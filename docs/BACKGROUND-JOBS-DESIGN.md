@@ -511,9 +511,13 @@ or reach getting any trust they do not already have?
   The queue's line is labelled with the tool's registered name.
 - **The job owns its parts and nothing of the run.** That means an `Arc<McpClient>` plus the
   owned call parameters. No `ToolCtx`, and above all not its `events` sender.
+- **The placeholder is the harness's alone.** A server's finished result that starts with
+  `being made: ` is refused as `not made: …`, so the still-out state and the restart repair
+  are never decided by the server's words.
 - **The job races the call against its own token.** On Stop it returns `not made: stopped` at
   once, whatever the server does. It sends `notifications/cancelled` for the request
-  best-effort, so a server that ignores the notice never holds the conversation's one slot.
+  best-effort, waiting at most two seconds to write it, so a server that ignores the notice, or
+  has stopped reading its input, never holds the conversation's one slot.
 - **Bounded either way.** A background call waits up to `BACKGROUND_TIMEOUT` (2 h), not
   `REQUEST_TIMEOUT`. Without a sink (the CLI, a subagent, an eval, a batch) the job is awaited
   inline, linked to the run's Stop, under that same cap.

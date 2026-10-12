@@ -6,6 +6,7 @@
 // row the server marked `deferred`, only a finished call, only a plain
 // chat-relative `.mp4` path. And a deferred row is still out only while its
 // first line says `being made: `, keyed on the mark, never the words.
+import { readFileSync } from 'node:fs';
 import { clipOf, stillOut } from '../src/lib/picture.js';
 
 let passed = 0;
@@ -40,12 +41,16 @@ is(clipOf(row('video: .hidden/a.mp4')), null, 'never a dot segment');
 is(clipOf(row('video: clips/a.mov')), null, 'only mp4');
 is(clipOf(row('here is video: clips/a.mp4')), null, 'only a line that is the fact itself');
 is(clipOf(row(making)), null, 'nothing while it is being made');
+// The envelope as `jobs::settle` writes it, from the case the Rust test
+// checks against `settle` itself — never retyped here.
+const cases = JSON.parse(readFileSync(new URL('./deferred-clip-cases.json', import.meta.url), 'utf8'));
+is(clipOf(row(cases.wrapped)), cases.clip, 'the settled, wrapped result plays as the live one did');
+is(clipOf(row(cases.result)), cases.clip, 'and the live, unwrapped one');
 is(
-  clipOf(row('<untrusted-content source="render">\nvideo: videos/v1.mp4\nmade in 2 min\n</untrusted-content>')),
-  'videos/v1.mp4',
-  'the settled, wrapped result plays as the live one did'
+  clipOf(row(cases.wrapped.replace('---\n', ''))),
+  null,
+  'only the envelope the loop writes, line for line'
 );
-is(clipOf(row('<untrusted-content source="render">video: videos/v1.mp4')), null, 'only the envelope the loop writes, line and all');
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

@@ -1571,4 +1571,32 @@ mod tests {
         let out = run_inline(&job, Some(&run)).await;
         assert_eq!(out.content, "stopped, nothing made");
     }
+
+    /// The page plays a deferred tool's clip from its settled transcript
+    /// row, reading through this envelope; the shared case is what it reads,
+    /// so it is checked here against what `settle` writes, never retyped
+    /// (review of #666, pass 2: the page's test believed a two-line envelope
+    /// the harness never produced).
+    #[test]
+    fn the_envelope_the_page_reads_through_is_the_one_settle_writes() {
+        let case: serde_json::Value =
+            serde_json::from_str(include_str!("../../web/test/deferred-clip-cases.json")).unwrap();
+        let terms = Terms {
+            cap: 1 << 20,
+            caps: Some(Capabilities {
+                untrusted_input: true,
+                ..Capabilities::default()
+            }),
+            spill_dir: None,
+            mark_untrusted: true,
+        };
+        let out = settle(
+            case["tool"].as_str().unwrap(),
+            "c1",
+            ToolOutput::ok(case["result"].as_str().unwrap()).from_outside(),
+            &terms,
+            &mut Taint::default(),
+        );
+        assert_eq!(out.content, case["wrapped"].as_str().unwrap());
+    }
 }
