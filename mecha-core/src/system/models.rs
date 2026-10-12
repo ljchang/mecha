@@ -190,6 +190,10 @@ pub struct ModelLoad {
     pub kind: ModelKind,
     /// The model it serves, when it is running and the name could be read.
     pub model: Option<String>,
+    /// Whether `model` is a finding: false when a running server's name
+    /// could not be read, so a NULL model is "unknown", never "no model
+    /// loaded" (review of #658).
+    pub model_known: bool,
     pub running: bool,
     pub mem_bytes: u64,
     /// Cumulative CPU time of the unit; a percentage needs the previous
@@ -302,7 +306,8 @@ pub fn parse_router_models(json: &str) -> Option<Vec<(String, Option<u16>)>> {
             let port = args
                 .iter()
                 .position(|a| *a == "--port")
-                .and_then(|i| args.get(i + 1))
+                .and_then(|i| args.get(i + 1).copied())
+                .or_else(|| args.iter().find_map(|a| a.strip_prefix("--port=")))
                 .and_then(|p| p.parse().ok());
             Some((id, port))
         })
@@ -532,7 +537,11 @@ pub fn collect(
                     .flatten()
             };
             let mut ports: Option<Vec<u16>> = None;
-            let mut router_unread = false;
+            // The router's lines can be attributed only when it answered
+            // and every loaded instance's port is known; otherwise the
+            // row's speed is unknown, never a quiet minute (review of #658).
+            let mut unattributable = false;
+            let mut listed_empty = false;
             let model = if !st.running {
                 None
             } else {
@@ -547,13 +556,15 @@ pub fn collect(
                             .and_then(|b| parse_router_models(&b))
                         {
                             Some(loaded) => {
+                                unattributable = loaded.iter().any(|(_, p)| p.is_none());
+                                listed_empty = loaded.is_empty();
                                 ports = Some(loaded.iter().filter_map(|(_, p)| *p).collect());
                                 let names: Vec<String> =
                                     loaded.into_iter().map(|(n, _)| n).collect();
                                 (!names.is_empty()).then(|| names.join(" + "))
                             }
                             None => {
-                                router_unread = true;
+                                unattributable = true;
                                 None
                             }
                         }
@@ -566,13 +577,15 @@ pub fn collect(
                     }
                 }
             };
-            let perf = journal.as_ref().filter(|_| !router_unread).map(|j| {
+            let model_known = !st.running || model.is_some() || listed_empty;
+            let perf = journal.as_ref().filter(|_| !unattributable).map(|j| {
                 let lines = j.get(unit).map(Vec::as_slice).unwrap_or(&[]);
                 fold_perf(server.kind, lines, ports.as_deref())
             });
             ModelLoad {
                 kind: server.kind,
                 model,
+                model_known,
                 running: st.running,
                 mem_bytes: mem,
                 cpu_usec: cpu,

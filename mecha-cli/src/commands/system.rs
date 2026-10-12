@@ -187,10 +187,11 @@ fn sample(json: bool) -> Result<()> {
             let mem = m.mem_bytes.map_or("—".to_string(), |b| {
                 format!("{:.2} GiB", b as f64 / 1073741824.0)
             });
-            let what = match (&m.model, m.running) {
-                (_, false) => "stopped".to_string(),
-                (Some(name), true) => name.clone(),
-                (None, true) => "running, no model loaded".to_string(),
+            let what = match (&m.model, m.running, m.model_known) {
+                (_, false, _) => "stopped".to_string(),
+                (Some(name), true, _) => name.clone(),
+                (None, true, true) => "running, no model loaded".to_string(),
+                (None, true, false) => "running, model unknown".to_string(),
             };
             let speed = [
                 m.prompt_tps.map(|t| format!("prompt {t:.0} tok/s")),
