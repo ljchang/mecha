@@ -357,6 +357,11 @@ async fn a_refused_proposal_carries_no_rows() {
         .unwrap();
     assert!(out.is_error, "{}", out.content);
     assert!(out.content.contains("broken: failed"), "{}", out.content);
+    assert!(
+        !out.content.contains("no_such_table"),
+        "a third-party source's schema names stay out: {}",
+        out.content
+    );
     assert!(out.content.contains("speed: runs"), "{}", out.content);
     assert!(!out.content.contains("88.25"), "{}", out.content);
     assert!(!out.external);

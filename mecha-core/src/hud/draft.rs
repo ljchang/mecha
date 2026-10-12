@@ -486,6 +486,9 @@ impl Store {
         if staging.exists() {
             std::fs::remove_dir_all(&staging)?;
         }
+        // Removed on every way out but the rename (which moves it): a `?`
+        // between here and there leaves nothing behind (review of #659).
+        let staged = Scratch(staging.clone());
         draft.write(&staging)?;
         crate::create_private_dir(&staging.join("data"))?;
         for d in &preview.datasets {
@@ -524,7 +527,6 @@ impl Store {
         let waiting = self.proposal_ids()?;
         let revised = waiting.iter().any(|w| w == draft.id());
         if !revised && waiting.len() >= MAX_PENDING {
-            let _ = std::fs::remove_dir_all(&staging);
             return Ok(Proposed::TooMany);
         }
         if target.exists() {
@@ -533,6 +535,8 @@ impl Store {
         }
         std::fs::rename(&staging, &target)
             .with_context(|| format!("staging the proposal {:?}", draft.id()))?;
+        // Renamed away: nothing for the guard to remove.
+        drop(staged);
         Ok(Proposed::Staged { revised, preview })
     }
 
