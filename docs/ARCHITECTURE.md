@@ -10220,8 +10220,11 @@ exhaustive `match`, so the build asks; the ones that are not say so.
       file mecha did not write.
     - `someone_elses` refuses to install over a server mecha did not install
       on the port. That one is provided, and used as it is.
-    - `restart`, not `enable --now`, so a reinstall reaches a running server.
-      A failed health check stops and disables what it started (#639).
+    - The server gets `restart`, not `enable --now`, so a reinstall reaches
+      a running server. A failed health check stops and disables what it
+      started (#639). A timer is the exception: `enable --now` is right
+      there, because the oneshot it fires reads its unit afresh on every
+      tick after `daemon-reload`.
     - **Everything the hand install runs beside the server ships with it.**
       7e shipped ComfyUI without the hand install's idle reset, so an
       installed server held ~13.6 GB after a picture for good until 7e-2

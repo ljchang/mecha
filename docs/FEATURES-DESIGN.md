@@ -1707,10 +1707,15 @@ Step 7 becomes these, each a PR that leaves every feature working:
   it listed (F14). **7e-2, the idle reset, built:** the install also writes
   `scripts/comfyui/comfyui-idle-reset` (a copy in the binary, held
   byte-equal by a test) and `mecha-comfyui-idle.{service,timer}` pointed at
-  its own unit and port, and starts the timer only once the server has
-  passed its check; `comfyui_unit::remove` stops the timer before the server.
-  The name differs from the hand install's `mecha-comfyui-idle-reset` so
-  both can sit on one machine.
+  its own unit and port. It starts the timer before the server, so a timer
+  that cannot start stops the install before anything runs, and a failed
+  check stops both; `comfyui_unit::remove` stops the timer before the
+  server. The name differs from the hand install's
+  `mecha-comfyui-idle-reset` so both can sit on one machine. An install
+  made before 7e-2 reads complete, so `enable` does not re-run it, and
+  nothing reports the missing timer (`doctor` sees only *failed* units).
+  None is known: 7e merged on 2026-10-11 and this machine runs the
+  hand-built server. If one turns up, reinstalling it brings the timer.
 - **7f.** The speech server — Breeze (qwentts.cpp and its adapter), the
   default since 2026-10-03 — built (`speech_unit.rs`). The owner ruled on
   2026-10-11 to publish both halves, so neither is converted at install:

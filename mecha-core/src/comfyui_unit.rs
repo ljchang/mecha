@@ -32,8 +32,9 @@
 //! server holds ~13.6 GB until something unloads it, so the install also
 //! writes `scripts/comfyui/comfyui-idle-reset` — byte for byte, a test holds
 //! the copies equal — and a one-minute timer that runs it against this unit
-//! and port (`docs/ARCHITECTURE.md` §Image generation). The timer is enabled
-//! only once the server has passed its check, and is named `<unit>-idle` so a
+//! and port (`docs/ARCHITECTURE.md` §Image generation). The timer starts
+//! before the server, so a failure stops the install before anything runs;
+//! a failed check stops both. It is named `<unit>-idle` so a
 //! hand install's `mecha-comfyui-idle-reset` can sit beside it.
 //!
 //! The commit is one constant, [`COMMIT`], so a bump is that line and the
@@ -449,6 +450,19 @@ pub async fn install(
     crate::engine_gate::systemctl("daemon-reload", &[])?;
     let service = format!("{}.service", naming.unit);
     crate::engine_gate::systemctl("enable", &[&service])?;
+    // The timer before the server starts: without it a loaded server holds
+    // its memory for good, so a timer that cannot start fails the install —
+    // and failing here, before anything is started or checked, leaves the
+    // caller's later steps (the `[image]` table) for a re-run rather than
+    // skipping them behind a running server (review of #661). A tick before
+    // the server answers finds nothing to release.
+    let timer = format!("{idle}.timer");
+    crate::engine_gate::systemctl("enable", &["--now", &timer]).with_context(|| {
+        format!(
+            "{timer}, the idle reset, could not be started, so a loaded model would stay in \
+             memory — nothing was started; run `systemctl --user status {timer}` to see why"
+        )
+    })?;
     // A restart, not `enable --now`, so a reinstall reaches a running server;
     // a failed restart or check stops it before the install says so (#639).
     let checked = match crate::engine_gate::systemctl("restart", &[&service]) {
@@ -466,6 +480,7 @@ pub async fn install(
         Err(e) => Err(e),
     };
     if let Err(e) = checked {
+        let _ = crate::engine_gate::systemctl("disable", &["--now", &timer]);
         let stopped = match crate::engine_gate::systemctl("disable", &["--now", &service]) {
             Ok(()) => format!("{service} was stopped and disabled"),
             Err(stop) => format!(
@@ -476,17 +491,6 @@ pub async fn install(
         };
         return Err(e.context(stopped));
     }
-    // Only a checked server gets the timer: one that failed is stopped above,
-    // and a reset of a stopped unit has nothing to release. Without the timer
-    // a loaded server holds its memory for good, so a failure here fails the
-    // install, which a re-run resumes.
-    let timer = format!("{idle}.timer");
-    crate::engine_gate::systemctl("enable", &["--now", &timer]).with_context(|| {
-        format!(
-            "{service} is installed and answers, but its idle reset could not be started, so \
-             a loaded model would stay in memory — run `systemctl --user enable --now {timer}`"
-        )
-    })?;
     say(&format!(
         "{timer} restarts it once it has held a model unused for 15 minutes"
     ));
