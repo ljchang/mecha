@@ -10,7 +10,9 @@ the loaders to the tools.
    one read-only query so you can look at real values.
 2. `hud_preview` with `id`, `spec` and `loaders` — checks everything, runs
    every query once, and returns each dataset's row count and first rows, or
-   every error by name. Fix and preview again until it is clean. With `id`
+   every error by name. Fix and preview again until it is clean. If it offers
+   `look`, add `look: true` once the text is clean to see the dashboard drawn,
+   and fix what looks wrong: empty charts, flat lines, cut-off labels. With `id`
    alone it returns that board's spec and loaders, to revise — a proposal
    still waiting for the owner first, else the installed board.
 3. `hud_propose` with the same three — stages the board for the owner, who

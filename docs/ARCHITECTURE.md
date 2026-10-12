@@ -5992,6 +5992,12 @@ the owner's rulings; this section is the invariants a change to
   digest the owner was shown, recomputed from the files, so a revision in
   between is refused. A replacement carries the ledger, which keeps publish
   generations monotonic, and the publish markers.
+- **A preview's picture is drawn with no network, by the kernel**
+  (`hud::render`, step 6). The browser runs inside `bwrap --unshare-all`,
+  served the bundle on the sandbox's own loopback under the interactive CSP,
+  with nothing of the home bound. Without `bwrap` or a browser there is no
+  picture, said; there is never an unconfined fallback. `look` is offered
+  only to a model that can see, on `image_view`'s rule.
 - **The renderer is ours, and nothing agent-authored executes in it**
   (`web/src/lib/hud/`, steps 3–4). No `{@html}`, no HTML string sink, no
   inline `style=`, no link: `web/test/hud.mjs` scans the source for each.
