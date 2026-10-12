@@ -68,11 +68,28 @@ impl HudSources {
 /// Check a draft and run each loader once.
 pub struct HudPreview {
     store: Store,
+    /// How to draw a draft, when this run can look at one (§5.3, step 6).
+    look: Option<Look>,
+}
+
+/// What drawing a preview needs from the session that registers the tool.
+#[derive(Debug, Clone)]
+pub struct Look {
+    /// The vendored renderer a publish ships (`web/dist/hud-renderer`).
+    pub renderer: std::path::PathBuf,
 }
 
 impl HudPreview {
     pub fn new(store: Store) -> Self {
-        HudPreview { store }
+        HudPreview { store, look: None }
+    }
+
+    /// Offer `look`: only for a model that can see images, as `image_view`
+    /// is offered. To a blind model a screenshot is a thousand tokens of
+    /// pixels the loop throws away.
+    pub fn with_look(mut self, look: Look) -> Self {
+        self.look = Some(look);
+        self
     }
 }
 
@@ -500,18 +517,35 @@ impl Tool for HudPreview {
     }
 
     fn description(&self) -> &str {
-        "Check a dashboard draft and run each of its loaders once against its source: every \
-         error by name, or each dataset's row count, columns and first rows. Pass `id`, `spec` \
-         and `loaders` (see hud_sources for the guide). Nothing is saved; preview until it is \
-         right, then hud_propose the same draft. With `id` alone, returns that dashboard's \
-         current spec and loaders (installed or proposed), to revise."
+        if self.look.is_some() {
+            "Check a dashboard draft and run each of its loaders once against its source: every \
+             error by name, or each dataset's row count, columns and first rows. Pass `id`, \
+             `spec` and `loaders` (see hud_sources for the guide). Nothing is saved; preview \
+             until it is right, then hud_propose the same draft. Add `look: true` once the text \
+             is clean to see the dashboard drawn — empty charts, wrong axes, unreadable labels — \
+             at about a thousand tokens per picture. With `id` alone, returns that dashboard's \
+             current spec and loaders (installed or proposed), to revise."
+        } else {
+            "Check a dashboard draft and run each of its loaders once against its source: every \
+             error by name, or each dataset's row count, columns and first rows. Pass `id`, \
+             `spec` and `loaders` (see hud_sources for the guide). Nothing is saved; preview \
+             until it is right, then hud_propose the same draft. With `id` alone, returns that \
+             dashboard's current spec and loaders (installed or proposed), to revise."
+        }
     }
 
     fn input_schema(&self) -> Value {
-        draft_schema(
+        let mut schema = draft_schema(
             "The dashboard's id: [a-z][a-z0-9_]*. An installed dashboard's id revises it.",
             false,
-        )
+        );
+        if self.look.is_some() {
+            schema["properties"]["look"] = json!({
+                "type": "boolean",
+                "description": "Also draw the dashboard and attach a screenshot of it. With `id` alone, draws the board under that id (its waiting proposal, else the installed one)."
+            });
+        }
+        schema
     }
 
     fn read_only(&self) -> bool {
@@ -524,15 +558,33 @@ impl Tool for HudPreview {
 
     async fn call(&self, input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
         let store = self.store.clone();
+        let wants_look = input.get("look").and_then(Value::as_bool) == Some(true);
+        let look = self.look.clone();
         tokio::task::spawn_blocking(move || {
             let only_id = input.get("spec").is_none() && input.get("loaders").is_none();
-            if only_id {
-                let id = input.get("id").and_then(Value::as_str).unwrap_or_default();
-                return current(&store, id.trim());
-            }
-            let draft = match draft_of(&input) {
-                Ok(draft) => draft,
-                Err(why) => return Ok(ToolOutput::err(why)),
+            let id = input.get("id").and_then(Value::as_str).unwrap_or_default().trim().to_string();
+            // `id` and `look` alone draw the board under that id — the
+            // waiting proposal first, else the installed one — which is what
+            // a model that has just checked a draft asks for (2026-10-12
+            // trial). `id` alone returns its files, to revise.
+            let draft = if only_id && wants_look && look.is_some() {
+                match draft_by_id(&store, &id) {
+                    Ok(Some(draft)) => draft,
+                    Ok(None) => {
+                        return Ok(ToolOutput::err(format!(
+                            "No dashboard or proposal named {id:?} to draw; pass `spec` and \
+                             `loaders` to draw a draft."
+                        )))
+                    }
+                    Err(why) => return Ok(ToolOutput::err(why)),
+                }
+            } else if only_id {
+                return current(&store, &id);
+            } else {
+                match draft_of(&input) {
+                    Ok(draft) => draft,
+                    Err(why) => return Ok(ToolOutput::err(why)),
+                }
             };
             let preview = store.preview(&draft)?;
             let mut out = describe(&preview);
@@ -544,12 +596,41 @@ impl Tool for HudPreview {
                 }
                 out.push_str("If it is right, propose it with hud_propose (the same id, spec and loaders).\n");
             }
+            // The picture: asked for, offered, and of a clean draft only.
+            let mut picture = None;
+            if wants_look {
+                match (&look, preview.is_clean()) {
+                    (None, _) => out.push_str(
+                        "(No picture: drawing is not offered to this model — it cannot see \
+                         images.)\n",
+                    ),
+                    (Some(_), false) => out.push_str(
+                        "(No picture until the draft passes and every loader runs.)\n",
+                    ),
+                    (Some(look), true) => match draw(&store, &draft, &preview, look) {
+                        Ok(block) => {
+                            out.push_str(
+                                "The dashboard as drawn is attached: check every panel shows \
+                                 what it should.\n",
+                            );
+                            picture = Some(block);
+                        }
+                        Err(why) => {
+                            let _ = writeln!(out, "(No picture: {why})");
+                        }
+                    },
+                }
+            }
             // A loader that failed is a draft the model can fix, as a
             // refusal is (review of #659, pass 3).
             let result = if preview.is_clean() {
                 ToolOutput::ok(out)
             } else {
                 ToolOutput::err(out)
+            };
+            let result = match picture {
+                Some(block) => result.with_image(block),
+                None => result,
             };
             Ok(if preview.external() {
                 result.from_outside()
@@ -559,6 +640,44 @@ impl Tool for HudPreview {
         })
         .await?
     }
+}
+
+/// Draw a clean draft in the render's sandbox and make it an image block,
+/// capped at the door as `image_view`'s are. The reason it could not be
+/// drawn is the error, worded for the model.
+fn draw(
+    store: &Store,
+    draft: &Draft,
+    preview: &Preview,
+    look: &Look,
+) -> std::result::Result<crate::message::Block, String> {
+    let with = crate::hud::render::Renderer::find()?;
+    if !look.renderer.join("hud.js").is_file() {
+        return Err(format!(
+            "the dashboard renderer is not built at {} (`npm run build` in web/)",
+            look.renderer.display()
+        ));
+    }
+    let png = store
+        .picture(draft, preview, &look.renderer, &with, chrono::Utc::now())
+        .map_err(|e| format!("it could not be drawn: {e:#}"))?;
+    crate::image::rendered_block(&png, Some(format!("{}.png", draft.id())))
+        .map_err(|e| format!("the screenshot could not be attached: {e:#}"))
+}
+
+/// The draft under `id`: a waiting proposal first, else the installed board.
+fn draft_by_id(store: &Store, id: &str) -> std::result::Result<Option<Draft>, String> {
+    match store.proposal(id) {
+        Ok(Some(Ok(p))) => return Ok(Some(p.draft)),
+        Ok(Some(Err(r))) => {
+            return Err(format!(
+                "A proposal `{id}` is waiting but no longer passes its checks:\n{r}"
+            ))
+        }
+        Ok(None) => {}
+        Err(e) => return Err(format!("The proposal `{id}` could not be read: {e:#}")),
+    }
+    store.board_draft(id).map_err(|e| format!("{e:#}"))
 }
 
 /// A dashboard's current files: a waiting proposal first — it is the newer
