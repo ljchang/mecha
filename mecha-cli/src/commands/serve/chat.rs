@@ -1703,7 +1703,8 @@ fn ensure_session_as<'a>(
         }
         // A picture still "being made" when the server stopped has no job
         // behind it now: settled from what the workspace holds (`late`).
-        let bound = chat.follower.current();
+        // Over the followed binding this function was handed, never
+        // `current()` (review of #666, pass 5).
         super::late::repair_orphans(&session, &workspace, &mut conversation, &|name| {
             super::late::may_be_orphan(bound.agent.registry(), name)
         });
@@ -4203,7 +4204,8 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
         routes.insert(key.clone(), (questions.clone(), events.clone(), park));
     }
     let mut conversation = conversation;
-    let bound = chat.follower.current();
+    // The binding read above, not a second `current()` (review of #666,
+    // pass 5).
     super::late::repair_orphans(&session, &workspace, &mut conversation, &|name| {
         super::late::may_be_orphan(bound.agent.registry(), name)
     });
