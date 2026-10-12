@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.23] - 2026-10-12
+
 ### Added
 
 - **Signing in is a page in your browser.** `mecha-docs auth` signs in with
@@ -5222,7 +5224,8 @@ under Added; later releases will record only what changed.
   benchmarks, the TUI survey, and a branching design recorded as a deliberate
   non-implementation.
 
-[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.22...HEAD
+[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.23...HEAD
+[0.1.23]: https://github.com/ljchang/mecha/releases/tag/v0.1.23
 [0.1.22]: https://github.com/ljchang/mecha/releases/tag/v0.1.22
 [0.1.21]: https://github.com/ljchang/mecha/releases/tag/v0.1.21
 [0.1.20]: https://github.com/ljchang/mecha/releases/tag/v0.1.20
