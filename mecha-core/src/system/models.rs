@@ -484,7 +484,9 @@ pub fn loopback_get(port: u16, path: &str, timeout: Duration) -> Option<String> 
     (status == "200").then(|| body.to_string())
 }
 
-/// Each server's row, from the unit counters and GPU memory the sample
+/// Each server's row, and whether the journal window was read (when it was
+/// not, the cursor stays and the next sample reads it), from the unit
+/// counters and GPU memory the sample
 /// already read, the units' states, and their journals since
 /// `journal_since` — the previous sample's own instant ([`super::journal_cursor`]),
 /// so consecutive windows meet with nothing between them.
@@ -498,7 +500,7 @@ pub fn collect(
     at: DateTime<Utc>,
     cfg: Option<&crate::config::Config>,
     budget: impl Fn() -> Duration,
-) -> Vec<ModelLoad> {
+) -> (Vec<ModelLoad>, bool) {
     let strip = |u: &str| u.strip_suffix(".service").unwrap_or(u).to_string();
     let all_units: Vec<String> = SERVERS
         .iter()
@@ -506,9 +508,9 @@ pub fn collect(
         .collect();
     let mut args = vec!["--user", "show", "-p", "Id,LoadState,ActiveState,MainPID"];
     args.extend(all_units.iter().map(String::as_str));
-    let states = match source::run_bounded("systemctl", &args, budget()) {
-        Ran::Out(t) => parse_unit_states(&t),
-        _ => BTreeMap::new(),
+    let (states, states_read) = match source::run_bounded("systemctl", &args, budget()) {
+        Ran::Out(t) => (parse_unit_states(&t), true),
+        _ => (BTreeMap::new(), false),
     };
 
     // The servers here: the first of each one's units that is installed.
@@ -554,7 +556,11 @@ pub fn collect(
             .map(|t| parse_journal(&t))
     };
 
-    present
+    // Whether this sample read the window: no server here is nothing to
+    // read, but a `systemctl` that did not answer leaves `present` empty
+    // too, and is not that (review of #658).
+    let window_read = states_read && (present.is_empty() || journal.is_some());
+    let rows = present
         .into_iter()
         .map(|(server, unit, st)| {
             let (mut mem, mut cpu) = (0, 0);
@@ -624,5 +630,6 @@ pub fn collect(
                 perf,
             }
         })
-        .collect()
+        .collect();
+    (rows, window_read)
 }

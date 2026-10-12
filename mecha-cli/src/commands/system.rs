@@ -21,8 +21,9 @@ pub struct Args {
 pub enum Cmd {
     /// Record one minute of the host's load, by kind of work only, into
     /// ~/.mecha/system/series.sqlite — what `scripts/mecha-system-sample.timer`
-    /// runs each minute. No process, unit or model name is ever written; a
-    /// sample that cannot be read is refused and exits non-zero.
+    /// runs each minute. No process or unit name is ever written — the one
+    /// name is a model's, in its server's row (R6); a sample that cannot be
+    /// read is refused and exits non-zero.
     Sample {
         #[arg(long)]
         json: bool,

@@ -167,6 +167,9 @@ pub struct Sample {
     /// Each model server's row (`models`): the one place a name — the
     /// model's, never a unit's — is part of a sample.
     pub models: Vec<models::ModelLoad>,
+    /// Whether the model rows' journal window was read; when it was not,
+    /// the cursor stays where it was ([`journal_cursor`]).
+    pub model_window_read: bool,
 }
 
 /// Cumulative counters, as read this minute. `Err(Reading::NotHere)` is a
@@ -321,9 +324,10 @@ pub fn collect(
     // older finding with readers, and the model rows' commands and connect
     // must not spend the deadline it shares (#641's shape; review of #658).
     let counters = read_counters(&reader, since);
-    let models = models::collect(&units, gpu_apps.as_deref(), journal_since, at, cfg, || {
-        reader.budget()
-    });
+    let (models, model_window_read) =
+        models::collect(&units, gpu_apps.as_deref(), journal_since, at, cfg, || {
+            reader.budget()
+        });
 
     Ok(Sample {
         at,
@@ -338,6 +342,7 @@ pub fn collect(
         now,
         counters,
         models,
+        model_window_read,
     })
 }
 
@@ -865,7 +870,7 @@ fn record_models(
     // moved when no row's journal was read, so the next sample reads the
     // window this one lost rather than dropping its requests (still capped
     // at ten minutes; review of #658).
-    if s.models.is_empty() || s.models.iter().any(|m| m.perf.is_some()) {
+    if s.model_window_read {
         tx.execute(
             "INSERT OR REPLACE INTO counter_state (key, value, ident, at) VALUES (?1, ?2, 0, ?3)",
             params![JOURNAL_CURSOR, s.at.timestamp_micros(), ts(s.at)],
