@@ -1589,7 +1589,27 @@ async fn prepare_tools_carrying(
                     registry.insert(Arc::new(HudSources::new(store.clone())));
                 }
                 if asked("hud_preview") {
-                    registry.insert(Arc::new(HudPreview::new(store.clone())));
+                    // `look` (a screenshot) only for a model that can see
+                    // one, on `image_view`'s rule; the renderer is the one a
+                    // publish vendors, beside the web app's assets.
+                    let sees = cfg
+                        .provider(opts.provider.as_deref())
+                        .ok()
+                        .is_some_and(|(_, p)| p.vision_enabled());
+                    let assets = cfg.web.assets.clone().or_else(|| {
+                        mecha_core::work::mecha_home()
+                            .ok()
+                            .map(|h| h.join("web").join("dist"))
+                    });
+                    let tool = HudPreview::new(store.clone());
+                    let tool = match assets.filter(|_| sees) {
+                        Some(assets) => tool.with_look(mecha_core::tool::hud::Look {
+                            renderer: assets.join(mecha_core::hud::publish::RENDERER_DIR),
+                            timezone: cfg.agent.timezone().map(|t| t.name().to_string()),
+                        }),
+                        None => tool,
+                    };
+                    registry.insert(Arc::new(tool));
                 }
                 if asked("hud_propose") {
                     registry.insert(Arc::new(HudPropose::new(store)));
