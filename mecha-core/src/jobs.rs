@@ -39,6 +39,7 @@ pub struct DeferredJob {
     busy: String,
     terms: std::sync::OnceLock<Terms>,
     label: std::sync::OnceLock<String>,
+    closings: std::sync::OnceLock<(crate::agent::Closing, crate::agent::Closing)>,
 }
 
 /// What the loop does to a result after the call executes, fixed for a
@@ -88,6 +89,7 @@ impl DeferredJob {
             busy: busy.into(),
             terms: std::sync::OnceLock::new(),
             label: std::sync::OnceLock::new(),
+            closings: std::sync::OnceLock::new(),
         })
     }
 
@@ -101,6 +103,24 @@ impl DeferredJob {
     pub fn with_label(self: Arc<Self>, label: impl Into<String>) -> Arc<Self> {
         let _ = self.label.set(label.into());
         self
+    }
+
+    /// The run's closing lines when this job is not a picture: said once it
+    /// is queued, and once it is refused because the line is full
+    /// (BACKGROUND-JOBS-DESIGN.md §8). A job that sets none closes its run
+    /// with the picture's lines, as every job did before another kind
+    /// existed — measured verbatim, so they stay the picture's.
+    pub fn with_closings(
+        self: Arc<Self>,
+        started: crate::agent::Closing,
+        busy: crate::agent::Closing,
+    ) -> Arc<Self> {
+        let _ = self.closings.set((started, busy));
+        self
+    }
+
+    pub(crate) fn closings(&self) -> Option<(crate::agent::Closing, crate::agent::Closing)> {
+        self.closings.get().copied()
     }
 
     fn label(&self) -> String {
