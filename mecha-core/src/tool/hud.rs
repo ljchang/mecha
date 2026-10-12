@@ -225,7 +225,9 @@ fn tables(out: &mut String, path: &std::path::Path, deadline: std::time::Instant
         path,
         "SELECT type, name, sql FROM sqlite_schema \
          WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY name",
-        500,
+        // Far past `MAX_TABLES`, so a large schema is listed short with its
+        // overflow line rather than refused whole.
+        100_000,
         SAMPLE_TIMEOUT,
     );
     let listed = match listed {
@@ -541,7 +543,9 @@ impl Tool for HudPreview {
                 }
                 out.push_str("If it is right, propose it with hud_propose (the same id, spec and loaders).\n");
             }
-            let result = if preview.refusals.is_empty() {
+            // A loader that failed is a draft the model can fix, as a
+            // refusal is (review of #659, pass 3).
+            let result = if preview.is_clean() {
                 ToolOutput::ok(out)
             } else {
                 ToolOutput::err(out)
@@ -636,12 +640,14 @@ impl Tool for HudPropose {
         true
     }
 
-    /// As `hud_preview`'s: a draft refused for one broken loader is described
-    /// with the rows its other loaders returned, and taint keys off the
-    /// declared capability — a `from_outside` on an undeclared tool arms
-    /// nothing (review of #659).
+    /// Nothing it returns came out of a source: a staged draft is named by
+    /// its datasets, and a refused one by its refusals and each failing
+    /// loader's reason — which never carries a value (`RunError`, the shape
+    /// check). So it declares no reach. That is also what keeps its record
+    /// honest: a proposer declaring `untrusted_input` would fold itself into
+    /// the turn's taint (review of #659, pass 3).
     fn capabilities(&self) -> Capabilities {
-        Capabilities::default().private().untrusted()
+        Capabilities::default()
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
@@ -649,7 +655,10 @@ impl Tool for HudPropose {
             Ok(draft) => draft,
             Err(why) => return Ok(ToolOutput::err(why)),
         };
-        let origin = Origin::of_proposal(ctx.taint.as_ref());
+        // What the conversation had read when the model wrote this draft —
+        // recorded before this turn's batch, so neither this tool nor a
+        // preview batched beside it marks the proposal (review of #659).
+        let origin = Origin::of_proposal(ctx.recorded_taint.as_ref());
         let store = self.store.clone();
         let proposed =
             tokio::task::spawn_blocking(move || store.propose(&draft, origin, chrono::Utc::now()))
@@ -667,43 +676,17 @@ impl Tool for HudPropose {
                 } else {
                     ""
                 };
-                let rows: Vec<String> = preview
-                    .datasets
-                    .iter()
-                    .map(|d| match &d.fetch {
-                        Fetch::Rows { rows, .. } => format!("{} {}", d.name, rows.len()),
-                        _ => d.name.clone(),
-                    })
-                    .collect();
-                let result = ToolOutput::ok(format!(
-                    "{verb} the dashboard `{}` ({title}){replaces}. It waits for the owner on \
-                     the Dashboards page, under Proposed, drawn with the rows it has now \
-                     ({}); nothing is installed until they accept it. Tell them it is there.",
+                let names: Vec<&str> = preview.datasets.iter().map(|d| d.name.as_str()).collect();
+                ToolOutput::ok(format!(
+                    "{verb} the dashboard `{}` ({title}){replaces}, with the datasets {}. It \
+                     waits for the owner on the Dashboards page, under Proposed, drawn with the \
+                     rows it has now; nothing is installed until they accept it. Tell them it \
+                     is there.",
                     preview.id,
-                    rows.join(", ")
-                ));
-                // The row counts came out of the sources the preview ran, so
-                // the result is marked exactly as `hud_preview`'s is (review
-                // of #659).
-                if preview.external() {
-                    result.from_outside()
-                } else {
-                    result
-                }
+                    names.join(", ")
+                ))
             }
-            Proposed::NotClean(preview) => {
-                let result = ToolOutput::err(format!(
-                    "{}Not proposed: fix the draft with hud_preview until every loader runs, \
-                     then propose it.",
-                    describe(&preview)
-                ));
-                // A refused draft's description carries the rows it did get.
-                if preview.external() {
-                    result.from_outside()
-                } else {
-                    result
-                }
-            }
+            Proposed::NotClean(preview) => ToolOutput::err(refused(&preview)),
             Proposed::TooMany => ToolOutput::err(format!(
                 "Not proposed: {} dashboards already wait for the owner. Revise one of those \
                  (the same id) instead, or ask the owner to accept or reject them.",
@@ -711,6 +694,39 @@ impl Tool for HudPropose {
             )),
         })
     }
+}
+
+/// Why a draft was not proposed, with no value from any source in it: the
+/// refusals, or each loader's outcome by name and reason.
+fn refused(p: &Preview) -> String {
+    let mut out = String::new();
+    if !p.refusals.is_empty() {
+        let _ = writeln!(
+            out,
+            "Not proposed: the draft does not pass its checks ({}):",
+            p.refusals.len()
+        );
+        for r in &p.refusals {
+            let _ = writeln!(out, "- {r}");
+        }
+    } else {
+        out.push_str("Not proposed: not every loader runs.\n");
+        for d in &p.datasets {
+            match &d.fetch {
+                Fetch::Rows { .. } => {
+                    let _ = writeln!(out, "- {}: runs", d.name);
+                }
+                Fetch::Refused(why) => {
+                    let _ = writeln!(out, "- {}: refused — {why}", d.name);
+                }
+                Fetch::Failed(why) => {
+                    let _ = writeln!(out, "- {}: failed — {why}", d.name);
+                }
+            }
+        }
+    }
+    out.push_str("Fix it with hud_preview until every loader runs, then propose it.");
+    out
 }
 
 #[cfg(test)]
