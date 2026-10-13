@@ -1015,7 +1015,7 @@ pub fn write_mcp_entry(
     wiring: &McpWiring,
     command: &Path,
 ) -> anyhow::Result<McpWrite> {
-    Ok(write_mcp_entries(path, &[(wiring, command)])?.remove(0))
+    Ok(write_mcp_entries(path, &[(wiring, command)], true)?.remove(0))
 }
 
 /// Write each feature's `[[mcp]]` entry, running its command, into the global
@@ -1029,9 +1029,15 @@ pub fn write_mcp_entry(
 /// `[outbox]` lacks of the routing, is returned for the caller to name. In
 /// place through `toml_edit`, comments kept, written beside and renamed, and
 /// not written at all when nothing changed.
+///
+/// `stage` false writes no `[outbox]` — the caller found an operator
+/// `allow`/`prompt` rule on a tool it would route, which `setup::live_rules`
+/// refuses at every start (review of #669) — and reports the routing as
+/// missing instead.
 pub fn write_mcp_entries(
     path: &Path,
     items: &[(&McpWiring, &Path)],
+    stage: bool,
 ) -> anyhow::Result<Vec<McpWrite>> {
     use anyhow::Context;
     let text = match std::fs::read_to_string(path) {
@@ -1102,7 +1108,11 @@ pub fn write_mcp_entries(
         .iter()
         .flat_map(|(w, _)| w.outbox.iter().copied())
         .collect();
-    if !outbox_existed {
+    if !outbox_existed && !stage {
+        for ((w, _), r) in items.iter().zip(results.iter_mut()) {
+            r.outbox_missing = w.outbox.iter().map(|t| t.to_string()).collect();
+        }
+    } else if !outbox_existed {
         if !wanted.is_empty() {
             let mut tools = toml_edit::Array::new();
             for t in &wanted {
@@ -1532,7 +1542,7 @@ mod tests {
             let p = root.join(name);
             let items: Vec<(&McpWiring, &Path)> =
                 order.iter().map(|w| (*w, Path::new("/b/x"))).collect();
-            let done = write_mcp_entries(&p, &items).unwrap();
+            let done = write_mcp_entries(&p, &items, true).unwrap();
             assert!(done
                 .iter()
                 .all(|d| d.wrote_entry && d.wrote_outbox && d.outbox_missing.is_empty()));
@@ -1549,6 +1559,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         assert_eq!(seen[0].len(), mail.outbox.len() + docs.outbox.len());
         assert_eq!(seen[0], seen[1], "order does not decide what is staged");
+
+        // Not staged (an operator rule would conflict): no [outbox] written,
+        // the routing reported as missing, the entry still written.
+        let root = std::env::temp_dir().join(format!("mecha-mcp-n-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let p = root.join("ruled.toml");
+        let done = write_mcp_entries(&p, &[(&mail, Path::new("/b/mecha-mail"))], false).unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(done[0].wrote_entry && !done[0].wrote_outbox);
+        assert_eq!(done[0].outbox_missing.len(), mail.outbox.len());
+        assert!(!text.contains("[outbox]"), "{text}");
     }
 
     /// `enable mail` writes the entry the docs give, untrusted, with its sends
