@@ -491,16 +491,32 @@ pub(crate) struct RunPictures {
     /// then win, being the measured ones (BACKGROUND-JOBS-DESIGN.md §8).
     started_closing: Option<Closing>,
     started_picture: bool,
+    /// Run-scoped, like `started`: the closing each started tool's job
+    /// carried (`None` for a picture), so a repeat of it in a later turn —
+    /// refused before it runs, its job never seen — closes on the same lines
+    /// (review of #666, pass 6).
+    closings_of: std::collections::BTreeMap<String, Option<Closing>>,
     /// The same, for a job refused busy.
     busy_closing: Option<Closing>,
     busy_picture: bool,
 }
 
 impl RunPictures {
-    fn note_started(&mut self, job: &crate::jobs::DeferredJob) {
-        match job.closings() {
-            Some((started, _)) => self.started_closing = Some(started),
+    fn note_started(&mut self, name: &str, job: &crate::jobs::DeferredJob) {
+        let own = job.closings().map(|(started, _)| started);
+        self.closings_of.insert(name.to_string(), own);
+        match own {
+            Some(started) => self.started_closing = Some(started),
             None => self.started_picture = true,
+        }
+    }
+
+    /// A repeat of a tool this run already started: its lines, as its job
+    /// set them when it started.
+    fn note_repeat(&mut self, name: &str) {
+        match self.closings_of.get(name) {
+            Some(Some(own)) => self.started_closing = Some(*own),
+            _ => self.started_picture = true,
         }
     }
 
@@ -5031,6 +5047,7 @@ impl Agent {
                      its way. Answer the owner now."
                 );
                 run_pictures.repeated = true;
+                run_pictures.note_repeat(name);
                 emit(
                     events,
                     AgentEvent::ToolResult {
@@ -5945,6 +5962,7 @@ impl Agent {
                     // run, IMAGE-DESIGN.md §5.5).
                     Some(_) if defer && run_pictures.started.contains(&name) => {
                         run_pictures.repeated = true;
+                        run_pictures.note_repeat(&name);
                         ToolOutput::refusal(format!(
                             "Not run: `{name}` was already started in this run, and its result \
                              is on its way. Answer the owner now."
@@ -5955,7 +5973,7 @@ impl Agent {
                             Ok(submitted) => {
                                 run_pictures.started.insert(name.clone());
                                 run_pictures.started_now = true;
-                                run_pictures.note_started(&job);
+                                run_pictures.note_started(&name, &job);
                                 // Queued, not started: the first line stays the
                                 // tool's own ("being made: …"), which the page
                                 // and the restart repair read; the queue's words
@@ -5981,6 +5999,7 @@ impl Agent {
                                 run_pictures.note_busy(&job);
                                 if run_pictures.started.contains(&name) {
                                     run_pictures.repeated = true;
+                                    run_pictures.note_repeat(&name);
                                 } else if run_pictures.refused_busy.insert(name.clone()) {
                                     run_pictures.busy = true;
                                 } else {
@@ -8974,6 +8993,46 @@ mod tests {
         let mut cx = agent.context().as_ref().clone();
         cx.jobs = Some(queue.sink("chat", 0));
         let mut convo = Conversation::user("a picture, then two clips");
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+        {
+            let seen = provider.seen.lock().unwrap();
+            assert_eq!(seen.len(), 3);
+            let tail = tail_text(&seen[2]);
+            assert!(tail.ends_with(WORK_STARTED), "{tail}");
+        }
+        assert_eq!(outcome.text, WORK_STARTED_REPLY);
+        go.notify_waiters();
+    }
+
+    /// A repeat in a later turn is refused before it runs, so its job is never
+    /// seen; it closes on the lines the tool's first job carried, never the
+    /// picture's (review of #666, pass 6).
+    #[tokio::test]
+    async fn a_later_turns_repeat_of_a_clip_closes_on_the_clips_lines() {
+        let go = Arc::new(tokio::sync::Notify::new());
+        let queue = crate::jobs::JobQueue::new(|_| {});
+        let clip = |id: &str| Block::ToolUse {
+            id: id.into(),
+            name: "clip".into(),
+            input: json!({}),
+        };
+        let (agent, provider) = agent_with_tools(
+            vec![
+                assistant(vec![clip("c1")], StopReason::ToolUse),
+                assistant(vec![clip("c2")], StopReason::ToolUse),
+                assistant(
+                    vec![Block::text(
+                        "<tool_call><function=clip></function></tool_call>",
+                    )],
+                    StopReason::EndTurn,
+                ),
+            ],
+            vec![Arc::new(Clip(Arc::clone(&go)))],
+            PermissionMode::Allow,
+        );
+        let mut cx = agent.context().as_ref().clone();
+        cx.jobs = Some(queue.sink("chat", 0));
+        let mut convo = Conversation::user("a clip, and again");
         let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
         {
             let seen = provider.seen.lock().unwrap();
