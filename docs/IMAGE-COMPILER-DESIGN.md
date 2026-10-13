@@ -465,33 +465,22 @@ characters/<name>/entry.toml
 - **Names offered to a model** (review of #680, pass 6). Locations and outfits follow styles, not characters:
   - their **approved, unlocked** names are listed to the model as written, sorted, so the list is stable in the cached prefix. That's as `style_names` is, whose order comes from `Library::load`'s sort by kind and name. A location or outfit name that contains a character's name would expose it, so the owner's doors warn when one does. A warning rather than a refusal is deliberate: the owner is the authority on their own names, where `imagelib::missing`'s roster rule guards against a model;
   - so is the quarantined extraction;
-  - a locked one isn't listed, which is how the owner hides a place.
-  - A guessed locked name still resolves for generation, as §1 rules for all locked entries, but the result never names it back, and the call reads the same as for a name the library doesn't hold. So **no surface names a locked entry**: not the list, not a result's text, not the manifest. The lock hides names, not appearance (review of #680, pass 13). A model that guesses a locked name and then views the picture it drew (`image_view`) sees the hidden place rendered. That follows from §1's ruling that generation always has access to locked entries. Refusing to resolve a locked location or outfit for a model-written name would close it, and that would be a separate ruling.
-  - **The picture's manifest is a result too** (review of #680, pass 12). `write_manifest` writes `images/<stem>.json` inside the chat's folder, beside the picture, and today it names every entry used, by name and version (`Compiled.used`). A model can read it, so it already confirms a guessed locked style.
-    - Under §9, the in-folder manifest names only unlocked entries, in the keys `write_manifest` already uses (review of #680, pass 16).
-      - A `cast` row is today `{name, version, portrait}`; for a locked character it becomes `{locked: true, version}`. That drops the `portrait` blob hash too, since a hash names the entry as surely as its name.
-      - The `style` object becomes `{locked: true, version}` the same way.
-      - New `location` and `outfits` keys follow the same rule.
-    - The full record, name and version, goes to a usage log in the library store, outside any chat's folder, where the owner's audit reads it. It's an append-only store, so a row's closed `kind` is a wire format: an unknown kind loads as unknown and is shown, never dropped.
-    - That applies to every kind, styles and characters included, so it closes today's channel along with the new ones.
-    - **The manifest's readers must change with it** (review of #680, passes 14 and 15). The save dialog's `GET /api/library/source` builds its cast by `name` and drops a row without one, so as it stands a redacted row would make it suggest **unlocked**, failing open.
-      - The redaction ships with `source` reading `locked: true` on any `cast` row or on the `style` object as "made from a locked entry", so the new entry starts locked, as §1 requires.
-      - §5's lineage reads the version and the key the row sits under, which stay.
-
-  Characters stay unlisted ("their names are the owner's"). A model can only write a location it knows the name of (L5).
+  - a locked one isn't in that passive list, as a locked style isn't (`style_names`). That's the existing behaviour, not a new hiding.
+  - **The lock is for browsing** (§1, §4; the owner reaffirmed it 2026-10-13, after passes 10–17 of this review drifted to treating it as model-facing).
+    - A locked location or outfit resolves for generation, as every locked entry does.
+    - `image_library` lists it, and the manifest beside a picture names it, as both do for characters and styles today. Pictures already in chats are untouched by a lock (§1).
+    - What the lock hides is the owner's browsing without the unlock: the Library tab, the image route (below), and the save dialog's `source`, which returns a yes or no and never names (#385).
 - **Where the lists sit:** the location and outfit names are appended after the styles sentence at the end of the description (`imagegen::described`). What keeps the cached prefix stable is that the description is built once, in `ImageGenerate::new`, so a new location reaches a running chat only on a restart, when the cache is cold anyway. A mid-session rebuild would re-pay the prefix wherever the lists sit (review of #680, pass 16).
 - **Tools:**
-  - `image_library` lists the new kinds, **unlocked entries only, for every kind** (review of #680, pass 17). Today it lists `lib.approved()`, which filters on status alone, so it names a locked character or style and prints its text. That's the largest of today's lock channels, and §9 closes it with the manifest's;
+  - `image_library` lists the new kinds as it lists characters and styles: approved entries, locked ones included (§4: "the lock is for browsing");
   - a scene names a location in `setting.location`, and a person's `wearing` may name an outfit.
 
   The compiler resolves both, and an unknown name stays plain text.
 - **How a scene record stores a location** (review of #680). `scene::Setting` is a closed enum read leniently: an unknown variant reads as `Setting::Unknown`, untrusted and drawing nothing. So a location isn't a new variant. It's recorded as today's `Words`, holding **the model's own words** for the place (at least the name it wrote), plus an optional `location` name.
-  - **Never the library text** (review of #680, pass 11). `scene::Scene` keeps names, not library text, for characters (`Who::Library`) and styles, and `scene::note` renders `Words` back into a persona's run notes every turn (`NOTE_PLACE_CHARS` 240). Recorded library text would hand a locked location's description back to the model, the very thing L5 says can't happen.
+  - **Never the library text** (review of #680, pass 11). `scene::Scene` keeps names, not library text, for characters (`Who::Library`) and styles, so a restage picks up the owner's later edits instead of a snapshot. `scene::note` renders `Words` back into a persona's run notes every turn (`NOTE_PLACE_CHARS` 240), so a location's 400 characters there would also crowd the note.
   - The compiler resolves the name to the owner's text at render time, as it does a description and a style. So an edit to the location reaches the next restage.
   - Outfits are the same: `wearing` records what the model wrote, and the outfit's text is resolved at compile time.
-  - **`scene::note` renders the words, never the `location` field** (review of #680, passes 15 and 17). The words are the model's own and may include the name it wrote.
-    - So a name the model was offered before the owner locked the place can come back in its notes. That's not a disclosure: the model had it already, and the lock doesn't retract what a model knew.
-    - What it does stop is any owner-side write of the field becoming a channel to the model.
+  - `scene::note` renders the words, never the `location` field, so the note stays the model's own words.
   - A build that predates the field reads the model's words and loses only the link.
 - **Untrusted text naming a location.** The quarantined extraction (`IMAGE-DESIGN.md` §5.3) would learn the field. A location name from an untrusted-origin record resolves like any name: it selects owner-approved words, and adds none of its own.
   - It's the same rule as a non-library `who` being drawn from words (`IMAGE-DESIGN.md` §8).
@@ -522,13 +511,12 @@ E9b and V-B use the same reference set, so one set of images answers both genera
   - `add-reference` refused on a candidate;
   - the image route serving only blobs a visible entry names, with the entry kind parsed once into `Kind`;
   - `create`'s and `validate`'s kind checks made exhaustive over `Kind`, not wildcards, for the same reason;
-  - the in-folder manifest redacting locked entries to `{kind, locked: true, version}`, which the save dialog reads as locked;
   - unknown kinds, and known kinds on the wrong entry kind, never sent;
   - a location stored in a scene record as words plus its name, the name field `#[serde(default)]` so older records still parse as `Words`.
 - **L2, the portrait stays canonical:** no migration. The face is its crop, and existing manifests stay valid.
 - **L3, each generator's references gated on its measurement** (§9.4), with the owner ruling on each result, and the slot-filling order of §9.4.
 - **L4, outfits are text:** an image is for browsing only.
-- **L5, names offered to a model:** location and outfit names are listed like styles, approved and unlocked only; characters stay unlisted, and an outfit's `for` is never named to a model. A locked location or outfit still resolves for generation (§1: generation always has access to locked entries), but **no surface names a locked entry**: not the list, not the tool's text, not the manifest beside the picture (review of #680, passes 10, 12 and 16). Two tells remain, and both are accepted under §1: a redacted manifest row exists only for an entry that resolved, and `image_view` shows what was drawn. The lock hides names, not existence.
+- **L5, names offered to a model:** location and outfit names appear in `image_generate`'s description as styles do (approved, unlocked); `image_library` lists them, locked included, as it lists everything (§4); characters stay unlisted in the description, and an outfit's `for` is never named to a model. The lock is for browsing (§1), reaffirmed 2026-10-13.
 - **L6, references stay local**, enforced where references are read, not by convention: the reference-read path both generators call (§9.3, where every blob gets the portrait's checks) refuses to hand a blob to a backend that isn't loopback, as `imagegen::loopback_url` does for `image_generate`'s server (review of #680, pass 16): a generator whose backend isn't on this machine (loopback) is given no library references (face, body, detail, location) without the owner's ruling for that generator.
 - **L7, the order:**
   1. E9b and V-B, one session with shared references;
