@@ -76,6 +76,7 @@ async fn serve(listener: TcpListener, spec: Spec) -> Result<()> {
         child: None,
         idle_since: Instant::now(),
     }));
+    let starting = Arc::new(Mutex::new(()));
     let open = Arc::new(AtomicUsize::new(0));
     // At least a second: `interval` panics on zero, and `--idle-secs 0`
     // would otherwise take the proxy down.
@@ -91,9 +92,10 @@ async fn serve(listener: TcpListener, spec: Spec) -> Result<()> {
             accepted = listener.accept() => {
                 let (conn, _) = accepted.context("accepting a connection")?;
                 open.fetch_add(1, Ordering::SeqCst);
-                let (spec, state, open) = (spec.clone(), state.clone(), open.clone());
+                let (spec, state, open, starting) =
+                    (spec.clone(), state.clone(), open.clone(), starting.clone());
                 tokio::spawn(async move {
-                    if let Err(e) = forward(conn, &spec, &state).await {
+                    if let Err(e) = forward(conn, &spec, &state, &starting).await {
                         eprintln!("{e:#}");
                     }
                     // The idle clock starts when the last connection closes.
@@ -132,20 +134,34 @@ fn signal(kind: tokio::signal::unix::SignalKind) -> Result<tokio::signal::unix::
 }
 
 /// Start the server if it is not running, then pipe this connection to it.
-async fn forward(mut conn: TcpStream, spec: &Spec, state: &Mutex<State>) -> Result<()> {
+async fn forward(
+    mut conn: TcpStream,
+    spec: &Spec,
+    state: &Mutex<State>,
+    starting: &Mutex<()>,
+) -> Result<()> {
     {
-        // Held across the start, so every connection that arrives meanwhile
-        // waits on this one start rather than beginning its own.
-        let mut s = state.lock().await;
-        let running = match s.child.as_mut() {
-            Some(c) => c.try_wait().ok().flatten().is_none(),
-            None => false,
+        // The start lock is held across the start, so every connection that
+        // arrives meanwhile waits on this one start rather than beginning
+        // its own. The state lock is held only to look and to record: held
+        // across a cold load, it also held the idle tick and — through the
+        // drain after a signal — the SIGTERM a re-install's `bootout` sends,
+        // past launchd's exit timeout, whose SIGKILL then orphaned the
+        // server on its port (review of #678).
+        let _starting = starting.lock().await;
+        let running = {
+            let mut s = state.lock().await;
+            let exited = s.child.as_mut().and_then(|c| c.try_wait().ok().flatten());
+            if let Some(status) = exited {
+                eprintln!("the server exited ({status}); starting it again");
+                s.child = None;
+            }
+            s.child.is_some()
         };
         if !running {
-            if let Some(status) = s.child.as_mut().and_then(|c| c.try_wait().ok().flatten()) {
-                eprintln!("the server exited ({status}); starting it again");
-            }
-            s.child = Some(start(spec).await?);
+            let child = start(spec).await?;
+            let mut s = state.lock().await;
+            s.child = Some(child);
             s.idle_since = Instant::now();
         }
     }
@@ -227,7 +243,11 @@ mod tests {
         std::fs::write(
             &server,
             format!(
-                r#"import http.server
+                // `socketserver.TCPServer`, not `http.server.HTTPServer`,
+                // whose bind looks its host up (`getfqdn`) — slower than the
+                // test's 30 s on a macOS CI runner, which read as a server
+                // that never answered (#678).
+                r#"import http.server, socketserver
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -235,7 +255,8 @@ class H(http.server.BaseHTTPRequestHandler):
         self.wfile.write(b"ok")
     def log_message(self, *a):
         pass
-http.server.HTTPServer(("127.0.0.1", {backend}), H).serve_forever()
+socketserver.TCPServer.allow_reuse_address = True
+socketserver.TCPServer(("127.0.0.1", {backend}), H).serve_forever()
 "#
             ),
         )
