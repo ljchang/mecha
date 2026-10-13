@@ -262,11 +262,17 @@ fn enable_does_not_stage_a_send_an_operator_rule_judges() {
         );
         assert!(!said.contains("left as it is"), "{decision}: {said}");
         // The rule is on mail's send, and docs' writes go unstaged with it:
-        // that is said too (review of #669, pass 5).
+        // that is said too (review of #669, pass 5) — and so are mail's own
+        // other sends, which no rule names (pass 6).
         assert!(
             said.contains("docs's calls") && said.contains("not staged either"),
             "{decision}: {said}"
         );
+        assert!(
+            said.contains("mail's calls") && said.contains("mail__mail_reply"),
+            "{decision}: {said}"
+        );
+        assert!(!said.contains("sends stay refused"), "{decision}: {said}");
     }
 }
 
