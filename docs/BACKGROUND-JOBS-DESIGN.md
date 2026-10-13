@@ -605,8 +605,10 @@ nothing on the persona's surfaces that assumes the work is a picture.
   results as it does any outside content.
 - **The persona form says who is asking.** `McpTool::for_persona_as` clones the tool with the
   `PersonaSelf`, and its background calls carry `_meta["mecha-factory.ai/persona"]`: the
-  persona's folder name and its linked library character, never its prompt, its display name
-  or anything it said. A server may read that character as `self`.
+  persona's folder name, its linked library character and its voice-library voice, never its
+  prompt, its display name or anything it said. A server may read that character as `self`,
+  and give a clip with sound her voice (owner, 2026-10-13: a video server's reference audio
+  carried it). Both are library names, settings the owner chose, never a path.
 - **The chat's folder is absolute** (§8), which is what lets a persona's chat, under
   `work/persona`, be named to a server spawned under `work/web`.
 - **The run closes on the job's own lines** (§8's `with_closings`): a persona that queued a
