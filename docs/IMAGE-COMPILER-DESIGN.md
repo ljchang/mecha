@@ -130,7 +130,7 @@ The rules, each a measurement:
 - **References are sent at 512²** (E2: four at 1024² cost 190 s, four at 512²
   79 s; E10: a whole portrait at 512² holds identity). `Request` gains a
   backend-neutral `reference_size`; plain edits keep 1024.
-- **At most four cast members** (E3 held four in one pass).
+- **At most four cast members** (E3 held four in one pass). Since raised to `MAX_CAST` 5 (`IMAGE-DESIGN.md` §5.2).
 - **Anyone else is an `extra`, and is counted** (E11). A waiter described in
   the scene beside a cast of three, with "Exactly three people" compiled in,
   was kept in the picture but pushed into the background; listed as
@@ -430,8 +430,8 @@ characters/<name>/entry.toml
   3. details, in cast order, then in each character's own order.
   - **Video** has nine slots, less any pinned or other reference images. Two people fit with a body each and up to five details; three fit with a body each and three details.
   - **Pictures** keep their people budgets (`MAX_CAST`, `EDIT_REFERENCE_BUDGET`, `IMAGE-DESIGN.md` §5.2, "Budgets, as measured") and gain an **image** cap (review of #680, pass 6). `MAX_CAST` counts people, and the measured ceiling is five reference images, with duplicate-free evidence at four (E12).
-    - A new picture carries at most five reference images.
-    - Faces come first. A `full_body` is added only while the total stays at four or fewer, so in practice a cast of one or two.
+    - A new picture carries at most five reference images. That's `IMAGE-DESIGN.md` §5.2's measurement: five whole portraits drew all five people, 3/3.
+    - Faces come first. **Bodies are all or nothing** (review of #680, pass 8): every person gets their `full_body`, or none does, and only while the total stays at four or fewer. So that's a cast of one or two. A cast of three gets no bodies, never one person bound to two images beside others bound to one, which no wording covers and nothing has measured.
     - What was left out is said.
     - **The four is E9b's to establish, not settled** (review of #680, pass 7). E12 measured four *different* faces with no duplicate, while two people with a body each is E9's B2 arm, which drew one person twice. So that configuration is exactly what E9b must pass.
     - **An edit sends faces only.** Its canvas plus five crops already fill `EDIT_REFERENCE_BUDGET` (6), and E9b's arms are new pictures. An edit gets bodies only with a measurement of its own.
@@ -441,11 +441,11 @@ characters/<name>/entry.toml
 ### 9.5 Surfaces
 
 - **CLI:**
-  - `mecha imagelib add-reference <name> --kind face|full_body|detail <file> [--label …]` and `remove-reference`;
+  - `mecha imagelib add-reference <name> --as face|full_body|detail|view <file> [--label …]` and `remove-reference`;
   - `add-location`;
   - `add-outfit [--for <character>]`.
 
-  Each writes a new version.
+  Each writes a new version. `--kind` keeps its existing meaning, the entry kind that tells apart a character and a style sharing a name; `resolve`'s message then names every kind holding the name, not just the two.
 - **Web:** the character page shows its references in a strip with their kinds and labels, and adds or removes one. That's an owner write, through the same door as §7's edit page. The Library tab gains Locations and Outfits beside Characters and Styles.
   - **The image route widens without widening the lock.** `GET /api/library/portrait/{blob}` serves a blob only when some **visible** entry names it, for every blob any entry names, whatever the kind.
   - So a locked entry's images stay unfetchable by hash, the leak the #385 review closed. Every kind carries its own `locked` flag.
@@ -456,6 +456,7 @@ characters/<name>/entry.toml
   - a locked one isn't listed, which is how the owner hides a place.
 
   Characters stay unlisted ("their names are the owner's"). A model can only write a location it knows the name of (L5).
+- **Where the lists sit:** the location and outfit names are appended after the styles sentence at the end of the description (`imagegen::described`), so a new location moves no earlier byte of the cached prefix.
 - **Tools:**
   - `image_library` lists the new kinds;
   - a scene names a location in `setting.location`, and a person's `wearing` may name an outfit.
