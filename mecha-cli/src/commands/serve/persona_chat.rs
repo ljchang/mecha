@@ -2020,7 +2020,11 @@ impl PersonaChats {
         // A picture still "being made" when the server stopped: no job is
         // behind it now (a chat leaves this map only with the process), so
         // the result is settled by what the workspace holds.
-        super::late::repair_orphans(&session, &workspace, &mut conversation);
+        // A persona's surface holds no MCP tool, so its one deferring tool
+        // is the picture.
+        super::late::repair_orphans(&session, &workspace, &mut conversation, &|name| {
+            name == "image_generate"
+        });
         sessions.insert(
             key.clone(),
             PersonaSession {
@@ -2861,6 +2865,7 @@ impl PersonaChats {
             id: late.call_id.clone(),
             is_error: late.output.is_error,
             preview: chat::result_preview(&late.output.content),
+            deferred: true,
         };
         if let Some(convo) = ps.conversation.as_mut() {
             super::late::land(&mut ps.late, &ps.session, convo, &late);
