@@ -252,6 +252,7 @@ pub fn registry_as(pool: &Registry, name: &str, settings: &Settings) -> PersonaT
         name: name.to_string(),
         display: settings.display.trim().to_string(),
         character: settings.character.clone().filter(|c| !c.trim().is_empty()),
+        voice: settings.voice.clone().filter(|v| !v.trim().is_empty()),
     };
     let mut registry = Registry::new();
     let mut refused = Vec::new();
@@ -520,6 +521,7 @@ mod tests {
         let mut s = settings(&["image_generate"], Answers::Open);
         s.display = " Maya ".into();
         s.character = Some("maya".into());
+        s.voice = Some("ada".into());
         let built = registry_as(&pool, "maya", &s);
         assert_eq!(names(&built.registry), ["image_generate"]);
         assert_eq!(
@@ -528,11 +530,15 @@ mod tests {
                 name: "maya".into(),
                 display: "Maya".into(),
                 character: Some("maya".into()),
+                voice: Some("ada".into()),
             })
         );
         s.character = Some("  ".into());
         registry_as(&pool, "maya", &s);
         assert_eq!(asks.0.lock().unwrap().as_ref().unwrap().character, None);
+        s.voice = Some(" ".into());
+        registry_as(&pool, "maya", &s);
+        assert_eq!(asks.0.lock().unwrap().as_ref().unwrap().voice, None);
     }
 
     /// A persona's run is read-only, so a form that says it changes things
@@ -762,6 +768,7 @@ mod tests {
                     name: "mara".into(),
                     display: "Mara".into(),
                     character: character.map(Into::into),
+                    voice: None,
                 };
                 let form = Arc::clone(tool).for_persona_as(&who);
                 assert_eq!(
