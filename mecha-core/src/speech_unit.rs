@@ -275,24 +275,49 @@ fn render(text: &str, dir: &Path, naming: &Naming, model: &str, codec: &str) -> 
 /// read from the OS and the driver, the toolchain asked only when those
 /// pass.
 pub fn fits(os: &str, nvidia: crate::engine::Nvidia) -> std::result::Result<Toolchain, String> {
-    fits_with(os, nvidia, || {
-        crate::engine::toolchain_missing(Target::BuiltCuda)
+    fits_with(os, std::env::consts::ARCH, nvidia, |target| {
+        crate::engine::toolchain_missing(target)
     })
 }
 
 /// [`fits`] over what was read, so every row is a test.
 fn fits_with(
     os: &str,
+    arch: &str,
     nvidia: crate::engine::Nvidia,
-    toolchain: impl FnOnce() -> std::result::Result<Toolchain, Vec<String>>,
+    toolchain: impl FnOnce(Target) -> std::result::Result<Toolchain, Vec<String>>,
 ) -> std::result::Result<Toolchain, String> {
     use crate::engine::Nvidia;
-    if os != "linux" {
-        return Err(
-            "the speech server is two systemd user units, which this system does not have — \
-             start it by hand until launchd is designed (FEATURES-DESIGN §10.5)"
-                .into(),
-        );
+    let missing = |missing: Vec<String>| {
+        // In this module's own words: the engine has no releases, and the
+        // pin that matters is the fork's commit, not llama.cpp's (review of
+        // #649).
+        format!(
+            "the speech engine is built on this machine from its pinned commit ({}), and that \
+             needs {}, which this machine does not have",
+            &COMMIT[..7],
+            missing.join(", ")
+        )
+    };
+    match os {
+        "linux" => {}
+        // Metal on Apple silicon: measured at RTF 0.36 on an M5 Max
+        // (2026-10-13, §12.1). No CUDA, so the toolchain is the CPU build's.
+        "macos" if arch == "aarch64" => return toolchain(Target::BuiltCpu).map_err(missing),
+        "macos" => {
+            return Err(
+                "the speech engine runs on Metal, which an Intel Mac's GPU does not run fast \
+                 enough to speak in real time"
+                    .into(),
+            )
+        }
+        _ => {
+            return Err(
+                "the speech server installs as systemd user units or launchd agents, and this \
+                 system has neither — start it by hand"
+                    .into(),
+            )
+        }
     }
     match nvidia {
         Nvidia::Driver(..) => {}
@@ -313,16 +338,7 @@ fn fits_with(
             )
         }
     }
-    // In this module's own words: the engine has no releases, and the pin
-    // that matters is the fork's commit, not llama.cpp's (review of #649).
-    toolchain().map_err(|missing| {
-        format!(
-            "the speech engine is built on this machine from its pinned commit ({}), and that \
-             needs {}, which this machine does not have",
-            &COMMIT[..7],
-            missing.join(", ")
-        )
-    })
+    toolchain(Target::BuiltCuda).map_err(missing)
 }
 
 pub async fn install(
@@ -336,9 +352,6 @@ pub async fn install(
         fits(std::env::consts::OS, crate::engine::read_nvidia()).map_err(anyhow::Error::msg)?;
     let home = &m.mecha_home;
     let dir = dir(home);
-    let units = crate::engine_gate::unit_dir(m)?.to_path_buf();
-    let engine_unit = units.join(format!("{}.service", naming.engine_unit));
-    let adapter_unit = units.join(format!("{}.service", naming.adapter_unit));
     if someone_elses(m, naming)? {
         bail!(
             "something already answers on :{} or :{} and mecha did not install it — nothing is \
@@ -395,9 +408,21 @@ pub async fn install(
             std::fs::create_dir_all(parent)?;
         }
         let _ = std::fs::remove_file(&link);
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&snap, &link)
-            .with_context(|| format!("linking {}", link.display()))?;
+        if f.path.starts_with("voices/") {
+            // Copied, in `VOICE`'s order — the clip, then its transcript.
+            // The adapter trusts a transcript only when it is no older than
+            // its clip, and a link reads the hub blob's time, which is
+            // whenever the hub was filled: a hub `hf download` filled wrote
+            // the transcript first, and the adapter sent the shipped voice
+            // to speech to text, and (with STT up) overwrote its curated
+            // transcript (found on the owner's Mac, 2026-10-13). A copy's
+            // time is this install's. The clip is 391 KB.
+            std::fs::copy(&snap, &link).with_context(|| format!("copying {}", link.display()))?;
+        } else {
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&snap, &link)
+                .with_context(|| format!("linking {}", link.display()))?;
+        }
     }
 
     // --- the adapter
@@ -418,18 +443,14 @@ pub async fn install(
 
     // --- the units
     let r = |t: &str| render(t, &dir, naming, model, codec);
-    write_owned(home, ID, &engine_unit, &r(ENGINE_UNIT), 0o644)?;
-    write_owned(home, ID, &adapter_unit, &r(ADAPTER_UNIT), 0o644)?;
-    crate::engine_gate::systemctl("daemon-reload", &[])?;
-    let services = [
-        format!("{}.service", naming.engine_unit),
-        format!("{}.service", naming.adapter_unit),
-    ];
-    let names: Vec<&str> = services.iter().map(String::as_str).collect();
-    crate::engine_gate::systemctl("enable", &names)?;
+    crate::user_service::write(m, ID, &naming.engine_unit, &r(ENGINE_UNIT))?;
+    crate::user_service::write(m, ID, &naming.adapter_unit, &r(ADAPTER_UNIT))?;
+    // The engine first: the adapter is ordered after it (`After=` under
+    // systemd; launchd loads them in this order).
+    let names = [naming.engine_unit.as_str(), naming.adapter_unit.as_str()];
     // A restart, so a reinstall reaches running servers; a failed restart or
     // check stops both before the install says so (#639's pattern).
-    let checked = match crate::engine_gate::systemctl("restart", &names) {
+    let checked = match crate::user_service::restart(m, &names) {
         Ok(()) => {
             say(&format!(
                 "starting the engine on :{} and the adapter on :{}, and speaking a sentence \
@@ -441,15 +462,12 @@ pub async fn install(
         Err(e) => Err(e),
     };
     if let Err(e) = checked {
-        let mut args = vec!["--now"];
-        args.extend(&names);
-        let stopped = match crate::engine_gate::systemctl("disable", &args) {
+        let stopped = match crate::user_service::stop(&names) {
             Ok(()) => format!("{} were stopped and disabled", names.join(" and ")),
             Err(stop) => format!(
-                "{} could NOT be stopped ({stop:#}) — they may still be listening; run \
-                 `systemctl --user disable --now {}`",
+                "{} could NOT be stopped ({stop:#}) — they may still be listening; run `{}`",
                 names.join(" and "),
-                names.join(" ")
+                crate::user_service::stop_by_hand(&names)
             ),
         };
         return Err(e.context(stopped));
@@ -536,10 +554,19 @@ async fn build_into(src: &Path, part: &Path, tc: &Toolchain, say: Say<'_>) -> Re
     )
     .await?;
 
-    let (nvcc, arch) = tc
-        .cuda
-        .as_ref()
-        .context("the speech engine is built for CUDA, and no nvcc was found")?;
+    // CUDA on Linux; Metal on a Mac, where `@loader_path` is `$ORIGIN`'s
+    // spelling and there is no toolkit runtime to carry (§12.2, built and
+    // measured on the owner's Mac 2026-10-13).
+    let macos = cfg!(target_os = "macos");
+    let cuda = if macos {
+        None
+    } else {
+        Some(
+            tc.cuda
+                .as_ref()
+                .context("the speech engine is built for CUDA, and no nvcc was found")?,
+        )
+    };
     let build = src.join("build");
     let mut c = std::process::Command::new(&tc.cmake);
     c.arg("-S").arg(src).arg("-B").arg(&build);
@@ -549,12 +576,18 @@ async fn build_into(src: &Path, part: &Path, tc: &Toolchain, say: Say<'_>) -> Re
     }
     c.args([
         "-DCMAKE_BUILD_TYPE=Release",
-        "-DCMAKE_INSTALL_RPATH=$ORIGIN",
         "-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON",
-        "-DGGML_CUDA=ON",
-    ])
-    .arg(format!("-DCMAKE_CUDA_COMPILER={}", nvcc.display()))
-    .arg(format!("-DCMAKE_CUDA_ARCHITECTURES={arch}"));
+    ]);
+    match cuda {
+        Some((nvcc, arch)) => {
+            c.args(["-DCMAKE_INSTALL_RPATH=$ORIGIN", "-DGGML_CUDA=ON"])
+                .arg(format!("-DCMAKE_CUDA_COMPILER={}", nvcc.display()))
+                .arg(format!("-DCMAKE_CUDA_ARCHITECTURES={arch}"));
+        }
+        None => {
+            c.args(["-DCMAKE_INSTALL_RPATH=@loader_path", "-DGGML_METAL=ON"]);
+        }
+    }
     say("configuring the speech engine's build");
     step(c, "configuring the speech engine (cmake)").await?;
     let available = crate::system::Reader::new()
@@ -564,7 +597,12 @@ async fn build_into(src: &Path, part: &Path, tc: &Toolchain, say: Say<'_>) -> Re
     let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
     let jobs = crate::engine::build_jobs(cpus, available);
     say(&format!(
-        "building the speech engine with {jobs} jobs — about seven minutes on a GB10"
+        "building the speech engine with {jobs} jobs — {}",
+        if macos {
+            "under a minute on Apple silicon"
+        } else {
+            "about seven minutes on a GB10"
+        }
     ));
     let mut c = std::process::Command::new(&tc.cmake);
     c.arg("--build")
@@ -577,7 +615,8 @@ async fn build_into(src: &Path, part: &Path, tc: &Toolchain, say: Say<'_>) -> Re
     for entry in std::fs::read_dir(&build)? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        if !(name == "tts-server" || (name.starts_with("lib") && name.contains(".so"))) {
+        let library = name.starts_with("lib") && (name.contains(".so") || name.ends_with(".dylib"));
+        if !(name == "tts-server" || library) {
             continue;
         }
         let dest = part.join(&name);
@@ -589,22 +628,24 @@ async fn build_into(src: &Path, part: &Path, tc: &Toolchain, say: Say<'_>) -> Re
                 .with_context(|| format!("copying {}", entry.path().display()))?;
         }
     }
-    let dirs = crate::engine::toolkit_dirs(nvcc, &build);
-    let copied = crate::engine::copy_cuda_runtime(&dirs, part)?;
-    if copied.is_empty() {
-        bail!(
-            "the speech engine links no toolkit library found in {} — check where your \
-             toolkit's libcudart is",
-            dirs.iter()
-                .map(|d| d.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
+    if let Some((nvcc, _)) = cuda {
+        let dirs = crate::engine::toolkit_dirs(nvcc, &build);
+        let copied = crate::engine::copy_cuda_runtime(&dirs, part)?;
+        if copied.is_empty() {
+            bail!(
+                "the speech engine links no toolkit library found in {} — check where your \
+                 toolkit's libcudart is",
+                dirs.iter()
+                    .map(|d| d.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        say(&format!(
+            "copied the CUDA toolkit's {} beside it",
+            copied.join(", ")
+        ));
     }
-    say(&format!(
-        "copied the CUDA toolkit's {} beside it",
-        copied.join(", ")
-    ));
     engine_health(part)?;
     std::fs::write(part.join(COMMIT_STAMP), COMMIT)?;
     Ok(())
@@ -617,10 +658,16 @@ fn engine_health(dir: &Path) -> Result<()> {
     if !server.is_file() {
         bail!("{} is not there", server.display());
     }
-    crate::engine::self_contained(dir)?;
+    // The ELF check; a Mac's Mach-O libraries are found by `@loader_path`,
+    // which the run below proves by starting at all (as `engine::health`
+    // skips it there).
+    if cfg!(target_os = "linux") {
+        crate::engine::self_contained(dir)?;
+    }
     let out = std::process::Command::new(&server)
         .arg("--help")
         .env_remove("LD_LIBRARY_PATH")
+        .env_remove("DYLD_LIBRARY_PATH")
         .output()
         .with_context(|| format!("starting {}", server.display()))?;
     let text = format!(
@@ -672,7 +719,8 @@ async fn check(adapter_port: u16) -> Result<()> {
                 return Err(e).with_context(|| {
                     format!(
                         "the speech adapter on :{adapter_port} did not answer within five \
-                         minutes — `journalctl --user -u <its unit>` says why"
+                         minutes — {}",
+                        crate::user_service::logs_anywhere()
                     )
                 })
             }
@@ -751,14 +799,14 @@ fn wav_seconds(wav: &[u8]) -> Option<f64> {
 /// someone's own speech server, used as it is (`stt_unit::someone_elses`'s
 /// twin).
 pub fn someone_elses(m: &Machinery, naming: &Naming) -> Result<bool> {
-    let units = crate::engine_gate::unit_dir(m)?;
     let manifest = Manifest::read(&m.mecha_home)?;
     let wrote = |unit: &str| {
-        let path = units.join(format!("{unit}.service"));
-        manifest
-            .entries
-            .iter()
-            .any(|e| e.sidecar == ID && e.wrote.contains(&path))
+        crate::user_service::file(m, unit).is_ok_and(|path| {
+            manifest
+                .entries
+                .iter()
+                .any(|e| e.sidecar == ID && e.wrote.contains(&path))
+        })
     };
     let stranger = |unit: &str, port: u16| !wrote(unit) && crate::router_unit::port_answers(port);
     Ok(stranger(&naming.engine_unit, naming.engine_port)
@@ -769,16 +817,12 @@ pub fn someone_elses(m: &Machinery, naming: &Naming) -> Result<bool> {
 /// The weights stay in the hub.
 pub fn remove(m: &Machinery, naming: &Naming) -> Result<()> {
     let home = &m.mecha_home;
-    let services = [
-        format!("{}.service", naming.adapter_unit),
-        format!("{}.service", naming.engine_unit),
-    ];
-    for s in &services {
-        let _ = crate::engine_gate::systemctl("disable", &["--now", s]);
+    let services = [naming.adapter_unit.as_str(), naming.engine_unit.as_str()];
+    for s in services {
+        let _ = crate::user_service::stop(&[s]);
     }
-    let units = crate::engine_gate::unit_dir(m)?.to_path_buf();
-    for s in &services {
-        let path = units.join(s);
+    for s in services {
+        let path = crate::user_service::file(m, s)?;
         match std::fs::remove_file(&path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -786,7 +830,7 @@ pub fn remove(m: &Machinery, naming: &Naming) -> Result<()> {
         }
         Manifest::unrecord(home, ID, &path)?;
     }
-    crate::engine_gate::systemctl("daemon-reload", &[])?;
+    crate::user_service::after_remove()?;
     let mut recorded: Vec<PathBuf> = Manifest::read(home)?
         .entries
         .iter()
@@ -972,9 +1016,9 @@ mod tests {
     }
 
     #[test]
-    fn only_a_linux_nvidia_machine_with_the_toolchain_fits() {
+    fn only_nvidia_linux_or_apple_silicon_with_the_toolchain_fits() {
         use crate::engine::Nvidia as N;
-        let tc = || {
+        let tc = |_| {
             Ok(Toolchain {
                 git: "/bin/git".into(),
                 cmake: "/bin/cmake".into(),
@@ -982,27 +1026,44 @@ mod tests {
                 cuda: Some(("/bin/nvcc".into(), "121".into())),
             })
         };
-        let lacks = || {
+        let lacks = |_| {
             Err(vec![
                 "nvcc (the CUDA toolkit, matching this driver)".to_string()
             ])
         };
-        assert!(fits_with("linux", N::Driver(570, 1), tc).is_ok());
-        let e = fits_with("linux", N::Driver(580, 0), lacks).unwrap_err();
+        assert!(fits_with("linux", "aarch64", N::Driver(570, 1), tc).is_ok());
+        let e = fits_with("linux", "aarch64", N::Driver(580, 0), lacks).unwrap_err();
         assert!(
             e.contains("speech engine") && e.contains("nvcc") && e.contains(&COMMIT[..7]),
             "{e}"
         );
         assert!(!e.contains("llama.cpp") && !e.contains("release"), "{e}");
-        assert!(fits_with("linux", N::Unread, tc)
+        assert!(fits_with("linux", "aarch64", N::Unread, tc)
             .unwrap_err()
             .contains("nvidia-smi"));
-        assert!(fits_with("linux", N::None, tc)
+        assert!(fits_with("linux", "aarch64", N::None, tc)
             .unwrap_err()
             .contains("NVIDIA GPU"));
-        assert!(fits_with("macos", N::Driver(580, 0), tc)
+        // Apple silicon builds for Metal: no NVIDIA asked, the CPU build's
+        // toolchain asked for.
+        let mut asked = None;
+        assert!(fits_with("macos", "aarch64", N::None, |t| {
+            asked = Some(t);
+            tc(t)
+        })
+        .is_ok());
+        assert_eq!(asked, Some(Target::BuiltCpu));
+        assert!(
+            fits_with("macos", "aarch64", N::None, |_| Err(vec!["cmake".into()]))
+                .unwrap_err()
+                .contains("cmake")
+        );
+        assert!(fits_with("macos", "x86_64", N::None, tc)
             .unwrap_err()
-            .contains("launchd"));
+            .contains("Intel"));
+        assert!(fits_with("freebsd", "x86_64", N::None, tc)
+            .unwrap_err()
+            .contains("neither"));
     }
 
     #[test]

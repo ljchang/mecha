@@ -148,7 +148,10 @@ pub const SIDECARS: &[Sidecar] = &[
         label: "the speech-to-text server",
         needed_by: &[Feature::Voice],
         serves: &["stt"],
-        evidence: &[Evidence::UserUnit("mecha-parakeet.service")],
+        evidence: &[
+            Evidence::UserUnit("mecha-parakeet.service"),
+            Evidence::UserUnit("ai.mecha-factory.mecha-parakeet.plist"),
+        ],
         installer: "7d-1",
         // Unpacked from its release tarball into its own tree, never the hub.
         models_in_hub: false,
@@ -158,7 +161,10 @@ pub const SIDECARS: &[Sidecar] = &[
         label: "the voice worker",
         needed_by: &[Feature::Voice],
         serves: &["turn"],
-        evidence: &[Evidence::UserUnit("mecha-voice-worker.service")],
+        evidence: &[
+            Evidence::UserUnit("mecha-voice-worker.service"),
+            Evidence::UserUnit("ai.mecha-factory.mecha-voice-worker.plist"),
+        ],
         installer: "7d-2",
         models_in_hub: true,
     },
@@ -174,6 +180,8 @@ pub const SIDECARS: &[Sidecar] = &[
         evidence: &[
             Evidence::UserUnit("mecha-breeze-tts.service"),
             Evidence::UserUnit("mecha-breeze-adapter.service"),
+            Evidence::UserUnit("ai.mecha-factory.mecha-breeze-tts.plist"),
+            Evidence::UserUnit("ai.mecha-factory.mecha-breeze-adapter.plist"),
             Evidence::DockerImage("mecha/chatterbox"),
         ],
         installer: "7f",

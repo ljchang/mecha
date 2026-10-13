@@ -409,10 +409,11 @@ fn start_agent(
             launcher.display().to_string(),
         ],
         env: vec![
-            ("PATH".into(), "/usr/bin:/bin:/usr/sbin:/sbin".into()),
+            ("PATH".into(), crate::launchd::SYSTEM_PATH.into()),
             ("LLAMA_SERVER".into(), engine.path().display().to_string()),
             ("HF_HUB".into(), hub.display().to_string()),
         ],
+        workdir: None,
         log,
     };
     write_owned(home, id, &plist, &crate::launchd::plist_text(&agent), 0o644)?;

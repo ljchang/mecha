@@ -1948,3 +1948,41 @@ start paying ~14 s to compile shaders. Voice is a service-manager change and
 a Metal build away; image generation waits on whether ComfyUI's int8 weights
 run on MPS.
 
+### 12.2 Voice on a Mac
+
+The three voice servers — speech to text (Parakeet), the voice worker
+(Pipecat) and the speech server (Breeze on qwentts.cpp, and its adapter) — are
+plain resident services: one program each, its environment, a working
+directory. So one helper, `user_service.rs`, installs them on either system,
+and **the systemd unit is the source**: on a Mac the agent is read out of the
+rendered unit (`launchd::agent_from_unit` — its `ExecStart=`, `Environment=`
+and `WorkingDirectory=`), so a Mac runs exactly what Linux runs and a change
+to a unit reaches both. A unit whose command would need a shell's quoting is
+refused rather than split wrongly; none of the shipped ones does.
+
+- **The environments are the Linux locks**, unchanged: all four install with
+  `--require-hashes` on macOS arm64 (measured 2026-10-13).
+- **The speech engine is built for Metal** on Apple silicon:
+  `-DGGML_METAL=ON`, `@loader_path` for `$ORIGIN`, the `.dylib`s copied flat,
+  no toolkit runtime. The toolchain asked for is the CPU build's (git,
+  cmake, a C++ compiler, make or ninja) — `cmake` is not part of the Xcode
+  command-line tools, so a Mac without Homebrew's is told so before anything
+  is fetched. An Intel Mac is refused: its GPU is not measured fast enough to
+  speak in real time. Measured on the owner's M5 Max: built in 17 s, RTF
+  0.36 warm, the first start compiling Metal shaders for ~14 s.
+- **The voice clip and its transcript are copied, not linked** — on both
+  systems. The adapter trusts a transcript no older than its clip, and a link
+  reads the hub blob's time: a hub filled by `hf download` had the transcript
+  written first, and the adapter sent the shipped voice to speech to text
+  (and would have overwritten its curated transcript with the result). A copy
+  is this install's, clip first.
+
+**Not yet:** ComfyUI on a Mac. Measured 2026-10-13: the pinned commit runs
+on MPS with PyPI torch, and the int8 ConvRot model draws a correct picture,
+but every quantized op is emulated (comfy-kitchen's `eager` backend; no
+native int8 on MPS), so a 40-step picture takes ~128 s against ~28 s on the
+GB10, and the text encoder runs on the CPU. Which model a Mac should default
+to (the 8-step turbo, a bf16 file) is being measured; the install needs its
+own lock (MPS torch from PyPI), and `comfy-aimdo` — the idle reset's memory
+release — does not run on Darwin.
+

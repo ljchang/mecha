@@ -84,16 +84,14 @@ fn render(dir: &Path, naming: &Naming) -> String {
 }
 
 pub async fn install(m: &Machinery, naming: &Naming, say: Say<'_>) -> Result<()> {
-    if !cfg!(target_os = "linux") {
+    if !crate::router_unit::installs_here() {
         bail!(
-            "the voice worker is a systemd user unit, which this system does not have — on \
-             macOS start it by hand until launchd is designed (FEATURES-DESIGN §10.5)"
+            "the voice worker installs as a systemd user unit or a launchd agent, and this \
+             system has neither — start it by hand"
         );
     }
     let home = &m.mecha_home;
     let dir = dir(home);
-    let units = crate::engine_gate::unit_dir(m)?.to_path_buf();
-    let unit = units.join(format!("{}.service", naming.unit));
     // A worker on the port whose unit mecha did not write is someone's —
     // the hand-built one under another name, or a terminal's. Nothing is
     // installed beside it: it would pass the checks below while mecha's own
@@ -134,10 +132,8 @@ pub async fn install(m: &Machinery, naming: &Naming, say: Say<'_>) -> Result<()>
     for (name, text) in FILES {
         write_owned(home, ID, &dir.join(name), text, 0o644)?;
     }
-    write_owned(home, ID, &unit, &render(&dir, naming), 0o644)?;
-    crate::engine_gate::systemctl("daemon-reload", &[])?;
-    let service = format!("{}.service", naming.unit);
-    crate::engine_gate::systemctl("enable", &[&service])?;
+    crate::user_service::write(m, ID, &naming.unit, &render(&dir, naming))?;
+    let service = naming.unit.as_str();
     // A restart, not `enable --now`: a reinstall must reach a running worker
     // with the new files, or `check` passes against the old process.
     // A failed restart, either check failing: each stops the worker before
@@ -146,7 +142,7 @@ pub async fn install(m: &Machinery, naming: &Naming, say: Say<'_>) -> Result<()>
     // not left enabled to restart forever at boot — `Type=exec` makes a bad
     // start fail the restart itself, so that is the likeliest way here
     // (review of #639).
-    let checked = match crate::engine_gate::systemctl("restart", &[&service]) {
+    let checked = match crate::user_service::restart(m, &[service]) {
         Ok(()) => {
             say(&format!(
                 "starting it on :{} and checking the direct door is shut",
@@ -162,12 +158,13 @@ pub async fn install(m: &Machinery, naming: &Naming, say: Say<'_>) -> Result<()>
     if let Err(e) = checked {
         // Said as it went: a stop that failed leaves the worker listening,
         // and the owner's next step depends on knowing (review of #639).
-        let stopped = match crate::engine_gate::systemctl("disable", &["--now", &service]) {
+        let stopped = match crate::user_service::stop(&[service]) {
             Ok(()) => format!("{service} was stopped and disabled"),
             Err(stop) => format!(
                 "{service} could NOT be stopped ({stop:#}) — it may still be listening on :{}; \
-                 run `systemctl --user disable --now {service}`",
-                naming.port
+                 run `{}`",
+                naming.port,
+                crate::user_service::stop_by_hand(&[service])
             ),
         };
         return Err(e.context(stopped));
@@ -178,7 +175,7 @@ pub async fn install(m: &Machinery, naming: &Naming, say: Say<'_>) -> Result<()>
 /// Whether a worker answers on the port whose unit mecha did not write —
 /// someone's own, used as it is (`stt_unit::someone_elses`'s twin).
 pub fn someone_elses(m: &Machinery, naming: &Naming) -> Result<bool> {
-    let unit = crate::engine_gate::unit_dir(m)?.join(format!("{}.service", naming.unit));
+    let unit = crate::user_service::file(m, &naming.unit)?;
     Ok(!wrote_unit(&m.mecha_home, &unit)? && crate::router_unit::port_answers(naming.port))
 }
 
@@ -210,8 +207,8 @@ async fn serves(port: u16) -> Result<()> {
             Err(e) if std::time::Instant::now() > deadline => {
                 return Err(e).with_context(|| {
                     format!(
-                        "the voice worker on :{port} did not answer within two minutes — \
-                         `journalctl --user -u <its unit>` says why"
+                        "the voice worker on :{port} did not answer within two minutes — {}",
+                        crate::user_service::logs_anywhere()
                     )
                 })
             }
@@ -308,16 +305,15 @@ async fn door_shut(port: u16) -> Result<()> {
 /// stand on it.
 pub fn remove(m: &Machinery, naming: &Naming) -> Result<()> {
     let home = &m.mecha_home;
-    let unit = format!("{}.service", naming.unit);
-    let _ = crate::engine_gate::systemctl("disable", &["--now", &unit]);
-    let path = crate::engine_gate::unit_dir(m)?.join(&unit);
+    let _ = crate::user_service::stop(&[&naming.unit]);
+    let path = crate::user_service::file(m, &naming.unit)?;
     match std::fs::remove_file(&path) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e).with_context(|| format!("removing {}", path.display())),
     }
     Manifest::unrecord(home, ID, &path)?;
-    crate::engine_gate::systemctl("daemon-reload", &[])?;
+    crate::user_service::after_remove()?;
     let dir = dir(home);
     let mut paths: Vec<PathBuf> = FILES.iter().map(|(n, _)| dir.join(n)).collect();
     paths.extend([
