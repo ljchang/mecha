@@ -9,7 +9,7 @@
 //! servers keep their own launchd halves: theirs differ in shape, not only
 //! in manager.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::PathBuf;
 
 use crate::sidecar::Machinery;
@@ -30,12 +30,13 @@ pub fn write(m: &Machinery, id: &str, stem: &str, unit: &str) -> Result<()> {
     let path = file(m, stem)?;
     let text = if cfg!(target_os = "macos") {
         let log = crate::launchd::log_path(&m.home, stem);
-        crate::launchd::plist_text(&crate::launchd::agent_from_unit(
-            &crate::launchd::label(stem),
-            unit,
-            &m.home,
-            log,
-        )?)
+        let mut agent =
+            crate::launchd::agent_from_unit(&crate::launchd::label(stem), unit, &m.home, log)?;
+        // Under the log cap, as the router and on-demand agents are
+        // (`log_cap.rs`): launchd never rotates a log.
+        let mecha = std::env::current_exe().context("finding the mecha binary for the agent")?;
+        agent.program = crate::log_cap::wrap(&mecha, &agent.log, agent.program);
+        crate::launchd::plist_text(&agent)
     } else {
         unit.to_string()
     };
