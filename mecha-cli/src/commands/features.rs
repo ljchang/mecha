@@ -504,7 +504,31 @@ fn mcp_entries(features: &[Feature]) -> Result<()> {
     }
     let refs: Vec<(&feature::McpWiring, &std::path::Path)> =
         items.iter().map(|(_, w, c)| (w, c.as_path())).collect();
-    let done = feature::write_mcp_entries(&path, &refs)?;
+    // An operator `allow`/`prompt` rule on a tool this would route: every
+    // start refuses that pair (`setup::live_rules`), so no `[outbox]` is
+    // written and the conflict is named — the owner's rules, like the owner's
+    // tables, are never overridden (review of #669).
+    let cfg = Config::load_global()?;
+    let conflicts: Vec<&mecha_core::policy::RuleConfig> = cfg
+        .rules
+        .iter()
+        .filter(|r| {
+            !r.from_project
+                && !matches!(r.decision, mecha_core::policy::RuleDecision::Forbid)
+                && refs
+                    .iter()
+                    .any(|(w, _)| w.outbox.contains(&r.tool.as_str()))
+        })
+        .collect();
+    for r in &conflicts {
+        println!(
+            "  no [outbox] was written: your [[rule]] on `{}` would conflict with staging it — \
+             make the rule `forbid`, or remove it, then `mecha features enable` again stages \
+             the sends",
+            r.tool
+        );
+    }
+    let done = feature::write_mcp_entries(&path, &refs, conflicts.is_empty())?;
     for ((_, wiring, command), done) in items.iter().zip(done) {
         if done.wrote_entry {
             println!(

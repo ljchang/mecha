@@ -207,3 +207,44 @@ fn enable_wires_mail_and_docs_with_one_outbox() {
         assert!(tools.contains(&t), "{t} not staged: {tools:?}");
     }
 }
+
+/// An operator `prompt` rule on a send `enable mail` would stage: every start
+/// refuses that pair (`setup::live_rules`), so no `[outbox]` is written and
+/// the conflict is named — the owner's rule is not overridden by a table
+/// that would stop every command (review of #669). The entry is still wired.
+#[test]
+fn enable_does_not_stage_a_send_an_operator_rule_judges() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = Home::new("ruled");
+    let bin = home.0.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let p = bin.join("mecha-mail");
+    std::fs::write(&p, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(
+        home.0.join("home/config.toml"),
+        "[[rule]]\ntool = \"mail__mail_send\"\ndecision = \"prompt\"\n",
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_mecha"))
+        .args(["features", "enable", "mail", "--no-install"])
+        .env("MECHA_HOME", home.0.join("home"))
+        .env("HOME", home.0.join("home"))
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .env("MECHA_SESSION_KIND", "test")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!home.config().contains("[outbox]"), "{}", home.config());
+    assert!(home.config().contains("[[mcp]]"), "{}", home.config());
+    assert!(
+        said.contains("mail__mail_send") && said.contains("no [outbox]"),
+        "{said}"
+    );
+}
