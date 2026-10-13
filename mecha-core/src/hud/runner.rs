@@ -153,6 +153,8 @@ pub fn run_sqlite(
     let started = Instant::now();
     let timed_out = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let flag = timed_out.clone();
+    // Since rusqlite 0.40 installing a handler can fail; a query that would
+    // run with no timeout is refused rather than run unbounded.
     conn.progress_handler(
         10_000,
         Some(move || {
@@ -162,7 +164,8 @@ pub fn run_sqlite(
             }
             over
         }),
-    );
+    )
+    .map_err(|e| RunError::Open(e.to_string()))?;
     let sql_error = |e: rusqlite::Error| {
         if timed_out.load(std::sync::atomic::Ordering::Relaxed) {
             RunError::Timeout
@@ -250,7 +253,7 @@ fn confine(conn: &Connection) -> rusqlite::Result<()> {
             Authorization::Allow
         }
         _ => Authorization::Deny,
-    }));
+    }))?;
     Ok(())
 }
 
