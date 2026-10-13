@@ -683,6 +683,38 @@ pub fn remove(m: &Machinery, which: Which, naming: &Naming) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// The router's engine is mecha's own or none: a `llama-server` on the
+    /// PATH is `Beside`, never run by the router — and once mecha's is
+    /// installed, it is `Ours` whatever else is on the PATH (review of #678:
+    /// nothing failed if this folded back into "any engine will do").
+    #[test]
+    fn the_router_runs_mecha_s_engine_never_a_provided_one() {
+        let root = std::env::temp_dir().join(format!("mecha-re-{}", uuid::Uuid::new_v4()));
+        let provided = root.join("bin");
+        std::fs::create_dir_all(&provided).unwrap();
+        let m = |path: Vec<PathBuf>| Machinery {
+            home: root.clone(),
+            mecha_home: root.join(".mecha"),
+            unit_dirs: vec![root.join("units")],
+            path,
+            docker: Box::new(|_| crate::sidecar::Lookup::Absent),
+        };
+        assert_eq!(
+            router_engine(&m(vec![provided.clone()])),
+            RouterEngine::Absent
+        );
+        std::fs::write(provided.join("llama-server"), b"#!/bin/sh\n").unwrap();
+        assert_eq!(
+            router_engine(&m(vec![provided.clone()])),
+            RouterEngine::Beside(provided.join("llama-server"))
+        );
+        let managed = crate::engine_gate::managed_binary(&root.join(".mecha"));
+        std::fs::create_dir_all(managed.parent().unwrap()).unwrap();
+        std::fs::write(&managed, b"#!/bin/sh\n").unwrap();
+        assert_eq!(router_engine(&m(vec![provided])), RouterEngine::Ours);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The units and launchers in the binary are the ones in `scripts/llama/`:
     /// one set of files, two copies, held equal so they cannot drift.
     #[test]
