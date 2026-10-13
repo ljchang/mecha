@@ -132,6 +132,21 @@ pub async fn execute(args: Args) -> Result<()> {
 /// `turbo` is `--turbo`: the image server's install fetches the turbo model
 /// too, as it does unasked once a persona's picture settings choose it.
 pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: bool) -> Result<()> {
+    let on = enable_unwired(ids, no_install, turbo, yes).await?;
+    mcp_entries(&on)
+}
+
+/// [`enable`] up to the `[[mcp]]` wiring, returning the features it switched
+/// on: the guided `mecha setup` enables one feature at a time (#631) and
+/// wires the server features of every yes together after the last, so one
+/// `[outbox]` decision covers mail and docs alike rather than the second
+/// finding the first's fresh table (review of #669, pass 4).
+pub(super) async fn enable_unwired(
+    ids: &[String],
+    no_install: bool,
+    turbo: bool,
+    yes: bool,
+) -> Result<Vec<Feature>> {
     use mecha_core::comfyui_unit as comfy;
     use mecha_core::install;
     use mecha_core::sidecar::SidecarState;
@@ -428,7 +443,7 @@ pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: b
                     "Nothing written. `mecha features enable {} --no-install` writes the switch without installing.",
                     ids.join(" ")
                 );
-                return Ok(());
+                return Ok(Vec::new());
             }
             for (id, label, ..) in todo.iter().filter(|_| go) {
                 println!("Installing {label}…");
@@ -447,11 +462,10 @@ pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: b
     if features.contains(&Feature::Image) {
         image_table()?;
     }
-    mcp_entries(&features)?;
     if features.contains(&Feature::Voice) {
         voices_dir()?;
     }
-    Ok(())
+    Ok(features)
 }
 
 /// `[voice] voices_dir` for a speech server already installed: the installer
@@ -481,13 +495,17 @@ fn voices_dir() -> Result<()> {
 /// so one `[outbox]` decision covers them all (review of #669), each program
 /// found on PATH (or in `~/.cargo/bin`) and recorded by its absolute path, so
 /// a unit's short PATH still finds it.
-fn mcp_entries(features: &[Feature]) -> Result<()> {
+pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
     let path = Config::global_path().context("no mecha home to find config.toml in")?;
     let mut items = Vec::new();
     for f in features {
         let Some(wiring) = feature::mcp_wiring(*f) else {
             continue;
         };
+        // One item per feature: a dependency two yeses share is wired once.
+        if items.iter().any(|(g, _, _)| g == f) {
+            continue;
+        }
         match find_program(wiring.program) {
             Some(command) => items.push((*f, wiring, command)),
             None => println!(
@@ -510,47 +528,33 @@ fn mcp_entries(features: &[Feature]) -> Result<()> {
     // Every decision counts: an `allow`/`prompt` beside the route refuses
     // every start (`setup::live_rules`), and a `forbid` is never reached
     // while it is on — the call becomes a draft a person can release, so the
-    // rule meant as "never sends" would quietly stop meaning it. Where the
-    // owner's `[outbox]` exists nothing is written either way, so there is
-    // no conflict to name.
+    // rule meant as "never sends" would quietly stop meaning it. The routes
+    // are matched as the entry serving each feature names them, so the write
+    // decides (review of #669, pass 4).
     let cfg = Config::load_global()?;
-    let outbox_table = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|t| t.parse::<toml::Table>().ok())
-        .is_some_and(|t| t.contains_key("outbox"));
-    let conflicts: Vec<(&mecha_core::policy::RuleConfig, Feature)> = if outbox_table {
-        Vec::new()
-    } else {
-        cfg.rules
-            .iter()
-            .filter(|r| !r.from_project)
-            .filter_map(|r| {
-                items
-                    .iter()
-                    .find(|(_, w, _)| w.outbox.contains(&r.tool.as_str()))
-                    .map(|(f, _, _)| (r, *f))
-            })
-            .collect()
-    };
-    for (r, f) in &conflicts {
-        let why = match r.decision {
-            mecha_core::policy::RuleDecision::Forbid => {
-                "forbids it, and staging would turn that into a draft you can release — the \
-                 sends stay refused, as your rule says"
-            }
-            _ => {
-                "judges it, and every start refuses an `allow` or `prompt` on a call that is \
-                 staged"
-            }
-        };
-        println!(
-            "  no [outbox] was written: your [[rule]] on `{}` {why}. To have the sends staged \
-             for your review instead, remove the rule, then `mecha features enable {}` again",
-            r.tool,
-            f.id()
-        );
+    let rules: Vec<&mecha_core::policy::RuleConfig> =
+        cfg.rules.iter().filter(|r| !r.from_project).collect();
+    let done = feature::write_mcp_entries(&path, &refs, &|t| rules.iter().any(|r| r.tool == t))?;
+    for ((f, _, _), done) in items.iter().zip(&done) {
+        for tool in &done.ruled {
+            let why = match rules.iter().find(|r| &r.tool == tool).map(|r| &r.decision) {
+                Some(mecha_core::policy::RuleDecision::Forbid) => {
+                    "forbids it, and staging would turn that into a draft you can release — the \
+                     sends stay refused, as your rule says"
+                }
+                _ => {
+                    "judges it, and every start refuses an `allow` or `prompt` on a call that \
+                     is staged"
+                }
+            };
+            println!(
+                "  no [outbox] was written: your [[rule]] on `{tool}` {why}. To have the sends \
+                 staged for your review instead, remove the rule, then `mecha features enable \
+                 {}` again",
+                f.id()
+            );
+        }
     }
-    let done = feature::write_mcp_entries(&path, &refs, conflicts.is_empty())?;
     for ((_, wiring, command), done) in items.iter().zip(done) {
         if done.wrote_entry {
             println!(
@@ -562,10 +566,10 @@ fn mcp_entries(features: &[Feature]) -> Result<()> {
         }
         if done.untrusted_missing {
             println!(
-                "  your [[mcp]] entry running {} is left as it is — it needs \
+                "  the [[mcp]] entry for {} is left as it is — it needs \
                  [mcp.capabilities] untrusted_input = true, or what it reads never arms the \
                  interlock",
-                wiring.program
+                wiring.name
             );
         }
         if done.wrote_outbox {
@@ -574,12 +578,12 @@ fn mcp_entries(features: &[Feature]) -> Result<()> {
                  (`mecha outbox`) — held for you rather than refused when a run has read \
                  something untrusted",
                 wiring.name,
-                wiring.outbox.join(", ")
+                done.routes.join(", ")
             );
         }
         if !done.outbox_missing.is_empty() {
             println!(
-                "  your [outbox] table is left as it is — for {}'s sends to be staged for review \
+                "  the [outbox] table is left as it is — for {}'s sends to be staged for review \
                  rather than run, add to its tools: {}",
                 wiring.name,
                 done.outbox_missing.join(", ")
