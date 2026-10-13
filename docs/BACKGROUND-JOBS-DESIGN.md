@@ -520,10 +520,16 @@ or reach getting any trust they do not already have?
   once, whatever the server does. It sends `notifications/cancelled` for the request
   best-effort from a task of its own, so a server that ignores the notice, or has stopped reading
   its input, never holds the conversation's one slot. The write is never cut off part-way, so
-  the server's input stream can't be left with half a line.
+  the server's input stream can't be left with half a line. That is a choice with a cost: the
+  notice is unbounded, so for a server whose input is full and never read again, its task waits
+  on the input lock, holding the client, until shutdown kills the child. Any request to such a
+  server already queues on that same lock, so nothing new is stranded.
 - **Bounded either way.** A background call waits up to `BACKGROUND_TIMEOUT` (2 h), not
   `REQUEST_TIMEOUT`. Without a sink (the CLI, a subagent, an eval, a batch) the job is awaited
-  inline, linked to the run's Stop, under that same cap.
+  inline, linked to the run's Stop, under that same cap. Pictures and clips share the
+  conversation's one running job, so a clip that runs long holds that chat's pictures in the
+  queue behind it. The first job kind bounded in hours rather than a minute; Stop is what the
+  owner has against it, and it is reliable.
 - **The result keeps its provenance.** The late output is built by the same conversion as an
   inline MCP result, so it is `external` (errors too). `jobs::settle` then wraps it and arms
   taint exactly as an inline call would. A failed call is marked from outside too, a timeout
@@ -553,7 +559,10 @@ or reach getting any trust they do not already have?
     when the tool defers. `picture.js` `stillOut` accepts `image_generate`, or a `deferred` row,
     and in both cases still requires the `being made: ` first line, so a finished result never
     reads as out. Read back from the transcript, not only from the live event, so the state
-    survives the reload every settle does.
+    survives the reload every settle does. The mark comes only from a tool the registry holds,
+    while the restart repair treats an unregistered one as deferring. So a clip that landed
+    cleanly before its server was dropped from config (or failed to connect) loses its player:
+    nothing registered can vouch for the tool. That is the default on purpose, not a gap.
 - **Wording follows the tool.** A still-out `image_generate` row keeps "drawing a picture…" and
   "Stop the picture". Any other deferred row reads "working on it…" (`picture.js` `makingText`,
   one function for every surface) and "Stop". The loop's closing
@@ -605,8 +614,10 @@ nothing on the persona's surfaces that assumes the work is a picture.
   results as it does any outside content.
 - **The persona form says who is asking.** `McpTool::for_persona_as` clones the tool with the
   `PersonaSelf`, and its background calls carry `_meta["mecha-factory.ai/persona"]`: the
-  persona's folder name and its linked library character, never its prompt, its display name
-  or anything it said. A server may read that character as `self`.
+  persona's folder name, its linked library character and its voice-library voice, never its
+  prompt, its display name or anything it said. A server may read that character as `self`,
+  and give a clip with sound her voice (owner, 2026-10-13: a video server's reference audio
+  carried it). Both are library names, settings the owner chose, never a path.
 - **The chat's folder is absolute** (§8), which is what lets a persona's chat, under
   `work/persona`, be named to a server spawned under `work/web`.
 - **The run closes on the job's own lines** (§8's `with_closings`): a persona that queued a
@@ -621,7 +632,9 @@ nothing on the persona's surfaces that assumes the work is a picture.
   picture…", and anything else reads "working on it…". A finished clip plays under its row
   (`ClipPlayer`, through the chat's file route, unlock token and all). On a call, the slot says
   the same words, and a finished clip is noted in the call's transcript as "a clip, in the chat".
-  The call screen draws pictures, not clips.
+  Its one Stop stops everything out, so a picture beside a clip names both (`slotText`). A row
+  naming a clip an earlier row already plays says so rather than play it twice (`repeatedClips`,
+  in both chats). The call screen draws pictures, not clips.
 - **Incognito is unchanged.** An incognito room's folder is not a kept chat's, and the server
   must refuse it. The private video server does, writing only under `work/web` or `work/persona`.
 

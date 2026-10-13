@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **argon2 0.6 and rusqlite 0.40.** A library lock set before the upgrade
+  still opens; a new lock's salt comes from argon2 itself. A dashboard query
+  whose timeout or read-only authorizer cannot be installed is now refused
+  rather than run without it.
+
 ### Fixed
 
 - **Switching on mail, documents or the graph finishes wiring them.**
@@ -15,8 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   setup`'s yes to mail stopped there instead of opening the sign-in. It now
   writes the `[[mcp]]` entry the docs give where none runs the program,
   with its results read as untrusted and the program by its absolute path;
-  for mail, its sends, replies and calendar changes are staged in the outbox
-  when you have no `[outbox]` table yet. An `[outbox]` you wrote is never
+  mail's sends, replies and calendar changes and documents' writes are
+  staged in the outbox when you have no `[outbox]` table yet, unless a
+  `[[rule]]` of yours names one of them. An `[outbox]` you wrote is never
   edited: enable names the routing it lacks. A program that is not installed
   is named with its install command.
 - **Voice recording and cloning work after `mecha features enable voice`.**
