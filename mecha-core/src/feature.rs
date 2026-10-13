@@ -1036,6 +1036,10 @@ pub struct McpWrite {
     /// An existing entry that does not force `untrusted_input = true`: never
     /// edited, named by the caller (review of #669).
     pub untrusted_missing: bool,
+    /// The command of an entry carrying the feature's name that runs some
+    /// other program: left as it is, and no entry added beside it, so the
+    /// caller names it (review of #669, pass 5).
+    pub runs_other: Option<String>,
 }
 
 /// Write one feature's wiring — [`write_mcp_entries`] with a single item and
@@ -1090,18 +1094,34 @@ pub fn write_mcp_entries(
     let mut results = Vec::new();
     let mut changed = false;
     for (wiring, command) in items {
-        let serves = |t: &toml_edit::Table| {
-            let runs = t
-                .get("command")
+        let runs = |t: &toml_edit::Table| {
+            t.get("command")
                 .and_then(|c| c.as_str())
                 .and_then(|c| Path::new(c).file_name().map(|n| n == wiring.program))
-                .unwrap_or(false);
-            runs || t.get("name").and_then(|n| n.as_str()) == Some(wiring.name)
+                .unwrap_or(false)
         };
-        let existing = doc
-            .get("mcp")
-            .and_then(|m| m.as_array_of_tables())
-            .and_then(|servers| servers.iter().find(|t| serves(t)).cloned());
+        let named =
+            |t: &toml_edit::Table| t.get("name").and_then(|n| n.as_str()) == Some(wiring.name);
+        // An entry running the program first; one only carrying the name
+        // after, which is left as it is and said (below).
+        let servers = doc.get("mcp").and_then(|m| m.as_array_of_tables());
+        let existing = servers.and_then(|s| {
+            s.iter()
+                .find(|t| runs(t))
+                .or_else(|| s.iter().find(|t| named(t)))
+                .cloned()
+        });
+        // The owner's entry of this name runs something else: no second one
+        // beside it (one name, two servers, shadowed tools), but the feature
+        // reads as served only by an entry running the program
+        // (`server_state`), so the caller says so rather than leaving a
+        // silent "nothing written" (review of #669, pass 5).
+        let runs_other = existing.as_ref().filter(|t| !runs(t)).map(|t| {
+            t.get("command")
+                .and_then(|c| c.as_str())
+                .unwrap_or("")
+                .to_string()
+        });
         // An entry the owner wrote that does not force the capability: named,
         // never edited. It is the stronger gap — a mail read declares only
         // `readOnlyHint`, so without it a mail body never arms the untrusted
@@ -1161,6 +1181,7 @@ pub fn write_mcp_entries(
             wrote_outbox: false,
             outbox_missing: Vec::new(),
             untrusted_missing,
+            runs_other,
         });
     }
     if !outbox_existed {
@@ -1688,6 +1709,11 @@ mod tests {
         );
 
         assert!(!wrapped.wrote_entry);
+        assert_eq!(
+            wrapped.runs_other.as_deref(),
+            Some("/usr/local/bin/mail-wrap")
+        );
+        assert!(renamed.runs_other.is_none() && bare.runs_other.is_none());
         assert_eq!(wrapped_v["mcp"].as_array().unwrap().len(), 1);
         assert_eq!(wrapped.routes, mail.outbox);
     }
