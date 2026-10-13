@@ -70,7 +70,18 @@ impl Sink {
         })
     }
 
+    /// Write, rotating first when this would pass the cap. A chunk larger
+    /// than the cap is written a cap at a time, so neither file ever passes
+    /// it (review of #678: one 16 KiB read into a 4 KiB cap overshot).
     fn write(&mut self, bytes: &[u8]) -> Result<()> {
+        let max = self.max.max(1) as usize;
+        for piece in bytes.chunks(max) {
+            self.write_piece(piece)?;
+        }
+        Ok(())
+    }
+
+    fn write_piece(&mut self, bytes: &[u8]) -> Result<()> {
         use std::io::Write;
         if self.size > 0 && self.size + bytes.len() as u64 > self.max {
             let older = self.path.with_extension(format!(
@@ -102,6 +113,33 @@ async fn pump(mut from: impl AsyncRead + Unpin, sink: Arc<Mutex<Sink>>) {
             }
         }
     }
+}
+
+/// Whether a program is one these internal commands may run: mecha's own
+/// install under `<mecha home>/sidecars/`, or this binary. launchd only ever
+/// passes those; anything else is refused, so a policy rule that allows
+/// `mecha` does not become a way to run any program after `--` (review of
+/// #678 — `policy::runs_its_arguments` knows nothing of these subcommands).
+pub fn mecha_s_own(program: &Path) -> Result<()> {
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let program = canon(program);
+    let sidecars = canon(&crate::work::mecha_home()?.join("sidecars"));
+    let this = std::env::current_exe().map(|p| canon(&p)).ok();
+    if owned(&program, &sidecars, this.as_deref()) {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "{} is not one of mecha's own programs (under {}) — these internal commands run \
+             only what mecha installed",
+            program.display(),
+            sidecars.display()
+        )
+    }
+}
+
+/// [`mecha_s_own`]'s rule over resolved paths.
+fn owned(program: &Path, sidecars: &Path, this: Option<&Path>) -> bool {
+    program.starts_with(sidecars) || this == Some(program)
 }
 
 /// Run the program until it exits, passing on a signal `stop` yields; its
@@ -155,6 +193,11 @@ pub async fn run_until(spec: Spec, mut stop: tokio::sync::mpsc::Receiver<i32>) -
 
 /// [`run_until`] with this process's SIGTERM, SIGINT and SIGHUP passed on.
 pub async fn run(spec: Spec) -> Result<i32> {
+    let prog = spec
+        .program
+        .first()
+        .context("log-cap was given no program")?;
+    mecha_s_own(Path::new(prog))?;
     use tokio::signal::unix::{signal, SignalKind};
     let (tx, rx) = tokio::sync::mpsc::channel(4);
     for (kind, sig) in [
@@ -196,10 +239,13 @@ mod tests {
             Spec {
                 log: log.clone(),
                 max_bytes: 4096,
+                // One stream only: stdout and stderr are read by two pumps,
+                // so which of them writes last is a race, and the test is
+                // about the cap, not the order (CI's MSRV arm on #678).
                 program: vec![
                     "/bin/sh".into(),
                     "-c".into(),
-                    "i=0; while [ $i -lt 2000 ]; do echo line $i; echo err $i >&2; i=$((i+1)); done; echo last"
+                    "i=0; while [ $i -lt 4000 ]; do echo line $i; i=$((i+1)); done; echo last"
                         .into(),
                 ],
             },
@@ -213,6 +259,27 @@ mod tests {
         assert!(now <= 4096 && older <= 4096, "{now} {older}");
         assert!(std::fs::read_to_string(&log).unwrap().contains("last"));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Only mecha's own programs: one under the sidecars tree, or this
+    /// binary — never a path beside the tree that merely starts with its name.
+    #[test]
+    fn only_mecha_s_own_programs_run() {
+        let side = Path::new("/h/.mecha/sidecars");
+        let this = Path::new("/u/.cargo/bin/mecha");
+        assert!(owned(
+            Path::new("/h/.mecha/sidecars/bin/mecha-router"),
+            side,
+            Some(this)
+        ));
+        assert!(owned(this, side, Some(this)));
+        assert!(!owned(Path::new("/bin/sh"), side, Some(this)));
+        assert!(!owned(
+            Path::new("/h/.mecha/sidecars-x/run"),
+            side,
+            Some(this)
+        ));
+        assert!(!owned(Path::new("/h/.mecha/bin/x"), side, None));
     }
 
     /// The program's exit code is this process's, and a stop is passed on.

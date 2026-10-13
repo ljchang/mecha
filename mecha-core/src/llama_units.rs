@@ -719,6 +719,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The plist each on-demand install writes is the one the plan looks
+    /// for: a renamed stem would otherwise read every Mac's server as absent
+    /// (review of #678).
+    #[test]
+    fn the_shipped_agents_are_the_servers_evidence() {
+        for which in [Which::Embeddings, Which::Ocr] {
+            let name = crate::launchd::plist_name(&which.shipped().stem);
+            let sidecar = crate::sidecar::SIDECARS
+                .iter()
+                .find(|s| s.id == which.sidecar())
+                .unwrap();
+            assert!(
+                sidecar
+                    .evidence
+                    .iter()
+                    .any(|e| matches!(e, crate::sidecar::Evidence::UserUnit(n) if *n == name)),
+                "{name} is not in {:?}",
+                sidecar.evidence
+            );
+        }
+    }
+
     /// The units and launchers in the binary are the ones in `scripts/llama/`:
     /// one set of files, two copies, held equal so they cannot drift.
     #[test]
