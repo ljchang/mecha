@@ -95,36 +95,33 @@ async fn the_profile_reaches_its_scratch_and_nothing_else_on_disk() {
     std::fs::remove_dir_all(outside).ok();
 }
 
-/// No network unless asked: the same request answers unconfined and with
+/// No network unless asked: the same connection opens unconfined and with
 /// `network = true`, and fails under the default profile. An address, not a
-/// name, so the denial measured is the connection's, not the resolver's.
+/// name, so the denial measured is the connection's, not the resolver's;
+/// and `nc`, a bare TCP connect that reads no configuration — `curl` loads
+/// `/etc/ssl/openssl.cnf`, which the profile denies, so its control failed
+/// on a file read and proved nothing about the network (first CI run).
 #[tokio::test]
 async fn the_network_is_closed_unless_the_call_opens_it() {
-    let url = "http://1.1.1.1/";
-    let curl = |extra: &[&'static str]| {
-        let mut a: Vec<&str> = vec!["-s", "-o", "/dev/null", "-m", "10"];
-        a.extend(extra);
-        a.push(url);
-        a
-    };
-    let plain = std::process::Command::new("/usr/bin/curl")
-        .args(curl(&[]))
-        .status()
+    let args = ["-z", "-G", "5", "-w", "5", "1.1.1.1", "80"];
+    let plain = std::process::Command::new("/usr/bin/nc")
+        .args(args)
+        .output()
         .unwrap();
-    if support::unavailable("network to 1.1.1.1", plain.success()) {
+    if support::unavailable("network to 1.1.1.1:80", plain.status.success()) {
         return;
     }
     let ws = support::tmpdir("sb-net");
-    let closed = run(&seatbelt(false), "/usr/bin/curl", &curl(&[]), &ws).await;
+    let closed = run(&seatbelt(false), "/usr/bin/nc", &args, &ws).await;
     assert!(
         !closed.status.success(),
-        "the network answered under the profile"
+        "a connection opened under the profile"
     );
-    let open = run(&seatbelt(true), "/usr/bin/curl", &curl(&[]), &ws).await;
+    let open = run(&seatbelt(true), "/usr/bin/nc", &args, &ws).await;
     assert!(
         open.status.success(),
-        "with network = true the same call answers, so the refusal above is the network \
-         rule: {}",
+        "with network = true the same connection opens, so the refusal above is the \
+         network rule: {}",
         String::from_utf8_lossy(&open.stderr)
     );
     std::fs::remove_dir_all(ws).ok();
