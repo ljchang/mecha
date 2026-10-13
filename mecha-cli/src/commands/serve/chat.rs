@@ -484,7 +484,7 @@ impl ChatState {
         // letting go of it first would leave the result "being made" for
         // good (review of #583).
         if !self.jobs.queue.pending_tools(&key).is_empty() {
-            return Err("a picture is being made in this conversation — stop it first");
+            return Err("a picture or other background work is still being made in this conversation — stop it first");
         }
         let ws = sessions.remove(&key).expect("found above");
         ws.questions.shutdown();
@@ -893,6 +893,9 @@ pub enum WireEvent {
         /// of its own. Third-party content rides in here (a mail body, a
         /// web page), so the page must render it as TEXT, never markup.
         preview: String,
+        /// The call's tool defers — see [`Entry::Tool::deferred`].
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        deferred: bool,
     },
     Denied {
         name: String,
@@ -1033,6 +1036,9 @@ pub(super) fn wire_event(event: &AgentEvent, context_window: Option<u64>) -> Opt
             id: id.clone(),
             is_error: *is_error,
             preview: result_preview(content),
+            // The event knows only the call; the run's host marks it from
+            // its registry (`mark_deferred`).
+            deferred: false,
         }),
         AgentEvent::ToolDenied { name, reason } => Some(WireEvent::Denied {
             name: name.clone(),
@@ -1098,6 +1104,13 @@ pub enum Entry {
         /// card (IMAGE-DESIGN.md §5.4). `None` for every other card.
         #[serde(skip_serializing_if = "Option::is_none")]
         version_of: Option<String>,
+        /// The call's tool defers (`Tool::defers`): a `being made:` result on
+        /// this row is still out, with a Stop, until its late result lands
+        /// (BACKGROUND-JOBS-DESIGN.md §8). Read back from the transcript, not
+        /// only sent live, so the state survives the re-read every settle
+        /// does. `image_generate` the page knows by name.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        deferred: bool,
     },
 }
 
@@ -1140,6 +1153,22 @@ fn strip_voice_preamble(text: &str) -> &str {
 }
 
 pub(super) fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
+    transcript_entries_with(messages, &|_| false)
+}
+
+/// Mark a live result event whose tool defers, from the run's registry
+/// (BACKGROUND-JOBS-DESIGN.md §8).
+pub(super) fn mark_deferred(wire: &mut WireEvent, defers: &dyn Fn(&str) -> bool) {
+    if let WireEvent::ToolResult { name, deferred, .. } = wire {
+        *deferred = defers(name);
+    }
+}
+
+/// [`transcript_entries`], with each tool row marked when its tool defers.
+pub(super) fn transcript_entries_with(
+    messages: &[Message],
+    defers: &dyn Fn(&str) -> bool,
+) -> Vec<Entry> {
     // The call's arguments, kept until its result arrives — a `tool_result`
     // block names only the id that produced it.
     //
@@ -1182,6 +1211,7 @@ pub(super) fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
                                 version_of: mecha_core::persona::edit::fact_redraw_of(t)
                                     .filter(|_| result.starts_with("image: "))
                                     .map(str::to_string),
+                                deferred: false,
                             });
                         }
                         // The owner's bubble carries the owner's words. A
@@ -1215,6 +1245,7 @@ pub(super) fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
                                 // read as a call that never happened.
                                 None => ("tool".to_string(), None, None),
                             };
+                            let deferred = defers(&name);
                             entries.push(Entry::Tool {
                                 name,
                                 id: Some(tool_use_id.clone()),
@@ -1223,6 +1254,7 @@ pub(super) fn transcript_entries(messages: &[Message]) -> Vec<Entry> {
                                 args,
                                 preview: Some(result_preview(content)),
                                 version_of: None,
+                                deferred,
                             });
                         }
                         Block::Image { .. } if results => {}
@@ -1453,7 +1485,7 @@ pub(super) async fn release_task_conversation(
     // reopen would settle it as never made (review of #583).
     if !chat.jobs.queue.pending_tools(&key).is_empty() {
         anyhow::bail!(
-            "a picture is being made in it right now — let it finish, or stop it first, then hand it over"
+            "a picture or other background work is being made in it right now — let it finish, or stop it first, then hand it over"
         );
     }
     let id = ws.session.id().to_string();
@@ -1668,7 +1700,11 @@ fn ensure_session_as<'a>(
         }
         // A picture still "being made" when the server stopped has no job
         // behind it now: settled from what the workspace holds (`late`).
-        super::late::repair_orphans(&session, &workspace, &mut conversation);
+        // Over the followed binding this function was handed, never
+        // `current()` (review of #666, pass 5).
+        super::late::repair_orphans(&session, &workspace, &mut conversation, &|name| {
+            super::late::may_be_orphan(bound.agent.registry(), name)
+        });
         let late = super::late::LateState::of_file(&session.path);
         sessions.insert(
             key.to_string(),
@@ -1865,12 +1901,20 @@ pub async fn transcript(
         None => return (StatusCode::NOT_FOUND, "no such session\n").into_response(),
     };
     let running = ws.live.is_some();
+    let defers = super::late::deferring(chat.follower.current().agent.registry());
+    let defers = |name: &str| defers.contains(name);
     let (entries, taint) = match (&ws.conversation, &ws.live) {
-        (Some(convo), _) => (transcript_entries(&convo.messages), Some(convo.taint)),
+        (Some(convo), _) => (
+            transcript_entries_with(&convo.messages, &defers),
+            Some(convo.taint),
+        ),
         // A run holds the conversation: the history it started from, and the
         // page takes the run itself over SSE — then re-reads at `done`,
         // because what streamed before it subscribed is not in either.
-        (None, Some(live)) => (transcript_entries(&live.history), Some(live.taint)),
+        (None, Some(live)) => (
+            transcript_entries_with(&live.history, &defers),
+            Some(live.taint),
+        ),
         (None, None) => (Vec::new(), None),
     };
     let usage = ws.last_usage.lock().ok().and_then(|u| u.clone());
@@ -2457,6 +2501,8 @@ async fn deliver(chat: &Arc<ChatState>, late: mecha_core::jobs::Delivered) {
         id: late.call_id.clone(),
         is_error: late.output.is_error,
         preview: result_preview(&late.output.content),
+        // A job is only ever a deferring tool's.
+        deferred: true,
     };
     if let Some(convo) = ws.conversation.as_mut() {
         super::late::land(&mut ws.late, &session, convo, &late);
@@ -2882,6 +2928,9 @@ fn begin_turn(
     let bcast = ws.events.clone();
     let last_usage = Arc::clone(&ws.last_usage);
     let context_window = bound.context_window;
+    // Which tools' results the page holds as still out (§8), from this
+    // run's own registry.
+    let run_defers = Arc::new(super::late::deferring(bound.agent.registry()));
     let state_for_task = Arc::clone(chat);
     let (tap_tx, tap_rx) = tokio::sync::mpsc::unbounded_channel();
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
@@ -2960,6 +3009,7 @@ fn begin_turn(
             let bcast = bcast.clone();
             let last_usage = Arc::clone(&last_usage);
             let queued_ids = Arc::clone(&queued_ids);
+            let run_defers = Arc::clone(&run_defers);
             tokio::spawn(async move {
                 while let Some(event) = rx.recv().await {
                     // Core drains steering in FIFO order. The ids are appended
@@ -2980,7 +3030,8 @@ fn begin_turn(
                     // The private tap: a caller streaming this run somewhere
                     // of its own (the voice facade, answering the worker).
                     let _ = tap_tx.send(event.clone());
-                    if let Some(wire) = wire_event(&event, context_window) {
+                    if let Some(mut wire) = wire_event(&event, context_window) {
+                        mark_deferred(&mut wire, &|name| run_defers.contains(name));
                         let _ = bcast.send(wire);
                     }
                 }
@@ -4150,7 +4201,11 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
         routes.insert(key.clone(), (questions.clone(), events.clone(), park));
     }
     let mut conversation = conversation;
-    super::late::repair_orphans(&session, &workspace, &mut conversation);
+    // The binding read above, not a second `current()` (review of #666,
+    // pass 5).
+    super::late::repair_orphans(&session, &workspace, &mut conversation, &|name| {
+        super::late::may_be_orphan(bound.agent.registry(), name)
+    });
     let late = super::late::LateState::of_file(&session.path);
     sessions.insert(
         key.clone(),
@@ -4861,6 +4916,7 @@ mod wire_tests {
                     args: Some("{}".into()),
                     preview: Some("3 results".into()),
                     version_of: None,
+                    deferred: false,
                 },
             ]
         );
@@ -5267,8 +5323,71 @@ mod wire_tests {
                 args: None,
                 preview: Some("…".into()),
                 version_of: None,
+                deferred: false,
             }]
         );
+    }
+
+    /// A deferring tool's row is marked in the transcript a settle re-reads,
+    /// not only on the live event, so a clip still out keeps its state and
+    /// its Stop past the reload (BACKGROUND-JOBS-DESIGN.md §8). Only its
+    /// tool's rows are marked, and the plain read marks none.
+    #[test]
+    fn a_deferring_tools_row_is_marked_in_the_transcript_read_back() {
+        let messages = vec![
+            Message::user("make a clip"),
+            Message::assistant(vec![
+                Block::ToolUse {
+                    id: "v1".into(),
+                    name: "render".into(),
+                    input: serde_json::json!({}),
+                },
+                Block::ToolUse {
+                    id: "s1".into(),
+                    name: "shell".into(),
+                    input: serde_json::json!({}),
+                },
+            ]),
+            Message::tool_results(vec![
+                Block::ToolResult {
+                    tool_use_id: "v1".into(),
+                    content: "being made: `render` is running.".into(),
+                    is_error: false,
+                },
+                Block::ToolResult {
+                    tool_use_id: "s1".into(),
+                    content: "being made: echoed".into(),
+                    is_error: false,
+                },
+            ]),
+        ];
+        let wire =
+            serde_json::to_value(transcript_entries_with(&messages, &|n| n == "render")).unwrap();
+        let rows: Vec<_> = wire
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["kind"] == "tool")
+            .collect();
+        assert_eq!(rows[0]["name"], "render");
+        assert_eq!(rows[0]["deferred"], true);
+        assert!(rows[1].get("deferred").is_none(), "{}", rows[1]);
+        let plain = serde_json::to_value(transcript_entries(&messages)).unwrap();
+        assert!(!plain.to_string().contains("deferred"));
+
+        // And the live event the run sends for the same call.
+        let mut live = wire_event(
+            &AgentEvent::ToolResult {
+                id: "v1".into(),
+                name: "render".into(),
+                is_error: false,
+                content: "being made: `render` is running.".into(),
+            },
+            None,
+        )
+        .unwrap();
+        mark_deferred(&mut live, &|n| n == "render");
+        assert_eq!(serde_json::to_value(&live).unwrap()["deferred"], true);
     }
 }
 

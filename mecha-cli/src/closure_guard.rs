@@ -204,6 +204,9 @@ impl Tool for ClosedStatusGuard {
     fn fixed_workspace(&self) -> Option<PathBuf> {
         self.inner.fixed_workspace()
     }
+    fn defers(&self) -> bool {
+        self.inner.defers()
+    }
     fn narrows_surface_to(&self) -> Option<Vec<String>> {
         self.inner.narrows_surface_to()
     }

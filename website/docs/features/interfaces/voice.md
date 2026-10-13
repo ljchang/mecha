@@ -18,14 +18,20 @@ and speak into the conversation already on screen. If the web surface is not
 running, there is no voice mode — which makes `mecha serve` the prerequisite
 rather than an alternative to it.
 
-## Before anything else: voice is not in the crate
+## Before anything else: voice is three services beside mecha
 
-**`cargo install mecha-cli` does not give you a working voice mode.** It ships
-the *facade* — `mecha voice-serve`, and the `--voice-port` flag on
+**`cargo install mecha-cli` alone does not give you a working voice mode.** It
+ships the *facade* — `mecha voice-serve`, and the `--voice-port` flag on
 `mecha serve` — which is the loopback endpoint the voice pipeline talks to.
-The pipeline itself is not packaged.
+The pipeline runs beside it: on Linux with an NVIDIA GPU and the CUDA
+toolkit, `mecha features enable voice` installs speech to text, the speech
+server and the worker (below; the chat model is `mecha setup chat`'s);
+anywhere else they are a git checkout and a hand build. Either way voice needs its `voice` switch in
+[`[features]`](/docs/reference/configuration#features), which that command
+writes — an absent switch is off — and calls, dictation and cloning in the
+browser also need `web`.
 
-Voice needs a **git checkout** and three local services (the text-to-speech one is two processes):
+Voice needs three local services (the text-to-speech one is two processes):
 
 | What | Where | Why |
 |---|---|---|
@@ -44,8 +50,9 @@ while as a "fallback" and was removed once it became clear nothing failed
 over to it automatically — a spare that needs a config edit and a restart is
 not a spare, it is a second service to keep alive.
 
-Plus the Python worker (`scripts/voice/worker.py`) that wires them together
-over WebRTC. **Speech to text and the worker install themselves** on Linux:
+Plus the Python worker (`scripts/voice/worker.py`, also shipped inside the
+binary) that wires them together over WebRTC. **Speech to text and the worker
+install themselves** on Linux:
 `mecha features enable voice` offers each. Speech to text builds its own
 Python environment from a hash-pinned lock, fetches the Parakeet model by its
 pinned sha256, and starts `mecha-parakeet.service` on `:8992`, under
@@ -73,9 +80,13 @@ the CUDA toolkit:
 **Breeze TTS 2's weights are licensed for research and non-commercial use
 only**, and the install says so before it fetches them. Chatterbox, the
 voice before Breeze, still runs as a container image if you would rather use
-it.
-This is a build-it-yourself feature, and the honest summary is that setting it
-up takes an afternoon.
+it. A machine the speech server does not fit — no NVIDIA GPU, no CUDA
+toolkit, or not Linux — is told why, and the switch is still written, for a
+speech server you run yourself.
+
+Off that path — macOS, or a stack you would rather build from the checkout's
+`scripts/voice/` — voice is build-it-yourself, and the honest summary is that
+setting it up by hand takes an afternoon.
 
 If that is not what you wanted, everything else in mecha works from the crate.
 
@@ -124,7 +135,8 @@ component standing between a microphone and an agent holding your mail.
 
 ## Turning it on
 
-From a checkout, with the three services and the worker running:
+With the voice switch on and the three services and the worker running —
+installed by `mecha features enable voice`, or started from a checkout:
 
 ```bash
 mecha serve --voice-port 8990 --voice-yes
@@ -132,9 +144,10 @@ mecha serve --voice-port 8990 --voice-yes
 
 Then open mecha's web app over your tailnet and go to the chat view: a
 waveform button opens a call overlay over whatever you were reading. Tap it,
-wait for the ring to warm, and speak. `scripts/voice/` holds systemd units for
-the worker and the speech servers — copy them, or run the scripts by hand while
-you are still finding out whether you like it.
+wait for the ring to warm, and speak. For the hand-built route,
+`scripts/voice/` holds systemd units for the worker and the speech servers —
+copy them, or run the scripts by hand while you are still finding out whether
+you like it.
 
 ## The controls
 
@@ -152,7 +165,8 @@ persona's reply in its voice, the assistant's in yours — with code, links
 and Markdown marks left out. It goes through the same worker, and keeps no
 trace of the text there.
 
-**Voice.** Six generated references, `default`, and any you have cloned. **Library → Voices** lists them all: tap one to hear a
+**Voice.** `default`, the six generated references once `make-voices.py` has
+written them, and any you have cloned. **Library → Voices** lists them all: tap one to hear a
 short sentence spoken in it, record or upload a new one, and see which
 personas speak in each. Breeze clones from a few seconds of reference audio and
 the exact words spoken in it, so a voice is a `.wav` on disk with its transcript
@@ -160,8 +174,16 @@ beside it as a `.txt` — written by `make-voices.py`, or by Parakeet the first
 time the voice is spoken, and yours to correct. The server reads the voices
 directory live, and dropping a clip in by hand works exactly as well as
 recording one through the page. Breeze has no built-in voice: `default` is
-`default.wav`, which `make-voices.py` writes from one of its references when
-there is none yet, and which you can replace with any clip you like.
+`default.wav` — the VCTK reading the install fetches, or on a hand build one
+`make-voices.py` writes from its references when there is none yet — and you
+can replace it with any clip you like.
+
+**Where the voices directory is** depends on how the adapter was set up. The
+adapter `mecha features enable voice` installs reads
+`~/.mecha/sidecars/speech/voices`; one run from `scripts/voice/` reads its
+`VOICES_DIR` environment variable, `~/models/voices` when that is unset. The
+two scripts below default to `~/models/voices` too, so against an installed
+adapter run them with `VOICES_DIR=~/.mecha/sidecars/speech/voices`.
 
 The six shipped references were synthesised from Kokoro's presets by
 `scripts/voice/make-voices.py`, which is a licensing decision more than a
@@ -181,8 +203,9 @@ one, and it takes speaker ids, never a URL.
 
 **Cloning your own** happens in Library → Voices: record someone reading the
 passage there, or upload a WAV recorded elsewhere. It needs `[voice] voices_dir` pointed at the directory the
-TTS reads its voices from (`~/models/voices` unless you moved it); unset, the endpoint answers *not configured*
-rather than failing obscurely. A reference is **5 to 120 seconds** — under five
+TTS reads its voices from — the one above; the install does not set it for
+you. Unset, the endpoint answers *not configured* rather than failing
+obscurely. A reference is **5 to 120 seconds** — under five
 the engine has too little voice to condition on, and past two minutes the extra
 audio buys nothing while the file stores that much more of somebody's speech.
 Uploads are capped at 32 MB and refused on size before anything is parsed, must
@@ -238,8 +261,11 @@ microphone.
 
 mecha also writes differently out loud. No bullet lists, no headings, no code
 blocks; numbers and times spoken as words; long tool output summarised rather
-than recited. And it opens with a short sentence — speech begins as soon as the
-first sentence is finished, so a long opening is silence you would sit through.
+than recited. With an engine that speaks a sentence only once all of it is
+synthesised (Chatterbox), it also opens with a short sentence — speech begins
+as soon as the first sentence is finished, so a long opening is silence you
+would sit through. Breeze streams audio as it synthesises, so there the length
+rules are dropped and mecha talks the way you would out loud.
 
 ## A call is the conversation you were already having
 

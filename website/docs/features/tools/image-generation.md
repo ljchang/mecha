@@ -8,9 +8,10 @@ description: The image_generate tool — ask for a picture in chat and a local i
 
 `image_generate` lets a run draw a picture with an image model on your own
 machine. Ask for one in any conversation — "make me a poster for Friday's lab
-meeting that says 'Journal Club'" — and the model writes a prompt, the image
-server renders it, and the PNG is saved under `images/` in the conversation's
-workspace. Web chat shows it under the call; the terminal shows the path.
+meeting that says 'Journal Club'" — and the model describes it as a scene,
+the tool writes the image model's prompt from that, the image server renders
+it, and the PNG is saved under `images/` in the conversation's workspace. Web
+chat shows it under the call; the terminal shows the path.
 
 It is registered only when `[image]` is configured. With none, the tool does
 not exist.
@@ -72,6 +73,8 @@ numbers rather than the chat's. The settings are kept in
 by those pages, and read on every picture, so a change is the next
 picture's.
 
+![Settings → Images: the picture settings panel with Default, Guided and Turbo presets and the model, steps, guidance, sampler, scheduler and negative prompt fields, each at its default](/img/screens/img-settings-images.png)
+
 Either page can switch pictures to the turbo model. It draws in
 about 8 steps instead of 40, so a picture takes 10 to 15 seconds, but it is
 weaker on two people acting together. Turbo needs one more file from the
@@ -87,39 +90,119 @@ pays the load.
 
 ## Using it
 
-Ask in plain words. The model chooses the prompt, a size — `square`
-(1024×1024), `landscape` (1344×768) or `portrait` (768×1344) — and, when you
-are revising, a seed.
+Ask in plain words. The model describes the picture as a `scene`, and the
+tool, not the model, writes the image model's prompt from it:
 
-- **Text in images works well.** Say the exact words; the model quotes them in
-  the prompt.
-- **Revise by talking.** "Same thing, but warmer light" — the model edits its
-  prompt and reuses the seed, which keeps the composition.
-- **The model cannot see the picture.** Images reach a conversation only when
-  you attach them, so it knows what it asked for, not what came out. You are
-  the judge; tell it what to change.
+- `setting` — everything but the people and the words: the place and its
+  objects, or the whole subject of a picture without people;
+- `light`, `camera`, `style` (a library style's name, only when you ask for
+  a look), `together` (what the people do with each other) and `text`
+  (words to render exactly);
+- `people`, each with `who`, `where` (left, centre, right or background),
+  `wearing`, `doing` and `expression`.
+
+It also picks a size: `square` (1024×1024), `landscape` (1344×768) or
+`portrait` (768×1344).
+
+- **Text in images works well.** Say the exact words; they go in
+  `scene.text` and are rendered as written.
+- **Put people into a room of your own.** Attach a photo of a place and ask
+  for someone in it: the photo becomes the setting, and the people are drawn
+  into it.
+- **Revise by talking.** "Same thing, but at dusk" — the model sends only
+  what changes, and the tool carries the rest of the scene forward from its
+  record (below). Restating what is already true changes nothing, and a call
+  that changes nothing draws the scene again at a new seed, which is what
+  "try again" gets you.
+- **The model is not shown the result.** It knows what it asked for, not
+  what came out, and is told never to say what a picture shows. A model that
+  can see images and has `image_view` looks only when the task needs it —
+  you asked it to check, compare or describe. Otherwise you are the judge;
+  tell it what to change.
 - **It works in any chat, read-only ones included.** It only ever adds new
   files under `images/` in the conversation's own folder, so it needs no
   approval and no mode switch.
-- **It takes about half a minute** for a 1024×1024 image at the default 40
-  steps on the DGX Spark; an edit, a little more. Anything else using the GPU
-  at the same time — reading a reply aloud, say — slows it down.
-  Cancelling the run stops the generation on the server too.
+- **A picture takes about half a minute to a minute** at the default 40
+  steps on the DGX Spark while the server has the model loaded; the first
+  after the server has restarted to give its memory back takes two to three
+  minutes. Anything else using the GPU at the same time — reading a
+  reply aloud, say — slows it down.
+
+`mecha run`, `mecha batch` and evals can also pass a `seed` to reproduce a
+new picture. A chat's schema has no seed, since models mostly copied an
+earlier result's; every new picture there draws at a fresh one.
+
+## Pictures in web chat
+
+In web chat a picture is drawn in the background: the reply can finish
+while it draws, and the picture lands on the call's card when it is done.
+Under each picture:
+
+- **Edit** opens the edit panel ([below](#editing-a-picture)).
+- **Regenerate** draws the same picture again at a new seed, with no words
+  and no painted area. The new one shows on the same card, with **‹ ›** to
+  step between versions, and Edit, Regenerate and Download act on the
+  version showing. It is off while a reply is running. On a persona call,
+  Regenerate is in the picture viewer; talking over the redraw does not
+  stop it.
+- **Download** saves the picture to your device. It is there in every chat,
+  incognito and a locked persona's included; the file is fetched and saved
+  by the page, so no picture address lands in your browser's history.
+- **Save to library** makes the picture a recurring character
+  ([below](#recurring-characters-the-image-library)).
+
+**One picture draws at a time, and up to three more wait their turn.** A
+picture asked for while another is drawing joins the line instead of
+failing; one asked for past that is refused, and the model is told so. While
+two or more are out the chat shows the line — the one drawing with its
+clock, then the ones waiting — and each waiting picture can be stopped on
+its own or dragged (or moved with ↑/↓) to a new place; the one drawing never
+moves. Stop on a picture stops that one, on the image server too; the call
+screen's Stop stops them all.
 
 ## Editing a picture
 
 The same tool edits. Hand it a picture and say what to change:
 
-- **One you generated:** tap **Edit** under it in web chat. The input fills
-  with `Edit images/….png: ` — finish the sentence ("put the fox in a yellow
-  raincoat") and send.
+- **One you generated:** tap **Edit** under it. The edit panel shows the
+  picture with a brush, a box and an eraser. Paint over (or box) the part to
+  change and say what changes there ("make the dress green"): only the
+  bright area is redrawn, and the dimmed part comes back exactly as it was.
+  Paint nothing and the words edit the whole picture. In a
+  persona chat you can paint up to four regions, each in its own colour with
+  its own words.
 - **One of your own:** attach it with the paperclip, then say what to change.
 
-Say what to keep as well as what to change — "keep everything else the same"
-works. The edit is saved as a new file; the original is never touched. Up to
-four pictures can go in one request, which is how "put the jacket from the
-second picture on the person in the first" works. The result keeps the first
-picture's shape unless you ask for a size.
+**Say only what changes.** There is no need to ask for the rest to stay as
+it is: the tool writes that part of the image model's prompt itself, naming what
+the change leaves alone, because a prompt that re-describes the picture it
+already has measured worst at changing anything. What the model
+sends decides how the picture changes:
+
+- **A new pose, the camera, the setting, the light, or someone taken out**
+  redraws everyone on the scene's setting, so the camera actually moves and
+  faces do not drift down a chain of edits.
+- **New clothes, an expression, someone added, or the words** edit the
+  picture.
+- **One small change to the picture itself** — an object, a colour, a
+  detail — is a `retouch`, with the painted area as its `mask` when there is
+  one. A mask applies only to a retouch: when a call asks for a scene
+  change and a mask together, mecha draws the scene change, ignores the
+  mask, and reports that it did.
+
+If an edit was meant to move things and the new picture's composition
+barely differs from the old one, the model is told plainly; a retouch of a
+colour or a detail is expected to keep the composition.
+
+**In a persona chat, mecha draws the panel's edit itself and the persona
+only answers.** A quick one-shot pass reads your words and what the picture
+was drawn as into a typed change; a painted area skips that reading and is
+drawn as you wrote it. A name the library does not hold, or a change that
+cannot be read, is said on the card and nothing is drawn, rather than a
+stranger. A change read as none draws the same scene again at a new seed. Then the persona replies in a line or two.
+
+The edit is saved as a new file; the original is never touched. The result
+keeps the picture's shape unless you ask for a size.
 
 Your photo is handed to the image server on this machine only, into a
 temporary folder it clears when it restarts. A large photo — anything over
@@ -153,9 +236,29 @@ mecha imagelib add-style watercolour --text "loose watercolour, soft washes, pap
 **Using them.** Name them in a chat, and say what each is wearing and doing:
 "Maya and John sharing a picnic by a lake, in the watercolour style — Maya in
 a straw hat pouring lemonade, John in a linen shirt, laughing." The model
-passes them to the tool by name; their portraits keep their faces. Up to four
-people fit in one picture. If the model forgets and describes a library
-character in words, the tool refuses before drawing and tells it how to ask.
+lists each in `scene.people` by name; the library supplies their portraits
+and descriptions, so their faces stay theirs. Up to five library characters
+fit one picture, and a scene holds at most ten people.
+
+- **Someone is drawn only when listed as a person.** A new picture that
+  lists nobody but names library characters in its other words draws them.
+  Otherwise a library name elsewhere in the words, for someone not in the
+  picture, is read as "the viewer" rather than drawn as a stranger, and the
+  result says so.
+- **An edit carries the faces of the people it changes.** Each library
+  character an edit places or changes comes in as a head crop of their
+  portrait beside their description, so a chain of edits does not drift into
+  somebody else.
+- **A name still waiting for your approval is refused**, never drawn as a
+  stranger by that name.
+- **People who aren't in the library** go in `scene.people` described in
+  words ("a waiter pouring coffee"), and are drawn as new faces each time.
+- **A style the library doesn't have is left out, and the picture still
+  draws.** The result names the styles the library has; a style written as
+  words ("Digital painting") finds the library's `digital-painting`. The
+  tool's description lists your styles so the model can name them; locked
+  styles and character names are never listed. A look with no library name
+  goes in words in the setting.
 
 **The model can propose characters.** Ask it to invent one — "create a
 recurring character called Sam, make his portrait, and add him to my
@@ -174,17 +277,28 @@ you change it under **Settings → Lock** (or `mecha imagelib set-autolock
 With no password it is a plain toggle; to require one, set it once with
 `mecha imagelib set-lock-password`. A character saved from a
 picture made with a locked character starts locked; untick the box to save
-it unlocked. Locking hides a character from then on; a portrait your browser
-already showed may stay in its cache until you clear the site's data.
+it unlocked. One saved from an incognito chat is always locked. Locking
+hides a character from then on; a portrait your browser already showed may
+stay in its cache until you clear the site's data.
 
-**People who aren't in the library.** Mention them in the scene — "a waiter
-pouring coffee" — and the model adds them as `extras`: drawn as new faces
-each time, and counted with your characters so they take part in the scene
-instead of fading into the background.
+## What a picture leaves behind
 
-Every generated picture also gets a small `.json` file beside it recording
-how it was made — the prompt, the seed, and which library entries (and which
-versions of them) it used.
+- **A `.json` file beside each picture** records how it was made: the seed,
+  the size, the model and sampling settings, and which library entries (and
+  which versions of them) it used. It holds no prompt and no scene words.
+- **A scene record per chat.** Each picture drawn in the assistant's web
+  chat, a persona chat or an incognito chat records where it is, who is in
+  it, and what they wear and do, so the next change starts from what the
+  picture shows. The records are kept outside the model's workspace;
+  an incognito chat's stays in its room. A picture brought into another chat
+  is recognised by its content and keeps its scene. Deleting an assistant
+  chat, or forgetting a persona chat's memories, removes the records it
+  wrote.
+- **Each picture's prompt, for you, for now.** Beside every kept chat's
+  transcript, `<chat>.prompts.log` holds one line per picture: what was
+  drawn, how, and the prompt the image model was given, so prompts can be
+  studied and improved. Nothing reads it but you, an incognito chat keeps
+  none, and forgetting a chat removes it.
 
 ## What it will refuse, and why
 
@@ -218,6 +332,7 @@ versions of them) it used.
   are deleted too; without it they stay in the server's temp folder until it
   restarts, and an [incognito chat](/docs/features/interfaces/incognito)
   will not generate images at all.
-- **Anything but a prompt, a size and a seed.** The workflow the server runs
-  is fixed in mecha's code. The model fills in values; it never writes the
+- **A workflow or a prompt from the model.** The workflow the server runs
+  is fixed in mecha's code, and the image model's prompt is compiled from the
+  scene by the tool. The model fills in typed values; it never writes the
   workflow, because an image server will run whatever workflow it is handed.
