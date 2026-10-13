@@ -340,10 +340,7 @@ The decisions that are this design's rather than the owner's:
 ### 9.1 Why now
 
 - **A second consumer.** The video tool (`video_generate`, MiniMax H3; built outside this repository for now, with its design moving in when it's ported) reads the same library. H3's full-reference mode binds several pictures to one person natively, "`<Subject 1>` … whose appearance comes from `<Picture 1>` and `<Picture 2>`". It has up to nine image slots, three voice slots and three video slots.
-- **What the video measurements showed** (2026-10-13; the owner reviewed the clips; recorded as V0 in `IMAGE-COMPILER-RESEARCH.md`):
-  - A whole portrait carried its outfit into every clip, even with the prompt saying the clothing wasn't taken from it.
-  - A face crop stopped the leak. That's the crop `face::anchor_crop` already makes for picture edits, tight at 1.12× the face, and it held identity as well as a looser head-and-shoulders crop.
-  - Clothing stated per clip then landed exactly. This is E9's leak and E10's crop again, on a second model.
+- **What the video measurements showed:** V0 in `IMAGE-COMPILER-RESEARCH.md` (2026-10-13). A whole portrait leaked its outfit into clips, a face crop stopped it, and clothing stated per clip landed.
 - **What text alone doesn't carry well.** A distinguishing mark (a forearm tattoo came out heavier than "fine-line") and build: E9 never got to test build, because its trench coat hid it.
 - **The owner's ask:** several typed images per character (face, full body, details), a location library, and named outfits, shared by pictures and video.
 
@@ -364,11 +361,13 @@ characters/<name>/entry.toml
   [[reference]]
   kind  = "full_body"                  # face | full_body | detail
   blob  = "sha256-….png"
-  label = "standing, fitted grey clothes, front"   # required for detail, e.g. "left-forearm tattoo"
+  label = "standing, front view"                     # required for detail, e.g. "left-forearm tattoo"
 ```
 
 - **`kind` is a closed enum in an on-disk store, so it's a wire format.** An unknown `kind` loads, is shown in the library, and is **never sent to a generator**. That's the fail-closed reading: a reference nobody can classify carries nothing into a picture.
-- **No `face` entry is needed today.** The face is the portrait's crop, cached by blob. A `face` kind is there for the owner who wants a better face than the portrait shows.
+- **No `face` entry is needed today.** The face is the portrait's crop, cached by blob.
+  - A `face` reference is for the owner who wants a better face than the portrait shows. At most one per character.
+  - When attached, it replaces the portrait as the source of the face crop, for both generators. The portrait stays the picture the library shows.
 - **Each reference is a blob,** content-addressed like the portrait, so the existing versioning (`history/v<N>.toml`) and lock apply unchanged.
 - **The portrait's two checks extend to every new blob name:** each reference's `blob`, and a location's images.
   - On load, the name check: no path separators, no leading dot, so a hand-edited entry can't point outside `blobs/`.
@@ -379,8 +378,8 @@ characters/<name>/entry.toml
   - the entry's one `origin` and `status` (§2) still describe everything in it;
   - a reference added to an approved entry is an owner write and a new version, as an owner `update` is (§6);
   - `reject`'s portrait-only clean-up and `MAX_PROPOSED_PORTRAIT_BYTES` stay correct as written. A proposal that tried to carry references would be refused, not trimmed.
-- **`label` is at most 100 characters.** Labels appended to a compiled prompt count against `MAX_COMPILED_PROMPT`, as the description does.
-- **Store limits:** at most 1 `full_body` and 4 `detail` per character. That's what the owner can attach, not what a call sends. §9.4 says how a call fits the generator's slots.
+- **`label` is at most 100 characters.** Only a `detail`'s label is ever sent; on a `face` or `full_body` it's for browsing. Sent labels count against `MAX_COMPILED_PROMPT`, as the description does.
+- **Store limits:** at most 1 `face`, 1 `full_body` and 4 `detail` per character. That's what the owner can attach, not what a call sends. §9.4 says how a call fits the generator's slots.
 
 **Two new kinds**, beside `Character` and `Style`, each its own directory (`locations/<name>/`, `outfits/<name>/`), since an entry's kind is derived from its directory (`Entry.kind`).
 - **§2's tree gains both.** Everything that walks the store, `blob_referenced` included, reads its directories from **`Kind::ALL` plus `removed/`**, rather than a hand-kept list.
@@ -393,6 +392,7 @@ characters/<name>/entry.toml
 | `Outfit` | `text` (≤ 300), optional `for` (a character, or none for anyone), optional image | **text only**: pasted into `wearing` | text only: pasted into `wearing` |
 
 - **Outfits stay text.** An image of clothes is the leak §9.1 measured, delivered on purpose. The image is for browsing.
+- **An outfit's `for` is a suggestion, not a lock.** A scene that dresses someone else in it resolves anyway, and the result says so.
 - **Who writes:** both new kinds follow §1. The owner creates approved entries; a model's proposal is a candidate, with no images, as above.
 - **Not stored yet:** a location's own clip or soundscape. Nothing would read them yet; they arrive with whatever does.
 
@@ -410,12 +410,17 @@ characters/<name>/entry.toml
 - **Labels have their own budget per person,** at most 300 characters of detail labels appended to one description (review of #680, pass 2).
   - Labels past it are dropped, in the character's own order, and the result says so.
   - A label never causes a refusal. A full cast of `MAX_CAST` adds at most 1,500 characters against `MAX_COMPILED_PROMPT`'s 9,000, so attaching details can't make every later picture fail with a message blaming a scene that didn't grow.
+- **Locations and outfits expand the same way,** from a short name the model wrote into owner text. Each is bounded by its own cap:
+  - an outfit is held to `wearing`'s `MAX_CAST_FIELD` (300), as typed text is;
+  - a location's 400 characters are added once per scene.
+
+  With labels, a full cast's worst case is about 3,400 characters of library text. If `MAX_COMPILED_PROMPT` is still reached, the message names the library text that filled it, never "shorten the scene".
 - **Fitting the slots** (review of #680). A call fills the generator's image budget in a fixed order, and says what it left out in the result:
   1. every person's face;
   2. each person's `full_body`, in cast order;
   3. details, in cast order, then in each character's own order.
   - **Video** has nine slots, less any pinned or other reference images. Two people fit with a body each and up to five details; three fit with a body each and three details.
-  - **Pictures** keep their existing budgets (`MAX_CAST`, `EDIT_REFERENCE_BUDGET`, `IMAGE-DESIGN.md` §15.5).
+  - **Pictures** keep their existing budgets (`MAX_CAST`, `EDIT_REFERENCE_BUDGET`, `IMAGE-DESIGN.md` §15.4).
   - A cast that can't fit its faces is refused in the scene's own terms, as today.
 - **Pictures with two images per person need new wording.** §3's grammar ("each of the N people from the images appears exactly once") assumes one image per person. If E9b passes, the compiled prompt binds them: "`<image1>` and `<image2>` show one person, Maya: her face and her build". It counts people, not images. E9b's bound arm must run with that wording.
 
@@ -462,7 +467,7 @@ E9b and V-B use the same reference set, so one set of images answers both genera
   - every new blob name getting the portrait's name check on load and hash check on read;
   - the image route serving only blobs a visible entry names;
   - unknown kinds never sent;
-  - a location stored in a scene record as words plus its name.
+  - a location stored in a scene record as words plus its name, the name field `#[serde(default)]` so older records still parse as `Words`.
 - **L2, the portrait stays canonical:** no migration. The face is its crop, and existing manifests stay valid.
 - **L3, each generator's references gated on its measurement** (§9.4), with the owner ruling on each result, and the slot-filling order of §9.4.
 - **L4, outfits are text:** an image is for browsing only.
