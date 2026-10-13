@@ -151,7 +151,7 @@ The rules, each a measurement:
   "John waving" as an extra is John drawn from words.
 - **A cast name the library does not hold is drawn as an extra** (owner,
   2026-09-30: a named character not in the library "blocks image generation
-  when it shouldn't"). `imagelib::demote_unknown` moves it, with its
+  when it shouldn't"). `picture::resolve` moves it, with its
   `wearing` and `doing`, into the extras before compiling, and the result
   says so. Only a name with no trace moves: a candidate, or an entry that did
   not load, stays in the cast and gets its own refusal, because drawing a
@@ -519,7 +519,7 @@ kind is derived from its directory (`Entry.kind`).
 
 | Reference | `image_generate` (Qwen-Image) | `video_generate` (H3) |
 |---|---|---|
-| face | the portrait at 512², as now (E10) | the face crop, as now; from an attached `face` reference when there is one, else from the portrait |
+| face | the whole portrait at 512² for a new picture (E10), its crop for an edit, as now | the face crop, as now; from an attached `face` reference when there is one, else from the portrait |
 | full_body | **sent**, bound to its portrait (E9b passed; owner, 2026-10-13) | **not sent**: V-B failed (an extra person in one seed); face crops only until a retest passes |
 | detail | not sent; its `label` is appended to the description | sent with its label ("`<Picture k>` shows her left-forearm tattoo"), if V-D passes |
 | location | its text in the scene | its images as an environment `<Subject>`, if V-L passes |
@@ -799,7 +799,7 @@ only says what each one gates:
 | Id | Gates |
 |---|---|
 | **E9b** | `full_body` for pictures (§9.4), and the two-images-one-person wording |
-| **V-B** | `full_body` for video |
+| **V-B's retest** | `full_body` for video (V-B itself failed, 2026-10-13) |
 | **V-D** | `detail` images for video |
 | **E13** | a location reference for pictures |
 | **V-L** | a location reference for video |
@@ -825,8 +825,9 @@ repository, never their names or images.
   - `add-reference` refused on a candidate;
   - the image route serving only blobs a visible entry names, with the entry
     kind parsed once into `Kind`;
-  - `create`'s and `validate`'s kind checks made exhaustive over `Kind`, not
-    wildcards, for the same reason; `Kind::ALL` and `KindArg`, which no
+  - `create`'s wildcard and `update`'s two `kind != Kind::Character` guards
+    made exhaustive matches over `Kind` (`validate_text` already is), for
+    the same reason; `Kind::ALL` and `KindArg`, which no
     match can guard, held to `Kind` by a test (§9.5);
   - unknown kinds, and known kinds on the wrong entry kind, never sent;
   - a location stored in a scene record as words plus its name, the name
