@@ -451,7 +451,7 @@ characters/<name>/entry.toml
     - **An edit sends faces only.** Its canvas plus five crops already fill `EDIT_REFERENCE_BUDGET` (6), and E9b's arms are new pictures. An edit gets bodies only with a measurement of its own.
   - A cast that can't fit its faces is refused in the scene's own terms, as today.
 - **A body reference carries its pose too** (E9b; review of #680, pass 19). One character's hip-shifted reference stance came through in both seeds of the bound arm.
-  - So a `full_body` reference is a neutral, square-on stance, arms relaxed: the store's guidance, and the CLI warns on nothing it can't check.
+  - So a `full_body` reference should be a neutral, square-on stance, arms relaxed. It's guidance the CLI and web page show when one is added, since no check can read a stance.
   - The scene's `doing` still states each person's pose, as `IMAGE-DESIGN.md` §2.8 requires. A pose the scene states is what the picture should follow, with the reference's stance only a fallback.
 - **Pictures with two images per person need new wording.** §3's grammar ("each of the N people from the images appears exactly once") assumes one image per person. If E9b passes, the compiled prompt binds them, naming what each image is. For pictures the first is the whole portrait (§9.3), so: "`<image1>` and `<image2>` show one person, Maya: `<image1>` is her portrait, `<image2>` her full figure". Naming how each person is shown is what E9 found prevents duplicates (review of #680, pass 17). It counts people, not images. E9b's bound arm must run with that wording, with a cast of two (four images).
 
