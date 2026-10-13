@@ -471,7 +471,9 @@ characters/<name>/entry.toml
     - Under §9, the in-folder manifest names only unlocked entries. A locked one is recorded as `{kind, locked: true, version}` with no name.
     - The full record, name and version, goes to a usage log in the library store, outside any chat's folder, where the owner's audit reads it.
     - That applies to every kind, styles and characters included, so it closes today's channel along with the new ones.
-    - **The manifest's own readers keep working** (review of #680, pass 14). The save dialog's `GET /api/library/source` decides whether a new entry starts locked from the manifest's cast names, so it reads a redacted row's `locked: true` as "made from a locked entry" and starts it locked, as §1 requires. §5's lineage reads the row's kind and version, which stay.
+    - **The manifest's readers must change with it** (review of #680, passes 14 and 15). The save dialog's `GET /api/library/source` builds its cast by `name` and drops a row without one, so as it stands a redacted row would make it suggest **unlocked**, failing open.
+      - The redaction ships with `source` reading any row's `locked: true` as "made from a locked entry", so the new entry starts locked, as §1 requires.
+      - §5's lineage reads the row's kind and version, which stay.
 
   Characters stay unlisted ("their names are the owner's"). A model can only write a location it knows the name of (L5).
 - **Where the lists sit:** the location and outfit names are appended after the styles sentence at the end of the description (`imagegen::described`), so a new location moves no earlier byte of the cached prefix.
@@ -484,6 +486,7 @@ characters/<name>/entry.toml
   - **Never the library text** (review of #680, pass 11). `scene::Scene` keeps names, not library text, for characters (`Who::Library`) and styles, and `scene::note` renders `Words` back into a persona's run notes every turn (`NOTE_PLACE_CHARS` 240). Recorded library text would hand a locked location's description back to the model, the very thing L5 says can't happen.
   - The compiler resolves the name to the owner's text at render time, as it does a description and a style. So an edit to the location reaches the next restage.
   - Outfits are the same: `wearing` records what the model wrote, and the outfit's text is resolved at compile time.
+  - **`scene::note` renders the words, never the `location` name** (review of #680, pass 15). So a name recorded while a location was unlocked isn't read back to the model after the owner locks it, and no future owner-side write of the field becomes a channel either.
   - A build that predates the field reads the model's words and loses only the link.
 - **Untrusted text naming a location.** The quarantined extraction (`IMAGE-DESIGN.md` §5.3) would learn the field. A location name from an untrusted-origin record resolves like any name: it selects owner-approved words, and adds none of its own.
   - It's the same rule as a non-library `who` being drawn from words (`IMAGE-DESIGN.md` §8).
