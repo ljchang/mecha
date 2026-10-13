@@ -29,6 +29,17 @@ pub fn file(m: &Machinery, stem: &str) -> Result<PathBuf> {
 pub fn write(m: &Machinery, id: &str, stem: &str, unit: &str) -> Result<()> {
     let path = file(m, stem)?;
     let text = if cfg!(target_os = "macos") {
+        // The unit's paths are rendered under the home and split on spaces
+        // into the agent's arguments, so a home with a space in it would
+        // come apart wrongly; refused by name instead (review of #679).
+        // systemd would mis-split it too.
+        if m.home.to_string_lossy().contains(char::is_whitespace) {
+            anyhow::bail!(
+                "{} has a space in it, which this install cannot write into a service's \
+                 command line — install it by hand",
+                m.home.display()
+            );
+        }
         let log = crate::launchd::log_path(&m.home, stem);
         let mut agent =
             crate::launchd::agent_from_unit(&crate::launchd::label(stem), unit, &m.home, log)?;
@@ -105,7 +116,7 @@ pub fn stop_by_hand(stems: &[&str]) -> String {
                 let l = crate::launchd::label(s);
                 format!(
                     "launchctl bootout gui/$(id -u)/{l}; launchctl bootout user/$(id -u)/{l}; \
-                     launchctl disable gui/$(id -u)/{l}"
+                     launchctl disable gui/$(id -u)/{l}; launchctl disable user/$(id -u)/{l}"
                 )
             })
             .collect::<Vec<_>>()
@@ -242,6 +253,19 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    /// A directive the reader has no answer for is refused, not dropped.
+    #[test]
+    fn an_unknown_directive_is_refused() {
+        let unit = "[Service]\nExecStart=/bin/run\nExecStartPre=/bin/prep\n";
+        let e = crate::launchd::agent_from_unit("u", unit, "/h".as_ref(), "/l".into())
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("ExecStartPre"), "{e}");
+        let unit = "[Unit]\nDescription=x\nAfter=y\n[Service]\nType=exec\nExecStart=/bin/run\n\
+                    Restart=on-failure\n[Install]\nWantedBy=default.target\n";
+        assert!(crate::launchd::agent_from_unit("k", unit, "/h".as_ref(), "/l".into()).is_ok());
     }
 
     /// A command a shell would have to unquote is refused, never split.
