@@ -1033,6 +1033,12 @@ pub struct McpWrite {
     /// Routes an operator rule names, which kept the `[outbox]` unwritten:
     /// for the caller to name with the rule.
     pub ruled: Vec<String>,
+    /// Routes an operator rule names that the owner's `[outbox]` lacks: left
+    /// out of `outbox_missing`, whose advice would otherwise have the owner
+    /// route a call their rule judges — every start refuses an `allow` or
+    /// `prompt` beside a route, and a `forbid` becomes a releasable draft
+    /// (review of #669, pass 7).
+    pub ruled_unrouted: Vec<String>,
     /// An existing entry that does not force `untrusted_input = true`: never
     /// edited, named by the caller (review of #669).
     pub untrusted_missing: bool,
@@ -1185,6 +1191,7 @@ pub fn write_mcp_entries(
                 routes.iter().filter(|t| ruled(t)).cloned().collect()
             },
             routes,
+            ruled_unrouted: Vec::new(),
             wrote_outbox: false,
             outbox_missing: Vec::new(),
             untrusted_missing,
@@ -1220,12 +1227,14 @@ pub fn write_mcp_entries(
             })
             .unwrap_or_default();
         for r in results.iter_mut() {
-            r.outbox_missing = r
+            let (judged, missing): (Vec<String>, Vec<String>) = r
                 .routes
                 .iter()
                 .filter(|t| !routed.contains(t))
                 .cloned()
-                .collect();
+                .partition(|t| ruled(t));
+            r.outbox_missing = missing;
+            r.ruled_unrouted = judged;
         }
     }
     if !changed {
@@ -1565,7 +1574,9 @@ fn own_state(facts: &Facts, f: Feature) -> State {
             Some(dir) => on(dir.display().to_string()),
             None => off(
                 "no [voice] voices_dir",
-                "set [voice] voices_dir to the directory the TTS container mounts as /voices",
+                "`mecha features enable voice` writes it for the speech server it installs, \
+                 where there is no [voice] table; otherwise, or for one you run, set [voice] voices_dir to the directory it reads voices from \
+                 (Chatterbox: the one it mounts as /voices)",
             ),
         },
         Feature::Incognito => match crate::config::provider_is_local(cfg, &cfg.default_provider) {
@@ -1658,6 +1669,24 @@ mod tests {
         assert!(done[0].outbox_missing.is_empty(), "{:?}", done[0]);
         assert_eq!(done[0].ruled, ["mail__mail_send"]);
         assert!(!text.contains("[outbox]"), "{text}");
+
+        // The owner's `[outbox]` exists: a ruled route is left out of the
+        // advice to add, and returned apart (review of #669, pass 7).
+        let p = root.join("owned-ruled.toml");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&p, "[outbox]\ntools = []\n").unwrap();
+        let done = write_mcp_entries(&p, &[(&mail, Path::new("/b/mecha-mail"))], &|t| {
+            t == "mail__mail_send"
+        })
+        .unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(done[0].ruled_unrouted, ["mail__mail_send"]);
+        assert!(done[0].ruled.is_empty());
+        assert_eq!(done[0].outbox_missing.len(), mail.outbox.len() - 1);
+        assert!(!done[0]
+            .outbox_missing
+            .iter()
+            .any(|t| t == "mail__mail_send"));
     }
 
     /// The routing is spelled off the entry that serves the feature, not the
@@ -1807,6 +1836,9 @@ mod tests {
         assert_eq!(tools(&parsed), mail.outbox);
         // Again: nothing.
         assert!(!again.wrote_entry && !again.wrote_outbox && again.outbox_missing.is_empty());
+        // The present case: the entry it wrote carries the capability, so a
+        // re-run never warns that it is missing (review of #669, pass 7).
+        assert!(!again.untrusted_missing);
         // An owner's partial [outbox]: the entry, not the table; the gap said.
         assert!(partial.wrote_entry && !partial.wrote_outbox);
         assert_eq!(partial.outbox_missing, lacking);

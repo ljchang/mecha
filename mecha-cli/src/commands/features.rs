@@ -626,6 +626,14 @@ pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
                 done.outbox_missing.join(", ")
             );
         }
+        if !done.ruled_unrouted.is_empty() {
+            println!(
+                "  not advised for the [outbox]: {} — your [[rule]] judges it, and a staged call \
+                 is never judged by rules (an `allow` or `prompt` beside it stops every start; a \
+                 `forbid` would become a draft you can release)",
+                done.ruled_unrouted.join(", ")
+            );
+        }
     }
     Ok(())
 }
