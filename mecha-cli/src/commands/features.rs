@@ -542,8 +542,8 @@ pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
         for tool in &done.ruled {
             let why = match rules.iter().find(|r| &r.tool == tool).map(|r| &r.decision) {
                 Some(mecha_core::policy::RuleDecision::Forbid) => {
-                    "forbids it, and staging would turn that into a draft you can release — the \
-                     sends stay refused, as your rule says"
+                    "forbids it, and staging would turn that into a draft you can release — it \
+                     stays refused, as your rule says"
                 }
                 _ => {
                     "judges it, and every start refuses an `allow` or `prompt` on a call that \
@@ -563,12 +563,21 @@ pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
     // left to a silent absence (review of #669, pass 5).
     let held = done.iter().any(|d| !d.ruled.is_empty());
     for ((f, wiring, command), done) in items.iter().zip(done) {
-        if held && done.ruled.is_empty() && !done.routes.is_empty() {
+        // The ruled feature's own other sends included: a rule is per tool,
+        // the `[outbox]` it held per command (review of #669, pass 6).
+        let unstaged: Vec<&str> = done
+            .routes
+            .iter()
+            .filter(|t| !done.ruled.contains(t))
+            .map(String::as_str)
+            .collect();
+        if held && !unstaged.is_empty() {
             println!(
-                "  {}'s calls that send or write ({}) are not staged either — one [outbox] \
-                 covers every server, and the rule above kept it unwritten",
+                "  {}'s calls that send or write and no rule names ({}) are not staged \
+                 either — one [outbox] covers every server, and the rule above kept it \
+                 unwritten",
                 wiring.name,
-                done.routes.join(", ")
+                unstaged.join(", ")
             );
         }
         if let Some(other) = &done.runs_other {

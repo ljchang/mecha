@@ -1103,11 +1103,18 @@ pub fn write_mcp_entries(
         let named =
             |t: &toml_edit::Table| t.get("name").and_then(|n| n.as_str()) == Some(wiring.name);
         // An entry running the program first; one only carrying the name
-        // after, which is left as it is and said (below).
+        // after, which is left as it is and said (below). Enabled before
+        // disabled in each, as `mcp_entry` reads them: a stale disabled
+        // duplicate must not name the routing, which would then match no
+        // registered tool while the live entry's sends ran unstaged (review
+        // of #669, pass 6).
+        let live = |t: &toml_edit::Table| t.get("disabled").and_then(|d| d.as_bool()) != Some(true);
         let servers = doc.get("mcp").and_then(|m| m.as_array_of_tables());
         let existing = servers.and_then(|s| {
             s.iter()
-                .find(|t| runs(t))
+                .find(|t| runs(t) && live(t))
+                .or_else(|| s.iter().find(|t| runs(t)))
+                .or_else(|| s.iter().find(|t| named(t) && live(t)))
                 .or_else(|| s.iter().find(|t| named(t)))
                 .cloned()
         });
@@ -1657,8 +1664,9 @@ mod tests {
     /// docs' entry: an owner's `gmail` entry running `mecha-mail` is routed
     /// as `gmail__…`, an unprefixed one by the bare names, and an entry named
     /// `mail` that runs a wrapper is the owner's mail — no second `mail` is
-    /// appended beside it (review of #669, pass 4). Each of these wrote
-    /// `mail__…` names that route nothing, or a duplicate entry, before.
+    /// appended beside it (review of #669, pass 4) — and a disabled duplicate
+    /// never names the routing over a live entry (pass 6). Each of these
+    /// wrote `mail__…` names that route nothing, or a duplicate entry, before.
     #[test]
     fn the_routing_is_named_off_the_entry_that_serves_it() {
         let root = std::env::temp_dir().join(format!("mecha-mcp-r-{}", uuid::Uuid::new_v4()));
@@ -1684,6 +1692,11 @@ mod tests {
             "wrapped.toml",
             "[[mcp]]\nname = \"mail\"\ncommand = \"/usr/local/bin/mail-wrap\"\n",
         );
+        let (stale, stale_v) = write(
+            "stale.toml",
+            "[[mcp]]\nname = \"mail\"\ncommand = \"/b/mecha-mail\"\ndisabled = true\n\n\
+             [[mcp]]\nname = \"gmail\"\ncommand = \"/b/mecha-mail\"\n",
+        );
         let _ = std::fs::remove_dir_all(&root);
 
         assert!(!renamed.wrote_entry && renamed.wrote_outbox);
@@ -1706,6 +1719,13 @@ mod tests {
                 "calendar_update_event",
                 "calendar_delete_event"
             ]
+        );
+
+        // A disabled duplicate first: the live `gmail` names the routing.
+        assert!(!stale.wrote_entry && stale.wrote_outbox);
+        assert_eq!(
+            stale_v["outbox"]["tools"][0].as_str(),
+            Some("gmail__mail_send")
         );
 
         assert!(!wrapped.wrote_entry);
