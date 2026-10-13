@@ -100,6 +100,7 @@ pub const SIDECARS: &[Sidecar] = &[
         evidence: &[
             Evidence::UserUnit("llama-embed.socket"),
             Evidence::UserUnit("llama-embed.service"),
+            Evidence::UserUnit("ai.mecha-factory.llama-embed.plist"),
         ],
         installer: "7c-1",
         models_in_hub: true,
@@ -112,6 +113,7 @@ pub const SIDECARS: &[Sidecar] = &[
         evidence: &[
             Evidence::UserUnit("llama-ocr.socket"),
             Evidence::UserUnit("llama-ocr.service"),
+            Evidence::UserUnit("ai.mecha-factory.llama-ocr.plist"),
         ],
         installer: "7c-1",
         models_in_hub: true,

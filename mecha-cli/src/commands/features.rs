@@ -73,6 +73,21 @@ pub enum Cmd {
         #[arg(long)]
         verify: bool,
     },
+    /// Internal: hold a port and start the server behind it on its first
+    /// request, stopping it when idle — the program of the on-demand
+    /// embeddings and OCR servers' launchd agents on macOS
+    /// (`mecha_core::on_demand`). Run by launchd, not by hand.
+    #[command(hide = true)]
+    OnDemand {
+        #[arg(long)]
+        listen: std::net::SocketAddr,
+        #[arg(long)]
+        backend: u16,
+        #[arg(long, default_value_t = 600)]
+        idle_secs: u64,
+        #[arg(long)]
+        launcher: std::path::PathBuf,
+    },
 }
 
 pub async fn execute(args: Args) -> Result<()> {
@@ -89,6 +104,22 @@ pub async fn execute(args: Args) -> Result<()> {
         }) => return enable(&ids, no_install, turbo, false).await,
         Some(Cmd::Disable { ids }) => return set(&ids, false),
         Some(Cmd::Plan { id, json, verify }) => return plan(&id, json, verify),
+        Some(Cmd::OnDemand {
+            listen,
+            backend,
+            idle_secs,
+            launcher,
+        }) => {
+            return mecha_core::on_demand::run(mecha_core::on_demand::Spec {
+                listen,
+                backend,
+                idle: std::time::Duration::from_secs(idle_secs),
+                // `mecha-wait-healthy`'s budget for these servers' start.
+                start_timeout: std::time::Duration::from_secs(180),
+                launcher,
+            })
+            .await;
+        }
         None => {}
     }
     let home = mecha_core::work::mecha_home()?;

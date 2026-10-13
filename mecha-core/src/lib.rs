@@ -112,6 +112,7 @@ pub mod mailbox;
 pub mod mcp;
 pub mod mdform;
 pub mod message;
+pub mod on_demand;
 pub mod onboarding;
 pub mod outbox;
 pub mod outbox_source;
