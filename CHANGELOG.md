@@ -19,9 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   agent mecha did not install is never written over. On every system, the
   router now runs mecha's own pinned llama.cpp, installed under `~/.mecha`
   beside any `llama-server` already on the PATH (Homebrew's, say), which is
-  left alone; only a machine no pinned build fits runs its own. The embeddings and OCR
-  servers, the image and voice servers and `mecha setup engine --adopt` are
-  still Linux-only.
+  left alone; only a machine no pinned build fits runs its own.
+- **The embeddings and OCR servers install on a Mac**, on demand as on
+  Linux: `mecha features enable graph` (or `documents`, `personas`) installs
+  a launchd agent that holds the port and starts the server at the first
+  request, stopping it after ten idle minutes — mecha's own small proxy,
+  since llama-server cannot take a socket launchd holds. The image and voice
+  servers and `mecha setup engine --adopt` are still Linux-only.
 
 ## [0.1.24] - 2026-10-13
 

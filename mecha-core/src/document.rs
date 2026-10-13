@@ -1119,15 +1119,24 @@ impl OcrClient {
                 if e.is_connect() {
                     anyhow!(
                         "the OCR server at {} is not reachable ({e}) — is its socket listening? \
-                         `systemctl --user status llama-ocr.socket` (install: scripts/llama/install.sh)",
-                        self.base
+                         {} (install: `mecha features enable documents`)",
+                        self.base,
+                        if cfg!(target_os = "macos") {
+                            "`launchctl print gui/$(id -u)/ai.mecha-factory.llama-ocr`"
+                        } else {
+                            "`systemctl --user status llama-ocr.socket`"
+                        }
                     )
                 } else if e.is_timeout() {
                     anyhow!(
-                        "the OCR server at {} did not become ready within {:?} — \
-                         `journalctl --user -u llama-ocr.service`",
+                        "the OCR server at {} did not become ready within {:?} — {}",
                         self.base,
-                        self.ready
+                        self.ready,
+                        if cfg!(target_os = "macos") {
+                            "~/Library/Logs/mecha/llama-ocr.log says why"
+                        } else {
+                            "`journalctl --user -u llama-ocr.service`"
+                        }
                     )
                 } else {
                     anyhow!("the OCR server at {} did not answer: {e}", self.base)

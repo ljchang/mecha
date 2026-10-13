@@ -1,8 +1,10 @@
 # Features — design
 
 > **Status (2026-10-13):** §12 — the chat router on macOS as a launchd
-> agent — is built on `mac/launchd-router`; its launchd round trip and a
-> recommended-row install on a real Mac are owed before merge.
+> agent — is built on `mac/launchd-router` and measured on the owner's Mac
+> (M5 Max, 128 GB: 169 tok/s, MTP acceptance 85%). §12.1, the embeddings and
+> OCR servers on demand under launchd, is built on the same branch; its
+> real-Mac install is owed.
 >
 > **Status (2026-10-12):** step 7 is built through 7e-2: the installed
 > ComfyUI gets the hand install's idle reset. **Step 8 is written:**
@@ -1897,11 +1899,8 @@ the unit and its drop-ins and restarts it; `start_agent` writes
   run here" for every door that offers it: `setup chat`'s own refusal, the
   guided setup's chat question, and the `local-server` step's remedy.
 
-**Not in this step.** The embeddings and OCR servers start on their first
-request through a systemd socket and `systemd-socket-proxyd`; launchd can
-hold a socket, but llama-server cannot take one handed to it, so a Mac
-needs a proxy of its own or a resident server, and that is its own design.
-`mecha setup engine --adopt/--upgrade` reads and restarts systemd units
+**Not in this step** (§12.1 takes the first of these): the embeddings and
+OCR servers. `mecha setup engine --adopt/--upgrade` reads and restarts systemd units
 (`engine_gate.rs`) and has not been taught agents. Triggers, `mecha serve`,
 the Slack connector, and the image and voice servers stay manual on a Mac.
 
@@ -1913,3 +1912,39 @@ removes it, record and all. Then `mecha setup chat` with the recommended row
 on a clean `~/.mecha`. A 32 GB Mac is the one to watch: Metal's default
 working-set limit (`sysctl iogpu.wired_limit_mb`, 0 for the default) is a
 fraction of the memory, and the 32 GB row's files alone are 22.0 GiB.
+
+### 12.1 The embeddings and OCR servers on demand
+
+On Linux each is a socket that holds the public port from boot, a
+`systemd-socket-proxyd` that forwards it and exits after ten idle minutes,
+and a `StopWhenUnneeded=` server that stops with it — so nothing is resident
+until asked for, and a request after an idle stop waits through a cold start
+rather than being refused. launchd can hold a socket too (`Sockets` in a
+plist), but only for a program that takes the descriptor it is handed, and
+llama-server binds its own port.
+
+**So mecha is the proxy.** `on_demand.rs` is all three units in one process:
+it binds the public port at once, starts the same launcher on the backend
+port at the first connection (one start however many connections arrive
+during it), forwards once `/health` says ok — `mecha-wait-healthy`'s rule —
+and stops the server with SIGINT after the same ten minutes with no open
+connection. A server that died is started again by the next request. The
+agent's program is the installed `mecha` binary by absolute path, `mecha
+features on-demand` (hidden), as `mecha trigger daemon --unit` names its own
+binary. Its plist carries `LLAMA_SERVER` and `HF_HUB`, the two drop-ins'
+contents on Linux.
+
+**A resident server was the other way**, and is not taken: the two models
+are ~8 GiB together on the GB10's figures, and on a laptop memory the owner
+is not using should be free.
+
+**Measured on the owner's Mac (2026-10-13), for the next steps:** the four
+Python locks (layout, speech to text, the voice worker, the speech adapter)
+install with `--require-hashes` on macOS arm64 unchanged; Parakeet decodes at
+RTF 0.018 on eight threads (peak RSS 2.0 GiB, against 685 MB on the GB10 —
+the Mac row needs its own figure); qwentts.cpp at the pinned commit builds
+with `-DGGML_METAL=ON` (17 s) and speaks at RTF 0.36 on Metal, its first
+start paying ~14 s to compile shaders. Voice is a service-manager change and
+a Metal build away; image generation waits on whether ComfyUI's int8 weights
+run on MPS.
+

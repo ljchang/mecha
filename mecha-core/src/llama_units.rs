@@ -28,9 +28,12 @@
 //! this one. The unit names and ports are parameters, so a test can install
 //! a pair beside the live one without touching it.
 //!
-//! **Linux only.** The units are systemd user units (§10.5): on macOS the
-//! engine and the models install, and starting the servers stays manual
-//! until launchd is designed.
+//! **On macOS, one launchd agent per server** (§12): launchd can hold a
+//! socket, but llama-server cannot take one handed to it, so the agent runs
+//! `mecha features on-demand` (`on_demand.rs`) — which holds the public port,
+//! starts the same launcher on the backend port at the first request, and
+//! stops it after the same ten idle minutes. The launcher, the model and the
+//! check are shared; the plist carries what the drop-ins carry.
 
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
@@ -228,15 +231,18 @@ pub async fn install(
     hub: &Path,
     say: Say<'_>,
 ) -> Result<()> {
-    if !cfg!(target_os = "linux") {
+    if !crate::router_unit::installs_here() {
         bail!(
-            "the on-demand servers are systemd user units, which this system does not have — \
-             on macOS start the server by hand until launchd is designed (FEATURES-DESIGN §10.5)"
+            "the on-demand servers install as systemd user units or launchd agents, and this \
+             system has neither — start the server by hand"
         );
     }
     let id = which.sidecar();
     let home = &m.mecha_home;
-    let proxyd = socket_proxyd()?;
+    let macos = cfg!(target_os = "macos");
+    // The proxy is systemd's; on a Mac mecha is its own (module doc). Its
+    // path is unused there, and rendered into nothing that runs.
+    let proxyd = if macos { "" } else { socket_proxyd()? };
     let units = crate::engine_gate::unit_dir(m)?.to_path_buf();
     let bin = bin_dir(home);
     Manifest::begin(home, id)?;
@@ -281,6 +287,45 @@ pub async fn install(
     let (socket, proxy, service, launcher, launcher_name) = which.files();
     let r = |t: &str| render(t, which, naming, &bin, proxyd);
     write_owned(home, id, &bin.join(launcher_name), &r(launcher), 0o755)?;
+    if macos {
+        start_agent(m, which, naming, &bin.join(launcher_name), &engine, hub)?;
+    } else {
+        start_units(
+            m,
+            which,
+            naming,
+            &units,
+            &bin,
+            &engine,
+            hub,
+            &r,
+            (socket, proxy, service),
+        )?;
+    }
+    say(&format!(
+        "starting it once through :{} — a cold start, up to 200 s",
+        naming.public
+    ));
+    check(which, naming.public).await?;
+    Manifest::finish(home, id)
+}
+
+/// The systemd half: the socket, proxy and server units and their drop-ins,
+/// the socket enabled.
+#[allow(clippy::too_many_arguments)]
+fn start_units(
+    m: &Machinery,
+    which: Which,
+    naming: &Naming,
+    units: &Path,
+    bin: &Path,
+    engine: &Engine,
+    hub: &Path,
+    r: &dyn Fn(&str) -> String,
+    (socket, proxy, service): (&str, &str, &str),
+) -> Result<()> {
+    let id = which.sidecar();
+    let home = &m.mecha_home;
     write_owned(
         home,
         id,
@@ -325,14 +370,58 @@ pub async fn install(
     engine.write(home, id, &dropins)?;
 
     crate::engine_gate::systemctl("daemon-reload", &[])?;
-    crate::engine_gate::systemctl("enable", &["--now", &format!("{stem}.socket")])?;
-    say(&format!(
-        "starting it once through :{} — a cold start, up to 200 s",
-        naming.public
-    ));
-    check(which, naming.public).await?;
-    Manifest::finish(home, id)
+    crate::engine_gate::systemctl("enable", &["--now", &format!("{stem}.socket")])
 }
+
+/// The launchd half: one agent running mecha's own on-demand proxy over the
+/// launcher, with the environment the drop-ins carry on Linux.
+fn start_agent(
+    m: &Machinery,
+    which: Which,
+    naming: &Naming,
+    launcher: &Path,
+    engine: &Engine,
+    hub: &Path,
+) -> Result<()> {
+    let id = which.sidecar();
+    let home = &m.mecha_home;
+    // The proxy is this binary: the one `mecha features enable` runs as,
+    // named by absolute path, as `mecha trigger daemon --unit` names itself.
+    let mecha = std::env::current_exe().context("finding the mecha binary for the agent")?;
+    let plist = crate::engine_gate::unit_dir(m)?.join(crate::launchd::plist_name(&naming.stem));
+    let log = crate::launchd::log_path(&m.home, &naming.stem);
+    if let Some(dir) = log.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    let agent = crate::launchd::Agent {
+        label: crate::launchd::label(&naming.stem),
+        program: vec![
+            mecha.display().to_string(),
+            "features".into(),
+            "on-demand".into(),
+            "--listen".into(),
+            format!("127.0.0.1:{}", naming.public),
+            "--backend".into(),
+            naming.backend.to_string(),
+            "--idle-secs".into(),
+            IDLE_SECS.to_string(),
+            "--launcher".into(),
+            launcher.display().to_string(),
+        ],
+        env: vec![
+            ("PATH".into(), "/usr/bin:/bin:/usr/sbin:/sbin".into()),
+            ("LLAMA_SERVER".into(), engine.path().display().to_string()),
+            ("HF_HUB".into(), hub.display().to_string()),
+        ],
+        log,
+    };
+    write_owned(home, id, &plist, &crate::launchd::plist_text(&agent), 0o644)?;
+    crate::launchd::load(&plist, &agent.label)?;
+    Ok(())
+}
+
+/// Ten minutes, as the proxy unit's `MECHA_LLAMA_IDLE`.
+const IDLE_SECS: u64 = 600;
 
 /// The `llama-server` a unit runs, resolved before anything is installed:
 /// mecha's own engine when it is installed, else a provided one on the PATH
@@ -490,11 +579,16 @@ pub fn remove(m: &Machinery, which: Which, naming: &Naming) -> Result<()> {
     let home = &m.mecha_home;
     let id = which.sidecar();
     let stem = &naming.stem;
-    let _ = crate::engine_gate::systemctl("disable", &["--now", &format!("{stem}.socket")]);
-    let _ = crate::engine_gate::systemctl(
-        "stop",
-        &[&format!("{stem}-proxy.service"), &format!("{stem}.service")],
-    );
+    if cfg!(target_os = "macos") {
+        // A job launchd still holds keeps its plist (as the router's does).
+        crate::launchd::unload(&crate::launchd::label(stem))?;
+    } else {
+        let _ = crate::engine_gate::systemctl("disable", &["--now", &format!("{stem}.socket")]);
+        let _ = crate::engine_gate::systemctl(
+            "stop",
+            &[&format!("{stem}-proxy.service"), &format!("{stem}.service")],
+        );
+    }
     // A record is forgotten only after its file is gone: a removal that
     // fails keeps the record, so the next install does not refuse mecha's
     // own file as someone else's.
@@ -514,6 +608,7 @@ pub fn remove(m: &Machinery, which: Which, naming: &Naming) -> Result<()> {
         units.join(format!("{stem}.socket")),
         units.join(format!("{stem}-proxy.service")),
         units.join(format!("{stem}.service")),
+        units.join(crate::launchd::plist_name(stem)),
     ] {
         gone(&p, &[id])?;
     }
@@ -539,7 +634,9 @@ pub fn remove(m: &Machinery, which: Which, naming: &Naming) -> Result<()> {
     } else {
         gone(&wait, &[id])?;
     }
-    crate::engine_gate::systemctl("daemon-reload", &[])?;
+    if !cfg!(target_os = "macos") {
+        crate::engine_gate::systemctl("daemon-reload", &[])?;
+    }
     // Removed whole: the entry goes too, so the plan reads the machine again.
     Manifest::forget_if_empty(home, id)
 }
