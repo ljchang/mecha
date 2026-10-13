@@ -33,12 +33,16 @@ pub fn write(m: &Machinery, id: &str, stem: &str, unit: &str) -> Result<()> {
         // into the agent's arguments, so a home with a space in it would
         // come apart wrongly; refused by name instead (review of #679).
         // systemd would mis-split it too.
-        if m.home.to_string_lossy().contains(char::is_whitespace) {
-            anyhow::bail!(
-                "{} has a space in it, which this install cannot write into a service's \
-                 command line — install it by hand",
-                m.home.display()
-            );
+        // Both: the units are rendered under the mecha home, and `%h` is the
+        // home (review of #679: MECHA_HOME can be set apart from it).
+        for root in [&m.mecha_home, &m.home] {
+            if root.to_string_lossy().contains(char::is_whitespace) {
+                anyhow::bail!(
+                    "{} has a space in it, which this install cannot write into a service's \
+                     command line — install it by hand",
+                    root.display()
+                );
+            }
         }
         let log = crate::launchd::log_path(&m.home, stem);
         let mut agent =
@@ -266,6 +270,14 @@ mod tests {
         let unit = "[Unit]\nDescription=x\nAfter=y\n[Service]\nType=exec\nExecStart=/bin/run\n\
                     Restart=on-failure\n[Install]\nWantedBy=default.target\n";
         assert!(crate::launchd::agent_from_unit("k", unit, "/h".as_ref(), "/l".into()).is_ok());
+        // The two read by value: a meaning an agent does not have is refused.
+        for bad in ["Type=oneshot", "Restart=always", "Restart=no"] {
+            let unit = format!("[Service]\nExecStart=/bin/run\n{bad}\n");
+            assert!(
+                crate::launchd::agent_from_unit("v", &unit, "/h".as_ref(), "/l".into()).is_err(),
+                "{bad}"
+            );
+        }
     }
 
     /// A command a shell would have to unquote is refused, never split.

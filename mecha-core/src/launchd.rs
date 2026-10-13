@@ -98,6 +98,18 @@ pub fn agent_from_unit(label: &str, unit: &str, home: &Path, log: PathBuf) -> Re
             throttle = secs.trim().parse().with_context(|| {
                 format!("{label}: `RestartSec={secs}` is not a whole number of seconds")
             })?;
+        } else if let Some(v) = line.strip_prefix("Type=") {
+            // The agent is a long-running program, as `exec` and `simple` are;
+            // `oneshot` would become an agent relaunched forever (review of
+            // #679).
+            if !matches!(v.trim(), "exec" | "simple") {
+                bail!("{label}'s unit says `{line}`, which a launchd agent does not mean");
+            }
+        } else if let Some(v) = line.strip_prefix("Restart=") {
+            // Every agent is `KeepAlive` on a failed exit: `on-failure` only.
+            if v.trim() != "on-failure" {
+                bail!("{label}'s unit says `{line}`; an agent restarts on failure only");
+            }
         } else if let Some((key, _)) = line.split_once('=') {
             // A closed set: every other directive is one an agent has an
             // answer for already, or it is refused. A new `ExecStartPre=` or
@@ -167,8 +179,6 @@ const AGENT_HAS_NO_USE_FOR: &[&str] = &[
     "Wants",
     "Requires",
     "WantedBy",
-    "Type",
-    "Restart",
     "OOMScoreAdjust",
 ];
 
