@@ -65,10 +65,15 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         .iter()
         .filter(|s| s.personas && !s.disabled)
         .collect();
-    let offered_to_personas = |name: &str| {
-        offered
-            .iter()
-            .any(|s| s.prefix_tools != Some(false) && name.starts_with(&format!("{}__", s.name)))
+    // Per tool, honestly: the server is offered, and this tool is one a
+    // persona's registry would admit — read-only, and not able to aim
+    // (review of #668, pass 3).
+    let offered_to_personas = |t: &dyn mecha_core::tool::Tool| {
+        t.read_only()
+            && t.capabilities().egress < mecha_core::tool::Egress::Chosen
+            && offered.iter().any(|s| {
+                s.prefix_tools != Some(false) && t.name().starts_with(&format!("{}__", s.name))
+            })
     };
     let offered_unattributable = offered.iter().any(|s| s.prefix_tools == Some(false));
 
@@ -97,7 +102,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     },
                     // A persona chat may be given this tool, on the owner's
                     // word about its server — see `[[mcp]] personas`.
-                    "offered_to_personas": if offered_to_personas(t.name()) {
+                    "offered_to_personas": if offered_to_personas(t.as_ref()) {
                         serde_json::Value::Bool(true)
                     } else if offered_unattributable {
                         serde_json::Value::Null
@@ -171,7 +176,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             ""
         };
         // Marked as the header promises (review of #668, pass 2).
-        let personas = if offered_to_personas(tool.name()) {
+        let personas = if offered_to_personas(tool.as_ref()) {
             " · offered to persona chats"
         } else {
             ""

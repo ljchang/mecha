@@ -748,6 +748,10 @@ mod tests {
                     form.capabilities().egress <= Egress::Blind,
                     "`{name}`'s persona form can aim"
                 );
+                // A persona's run is read-only and `registry_as` refuses a
+                // form that is not: a listed tool that forgot to say so would
+                // be refused for every persona (review of #668, pass 3).
+                assert!(form.read_only(), "`{name}`'s persona form is not read-only");
                 assert_eq!(form.name(), name);
             }
             // The live path: a chat's registry asks `for_persona_as`, so the
@@ -769,6 +773,10 @@ mod tests {
                     assert!(
                         form.capabilities().egress <= Egress::Blind,
                         "`{name}`'s live persona form can aim"
+                    );
+                    assert!(
+                        form.read_only(),
+                        "`{name}`'s live persona form is not read-only"
                     );
                     assert_eq!(form.name(), name);
                 }
