@@ -133,7 +133,7 @@ The rules, each a measurement:
 - **References are sent at 512²** (E2: four at 1024² cost 190 s, four at 512²
   79 s; E10: a whole portrait at 512² holds identity). `Request` gains a
   backend-neutral `reference_size`; plain edits keep 1024.
-- **At most five cast members** (`MAX_CAST`; `IMAGE-DESIGN.md` §5.2: five whole portraits drew all five, 3/3, up from E3's measured four).
+- **At most five cast members** (`MAX_CAST`; the owner's **provisional** ceiling C5, `IMAGE-DESIGN.md` §6 and §5.2: five whole portraits drew all five, 3/3, up from E3's measured four; to be revisited after a closer look).
 - **Anyone else is an `extra`, and is counted** (E11). A waiter described in
   the scene beside a cast of three, with "Exactly three people" compiled in,
   was kept in the picture but pushed into the background; listed as
@@ -338,7 +338,11 @@ The decisions that are this design's rather than the owner's:
 
 ## 9. Library v2: typed references, locations and wardrobe (ruled 2026-10-13)
 
-**Status:** ruled 2026-10-13 (L1–L7, §9.7); the owner approved the direction the same day (the video design's R6). Nothing in this section is built. Step 1, E9b and V-B, is next. It reopens two of §1's settled rulings with new evidence, and says which, rather than re-arguing them silently.
+**Status:** ruled 2026-10-13 (L1–L7, §9.7); the owner approved the direction the same day (the video design's R6). Nothing in this section is built. **Step 1 is measured and ruled (owner, 2026-10-13):**
+  - E9b passed, so pictures send `full_body`, in a neutral, square-on stance;
+  - V-B failed, with an extra person in one seed of two, so video stays on face crops.
+
+  Step 2, the store and CLI, is next. It reopens two of §1's settled rulings with new evidence, and says which, rather than re-arguing them silently.
 
 ### 9.1 Why now
 
@@ -408,7 +412,7 @@ characters/<name>/entry.toml
 | Reference | `image_generate` (Qwen-Image) | `video_generate` (H3) |
 |---|---|---|
 | face | the portrait at 512², as now (E10) | the face crop, as now; from an attached `face` reference when there is one, else from the portrait |
-| full_body | **not sent** until E9b passes | sent beside the face, bound as one `<Subject>`, if V-B passes |
+| full_body | **sent**, bound to its portrait (E9b passed; owner, 2026-10-13) | **not sent**: V-B failed (an extra person in one seed); face crops only until a retest passes |
 | detail | not sent; its `label` is appended to the description | sent with its label ("`<Picture k>` shows her left-forearm tattoo"), if V-D passes |
 | location | its text in the scene | its images as an environment `<Subject>`, if V-L passes |
 | outfit | its text as `wearing` | its text as `wearing` |
@@ -446,6 +450,9 @@ characters/<name>/entry.toml
     - **The four is E9b's to establish, not settled** (review of #680, pass 7). E12 measured four *different* faces with no duplicate, while two people with a body each is E9's B2 arm, which drew one person twice. So that configuration is exactly what E9b must pass.
     - **An edit sends faces only.** Its canvas plus five crops already fill `EDIT_REFERENCE_BUDGET` (6), and E9b's arms are new pictures. An edit gets bodies only with a measurement of its own.
   - A cast that can't fit its faces is refused in the scene's own terms, as today.
+- **A body reference carries its pose too** (E9b; review of #680, pass 19). One character's hip-shifted reference stance came through in both seeds of the bound arm.
+  - So a `full_body` reference is a neutral, square-on stance, arms relaxed: the store's guidance, and the CLI warns on nothing it can't check.
+  - The scene's `doing` still states each person's pose, as `IMAGE-DESIGN.md` §2.8 requires. A pose the scene states is what the picture should follow, with the reference's stance only a fallback.
 - **Pictures with two images per person need new wording.** §3's grammar ("each of the N people from the images appears exactly once") assumes one image per person. If E9b passes, the compiled prompt binds them, naming what each image is. For pictures the first is the whole portrait (§9.3), so: "`<image1>` and `<image2>` show one person, Maya: `<image1>` is her portrait, `<image2>` her full figure". Naming how each person is shown is what E9 found prevents duplicates (review of #680, pass 17). It counts people, not images. E9b's bound arm must run with that wording, with a cast of two (four images).
 
 ### 9.5 Surfaces
@@ -470,7 +477,9 @@ characters/<name>/entry.toml
     - A locked location or outfit resolves for generation, as every locked entry does.
     - `image_library` lists it, and the manifest beside a picture names it, as both do for characters and styles today. Pictures already in chats are untouched by a lock (§1).
     - What the lock hides is the owner's browsing without the unlock: the Library tab, the image route (below), and the save dialog's `source`, which returns a yes or no and never names (#385).
-- **Where the lists sit:** the location and outfit names are appended after the styles sentence at the end of the description (`imagegen::described`). What keeps the cached prefix stable is that the description is built once, in `ImageGenerate::new`, so a new location reaches a running chat only on a restart, when the cache is cold anyway. A mid-session rebuild would re-pay the prefix wherever the lists sit (review of #680, pass 16).
+- **Where the lists sit:** the location and outfit names are appended after the styles sentence at the end of the description (`imagegen::described`). What keeps the cached prefix stable is that the description is built when the tool is built, not per turn: in `ImageGenerate::new`, and again in `persona_form` whenever a persona's agent is rebuilt (on a persona edit, or a new binding).
+  - So a new location reaches a running chat on a restart or a persona rebuild. Each of those already re-pays the prefix.
+  - A rebuild per turn would re-pay it wherever the lists sit (review of #680, passes 16 and 19).
 - **Tools:**
   - `image_library` lists the new kinds as it lists characters and styles: approved entries, locked ones included (§4: "the lock is for browsing");
   - a scene names a location in `setting.location`, and a person's `wearing` may name an outfit.
