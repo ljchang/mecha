@@ -7,7 +7,7 @@
 // chat-relative `.mp4` path. And a deferred row is still out only while its
 // first line says `being made: `, keyed on the mark, never the words.
 import { readFileSync } from 'node:fs';
-import { clipOf, stillOut, makingText } from '../src/lib/picture.js';
+import { clipOf, stillOut, makingText, slotText, repeatedClips } from '../src/lib/picture.js';
 import { applyEvent } from '../src/lib/persona.js';
 import { historyLines } from '../src/lib/call-lines.js';
 
@@ -84,6 +84,27 @@ is(makingText({ name: 'video_generate' }), 'working on it…', 'anything else is
     row('video: videos/v2.mp4', { id: 'v3', name: 'video_generate' }),
   ]);
   is(twice.length, 1, 'one clip is noted once');
+}
+
+{
+  // The call screen's one slot, whose one Stop stops everything out.
+  const picture = { kind: 'tool', name: 'image_generate', is_error: false, preview: 'being made: images/a.png' };
+  const clip = row(making, { name: 'video_generate' });
+  is(slotText([picture]), 'drawing a picture…', 'the slot keeps a picture\'s words');
+  is(slotText([clip]), 'working on it…', 'and calls a clip alone no picture');
+  is(slotText([clip, picture]), 'drawing a picture, and working on something else…', 'a picture beside a clip names both');
+  is(slotText([row('video: videos/v1.mp4'), picture]), 'drawing a picture…', 'a finished clip is not out');
+}
+
+{
+  const again = repeatedClips([
+    row('video: videos/v1.mp4', { id: 'v1' }),
+    row(making, { id: 'v2' }),
+    row('video: videos/v1.mp4', { id: 'v3' }),
+    row('video: videos/v4.mp4', { id: 'v4' }),
+  ]);
+  is([...again].join(','), '2', 'a clip a row above already plays is not played again');
+  is(repeatedClips([row('video: videos/v1.mp4', { deferred: undefined }), row('video: videos/v1.mp4')]).size, 0, 'an unmarked row is no clip, so it repeats nothing');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

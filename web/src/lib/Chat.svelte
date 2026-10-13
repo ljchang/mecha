@@ -8,7 +8,7 @@
   import { replyContext } from './speech.js';
   import EditModal from './EditModal.svelte';
   import { composeEditMessage, composeRegenerateMessage, maskName } from './image-edit.js';
-  import { pictureOf, clipOf, stillOut, waitingPictures, repeatedPictures, downloadPicture, pictureVersions, shownVersion, makingText } from './picture.js';
+  import { pictureOf, clipOf, stillOut, waitingPictures, repeatedPictures, downloadPicture, pictureVersions, shownVersion, makingText, repeatedClips } from './picture.js';
   import ClipPlayer from './ClipPlayer.svelte';
   import { carriesFiles, droppedFiles, withAttachments } from './attach.js';
   import { rowSummary, ROUTING_KEYS } from './outbox-view.js';
@@ -1389,6 +1389,7 @@
   let attachments = $state([]); // workspace-relative paths, announced on send
 
   const repeats = $derived(repeatedPictures(entries));
+  const clipRepeats = $derived(repeatedClips(entries));
   // A Regenerate's picture shows on the card it was drawn again from,
   // ‹ k/n ›, and Edit, Regenerate, Download and Save act on the version
   // showing (IMAGE-DESIGN.md §5.4). The version stepped to, per first
@@ -2063,7 +2064,7 @@
              never a reply that is running (review of #583). -->
         {#if stillOut(entry)}<button class="qmore" onclick={() => stopPicture(entry.id)}>{entry.name === 'image_generate' ? 'Stop the picture' : 'Stop'}</button>{/if}
         <!-- A clip a deferring tool made (§8), played where its call is. -->
-        {#if clip}<ClipPlayer src={workspaceFile(clip)} />{/if}
+        {#if clip && !clipRepeats.has(i)}<ClipPlayer src={workspaceFile(clip)} />{:else if clip}<span class="tool-state">the same clip as above</span>{/if}
         {#if entry.open}
           <div class="toolpanel">
             {#if entry.draft}
