@@ -800,13 +800,20 @@ fn wav_seconds(wav: &[u8]) -> Option<f64> {
 /// twin).
 pub fn someone_elses(m: &Machinery, naming: &Naming) -> Result<bool> {
     let manifest = Manifest::read(&m.mecha_home)?;
+    // Paths read first, so an unreadable unit directory is an error, never
+    // "someone else's server" (review of #679).
+    let engine_file = crate::user_service::file(m, &naming.engine_unit)?;
+    let adapter_file = crate::user_service::file(m, &naming.adapter_unit)?;
     let wrote = |unit: &str| {
-        crate::user_service::file(m, unit).is_ok_and(|path| {
-            manifest
-                .entries
-                .iter()
-                .any(|e| e.sidecar == ID && e.wrote.contains(&path))
-        })
+        let path = if unit == naming.engine_unit {
+            &engine_file
+        } else {
+            &adapter_file
+        };
+        manifest
+            .entries
+            .iter()
+            .any(|e| e.sidecar == ID && e.wrote.contains(path))
     };
     let stranger = |unit: &str, port: u16| !wrote(unit) && crate::router_unit::port_answers(port);
     Ok(stranger(&naming.engine_unit, naming.engine_port)

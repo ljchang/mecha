@@ -1026,6 +1026,13 @@ mod tests {
                 "macos",
                 "only a Mac fits without NVIDIA"
             );
+            // Offered, and its clip priced with it (review of #679 — this
+            // branch asserted nothing else).
+            price(&mut p, true, || crate::engine::Nvidia::None);
+            let clip: u64 = crate::speech_unit::VOICE.iter().map(|f| f.bytes).sum();
+            assert_eq!(p.sidecars[0].bytes, Some(clip));
+            assert_eq!(p.download_bytes, 105 + clip);
+            assert!(p.sidecars[0].not_offered.is_none());
             return;
         }
         price(&mut p, true, || crate::engine::Nvidia::None);
