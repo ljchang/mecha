@@ -504,28 +504,50 @@ fn mcp_entries(features: &[Feature]) -> Result<()> {
     }
     let refs: Vec<(&feature::McpWiring, &std::path::Path)> =
         items.iter().map(|(_, w, c)| (w, c.as_path())).collect();
-    // An operator `allow`/`prompt` rule on a tool this would route: every
-    // start refuses that pair (`setup::live_rules`), so no `[outbox]` is
-    // written and the conflict is named — the owner's rules, like the owner's
-    // tables, are never overridden (review of #669).
+    // An operator rule on a tool this would route, where no `[outbox]` exists
+    // yet: no `[outbox]` is written and the conflict is named — the owner's
+    // rules, like the owner's tables, are never overridden (review of #669).
+    // Every decision counts: an `allow`/`prompt` beside the route refuses
+    // every start (`setup::live_rules`), and a `forbid` is never reached
+    // while it is on — the call becomes a draft a person can release, so the
+    // rule meant as "never sends" would quietly stop meaning it. Where the
+    // owner's `[outbox]` exists nothing is written either way, so there is
+    // no conflict to name.
     let cfg = Config::load_global()?;
-    let conflicts: Vec<&mecha_core::policy::RuleConfig> = cfg
-        .rules
-        .iter()
-        .filter(|r| {
-            !r.from_project
-                && !matches!(r.decision, mecha_core::policy::RuleDecision::Forbid)
-                && refs
+    let outbox_table = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| t.parse::<toml::Table>().ok())
+        .is_some_and(|t| t.contains_key("outbox"));
+    let conflicts: Vec<(&mecha_core::policy::RuleConfig, Feature)> = if outbox_table {
+        Vec::new()
+    } else {
+        cfg.rules
+            .iter()
+            .filter(|r| !r.from_project)
+            .filter_map(|r| {
+                items
                     .iter()
-                    .any(|(w, _)| w.outbox.contains(&r.tool.as_str()))
-        })
-        .collect();
-    for r in &conflicts {
+                    .find(|(_, w, _)| w.outbox.contains(&r.tool.as_str()))
+                    .map(|(f, _, _)| (r, *f))
+            })
+            .collect()
+    };
+    for (r, f) in &conflicts {
+        let why = match r.decision {
+            mecha_core::policy::RuleDecision::Forbid => {
+                "forbids it, and staging would turn that into a draft you can release — the \
+                 sends stay refused, as your rule says"
+            }
+            _ => {
+                "judges it, and every start refuses an `allow` or `prompt` on a call that is \
+                 staged"
+            }
+        };
         println!(
-            "  no [outbox] was written: your [[rule]] on `{}` would conflict with staging it — \
-             make the rule `forbid`, or remove it, then `mecha features enable` again stages \
-             the sends",
-            r.tool
+            "  no [outbox] was written: your [[rule]] on `{}` {why}. To have the sends staged \
+             for your review instead, remove the rule, then `mecha features enable {}` again",
+            r.tool,
+            f.id()
         );
     }
     let done = feature::write_mcp_entries(&path, &refs, conflicts.is_empty())?;

@@ -1030,10 +1030,12 @@ pub fn write_mcp_entry(
 /// place through `toml_edit`, comments kept, written beside and renamed, and
 /// not written at all when nothing changed.
 ///
-/// `stage` false writes no `[outbox]` — the caller found an operator
-/// `allow`/`prompt` rule on a tool it would route, which `setup::live_rules`
-/// refuses at every start (review of #669) — and reports the routing as
-/// missing instead.
+/// `stage` false writes no `[outbox]` — the caller found an operator rule on
+/// a tool it would route: an `allow`/`prompt` there `setup::live_rules`
+/// refuses at every start, and a `forbid` the route would turn into a
+/// releasable draft (review of #669). Nothing is reported missing then: there
+/// is no table to add to, and the caller has named the rule, which is what
+/// stands in the way.
 pub fn write_mcp_entries(
     path: &Path,
     items: &[(&McpWiring, &Path)],
@@ -1108,12 +1110,9 @@ pub fn write_mcp_entries(
         .iter()
         .flat_map(|(w, _)| w.outbox.iter().copied())
         .collect();
-    if !outbox_existed && !stage {
-        for ((w, _), r) in items.iter().zip(results.iter_mut()) {
-            r.outbox_missing = w.outbox.iter().map(|t| t.to_string()).collect();
-        }
-    } else if !outbox_existed {
-        if !wanted.is_empty() {
+    if !outbox_existed {
+        // `stage` false: nothing written and nothing missing (see above).
+        if stage && !wanted.is_empty() {
             let mut tools = toml_edit::Array::new();
             for t in &wanted {
                 tools.push(*t);
@@ -1561,7 +1560,8 @@ mod tests {
         assert_eq!(seen[0], seen[1], "order does not decide what is staged");
 
         // Not staged (an operator rule would conflict): no [outbox] written,
-        // the routing reported as missing, the entry still written.
+        // nothing reported missing of a table that does not exist (review of
+        // #669, pass 4), the entry still written.
         let root = std::env::temp_dir().join(format!("mecha-mcp-n-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let p = root.join("ruled.toml");
@@ -1569,7 +1569,7 @@ mod tests {
         let text = std::fs::read_to_string(&p).unwrap();
         let _ = std::fs::remove_dir_all(&root);
         assert!(done[0].wrote_entry && !done[0].wrote_outbox);
-        assert_eq!(done[0].outbox_missing.len(), mail.outbox.len());
+        assert!(done[0].outbox_missing.is_empty(), "{:?}", done[0]);
         assert!(!text.contains("[outbox]"), "{text}");
     }
 
