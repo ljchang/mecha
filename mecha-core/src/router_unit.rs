@@ -564,11 +564,12 @@ fn start_agent(
         env: vec![
             // An agent's PATH is launchd's, not the shell's; the launcher
             // needs only `sh`, `mkdir` and `dirname`, and names the engine.
-            ("PATH".into(), "/usr/bin:/bin:/usr/sbin:/sbin".into()),
+            ("PATH".into(), crate::launchd::SYSTEM_PATH.into()),
             ("MECHA_ROUTER_PORT".into(), naming.port.to_string()),
             ("MECHA_ROUTER_PRESETS".into(), presets.display().to_string()),
             ("LLAMA_SERVER".into(), engine.path().display().to_string()),
         ],
+        workdir: None,
         log,
     };
     write_owned(home, ID, &plist, &crate::launchd::plist_text(&agent), 0o644)?;

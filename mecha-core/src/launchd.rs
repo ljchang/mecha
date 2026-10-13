@@ -58,8 +58,51 @@ pub struct Agent {
     pub label: String,
     pub program: Vec<String>,
     pub env: Vec<(String, String)>,
+    /// Where it runs, as a unit's `WorkingDirectory=`.
+    pub workdir: Option<PathBuf>,
     pub log: PathBuf,
 }
+
+/// The agent a rendered systemd unit describes: its `ExecStart=`,
+/// `Environment=` and `WorkingDirectory=` lines, with `%h` as `home` — so a
+/// Mac runs what the Linux unit runs, from the one file, and the two cannot
+/// drift (§12.2). `PATH` is the system directories unless the unit names one,
+/// since an agent gets launchd's environment, not a shell's. A unit whose
+/// command needs a shell's quoting is refused, never split wrongly.
+pub fn agent_from_unit(label: &str, unit: &str, home: &Path, log: PathBuf) -> Result<Agent> {
+    let expand = |s: &str| s.replace("%h", &home.display().to_string());
+    let (mut program, mut env, mut workdir) = (None, Vec::new(), None);
+    for line in unit.lines().map(str::trim) {
+        if let Some(cmd) = line.strip_prefix("ExecStart=") {
+            if cmd.contains(['"', '\\', '\'', '$']) {
+                bail!("{label}'s command needs a shell's quoting, which an agent does not have: {cmd}");
+            }
+            program = Some(cmd.split_whitespace().map(expand).collect::<Vec<_>>());
+        } else if let Some(kv) = line.strip_prefix("Environment=") {
+            let kv = kv.trim_matches('"');
+            let (k, v) = kv
+                .split_once('=')
+                .with_context(|| format!("{label}: `Environment={kv}` names no value"))?;
+            env.push((k.to_string(), expand(v)));
+        } else if let Some(d) = line.strip_prefix("WorkingDirectory=") {
+            workdir = Some(PathBuf::from(expand(d)));
+        }
+    }
+    let program = program.with_context(|| format!("{label}'s unit has no ExecStart="))?;
+    if !env.iter().any(|(k, _)| k == "PATH") {
+        env.insert(0, ("PATH".into(), SYSTEM_PATH.into()));
+    }
+    Ok(Agent {
+        label: label.to_string(),
+        program,
+        env,
+        workdir,
+        log,
+    })
+}
+
+/// An agent's `PATH` when its unit names none: the system's own directories.
+pub const SYSTEM_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
 
 /// The plist for an agent: started at load, restarted when it exits with a
 /// failure (systemd's `Restart=on-failure`), ten seconds apart
@@ -91,6 +134,13 @@ pub fn plist_text(a: &Agent) -> String {
         ));
     }
     out.push_str("  </dict>\n");
+    if let Some(dir) = &a.workdir {
+        key(&mut out, "WorkingDirectory");
+        out.push_str(&format!(
+            "  <string>{}</string>\n",
+            xml(&dir.display().to_string())
+        ));
+    }
     key(&mut out, "RunAtLoad");
     out.push_str("  <true/>\n");
     key(&mut out, "KeepAlive");
@@ -236,6 +286,7 @@ mod tests {
                 ("MECHA_ROUTER_PORT".into(), "8080".into()),
                 ("LLAMA_SERVER".into(), "/opt/R&D/llama-server".into()),
             ],
+            workdir: None,
             log: "/Users/a b/Library/Logs/mecha/llama-local.log".into(),
         });
         for want in [
@@ -265,6 +316,7 @@ mod tests {
                 label: label("mecha-test"),
                 program: vec!["/bin/echo".into(), "<&>".into()],
                 env: vec![("A".into(), "\"quoted\"".into())],
+                workdir: Some(dir.clone()),
                 log: dir.join("t.log"),
             }),
         )
