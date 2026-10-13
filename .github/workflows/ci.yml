@@ -317,9 +317,10 @@ jobs:
 
   # macOS's Seatbelt confinement of the PDF parser, measured on a real Mac:
   # the profile denies a read beside the scratch, a write outside it and the
-  # network, and poppler still renders under it. The arm above runs the same
-  # file, but without poppler its render test skips, so this one installs it
-  # and makes every skip a failure, as `sandbox backends` does for bwrap.
+  # network, and poppler still renders under it. `test (macos-latest, pinned)`
+  # runs the same file, but without poppler its render test skips, so this
+  # one installs it and makes every skip a failure, as `sandbox backends`
+  # does for bwrap.
   seatbelt:
     name: seatbelt (macOS)
     runs-on: macos-latest

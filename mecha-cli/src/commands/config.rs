@@ -217,7 +217,7 @@ mark_untrusted_output = true
 # ocr = true
 # ocr_url = "http://127.0.0.1:8085"    # llama-ocr.socket; starts on first use
 # ocr_model = "paddleocr-vl-1.6"
-# confine = "bwrap"                     # Linux: bwrap | landlock | none;
+# confine = "bwrap"                     # Linux: bwrap | landlock | none
 #                                       # a Mac: seatbelt | none
 # max_file_mb = 100
 # max_pages = 2000

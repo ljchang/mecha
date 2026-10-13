@@ -967,6 +967,27 @@ mod tests {
     }
 
     #[test]
+    fn a_server_is_never_confined_by_seatbelt() {
+        // A sandbox built in code never meets `Config::validate`'s refusal:
+        // the construction site refuses it too (review of #682).
+        let cfg = McpServerConfig {
+            name: "nosy".into(),
+            command: "/usr/bin/env".into(),
+            sandbox: true,
+            ..Default::default()
+        };
+        let seatbelt = Sandbox::new(SandboxConfig {
+            kind: crate::sandbox::Backend::Seatbelt,
+            ..SandboxConfig::default()
+        });
+        let err = McpClient::build_command(&cfg, &seatbelt, Path::new("/tmp"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("document extraction only"), "{err}");
+        assert!(err.contains("nosy"), "{err}");
+    }
+
+    #[test]
     fn asking_for_confinement_with_no_backend_is_an_error_not_a_warning() {
         let cfg = McpServerConfig {
             name: "nosy".into(),
