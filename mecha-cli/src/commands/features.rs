@@ -880,11 +880,19 @@ fn turbo_step(f: TurboFacts, unfit: impl FnOnce() -> Option<String>) -> TurboSte
 /// 2026-10-13). A table the owner wrote is never edited.
 async fn documents_table() -> Result<()> {
     use mecha_core::sidecar::SidecarState;
-    let cfg = Config::load_global()?;
-    if cfg.documents.is_some() {
+    // The file's own answer, as `image_table`'s: `write_documents_table`
+    // leaves a table the file has, and the layered config (an override, the
+    // environment) is not what this writes into (review of #683).
+    let path = Config::global_path().context("no mecha home to find config.toml in")?;
+    // Asked of the file before the machine is: a table already there means
+    // no plan and no confinement probe.
+    let has_table = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| toml::from_str::<toml::Table>(&t).ok())
+        .is_some_and(|d| d.contains_key("documents"));
+    if has_table {
         return Ok(());
     }
-    let path = Config::global_path().context("no mecha home to find config.toml in")?;
     let m = sidecar::Machinery::real()?;
     let machine = recommend::Machine::read()?;
     let hub = mecha_core::fetch::hub_dir()?;

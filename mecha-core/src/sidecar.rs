@@ -717,6 +717,19 @@ pub fn plan(
                 }
             }
         };
+        // The graph's server records only its tree, so "the tree is there"
+        // is not "the pinned build is": a build of an older commit, or a tree
+        // whose binary is gone, reads unfinished — offered, and rebuilt by
+        // `enable` — or a bump of `graph_mcp::REV` would never reach a
+        // machine that built the last one (review of #683).
+        let state = match state {
+            SidecarState::Installed
+                if s.id == crate::graph_mcp::ID && !crate::graph_mcp::installed(&m.mecha_home) =>
+            {
+                SidecarState::Incomplete
+            }
+            other => other,
+        };
         sidecars.push(PlannedSidecar {
             id: s.id,
             label: s.label,
@@ -1388,11 +1401,41 @@ mod tests {
         std::fs::write(root.join("bin/mecha-graph-mcp"), b"#!/bin/sh\n").unwrap();
         assert!(matches!(state(&m), SidecarState::Provided { .. }));
         std::fs::remove_file(root.join("bin/mecha-graph-mcp")).unwrap();
-        let tree = crate::graph_mcp::root(&m.mecha_home);
+        // A finished record over a tree with no pinned build in it is not
+        // installed: it is offered again, so `enable` rebuilds it.
+        use crate::graph_mcp::{binary, root as tree_of, PROGRAM, REPO, REV};
+        let tree = tree_of(&m.mecha_home);
         std::fs::create_dir_all(tree.join("bin")).unwrap();
         Manifest::begin(&m.mecha_home, crate::graph_mcp::ID).unwrap();
         Manifest::record(&m.mecha_home, crate::graph_mcp::ID, &tree).unwrap();
         Manifest::finish(&m.mecha_home, crate::graph_mcp::ID).unwrap();
+        assert_eq!(state(&m), SidecarState::Incomplete, "no binary");
+        std::fs::write(binary(&m.mecha_home), b"#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                binary(&m.mecha_home),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
+        let record = |rev: &str| {
+            std::fs::write(
+                tree.join(".crates2.json"),
+                format!(
+                    r#"{{"installs":{{"{PROGRAM} 0.1.5 (git+{REPO}?rev={rev}#{rev})":{{}}}}}}"#
+                ),
+            )
+            .unwrap()
+        };
+        record("0000000000000000000000000000000000000000");
+        assert_eq!(
+            state(&m),
+            SidecarState::Incomplete,
+            "an older commit's build is not the pin"
+        );
+        record(REV);
         assert_eq!(state(&m), SidecarState::Installed);
         let _ = std::fs::remove_dir_all(&root);
     }
