@@ -701,9 +701,10 @@ the tools it may use, and a persona chat still refuses:
 
 Like `trust_result_claims`, `personas` is off by default and honoured only
 from your global config. A project's `mecha.toml` or an experiment environment's
-setting is ignored, with a warning. A persona's background call to such a server
-names the persona in `_meta["mecha-factory.ai/persona"]`: its folder name, its
-library character and its voice-library voice. It never sends the persona's prompt,
+setting is ignored, with a warning. `mecha tools` marks each of its tools "offered
+to persona chats", and `mecha doctor` names the server. A persona's background call
+to such a server names the persona in `_meta["mecha-factory.ai/persona"]`: its
+folder name, its library character and its voice-library voice. It never sends the persona's prompt,
 display name or anything the persona said.
 
 ### `[[mcp]].capabilities`
