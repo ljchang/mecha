@@ -244,9 +244,10 @@ http.server.HTTPServer(("127.0.0.1", {backend}), H).serve_forever()
         std::fs::write(
             &script,
             format!(
-                "#!/bin/sh\necho started >> '{}'\nexec python3 '{}'\n",
+                "#!/bin/sh\necho started >> '{}'\nexec python3 '{}' 2>> '{}'\n",
                 dir.join("starts").display(),
-                server.display()
+                server.display(),
+                dir.join("server.err").display()
             ),
         )
         .unwrap();
@@ -283,9 +284,18 @@ http.server.HTTPServer(("127.0.0.1", {backend}), H).serve_forever()
         }
         let dir = std::env::temp_dir().join(format!("mecha-ondemand-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let backend = free_port();
+        // The public port first, held while the backend's is chosen: a port
+        // chosen and let go, then a second bind, can be handed the same
+        // number — the stand-in then cannot bind its own (found on macOS CI,
+        // #679, and reproduced here).
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let public = listener.local_addr().unwrap();
+        let backend = loop {
+            let p = free_port();
+            if p != public.port() {
+                break p;
+            }
+        };
         let spec = Spec {
             listen: public,
             backend,
@@ -305,7 +315,16 @@ http.server.HTTPServer(("127.0.0.1", {backend}), H).serve_forever()
             client.get(&url).send()
         );
         for r in [a, b, c] {
-            assert_eq!(r.unwrap().text().await.unwrap(), "ok");
+            // The stand-in's own error output, when it never answered: a
+            // failure here is otherwise a bare connection reset (macOS CI on
+            // #679).
+            let r = r.unwrap_or_else(|e| {
+                panic!(
+                    "{e:#}\nthe stand-in server said:\n{}",
+                    std::fs::read_to_string(dir.join("server.err")).unwrap_or_default()
+                )
+            });
+            assert_eq!(r.text().await.unwrap(), "ok");
         }
         assert_eq!(starts(&dir), 1, "three first requests, one start");
 
