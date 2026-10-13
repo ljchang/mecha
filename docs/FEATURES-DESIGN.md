@@ -1,5 +1,9 @@
 # Features — design
 
+> **Status (2026-10-13):** §12 — the chat router on macOS as a launchd
+> agent — is built on `mac/launchd-router`; its launchd round trip and a
+> recommended-row install on a real Mac are owed before merge.
+>
 > **Status (2026-10-12):** step 7 is built through 7e-2: the installed
 > ComfyUI gets the hand install's idle reset. **Step 8 is written:**
 > `ARCHITECTURE.md` §Features → *Adding a feature* holds the checklist, and
@@ -1595,9 +1599,9 @@ from the row.
 
 ### 10.5 Out of scope, still
 
-macOS and Windows service managers (§8: the units are Linux user units; on
-macOS the engine and models install, and starting them stays manual until
-launchd is designed); system packages (`apt`, CUDA drivers, Docker) — setup
+Windows service managers, and on macOS every server but the chat router
+(§12: the router is a launchd agent there; the embeddings, OCR, image and
+voice servers still start by hand); system packages (`apt`, CUDA drivers, Docker) — setup
 names them and stops; installing anything from the web app; and installing
 inside a trial. An environment may switch a feature on (§5.1), but a trial
 home never runs an installer: a switch that is on over an absent sidecar is
@@ -1833,3 +1837,67 @@ Out of scope here, still: the web app's toggles and *Set up* button (§8),
 which this is the terminal half of; and the voice and image installers (7d–7f)
 — until they exist, those questions switch the feature on and name what is
 still to install.
+
+## 12. macOS: the chat router as a launchd agent
+
+**2026-10-13.** The owner, testing the installer on a Mac: a Mac that cannot
+install a local chat model cannot install mecha at all, since the model is
+the point. And on sizing: *"mac arms also use unified memory, so i'm okay
+following the same linux recs as the spark."* Ruled: a Mac reads its tier
+off `sysctl hw.memsize` as one pool (`Machine::Unified`, as the GB10 does),
+and takes the same chat rows. There is no Mac-only row.
+
+**What a Mac lacked was the service manager, and nothing else.** Before the
+start, `router_unit::install` is portable: the engine (`engine.rs` pins
+`macos-arm64` and `macos-x64` builds, Metal on Apple silicon, and the health
+check accepts an `MTL` device), the model fetch, the presets, the `sh`
+launcher, and the holds and switch around the restart. Only the last step
+was systemd. So the split is there and nowhere earlier: `start_unit` writes
+the unit and its drop-ins and restarts it; `start_agent` writes
+`~/Library/LaunchAgents/ai.mecha-factory.<stem>.plist` and loads it.
+
+- **The plist carries what the drop-ins carry**: `MECHA_ROUTER_PORT`,
+  `MECHA_ROUTER_PRESETS`, `LLAMA_SERVER` (the engine resolved as on Linux,
+  so mecha's `current/llama-server` follows an upgrade as the drop-in
+  does), and a `PATH` of the system directories, since an agent gets
+  launchd's environment, not the shell's. `RunAtLoad`, and `KeepAlive` on
+  an unsuccessful exit with a ten-second throttle (the unit's
+  `Restart=on-failure`, `RestartSec=10`).
+- **Loaded by `bootout` then `bootstrap`**, waiting out the `bootout`:
+  launchd reads a plist only when it is bootstrapped, so a rewritten one
+  (another model, another engine) needs the old one unloaded, and a
+  `bootstrap` racing an exiting job fails with an I/O error.
+- **`gui/<uid>` when there is a login session, else `user/<uid>`.** Over SSH
+  with nobody at the screen there is no `gui` domain; the agent runs now
+  and loads from the directory at the next graphical login. An agent starts
+  at login, not at boot, which is the Mac's version of the linger note.
+- **No `mecha-wait-healthy`.** `bootstrap` returns at once, and the install's
+  own `check` already waits for `/health` and asks the router to load the
+  model, so the systemd `ExecStartPost` has nothing to add on a Mac.
+- **The log is a file**, `~/Library/Logs/mecha/<stem>.log`, made by the
+  install (launchd does not make it, and an agent whose log cannot open
+  never starts). An error names it where Linux names `journalctl`.
+- **Found as installed by its plist**: `Machinery::unit_dirs` is the agents
+  directories on a Mac, and the router's evidence names both file names, so
+  a hand-written agent of the same name is the owner's and nothing is
+  written over it.
+- **One predicate**, `router_unit::installs_here`, answers "can `setup chat`
+  run here" for every door that offers it: `setup chat`'s own refusal, the
+  guided setup's chat question, and the `local-server` step's remedy.
+
+**Not in this step.** The embeddings and OCR servers start on their first
+request through a systemd socket and `systemd-socket-proxyd`; launchd can
+hold a socket, but llama-server cannot take one handed to it, so a Mac
+needs a proxy of its own or a resident server, and that is its own design.
+`mecha setup engine --adopt/--upgrade` reads and restarts systemd units
+(`engine_gate.rs`) and has not been taught agents. Triggers, `mecha serve`,
+the Slack connector, and the image and voice servers stay manual on a Mac.
+
+**How to know it works**, on a Mac: the ignored real-machine test
+(`router_unit::a_router_installs_and_serves_beside_the_live_one`, with
+`MECHA_TEST_ROUTER_GGUF` naming a small model) installs an agent on a free
+port under a test name, loads the model, reads the router's list, and
+removes it, record and all. Then `mecha setup chat` with the recommended row
+on a clean `~/.mecha`. A 32 GB Mac is the one to watch: Metal's default
+working-set limit (`sysctl iogpu.wired_limit_mb`, 0 for the default) is a
+fraction of the memory, and the 32 GB row's files alone are 22.0 GiB.
