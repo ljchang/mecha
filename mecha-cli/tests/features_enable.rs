@@ -221,16 +221,18 @@ fn enable_does_not_stage_a_send_an_operator_rule_judges() {
         let home = Home::new(&format!("ruled-{decision}"));
         let bin = home.0.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        let p = bin.join("mecha-mail");
-        std::fs::write(&p, "#!/bin/sh\nexit 0\n").unwrap();
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for program in ["mecha-mail", "mecha-docs"] {
+            let p = bin.join(program);
+            std::fs::write(&p, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         std::fs::write(
             home.0.join("home/config.toml"),
             format!("[[rule]]\ntool = \"mail__mail_send\"\ndecision = \"{decision}\"\n"),
         )
         .unwrap();
         let out = Command::new(env!("CARGO_BIN_EXE_mecha"))
-            .args(["features", "enable", "mail", "--no-install"])
+            .args(["features", "enable", "mail", "docs", "--no-install"])
             .env("MECHA_HOME", home.0.join("home"))
             .env("HOME", home.0.join("home"))
             .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
@@ -259,5 +261,52 @@ fn enable_does_not_stage_a_send_an_operator_rule_judges() {
             "{decision}: {said}"
         );
         assert!(!said.contains("left as it is"), "{decision}: {said}");
+        // The rule is on mail's send, and docs' writes go unstaged with it:
+        // that is said too (review of #669, pass 5).
+        assert!(
+            said.contains("docs's calls") && said.contains("not staged either"),
+            "{decision}: {said}"
+        );
     }
+}
+
+/// An entry called `mail` that runs some other program is the owner's: no
+/// second `mail` is added beside it, and `enable` says why rather than
+/// writing nothing and saying nothing while `mecha features` still reads
+/// mail as off (review of #669, pass 5).
+#[test]
+fn an_entry_of_the_name_running_something_else_is_named() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = Home::new("wrapped");
+    let bin = home.0.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let p = bin.join("mecha-mail");
+    std::fs::write(&p, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(
+        home.0.join("home/config.toml"),
+        "[[mcp]]\nname = \"mail\"\ncommand = \"/usr/local/bin/mail-wrap\"\n",
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_mecha"))
+        .args(["features", "enable", "mail", "--no-install"])
+        .env("MECHA_HOME", home.0.join("home"))
+        .env("HOME", home.0.join("home"))
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .env("MECHA_SESSION_KIND", "test")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let cfg: toml::Value = toml::from_str(&home.config()).unwrap();
+    assert_eq!(cfg["mcp"].as_array().unwrap().len(), 1, "{cfg}");
+    assert!(
+        said.contains("runs `/usr/local/bin/mail-wrap`, not mecha-mail"),
+        "{said}"
+    );
 }

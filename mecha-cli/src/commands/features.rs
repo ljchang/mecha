@@ -498,14 +498,17 @@ fn voices_dir() -> Result<()> {
 pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
     let path = Config::global_path().context("no mecha home to find config.toml in")?;
     let mut items = Vec::new();
+    let mut seen = Vec::new();
     for f in features {
         let Some(wiring) = feature::mcp_wiring(*f) else {
             continue;
         };
-        // One item per feature: a dependency two yeses share is wired once.
-        if items.iter().any(|(g, _, _)| g == f) {
+        // One pass per feature: a dependency two yeses share is wired, or
+        // said to be missing, once.
+        if seen.contains(f) {
             continue;
         }
+        seen.push(*f);
         match find_program(wiring.program) {
             Some(command) => items.push((*f, wiring, command)),
             None => println!(
@@ -555,7 +558,32 @@ pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
             );
         }
     }
-    for ((_, wiring, command), done) in items.iter().zip(done) {
+    // One `[outbox]` covers every server of the call, so a rule on one
+    // feature's send leaves the others' unstaged too: said for each, never
+    // left to a silent absence (review of #669, pass 5).
+    let held = done.iter().any(|d| !d.ruled.is_empty());
+    for ((f, wiring, command), done) in items.iter().zip(done) {
+        if held && done.ruled.is_empty() && !done.routes.is_empty() {
+            println!(
+                "  {}'s calls that send or write ({}) are not staged either — one [outbox] \
+                 covers every server, and the rule above kept it unwritten",
+                wiring.name,
+                done.routes.join(", ")
+            );
+        }
+        if let Some(other) = &done.runs_other {
+            println!(
+                "  the [[mcp]] entry called `{}` runs `{other}`, not {}, so it is left as it is \
+                 and none is added beside it (two entries of one name shadow each other's \
+                 tools) — {} reads as set up only with an entry running {}: point yours at it, \
+                 or rename it and `mecha features enable {}` again",
+                wiring.name,
+                wiring.program,
+                wiring.name,
+                wiring.program,
+                f.id()
+            );
+        }
         if done.wrote_entry {
             println!(
                 "Wrote [[mcp]] `{}` (running {}, its results read as untrusted) into {}",
@@ -564,7 +592,7 @@ pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
                 path.display()
             );
         }
-        if done.untrusted_missing {
+        if done.untrusted_missing && done.runs_other.is_none() {
             println!(
                 "  the [[mcp]] entry for {} is left as it is — it needs \
                  [mcp.capabilities] untrusted_input = true, or what it reads never arms the \
