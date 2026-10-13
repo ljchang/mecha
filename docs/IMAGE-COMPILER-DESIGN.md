@@ -370,6 +370,11 @@ characters/<name>/entry.toml
 - **`kind` is a closed enum in an on-disk store, so it's a wire format.** An unknown `kind` loads, is shown in the library, and is **never sent to a generator**. That's the fail-closed reading: a reference nobody can classify carries nothing into a picture.
 - **No `face` entry is needed today.** The face is the portrait's crop, cached by blob. A `face` kind is there for the owner who wants a better face than the portrait shows.
 - **Each reference is a blob,** content-addressed like the portrait, so the existing versioning (`history/v<N>.toml`) and lock apply unchanged.
+- **The portrait's two checks extend to every new blob name:** each reference's `blob`, and a location's images.
+  - On load, the name check: no path separators, no leading dot, so a hand-edited entry can't point outside `blobs/`.
+  - On read, the hash check: bytes swapped under an approved hash are refused, not sent.
+
+  Today both read `entry.portrait` only, so neither carries over by itself.
 - **Only the owner writes references** (review of #680): the CLI and the web page. `image_library_propose` can't add one, and a candidate carries none. So:
   - the entry's one `origin` and `status` (§2) still describe everything in it;
   - a reference added to an approved entry is an owner write and a new version, as an owner `update` is (§6);
@@ -378,11 +383,13 @@ characters/<name>/entry.toml
 - **Store limits:** at most 1 `full_body` and 4 `detail` per character. That's what the owner can attach, not what a call sends. §9.4 says how a call fits the generator's slots.
 
 **Two new kinds**, beside `Character` and `Style`, each its own directory (`locations/<name>/`, `outfits/<name>/`), since an entry's kind is derived from its directory (`Entry.kind`).
-- **§2's tree gains both.** Everything that walks the store, `blob_referenced` included, reads its directories from `Kind::ALL` rather than a hand-kept list, so a blob only a location names is never taken for an orphan.
+- **§2's tree gains both.** Everything that walks the store, `blob_referenced` included, reads its directories from **`Kind::ALL` plus `removed/`**, rather than a hand-kept list.
+  - So a blob only a location names is never taken for an orphan.
+  - `removed/` is no kind, but it keeps a removed entry's blobs alive for the manifests that name them (§6). Blobs are content-addressed, so dropping it would let a rejected candidate's clean-up delete a removed entry's portrait.
 
 | Kind | Fields | Pictures | Video |
 |---|---|---|---|
-| `Location` | `text` (≤ 400), 1–3 images | unmeasured as a reference (E13); until then its text goes into the scene | an environment `<Subject>`, "the place in `<Picture k>`" (V-L) |
+| `Location` | `text` (≤ 400), 0–3 images (optional until E13 or V-L makes them mean something) | unmeasured as a reference (E13); until then its text goes into the scene | an environment `<Subject>`, "the place in `<Picture k>`" (V-L) |
 | `Outfit` | `text` (≤ 300), optional `for` (a character, or none for anyone), optional image | **text only**: pasted into `wearing` | text only: pasted into `wearing` |
 
 - **Outfits stay text.** An image of clothes is the leak §9.1 measured, delivered on purpose. The image is for browsing.
@@ -399,7 +406,10 @@ characters/<name>/entry.toml
 | location | its text in the scene | its images as an environment `<Subject>`, if V-L passes |
 | outfit | its text as `wearing` | its text as `wearing` |
 
-- **Every row marked "if" is off until its measurement passes,** and the owner rules on the result. A reference a generator doesn't send still costs nothing: the description and labels carry the facts in words.
+- **Every row marked "if" is off until its measurement passes,** and the owner rules on the result. A reference a generator doesn't send still costs no image slot: the description and labels carry the facts in words.
+- **Labels have their own budget per person,** at most 300 characters of detail labels appended to one description (review of #680, pass 2).
+  - Labels past it are dropped, in the character's own order, and the result says so.
+  - A label never causes a refusal. A full cast of `MAX_CAST` adds at most 1,500 characters against `MAX_COMPILED_PROMPT`'s 9,000, so attaching details can't make every later picture fail with a message blaming a scene that didn't grow.
 - **Fitting the slots** (review of #680). A call fills the generator's image budget in a fixed order, and says what it left out in the result:
   1. every person's face;
   2. each person's `full_body`, in cast order;
@@ -417,14 +427,18 @@ characters/<name>/entry.toml
   - `add-outfit [--for <character>]`.
 
   Each writes a new version.
-- **Web:** the character page shows its references in a strip with their kinds and labels. The Library tab gains Locations and Outfits beside Characters and Styles.
+- **Web:** the character page shows its references in a strip with their kinds and labels, and adds or removes one. That's an owner write, through the same door as §7's edit page. The Library tab gains Locations and Outfits beside Characters and Styles.
+  - **The image route widens without widening the lock.** `GET /api/library/portrait/{blob}` serves a blob only when some **visible** entry names it, and that rule extends from `portrait` to reference blobs and location images.
+  - A locked character's `full_body` and `detail` images, and a locked location's images, stay unfetchable by hash, the leak the #385 review closed. `Location` and `Outfit` entries carry their own `locked` flag, and the same rule applies to them.
 - **Tools:**
   - `image_library` lists the new kinds;
   - a scene names a location in `setting.location`, and a person's `wearing` may name an outfit.
 
   The compiler resolves both, and an unknown name stays plain text.
 - **How a scene record stores a location** (review of #680). `scene::Setting` is a closed enum read leniently, and an unknown variant reads as "no setting". So a location isn't a new variant: it's recorded as today's `Words`, holding the location's resolved text, plus an optional `location` name. A build that predates it reads the words and loses only the link.
-- **Untrusted text naming a location.** The quarantined extraction (§5.2) would learn the field. A location name from an untrusted-origin record resolves like any name: it selects owner-approved words, and adds none of its own. The record keeps its origin, as a cast name does (`demote_unknown`).
+- **Untrusted text naming a location.** The quarantined extraction (§5.2) would learn the field. A location name from an untrusted-origin record resolves like any name: it selects owner-approved words, and adds none of its own.
+  - It's the same rule as a non-library `who` being drawn from words (`IMAGE-DESIGN.md` §8).
+  - The record keeps the origin of the write that set it, as every `scene::Field` does; an unreadable setting stays `Setting::Unknown` and untrusted.
 
 ### 9.6 Measurements, before anything is built
 
@@ -444,7 +458,9 @@ E9b and V-B use the same reference set, so one set of images answers both genera
 
 - **L1, the store shape:**
   - `[[reference]]` with `kind`, `blob` and `label` (≤ 100 characters) on characters, written by the owner only;
-  - the `Location` and `Outfit` kinds as their own directories, with every store walk derived from `Kind::ALL`;
+  - the `Location` and `Outfit` kinds as their own directories, with every store walk reading `Kind::ALL` plus `removed/`;
+  - every new blob name getting the portrait's name check on load and hash check on read;
+  - the image route serving only blobs a visible entry names;
   - unknown kinds never sent;
   - a location stored in a scene record as words plus its name.
 - **L2, the portrait stays canonical:** no migration. The face is its crop, and existing manifests stay valid.
