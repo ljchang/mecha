@@ -553,7 +553,11 @@ fn run(dir: &std::path::Path, cmd: Cmd) -> Result<()> {
                 kind.label()
             );
             if kind == RefKind::FullBody {
-                println!("A full-body picture's stance carries into pictures: neutral and square-on works best.");
+                println!(
+                    "A full-body picture's stance carries into pictures: neutral and square-on \
+                     works best. It goes with a new picture of one or two people when everyone \
+                     in it has one; edits and layered pictures use portraits."
+                );
             }
         }
         Cmd::RemoveReference {
