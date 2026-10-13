@@ -90,7 +90,18 @@ async fn serve(listener: TcpListener, spec: Spec) -> Result<()> {
     loop {
         tokio::select! {
             accepted = listener.accept() => {
-                let (conn, _) = accepted.context("accepting a connection")?;
+                // A failed accept is one client's (a reset before accept, or
+                // descriptors briefly exhausted), never the proxy's: on a Mac
+                // this process IS the socket, and exiting would leave the
+                // port unheld and SIGKILL the server (review of #678).
+                let conn = match accepted {
+                    Ok((conn, _)) => conn,
+                    Err(e) => {
+                        eprintln!("accepting a connection: {e}");
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        continue;
+                    }
+                };
                 open.fetch_add(1, Ordering::SeqCst);
                 let (spec, state, open, starting) =
                     (spec.clone(), state.clone(), open.clone(), starting.clone());

@@ -421,19 +421,23 @@ fn start_agent(
     }
     let agent = crate::launchd::Agent {
         label: crate::launchd::label(&naming.stem),
-        program: vec![
-            mecha.display().to_string(),
-            "features".into(),
-            "on-demand".into(),
-            "--listen".into(),
-            format!("127.0.0.1:{}", naming.public),
-            "--backend".into(),
-            naming.backend.to_string(),
-            "--idle-secs".into(),
-            IDLE_SECS.to_string(),
-            "--launcher".into(),
-            launcher.display().to_string(),
-        ],
+        program: crate::log_cap::wrap(
+            &mecha,
+            &log,
+            vec![
+                mecha.display().to_string(),
+                "features".into(),
+                "on-demand".into(),
+                "--listen".into(),
+                format!("127.0.0.1:{}", naming.public),
+                "--backend".into(),
+                naming.backend.to_string(),
+                "--idle-secs".into(),
+                IDLE_SECS.to_string(),
+                "--launcher".into(),
+                launcher.display().to_string(),
+            ],
+        ),
         env: vec![
             ("PATH".into(), "/usr/bin:/bin:/usr/sbin:/sbin".into()),
             ("LLAMA_SERVER".into(), engine.path().display().to_string()),

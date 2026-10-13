@@ -1601,9 +1601,9 @@ from the row.
 
 ### 10.5 Out of scope, still
 
-Windows service managers, and on macOS every server but the chat router
-(§12: the router is a launchd agent there; the embeddings, OCR, image and
-voice servers still start by hand); system packages (`apt`, CUDA drivers, Docker) — setup
+Windows service managers, and on macOS the servers §12 has not yet taken
+(the router and the embeddings and OCR servers are launchd agents there;
+§12.2 and §12.3 bring voice and image); system packages (`apt`, CUDA drivers, Docker) — setup
 names them and stops; installing anything from the web app; and installing
 inside a trial. An environment may switch a feature on (§5.1), but a trial
 home never runs an installer: a switch that is on over an absent sidecar is
@@ -1912,6 +1912,15 @@ removes it, record and all. Then `mecha setup chat` with the recommended row
 on a clean `~/.mecha`. A 32 GB Mac is the one to watch: Metal's default
 working-set limit (`sysctl iogpu.wired_limit_mb`, 0 for the default) is a
 fraction of the memory, and the 32 GB row's files alone are 22.0 GiB.
+
+**Every agent's log is capped.** launchd writes `StandardOutPath` for good
+and nothing rotates it — `newsyslog` reads only its own configuration, which
+a user cannot add to — and the router logs every request. So an agent's
+program runs under `mecha features log-cap` (`log_cap.rs`), which writes the
+program's output to `~/Library/Logs/mecha/<stem>.log`, moves it to
+`<stem>.log.1` before it would pass 20 MiB, and passes a stop signal on and
+the program's exit status back, so `KeepAlive` still means the program's
+failure (review of #678).
 
 ### 12.1 The embeddings and OCR servers on demand
 

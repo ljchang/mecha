@@ -560,7 +560,13 @@ fn start_agent(
     }
     let agent = crate::launchd::Agent {
         label: crate::launchd::label(&naming.stem),
-        program: vec![bin.join("mecha-router").display().to_string()],
+        // Under the log cap: launchd's log file is never rotated, and the
+        // router logs every request (review of #678).
+        program: crate::log_cap::wrap(
+            &std::env::current_exe().context("finding the mecha binary for the agent")?,
+            &log,
+            vec![bin.join("mecha-router").display().to_string()],
+        ),
         env: vec![
             // An agent's PATH is launchd's, not the shell's; the launcher
             // needs only `sh`, `mkdir` and `dirname`, and names the engine.
