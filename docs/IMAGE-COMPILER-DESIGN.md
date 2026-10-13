@@ -17,7 +17,8 @@ document holds the decisions and does not re-argue them.
 Settled; the build follows them and does not re-ask.
 
 - **v1 is characters and styles.** Locations stay free text in the scene
-  until a location reference is measured.
+  until a location reference is measured. *(Reopened by §9.2: locations as a
+  kind, gated by E13 and V-L.)*
 - **The model proposes, the owner approves — and the owner may also create
   directly.** An entry the owner makes is approved on creation; one the
   model makes is a candidate until the owner approves it.
@@ -28,6 +29,7 @@ Settled; the build follows them and does not re-ask.
 - **A character is a portrait plus a description** that carries build and
   height — no body reference (E9), no required crop (E10: the whole portrait
   at 512² held identity within a few hundredths of a tight crop).
+  *(Reopened by §9.2: a `full_body` reference, gated by E9b and V-B.)*
 - **The web surface ships second**, minimal: save to library, browse, lock.
 - **The lock is a browsing filter, not an access control.** Generation
   always has access to locked entries. Things made from a locked entry start
@@ -116,7 +118,8 @@ The rules, each a measurement:
   0.33, pointer 0.74, both 0.78). Each cast member's portrait becomes a
   reference, and their description rides beside the pointer.
 - **One reference per character, left to right, each appearing exactly once**
-  (E2, E9: every slot tends to become a person). One person is "the person in
+  (E2, E9: every slot tends to become a person). *(§9.4 adds two images per
+  person, all or nothing, if E9b passes.)* One person is "the person in
   the image"; two or more are `<image1>…<imageN>` in `cast` order, "from left
   to right", and "each of the N people from the images appears exactly once;
   anyone else the scene describes is a new person". No total: a total with
@@ -333,7 +336,7 @@ The decisions that are this design's rather than the owner's:
 - **A crop box** — optional on the character page in phase 2 (E10: a small
   gain).
 
-## 9. Library v2: typed references, locations and wardrobe (proposed 2026-10-13)
+## 9. Library v2: typed references, locations and wardrobe (ruled 2026-10-13)
 
 **Status:** ruled 2026-10-13 (L1–L7, §9.7); the owner approved the direction the same day (the video design's R6). Nothing in this section is built. Step 1, E9b and V-B, is next. It reopens two of §1's settled rulings with new evidence, and says which, rather than re-arguing them silently.
 
@@ -425,12 +428,17 @@ characters/<name>/entry.toml
   - an outfit fills `wearing` under `wearing`'s own `MAX_CAST_FIELD` (300), so it substitutes for typed text rather than adding to it;
   - a location's 400 characters are added once per scene.
 
-  So the new pressure is about 1,900 characters: labels plus the location. If `MAX_COMPILED_PROMPT` is still reached, the message names the library text that filled it, never "shorten the scene".
+  So the new pressure is about 1,900 characters: labels plus the location.
+- **The prompt can already overflow before §9 adds anything** (review of #680, pass 10). The scene's own prose (`PROMPT_CAP` 4,000) and up to four extras (about 900 each) sit beside the cast fields and the style, a ceiling of about 13,650 against 9,000.
+  - So an overflow message names **what filled it, by share**: the scene's prose, the extras, or the library text (descriptions, location, labels left after dropping).
+  - It's never library text by default, and never "shorten the scene" when the scene didn't grow.
 - **Fitting the slots** (review of #680). A call fills the generator's image budget in a fixed order, and says what it left out in the result:
   1. every person's face;
   2. each person's `full_body`, in cast order;
   3. details, in cast order, then in each character's own order.
   - **Video** has nine slots, less any pinned or other reference images. Two people fit with a body each and up to five details; three fit with a body each and three details.
+  - **Bodies are all or nothing in both generators** (review of #680, pass 10). If every person's `full_body` doesn't fit beside every face, none is sent. So a cast of five (5 faces + 5 bodies over 9), or four with two pinned images, sends faces only, never four bound people beside one unbound.
+  - Details also bind a second image to one person, so they're the same mixed shape. V-D's arms must include one person with a detail beside one without, before details ship.
   - **Pictures** keep their people budgets (`MAX_CAST`, `EDIT_REFERENCE_BUDGET`, `IMAGE-DESIGN.md` §5.2, "Budgets, as measured") and gain an **image** cap (review of #680, pass 6). `MAX_CAST` counts people, and the measured ceiling is five reference images, with duplicate-free evidence at four (E12).
     - A new picture carries at most five reference images. That's `IMAGE-DESIGN.md` §5.2's measurement: five whole portraits drew all five people, 3/3.
     - Faces come first. **Bodies are all or nothing** (review of #680, pass 8): every person gets their `full_body`, or none does, and only while the total stays at four or fewer. So that's a cast of one or two. A cast of three gets no bodies, never one person bound to two images beside others bound to one, which no wording covers and nothing has measured.
@@ -456,6 +464,7 @@ characters/<name>/entry.toml
   - their **approved, unlocked** names are listed to the model as written, sorted, so the list is stable in the cached prefix. That's as `style_names` is, whose order comes from `Library::load`'s sort by kind and name. A location or outfit name that contains a character's name would expose it, so the owner's doors warn when one does;
   - so is the quarantined extraction;
   - a locked one isn't listed, which is how the owner hides a place.
+  - A guessed locked name still resolves for generation, as §1 rules for all locked entries, but the result never names it back, and the call reads the same as for a name the library doesn't hold. So the lock hides the place from the model, not only from the list.
 
   Characters stay unlisted ("their names are the owner's"). A model can only write a location it knows the name of (L5).
 - **Where the lists sit:** the location and outfit names are appended after the styles sentence at the end of the description (`imagegen::described`), so a new location moves no earlier byte of the cached prefix.
@@ -498,7 +507,7 @@ E9b and V-B use the same reference set, so one set of images answers both genera
 - **L2, the portrait stays canonical:** no migration. The face is its crop, and existing manifests stay valid.
 - **L3, each generator's references gated on its measurement** (§9.4), with the owner ruling on each result, and the slot-filling order of §9.4.
 - **L4, outfits are text:** an image is for browsing only.
-- **L5, names offered to a model:** location and outfit names are listed like styles, approved and unlocked only; characters stay unlisted, and an outfit's `for` is never named to a model.
+- **L5, names offered to a model:** location and outfit names are listed like styles, approved and unlocked only; characters stay unlisted, and an outfit's `for` is never named to a model. A locked location or outfit still resolves for generation (§1: generation always has access to locked entries), but **a result never names a locked entry**, so a model can't tell "locked" from "absent" by calling (review of #680, pass 10).
 - **L6, references stay local:** a generator whose backend isn't on this machine (loopback) is given no library references (face, body, detail, location) without the owner's ruling for that generator.
 - **L7, the order:**
   1. E9b and V-B, one session with shared references;
