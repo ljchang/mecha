@@ -13,7 +13,7 @@
   import { features } from './features.svelte.js';
   import { isShown } from './features.js';
   import { composeEditMessage, composeRegenerateMessage, composeRegionsMessage, maskName } from './image-edit.js';
-  import { pictureOf, clipOf, stillOut, waitingPictures, repeatedPictures, turnsWithoutPicture, downloadPicture, picturesIn, picturesSince, pictureVersions, shownVersion, makingText } from './picture.js';
+  import { pictureOf, clipOf, stillOut, waitingPictures, repeatedPictures, turnsWithoutPicture, downloadPicture, picturesIn, picturesSince, pictureVersions, shownVersion, makingText, slotText, repeatedClips } from './picture.js';
   import ClipPlayer from './ClipPlayer.svelte';
   import { carriesFiles, droppedFiles, withAttachments } from './attach.js';
   import { watchIdle, idleSpan } from './autolock.js';
@@ -155,6 +155,7 @@
   // into the browser's history, which outlives the unlock. An open persona's
   // needs neither, so its URL is safe to open full size.
   const repeats = $derived(repeatedPictures(run.entries));
+  const clipRepeats = $derived(repeatedClips(run.entries));
   // A Regenerate's picture shows on the card it was drawn again from,
   // ‹ k/n ›, and Edit, Regenerate and Download act on the version showing
   // (IMAGE-DESIGN.md §5.4). The version stepped to, per first picture; none
@@ -2065,7 +2066,7 @@
               <button class="genedit" onclick={() => stopPicture(entry.id)}>Stop</button>
             {/if}
             <!-- A clip a deferring tool made (§9), played where its call is. -->
-            {#if clip}<ClipPlayer src={pictureUrl(clip)} />{/if}
+            {#if clip && !clipRepeats.has(i)}<ClipPlayer src={pictureUrl(clip)} />{:else if clip}<span class="genwait">the same clip as above</span>{/if}
           {:else if entry.kind === 'notice'}
             <div class="notice">{entry.text}</div>
           {:else if entry.kind === 'crisis'}
@@ -2282,7 +2283,7 @@
       ondismiss={(id) => (dismissed = new Set([...dismissed, id]))}
       {pictureUrl}
       making={callEntries.some(stillOut)}
-      makingLabel={makingText(callEntries.find((e) => stillOut(e) && e.name === 'image_generate') ?? callEntries.find(stillOut))}
+      makingLabel={slotText(callEntries)}
       onstoppicture={() => stopPicture()}
       ondownload={savePicture}
       onedit={editInCall}
