@@ -29,8 +29,9 @@ Settled; the build follows them and does not re-ask.
 - **A character is a portrait plus a description** that carries build and
   height — no body reference (E9), no required crop (E10: the whole portrait
   at 512² held identity within a few hundredths of a tight crop).
-  *(Changed by §9.2 on 2026-10-13: pictures send a `full_body` reference,
-  since E9b passed; video stays without one, since V-B failed.)*
+  *(Ruled 2026-10-13 by §9.2, to be built in step 2: pictures will send a
+  `full_body` reference, since E9b passed; video stays without one, since V-B
+  failed.)*
 - **The web surface ships second**, minimal: save to library, browse, lock.
 - **The lock is a browsing filter, not an access control.** Generation
   always has access to locked entries. Things made from a locked entry start
@@ -119,8 +120,8 @@ The rules, each a measurement:
   0.33, pointer 0.74, both 0.78). Each cast member's portrait becomes a
   reference, and their description rides beside the pointer.
 - **One reference per character, left to right, each appearing exactly once**
-  (E2, E9: every slot tends to become a person). *(§9.4 adds two images per
-  person, all or nothing, if E9b passes.)* One person is "the person in
+  (E2, E9: every slot tends to become a person). *(Ruled 2026-10-13, to be
+  built: §9.4 adds two images per person, all or nothing, since E9b passed.)* One person is "the person in
   the image"; two or more are `<image1>…<imageN>` in `cast` order, "from left
   to right", and "each of the N people from the images appears exactly once;
   anyone else the scene describes is a new person". No total: a total with
@@ -134,7 +135,7 @@ The rules, each a measurement:
 - **References are sent at 512²** (E2: four at 1024² cost 190 s, four at 512²
   79 s; E10: a whole portrait at 512² holds identity). `Request` gains a
   backend-neutral `reference_size`; plain edits keep 1024.
-- **At most five cast members** (`MAX_CAST`; the owner's **provisional** ceiling C5, `IMAGE-DESIGN.md` §6 and §5.2: five whole portraits drew all five, 3/3, up from E3's measured four; to be revisited after a closer look).
+- **At most five cast members** (`MAX_CAST`; the owner's **provisional** ceiling C5, `IMAGE-DESIGN.md` §11 and §5.2: five whole portraits drew all five, 3/3, up from E3's measured four; to be revisited after a closer look).
 - **Anyone else is an `extra`, and is counted** (E11). A waiter described in
   the scene beside a cast of three, with "Exactly three people" compiled in,
   was kept in the picture but pushed into the background; listed as
@@ -393,7 +394,7 @@ characters/<name>/entry.toml
 **Two new kinds**, beside `Character` and `Style`. A location's or outfit's images are `[[reference]]` rows too, with the kind `view`, so every blob an entry names lives in one table, under one set of checks. Each new kind is its own directory (`locations/<name>/`, `outfits/<name>/`), since an entry's kind is derived from its directory (`Entry.kind`).
 - **§2's tree gains both.**
   - **Loading** reads the directories this build knows (`Kind::ALL`).
-  - **Deleting** a blob is decided by walking every `*.toml` under the store root, whatever directory it sits in (review of #680, pass 5). `blob_referenced` gates a delete, so it must be fail-closed for kinds this build doesn't know: a later build's fifth directory is unseen, not unreadable.
+  - **Deleting** a blob is decided by walking every `*.toml` under the store root, whatever directory it sits in (review of #680, pass 5). `blob_referenced` gates a delete, so it must be fail-closed for kinds this build doesn't know: a later build's fifth directory is unseen, not unreadable. That walk also reads `lock.toml` and `autolock.toml`; a blob name never matches in them, so it's harmless and the safe direction.
   - That walk also covers `removed/`, which keeps a removed entry's blobs alive for the manifests that name them (§6), and a blob only a location names.
 
 | Kind | Fields | Pictures | Video |
@@ -479,7 +480,7 @@ characters/<name>/entry.toml
     - A locked location or outfit resolves for generation, as every locked entry does.
     - `image_library` lists it, and the manifest beside a picture names it, as both do for characters and styles today. Pictures already in chats are untouched by a lock (§1).
     - What the lock hides is the owner's browsing without the unlock: the Library tab, the image route (below), and the save dialog's `source`, which returns a yes or no and never names (#385).
-- **Where the lists sit:** the location and outfit names are appended after the styles sentence at the end of the description (`imagegen::described`). What keeps the cached prefix stable is that the description is built when the tool is built, not per turn: in `ImageGenerate::new`, and again in `persona_form` whenever a persona's agent is rebuilt (on a persona edit, or a new binding).
+- **Where the lists sit:** the location and outfit names are appended after the styles sentence at the end of the description (`imagegen::described`). What keeps the cached prefix stable is that the description is built when the tool is built, not per turn: in `ImageGenerate::new` (and `with_library_dir`), and again in `persona_form` whenever a persona's agent is rebuilt (on a persona edit, or a new binding).
   - So a new location reaches a running chat on a restart or a persona rebuild. Each of those already re-pays the prefix.
   - A rebuild per turn would re-pay it wherever the lists sit (review of #680, passes 16 and 19).
 - **Tools:**
@@ -528,7 +529,7 @@ E9b and V-B use the same reference set, so one set of images answers both genera
 - **L3, each generator's references gated on its measurement** (§9.4), with the owner ruling on each result, and the slot-filling order of §9.4.
 - **L4, outfits are text:** an image is for browsing only.
 - **L5, names offered to a model:** location and outfit names appear in `image_generate`'s description as styles do (approved, unlocked); `image_library` lists them, locked included, as it lists everything (§4); characters stay unlisted in the description, and an outfit's `for` is never named to a model. The lock is for browsing (§1), reaffirmed 2026-10-13.
-- **L6, references stay local**, enforced where references are read, not by convention: the reference-read path both generators call (§9.3, where every blob gets the portrait's checks) refuses to hand a blob to a backend that isn't loopback, as `imagegen::loopback_url` does for `image_generate`'s server (review of #680, pass 16): a generator whose backend isn't on this machine (loopback) is given no library references (face, body, detail, location) without the owner's ruling for that generator. **Enforced for `image_generate` now; for the video tool it's a convention until the port** (review of #680, pass 18). That tool is built outside this repository and calls none of this read path, so the check is on its port checklist: until it lands there, video is held to L6 by the owner's private server alone, not by mecha.
+- **L6, references stay local:** a generator whose backend isn't on this machine (loopback) is given no library references (face, body, detail, location) without the owner's ruling for that generator. **The two generators differ** (review of #680, passes 18 and 21). For `image_generate` it's enforced where references are read: the reference-read path (§9.3) refuses a blob to a non-loopback backend, as `imagegen::loopback_url` does for its server. For the video tool it's a convention until the port: that tool is built outside this repository and calls none of this read path, so the check is on its port checklist, and until then video is held to L6 by the owner's private server alone, not by mecha.
 - **L7, the order:**
   1. E9b and V-B, one session with shared references;
   2. the store and CLI for `face`, `full_body` and `detail`. A `face` reference changes video's crop source and needs no picture measurement, so it ships here (review of #680, pass 17);
