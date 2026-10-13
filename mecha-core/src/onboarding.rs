@@ -1483,8 +1483,10 @@ mod tests {
     /// The registry decides, so setup asks what registration asks (§1.1): an
     /// installed `mecha-mail` with no `[[mcp]]` entry is not mail. Switched
     /// on, it is a yes that does not work — `Wrong`, never declinable — and
-    /// the fix is an edit, said rather than run. With the entry and no
-    /// account, the remedy is the auth, which needs a terminal.
+    /// the fix is `mecha features enable mail`, which writes the entry: a
+    /// command setup can run, where it was once an edit it could only say
+    /// (review of #669, pass 8). With the entry and no account, the remedy
+    /// is the auth, which needs a terminal.
     #[test]
     fn a_feature_step_asks_what_registration_asks() {
         let cfg = cfg_with_local(262144, Some(true));
@@ -1497,7 +1499,8 @@ mod tests {
         let mail = step(&steps, "mail");
         assert_eq!(mail.status, Status::Wrong);
         assert!(!mail.optional);
-        assert!(mail.remedy.is_none(), "an edit is never run");
+        let wire = mail.remedy.clone().expect("the wiring is runnable");
+        assert_eq!(wire.argv, ["mecha", "features", "enable", "mail"]);
         assert!(mail.detail.contains("[[mcp]]"), "{}", mail.detail);
 
         f.features = rows(|ff| {

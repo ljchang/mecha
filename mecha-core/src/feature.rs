@@ -1323,8 +1323,9 @@ fn mcp_entry<'a>(facts: &'a Facts, program: &str) -> Option<&'a McpServerConfig>
         .or_else(|| servers.iter().find(runs))
 }
 
-/// The shared shape of the three features that are an MCP server.
+/// The shared shape of the features that are an MCP server.
 fn server_state(
+    f: Feature,
     facts: &Facts,
     program: &str,
     installed: bool,
@@ -1334,9 +1335,17 @@ fn server_state(
 ) -> State {
     let Some(entry) = mcp_entry(facts, program) else {
         return if installed {
+            // Where `enable` writes the entry, the fix is that runnable
+            // command, so setup can finish the feature it was asked for —
+            // a binary installed after the first yes otherwise leaves an
+            // edit no step can run (review of #669, pass 8).
+            let fix = match mcp_wiring(f) {
+                Some(_) => format!("mecha features enable {}", f.id()),
+                None => format!("add an [[mcp]] entry with command = \"{program}\""),
+            };
             off(
                 format!("`{program}` is installed, but no [[mcp]] entry runs it"),
-                format!("add an [[mcp]] entry with command = \"{program}\""),
+                fix,
             )
         } else {
             off(format!("`{program}` is not installed"), install)
@@ -1391,6 +1400,7 @@ fn own_state(facts: &Facts, f: Feature) -> State {
             },
         },
         Feature::Mail => server_state(
+            Feature::Mail,
             facts,
             "mecha-mail",
             facts.has_mail_binary,
@@ -1399,6 +1409,7 @@ fn own_state(facts: &Facts, f: Feature) -> State {
             "mecha-mail auth",
         ),
         Feature::Docs => server_state(
+            Feature::Docs,
             facts,
             "mecha-docs",
             facts.has_docs_binary,
@@ -1407,6 +1418,7 @@ fn own_state(facts: &Facts, f: Feature) -> State {
             "mecha-docs auth",
         ),
         Feature::Graph => server_state(
+            Feature::Graph,
             facts,
             "mecha-graph-mcp",
             facts.has_graph_binary,
@@ -1598,6 +1610,7 @@ fn own_state(facts: &Facts, f: Feature) -> State {
         },
         // The model's half: publishing tools, from an `[[mcp]]` entry.
         Feature::Publishing => server_state(
+            Feature::Publishing,
             facts,
             "factory-publish",
             facts.has_factory_binary,
