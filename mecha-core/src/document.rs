@@ -168,7 +168,8 @@ pub struct DocumentsConfig {
     pub layout_model: Option<PathBuf>,
     /// CPU threads for the layout model (it never touches the GPU).
     pub layout_threads: u32,
-    /// Address-space ceiling for the layout worker, in MB.
+    /// Address-space ceiling for the layout worker, in MB. Not applied on
+    /// macOS, as `memory_mb` is not ([`limit`]).
     pub layout_memory_mb: u64,
 }
 

@@ -132,14 +132,13 @@ pub fn profile(p: &Policy) -> Result<String> {
             "(deny file-read-data file-read-xattr file-write* {filter})\n"
         ));
     }
-    if !p.read_trees.is_empty() || !p.read_files.is_empty() || !p.exec.is_empty() {
-        out.push_str(&format!(
-            "(allow file-read*{}{}{})\n",
-            list("subpath", &p.read_trees)?,
-            list("literal", &p.read_files)?,
-            list("literal", &p.exec)?
-        ));
-    }
+    // Never empty: `exec` was proven non-empty above.
+    out.push_str(&format!(
+        "(allow file-read*{}{}{})\n",
+        list("subpath", &p.read_trees)?,
+        list("literal", &p.read_files)?,
+        list("literal", &p.exec)?
+    ));
     if !p.write_trees.is_empty() {
         out.push_str(&format!(
             "(allow file-read* file-write*{})\n",
@@ -208,8 +207,10 @@ pub fn resolve_program(program: &str, path_var: Option<&std::ffi::OsStr>) -> Res
 /// load, never a read granted — and the first place to look when a Mac
 /// reports a dyld failure under the profile: `@rpath` is resolved against
 /// the loading file's own `LC_RPATH`s only, where dyld also searches the
-/// loader chain's (the main executable's included); and the walk stops at
-/// 512 files.
+/// loader chain's (the main executable's included); the walk stops at 512
+/// files; and a fat binary is read only in its 32-bit-offset form
+/// (`FAT_MAGIC`), so a `FAT_MAGIC_64` or byte-swapped one yields no
+/// libraries. Homebrew ships thin binaries.
 pub fn library_closure(binary: &Path) -> Vec<PathBuf> {
     let mut seen: Vec<PathBuf> = Vec::new();
     let mut queue = vec![binary.to_path_buf()];
@@ -253,6 +254,25 @@ pub fn library_closure(binary: &Path) -> Vec<PathBuf> {
         }
     }
     seen
+}
+
+/// [`library_closure`], walked once per program for the life of the process:
+/// it is a function of the binary alone, and one extraction runs poppler
+/// dozens of times (review of #682). The profile around it is still built
+/// per call — the scratch directory and the call's paths are not cached.
+fn closure_once(binary: &Path) -> Vec<PathBuf> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static SEEN: OnceLock<Mutex<HashMap<PathBuf, Vec<PathBuf>>>> = OnceLock::new();
+    let seen = SEEN.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(hit) = seen.lock().ok().and_then(|m| m.get(binary).cloned()) {
+        return hit;
+    }
+    let walked = library_closure(binary);
+    if let Ok(mut m) = seen.lock() {
+        m.insert(binary.to_path_buf(), walked.clone());
+    }
+    walked
 }
 
 fn expand(path: &str, loader_dir: &Path, exe_dir: &Path) -> Option<PathBuf> {
@@ -315,9 +335,18 @@ pub fn policy_for(
     let mut policy = Policy {
         exec: vec![real.clone()],
         write_trees: vec![canon(workspace)?],
-        home: std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .and_then(|h| h.canonicalize().ok()),
+        // Required: the home's denial is the rule written to hold whatever
+        // `system.sb` grants, and a profile without it is otherwise the same
+        // text — so no `HOME` refuses the call rather than dropping the rule
+        // in silence (review of #682).
+        home: Some(
+            std::env::var_os("HOME")
+                .filter(|h| !h.is_empty())
+                .map(PathBuf::from)
+                .context("HOME is unset, so no profile can deny the home — refusing to confine")?
+                .canonicalize()
+                .context("resolving HOME for the profile's denial of it")?,
+        ),
         network,
         ..Policy::default()
     };
@@ -336,7 +365,7 @@ pub fn policy_for(
         }
     }
     let mut files = vec![real.clone()];
-    files.extend(library_closure(&real));
+    files.extend(closure_once(&real));
     for f in &files {
         if let Some((keg, data)) = keg_and_data(f) {
             if !policy.read_trees.contains(&keg) {
