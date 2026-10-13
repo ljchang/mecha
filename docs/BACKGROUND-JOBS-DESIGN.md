@@ -612,8 +612,10 @@ nothing on the persona's surfaces that assumes the work is a picture.
 - **The run closes on the job's own lines** (§8's `with_closings`): a persona that queued a
   clip says "what this turn asked for is being made", never that a picture is.
 - **The persona host keys on the call, as the assistant's does.** The restart repair uses
-  `may_be_orphan` over the install's pool. The transcript a settle re-reads marks a deferring
-  tool's rows. The run's live result events are marked from the persona agent's own registry.
+  `may_be_orphan` over the persona agent's own registry. The transcript a settle re-reads marks a
+  deferring tool's rows from the install's pool, deliberately: a job still running after the
+  persona's tool list was narrowed mid-chat keeps its row and its Stop. The run's live result
+  events are marked from the persona agent's own registry.
 - **The persona page and the call screen.** The live fold keeps the server's `deferred` mark
   (`persona.js` `applyEvent`). A still-out row says `makingText`: a picture keeps "drawing a
   picture…", and anything else reads "working on it…". A finished clip plays under its row
