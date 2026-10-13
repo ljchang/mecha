@@ -22,6 +22,12 @@
 //! module installs and starts; `mecha setup chat` then hands the router's own
 //! `/props` — for the model installed, never the router's placeholder — to
 //! setup's existing write-and-confirm flow.
+//!
+//! **Two service managers, one launcher** (§12). On Linux the router is a
+//! systemd user unit, its engine named by a drop-in; on macOS it is a launchd
+//! agent (`launchd.rs`) whose plist carries the same environment. Everything
+//! before the start — the engine, the model, the presets, the launcher, the
+//! holds — is the same code on both.
 
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
@@ -36,6 +42,34 @@ const ROUTER_LAUNCHER: &str = include_str!("../units/mecha-router");
 
 /// The sidecar id `sidecar::SIDECARS` knows the router by.
 pub const ID: &str = "router";
+
+/// Whether this system has a service manager the router installs under:
+/// systemd on Linux, launchd on macOS. Every door that offers `setup chat`
+/// asks this, so none of them offers it where the install would refuse.
+pub fn installs_here() -> bool {
+    cfg!(any(target_os = "linux", target_os = "macos"))
+}
+
+/// What the router is installed as here, in words.
+pub fn service_kind() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "a launchd agent"
+    } else {
+        "a systemd user service"
+    }
+}
+
+/// Where the router's own output goes, for an error to point at.
+fn logs_hint(home: &Path, naming: &Naming) -> String {
+    if cfg!(target_os = "macos") {
+        format!(
+            "{} says why",
+            crate::launchd::log_path(home, &naming.stem).display()
+        )
+    } else {
+        format!("`journalctl --user -u {}` says why", naming.stem)
+    }
+}
 
 /// The unit and port the router runs under: the shipped ones in use, others
 /// in a test beside the live router.
@@ -367,10 +401,10 @@ pub async fn install(
     hub: &Path,
     say: Say<'_>,
 ) -> Result<String> {
-    if !cfg!(target_os = "linux") {
+    if !installs_here() {
         bail!(
-            "the router is a systemd user unit, which this system does not have — on macOS start \
-             llama-server by hand until launchd is designed (FEATURES-DESIGN §10.5)"
+            "the router installs as a systemd user unit or a launchd agent, and this system has \
+             neither — start llama-server by hand and run `mecha setup --write`"
         );
     }
     let home = &m.mecha_home;
@@ -387,7 +421,9 @@ pub async fn install(
         );
     }
     let engine = Engine::resolve(m)?;
-    let units = crate::engine_gate::unit_dir(m)?.to_path_buf();
+    // Asked before the download: a machine with nowhere to write the
+    // service learns it before the model is fetched, not after.
+    crate::engine_gate::unit_dir(m)?;
     let bin = bin_dir(home);
     // The restart below stops whatever the router has resident, so it is a
     // switch like `mecha model use` and the engine gate's: declined before
@@ -420,6 +456,56 @@ pub async fn install(
         &r(ROUTER_LAUNCHER),
         0o755,
     )?;
+    let agent_domain = if cfg!(target_os = "macos") {
+        Some(start_agent(
+            m,
+            naming,
+            &bin,
+            &presets,
+            &engine,
+            &preset.alias,
+            say,
+        )?)
+    } else {
+        start_unit(m, naming, &bin, &engine, &preset.alias, &r, say)?;
+        None
+    };
+    // Under systemd the restart has already waited for /health (`ExecStart
+    // Post=mecha-wait-healthy 8080 540`); `bootstrap` returns at once, so on
+    // a Mac this wait is the router's whole start, and gets the unit's start
+    // budget (`TimeoutStartSec=600`, review of #678). The model's own load
+    // is `router::load`'s, after it.
+    let budget = Duration::from_secs(if cfg!(target_os = "macos") { 600 } else { 180 });
+    check(naming, &preset.alias, &logs_hint(&m.home, naming), budget).await?;
+    match agent_domain {
+        Some(crate::launchd::Domain::Gui) => say("the router starts again at each login"),
+        // Loaded with nobody at the screen: launchd reads the agents
+        // directory at a graphical login, so a headless Mac's router does not
+        // come back after a restart until someone logs in at the console
+        // (review of #678) — said, as the Linux linger note is.
+        Some(crate::launchd::Domain::User) => say(
+            "nobody is logged in at this Mac's screen, so after a restart the router starts \
+             only once someone logs in there — macOS loads login agents at a graphical login",
+        ),
+        None => linger_note(say),
+    }
+    Manifest::finish(home, ID)?;
+    Ok(preset.alias)
+}
+
+/// The systemd half: the unit, its drop-ins, enabled and restarted — which
+/// blocks until the model has loaded (`ExecStartPost=mecha-wait-healthy`).
+fn start_unit(
+    m: &Machinery,
+    naming: &Naming,
+    bin: &Path,
+    engine: &Engine,
+    alias: &str,
+    r: &dyn Fn(&str) -> String,
+    say: Say<'_>,
+) -> Result<()> {
+    let home = &m.mecha_home;
+    let units = crate::engine_gate::unit_dir(m)?.to_path_buf();
     write_owned(
         home,
         ID,
@@ -445,19 +531,63 @@ pub async fn install(
     // (`ExecStartPost=mecha-wait-healthy`): after it, the wait it describes
     // would pass in silence (found on review of #568).
     say(&format!(
-        "loading {} on the router at :{} — up to fifteen minutes for a large model",
-        preset.alias, naming.port
+        "loading {alias} on the router at :{} — up to fifteen minutes for a large model",
+        naming.port
     ));
     crate::engine_gate::systemctl("restart", &[&format!("{stem}.service")])?;
-    check(naming, &preset.alias).await?;
-    linger_note(say);
-    Manifest::finish(home, ID)?;
-    Ok(preset.alias)
+    Ok(())
+}
+
+/// The launchd half: the plist, written with the environment a unit's
+/// drop-ins carry, and loaded — which starts it. `check` then waits for the
+/// load, as `mecha-wait-healthy` does under systemd.
+fn start_agent(
+    m: &Machinery,
+    naming: &Naming,
+    bin: &Path,
+    presets: &Path,
+    engine: &Engine,
+    alias: &str,
+    say: Say<'_>,
+) -> Result<crate::launchd::Domain> {
+    let home = &m.mecha_home;
+    let plist = crate::engine_gate::unit_dir(m)?.join(crate::launchd::plist_name(&naming.stem));
+    let log = crate::launchd::log_path(&m.home, &naming.stem);
+    // launchd opens the log before it runs anything, and does not make its
+    // directory: an agent whose log cannot open never starts.
+    if let Some(dir) = log.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    let agent = crate::launchd::Agent {
+        label: crate::launchd::label(&naming.stem),
+        // Under the log cap: launchd's log file is never rotated, and the
+        // router logs every request (review of #678).
+        program: crate::log_cap::wrap(
+            &std::env::current_exe().context("finding the mecha binary for the agent")?,
+            &log,
+            vec![bin.join("mecha-router").display().to_string()],
+        ),
+        env: vec![
+            // An agent's PATH is launchd's, not the shell's; the launcher
+            // needs only `sh`, `mkdir` and `dirname`, and names the engine.
+            ("PATH".into(), "/usr/bin:/bin:/usr/sbin:/sbin".into()),
+            ("MECHA_ROUTER_PORT".into(), naming.port.to_string()),
+            ("MECHA_ROUTER_PRESETS".into(), presets.display().to_string()),
+            ("LLAMA_SERVER".into(), engine.path().display().to_string()),
+        ],
+        log,
+    };
+    write_owned(home, ID, &plist, &crate::launchd::plist_text(&agent), 0o644)?;
+    say(&format!(
+        "loading {alias} on the router at :{} — up to fifteen minutes for a large model",
+        naming.port
+    ));
+    crate::launchd::load(&plist, &agent.label)
 }
 
 /// The router answers, and the model is resident — asked of the router, never
 /// inferred from the service starting.
-async fn check(naming: &Naming, alias: &str) -> Result<()> {
+async fn check(naming: &Naming, alias: &str, logs: &str, budget: Duration) -> Result<()> {
     let base = naming.base();
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
@@ -471,12 +601,11 @@ async fn check(naming: &Naming, alias: &str) -> Result<()> {
         .await
         .is_ok_and(|r| r.status().is_success())
     {
-        if started.elapsed() > Duration::from_secs(180) {
+        if started.elapsed() > budget {
             bail!(
-                "the router on :{} did not answer /health within 180 s — `journalctl --user -u \
-                 {}` says why",
+                "the router on :{} did not answer /health within {} s — {logs}",
                 naming.port,
-                naming.stem
+                budget.as_secs()
             );
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -525,7 +654,13 @@ fn linger_note(say: Say<'_>) {
 pub fn remove(m: &Machinery, naming: &Naming) -> Result<()> {
     let home = &m.mecha_home;
     let stem = &naming.stem;
-    let _ = crate::engine_gate::systemctl("disable", &["--now", &format!("{stem}.service")]);
+    if cfg!(target_os = "macos") {
+        // A job launchd still holds is not deleted out from under it: its
+        // plist stays, so a second `remove` can try again (review of #678).
+        crate::launchd::unload(&crate::launchd::label(stem))?;
+    } else {
+        let _ = crate::engine_gate::systemctl("disable", &["--now", &format!("{stem}.service")]);
+    }
     let gone = |p: &Path, ids: &[&str]| -> Result<()> {
         match std::fs::remove_file(p) {
             Ok(()) => {}
@@ -539,6 +674,7 @@ pub fn remove(m: &Machinery, naming: &Naming) -> Result<()> {
     };
     let units = crate::engine_gate::unit_dir(m)?.to_path_buf();
     gone(&units.join(format!("{stem}.service")), &[ID])?;
+    gone(&units.join(crate::launchd::plist_name(stem)), &[ID])?;
     let dropins = units.join(format!("{stem}.service.d"));
     gone(&dropins.join("path.conf"), &[ID])?;
     gone(&dropins.join("engine-provided.conf"), &[ID])?;
@@ -563,7 +699,9 @@ pub fn remove(m: &Machinery, naming: &Naming) -> Result<()> {
     } else {
         gone(&wait, &[ID])?;
     }
-    crate::engine_gate::systemctl("daemon-reload", &[])?;
+    if !cfg!(target_os = "macos") {
+        crate::engine_gate::systemctl("daemon-reload", &[])?;
+    }
     Manifest::forget_if_empty(home, ID)
 }
 
@@ -654,6 +792,25 @@ mod tests {
         assert_eq!(
             alias_for(Path::new(&format!("/m/{PINNED_ALIAS}.gguf"))),
             format!("{PINNED_ALIAS}-own")
+        );
+    }
+
+    /// The plist the installer writes is the one the plan looks for: the
+    /// sidecar's evidence names the shipped agent by its file name.
+    #[test]
+    fn the_shipped_agent_is_the_router_s_evidence() {
+        let name = crate::launchd::plist_name(&Naming::shipped().stem);
+        let router = crate::sidecar::SIDECARS
+            .iter()
+            .find(|s| s.id == ID)
+            .unwrap();
+        assert!(
+            router
+                .evidence
+                .iter()
+                .any(|e| matches!(e, crate::sidecar::Evidence::UserUnit(n) if *n == name)),
+            "{name} is not in {:?}",
+            router.evidence
         );
     }
 
@@ -762,7 +919,7 @@ mod tests {
             &mut |_| {},
         )
         .await;
-        if cfg!(target_os = "linux") {
+        if installs_here() {
             let err = format!("{:#}", r.unwrap_err());
             assert!(err.contains("already answers"), "{err}");
             assert!(!recorded(&m.mecha_home), "nothing recorded");
@@ -841,7 +998,7 @@ mod tests {
             &mut |_| {},
         )
         .await;
-        if cfg!(target_os = "linux") {
+        if installs_here() {
             assert!(
                 Engine::resolve(&m).is_ok(),
                 "the test's own engine resolves"
@@ -931,7 +1088,7 @@ mod tests {
             &mut |_| {},
         )
         .await;
-        if cfg!(target_os = "linux") {
+        if installs_here() {
             let err = format!("{:#}", r.unwrap_err());
             assert!(err.contains("already waiting"), "{err}");
             assert!(!recorded(&m.mecha_home), "nothing recorded");
@@ -1131,20 +1288,27 @@ mod tests {
     }
 
     /// The real thing beside the live router: a router installed under its
-    /// own name on a free port in this user's systemd, serving a small model
-    /// brought as the owner's (the embeddings GGUF, already in the hub),
-    /// started, the model resident — then removed, record and all.
+    /// own name on a free port in this user's service manager (systemd, or
+    /// launchd on a Mac), serving a small model brought as the owner's (the
+    /// embeddings GGUF, already in the hub — or any small GGUF named by
+    /// `MECHA_TEST_ROUTER_GGUF`, for a machine without it), started, the
+    /// model resident — then removed, record and all.
     #[tokio::test]
     #[ignore]
     async fn a_router_installs_and_serves_beside_the_live_one() {
         let hub = crate::fetch::hub_dir().unwrap();
-        let model =
-            std::fs::read_dir(hub.join("models--mradermacher--harrier-oss-v1-0.6b-GGUF/snapshots"))
-                .unwrap()
-                .flatten()
-                .map(|e| e.path().join("harrier-oss-v1-0.6b.f16.gguf"))
-                .find(|p| p.is_file())
-                .expect("the embeddings model in the hub");
+        let model = match std::env::var_os("MECHA_TEST_ROUTER_GGUF") {
+            Some(p) => PathBuf::from(p),
+            None => std::fs::read_dir(
+                hub.join("models--mradermacher--harrier-oss-v1-0.6b-GGUF/snapshots"),
+            )
+            .unwrap()
+            .flatten()
+            .map(|e| e.path().join("harrier-oss-v1-0.6b.f16.gguf"))
+            .find(|p| p.is_file())
+            .expect("the embeddings model in the hub, or MECHA_TEST_ROUTER_GGUF"),
+        };
+        let want = alias_for(&model);
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
             .local_addr()
@@ -1182,9 +1346,17 @@ mod tests {
             .map(|m| m.id)
             .collect();
         let cleaned = remove(&m, &naming);
+        // A test router's log is the test's: `remove` keeps a real router's
+        // for the owner, as the journal keeps a unit's, but this one goes,
+        // and its directory with it when nothing else is in it.
+        let log = crate::launchd::log_path(&m.home, &naming.stem);
+        let _ = std::fs::remove_file(&log);
+        if let Some(dir) = log.parent() {
+            let _ = std::fs::remove_dir(dir);
+        }
         eprintln!("{said:#?}\noffered: {offered:?}");
-        assert_eq!(r.unwrap(), "harrier-oss-v1-0.6b.f16");
-        assert_eq!(offered, ["harrier-oss-v1-0.6b.f16"]);
+        assert_eq!(r.unwrap(), want);
+        assert_eq!(offered, [want.as_str()]);
         cleaned.unwrap();
         let man = Manifest::read(&m.mecha_home).unwrap();
         assert!(
