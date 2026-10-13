@@ -755,6 +755,7 @@ impl McpTool {
             meta[PERSONA_META] = json!({
                 "name": who.name,
                 "character": who.character,
+                "voice": who.voice,
             });
         }
         let params = json!({
@@ -1534,6 +1535,7 @@ for line in sys.stdin:
             name: "mara".into(),
             display: "Mara".into(),
             character: Some("maya".into()),
+            voice: Some("ada".into()),
         };
         let closed = Slow::start_with("persona-closed", false).await;
         assert!(closed.tool("render").for_persona_as(&who).is_none());
@@ -1556,6 +1558,9 @@ for line in sys.stdin:
         let meta = &open.calls()[0]["params"]["_meta"];
         assert_eq!(meta[PERSONA_META]["name"], "mara");
         assert_eq!(meta[PERSONA_META]["character"], "maya");
+        // The voice she speaks in, so a server that makes sound can give her
+        // hers (owner, 2026-10-13): a library name, as the character is.
+        assert_eq!(meta[PERSONA_META]["voice"], "ada");
         assert!(
             meta[PERSONA_META].get("display").is_none(),
             "who is asking, never more"

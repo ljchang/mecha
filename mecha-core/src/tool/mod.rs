@@ -580,13 +580,15 @@ pub struct CarriedState {
 }
 
 /// Who a persona is, as the tools that need it see it: its folder name, the
-/// name it is shown by, and the image-library character it looks like, if
-/// any (`docs/PERSONA-DESIGN.md` §4.2, §8.6).
+/// name it is shown by, the image-library character it looks like, and the
+/// voice-library voice it speaks in, if any (`docs/PERSONA-DESIGN.md` §4.2,
+/// §8.6, §11).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PersonaSelf {
     pub name: String,
     pub display: String,
     pub character: Option<String>,
+    pub voice: Option<String>,
 }
 
 /// What a tool is allowed to touch.
