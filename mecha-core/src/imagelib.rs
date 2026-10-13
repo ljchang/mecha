@@ -28,13 +28,13 @@ pub const MAX_DESCRIPTION: usize = 400;
 /// A style's text, pasted verbatim at the end of every prompt that names it.
 pub const MAX_STYLE_TEXT: usize = 1000;
 /// People per new picture. E3 held four in one pass; five is the owner's
-/// provisional ceiling (IMAGE-DESIGN.md §6, C5).
+/// provisional ceiling (IMAGE-DESIGN.md §5.2 and §11, C5).
 pub const MAX_CAST: usize = 5;
 /// `wearing` and `doing`, each.
 pub const MAX_CAST_FIELD: usize = 300;
 /// People in a scene who are no library character — a waiter, a crowd's
-/// front row. They carry no reference, so the four-reference ceiling (E3)
-/// does not bound them; four is what has been asked of the model alongside
+/// front row. They carry no reference, so the reference ceiling
+/// ([`MAX_CAST`]) does not bound them; four is what has been asked of the model alongside
 /// a cast, not a measured limit.
 pub const MAX_EXTRAS: usize = 4;
 /// Candidates waiting on the owner. A model that proposes in a loop fills a
