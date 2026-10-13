@@ -29,7 +29,8 @@ Settled; the build follows them and does not re-ask.
 - **A character is a portrait plus a description** that carries build and
   height — no body reference (E9), no required crop (E10: the whole portrait
   at 512² held identity within a few hundredths of a tight crop).
-  *(Reopened by §9.2: a `full_body` reference, gated by E9b and V-B.)*
+  *(Changed by §9.2 on 2026-10-13: pictures send a `full_body` reference,
+  since E9b passed; video stays without one, since V-B failed.)*
 - **The web surface ships second**, minimal: save to library, browse, lock.
 - **The lock is a browsing filter, not an access control.** Generation
   always has access to locked entries. Things made from a locked entry start
@@ -354,8 +355,8 @@ The decisions that are this design's rather than the owner's:
 ### 9.2 What it reopens
 
 - **§1, "a character is a portrait plus a description … no body reference (E9), no required crop (E10)."**
-  - Kept for pictures, until E9b says otherwise.
-  - Video takes face crops now, and a body reference becomes a measurement for it too (§9.6).
+  - **Changed for pictures by E9b** (passed; owner, 2026-10-13): a `full_body` reference is sent, bound to its portrait (§9.4).
+  - **Kept for video:** face crops only. V-B failed with an extra person, so a body reference waits on a retest.
 - **§1, "locations stay free text in the scene until a location reference is measured."** Kept as the rule for **references**, the images. §9.6 is that measurement, for each generator. A text-only `Location` kind is still text in the scene: named owner text resolved into the setting, as a style is. So it ships without waiting for E13 or V-L, which gate only a location's images.
 
 ### 9.3 The store
@@ -424,9 +425,9 @@ characters/<name>/entry.toml
   That's why sending a portrait, a full body, a labelled mark or a location's images costs nothing against the interlock today. A generator that isn't local gets no library references without the owner's ruling (L6). A hosted backend would send exactly these images off the machine.
 - **Every row marked "if" is off until its measurement passes,** and the owner rules on the result. A reference a generator doesn't send still costs no image slot: the description and labels carry the facts in words.
 - **Labels have their own budget per person,** at most 300 characters of detail labels appended to one description (review of #680, pass 2).
-  - Labels past it are dropped, in the character's own order, and the result says so.
+  - Labels past it are dropped, in the character's own order, and the result says how many, **never which** (review of #680, pass 20). A label describes a person, and `image_generate` declares `Capabilities::default()` because nothing private comes back, only a path and a seed. A result naming labels would arm `private_data` on every picture-drawing conversation. Counts keep the declaration true.
   - **Labels are the first thing dropped when the compiled prompt would pass `MAX_COMPILED_PROMPT`** (review of #680, pass 9). The 9,000 isn't free room: at `MAX_CAST`, each person's description, `wearing` and `doing` (about 1,010 together) plus a style already take about 6,000.
-    - So the compiler drops labels, last person first, until the prompt fits, and says which. A label alone never causes a refusal.
+    - So the compiler drops labels, last person first, until the prompt fits, and says how many, never which (the same capability reason). A label alone never causes a refusal.
     - If the prompt is still over (the location's text is the setting and is kept), the next bullet's message applies.
 - **Locations and outfits expand the same way,** from a short name the model wrote into owner text. Each is bounded by its own cap:
   - an outfit fills `wearing` under `wearing`'s own `MAX_CAST_FIELD` (300), so it substitutes for typed text rather than adding to it;
@@ -464,6 +465,7 @@ characters/<name>/entry.toml
 
   Each writes a new version.
   - **The web routes parse an entry kind once, into `Kind`** (review of #680, pass 14). Today `parse_kind` allowlists a string and `visible` re-matches it with a Character fallback, so a new kind added to one and not the other would resolve a location against a same-named character, with every test green. One typed parse lets the compiler find every site, as `Config` and `ConfigLayer` rely on.
+  - **Every kind-matching site, not only the web's** (review of #680, pass 20). `tool/image_library.rs`'s `parse_kind` and its schema enum, `image_library_propose`'s match and schema enum, the CLI's `KindArg`, `serve/library.rs`'s `parse_kind` and `visible`, and `load_entry`'s character-only portrait rule all spell kinds by hand today. Each becomes an exhaustive match on `Kind`, so a new variant fails the build at every one, where today `kind: "location"` would be refused by the listing tool that §9.5 says lists it.
   - `--kind` keeps its existing meaning, the entry kind that tells apart a character and a style sharing a name; `resolve`'s message then names every kind holding the name, not just the two.
 - **Web:** the character page shows its references in a strip with their kinds and labels, and adds or removes one. That's an owner write, through the same door as §7's edit page. The Library tab gains Locations and Outfits beside Characters and Styles.
   - **The image route widens without widening the lock.** `GET /api/library/portrait/{blob}` serves a blob only when some **visible** entry names it, for every blob any entry names, whatever the kind.
