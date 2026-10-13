@@ -518,8 +518,9 @@ or reach getting any trust they do not already have?
   are never decided by the server's words.
 - **The job races the call against its own token.** On Stop it returns `not made: stopped` at
   once, whatever the server does. It sends `notifications/cancelled` for the request
-  best-effort, waiting at most two seconds to write it, so a server that ignores the notice, or
-  has stopped reading its input, never holds the conversation's one slot.
+  best-effort from a task of its own, so a server that ignores the notice, or has stopped reading
+  its input, never holds the conversation's one slot. The write is never cut off part-way, so
+  the server's input stream can't be left with half a line.
 - **Bounded either way.** A background call waits up to `BACKGROUND_TIMEOUT` (2 h), not
   `REQUEST_TIMEOUT`. Without a sink (the CLI, a subagent, an eval, a batch) the job is awaited
   inline, linked to the run's Stop, under that same cap.
@@ -542,7 +543,10 @@ or reach getting any trust they do not already have?
   - the **restart repair** (`late.rs` `may_be_orphan`): an orphaned `being made:` result is
     settled when its tool is `image_generate`, defers, or is no longer registered at all (a
     skipped server, a feature switched off; a restart is what removes one). Only a tool still
-    registered and known not to defer keeps its words. `image_generate` keeps its manifest
+    registered and known not to defer keeps its words. For an *unregistered* tool the words do
+    decide: a result of its that happens to start `being made: ` is replaced by the harness's
+    words. That's the accepted cost: the repair can only ever substitute the harness's own
+    sentence, and leaving a real orphan "being made" for good would strand a dead Stop. `image_generate` keeps its manifest
     repair. Any other becomes the harness's `not made: the server restarted`, recorded not
     external (§2.3's rule for that branch);
   - the **page's still-out state**: a transcript row and a live result event carry `deferred`
