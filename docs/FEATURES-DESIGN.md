@@ -1881,6 +1881,18 @@ the unit and its drop-ins and restarts it; `start_agent` writes
   directories on a Mac, and the router's evidence names both file names, so
   a hand-written agent of the same name is the owner's and nothing is
   written over it.
+- **The router runs mecha's own engine, always** (owner, 2026-10-13: *"perhaps
+  it is cleaner to just install our own to avoid conflicts"*). Found on the
+  owner's Mac: Homebrew's `llama-server` (build 9960, 1,431 behind the pin)
+  sat on the PATH, and `setup chat` read any engine there as provided and
+  would have run it. Its `--help` listed every flag the presets use, so a
+  flag check would have passed it; and a package manager's binary changes
+  under a running router on its next upgrade, past the measurement gate. So
+  `llama_units::router_engine` installs the pinned build under `~/.mecha`
+  beside any other, which is left alone — never upgraded, never removed. The
+  one exception: a machine no pinned build fits, with an engine of its own,
+  runs that one and is told so. The embeddings and OCR servers keep
+  `Engine::resolve`'s order (mecha's, else a provided one).
 - **One predicate**, `router_unit::installs_here`, answers "can `setup chat`
   run here" for every door that offers it: `setup chat`'s own refusal, the
   guided setup's chat question, and the `local-server` step's remedy.
