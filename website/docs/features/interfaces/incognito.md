@@ -52,11 +52,20 @@ The rest follows from that:
   gone rather than unlinked on an SSD. The folder is removed when the chat
   closes. If `mecha serve` dies before it can clean up, the next start sweeps
   the leftovers before it accepts any connections.
-- **No title, no situation brief, no hooks, no voice call.** The titler sends
-  your first turns to the model and stores the result. The brief reads the
-  task board through the graph server, and that read is itself a record.
-  [Hooks](/docs/features/security/hooks) receive tool inputs and outputs, and
-  the voice worker logs what it hears. So none of them runs.
+- **No title, no situation brief, no hooks.** The titler sends your first
+  turns to the model and stores the result. The brief reads the task board
+  through the graph server, and that read is itself a record.
+  [Hooks](/docs/features/security/hooks) receive tool inputs and outputs. So
+  none of them runs.
+- **A voice call keeps nothing either.** The call button works in an
+  incognito chat, and the call pane says that nothing from it is kept. The
+  voice worker's speech pipeline can write both sides of a call to the
+  system journal, so `mecha serve` hands the worker an incognito call only
+  after the worker answers that it logs none of it; while the call is live
+  that pipeline's logging is switched off at its core, the worker's own lines
+  keep their timings and lose the words, and no per-turn record names the
+  chat. A worker that cannot
+  give that answer is never handed the call, and the call does not start.
 - **The browser keeps nothing either.** Every incognito response carries
   `Cache-Control: no-store`, and a test in the web app's suite fails if it
   ever calls a browser storage API. A generated picture is shown but not linked,

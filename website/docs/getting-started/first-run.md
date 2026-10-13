@@ -136,9 +136,15 @@ compare it against.
 mecha serve
 ```
 
-The web surface, on your phone or another machine on your tailnet. It needs one
-line of config before it will start, because a door with no owner check should
-not open:
+The web surface, on your phone or another machine on your tailnet. It will not
+start until two things are true. The web app is a feature, switched on in
+`[features]` like every other — `mecha setup` asks about it, or:
+
+```bash
+mecha features enable web
+```
+
+And it needs an owner, because a door with no owner check should not open:
 
 ```toml
 [web]
@@ -147,13 +153,17 @@ port = 63242
 assets = "~/.mecha/web/dist"
 ```
 
+The pages are a build artifact, not part of `cargo install`, so they come from
+a git checkout:
+
 ```bash
-cd <checkout>/web && npm ci && npm run build   # the pages are a build artifact
+cd <checkout>/web && npm ci && npm run build
 rsync -a --delete dist/ ~/.mecha/web/dist/
 tailscale serve --bg 63242                     # what makes it reachable
 ```
 
-Then open home, chat, mail, the graph, review queues, tasks, and settings.
+Then open home, chat, review queues and settings, plus mail, the graph and
+tasks once their features are on — a page whose feature is off is not shown.
 They share the CLI stores and the same approval rules. A session there starts **read-only**: reads run, and
 anything that would send stages in the outbox instead.
 
