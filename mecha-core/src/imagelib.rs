@@ -720,11 +720,10 @@ pub fn set_lock_password(dir: &Path, password: &str) -> Result<()> {
     if password.chars().count() < MIN_LOCK_PASSWORD {
         bail!("the lock password needs at least {MIN_LOCK_PASSWORD} characters");
     }
-    // A v4 UUID's bytes from the OS generator — 122 random bits, six being
-    // the UUID's version and variant: no second RNG crate for one salt.
-    let salt = uuid::Uuid::new_v4();
+    // The salt is argon2's own: sixteen bytes from the OS generator
+    // (`getrandom`, a default of argon2 0.6).
     let hash = argon2::Argon2::default()
-        .hash_password_with_salt(password.as_bytes(), salt.as_bytes())
+        .hash_password(password.as_bytes())
         .map_err(|e| anyhow!("hashing the lock password: {e}"))?
         .to_string();
     std::fs::create_dir_all(dir)?;
@@ -1572,6 +1571,21 @@ mod tests {
         .unwrap();
         assert!(verify_lock_password(dir.path(), "lantern-orchard-42").unwrap());
         assert!(!verify_lock_password(dir.path(), "lantern-orchard-43").unwrap());
+    }
+
+    /// Every lock gets a salt of its own: one password set twice is two
+    /// different hashes. A constant salt — a dropped or ignored argument after
+    /// a crate change of how the salt is passed — would make a lock file
+    /// precomputable while every other test stayed green (review of #670).
+    #[test]
+    fn two_locks_with_one_password_get_different_salts() {
+        let (a, b) = (scratch(), scratch());
+        set_lock_password(a.path(), "correct horse").unwrap();
+        set_lock_password(b.path(), "correct horse").unwrap();
+        let read = |d: &Scratch| std::fs::read_to_string(d.path().join(LOCK_FILE)).unwrap();
+        assert_ne!(read(&a), read(&b));
+        assert!(verify_lock_password(a.path(), "correct horse").unwrap());
+        assert!(verify_lock_password(b.path(), "correct horse").unwrap());
     }
 
     #[test]
