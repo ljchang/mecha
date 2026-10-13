@@ -250,7 +250,7 @@ const IMAGE_MAC: &[Recommendation] = &[Recommendation {
             },
         ],
     }],
-    excludes: Some("the CPU text encoder's own memory, not measured apart from the process"),
+    excludes: Some("what a loaded server holds between pictures: there is no idle reset on a Mac, so ~13.6 GB on MPS and ~6 GiB RSS stay until `[image] unload_after_secs` sends /free, and what /free gives back on MPS is not measured; and the CPU text encoder's own memory, not measured apart from the process"),
 }];
 
 const MAC_M5: &str = "MacBook Pro (M5 Max)";
@@ -1385,7 +1385,14 @@ mod tests {
         };
         let b = budget(m, &[Feature::Graph, Feature::Image]);
         assert_eq!(b.gpu.loaded_mb, None);
-        assert_eq!(b.gpu.loaded_floor.known_mb, 5_243 + 20_790);
+        // The image figure is this system's row: a Mac reads its own
+        // (bf16) row, having no discrete one, through `pick`'s fallback.
+        let image = if std::env::consts::OS == "macos" {
+            33_485
+        } else {
+            20_790
+        };
+        assert_eq!(b.gpu.loaded_floor.known_mb, 5_243 + image);
         // Each line's floor is its own: nothing resident is known here, and
         // image generation (released on idle) is not charged to it.
         assert_eq!(b.gpu.resident_floor.known_mb, 0);

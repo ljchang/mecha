@@ -255,6 +255,23 @@ fn render(dir: &Path, naming: &Naming) -> String {
         .replace("@PORT@", &naming.port.to_string())
 }
 
+/// The unit as a Mac's agent reads it: its `PATH` is the system's own. The
+/// Linux line names `/usr/local/cuda/bin` for Triton's compiler, which a Mac
+/// has neither of (review of #681).
+fn for_mac(unit: &str) -> String {
+    unit.lines()
+        .map(|l| {
+            if l.trim_start().starts_with("Environment=PATH=") {
+                format!("Environment=PATH={}", crate::launchd::SYSTEM_PATH)
+            } else {
+                l.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
+}
+
 /// The idle reset's script under the install's tree.
 fn idle_reset_path(dir: &Path) -> PathBuf {
     dir.join("idle-reset")
@@ -492,7 +509,9 @@ pub async fn install(
     // The unit's `ExecStartPre` makes the temp directory on every start; a
     // launchd agent has no such step, so the install makes it on both.
     std::fs::create_dir_all(dir.join("tmp"))?;
-    crate::user_service::write(m, ID, &naming.unit, &render(&dir, naming))?;
+    let unit = render(&dir, naming);
+    let unit = if macos { for_mac(&unit) } else { unit };
+    crate::user_service::write(m, ID, &naming.unit, &unit)?;
     let names: Vec<&str> = models
         .iter()
         .filter_map(|(_, _, f)| f.path.rsplit('/').next())
@@ -1187,6 +1206,17 @@ mod tests {
             Some(dir.join("ComfyUI").as_path())
         );
         assert!(!agent.program.iter().any(|a| a == "--gpu-only"));
+        // And its PATH is the system's, not the unit's CUDA one.
+        let mac = crate::launchd::agent_from_unit(
+            "mecha-comfyui",
+            &for_mac(&text),
+            Path::new("/Users/owner"),
+            "/l".into(),
+        )
+        .unwrap();
+        let path = mac.env.iter().find(|(k, _)| k == "PATH").unwrap();
+        assert_eq!(path.1, crate::launchd::SYSTEM_PATH);
+        assert_eq!(mac.program, agent.program);
         assert!(text.contains("WorkingDirectory=/srv/owner/.mecha/sidecars/comfyui/ComfyUI"));
         assert!(text.contains(
             "ExecStart=/srv/owner/.mecha/sidecars/comfyui/venv/bin/python -B main.py --listen \
