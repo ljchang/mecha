@@ -687,8 +687,14 @@ duplicate there is not a regression E12 covers.
   format before tier D's LoRAs are the answer. Arms (library v2, design §9):
   F, face only, against B, face + full body bound by person with the
   two-images-one-person wording (design §9.4), each with height in text; two
-  seeds; E9's opposite builds in fitted grey clothes. Passes if build visibly
-  carries over with no clothing leak and no duplicate person. It shares its
+  seeds; E9's opposite builds. **Both halves fitted** (review of #680, pass 8):
+  - the references are full-body shots in fitted grey clothes;
+  - the scene states fitted clothing of another colour (a navy T-shirt and
+    slim jeans), so build is visible in the picture, which E9's stated
+    trench coat hid, and a grey leak is told apart from what was asked.
+
+  Passes if build visibly carries over with no clothing leak and no
+  duplicate person. It shares its
   reference set with V-B below.
 - **Library v2, the video side** (2026-10-13; the video tool, MiniMax H3,
   built outside this repository for now; its own design moves in with it):
