@@ -146,9 +146,9 @@ The rules, each a measurement:
   "Also in the scene, not from any image: …" with a head count of four — "the
   three from the images, each exactly once, and one new person" — he stood
   where the scene put him. Extras carry no reference, so the reference
-  ceiling (five, above) does not bound them; `MAX_EXTRAS` is four, unmeasured beyond. They
-  are read by the named-character guard too: "John waving" as an extra is
-  John drawn from words.
+  ceiling (five, above) does not bound them; `MAX_EXTRAS` is four,
+  unmeasured beyond. They are read by the named-character guard too:
+  "John waving" as an extra is John drawn from words.
 - **A cast name the library does not hold is drawn as an extra** (owner,
   2026-09-30: a named character not in the library "blocks image generation
   when it shouldn't"). `imagelib::demote_unknown` moves it, with its
@@ -498,6 +498,9 @@ kind is derived from its directory (`Entry.kind`).
     who**. `for` is never surfaced to a model, since a character name the
     call didn't supply is the roster leak `imagelib::missing` guards (review
     of #680, pass 7).
+  - **`for` is owner-written only, like a reference** (pass 26). A model's
+    proposed outfit carries no `for`: validating one against the roster
+    would answer which names exist, the same leak from the write side.
 - **An outfit expands only when it fills `wearing` whole.** A `wearing` that
   only mentions an outfit's name stays the model's text, so the expansion
   always sits inside `wearing`'s own 300 characters.
@@ -677,6 +680,14 @@ kind is derived from its directory (`Entry.kind`).
     one declaration the list is derived from, plus a test that walks
     `Kind::ALL` and asserts every other list agrees with it (for `KindArg`,
     a `From<Kind>` the compiler checks).
+  - **Three more of that shape in `imagelib` itself** (pass 26).
+    `update`'s two `kind != Kind::Character` guards ("a style has no
+    portrait") let a `Location` through with a style's message, since `!=`
+    can't fail a build; they become matches. And `default_kind()`'s
+    Character fallback types any `Entry` read on a path that forgets to
+    stamp its kind from the directory (a `history/v<N>.toml` read, say) as a
+    character: `visible`'s defect one module over. Every such read stamps
+    the kind, and a test reads each kind's history back.
   - `--kind` keeps its existing meaning, the entry kind that tells apart a
     character and a style sharing a name; `resolve`'s message then names
     every kind holding the name, not just the two.
@@ -774,8 +785,9 @@ kind is derived from its directory (`Entry.kind`).
 
 ### 9.6 Measurements, and what each gates
 
-The arms and pass bars are in `IMAGE-COMPILER-RESEARCH.md` under **Still
-open** (review of #680: evidence lives there, decisions here). This section
+The arms and pass bars are in `IMAGE-COMPILER-RESEARCH.md` §8: measured
+ones above its **Still open** list, open ones in it (review of #680, pass
+26: evidence lives there, decisions here). This section
 only says what each one gates:
 
 | Id | Gates |
@@ -824,6 +836,15 @@ repository, never their names or images.
   characters stay unlisted in the description, and an outfit's `for` is
   never named to a model. The lock is for browsing (§1), reaffirmed
   2026-10-13.
+  - **Its cost, stated as `docs/TRIFECTA.md` asks** (review of #680, pass
+    26). The 2026-10-08 ruling it inherits was about style names, a
+    rendering idiom; a location name may be a place the owner goes. The
+    description sits in every chat that can draw, persona and incognito
+    included, with nothing armed, since `image_generate` declares
+    `Capabilities::default()`. So an unarmed conversation can read every
+    approved, unlocked location name from its own prefix and hand it to a
+    `Chosen` sender. Locking a location is the owner's lever for a name
+    they don't want listed.
 - **L6, references stay local:** a generator whose backend isn't on this
   machine (loopback) is given no library references (face, body, detail,
   location) without the owner's ruling for that generator. **The two
