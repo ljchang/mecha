@@ -538,7 +538,21 @@ pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
     let rules: Vec<&mecha_core::policy::RuleConfig> =
         cfg.rules.iter().filter(|r| !r.from_project).collect();
     let done = feature::write_mcp_entries(&path, &refs, &|t| rules.iter().any(|r| r.tool == t))?;
-    for ((f, _, _), done) in items.iter().zip(&done) {
+    // One `[outbox]` covers every server of the call, so a rule on one
+    // feature's send leaves the others' unstaged too: said for each, never
+    // left to a silent absence (review of #669, pass 5).
+    let held = done.iter().any(|d| !d.ruled.is_empty());
+    for ((f, wiring, command), done) in items.iter().zip(done) {
+        // The feature's own line first, what hangs under it after (review of
+        // #669, pass 9).
+        if done.wrote_entry {
+            println!(
+                "Wrote [[mcp]] `{}` (running {}, its results read as untrusted) into {}",
+                wiring.name,
+                command.display(),
+                path.display()
+            );
+        }
         for tool in &done.ruled {
             let why = match rules.iter().find(|r| &r.tool == tool).map(|r| &r.decision) {
                 Some(mecha_core::policy::RuleDecision::Forbid) => {
@@ -557,12 +571,6 @@ pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
                 f.id()
             );
         }
-    }
-    // One `[outbox]` covers every server of the call, so a rule on one
-    // feature's send leaves the others' unstaged too: said for each, never
-    // left to a silent absence (review of #669, pass 5).
-    let held = done.iter().any(|d| !d.ruled.is_empty());
-    for ((f, wiring, command), done) in items.iter().zip(done) {
         // The ruled feature's own other sends included: a rule is per tool,
         // the `[outbox]` it held per command (review of #669, pass 6).
         let unstaged: Vec<&str> = done
@@ -593,12 +601,12 @@ pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
                 f.id()
             );
         }
-        if done.wrote_entry {
+        if let Some(name) = &done.disabled {
             println!(
-                "Wrote [[mcp]] `{}` (running {}, its results read as untrusted) into {}",
-                wiring.name,
-                command.display(),
-                path.display()
+                "  the [[mcp]] entry `{name}` running {} is disabled, so {} reads off until it \
+                 runs — remove `disabled = true` from [[mcp]] `{name}`",
+                wiring.program,
+                f.id()
             );
         }
         if done.untrusted_missing && done.runs_other.is_none() {

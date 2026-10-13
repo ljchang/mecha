@@ -1046,15 +1046,19 @@ pub struct McpWrite {
     /// other program: left as it is, and no entry added beside it, so the
     /// caller names it (review of #669, pass 5).
     pub runs_other: Option<String>,
+    /// The name of the entry running the program, where the only one is
+    /// `disabled = true`: left as it is, but the feature reads off until it
+    /// is enabled, so the caller says so beside whatever was staged (review
+    /// of #669, pass 9).
+    pub disabled: Option<String>,
 }
 
 /// Write one feature's wiring — [`write_mcp_entries`] with a single item and
-/// no operator rules.
-pub fn write_mcp_entry(
-    path: &Path,
-    wiring: &McpWiring,
-    command: &Path,
-) -> anyhow::Result<McpWrite> {
+/// no operator rules. Tests only: "no rule exists" is no answer for a real
+/// config, where a route beside an operator rule stops every start (review of
+/// #669, pass 9).
+#[cfg(test)]
+fn write_mcp_entry(path: &Path, wiring: &McpWiring, command: &Path) -> anyhow::Result<McpWrite> {
     Ok(write_mcp_entries(path, &[(wiring, command)], &|_| false)?.remove(0))
 }
 
@@ -1129,6 +1133,12 @@ pub fn write_mcp_entries(
         // reads as served only by an entry running the program
         // (`server_state`), so the caller says so rather than leaving a
         // silent "nothing written" (review of #669, pass 5).
+        let disabled = existing.as_ref().filter(|t| runs(t) && !live(t)).map(|t| {
+            t.get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("")
+                .to_string()
+        });
         let runs_other = existing.as_ref().filter(|t| !runs(t)).map(|t| {
             t.get("command")
                 .and_then(|c| c.as_str())
@@ -1196,6 +1206,7 @@ pub fn write_mcp_entries(
             outbox_missing: Vec::new(),
             untrusted_missing,
             runs_other,
+            disabled,
         });
     }
     if !outbox_existed {
@@ -1734,6 +1745,10 @@ mod tests {
             "wrapped.toml",
             "[[mcp]]\nname = \"mail\"\ncommand = \"/usr/local/bin/mail-wrap\"\n",
         );
+        let (off, off_v) = write(
+            "off.toml",
+            "[[mcp]]\nname = \"mail\"\ncommand = \"/b/mecha-mail\"\ndisabled = true\n",
+        );
         let (stale, stale_v) = write(
             "stale.toml",
             "[[mcp]]\nname = \"mail\"\ncommand = \"/b/mecha-mail\"\ndisabled = true\n\n\
@@ -1762,6 +1777,11 @@ mod tests {
                 "calendar_delete_event"
             ]
         );
+
+        // Only a disabled entry runs it: left as it is, and said.
+        assert_eq!(off.disabled.as_deref(), Some("mail"));
+        assert!(!off.wrote_entry && off_v["mcp"].as_array().unwrap().len() == 1);
+        assert!(stale.disabled.is_none() && renamed.disabled.is_none());
 
         // A disabled duplicate first: the live `gmail` names the routing.
         assert!(!stale.wrote_entry && stale.wrote_outbox);
