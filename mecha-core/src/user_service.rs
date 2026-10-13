@@ -25,16 +25,13 @@ pub fn file(m: &Machinery, stem: &str) -> Result<PathBuf> {
     })
 }
 
-/// Write a service's definition from its rendered unit, recorded under `id`.
-pub fn write(m: &Machinery, id: &str, stem: &str, unit: &str) -> Result<()> {
-    let path = file(m, stem)?;
-    let text = if cfg!(target_os = "macos") {
-        // The unit's paths are rendered under the home and split on spaces
-        // into the agent's arguments, so a home with a space in it would
-        // come apart wrongly; refused by name instead (review of #679).
-        // systemd would mis-split it too.
-        // Both: the units are rendered under the mecha home, and `%h` is the
-        // home (review of #679: MECHA_HOME can be set apart from it).
+/// What a service install can know before anything is fetched: on a Mac, a
+/// home or mecha home with a space in it cannot become an agent's command
+/// line (the unit's paths are split on spaces), so it is refused here,
+/// before the build and the downloads (review of #679). systemd would
+/// mis-split it too, but Linux keeps its own behaviour.
+pub fn preflight(m: &Machinery) -> Result<()> {
+    if cfg!(target_os = "macos") {
         for root in [&m.mecha_home, &m.home] {
             if root.to_string_lossy().contains(char::is_whitespace) {
                 anyhow::bail!(
@@ -44,6 +41,17 @@ pub fn write(m: &Machinery, id: &str, stem: &str, unit: &str) -> Result<()> {
                 );
             }
         }
+    }
+    Ok(())
+}
+
+/// Write a service's definition from its rendered unit, recorded under `id`.
+pub fn write(m: &Machinery, id: &str, stem: &str, unit: &str) -> Result<()> {
+    let path = file(m, stem)?;
+    let text = if cfg!(target_os = "macos") {
+        // Asked again here, the last door before a command line is split;
+        // the installs ask it first, before anything is fetched.
+        preflight(m)?;
         let log = crate::launchd::log_path(&m.home, stem);
         let mut agent =
             crate::launchd::agent_from_unit(&crate::launchd::label(stem), unit, &m.home, log)?;
@@ -51,6 +59,12 @@ pub fn write(m: &Machinery, id: &str, stem: &str, unit: &str) -> Result<()> {
         // (`log_cap.rs`): launchd never rotates a log.
         let mecha = std::env::current_exe().context("finding the mecha binary for the agent")?;
         agent.program = crate::log_cap::wrap(&mecha, &agent.log, agent.program);
+        // The wrapper's own-program check resolves the mecha home from the
+        // environment: an agent carries it, or one under a MECHA_HOME other
+        // than ~/.mecha refuses its own program (review of #679).
+        agent
+            .env
+            .push(("MECHA_HOME".into(), m.mecha_home.display().to_string()));
         crate::launchd::plist_text(&agent)
     } else {
         unit.to_string()

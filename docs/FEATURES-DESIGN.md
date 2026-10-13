@@ -1602,8 +1602,8 @@ from the row.
 ### 10.5 Out of scope, still
 
 Windows service managers, and on macOS the servers §12 has not yet taken
-(the router and the embeddings and OCR servers are launchd agents there;
-§12.2 and §12.3 bring voice and image); system packages (`apt`, CUDA drivers, Docker) — setup
+(the router, the embeddings and OCR servers and voice are launchd agents
+there; §12.3 brings image); system packages (`apt`, CUDA drivers, Docker) — setup
 names them and stops; installing anything from the web app; and installing
 inside a trial. An environment may switch a feature on (§5.1), but a trial
 home never runs an installer: a switch that is on over an absent sidecar is

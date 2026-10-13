@@ -1606,4 +1606,20 @@ mod tests {
                 })));
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// The one Docker evidence is Chatterbox's: on a Mac an unanswering
+    /// daemon reads as no container, a rule written for that image alone. A
+    /// second `DockerImage` would inherit it quietly (review of #679).
+    #[test]
+    fn chatterbox_is_the_only_docker_evidence() {
+        let docker: Vec<&str> = SIDECARS
+            .iter()
+            .flat_map(|s| s.evidence)
+            .filter_map(|e| match e {
+                Evidence::DockerImage(r) => Some(*r),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(docker, ["mecha/chatterbox"]);
+    }
 }

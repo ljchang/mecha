@@ -107,6 +107,8 @@ pub async fn install(m: &Machinery, naming: &Naming, say: Say<'_>) -> Result<()>
             naming.port
         );
     }
+    // Before anything is fetched or recorded (review of #679).
+    crate::user_service::preflight(m)?;
     Manifest::begin(home, ID)?;
     Manifest::record(home, ID, &dir)?;
     std::fs::create_dir_all(&dir)?;

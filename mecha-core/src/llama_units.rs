@@ -442,6 +442,11 @@ fn start_agent(
             ("PATH".into(), crate::launchd::SYSTEM_PATH.into()),
             ("LLAMA_SERVER".into(), engine.path().display().to_string()),
             ("HF_HUB".into(), hub.display().to_string()),
+            // `log-cap` (and `on-demand`) resolve the mecha home from the
+            // environment to check they run only mecha's own programs: an
+            // agent under a MECHA_HOME other than ~/.mecha must carry it
+            // (review of #679).
+            ("MECHA_HOME".into(), m.mecha_home.display().to_string()),
         ],
         workdir: None,
         throttle_secs: crate::launchd::THROTTLE_SECS,

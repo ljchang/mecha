@@ -364,7 +364,10 @@ pub fn load(plist: &Path, label: &str) -> Result<Domain> {
 /// #679); `disable` is launchd's persistent override, cleared by [`load`].
 /// Disabled in both domains; it is enough that one accepted it.
 pub fn disable(label: &str) -> Result<()> {
-    unload(label)?;
+    // The override is set whatever the unload answered: a bootout that timed
+    // out is exactly when the agent must not come back at login (review of
+    // #679). Its error is still returned after.
+    let unloaded = unload(label);
     let mut first_err = None;
     let mut any = false;
     for d in [Domain::Gui, Domain::User] {
@@ -375,6 +378,7 @@ pub fn disable(label: &str) -> Result<()> {
             }
         }
     }
+    unloaded?;
     match (any, first_err) {
         (true, _) | (false, None) => Ok(()),
         (false, Some(e)) => Err(e),
