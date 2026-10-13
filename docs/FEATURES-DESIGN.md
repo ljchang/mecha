@@ -2028,3 +2028,49 @@ back at ~1.1 GB — does not run on Darwin. mecha's own `[image]
 unload_after_secs` (`/free` after fifteen idle minutes) still runs; how much
 of the ~13.6 GB it gives back on MPS is not measured yet.
 
+## 13. `enable` finishes what it starts
+
+**2026-10-13.** Two gaps, found installing on the owner's Mac, and two
+rulings. `enable graph` wrote `graph = true` and a footnote — "`mecha-graph-mcp`
+is not installed, so no [[mcp]] entry was written" — and left the feature
+half-on; `enable documents` installed the OCR server, the embeddings server
+and the layout environment and wrote no `[documents]` table, so the feature it
+had just installed read *unready* and `mecha document extract` refused. Not
+Mac-specific: a fresh Linux install had both.
+
+**The graph's server is a sidecar** (`graph_mcp.rs`). The owner: `enable
+graph` offers to install `mecha-graph-mcp` when it is missing — **only the
+server, not the `mecha-graph` CLI**, "to be cleaner" — and setup runs each
+feature's enable, so there is one installer per feature.
+
+- **Pinned, never the registry's latest:** `cargo install --git
+  https://github.com/ljchang/mecha-graph --rev <REV> --locked --root
+  ~/.mecha/sidecars/graph-mcp mecha-graph-mcp`. It is code that will hold the
+  owner's graph, so it is the reviewed commit, as the engine's and the speech
+  engine's builds are.
+- **One on the PATH is the owner's** (`Evidence::OnPath`): used as it is,
+  never installed over. Mecha's build is on no PATH; the `[[mcp]]` entry names
+  it absolutely, so a unit or an agent with a short PATH finds it.
+- **Priced as a build**, said as one before the yes: a few minutes, cargo and
+  a C compiler (SQLCipher is built from source). No cargo: not offered, with
+  why, and graph reads *switched on, but not working* until it is installed.
+- **Fail loud.** A build that fails stops `enable` before the switch, as
+  every installer here does — never "enabled `graph`" over a footnote. The
+  check never starts the server, which would open (and create) the owner's
+  graph database; it asks cargo's own record, `.crates2.json`, for this
+  package from this commit.
+
+**`enable documents` writes the table** where there is none, never over the
+owner's: `ocr` where the OCR server is installed or provided, `layout` where
+its environment is, and on Linux the confinement this machine actually runs —
+each backend's own preflight asked in turn (bubblewrap, then Landlock),
+`confine` written as the one that started poppler. None working: the table is
+written, and PDFs are said to be refused until one does, with the fix.
+
+**On a Mac, PDFs wait for the macOS sandbox** (the owner, 2026-10-13: build a
+Seatbelt confinement; until it lands, a Mac reads pictures and refuses PDFs).
+The table gets no `confine`, the extractor refuses a PDF by name before
+anything runs (`document::pdf_refused_on`) rather than as a confused wrapper
+failure, and `layout` is written off — the layout model is confined as the
+parser is.
+

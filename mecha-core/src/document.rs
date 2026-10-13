@@ -1735,6 +1735,67 @@ pub fn pdf_refused_on(os: &str, confine: Backend) -> Option<&'static str> {
     )
 }
 
+#[cfg(test)]
+mod enable_tests {
+    use super::*;
+
+    /// A Mac refuses a PDF by name when its confinement is one only Linux
+    /// has; `none` is the operator's choice, and Linux is never refused here.
+    #[test]
+    fn a_mac_refuses_pdfs_until_its_sandbox_exists() {
+        for b in [Backend::Bwrap, Backend::Landlock] {
+            let why = pdf_refused_on("macos", b).unwrap();
+            assert!(
+                why.contains("macOS sandbox") && why.contains("Pictures"),
+                "{why}"
+            );
+            assert!(pdf_refused_on("linux", b).is_none());
+        }
+        assert!(pdf_refused_on("macos", Backend::None).is_none());
+    }
+
+    /// The table is written where there is none, with what was chosen, the
+    /// file's comments kept — and an owner's table is never touched.
+    #[test]
+    fn the_documents_table_is_written_once_and_never_over_the_owner_s() {
+        let dir = std::env::temp_dir().join(format!("mecha-doctable-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "# my notes\n[features]\ndocuments = true\n").unwrap();
+        let choice = TableChoice {
+            ocr: true,
+            layout: false,
+            confine: Some(Backend::Landlock),
+        };
+        assert!(write_documents_table(&path, &choice).unwrap());
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# my notes"), "{text}");
+        let v: toml::Value = toml::from_str(&text).unwrap();
+        assert_eq!(v["documents"]["ocr"].as_bool(), Some(true));
+        assert_eq!(v["documents"]["layout"].as_bool(), Some(false));
+        assert_eq!(v["documents"]["confine"].as_str(), Some("landlock"));
+        // It parses as the config reads it.
+        let d: DocumentsConfig = v["documents"].clone().try_into().unwrap();
+        assert_eq!(d.confine, Backend::Landlock);
+
+        std::fs::write(&path, "[documents]\nocr = false\n").unwrap();
+        assert!(!write_documents_table(&path, &choice).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[documents]\nocr = false\n"
+        );
+        // No confinement chosen: the key is left out, so the default holds.
+        std::fs::write(&path, "").unwrap();
+        let none = TableChoice {
+            confine: None,
+            ..choice
+        };
+        assert!(write_documents_table(&path, &none).unwrap());
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("confine"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 /// What `mecha features enable documents` writes when the config has no
 /// `[documents]` table: the settings that match what is installed here.
 #[derive(Debug, Clone, PartialEq)]

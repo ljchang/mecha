@@ -344,7 +344,7 @@ be able to record.
 | **Mail and calendar** | Gmail and Outlook behind one surface. The model names an *account*, never a provider. | `mecha features enable mail` | `mecha-mail auth` (asks Google or Outlook, and a name) |
 | **Documents** | Google Docs, Sheets and Slides under `drive.file` — only files it created or you handed it in Google's own picker. | `mecha features enable docs` | `mecha-docs auth` (the account is `--account`, default `personal`) |
 | **Slack** | A remote control: watch a run from a phone, approve sends, pass files both ways. | `mecha features enable slack` | `mecha slack auth` |
-| **Knowledge graph** | Memory — who people are, what happened when. A separate project, wired in over MCP. | `mecha features enable graph` | `cargo install mecha-graph mecha-graph-mcp --locked` before it, so it finds the program |
+| **Knowledge graph** | Memory — who people are, what happened when. A separate project, wired in over MCP. | `mecha features enable graph` | nothing: enable builds `mecha-graph-mcp` from its pinned commit if none is on your `PATH` |
 
 For mail, documents and the graph, `mecha features enable` also writes the
 **`[[mcp]]` entry** that runs the server — found on your `PATH` or in
