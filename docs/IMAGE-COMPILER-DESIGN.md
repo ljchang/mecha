@@ -455,7 +455,9 @@ characters/<name>/entry.toml
   - `add-location`;
   - `add-outfit [--for <character>]`.
 
-  Each writes a new version. `--kind` keeps its existing meaning, the entry kind that tells apart a character and a style sharing a name; `resolve`'s message then names every kind holding the name, not just the two.
+  Each writes a new version.
+  - **The web routes parse an entry kind once, into `Kind`** (review of #680, pass 14). Today `parse_kind` allowlists a string and `visible` re-matches it with a Character fallback, so a new kind added to one and not the other would resolve a location against a same-named character, with every test green. One typed parse lets the compiler find every site, as `Config` and `ConfigLayer` rely on.
+  - `--kind` keeps its existing meaning, the entry kind that tells apart a character and a style sharing a name; `resolve`'s message then names every kind holding the name, not just the two.
 - **Web:** the character page shows its references in a strip with their kinds and labels, and adds or removes one. That's an owner write, through the same door as §7's edit page. The Library tab gains Locations and Outfits beside Characters and Styles.
   - **The image route widens without widening the lock.** `GET /api/library/portrait/{blob}` serves a blob only when some **visible** entry names it, for every blob any entry names, whatever the kind.
   - So a locked entry's images stay unfetchable by hash, the leak the #385 review closed. Every kind carries its own `locked` flag.
@@ -469,6 +471,7 @@ characters/<name>/entry.toml
     - Under §9, the in-folder manifest names only unlocked entries. A locked one is recorded as `{kind, locked: true, version}` with no name.
     - The full record, name and version, goes to a usage log in the library store, outside any chat's folder, where the owner's audit reads it.
     - That applies to every kind, styles and characters included, so it closes today's channel along with the new ones.
+    - **The manifest's own readers keep working** (review of #680, pass 14). The save dialog's `GET /api/library/source` decides whether a new entry starts locked from the manifest's cast names, so it reads a redacted row's `locked: true` as "made from a locked entry" and starts it locked, as §1 requires. §5's lineage reads the row's kind and version, which stay.
 
   Characters stay unlisted ("their names are the owner's"). A model can only write a location it knows the name of (L5).
 - **Where the lists sit:** the location and outfit names are appended after the styles sentence at the end of the description (`imagegen::described`), so a new location moves no earlier byte of the cached prefix.
@@ -509,7 +512,8 @@ E9b and V-B use the same reference set, so one set of images answers both genera
   - the `Location` and `Outfit` kinds as their own directories, with deletes decided by a walk of the whole store root;
   - every blob any entry names getting the portrait's name check on load and hash check on read;
   - `add-reference` refused on a candidate;
-  - the image route serving only blobs a visible entry names;
+  - the image route serving only blobs a visible entry names, with the entry kind parsed once into `Kind`;
+  - the in-folder manifest redacting locked entries to `{kind, locked: true, version}`, which the save dialog reads as locked;
   - unknown kinds, and known kinds on the wrong entry kind, never sent;
   - a location stored in a scene record as words plus its name, the name field `#[serde(default)]` so older records still parse as `Words`.
 - **L2, the portrait stays canonical:** no migration. The face is its crop, and existing manifests stay valid.
