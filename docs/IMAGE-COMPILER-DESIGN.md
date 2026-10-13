@@ -323,7 +323,8 @@ The decisions that are this design's rather than the owner's:
 
 ## 8. Not yet built
 
-- **Locations, scene assets, lineage and branching** (draft §6–7, §20).
+- **Locations, scene assets, lineage and branching** (draft §6–7, §20). §9 proposes the
+  library half of this: typed character references, locations and wardrobe.
 - **Tier B checks** (face embedding, detector, VLM) and the repair loop.
 - **Cast plus an edit canvas in one call** — needs a per-reference
   resolution (ComfyUI's `resolution = 0` keeps each at its own size), which
@@ -331,3 +332,104 @@ The decisions that are this design's rather than the owner's:
 - **A prompt rewriter** (E1b, unmeasured).
 - **A crop box** — optional on the character page in phase 2 (E10: a small
   gain).
+
+## 9. Library v2: typed references, locations and wardrobe (proposed 2026-10-13)
+
+**Status:** a design for the owner's ruling. The owner approved the direction on 2026-10-13 (the video design's R6). Nothing in this section is built. It reopens two of §1's settled rulings with new evidence, and says which, rather than re-arguing them silently.
+
+### 9.1 Why now
+
+- **A second consumer.** The video tool (`video_generate`, MiniMax H3; built outside this repository for now, with its design moving in when it's ported) reads the same library. H3's full-reference mode binds several pictures to one person natively, "`<Subject 1>` … whose appearance comes from `<Picture 1>` and `<Picture 2>`". It has up to nine image slots, three voice slots and three video slots.
+- **What the video measurements showed** (2026-10-13; the owner reviewed the clips):
+  - A whole portrait carried its outfit into every clip, even with the prompt saying the clothing wasn't taken from it.
+  - A face crop stopped the leak. That's the crop `face::anchor_crop` already makes for picture edits, tight at 1.12× the face, and it held identity as well as a looser head-and-shoulders crop.
+  - Clothing stated per clip then landed exactly. This is E9's leak and E10's crop again, on a second model.
+- **What text alone doesn't carry well.** A distinguishing mark (a forearm tattoo came out heavier than "fine-line") and build: E9 never got to test build, because its trench coat hid it.
+- **The owner's ask:** several typed images per character (face, full body, details), a location library, and named outfits, shared by pictures and video.
+
+### 9.2 What it reopens
+
+- **§1, "a character is a portrait plus a description … no body reference (E9), no required crop (E10)."**
+  - Kept for pictures, until E9b says otherwise.
+  - Video takes face crops now, and a body reference becomes a measurement for it too (§9.6).
+- **§1, "locations stay free text in the scene until a location reference is measured."** Kept as the rule. §9.6 is that measurement, for each generator.
+
+### 9.3 The store
+
+A character entry gains typed references beside its portrait. The portrait stays: it's what the Library tab shows, what `face::anchor_crop` crops, and what every existing manifest names.
+
+```
+characters/<name>/entry.toml
+  portrait  = "sha256-….jpg"           # unchanged: the canonical picture
+  [[reference]]
+  kind  = "full_body"                  # face | full_body | detail
+  blob  = "sha256-….png"
+  label = "standing, fitted grey clothes, front"   # required for detail, e.g. "left-forearm tattoo"
+```
+
+- **`kind` is a closed enum in an on-disk store, so it's a wire format.** An unknown `kind` loads, is shown in the library, and is **never sent to a generator**. That's the fail-closed reading: a reference nobody can classify carries nothing into a picture.
+- **No `face` entry is needed today.** The face is the portrait's crop, cached by blob. A `face` kind is there for the owner who wants a better face than the portrait shows.
+- **Each reference is a blob,** content-addressed like the portrait, so the existing versioning (`history/v<N>.toml`) and lock apply unchanged.
+- **Limits:** at most 1 `full_body` and 4 `detail` per character. These are budget limits, set by video's nine image slots across up to three people.
+
+**Two new kinds**, beside `Character` and `Style`:
+
+| Kind | Fields | Pictures | Video |
+|---|---|---|---|
+| `Location` | `text` (≤ 400), 1–3 images, optional short clip blob, optional `soundscape` | unmeasured as a reference (E13); until then its text goes into the scene | an environment `<Subject>`, "the place in `<Picture k>`" (V-L) |
+| `Outfit` | `text` (≤ 300), optional `for` (a character, or none for anyone), optional image | **text only**: pasted into `wearing` | text only: pasted into `wearing` |
+
+- **Outfits stay text.** An image of clothes is the leak §9.1 measured, delivered on purpose. The image is for browsing.
+- **Who writes:** both new kinds follow §1. The owner creates approved entries; a model's proposal is a candidate.
+
+### 9.4 What each generator sends
+
+| Reference | `image_generate` (Qwen-Image) | `video_generate` (H3) |
+|---|---|---|
+| face | the portrait at 512², as now (E10) | the face crop, as now |
+| full_body | **not sent** until E9b passes | sent beside the face, bound as one `<Subject>`, if V-B passes |
+| detail | not sent; its `label` is appended to the description | sent with its label ("`<Picture k>` shows her left-forearm tattoo"), if V-D passes |
+| location | its text in the scene | its images as an environment `<Subject>`, if V-L passes |
+| outfit | its text as `wearing` | its text as `wearing` |
+
+- **Every row marked "if" is off until its measurement passes,** and the owner rules on the result. A reference a generator doesn't send still costs nothing: the description and labels carry the facts in words.
+
+### 9.5 Surfaces
+
+- **CLI:**
+  - `mecha imagelib add-reference <name> --kind full_body|detail <file> [--label …]` and `remove-reference`;
+  - `add-location`;
+  - `add-outfit [--for <character>]`.
+
+  Each writes a new version.
+- **Web:** the character page shows its references in a strip with their kinds and labels. The Library tab gains Locations and Outfits beside Characters and Styles.
+- **Tools:**
+  - `image_library` lists the new kinds;
+  - a scene names a location in `setting.location`, and a person's `wearing` may name an outfit.
+
+  The compiler resolves both, and an unknown name stays plain text.
+
+### 9.6 Measurements, before anything is built
+
+| Id | Generator | Question | Arms | Passes if |
+|---|---|---|---|---|
+| **E9b** | pictures | Does a full-body reference in fitted neutral clothing carry build, now that build is visible? | F (face only), B (face + body, bound by person), each with height in text; 2 seeds; opposite builds (E9's Maya and John) | build visibly carries over with no clothing leak and no duplicate person |
+| **V-B** | video | The same, in H3's subject binding | face crop vs face crop + full body, 2 seeds | the same bar |
+| **V-D** | video | Does a labelled detail image carry a mark (a tattoo) better than the label alone? | label only vs label + detail crop | the mark matches the detail image in both seeds |
+| **E13** | pictures | Does a location reference place people in that place without becoming a person or replacing the cast? | text only vs text + location image | the place is recognisable and the head count holds |
+| **V-L** | video | The same in H3 | text only vs environment `<Subject>` | the same bar |
+
+E9b and V-B use the same reference set, so one set of images answers both generators.
+
+### 9.7 Rulings asked
+
+- **L1, the store shape:** `[[reference]]` with `kind`, `blob` and `label` on characters; the `Location` and `Outfit` kinds; unknown kinds never sent.
+- **L2, the portrait stays canonical:** no migration. The face is its crop, and existing manifests stay valid.
+- **L3, each generator's references gated on its measurement** (§9.4), with the owner ruling on each result.
+- **L4, outfits are text:** an image is for browsing only.
+- **L5, the order:**
+  1. E9b and V-B, one session with shared references;
+  2. the store and CLI for `full_body` and `detail`;
+  3. V-D;
+  4. locations (E13 and V-L, then the kind);
+  5. outfits, last, being text and the cheapest.
