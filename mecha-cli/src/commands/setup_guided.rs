@@ -57,8 +57,8 @@ pub(super) struct ServerToWrite {
 pub(super) struct ChatOptions {
     /// The recommended model and its download, when one can be installed here.
     pub recommended: Option<(String, u64)>,
-    /// Whether `setup chat` can install a router here at all — Linux, and
-    /// nobody else's server on the port.
+    /// Whether `setup chat` can install a router here at all — Linux or
+    /// macOS, and nobody else's server on the port.
     pub can_install: bool,
     /// A server answers that the config does not describe.
     pub server: Option<ServerToWrite>,
@@ -145,7 +145,7 @@ pub(super) fn ask_chat(read: &mut impl BufRead, o: &ChatOptions) -> Result<ChatP
     } else {
         println!(
             "  Nothing answers prompts yet, and setup cannot install a local model here: that \
-             needs Linux and :8080 free, and a config whose local provider is this machine's \
+             needs Linux or macOS and :8080 free, and a config whose local provider is this machine's \
              router. Start your own server and run `mecha setup --write`, or use a hosted model."
         );
     }

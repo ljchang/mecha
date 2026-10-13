@@ -1581,8 +1581,10 @@ server gets one. It shows the chat model recommended for this machine's memory
 tier — its download size and the context and slots it will be served with — or
 takes a GGUF you already have (and its vision projector, if any; `~/` is
 expanded). On a yes it
-installs mecha's pinned llama.cpp first if the machine has none, then the
-router: a systemd user service on `:8080`, its launcher in
+installs mecha's pinned llama.cpp first unless mecha's own is already
+installed — a `llama-server` already on your `PATH`, Homebrew's say, is left
+alone and not run — then the router on `:8080`: a systemd user service on
+Linux, a launchd agent on a Mac. Its launcher is in
 `~/.mecha/sidecars/bin/`, and its presets in `~/.mecha/sidecars/router/models.ini`.
 It starts the router, waits for the model to load — several minutes for a large
 one — and asks it which model it serves. A model you brought stays yours, and

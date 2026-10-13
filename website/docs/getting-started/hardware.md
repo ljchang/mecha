@@ -279,7 +279,7 @@ Two Mac-specific notes that do transfer:
 
 ## What to do once you have chosen
 
-Do not type the numbers from this page into your config. On Linux,
+Do not type the numbers from this page into your config.
 `mecha setup chat` installs the model recommended for this machine's memory
 and writes its settings for you. With a server you started yourself, let
 mecha read them back:
