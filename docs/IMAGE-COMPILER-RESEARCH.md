@@ -678,6 +678,8 @@ in the image" on the same reasoning with no arm of its own: it is carried by
 inference from the three- and four-person arms, not measured, so a
 duplicate there is not a regression E12 covers.
 
+**V0, the video tool's portraits** (2026-10-13; MiniMax H3, built outside this repository for now). A whole portrait sent as H3's reference carried its outfit into every clip, both seeds, even with the prompt saying the clothing wasn't taken from it. `face::anchor_crop`'s crop stopped the leak and held identity, as well as a looser head-and-shoulders crop did (owner's review). Clothing stated per clip then landed exactly. This is E9's leak and E10's crop, on a second model.
+
 **Still open**, in the order they would change the design:
 
 - **E9b — build, re-run with fitted clothing** so build is visible, and
@@ -690,12 +692,6 @@ duplicate there is not a regression E12 covers.
   reference set with V-B below.
 - **Library v2, the video side** (2026-10-13; the video tool, MiniMax H3,
   built outside this repository for now; its own design moves in with it):
-  - **V0 (measured).** A whole portrait sent as H3's reference carried its
-    outfit into every clip, both seeds, even with the prompt saying the
-    clothing wasn't taken from it. `face::anchor_crop`'s crop stopped the
-    leak and held identity, as well as a looser head-and-shoulders crop did
-    (owner's review). Clothing stated per clip then landed exactly. This is
-    E9's leak and E10's crop, on a second model.
   - **V-B (open).** E9b's question in H3's subject binding: a face crop
     against a face crop plus a full body, two seeds, E9b's bar.
   - **V-D (open).** Does a labelled detail image (a tattoo) carry the mark

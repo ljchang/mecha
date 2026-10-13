@@ -369,22 +369,23 @@ characters/<name>/entry.toml
   - A `face` reference is for the owner who wants a better face than the portrait shows. At most one per character.
   - When attached, it replaces the portrait as the source of video's face crop. Pictures keep sending the whole portrait (E10), since they have no crop to replace; using a `face` reference there would want its own measurement. The portrait stays the picture the library shows.
 - **Each reference is a blob,** content-addressed like the portrait, so the existing versioning (`history/v<N>.toml`) and lock apply unchanged.
-- **The portrait's two checks extend to every new blob name:** each reference's `blob`, and a location's images.
+- **The portrait's two checks extend to every blob any entry names:** references, a location's images, an outfit's image. Stated over the set, not by list.
   - On load, the name check: no path separators, no leading dot, so a hand-edited entry can't point outside `blobs/`.
   - On read, the hash check: bytes swapped under an approved hash are refused, not sent.
 
   Today both read `entry.portrait` only, so neither carries over by itself.
-- **Only the owner writes references** (review of #680): the CLI and the web page. `image_library_propose` can't add one, and a candidate carries none. So:
+- **Only the owner writes references** (review of #680): the CLI and the web page. `image_library_propose` can't add one, and **`add-reference` refuses a candidate**: the owner approves the entry first. So a candidate never holds a reference, and:
   - the entry's one `origin` and `status` (§2) still describe everything in it;
-  - a reference added to an approved entry is an owner write and a new version, as an owner `update` is (§6);
+  - a reference added to an approved entry is an owner write and a new version, as an owner `update` is (§6). `update`'s "nothing to change" comparison includes the references, and the version bump is what changes `shown_digest`, so a reference write can't slip past a displayed approval;
   - `reject`'s portrait-only clean-up and `MAX_PROPOSED_PORTRAIT_BYTES` stay correct as written. A proposal that tried to carry references would be refused, not trimmed.
 - **`label` is at most 100 characters.** Only a `detail`'s label is ever sent; on a `face` or `full_body` it's for browsing. Sent labels count against `MAX_COMPILED_PROMPT`, as the description does.
 - **Store limits:** at most 1 `face`, 1 `full_body` and 4 `detail` per character. That's what the owner can attach, not what a call sends. §9.4 says how a call fits the generator's slots.
 
 **Two new kinds**, beside `Character` and `Style`, each its own directory (`locations/<name>/`, `outfits/<name>/`), since an entry's kind is derived from its directory (`Entry.kind`).
-- **§2's tree gains both.** Everything that walks the store, `blob_referenced` included, reads its directories from **`Kind::ALL` plus `removed/`**, rather than a hand-kept list.
-  - So a blob only a location names is never taken for an orphan.
-  - `removed/` is no kind, but it keeps a removed entry's blobs alive for the manifests that name them (§6). Blobs are content-addressed, so dropping it would let a rejected candidate's clean-up delete a removed entry's portrait.
+- **§2's tree gains both.**
+  - **Loading** reads the directories this build knows (`Kind::ALL`).
+  - **Deleting** a blob is decided by walking every `*.toml` under the store root, whatever directory it sits in (review of #680, pass 5). `blob_referenced` gates a delete, so it must be fail-closed for kinds this build doesn't know: a later build's fifth directory is unseen, not unreadable.
+  - That walk also covers `removed/`, which keeps a removed entry's blobs alive for the manifests that name them (§6), and a blob only a location names.
 
 | Kind | Fields | Pictures | Video |
 |---|---|---|---|
@@ -410,7 +411,7 @@ characters/<name>/entry.toml
   - `image_generate` is loopback-only, `Egress::None`, enforced by `loopback_url`.
   - The video tool renders on a local ComfyUI over loopback, H3's open weights, not MiniMax's hosted API, and declares no open world.
 
-  That's why sending a portrait, a full body, a labelled mark or a location's images costs nothing against the interlock today. A generator that isn't local gets no library references without the owner's ruling (L6). A hosted backend would send exactly these images off the machine.
+  That's why sending a portrait, a full body, a labelled mark or a location's images costs nothing against the interlock today. A generator that isn't local gets no library references without the owner's ruling (L5). A hosted backend would send exactly these images off the machine.
 - **Every row marked "if" is off until its measurement passes,** and the owner rules on the result. A reference a generator doesn't send still costs no image slot: the description and labels carry the facts in words.
 - **Labels have their own budget per person,** at most 300 characters of detail labels appended to one description (review of #680, pass 2).
   - Labels past it are dropped, in the character's own order, and the result says so.
@@ -425,7 +426,7 @@ characters/<name>/entry.toml
   2. each person's `full_body`, in cast order;
   3. details, in cast order, then in each character's own order.
   - **Video** has nine slots, less any pinned or other reference images. Two people fit with a body each and up to five details; three fit with a body each and three details.
-  - **Pictures** keep their existing budgets (`MAX_CAST`, `EDIT_REFERENCE_BUDGET`, `IMAGE-DESIGN.md` §15.4).
+  - **Pictures** keep their existing budgets (`MAX_CAST`, `EDIT_REFERENCE_BUDGET`, `IMAGE-DESIGN.md` §5.2, "Budgets, as measured").
   - A cast that can't fit its faces is refused in the scene's own terms, as today.
 - **Pictures with two images per person need new wording.** §3's grammar ("each of the N people from the images appears exactly once") assumes one image per person. If E9b passes, the compiled prompt binds them: "`<image1>` and `<image2>` show one person, Maya: her face and her build". It counts people, not images. E9b's bound arm must run with that wording.
 
@@ -438,15 +439,16 @@ characters/<name>/entry.toml
 
   Each writes a new version.
 - **Web:** the character page shows its references in a strip with their kinds and labels, and adds or removes one. That's an owner write, through the same door as §7's edit page. The Library tab gains Locations and Outfits beside Characters and Styles.
-  - **The image route widens without widening the lock.** `GET /api/library/portrait/{blob}` serves a blob only when some **visible** entry names it, and that rule extends from `portrait` to reference blobs and location images.
-  - A locked character's `full_body` and `detail` images, and a locked location's images, stay unfetchable by hash, the leak the #385 review closed. `Location` and `Outfit` entries carry their own `locked` flag, and the same rule applies to them.
+  - **The image route widens without widening the lock.** `GET /api/library/portrait/{blob}` serves a blob only when some **visible** entry names it, for every blob any entry names, whatever the kind.
+  - So a locked entry's images stay unfetchable by hash, the leak the #385 review closed. Every kind carries its own `locked` flag.
+- **Blob size:** owner-written blobs of every kind follow the owner portrait's existing rule. `MAX_PROPOSED_PORTRAIT_BYTES` stays a proposal-only cap, since candidates carry no new blobs.
 - **Tools:**
   - `image_library` lists the new kinds;
   - a scene names a location in `setting.location`, and a person's `wearing` may name an outfit.
 
   The compiler resolves both, and an unknown name stays plain text.
 - **How a scene record stores a location** (review of #680). `scene::Setting` is a closed enum read leniently, and an unknown variant reads as "no setting". So a location isn't a new variant: it's recorded as today's `Words`, holding the location's resolved text, plus an optional `location` name. A build that predates it reads the words and loses only the link.
-- **Untrusted text naming a location.** The quarantined extraction (`IMAGE-DESIGN.md` §5.2) would learn the field. A location name from an untrusted-origin record resolves like any name: it selects owner-approved words, and adds none of its own.
+- **Untrusted text naming a location.** The quarantined extraction (`IMAGE-DESIGN.md` §5.3) would learn the field. A location name from an untrusted-origin record resolves like any name: it selects owner-approved words, and adds none of its own.
   - It's the same rule as a non-library `who` being drawn from words (`IMAGE-DESIGN.md` §8).
   - The record keeps the origin of the write that set it, as every `scene::Field` does; an unreadable setting stays `Setting::Unknown` and untrusted.
 
@@ -468,16 +470,17 @@ E9b and V-B use the same reference set, so one set of images answers both genera
 
 - **L1, the store shape:**
   - `[[reference]]` with `kind`, `blob` and `label` (≤ 100 characters) on characters, written by the owner only;
-  - the `Location` and `Outfit` kinds as their own directories, with every store walk reading `Kind::ALL` plus `removed/`;
-  - every new blob name getting the portrait's name check on load and hash check on read;
+  - the `Location` and `Outfit` kinds as their own directories, with deletes decided by a walk of the whole store root;
+  - every blob any entry names getting the portrait's name check on load and hash check on read;
+  - `add-reference` refused on a candidate;
   - the image route serving only blobs a visible entry names;
   - unknown kinds never sent;
   - a location stored in a scene record as words plus its name, the name field `#[serde(default)]` so older records still parse as `Words`.
 - **L2, the portrait stays canonical:** no migration. The face is its crop, and existing manifests stay valid.
 - **L3, each generator's references gated on its measurement** (§9.4), with the owner ruling on each result, and the slot-filling order of §9.4.
 - **L4, outfits are text:** an image is for browsing only.
-- **L6, references stay local:** a generator whose backend isn't on this machine (loopback) is given no library references (face, body, detail, location) without the owner's ruling for that generator.
-- **L5, the order:**
+- **L5, references stay local:** a generator whose backend isn't on this machine (loopback) is given no library references (face, body, detail, location) without the owner's ruling for that generator.
+- **L6, the order:**
   1. E9b and V-B, one session with shared references;
   2. the store and CLI for `full_body` and `detail`;
   3. V-D;
