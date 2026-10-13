@@ -557,16 +557,12 @@ pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
             continue;
         }
         seen.push(*f);
-        // The owner's own on the PATH first; else the build mecha installed
-        // into its own tree (`graph_mcp`), which no PATH names.
-        let own_build = path
-            .parent()
-            .filter(|home| {
-                wiring.program == mecha_core::graph_mcp::PROGRAM
-                    && mecha_core::graph_mcp::installed(home)
-            })
-            .map(mecha_core::graph_mcp::binary);
-        match mecha_core::onboarding::find_program(wiring.program).or(own_build) {
+        let found = mcp_command(
+            wiring.program,
+            mecha_core::onboarding::find_program(wiring.program),
+            path.parent(),
+        );
+        match found {
             Some(command) => items.push((*f, wiring, command)),
             // Where `enable` is the installer, the feature is said to be not
             // working rather than left as a footnote under "enabled" (§13).
@@ -710,6 +706,23 @@ pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The program an `[[mcp]]` entry runs: the owner's own on the PATH first;
+/// else, for the graph, the build mecha installed into its own tree
+/// (`graph_mcp`), which no PATH names — by its absolute path either way.
+fn mcp_command(
+    program: &str,
+    on_path: Option<std::path::PathBuf>,
+    mecha_home: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
+    on_path.or_else(|| {
+        mecha_home
+            .filter(|home| {
+                program == mecha_core::graph_mcp::PROGRAM && mecha_core::graph_mcp::installed(home)
+            })
+            .map(mecha_core::graph_mcp::binary)
+    })
 }
 
 /// What `enable` knows when it decides about the turbo model.
@@ -1924,5 +1937,41 @@ mod tests {
             assert!(text.contains(want), "missing {want:?} in:\n{text}");
         }
         assert!(!text.contains("Nothing to install"), "{text}");
+    }
+
+    /// The owner's server on the PATH is the entry's; else mecha's own build,
+    /// by absolute path; a half-built tree is neither, and no other program
+    /// is ever pointed at the graph's build.
+    #[test]
+    fn the_graph_entry_runs_the_owner_s_server_or_mecha_s_build() {
+        use mecha_core::graph_mcp::{binary, root, PROGRAM, REPO, REV};
+        let home = std::env::temp_dir().join(format!("mecha-mcpcmd-{}", uuid::Uuid::new_v4()));
+        let theirs = std::path::PathBuf::from("/opt/bin/mecha-graph-mcp");
+        assert_eq!(
+            mcp_command(PROGRAM, Some(theirs.clone()), Some(&home)),
+            Some(theirs)
+        );
+        assert_eq!(mcp_command(PROGRAM, None, Some(&home)), None);
+        std::fs::create_dir_all(root(&home).join("bin")).unwrap();
+        std::fs::write(binary(&home), b"#!/bin/sh\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(binary(&home), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        assert_eq!(
+            mcp_command(PROGRAM, None, Some(&home)),
+            None,
+            "no record of the pinned build"
+        );
+        std::fs::write(
+            root(&home).join(".crates2.json"),
+            format!(r#"{{"installs":{{"{PROGRAM} 0.1.5 (git+{REPO}?rev={REV}#{REV})":{{}}}}}}"#),
+        )
+        .unwrap();
+        let ours = mcp_command(PROGRAM, None, Some(&home)).unwrap();
+        assert!(ours.is_absolute() && ours == binary(&home));
+        assert_eq!(mcp_command("mecha-mail", None, Some(&home)), None);
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

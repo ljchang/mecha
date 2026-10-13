@@ -58,7 +58,12 @@ pub fn installed(mecha_home: &Path) -> bool {
 /// (the graph's SQLCipher is built from source), and its absence is said by
 /// cargo, at the build.
 pub fn fits() -> std::result::Result<PathBuf, String> {
-    crate::onboarding::find_program("cargo").ok_or_else(|| {
+    fits_with(crate::onboarding::find_program)
+}
+
+/// [`fits`] over a lookup, so a test chooses whether cargo is here.
+fn fits_with(find: impl Fn(&str) -> Option<PathBuf>) -> std::result::Result<PathBuf, String> {
+    find("cargo").ok_or_else(|| {
         "it is built from its pinned source with cargo, which is not installed (rustup.rs \
          installs it)"
             .to_string()
@@ -68,8 +73,13 @@ pub fn fits() -> std::result::Result<PathBuf, String> {
 /// Build the pinned commit into [`root`] and check it. Idempotent: a build
 /// already here from this commit is kept.
 pub async fn install(m: &Machinery, say: Say<'_>) -> Result<()> {
-    let home = &m.mecha_home;
     let cargo = fits().map_err(anyhow::Error::msg)?;
+    install_with(m, &cargo, say).await
+}
+
+/// [`install`] with the cargo to run, so a test can stand one in.
+async fn install_with(m: &Machinery, cargo: &Path, say: Say<'_>) -> Result<()> {
+    let home = &m.mecha_home;
     let root = root(home);
     Manifest::begin(home, ID)?;
     Manifest::record(home, ID, &root)?;
@@ -81,7 +91,7 @@ pub async fn install(m: &Machinery, say: Say<'_>) -> Result<()> {
         "building {PROGRAM} from {REPO} at {} — a few minutes; cargo prints its progress",
         &REV[..7]
     ));
-    let status = tokio::process::Command::new(&cargo)
+    let status = tokio::process::Command::new(cargo)
         .args([
             "install", "--git", REPO, "--rev", REV, "--locked", "--force", "--root",
         ])
@@ -188,6 +198,82 @@ mod tests {
         ))));
         assert!(!records_pin("not json"));
         assert!(!records_pin("{}"));
+    }
+
+    #[test]
+    fn without_cargo_the_build_is_not_offered_and_says_why() {
+        let why = fits_with(|_| None).unwrap_err();
+        assert!(why.contains("cargo") && why.contains("rustup"), "{why}");
+        assert_eq!(
+            fits_with(|n| (n == "cargo").then(|| PathBuf::from("/c/cargo"))).unwrap(),
+            PathBuf::from("/c/cargo")
+        );
+    }
+
+    /// A stand-in cargo, as a script: `body` runs with the arguments cargo
+    /// would get, `--root <dir>` among them.
+    fn fake_cargo(dir: &Path, body: &str) -> PathBuf {
+        let p = dir.join("cargo");
+        std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        p
+    }
+
+    fn scratch_machinery(root: &Path) -> Machinery {
+        Machinery {
+            home: root.join("home"),
+            mecha_home: root.join("home/.mecha"),
+            unit_dirs: vec![],
+            path: vec![],
+            docker: Box::new(|_| crate::sidecar::Lookup::Absent),
+        }
+    }
+
+    /// A failed build is an error and leaves nothing installed — the install
+    /// unfinished in the record, so `enable` resumes it rather than reading
+    /// mecha's half-tree as someone's; a build that exits 0 and wrote no
+    /// binary is a failure too; one that wrote the pinned build is installed.
+    #[tokio::test]
+    async fn a_failed_or_empty_build_installs_nothing_and_a_good_one_is_checked() {
+        let root = std::env::temp_dir().join(format!("mecha-gmcp-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let m = scratch_machinery(&root);
+        let home = m.mecha_home.clone();
+
+        let failing = fake_cargo(&root, "exit 101");
+        let e = install_with(&m, &failing, &mut |_| {}).await.unwrap_err();
+        assert!(format!("{e:#}").contains("failed"), "{e:#}");
+        assert!(!installed(&home));
+        let man = Manifest::read(&home).unwrap();
+        assert!(man.entries.iter().any(|e| e.sidecar == ID && e.incomplete));
+
+        let empty = fake_cargo(&root, "exit 0");
+        let e = install_with(&m, &empty, &mut |_| {}).await.unwrap_err();
+        assert!(format!("{e:#}").contains("is not there"), "{e:#}");
+        assert!(!installed(&home));
+
+        // Writes what `cargo install --root <r> --git … --rev …` writes.
+        let good = fake_cargo(
+            &root,
+            &format!(
+                "while [ \"$1\" != --root ]; do shift; done; r=\"$2\"\n\
+                 mkdir -p \"$r/bin\" && printf '#!/bin/sh\\n' > \"$r/bin/{PROGRAM}\" && \
+                 chmod 755 \"$r/bin/{PROGRAM}\"\n\
+                 printf '%s' '{{\"installs\":{{\"{PROGRAM} 0.1.5 (git+{REPO}?rev={REV}#{REV})\":{{}}}}}}' \
+                 > \"$r/.crates2.json\""
+            ),
+        );
+        install_with(&m, &good, &mut |_| {}).await.unwrap();
+        assert!(installed(&home));
+        let man = Manifest::read(&home).unwrap();
+        assert!(man.entries.iter().any(|e| e.sidecar == ID && !e.incomplete));
+        remove(&m).unwrap();
+        assert!(!root.join("home/.mecha/sidecars").join(ID).exists());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A tree with the binary but no record, or the record but no binary, is

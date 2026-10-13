@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`mecha features enable graph` installs the graph's MCP server.** When no
+  `mecha-graph-mcp` is on your `PATH`, enable builds it with cargo from a
+  pinned commit of `ljchang/mecha-graph` into `~/.mecha/sidecars/graph-mcp/`
+  and writes the `[[mcp]]` entry naming it by absolute path. The
+  `mecha-graph` CLI is no longer part of the install; it stays an optional
+  `cargo install`. A failed build switches nothing on.
+- **`mecha features enable documents` writes the `[documents]` table** it
+  needs, where there is none: OCR and layout as installed, and on Linux the
+  confinement this machine runs. On a Mac, PDFs are refused by name until
+  the macOS sandbox lands; pictures are read.
+
 - **The local chat model installs on a Mac.** `mecha setup chat`, and the
   chat question of the guided `mecha setup`, now run on macOS: llama.cpp's
   pinned Metal build, the model recommended for the Mac's memory (the same

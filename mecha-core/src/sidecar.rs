@@ -989,7 +989,8 @@ mod tests {
                 );
             }
             assert!(
-                ["7a-3", "7b", "7c-1", "7c-2", "7d-1", "7d-2", "7e", "7f"].contains(&s.installer),
+                ["7a-3", "7b", "7c-1", "7c-2", "7d-1", "7d-2", "7e", "7f", "13"]
+                    .contains(&s.installer),
                 "{}: installer step {}",
                 s.id,
                 s.installer
@@ -1354,6 +1355,36 @@ mod tests {
         Manifest::finish(&home, "layout").unwrap();
         assert!(!Manifest::read(&home).unwrap().entries[0].incomplete);
         assert!(Manifest::record(&home, "never-begun", &home).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The graph's MCP server: missing with nothing here; the owner's on the
+    /// PATH is provided and left alone; mecha's own build, recorded, is
+    /// installed — never read as the owner's for being on no PATH (§13).
+    #[test]
+    fn the_graph_server_is_missing_provided_or_mecha_s_own() {
+        let root = scratch();
+        let m = machinery(&root);
+        let state = |m: &Machinery| {
+            plan(Feature::Graph, m, &GB10, &root.join("hub"), false)
+                .unwrap()
+                .sidecars
+                .into_iter()
+                .find(|s| s.id == crate::graph_mcp::ID)
+                .expect("graph's plan names its MCP server")
+                .state
+        };
+        assert!(matches!(state(&m), SidecarState::Missing { .. }));
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        std::fs::write(root.join("bin/mecha-graph-mcp"), b"#!/bin/sh\n").unwrap();
+        assert!(matches!(state(&m), SidecarState::Provided { .. }));
+        std::fs::remove_file(root.join("bin/mecha-graph-mcp")).unwrap();
+        let tree = crate::graph_mcp::root(&m.mecha_home);
+        std::fs::create_dir_all(tree.join("bin")).unwrap();
+        Manifest::begin(&m.mecha_home, crate::graph_mcp::ID).unwrap();
+        Manifest::record(&m.mecha_home, crate::graph_mcp::ID, &tree).unwrap();
+        Manifest::finish(&m.mecha_home, crate::graph_mcp::ID).unwrap();
+        assert_eq!(state(&m), SidecarState::Installed);
         let _ = std::fs::remove_dir_all(&root);
     }
 
