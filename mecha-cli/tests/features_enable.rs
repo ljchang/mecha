@@ -316,3 +316,46 @@ fn an_entry_of_the_name_running_something_else_is_named() {
         "{said}"
     );
 }
+
+/// The only entry running `mecha-mail` is disabled: left as it is, with no
+/// second one added, and `enable` says mail reads off until it runs rather
+/// than reporting its sends staged and nothing else (review of #669, pass 9).
+#[test]
+fn a_disabled_entry_running_the_program_is_named() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = Home::new("disabled");
+    let bin = home.0.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let p = bin.join("mecha-mail");
+    std::fs::write(&p, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(
+        home.0.join("home/config.toml"),
+        format!(
+            "[[mcp]]\nname = \"mail\"\ncommand = \"{}\"\ndisabled = true\n",
+            p.display()
+        ),
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_mecha"))
+        .args(["features", "enable", "mail", "--no-install"])
+        .env("MECHA_HOME", home.0.join("home"))
+        .env("HOME", home.0.join("home"))
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .env("MECHA_SESSION_KIND", "test")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let cfg: toml::Value = toml::from_str(&home.config()).unwrap();
+    assert_eq!(cfg["mcp"].as_array().unwrap().len(), 1, "{cfg}");
+    assert!(
+        said.contains("is disabled") && said.contains("remove `disabled = true`"),
+        "{said}"
+    );
+}
