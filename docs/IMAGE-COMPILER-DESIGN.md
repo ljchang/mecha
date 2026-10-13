@@ -335,7 +335,7 @@ The decisions that are this design's rather than the owner's:
 
 ## 9. Library v2: typed references, locations and wardrobe (proposed 2026-10-13)
 
-**Status:** a design for the owner's ruling. The owner approved the direction on 2026-10-13 (the video design's R6). Nothing in this section is built. It reopens two of §1's settled rulings with new evidence, and says which, rather than re-arguing them silently.
+**Status:** ruled 2026-10-13 (L1–L7, §9.7); the owner approved the direction the same day (the video design's R6). Nothing in this section is built. Step 1, E9b and V-B, is next. It reopens two of §1's settled rulings with new evidence, and says which, rather than re-arguing them silently.
 
 ### 9.1 Why now
 
@@ -481,7 +481,9 @@ The arms and pass bars are in `IMAGE-COMPILER-RESEARCH.md` under **Still open** 
 
 E9b and V-B use the same reference set, so one set of images answers both generators.
 
-### 9.7 Rulings asked
+### 9.7 Rulings
+
+**Ruled by the owner, 2026-10-13: L1–L7 as recommended below** ("let's go with your recommendations for now"). E9b and V-B run on the owner's own characters. Only numbers and a generic description of them enter this repository, never their names or images.
 
 - **L1, the store shape:**
   - `[[reference]]` with `kind`, `blob` and `label` (≤ 100 characters), written by the owner only: `face | full_body | detail` on characters, `view` on locations and outfits;
