@@ -73,6 +73,19 @@ pub enum Cmd {
         #[arg(long)]
         verify: bool,
     },
+    /// Internal: run a program with its output in a log that rotates at a
+    /// cap — the journal's part, for every launchd agent mecha installs on
+    /// macOS (`mecha_core::log_cap`). Run by launchd, not by hand.
+    #[command(hide = true)]
+    LogCap {
+        #[arg(long)]
+        log: std::path::PathBuf,
+        #[arg(long, default_value_t = mecha_core::log_cap::MAX_MB)]
+        max_mb: u64,
+        /// The program and its arguments, after `--`.
+        #[arg(last = true, required = true)]
+        program: Vec<String>,
+    },
     /// Internal: hold a port and start the server behind it on its first
     /// request, stopping it when idle — the program of the on-demand
     /// embeddings and OCR servers' launchd agents on macOS
@@ -104,6 +117,19 @@ pub async fn execute(args: Args) -> Result<()> {
         }) => return enable(&ids, no_install, turbo, false).await,
         Some(Cmd::Disable { ids }) => return set(&ids, false),
         Some(Cmd::Plan { id, json, verify }) => return plan(&id, json, verify),
+        Some(Cmd::LogCap {
+            log,
+            max_mb,
+            program,
+        }) => {
+            let code = mecha_core::log_cap::run(mecha_core::log_cap::Spec {
+                log,
+                max_bytes: max_mb.max(1) << 20,
+                program,
+            })
+            .await?;
+            crate::exit_with(code);
+        }
         Some(Cmd::OnDemand {
             listen,
             backend,
