@@ -52,6 +52,10 @@ pub const MAX_PROPOSED_PORTRAIT_BYTES: u64 = 4 * 1024 * 1024;
 /// 1024² took 190 s and four at 512² 79 s; E10: a whole portrait at 512² held
 /// identity within a few hundredths of a tight face crop.
 pub const REFERENCE_SIZE: u32 = 512;
+/// A reference's label: "left-forearm tattoo", not a paragraph. Only a
+/// `detail`'s is ever sent, appended to the description it rides beside
+/// (`IMAGE-COMPILER-DESIGN.md` §9.3).
+pub const MAX_LABEL: usize = 100;
 
 /// What an entry is. The directory it lives under.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -148,9 +152,93 @@ pub struct Entry {
     pub created: String,
     #[serde(default)]
     pub updated: String,
+    /// Typed pictures beside the portrait (`IMAGE-COMPILER-DESIGN.md` §9.3),
+    /// written by the owner only. Last, so the TOML's `[[reference]]` tables
+    /// follow every plain field.
+    #[serde(default, rename = "reference", skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<Reference>,
     /// Set on load from the directory, never stored.
     #[serde(skip, default = "default_kind")]
     pub kind: Kind,
+}
+
+/// What a reference picture is of (`IMAGE-COMPILER-DESIGN.md` §9.3). A closed
+/// enum in an on-disk store, so a wire format: a value this build does not
+/// know loads as `Unknown`, is shown, and is never sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefKind {
+    /// A better face than the portrait shows; the source of video's crop.
+    Face,
+    /// Build and proportions, in a neutral, square-on stance.
+    FullBody,
+    /// A labelled mark: "left-forearm tattoo".
+    Detail,
+    /// A place's or an outfit's picture, for the kinds still to come.
+    View,
+    #[serde(other)]
+    Unknown,
+}
+
+impl RefKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            RefKind::Face => "face",
+            RefKind::FullBody => "full_body",
+            RefKind::Detail => "detail",
+            RefKind::View => "view",
+            RefKind::Unknown => "unknown",
+        }
+    }
+
+    /// Whether an entry of `kind` may carry this reference. A known kind on
+    /// the wrong entry kind reads as unknown: never sent (§9.3).
+    pub fn allowed_on(self, kind: Kind) -> bool {
+        matches!(
+            (kind, self),
+            (
+                Kind::Character,
+                RefKind::Face | RefKind::FullBody | RefKind::Detail
+            )
+        )
+    }
+
+    /// How many of this kind one entry may hold (§9.3's store limits).
+    pub fn limit(self) -> usize {
+        match self {
+            RefKind::Face | RefKind::FullBody => 1,
+            RefKind::Detail => 4,
+            RefKind::View => 3,
+            RefKind::Unknown => 0,
+        }
+    }
+}
+
+/// One typed reference: a blob under `blobs/`, checked like the portrait.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Reference {
+    pub kind: RefKind,
+    pub blob: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+impl Entry {
+    /// The references a generator may be sent, by the entry's own rules: a
+    /// kind this build knows and this entry kind allows, within its limit,
+    /// in stored order. Anything else is kept and shown, never sent.
+    pub fn sendable_references(&self) -> Vec<&Reference> {
+        let mut seen: std::collections::HashMap<RefKind, usize> = Default::default();
+        self.references
+            .iter()
+            .filter(|r| r.kind.allowed_on(self.kind))
+            .filter(|r| {
+                let n = seen.entry(r.kind).or_default();
+                *n += 1;
+                *n <= r.kind.limit()
+            })
+            .collect()
+    }
 }
 
 fn default_kind() -> Kind {
@@ -364,12 +452,39 @@ impl Library {
             .portrait
             .as_deref()
             .ok_or_else(|| anyhow!("`{}` has no portrait", entry.name))?;
-        let bytes = std::fs::read(self.blob_path(blob))
-            .with_context(|| format!("reading `{}`'s portrait", entry.name))?;
-        if blob_name(&bytes, picture_type(&bytes)?) != blob {
-            bail!("`{}`'s portrait does not match its hash", entry.name);
+        self.read_checked(blob, &format!("`{}`'s portrait", entry.name))
+    }
+
+    /// A reference's picture, under the portrait's hash check: bytes swapped
+    /// under an approved hash are refused, not sent (§9.3).
+    pub fn read_reference(
+        &self,
+        entry: &Entry,
+        reference: &Reference,
+    ) -> Result<(Vec<u8>, &'static str)> {
+        // "Never sent" is a property of the read, not a filter a caller must
+        // remember (review of #684): an unknown kind, a kind this entry kind
+        // doesn't take, or one past its limit is refused here.
+        if !entry.sendable_references().contains(&reference) {
+            bail!(
+                "`{}`'s {} reference is not one it may send",
+                entry.name,
+                reference.kind.label()
+            );
         }
+        self.read_checked(
+            &reference.blob,
+            &format!("`{}`'s {} reference", entry.name, reference.kind.label()),
+        )
+    }
+
+    fn read_checked(&self, blob: &str, what: &str) -> Result<(Vec<u8>, &'static str)> {
+        let bytes =
+            std::fs::read(self.blob_path(blob)).with_context(|| format!("reading {what}"))?;
         let ext = picture_type(&bytes)?;
+        if blob_name(&bytes, ext) != blob {
+            bail!("{what} does not match its hash");
+        }
         Ok((bytes, ext))
     }
 }
@@ -392,11 +507,31 @@ fn load_entry(kind: Kind, dir: &Path) -> Result<Entry> {
     if kind == Kind::Character && entry.portrait.is_none() {
         bail!("a character without a portrait");
     }
+    // A plain file name, so a hand-edited entry cannot point a reference at
+    // anything outside `blobs/`. Every blob the entry names, not only the
+    // portrait (§9.3).
+    let plain = |blob: &str| !(blob.contains('/') || blob.contains('\\') || blob.starts_with('.'));
     if let Some(blob) = &entry.portrait {
-        // A plain file name, so a hand-edited entry cannot point a reference
-        // at anything outside `blobs/`.
-        if blob.contains('/') || blob.contains('\\') || blob.starts_with('.') {
+        if !plain(blob) {
             bail!("portrait `{blob}` is not a blob name");
+        }
+    }
+    for r in &entry.references {
+        if !plain(&r.blob) {
+            bail!(
+                "{} reference `{}` is not a blob name",
+                r.kind.label(),
+                r.blob
+            );
+        }
+        if r.label
+            .as_deref()
+            .is_some_and(|l| l.chars().count() > MAX_LABEL)
+        {
+            bail!(
+                "a {} reference's label is over {MAX_LABEL} characters",
+                r.kind.label()
+            );
         }
     }
     Ok(entry)
@@ -412,7 +547,7 @@ fn blob_name(bytes: &[u8], ext: &str) -> String {
 fn store_blob(dir: &Path, bytes: &[u8]) -> Result<String> {
     if bytes.len() as u64 > MAX_PORTRAIT_BYTES {
         bail!(
-            "the portrait is {} MB; portraits are capped at {} MB",
+            "the picture is {} MB; library pictures are capped at {} MB",
             bytes.len() / (1024 * 1024),
             MAX_PORTRAIT_BYTES / (1024 * 1024)
         );
@@ -511,6 +646,9 @@ pub fn create(dir: &Path, new: NewEntry) -> Result<Entry> {
         version: 1,
         created: stamp.clone(),
         updated: stamp,
+        // A new entry carries none: the owner adds references to an approved
+        // entry (`add_reference`), so a proposal can never bring any.
+        references: Vec::new(),
         kind: new.kind,
     };
     if let Err(e) = write_entry(dir, &entry) {
@@ -611,13 +749,6 @@ pub fn update(
     {
         bail!("nothing to change");
     }
-    let history = entry_dir(dir, kind, name).join("history");
-    std::fs::create_dir_all(&history)?;
-    write_atomic(
-        &history.join(format!("v{}.toml", old.version)),
-        toml::to_string_pretty(&old)?.as_bytes(),
-    )?;
-    entry.version = old.version + 1;
     // Only a rewritten text is the owner's. A new portrait or seed is not a
     // reading of the text, so it must not approve a candidate or relabel its
     // provenance — that would launder a model's text past `approve`'s
@@ -626,9 +757,8 @@ pub fn update(
         entry.origin = Origin::Owner;
         entry.status = Status::Approved;
     }
-    entry.updated = now();
-    write_entry(dir, &entry)?;
-    Ok(entry)
+    // One place cuts a version (review of #684).
+    new_version(dir, old, entry)
 }
 
 /// Reject a candidate: deleted outright, and its portrait with it unless
@@ -671,11 +801,149 @@ fn blob_referenced(dir: &Path, blob: &str) -> bool {
         }
         Ok(false)
     }
-    ["characters", "styles", "removed"]
+    // The whole store, not a list of the directories this build knows: a
+    // delete must be fail-closed for a kind a later build adds (§9.3). The
+    // blobs themselves are skipped, being no entry.
+    let Ok(items) = std::fs::read_dir(dir) else {
+        return dir.exists();
+    };
+    for item in items {
+        let Ok(item) = item else { return true };
+        let path = item.path();
+        if path.file_name().is_some_and(|n| n == "blobs") {
+            continue;
+        }
+        let named = if path.is_dir() {
+            walk(&path, blob).unwrap_or(true)
+        } else {
+            path.extension().is_some_and(|e| e == "toml")
+                && std::fs::read_to_string(&path).map_or(true, |t| t.contains(blob))
+        };
+        if named {
+            return true;
+        }
+    }
+    false
+}
+
+/// Attach a typed reference to an approved character: the owner's write, a
+/// new version with the old one kept in its history (§9.3). A candidate is
+/// refused, so a rejected one can never strand reference blobs.
+pub fn add_reference(
+    dir: &Path,
+    name: &str,
+    kind: RefKind,
+    bytes: &[u8],
+    label: Option<String>,
+) -> Result<Entry> {
+    let old = current(dir, Kind::Character, name)?;
+    if old.status != Status::Approved {
+        bail!("`{name}` is a candidate; approve it before adding references");
+    }
+    if !kind.allowed_on(Kind::Character) {
+        bail!(
+            "a character takes face, full_body or detail references, not {}",
+            kind.label()
+        );
+    }
+    let label = label
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty());
+    if kind == RefKind::Detail && label.is_none() {
+        bail!("a detail needs a label saying what it shows, e.g. \"left-forearm tattoo\"");
+    }
+    if label
+        .as_deref()
+        .is_some_and(|l| l.chars().count() > MAX_LABEL)
+    {
+        bail!("a label is capped at {MAX_LABEL} characters");
+    }
+    let held = old.references.iter().filter(|r| r.kind == kind).count();
+    if held >= kind.limit() {
+        bail!(
+            "`{name}` already has {} {} reference{}; remove one first",
+            held,
+            kind.label(),
+            if held == 1 { "" } else { "s" }
+        );
+    }
+    // Two of one kind under one label could never be told apart again:
+    // `remove_reference` names a reference by its kind and label (review of
+    // #684). Checked before the picture is stored, so a refusal leaves none.
+    if old
+        .references
         .iter()
-        .map(|d| dir.join(d))
-        .filter(|d| d.exists())
-        .any(|d| walk(&d, blob).unwrap_or(true))
+        .any(|r| r.kind == kind && r.label == label)
+    {
+        bail!(
+            "`{name}` already has a {} reference{}; use another label",
+            kind.label(),
+            label
+                .as_deref()
+                .map(|l| format!(" labelled \"{l}\""))
+                .unwrap_or_default()
+        );
+    }
+    let blob = store_blob(dir, bytes)?;
+    if old.portrait.as_deref() == Some(blob.as_str())
+        || old.references.iter().any(|r| r.blob == blob)
+    {
+        bail!("`{name}` already holds that picture");
+    }
+    let mut entry = old.clone();
+    entry.references.push(Reference { kind, blob, label });
+    new_version(dir, old, entry)
+}
+
+/// Take a reference off a character: a new version, the picture kept in
+/// `blobs/` for the history and any manifest that names it. With more than
+/// one of the kind, `label` says which.
+pub fn remove_reference(
+    dir: &Path,
+    name: &str,
+    kind: RefKind,
+    label: Option<&str>,
+) -> Result<Entry> {
+    let old = current(dir, Kind::Character, name)?;
+    let matching: Vec<usize> = old
+        .references
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.kind == kind && label.is_none_or(|l| r.label.as_deref() == Some(l)))
+        .map(|(i, _)| i)
+        .collect();
+    let index = match matching.as_slice() {
+        [one] => *one,
+        [] => bail!(
+            "`{name}` has no {} reference{}",
+            kind.label(),
+            label
+                .map(|l| format!(" labelled \"{l}\""))
+                .unwrap_or_default()
+        ),
+        _ => bail!(
+            "`{name}` has several {} references; pass --label to say which",
+            kind.label()
+        ),
+    };
+    let mut entry = old.clone();
+    entry.references.remove(index);
+    new_version(dir, old, entry)
+}
+
+/// Write `entry` as the version after `old`, keeping `old` in the history.
+/// The entry's text is untouched, so its origin and status stand.
+fn new_version(dir: &Path, old: Entry, mut entry: Entry) -> Result<Entry> {
+    let history = entry_dir(dir, old.kind, &old.name).join("history");
+    std::fs::create_dir_all(&history)?;
+    write_atomic(
+        &history.join(format!("v{}.toml", old.version)),
+        toml::to_string_pretty(&old)?.as_bytes(),
+    )?;
+    entry.version = old.version + 1;
+    entry.updated = now();
+    write_entry(dir, &entry)?;
+    Ok(entry)
 }
 
 /// Remove an entry — moved aside under `removed/`, not deleted, because a
@@ -1981,5 +2249,268 @@ mod tests {
             ..Taint::default()
         };
         assert_eq!(Origin::of_proposal(Some(&dirty)), Origin::ModelUntrusted);
+    }
+
+    /// A different real PNG per colour, so two references are two blobs.
+    fn png_of(rgb: [u8; 3]) -> Vec<u8> {
+        let img = image::RgbImage::from_pixel(2, 2, image::Rgb(rgb));
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    }
+
+    /// A reference is the owner's write on an approved character: a new
+    /// version, the old one kept, the picture read back under its hash
+    /// (IMAGE-COMPILER-DESIGN.md §9.3).
+    #[test]
+    fn a_reference_is_a_new_version_read_under_its_hash() {
+        let dir = scratch();
+        create(dir.path(), character("wren", Origin::Owner)).unwrap();
+        let e = add_reference(
+            dir.path(),
+            "wren",
+            RefKind::FullBody,
+            &png_of([1, 2, 3]),
+            None,
+        )
+        .unwrap();
+        assert_eq!(e.version, 2);
+        assert!(entry_dir(dir.path(), Kind::Character, "wren")
+            .join("history/v1.toml")
+            .is_file());
+        let lib = Library::load(dir.path()).0;
+        let wren = lib.get(Kind::Character, "wren").unwrap();
+        assert_eq!(wren.references.len(), 1);
+        assert_eq!(wren.sendable_references().len(), 1);
+        let (bytes, ext) = lib.read_reference(wren, &wren.references[0]).unwrap();
+        assert_eq!((bytes, ext), (png_of([1, 2, 3]), "png"));
+        // Its text is untouched, so the owner's write changes no provenance.
+        assert_eq!(wren.origin, Origin::Owner);
+        assert_eq!(wren.status, Status::Approved);
+    }
+
+    /// A candidate carries no references, so rejecting one can never strand
+    /// reference blobs (§9.3, review of #680).
+    #[test]
+    fn a_candidate_takes_no_reference() {
+        let dir = scratch();
+        create(dir.path(), character("moss", Origin::ModelClean)).unwrap();
+        let err = add_reference(
+            dir.path(),
+            "moss",
+            RefKind::FullBody,
+            &png_of([9, 9, 9]),
+            None,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("candidate"), "{err}");
+    }
+
+    /// The store limits, a detail's label and the label's cap.
+    #[test]
+    fn references_keep_their_limits_and_labels() {
+        let dir = scratch();
+        create(dir.path(), character("wren", Origin::Owner)).unwrap();
+        add_reference(
+            dir.path(),
+            "wren",
+            RefKind::FullBody,
+            &png_of([1, 0, 0]),
+            None,
+        )
+        .unwrap();
+        let second = add_reference(
+            dir.path(),
+            "wren",
+            RefKind::FullBody,
+            &png_of([2, 0, 0]),
+            None,
+        )
+        .unwrap_err();
+        assert!(second.to_string().contains("remove one first"), "{second}");
+        let unlabelled = add_reference(
+            dir.path(),
+            "wren",
+            RefKind::Detail,
+            &png_of([3, 0, 0]),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            unlabelled.to_string().contains("needs a label"),
+            "{unlabelled}"
+        );
+        let long = add_reference(
+            dir.path(),
+            "wren",
+            RefKind::Detail,
+            &png_of([3, 0, 0]),
+            Some("x".repeat(MAX_LABEL + 1)),
+        )
+        .unwrap_err();
+        assert!(long.to_string().contains("capped"), "{long}");
+        for (i, l) in ["tattoo", "scar", "freckles", "ring"].iter().enumerate() {
+            add_reference(
+                dir.path(),
+                "wren",
+                RefKind::Detail,
+                &png_of([4, i as u8, 0]),
+                Some(l.to_string()),
+            )
+            .unwrap();
+        }
+        let fifth = add_reference(
+            dir.path(),
+            "wren",
+            RefKind::Detail,
+            &png_of([5, 0, 0]),
+            Some("mole".into()),
+        )
+        .unwrap_err();
+        assert!(fifth.to_string().contains("remove one first"), "{fifth}");
+        let view =
+            add_reference(dir.path(), "wren", RefKind::View, &png_of([6, 0, 0]), None).unwrap_err();
+        assert!(view.to_string().contains("not view"), "{view}");
+    }
+
+    /// An unknown kind, or a known kind this entry kind doesn't take, loads
+    /// and is shown but is never sent (§9.3's fail-closed reading).
+    #[test]
+    fn an_unknown_or_misplaced_reference_loads_but_is_never_sent() {
+        let dir = scratch();
+        create(dir.path(), character("wren", Origin::Owner)).unwrap();
+        let path = entry_dir(dir.path(), Kind::Character, "wren").join("entry.toml");
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str("\n[[reference]]\nkind = \"hat\"\nblob = \"sha256-aa.png\"\n\n[[reference]]\nkind = \"view\"\nblob = \"sha256-bb.png\"\n");
+        std::fs::write(&path, text).unwrap();
+        let (lib, errors) = Library::load(dir.path());
+        assert!(errors.is_empty(), "{errors:?}");
+        let wren = lib.get(Kind::Character, "wren").unwrap();
+        assert_eq!(wren.references.len(), 2);
+        assert_eq!(wren.references[0].kind, RefKind::Unknown);
+        assert!(wren.sendable_references().is_empty());
+    }
+
+    /// A hand-edited reference can't point outside `blobs/`, and bytes
+    /// swapped under an approved hash are refused, as for the portrait.
+    #[test]
+    fn a_reference_gets_the_portraits_name_and_hash_checks() {
+        let dir = scratch();
+        create(dir.path(), character("wren", Origin::Owner)).unwrap();
+        let e = add_reference(dir.path(), "wren", RefKind::Face, &png_of([7, 7, 7]), None).unwrap();
+        std::fs::write(
+            dir.path().join("blobs").join(&e.references[0].blob),
+            png_of([8, 8, 8]),
+        )
+        .unwrap();
+        let lib = Library::load(dir.path()).0;
+        let wren = lib.get(Kind::Character, "wren").unwrap();
+        let swapped = lib.read_reference(wren, &wren.references[0]).unwrap_err();
+        assert!(
+            swapped.to_string().contains("does not match its hash"),
+            "{swapped}"
+        );
+
+        let path = entry_dir(dir.path(), Kind::Character, "wren").join("entry.toml");
+        let text = std::fs::read_to_string(&path)
+            .unwrap()
+            .replace(&e.references[0].blob, "../../escape.png");
+        std::fs::write(&path, text).unwrap();
+        let (lib, errors) = Library::load(dir.path());
+        assert!(lib.get(Kind::Character, "wren").is_none());
+        assert!(
+            errors.iter().any(|e| e.why.contains("not a blob name")),
+            "{errors:?}"
+        );
+    }
+
+    /// Several details need a label to say which goes; the picture stays for
+    /// the history.
+    #[test]
+    fn removing_a_reference_is_a_new_version_and_keeps_the_picture() {
+        let dir = scratch();
+        create(dir.path(), character("wren", Origin::Owner)).unwrap();
+        add_reference(
+            dir.path(),
+            "wren",
+            RefKind::Detail,
+            &png_of([1, 1, 0]),
+            Some("tattoo".into()),
+        )
+        .unwrap();
+        let e = add_reference(
+            dir.path(),
+            "wren",
+            RefKind::Detail,
+            &png_of([1, 2, 0]),
+            Some("scar".into()),
+        )
+        .unwrap();
+        let ambiguous = remove_reference(dir.path(), "wren", RefKind::Detail, None).unwrap_err();
+        assert!(ambiguous.to_string().contains("--label"), "{ambiguous}");
+        let gone = e.references[0].blob.clone();
+        let after = remove_reference(dir.path(), "wren", RefKind::Detail, Some("tattoo")).unwrap();
+        assert_eq!(after.version, 4);
+        assert_eq!(after.references.len(), 1);
+        assert!(dir.path().join("blobs").join(gone).is_file());
+    }
+
+    /// Two details under one label could never be told apart for removal,
+    /// so the second is refused before its picture is stored (review of #684).
+    #[test]
+    fn a_label_is_unique_within_its_kind() {
+        let dir = scratch();
+        create(dir.path(), character("wren", Origin::Owner)).unwrap();
+        add_reference(
+            dir.path(),
+            "wren",
+            RefKind::Detail,
+            &png_of([1, 3, 0]),
+            Some("tattoo".into()),
+        )
+        .unwrap();
+        let dup = add_reference(
+            dir.path(),
+            "wren",
+            RefKind::Detail,
+            &png_of([1, 4, 0]),
+            Some(" tattoo ".into()),
+        )
+        .unwrap_err();
+        assert!(dup.to_string().contains("use another label"), "{dup}");
+        let blobs = std::fs::read_dir(dir.path().join("blobs")).unwrap().count();
+        assert_eq!(blobs, 2, "the refused picture was stored");
+    }
+
+    /// The read itself refuses a reference the entry may not send, so no
+    /// caller can ship one by iterating `references` (review of #684).
+    #[test]
+    fn a_reference_that_may_not_be_sent_cannot_be_read() {
+        let dir = scratch();
+        create(dir.path(), character("wren", Origin::Owner)).unwrap();
+        let path = entry_dir(dir.path(), Kind::Character, "wren").join("entry.toml");
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str("\n[[reference]]\nkind = \"view\"\nblob = \"sha256-bb.png\"\n");
+        std::fs::write(&path, text).unwrap();
+        let lib = Library::load(dir.path()).0;
+        let wren = lib.get(Kind::Character, "wren").unwrap();
+        let err = lib.read_reference(wren, &wren.references[0]).unwrap_err();
+        assert!(err.to_string().contains("not one it may send"), "{err}");
+    }
+
+    /// The delete gate walks the whole store: a blob named only under a
+    /// directory this build doesn't know is still referenced (§9.3).
+    #[test]
+    fn a_blob_named_only_in_an_unknown_directory_is_still_referenced() {
+        let dir = scratch();
+        let later = dir.path().join("locations/harbour");
+        std::fs::create_dir_all(&later).unwrap();
+        std::fs::write(
+            later.join("entry.toml"),
+            "name = \"harbour\"\n[[reference]]\nkind = \"view\"\nblob = \"sha256-cc.png\"\n",
+        )
+        .unwrap();
+        assert!(blob_referenced(dir.path(), "sha256-cc.png"));
+        assert!(!blob_referenced(dir.path(), "sha256-dd.png"));
     }
 }
