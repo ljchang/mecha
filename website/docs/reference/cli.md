@@ -1581,8 +1581,10 @@ server gets one. It shows the chat model recommended for this machine's memory
 tier — its download size and the context and slots it will be served with — or
 takes a GGUF you already have (and its vision projector, if any; `~/` is
 expanded). On a yes it
-installs mecha's pinned llama.cpp first if the machine has none, then the
-router: a systemd user service on `:8080`, its launcher in
+installs mecha's pinned llama.cpp first unless mecha's own is already
+installed — a `llama-server` already on your `PATH`, Homebrew's say, is left
+alone and not run — then the router on `:8080`: a systemd user service on
+Linux, a launchd agent on a Mac. Its launcher is in
 `~/.mecha/sidecars/bin/`, and its presets in `~/.mecha/sidecars/router/models.ini`.
 It starts the router, waits for the model to load — several minutes for a large
 one — and asks it which model it serves. A model you brought stays yours, and
@@ -1904,8 +1906,10 @@ switch only after every install has passed its check. What it can install:
   `~/.mecha/sidecars/voice-worker/`, reachable only through `mecha serve`'s
   relay.
 
-Every systemd unit is Linux only: on macOS the engine and the models install,
-and the servers start by hand, for now. **The chat model is never
+On macOS the servers install as launchd agents in `~/Library/LaunchAgents/`
+instead of systemd units — the chat router (`mecha setup chat`) and the
+embeddings and OCR servers, started on their first request — each logging to
+`~/Library/Logs/mecha/`, capped at 20 MiB and one older file. **The chat model is never
 `enable`'s**: its engine, model and router are `mecha setup chat`'s, where the
 model is chosen, so switching on the web app does not stand behind a chat
 model's download. A file mecha did not write is never replaced.
