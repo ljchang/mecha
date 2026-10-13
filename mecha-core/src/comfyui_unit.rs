@@ -200,11 +200,60 @@ pub fn fits(
     arch: &str,
     nvidia: crate::engine::Nvidia,
 ) -> std::result::Result<(), String> {
+    // The macOS version, read only on a Mac: off one there is nothing to ask.
+    let macos = if os == "macos" && cfg!(target_os = "macos") {
+        macos_major()
+    } else {
+        None
+    };
+    fits_with(os, arch, nvidia, macos)
+}
+
+/// The oldest macOS the Mac lock's torch runs on: its wheels are tagged
+/// `macosx_14_0_arm64`, and on an older system `uv` finds no wheel and fails
+/// mid-install with its own words (review of #681).
+pub const MACOS_FLOOR: u32 = 14;
+
+/// The running macOS's major version, from `sw_vers -productVersion`.
+fn macos_major() -> Option<u32> {
+    let out = std::process::Command::new("sw_vers")
+        .arg("-productVersion")
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .split('.')
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// [`fits`] over what was read, so every row is a test. `macos` is the
+/// running macOS's major version, `None` where it was not read — refused on
+/// a Mac, since unknown is never new enough.
+fn fits_with(
+    os: &str,
+    arch: &str,
+    nvidia: crate::engine::Nvidia,
+    macos: Option<u32>,
+) -> std::result::Result<(), String> {
     use crate::engine::Nvidia;
     match os {
         "linux" => {}
-        // MPS, from PyPI's torch: no driver to ask (§12.3).
-        "macos" if arch == "aarch64" => return Ok(()),
+        // MPS, from PyPI's torch: no driver to ask (§12.3), but a floor.
+        "macos" if arch == "aarch64" => {
+            return match macos {
+                Some(v) if v >= MACOS_FLOOR => Ok(()),
+                Some(v) => Err(format!(
+                    "this Mac runs macOS {v}; the pinned torch needs macOS {MACOS_FLOOR} or \
+                     newer — update macOS to install image generation"
+                )),
+                None => Err(format!(
+                    "this Mac's macOS version could not be read (`sw_vers -productVersion`), and \
+                     the pinned torch needs macOS {MACOS_FLOOR} or newer"
+                )),
+            }
+        }
         "macos" => {
             return Err(
                 "image generation on a Mac needs Apple silicon: the pinned torch draws on MPS, \
@@ -253,6 +302,23 @@ fn render(dir: &Path, naming: &Naming) -> String {
         .replace("@VENV@", &dir.join("venv").display().to_string())
         .replace("@TEMP@", &dir.join("tmp").display().to_string())
         .replace("@PORT@", &naming.port.to_string())
+}
+
+/// The unit as a Mac's agent reads it: its `PATH` is the system's own. The
+/// Linux line names `/usr/local/cuda/bin` for Triton's compiler, which a Mac
+/// has neither of (review of #681).
+fn for_mac(unit: &str) -> String {
+    unit.lines()
+        .map(|l| {
+            if l.trim_start().starts_with("Environment=PATH=") {
+                format!("Environment=PATH={}", crate::launchd::SYSTEM_PATH)
+            } else {
+                l.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
 }
 
 /// The idle reset's script under the install's tree.
@@ -492,7 +558,9 @@ pub async fn install(
     // The unit's `ExecStartPre` makes the temp directory on every start; a
     // launchd agent has no such step, so the install makes it on both.
     std::fs::create_dir_all(dir.join("tmp"))?;
-    crate::user_service::write(m, ID, &naming.unit, &render(&dir, naming))?;
+    let unit = render(&dir, naming);
+    let unit = if macos { for_mac(&unit) } else { unit };
+    crate::user_service::write(m, ID, &naming.unit, &unit)?;
     let names: Vec<&str> = models
         .iter()
         .filter_map(|(_, _, f)| f.path.rsplit('/').next())
@@ -524,6 +592,11 @@ pub async fn install(
             };
             return Err(e.context(stopped));
         }
+        say(&format!(
+            "a loaded model stays in memory between pictures (~14 GB) until `[image] \
+             unload_after_secs` ({} s by default) unloads it — a Mac has no idle reset",
+            crate::imagegen::ImageConfig::default().unload_after_secs
+        ));
         return Manifest::finish(home, ID);
     }
     let (idle_service, idle_timer) = render_idle(&dir, naming);
@@ -1056,8 +1129,16 @@ mod tests {
             .unwrap_err()
             .contains("nvidia-smi"));
         assert!(fits("linux", "riscv64", Driver(580, 0)).is_err());
-        // MPS: no driver asked (§12.3); an Intel Mac has no MPS.
-        assert!(fits("macos", "aarch64", None).is_ok());
+        // MPS: no driver asked (§12.3), a macOS floor instead; an Intel
+        // Mac has no MPS.
+        assert!(fits_with("macos", "aarch64", None, Some(MACOS_FLOOR)).is_ok());
+        assert!(fits_with("macos", "aarch64", None, Some(27)).is_ok());
+        assert!(fits_with("macos", "aarch64", None, Some(13))
+            .unwrap_err()
+            .contains("macOS 13"));
+        assert!(fits_with("macos", "aarch64", None, Option::None)
+            .unwrap_err()
+            .contains("could not be read"));
         assert!(fits("macos", "x86_64", None)
             .unwrap_err()
             .contains("Apple silicon"));
@@ -1187,6 +1268,17 @@ mod tests {
             Some(dir.join("ComfyUI").as_path())
         );
         assert!(!agent.program.iter().any(|a| a == "--gpu-only"));
+        // And its PATH is the system's, not the unit's CUDA one.
+        let mac = crate::launchd::agent_from_unit(
+            "mecha-comfyui",
+            &for_mac(&text),
+            Path::new("/Users/owner"),
+            "/l".into(),
+        )
+        .unwrap();
+        let path = mac.env.iter().find(|(k, _)| k == "PATH").unwrap();
+        assert_eq!(path.1, crate::launchd::SYSTEM_PATH);
+        assert_eq!(mac.program, agent.program);
         assert!(text.contains("WorkingDirectory=/srv/owner/.mecha/sidecars/comfyui/ComfyUI"));
         assert!(text.contains(
             "ExecStart=/srv/owner/.mecha/sidecars/comfyui/venv/bin/python -B main.py --listen \
@@ -1384,17 +1476,28 @@ mod tests {
             std::fs::read_to_string(dir(&m.mecha_home).join("ComfyUI").join(COMMIT_STAMP));
         let turbo = turbo_linked(&m.mecha_home);
         let timer = format!("{}.timer", naming.idle());
-        let ticking = std::process::Command::new("systemctl")
-            .args(["--user", "is-active", "--quiet", &timer])
-            .status()
-            .is_ok_and(|s| s.success());
+        // The idle reset is Linux's (module doc): a Mac installs no timer.
+        let macos = cfg!(target_os = "macos");
+        let ticking = macos
+            || std::process::Command::new("systemctl")
+                .args(["--user", "is-active", "--quiet", &timer])
+                .status()
+                .is_ok_and(|s| s.success());
+        // The service's own file, written on either system: its removal is
+        // measured on a Mac too, where the timer's never existed (review of
+        // #681).
+        let service = crate::user_service::file(&m, &naming.unit).unwrap();
+        let written = service.exists();
         let cleaned = remove(&m, &naming);
         let units = crate::engine_gate::unit_dir(&m).unwrap().to_path_buf();
-        let left: Vec<PathBuf> = [timer.clone(), format!("{}.service", naming.idle())]
-            .into_iter()
-            .map(|n| units.join(n))
-            .filter(|p| p.exists())
-            .collect();
+        let left: Vec<PathBuf> = [
+            units.join(&timer),
+            units.join(format!("{}.service", naming.idle())),
+            service,
+        ]
+        .into_iter()
+        .filter(|p| p.exists())
+        .collect();
         eprintln!("{said:#?}");
         let man = Manifest::read(&m.mecha_home);
         let _ = std::fs::remove_dir_all(&root);
@@ -1402,6 +1505,7 @@ mod tests {
         cleaned.unwrap();
         assert_eq!(stamped.unwrap(), COMMIT);
         assert!(turbo, "the turbo model was linked");
+        assert!(written, "the service's definition was written");
         assert!(ticking, "{timer} was started");
         assert!(left.is_empty(), "removal left {left:?}");
         let man = man.unwrap();

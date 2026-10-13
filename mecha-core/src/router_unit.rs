@@ -570,6 +570,7 @@ fn start_agent(
             ("LLAMA_SERVER".into(), engine.path().display().to_string()),
         ],
         workdir: None,
+        throttle_secs: crate::launchd::THROTTLE_SECS,
         log,
     };
     write_owned(home, ID, &plist, &crate::launchd::plist_text(&agent), 0o644)?;
