@@ -94,6 +94,13 @@ export function stillOut(entry) {
   );
 }
 
+// What a still-out row says it is doing: a picture's measured words for a
+// picture, and a plain one for any other deferring tool, which the page
+// cannot name (§9).
+export function makingText(entry) {
+  return entry?.name === 'image_generate' ? 'drawing a picture…' : 'working on it…';
+}
+
 // A clip under its tool row (§8): read off the first line of a deferring
 // tool's finished result, `video: <path>.mp4`, as strictly as `PICTURE` — a
 // chat-relative path of plain segments, none starting with a dot — and only

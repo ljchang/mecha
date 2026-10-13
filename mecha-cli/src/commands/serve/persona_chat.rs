@@ -1987,7 +1987,7 @@ impl PersonaChats {
         let pinned = persona_agent::load_version(&self.store, &p.name, &pin.digest)
             .map_err(|e| Refusal::Conflict(format!("{e:#}")))?;
         let bound = chat.follower.current();
-        let (_, refused) = self.agent_for(&bound, &pinned).map_err(failed)?;
+        let (agent, refused) = self.agent_for(&bound, &pinned).map_err(failed)?;
         // A goal set at open and never sent — the chat was opened and left.
         let goal = pin.goal.filter(|_| conversation.messages.is_empty());
         // A chat picked back up re-anchors on its first turn.
@@ -2020,10 +2020,13 @@ impl PersonaChats {
         // A picture still "being made" when the server stopped: no job is
         // behind it now (a chat leaves this map only with the process), so
         // the result is settled by what the workspace holds.
-        // A persona's surface holds no MCP tool, so its one deferring tool
-        // is the picture.
+        // Over the persona's own registry, the one its runs call: a picture
+        // always, a deferring tool such as an MCP server's background tool
+        // (§9), and one a restart removed (review of #666) — while the tools
+        // only a persona has (its files, its memory) keep their words, which
+        // the assistant's pool would have taken for orphans (review of #668).
         super::late::repair_orphans(&session, &workspace, &mut conversation, &|name| {
-            name == "image_generate"
+            super::late::may_be_orphan(agent.registry(), name)
         });
         sessions.insert(
             key.clone(),
@@ -2689,7 +2692,10 @@ impl PersonaChats {
             (None, Some(live)) => &live.history,
             (None, None) => &[],
         };
-        let entries = chat::transcript_entries(messages);
+        // A deferring tool's row is marked, so a clip still out keeps its
+        // state past this re-read (§9).
+        let defers = super::late::deferring(bound.agent.registry());
+        let entries = chat::transcript_entries_with(messages, &|name| defers.contains(name));
         // Checked once the lock is let go: the session file is read whole.
         let session = Arc::clone(&ps.session);
         let taint = match (&ps.conversation, &ps.live) {
@@ -4017,6 +4023,7 @@ impl PersonaChats {
             let _held = held;
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
             let forwarder = {
+                let run_defers = super::late::deferring(agent.registry());
                 let bcast = bcast.clone();
                 tokio::spawn(async move {
                     while let Some(event) = rx.recv().await {
@@ -4036,7 +4043,8 @@ impl PersonaChats {
                                 *slot = Some(usage.clone());
                             }
                         }
-                        if let Some(wire) = chat::wire_event(&event, context_window) {
+                        if let Some(mut wire) = chat::wire_event(&event, context_window) {
+                            chat::mark_deferred(&mut wire, &|name| run_defers.contains(name));
                             let _ = bcast.send(wire);
                         }
                     }
@@ -9949,10 +9957,13 @@ mod tests {
             let mut sessions = w.chat.personas.sessions.lock().await;
             let ps = sessions.get_mut(&key).unwrap();
             let turn = vec![
+                // A tool the persona's own registry holds, and that does not defer: only
+                // then are its words its own (an unregistered one may be a
+                // restart's orphan, review of #666).
                 Message::user("echo it"),
                 Message::assistant(vec![Block::ToolUse {
                     id: "s1".into(),
-                    name: "shell".into(),
+                    name: "file_read".into(),
                     input: serde_json::json!({}),
                 }]),
                 Message::tool_results(vec![Block::ToolResult {
@@ -9972,6 +9983,44 @@ mod tests {
             .unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(!text.contains(r#""record":"late_result""#), "{text}");
+    }
+
+    /// A clip in flight when serve restarted: its tool is not the picture,
+    /// and the pool may not even hold it now (a skipped server), so the
+    /// resume settles it in the harness's words rather than leave a dead
+    /// Stop on the page (BACKGROUND-JOBS-DESIGN.md §9, review of #666).
+    #[tokio::test]
+    async fn a_resumed_persona_chat_settles_a_clip_the_restart_left() {
+        let w = world();
+        let key = open_chat(&w).await;
+        let (path, id) = {
+            let mut sessions = w.chat.personas.sessions.lock().await;
+            let ps = sessions.get_mut(&key).unwrap();
+            let turn = vec![
+                Message::user("make a clip"),
+                Message::assistant(vec![Block::ToolUse {
+                    id: "v1".into(),
+                    name: "video_generate".into(),
+                    input: serde_json::json!({}),
+                }]),
+                Message::tool_results(vec![Block::ToolResult {
+                    tool_use_id: "v1".into(),
+                    content: "being made: `video_generate` is running.".into(),
+                    is_error: false,
+                }]),
+                Message::assistant(vec![Block::text("It is on its way.")]),
+            ];
+            ps.session.append_messages(&turn).unwrap();
+            (ps.session.path.clone(), ps.session.meta.id.clone())
+        };
+        w.chat.personas.sessions.lock().await.clear();
+        w.personas()
+            .resume(&w.chat, &w.library, "mara", &id, None)
+            .await
+            .unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(r#""record":"late_result""#), "{text}");
+        assert!(text.contains(super::super::late::RESTARTED), "{text}");
     }
 
     /// A chat resumed after a restart holds a "being made" result with no

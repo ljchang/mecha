@@ -478,6 +478,9 @@ impl Fixtures {
                 // operator's to vouch for: a trial's outbox reconciles as
                 // the default does.
                 trust_result_claims: false,
+                // Nor is offering it to personas: a fixture vouches for
+                // nothing (§9).
+                personas: false,
                 disabled: false,
                 owner_zone: None,
             });

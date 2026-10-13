@@ -1183,6 +1183,15 @@ pub struct McpServerConfig {
     /// Turn it on only for a server you wrote or can read: its word is taken
     /// about whether it sent something.
     pub trust_result_claims: bool,
+    /// Offer this server's tools to persona chats (`docs/PERSONA-DESIGN.md`
+    /// §3.3; BACKGROUND-JOBS-DESIGN.md §9). The owner's word that the server
+    /// reads none of the owner's private stores — the one thing a tool's
+    /// persona form declares, and a remote server cannot be trusted to
+    /// declare of itself. It admits nothing on its own: each persona still
+    /// names the tools it wants, and the persona registry still refuses any
+    /// whose reach is `Chosen`. Like `trust_result_claims` it widens, so only
+    /// the operator's own config may set it.
+    pub personas: bool,
     /// Skip this server without deleting its config.
     pub disabled: bool,
 }
@@ -1433,6 +1442,16 @@ impl Config {
                     tracing::warn!(
                         "[[mcp]] `{}` in {} sets trust_result_claims, which is ignored — \
                          only the global config may vouch for a server's claims",
+                        server.name,
+                        path.display()
+                    );
+                }
+                // `personas` vouches too: that a server reads no private
+                // store, so a persona may be given its tools (§9).
+                if std::mem::take(&mut server.personas) {
+                    tracing::warn!(
+                        "[[mcp]] `{}` in {} sets personas, which is ignored — \
+                         only the global config may offer a server to personas",
                         server.name,
                         path.display()
                     );
@@ -2890,6 +2909,37 @@ mod tests {
             !from_environment.mcp[0].trust_result_claims,
             "an experiment environment must not vouch for a server"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_project_layer_cannot_offer_a_server_to_personas() {
+        // `personas` is the owner's word that a server reads no private
+        // store (§9): a project or experiment file may declare the server,
+        // never vouch for it.
+        let dir = std::env::temp_dir().join(format!("mecha-personas-scope-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("layer.toml");
+        std::fs::write(
+            &path,
+            "[[mcp]]\nname = \"video\"\ncommand = \"mecha-video\"\npersonas = true\n",
+        )
+        .unwrap();
+        let mut from_global = Config::default();
+        from_global.merge_file(&path, LayerTrust::Global).unwrap();
+        assert!(
+            from_global.mcp[0].personas,
+            "the operator's own config vouches"
+        );
+        let mut from_project = Config::default();
+        from_project.merge_file(&path, LayerTrust::Project).unwrap();
+        assert_eq!(from_project.mcp.len(), 1, "the server itself still loads");
+        assert!(!from_project.mcp[0].personas);
+        let mut from_environment = Config::default();
+        from_environment
+            .merge_environment_text(&std::fs::read_to_string(&path).unwrap(), &path)
+            .unwrap();
+        assert!(!from_environment.mcp[0].personas);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
