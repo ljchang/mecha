@@ -364,7 +364,7 @@ characters/<name>/entry.toml
   [[reference]]
   kind  = "full_body"                  # face | full_body | detail
   blob  = "sha256-….png"
-  label = "standing, front view"                     # required for detail, e.g. "left-forearm tattoo"
+  label = "standing, front view"                     # optional here (browsing only); required on a detail, e.g. "left-forearm tattoo"
 ```
 
 - **`kind` is a closed enum in an on-disk store, so it's a wire format.** An unknown `kind` loads, is shown in the library, and is **never sent to a generator**.
@@ -407,7 +407,7 @@ characters/<name>/entry.toml
 
 | Reference | `image_generate` (Qwen-Image) | `video_generate` (H3) |
 |---|---|---|
-| face | the portrait at 512², as now (E10) | the face crop, as now |
+| face | the portrait at 512², as now (E10) | the face crop, as now; from an attached `face` reference when there is one, else from the portrait |
 | full_body | **not sent** until E9b passes | sent beside the face, bound as one `<Subject>`, if V-B passes |
 | detail | not sent; its `label` is appended to the description | sent with its label ("`<Picture k>` shows her left-forearm tattoo"), if V-D passes |
 | location | its text in the scene | its images as an environment `<Subject>`, if V-L passes |
@@ -433,7 +433,7 @@ characters/<name>/entry.toml
   - So an overflow message names **what filled it, by share**: the scene's prose, the extras, or the library text (descriptions, location, labels left after dropping).
   - It's never library text by default, and never "shorten the scene" when the scene didn't grow.
 - **Fitting the slots** (review of #680). A call fills the generator's image budget in a fixed order, and says what it left out in the result:
-  1. every person's face;
+  1. every person's face: the portrait for pictures (E10), the face crop for video;
   2. each person's `full_body`, in cast order;
   3. details, in cast order, then in each character's own order.
   - **Video** has nine slots, less any pinned or other reference images. Two people fit with a body each and up to five details; three fit with a body each and three details.
@@ -461,10 +461,14 @@ characters/<name>/entry.toml
   - So a locked entry's images stay unfetchable by hash, the leak the #385 review closed. Every kind carries its own `locked` flag.
 - **Blob size:** owner-written blobs of every kind follow the owner portrait's existing rule. `MAX_PROPOSED_PORTRAIT_BYTES` stays a proposal-only cap, since candidates carry no new blobs.
 - **Names offered to a model** (review of #680, pass 6). Locations and outfits follow styles, not characters:
-  - their **approved, unlocked** names are listed to the model as written, sorted, so the list is stable in the cached prefix. That's as `style_names` is, whose order comes from `Library::load`'s sort by kind and name. A location or outfit name that contains a character's name would expose it, so the owner's doors warn when one does;
+  - their **approved, unlocked** names are listed to the model as written, sorted, so the list is stable in the cached prefix. That's as `style_names` is, whose order comes from `Library::load`'s sort by kind and name. A location or outfit name that contains a character's name would expose it, so the owner's doors warn when one does. A warning rather than a refusal is deliberate: the owner is the authority on their own names, where `imagelib::missing`'s roster rule guards against a model;
   - so is the quarantined extraction;
   - a locked one isn't listed, which is how the owner hides a place.
   - A guessed locked name still resolves for generation, as §1 rules for all locked entries, but the result never names it back, and the call reads the same as for a name the library doesn't hold. So the lock hides the place from the model, not only from the list.
+  - **The picture's manifest is a result too** (review of #680, pass 12). `write_manifest` writes `images/<stem>.json` inside the chat's folder, beside the picture, and today it names every entry used, by name and version (`Compiled.used`). A model can read it, so it already confirms a guessed locked style.
+    - Under §9, the in-folder manifest names only unlocked entries. A locked one is recorded as `{kind, locked: true, version}` with no name.
+    - The full record, name and version, goes to a usage log in the library store, outside any chat's folder, where the owner's audit reads it.
+    - That applies to every kind, styles and characters included, so it closes today's channel along with the new ones.
 
   Characters stay unlisted ("their names are the owner's"). A model can only write a location it knows the name of (L5).
 - **Where the lists sit:** the location and outfit names are appended after the styles sentence at the end of the description (`imagegen::described`), so a new location moves no earlier byte of the cached prefix.
@@ -511,7 +515,7 @@ E9b and V-B use the same reference set, so one set of images answers both genera
 - **L2, the portrait stays canonical:** no migration. The face is its crop, and existing manifests stay valid.
 - **L3, each generator's references gated on its measurement** (§9.4), with the owner ruling on each result, and the slot-filling order of §9.4.
 - **L4, outfits are text:** an image is for browsing only.
-- **L5, names offered to a model:** location and outfit names are listed like styles, approved and unlocked only; characters stay unlisted, and an outfit's `for` is never named to a model. A locked location or outfit still resolves for generation (§1: generation always has access to locked entries), but **a result never names a locked entry**, so a model can't tell "locked" from "absent" by calling (review of #680, pass 10).
+- **L5, names offered to a model:** location and outfit names are listed like styles, approved and unlocked only; characters stay unlisted, and an outfit's `for` is never named to a model. A locked location or outfit still resolves for generation (§1: generation always has access to locked entries), but **a result never names a locked entry**, neither the tool's text nor the manifest beside the picture, so a model can't tell "locked" from "absent" by calling (review of #680, passes 10 and 12).
 - **L6, references stay local:** a generator whose backend isn't on this machine (loopback) is given no library references (face, body, detail, location) without the owner's ruling for that generator.
 - **L7, the order:**
   1. E9b and V-B, one session with shared references;
