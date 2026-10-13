@@ -205,12 +205,34 @@ pub async fn install(m: &Machinery, naming: &Naming, say: Say<'_>) -> Result<()>
     // A restart, not `enable --now`: a reinstall over a running server must
     // reach it with the new script and model, or `check` passes against the
     // old process (`router_unit`'s reason; review of #638).
-    crate::user_service::restart(m, &[&naming.unit])?;
-    say(&format!(
-        "starting it on :{} and transcribing a second of silence",
-        naming.port
-    ));
-    check(naming.port).await?;
+    // A failed start or check stops the server before the install says so,
+    // as the worker's and the speech server's do (#639's pattern): on a Mac,
+    // `bootstrap` succeeds for a program that cannot start, and the agent
+    // would otherwise relaunch forever after an install that failed (review
+    // of #679).
+    let checked = match crate::user_service::restart(m, &[&naming.unit]) {
+        Ok(()) => {
+            say(&format!(
+                "starting it on :{} and transcribing a second of silence",
+                naming.port
+            ));
+            check(naming.port).await
+        }
+        Err(e) => Err(e),
+    };
+    if let Err(e) = checked {
+        let service = naming.unit.as_str();
+        let stopped = match crate::user_service::stop(&[service]) {
+            Ok(()) => format!("{service} was stopped and disabled"),
+            Err(stop) => format!(
+                "{service} could NOT be stopped ({stop:#}) — it may still be listening on :{}; \
+                 run `{}`",
+                naming.port,
+                crate::user_service::stop_by_hand(&[service])
+            ),
+        };
+        return Err(e.context(stopped));
+    }
     Manifest::finish(home, ID)
 }
 
