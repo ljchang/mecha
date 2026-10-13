@@ -64,6 +64,8 @@
     // Q2, 2026-10-05). Talking never stops a picture; this does, and leaves
     // the persona speaking.
     making = false,
+    // What the slot says the persona is making (`picture.js` `makingText`).
+    makingLabel = 'drawing a picture…',
     onstoppicture = null,
   } = $props();
   let showResources = $state(false);
@@ -360,7 +362,7 @@
       </div>
       {#if making}
         <div class="making" role="status">
-          <span>drawing a picture…</span>
+          <span>{makingLabel}</span>
           {#if onstoppicture}<button class="stoppic" onclick={onstoppicture}>Stop</button>{/if}
         </div>
       {/if}
