@@ -706,7 +706,7 @@ impl Tool for McpTool {
         if !self.client.personas {
             return None;
         }
-        Some(Arc::new((*self).clone()))
+        Some(Arc::new(self.persona_form(None)))
     }
 
     /// The same, knowing which persona: a background call tells the server
@@ -715,9 +715,7 @@ impl Tool for McpTool {
         if !self.client.personas {
             return None;
         }
-        let mut form = (*self).clone();
-        form.persona = Some(who.clone());
-        Some(Arc::new(form))
+        Some(Arc::new(self.persona_form(Some(who.clone()))))
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
@@ -737,6 +735,19 @@ impl Tool for McpTool {
 }
 
 impl McpTool {
+    /// The form a persona is given (§9). Its results are a server's words,
+    /// whatever the server's annotations say, so the form declares untrusted
+    /// input: that is what keeps it off a persona that answers from its files
+    /// only (`answers = "files"`, PERSONA-DESIGN.md §10.4, the rule
+    /// `document_read` follows), and what has the loop wrap and taint its
+    /// results there as it does any outside content (review of #668, pass 2).
+    fn persona_form(&self, who: Option<crate::tool::PersonaSelf>) -> McpTool {
+        let mut form = self.clone();
+        form.persona = who;
+        form.capabilities.untrusted_input = true;
+        form
+    }
+
     /// A background tool's call (BACKGROUND-JOBS-DESIGN.md §8): answered at
     /// once in the harness's words, the server's call handed over as the
     /// chat's job. The job owns an `Arc` of the client and the call's
@@ -1178,6 +1189,7 @@ for line in sys.stdin:
     elif method == "tools/list":
         result = {"tools": [
             {"name": "render", "description": "slow", "inputSchema": {"type": "object"},
+             "annotations": {"readOnlyHint": True},
              "_meta": {"mecha-factory.ai/background": True}},
             {"name": "quick", "description": "fast", "inputSchema": {"type": "object"}},
             {"name": "sender", "description": "sends", "inputSchema": {"type": "object"},
@@ -1524,6 +1536,11 @@ for line in sys.stdin:
         let form = open.tool("render").for_persona_as(&who).expect("offered");
         assert_eq!(form.name(), "render", "the persona form keeps its name");
         assert!(form.defers());
+        // A server's words, whatever its annotations: untrusted, so a persona
+        // that answers from its files only is never given it (review of #668,
+        // pass 2), and the assistant's own form is unchanged.
+        assert!(form.capabilities().untrusted_input);
+        assert!(!open.tool("render").capabilities().untrusted_input);
         let out = form
             .call(json!({"mode": "ok"}), &open.ctx(open.root.join("chat-1")))
             .await
@@ -1535,6 +1552,32 @@ for line in sys.stdin:
         assert!(
             meta[PERSONA_META].get("display").is_none(),
             "who is asking, never more"
+        );
+
+        // Through the persona registry itself: a persona that answers from
+        // its files only is refused the tool; an open one is given it.
+        let mut pool = crate::tool::Registry::new();
+        pool.insert(open.tool("render"));
+        let mut settings: crate::persona::Settings = toml::from_str("").unwrap();
+        settings.tools.allow = vec!["render".into()];
+        settings.files.answers = crate::persona::Answers::Files;
+        let built = crate::persona::agent::registry_as(&pool, "mara", &settings);
+        assert!(
+            built.registry.iter().next().is_none(),
+            "files only: refused"
+        );
+        assert!(
+            built.refused[0].why.contains("files only"),
+            "{}",
+            built.refused[0].why
+        );
+        settings.files.answers = crate::persona::Answers::Open;
+        let built = crate::persona::agent::registry_as(&pool, "mara", &settings);
+        assert_eq!(
+            built.registry.iter().map(|t| t.name()).collect::<Vec<_>>(),
+            ["render"],
+            "{:?}",
+            built.refused.iter().map(|r| r.why).collect::<Vec<_>>()
         );
 
         // The assistant's own form says nothing about a persona.

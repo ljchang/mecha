@@ -551,7 +551,8 @@ or reach getting any trust they do not already have?
     reads as out. Read back from the transcript, not only from the live event, so the state
     survives the reload every settle does.
 - **Wording follows the tool.** A still-out `image_generate` row keeps "drawing a picture…" and
-  "Stop the picture". Any other deferred row reads "running…" and "Stop". The loop's closing
+  "Stop the picture". Any other deferred row reads "working on it…" (`picture.js` `makingText`,
+  one function for every surface) and "Stop". The loop's closing
   lines follow the job too: a job may carry its own (`DeferredJob::with_closings`), and an
   MCP tool's does (`WORK_ON_ITS_WAY`, `WORK_STILL_RUNNING`: "what this turn asked for is being
   made…"). A job that carries none closes on the picture's measured lines, so pictures speak
@@ -593,6 +594,11 @@ nothing on the persona's surfaces that assumes the work is a picture.
   a tool every call of which is then blocked. Every built-in persona tool already declares
   read-only. A server's tool must declare `readOnlyHint` to be given to a persona, as
   `image_generate` declares read-only for writing a new picture into the chat's own folder.
+- **A server's words, so untrusted on a persona.** The persona form declares `untrusted_input`
+  whatever the server's annotations say, because its results are a server's. So a persona that
+  answers from its files only is refused it (`PERSONA-DESIGN.md` §10.4, the rule
+  `document_read` follows), and on a persona that may have it, the loop wraps and taints its
+  results as it does any outside content.
 - **The persona form says who is asking.** `McpTool::for_persona_as` clones the tool with the
   `PersonaSelf`, and its background calls carry `_meta["mecha-factory.ai/persona"]`: the
   persona's folder name and its linked library character, never its prompt, its display name
