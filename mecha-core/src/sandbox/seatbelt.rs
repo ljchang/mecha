@@ -316,7 +316,9 @@ pub fn keg_and_data(file: &Path) -> Option<(PathBuf, Vec<PathBuf>)> {
 /// The policy for running `program` with `workspace` as its scratch: the
 /// program and its libraries found, their kegs and data, the call's extra
 /// paths — all canonical, since the sandbox matches paths as they resolve
-/// (`/var` is `/private/var` on a Mac).
+/// (`/var` is `/private/var` on a Mac). Returns the program **as named**,
+/// which is what runs: the resolved path is for the library walk and the
+/// profile only (see [`command`]).
 pub fn policy_for(
     program: &str,
     workspace: &Path,
@@ -382,7 +384,7 @@ pub fn policy_for(
             policy.read_files.push(f.clone());
         }
     }
-    Ok((real, policy))
+    Ok((named, policy))
 }
 
 /// The Mach-O reader: the load commands that name libraries and search
@@ -520,7 +522,12 @@ pub fn command(
     cwd: &Path,
     cfg: &super::SandboxConfig,
 ) -> Result<tokio::process::Command> {
-    let (real, policy) = policy_for(
+    // The program runs as named, as every other backend runs it: a venv's
+    // `bin/python` is a link to its interpreter, and CPython finds the venv
+    // (`pyvenv.cfg`) beside the path it was started by — run by its target,
+    // the layout worker would lose the venv's packages (review of #682).
+    // Both spellings are in the profile's `process-exec`.
+    let (named, policy) = policy_for(
         program,
         workspace,
         &cfg.readable,
@@ -530,14 +537,14 @@ pub fn command(
     let text = profile(&policy)?;
     let scratch = &policy.write_trees[0];
     let mut c = tokio::process::Command::new("/usr/bin/sandbox-exec");
-    c.arg("-p").arg(text).arg(&real).args(args);
+    c.arg("-p").arg(text).arg(&named).args(args);
     c.current_dir(
         cwd.canonicalize()
             .with_context(|| format!("resolving {}", cwd.display()))?,
     );
     c.env_clear();
     let mut path = String::from("/usr/bin:/bin:/usr/sbin:/sbin");
-    if let Some(dir) = real.parent().and_then(Path::to_str) {
+    if let Some(dir) = named.parent().and_then(Path::to_str) {
         path = format!("{dir}:{path}");
     }
     c.env("PATH", path);
