@@ -133,7 +133,7 @@ The rules, each a measurement:
 - **References are sent at 512²** (E2: four at 1024² cost 190 s, four at 512²
   79 s; E10: a whole portrait at 512² holds identity). `Request` gains a
   backend-neutral `reference_size`; plain edits keep 1024.
-- **At most four cast members** (E3 held four in one pass). Since raised to `MAX_CAST` 5 (`IMAGE-DESIGN.md` §5.2).
+- **At most five cast members** (`MAX_CAST`; `IMAGE-DESIGN.md` §5.2: five whole portraits drew all five, 3/3, up from E3's measured four).
 - **Anyone else is an `extra`, and is counted** (E11). A waiter described in
   the scene beside a cast of three, with "Exactly three people" compiled in,
   was kept in the picture but pushed into the background; listed as
@@ -468,15 +468,18 @@ characters/<name>/entry.toml
   - a locked one isn't listed, which is how the owner hides a place.
   - A guessed locked name still resolves for generation, as §1 rules for all locked entries, but the result never names it back, and the call reads the same as for a name the library doesn't hold. So **no surface names a locked entry**: not the list, not a result's text, not the manifest. The lock hides names, not appearance (review of #680, pass 13). A model that guesses a locked name and then views the picture it drew (`image_view`) sees the hidden place rendered. That follows from §1's ruling that generation always has access to locked entries. Refusing to resolve a locked location or outfit for a model-written name would close it, and that would be a separate ruling.
   - **The picture's manifest is a result too** (review of #680, pass 12). `write_manifest` writes `images/<stem>.json` inside the chat's folder, beside the picture, and today it names every entry used, by name and version (`Compiled.used`). A model can read it, so it already confirms a guessed locked style.
-    - Under §9, the in-folder manifest names only unlocked entries. A locked one is recorded as `{kind, locked: true, version}` with no name.
-    - The full record, name and version, goes to a usage log in the library store, outside any chat's folder, where the owner's audit reads it.
+    - Under §9, the in-folder manifest names only unlocked entries, in the keys `write_manifest` already uses (review of #680, pass 16).
+      - A `cast` row is today `{name, version, portrait}`; for a locked character it becomes `{locked: true, version}`. That drops the `portrait` blob hash too, since a hash names the entry as surely as its name.
+      - The `style` object becomes `{locked: true, version}` the same way.
+      - New `location` and `outfits` keys follow the same rule.
+    - The full record, name and version, goes to a usage log in the library store, outside any chat's folder, where the owner's audit reads it. It's an append-only store, so a row's closed `kind` is a wire format: an unknown kind loads as unknown and is shown, never dropped.
     - That applies to every kind, styles and characters included, so it closes today's channel along with the new ones.
     - **The manifest's readers must change with it** (review of #680, passes 14 and 15). The save dialog's `GET /api/library/source` builds its cast by `name` and drops a row without one, so as it stands a redacted row would make it suggest **unlocked**, failing open.
-      - The redaction ships with `source` reading any row's `locked: true` as "made from a locked entry", so the new entry starts locked, as §1 requires.
-      - §5's lineage reads the row's kind and version, which stay.
+      - The redaction ships with `source` reading `locked: true` on any `cast` row or on the `style` object as "made from a locked entry", so the new entry starts locked, as §1 requires.
+      - §5's lineage reads the version and the key the row sits under, which stay.
 
   Characters stay unlisted ("their names are the owner's"). A model can only write a location it knows the name of (L5).
-- **Where the lists sit:** the location and outfit names are appended after the styles sentence at the end of the description (`imagegen::described`), so a new location moves no earlier byte of the cached prefix.
+- **Where the lists sit:** the location and outfit names are appended after the styles sentence at the end of the description (`imagegen::described`). What keeps the cached prefix stable is that the description is built once, in `ImageGenerate::new`, so a new location reaches a running chat only on a restart, when the cache is cold anyway. A mid-session rebuild would re-pay the prefix wherever the lists sit (review of #680, pass 16).
 - **Tools:**
   - `image_library` lists the new kinds;
   - a scene names a location in `setting.location`, and a person's `wearing` may name an outfit.
@@ -522,8 +525,8 @@ E9b and V-B use the same reference set, so one set of images answers both genera
 - **L2, the portrait stays canonical:** no migration. The face is its crop, and existing manifests stay valid.
 - **L3, each generator's references gated on its measurement** (§9.4), with the owner ruling on each result, and the slot-filling order of §9.4.
 - **L4, outfits are text:** an image is for browsing only.
-- **L5, names offered to a model:** location and outfit names are listed like styles, approved and unlocked only; characters stay unlisted, and an outfit's `for` is never named to a model. A locked location or outfit still resolves for generation (§1: generation always has access to locked entries), but **a result never names a locked entry**, neither the tool's text nor the manifest beside the picture, so a model can't tell "locked" from "absent" by calling (review of #680, passes 10 and 12).
-- **L6, references stay local:** a generator whose backend isn't on this machine (loopback) is given no library references (face, body, detail, location) without the owner's ruling for that generator.
+- **L5, names offered to a model:** location and outfit names are listed like styles, approved and unlocked only; characters stay unlisted, and an outfit's `for` is never named to a model. A locked location or outfit still resolves for generation (§1: generation always has access to locked entries), but **no surface names a locked entry**: not the list, not the tool's text, not the manifest beside the picture (review of #680, passes 10, 12 and 16). Two tells remain, and both are accepted under §1: a redacted manifest row exists only for an entry that resolved, and `image_view` shows what was drawn. The lock hides names, not existence.
+- **L6, references stay local**, enforced where references are read, not by convention: the reference-read path both generators call (§9.3, where every blob gets the portrait's checks) refuses to hand a blob to a backend that isn't loopback, as `imagegen::loopback_url` does for `image_generate`'s server (review of #680, pass 16): a generator whose backend isn't on this machine (loopback) is given no library references (face, body, detail, location) without the owner's ruling for that generator.
 - **L7, the order:**
   1. E9b and V-B, one session with shared references;
   2. the store and CLI for `full_body` and `detail`;
