@@ -696,7 +696,25 @@ duplicate there is not a regression E12 covers.
     trench coat hid, and a grey leak is told apart from what was asked.
 
   Passes if build visibly carries over with no clothing leak and no
-  duplicate person. It shares its
+  duplicate person.
+  **All three clothing sources must be told apart** (review of #680, pass 18): the scene's stated
+  clothing, arm B's grey reference, and each portrait's own. A portrait whose clothing shares a
+  colour with either makes a leak unscoreable.
+
+  **Measured 2026-10-13** (two of the owner's characters with contrasting stored builds; 1024²,
+  40 steps, references at 512, seeds 101 and 202; F and B share the compiled prompt):
+  - The portraits wore a third pair of colours (a crop top and shorts; a bikini). No portrait
+    clothing appeared in either arm.
+  - **F:** identity held and the stated clothing landed. The two builds converged on one generic
+    slim figure in both seeds, though each description states its build.
+  - **B:** the builds separated in both seeds: the athletic, fuller character curvier through the
+    hips and waist, the lanky one still lanky.
+  - **B, leak and duplicates:** no grey from the references, and no duplicate person (two people
+    in both seeds).
+  - **B, side effect:** one character's reference pose (a hip-shifted stance) carried over in both
+    seeds.
+  - **Reading:** passes E9b's bar on this pair, with pose transfer noted. The owner rules on the
+    result (design L3). It shares its
   reference set with V-B below.
 - **Library v2, the video side** (2026-10-13; the video tool, MiniMax H3,
   built outside this repository for now; its own design moves in with it):
