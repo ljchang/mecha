@@ -435,7 +435,7 @@ characters/<name>/entry.toml
 - **Fitting the slots** (review of #680). A call fills the generator's image budget in a fixed order, and says what it left out in the result:
   1. every person's face: the portrait for pictures (E10), the face crop for video;
   2. each person's `full_body`, in cast order;
-  3. details, in cast order, then in each character's own order.
+  3. details, in cast order, then in each character's own order. That's greedy, so it's the mixed shape the next bullets call unmeasured; it waits on V-D, whose arms include that shape.
   - **Video** has nine slots, less any pinned or other reference images. Two people fit with a body each and up to five details; three fit with a body each and three details.
   - **Bodies are all or nothing in both generators** (review of #680, pass 10). Bodies are sent only when **every person in the cast has one attached and they all fit** beside every face; otherwise none is (review of #680, pass 13). So a cast where one character has a body and another doesn't sends faces only. So a cast of five (5 faces + 5 bodies over 9), or four with two pinned images, sends faces only, never four bound people beside one unbound.
   - Details also bind a second image to one person, so they're the same mixed shape. V-D's arms must include one person with a detail beside one without, before details ship.
@@ -446,7 +446,7 @@ characters/<name>/entry.toml
     - **The four is E9b's to establish, not settled** (review of #680, pass 7). E12 measured four *different* faces with no duplicate, while two people with a body each is E9's B2 arm, which drew one person twice. So that configuration is exactly what E9b must pass.
     - **An edit sends faces only.** Its canvas plus five crops already fill `EDIT_REFERENCE_BUDGET` (6), and E9b's arms are new pictures. An edit gets bodies only with a measurement of its own.
   - A cast that can't fit its faces is refused in the scene's own terms, as today.
-- **Pictures with two images per person need new wording.** §3's grammar ("each of the N people from the images appears exactly once") assumes one image per person. If E9b passes, the compiled prompt binds them: "`<image1>` and `<image2>` show one person, Maya: her face and her build". It counts people, not images. E9b's bound arm must run with that wording, with a cast of two (four images).
+- **Pictures with two images per person need new wording.** §3's grammar ("each of the N people from the images appears exactly once") assumes one image per person. If E9b passes, the compiled prompt binds them, naming what each image is. For pictures the first is the whole portrait (§9.3), so: "`<image1>` and `<image2>` show one person, Maya: `<image1>` is her portrait, `<image2>` her full figure". Naming how each person is shown is what E9 found prevents duplicates (review of #680, pass 17). It counts people, not images. E9b's bound arm must run with that wording, with a cast of two (four images).
 
 ### 9.5 Surfaces
 
@@ -481,7 +481,7 @@ characters/<name>/entry.toml
   Characters stay unlisted ("their names are the owner's"). A model can only write a location it knows the name of (L5).
 - **Where the lists sit:** the location and outfit names are appended after the styles sentence at the end of the description (`imagegen::described`). What keeps the cached prefix stable is that the description is built once, in `ImageGenerate::new`, so a new location reaches a running chat only on a restart, when the cache is cold anyway. A mid-session rebuild would re-pay the prefix wherever the lists sit (review of #680, pass 16).
 - **Tools:**
-  - `image_library` lists the new kinds;
+  - `image_library` lists the new kinds, **unlocked entries only, for every kind** (review of #680, pass 17). Today it lists `lib.approved()`, which filters on status alone, so it names a locked character or style and prints its text. That's the largest of today's lock channels, and §9 closes it with the manifest's;
   - a scene names a location in `setting.location`, and a person's `wearing` may name an outfit.
 
   The compiler resolves both, and an unknown name stays plain text.
@@ -489,7 +489,9 @@ characters/<name>/entry.toml
   - **Never the library text** (review of #680, pass 11). `scene::Scene` keeps names, not library text, for characters (`Who::Library`) and styles, and `scene::note` renders `Words` back into a persona's run notes every turn (`NOTE_PLACE_CHARS` 240). Recorded library text would hand a locked location's description back to the model, the very thing L5 says can't happen.
   - The compiler resolves the name to the owner's text at render time, as it does a description and a style. So an edit to the location reaches the next restage.
   - Outfits are the same: `wearing` records what the model wrote, and the outfit's text is resolved at compile time.
-  - **`scene::note` renders the words, never the `location` name** (review of #680, pass 15). So a name recorded while a location was unlocked isn't read back to the model after the owner locks it, and no future owner-side write of the field becomes a channel either.
+  - **`scene::note` renders the words, never the `location` field** (review of #680, passes 15 and 17). The words are the model's own and may include the name it wrote.
+    - So a name the model was offered before the owner locked the place can come back in its notes. That's not a disclosure: the model had it already, and the lock doesn't retract what a model knew.
+    - What it does stop is any owner-side write of the field becoming a channel to the model.
   - A build that predates the field reads the model's words and loses only the link.
 - **Untrusted text naming a location.** The quarantined extraction (`IMAGE-DESIGN.md` §5.3) would learn the field. A location name from an untrusted-origin record resolves like any name: it selects owner-approved words, and adds none of its own.
   - It's the same rule as a non-library `who` being drawn from words (`IMAGE-DESIGN.md` §8).
@@ -519,6 +521,7 @@ E9b and V-B use the same reference set, so one set of images answers both genera
   - every blob any entry names getting the portrait's name check on load and hash check on read;
   - `add-reference` refused on a candidate;
   - the image route serving only blobs a visible entry names, with the entry kind parsed once into `Kind`;
+  - `create`'s and `validate`'s kind checks made exhaustive over `Kind`, not wildcards, for the same reason;
   - the in-folder manifest redacting locked entries to `{kind, locked: true, version}`, which the save dialog reads as locked;
   - unknown kinds, and known kinds on the wrong entry kind, never sent;
   - a location stored in a scene record as words plus its name, the name field `#[serde(default)]` so older records still parse as `Words`.
@@ -529,7 +532,7 @@ E9b and V-B use the same reference set, so one set of images answers both genera
 - **L6, references stay local**, enforced where references are read, not by convention: the reference-read path both generators call (§9.3, where every blob gets the portrait's checks) refuses to hand a blob to a backend that isn't loopback, as `imagegen::loopback_url` does for `image_generate`'s server (review of #680, pass 16): a generator whose backend isn't on this machine (loopback) is given no library references (face, body, detail, location) without the owner's ruling for that generator.
 - **L7, the order:**
   1. E9b and V-B, one session with shared references;
-  2. the store and CLI for `full_body` and `detail`;
+  2. the store and CLI for `face`, `full_body` and `detail`. A `face` reference changes video's crop source and needs no picture measurement, so it ships here (review of #680, pass 17);
   3. V-D;
   4. locations: the kind ships **text-only**, like styles; E13 and V-L then gate only its images (review of #680, pass 11);
   5. outfits, last, being text and the cheapest.

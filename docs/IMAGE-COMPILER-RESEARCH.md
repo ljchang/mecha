@@ -686,7 +686,7 @@ duplicate there is not a regression E12 covers.
   with height stated in text; decides whether any body reference joins the
   format before tier D's LoRAs are the answer. Arms (library v2, design §9):
   F, face only, against B, face + full body bound by person with the
-  two-images-one-person wording (design §9.4), each with height in text; two
+  two-images-one-person wording (design §9.4: "`<image1>` is her portrait, `<image2>` her full figure"), each with height in text; two
   seeds; E9's opposite builds. **Fitted where it matters** (review of #680, passes 8 and 16): the scene states fitted clothing in both arms, and arm B's added reference is fitted grey.
   - arm F's one reference per person is the character's normal portrait, as
     pictures send today; arm B adds a full-body shot in fitted grey clothes as
