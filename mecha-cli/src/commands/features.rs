@@ -132,6 +132,21 @@ pub async fn execute(args: Args) -> Result<()> {
 /// `turbo` is `--turbo`: the image server's install fetches the turbo model
 /// too, as it does unasked once a persona's picture settings choose it.
 pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: bool) -> Result<()> {
+    let on = enable_unwired(ids, no_install, turbo, yes).await?;
+    mcp_entries(&on)
+}
+
+/// [`enable`] up to the `[[mcp]]` wiring, returning the features it switched
+/// on: the guided `mecha setup` enables one feature at a time (#631) and
+/// wires the server features of every yes together after the last, so one
+/// `[outbox]` decision covers mail and docs alike rather than the second
+/// finding the first's fresh table (review of #669, pass 4).
+pub(super) async fn enable_unwired(
+    ids: &[String],
+    no_install: bool,
+    turbo: bool,
+    yes: bool,
+) -> Result<Vec<Feature>> {
     use mecha_core::comfyui_unit as comfy;
     use mecha_core::install;
     use mecha_core::sidecar::SidecarState;
@@ -428,7 +443,7 @@ pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: b
                     "Nothing written. `mecha features enable {} --no-install` writes the switch without installing.",
                     ids.join(" ")
                 );
-                return Ok(());
+                return Ok(Vec::new());
             }
             for (id, label, ..) in todo.iter().filter(|_| go) {
                 println!("Installing {label}…");
@@ -446,6 +461,187 @@ pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: b
     set(ids, true)?;
     if features.contains(&Feature::Image) {
         image_table()?;
+    }
+    if features.contains(&Feature::Voice) {
+        voices_dir()?;
+    }
+    Ok(features)
+}
+
+/// `[voice] voices_dir` for a speech server already installed: the installer
+/// writes it, but an install that has the server never runs the installer
+/// again, so `enable voice` writes it too — `image_table`'s two halves
+/// (review of #669). Nothing where no speech server is installed.
+fn voices_dir() -> Result<()> {
+    let path = Config::global_path().context("no mecha home to find config.toml in")?;
+    let Some(home) = path.parent() else {
+        return Ok(());
+    };
+    let voices = mecha_core::speech_unit::voices_dir(home);
+    if !voices.is_dir() {
+        return Ok(());
+    }
+    let outcome = mecha_core::speech_unit::write_voices_dir(&path, &voices);
+    if let Some(line) = mecha_core::speech_unit::voices_dir_said(&outcome, &voices, &path) {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+/// A server feature's switch alone leaves it off — `server_state` wants an
+/// `[[mcp]]` entry running the program — so `mecha setup`'s yes to mail ended
+/// at "add an [[mcp]] entry" instead of a sign-in page (the owner, 2026-10-12).
+/// Written here where none runs it, every feature of the command in one write
+/// so one `[outbox]` decision covers them all (review of #669), each program
+/// found on PATH (or in `~/.cargo/bin`) and recorded by its absolute path, so
+/// a unit's short PATH still finds it.
+pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
+    let path = Config::global_path().context("no mecha home to find config.toml in")?;
+    let mut items = Vec::new();
+    let mut seen = Vec::new();
+    for f in features {
+        let Some(wiring) = feature::mcp_wiring(*f) else {
+            continue;
+        };
+        // One pass per feature: a dependency two yeses share is wired, or
+        // said to be missing, once.
+        if seen.contains(f) {
+            continue;
+        }
+        seen.push(*f);
+        match mecha_core::onboarding::find_program(wiring.program) {
+            Some(command) => items.push((*f, wiring, command)),
+            None => println!(
+                "`{}` is not installed, so no [[mcp]] entry was written — `{}`, then `mecha \
+                 features enable {}` again writes it",
+                wiring.program,
+                wiring.install,
+                f.id()
+            ),
+        }
+    }
+    if items.is_empty() {
+        return Ok(());
+    }
+    let refs: Vec<(&feature::McpWiring, &std::path::Path)> =
+        items.iter().map(|(_, w, c)| (w, c.as_path())).collect();
+    // An operator rule on a tool this would route, where no `[outbox]` exists
+    // yet: no `[outbox]` is written and the conflict is named — the owner's
+    // rules, like the owner's tables, are never overridden (review of #669).
+    // Every decision counts: an `allow`/`prompt` beside the route refuses
+    // every start (`setup::live_rules`), and a `forbid` is never reached
+    // while it is on — the call becomes a draft a person can release, so the
+    // rule meant as "never sends" would quietly stop meaning it. The routes
+    // are matched as the entry serving each feature names them, so the write
+    // decides (review of #669, pass 4).
+    let cfg = Config::load_global()?;
+    let rules: Vec<&mecha_core::policy::RuleConfig> =
+        cfg.rules.iter().filter(|r| !r.from_project).collect();
+    let done = feature::write_mcp_entries(&path, &refs, &|t| rules.iter().any(|r| r.tool == t))?;
+    // One `[outbox]` covers every server of the call, so a rule on one
+    // feature's send leaves the others' unstaged too: said for each, never
+    // left to a silent absence (review of #669, pass 5).
+    let held = done.iter().any(|d| !d.ruled.is_empty());
+    for ((f, wiring, command), done) in items.iter().zip(done) {
+        // The feature's own line first, what hangs under it after (review of
+        // #669, pass 9).
+        if done.wrote_entry {
+            println!(
+                "Wrote [[mcp]] `{}` (running {}, its results read as untrusted) into {}",
+                wiring.name,
+                command.display(),
+                path.display()
+            );
+        }
+        for tool in &done.ruled {
+            let why = match rules.iter().find(|r| &r.tool == tool).map(|r| &r.decision) {
+                Some(mecha_core::policy::RuleDecision::Forbid) => {
+                    "forbids it, and staging would turn that into a draft you can release — it \
+                     stays refused, as your rule says"
+                }
+                _ => {
+                    "judges it, and every start refuses an `allow` or `prompt` on a call that \
+                     is staged"
+                }
+            };
+            println!(
+                "  no [outbox] was written: your [[rule]] on `{tool}` {why}. To have the sends \
+                 staged for your review instead, remove the rule, then `mecha features enable \
+                 {}` again",
+                f.id()
+            );
+        }
+        // The ruled feature's own other sends included: a rule is per tool,
+        // the `[outbox]` it held per command (review of #669, pass 6).
+        let unstaged: Vec<&str> = done
+            .routes
+            .iter()
+            .filter(|t| !done.ruled.contains(t))
+            .map(String::as_str)
+            .collect();
+        if held && !unstaged.is_empty() {
+            println!(
+                "  {}'s calls that send or write and no rule names ({}) are not staged \
+                 either — one [outbox] covers every server, and the rule above kept it \
+                 unwritten",
+                wiring.name,
+                unstaged.join(", ")
+            );
+        }
+        if let Some(other) = &done.runs_other {
+            println!(
+                "  the [[mcp]] entry called `{}` runs `{other}`, not {}, so it is left as it is \
+                 and none is added beside it (two entries of one name shadow each other's \
+                 tools) — {} reads as set up only with an entry running {}: point yours at it, \
+                 or rename it and `mecha features enable {}` again",
+                wiring.name,
+                wiring.program,
+                wiring.name,
+                wiring.program,
+                f.id()
+            );
+        }
+        if let Some(name) = &done.disabled {
+            println!(
+                "  the [[mcp]] entry `{name}` running {} is disabled, so {} reads off until it \
+                 runs — remove `disabled = true` from [[mcp]] `{name}`",
+                wiring.program,
+                f.id()
+            );
+        }
+        if done.untrusted_missing && done.runs_other.is_none() {
+            println!(
+                "  the [[mcp]] entry for {} is left as it is — it needs \
+                 [mcp.capabilities] untrusted_input = true, or what it reads never arms the \
+                 interlock",
+                wiring.name
+            );
+        }
+        if done.wrote_outbox {
+            println!(
+                "  {}'s calls that send or write ({}) are staged in the outbox for you to review \
+                 (`mecha outbox`) — held for you rather than refused when a run has read \
+                 something untrusted",
+                wiring.name,
+                done.routes.join(", ")
+            );
+        }
+        if !done.outbox_missing.is_empty() {
+            println!(
+                "  the [outbox] table is left as it is — for {}'s sends to be staged for review \
+                 rather than run, add to its tools: {}",
+                wiring.name,
+                done.outbox_missing.join(", ")
+            );
+        }
+        if !done.ruled_unrouted.is_empty() {
+            println!(
+                "  not advised for the [outbox]: {} — your [[rule]] judges it, and a staged call \
+                 is never judged by rules (an `allow` or `prompt` beside it stops every start; a \
+                 `forbid` would become a draft you can release)",
+                done.ruled_unrouted.join(", ")
+            );
+        }
     }
     Ok(())
 }

@@ -1289,18 +1289,102 @@ pub fn slack_linked(home: &std::path::Path) -> Option<bool> {
     }
 }
 
-/// Is `name` runnable from `PATH`?
-pub fn on_path(name: &str) -> bool {
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
+/// Where `name` is installed, by an absolute path a config entry can name:
+/// the first executable on an absolute `PATH` entry, else `~/.cargo/bin`,
+/// where `cargo install` puts it and a fresh shell may not have it on `PATH`
+/// yet. The one answer to "is it installed" — `Facts` reads it and `features
+/// enable` writes what it finds — so a readout that says installed never
+/// hands over an `enable` that answers "not installed" (review of #669, pass
+/// 10). A relative or empty `PATH` entry (the cwd) is skipped: a relative
+/// `command` in config is a defect, not an install.
+pub fn find_program(name: &str) -> Option<PathBuf> {
+    find_program_in(name, std::env::var_os("PATH"), dirs::home_dir())
+}
+
+fn find_program_in(
+    name: &str,
+    path: Option<std::ffi::OsString>,
+    home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    let runnable = |f: &PathBuf| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::metadata(f).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        }
+        #[cfg(not(unix))]
+        {
+            f.is_file()
+        }
     };
-    std::env::split_paths(&path).any(|dir| dir.join(name).is_file())
+    path.and_then(|p| {
+        std::env::split_paths(&p)
+            .filter(|d| d.is_absolute())
+            .map(|d| d.join(name))
+            .find(|f| runnable(f))
+    })
+    .or_else(|| {
+        home.map(|h| h.join(".cargo/bin").join(name))
+            .filter(|f| runnable(f))
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::provider::preflight::{GenerationSettings, Modalities, Props};
+
+    /// One lookup answers "installed": an absolute `PATH` entry, else
+    /// `~/.cargo/bin`; never a relative entry, never a file that does not
+    /// run. `on_path` once took the relative entry and skipped
+    /// `~/.cargo/bin`, the mirror of what `enable` wrote, so the readout's
+    /// fix and the fix's answer contradicted each other (review of #669,
+    /// pass 10).
+    #[cfg(unix)]
+    #[test]
+    fn a_program_is_found_where_an_entry_can_name_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("mecha-find-{}", uuid::Uuid::new_v4()));
+        let bin = root.join("bin");
+        let cargo = root.join("home/.cargo/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&cargo).unwrap();
+        let make = |p: &Path, mode: u32| {
+            std::fs::write(p, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).unwrap();
+        };
+        make(&bin.join("tool"), 0o755);
+        make(&bin.join("inert"), 0o644);
+        make(&cargo.join("carg"), 0o755);
+        let home = Some(root.join("home"));
+        let path = |s: &str| Some(std::ffi::OsString::from(s));
+        let abs = format!("{}:/usr/bin", bin.display());
+
+        assert_eq!(
+            find_program_in("tool", path(&abs), home.clone()),
+            Some(bin.join("tool"))
+        );
+        // Relative: the same directory, reached from the cwd, is not where an
+        // entry can point — and it does reach the file, so the refusal is
+        // the rule's, not a missing file's.
+        let cwd = std::env::current_dir().unwrap();
+        let up = "../".repeat(cwd.components().count() - 1);
+        let rel = format!("{up}{}", bin.strip_prefix("/").unwrap().display());
+        assert!(Path::new(&rel).join("tool").is_file(), "{rel}");
+        assert_eq!(find_program_in("tool", path(&rel), home.clone()), None);
+        // Not executable: not installed.
+        assert_eq!(find_program_in("inert", path(&abs), home.clone()), None);
+        // Off PATH, in ~/.cargo/bin: installed.
+        assert_eq!(
+            find_program_in("carg", path("/usr/bin"), home.clone()),
+            Some(cargo.join("carg"))
+        );
+        assert_eq!(
+            find_program_in("carg", None, home),
+            Some(cargo.join("carg"))
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// A config that chats through a hosted provider alone — the shape
     /// these tests were written against before ruling F12 made a local
@@ -1483,8 +1567,10 @@ mod tests {
     /// The registry decides, so setup asks what registration asks (§1.1): an
     /// installed `mecha-mail` with no `[[mcp]]` entry is not mail. Switched
     /// on, it is a yes that does not work — `Wrong`, never declinable — and
-    /// the fix is an edit, said rather than run. With the entry and no
-    /// account, the remedy is the auth, which needs a terminal.
+    /// the fix is `mecha features enable mail`, which writes the entry: a
+    /// command setup can run, where it was once an edit it could only say
+    /// (review of #669, pass 8). With the entry and no account, the remedy
+    /// is the auth, which needs a terminal.
     #[test]
     fn a_feature_step_asks_what_registration_asks() {
         let cfg = cfg_with_local(262144, Some(true));
@@ -1497,7 +1583,8 @@ mod tests {
         let mail = step(&steps, "mail");
         assert_eq!(mail.status, Status::Wrong);
         assert!(!mail.optional);
-        assert!(mail.remedy.is_none(), "an edit is never run");
+        let wire = mail.remedy.clone().expect("the wiring is runnable");
+        assert_eq!(wire.argv, ["mecha", "features", "enable", "mail"]);
         assert!(mail.detail.contains("[[mcp]]"), "{}", mail.detail);
 
         f.features = rows(|ff| {

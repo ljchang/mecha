@@ -159,6 +159,44 @@ pub async fn serve(provider: impl ToolProvider) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Every send this server declares (`openWorldHint`) is one `mecha features
+/// enable` stages for it, and nothing else is: the `outbox` list in
+/// mecha-core's `feature::mcp_wiring`, read from its source because that
+/// crate is not a dependency of this one. A new send verb otherwise lands
+/// unlisted, and enable writes an `[outbox]` that stages every send but the
+/// new one while the config reads as reviewed (review of #669, pass 6).
+#[cfg(test)]
+pub(crate) fn assert_enable_stages_every_send(tools: &[Value], server: &str) {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../mecha-core/src/feature.rs");
+    let src = std::fs::read_to_string(path).expect("mecha-core's feature.rs beside this crate");
+    let start = src.find("pub fn mcp_wiring(").expect("feature::mcp_wiring");
+    let body = &src[start..];
+    let body = &body[..body.find("\n}\n").expect("the end of mcp_wiring")];
+    let quoted = format!("\"{server}__");
+    let mut staged: Vec<&str> = body
+        .match_indices(&quoted)
+        .map(|(i, _)| {
+            let rest = &body[i + quoted.len()..];
+            &rest[..rest.find('"').expect("a closing quote")]
+        })
+        .collect();
+    let mut sends: Vec<&str> = tools
+        .iter()
+        .filter(|t| t["annotations"]["openWorldHint"].as_bool() == Some(true))
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    staged.sort_unstable();
+    sends.sort_unstable();
+    assert!(
+        !sends.is_empty(),
+        "no sends found: the test would be vacuous"
+    );
+    assert_eq!(
+        staged, sends,
+        "feature::mcp_wiring's outbox for `{server}` must stage exactly this server's sends"
+    );
+}
+
 /// Assertions every provider's tool list must satisfy. Shared so a new
 /// provider cannot ship a mislabelled surface — the annotations are the
 /// security contract the connecting client reads.

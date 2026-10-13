@@ -416,6 +416,7 @@ mod tests {
             &["docs_append", "docs_replace", "sheets_write"],
             &["docs_trash"],
         );
+        crate::mcp::assert_enable_stages_every_send(&tool_definitions(), "docs");
         crate::mcp::assert_private_writes(
             &tool_definitions(),
             &["docs_create", "sheets_create", "slides_create"],

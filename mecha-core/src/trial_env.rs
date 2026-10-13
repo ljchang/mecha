@@ -507,12 +507,12 @@ fn refuse_missing_requires(
     // The binaries are the machine's, which a trial shares, so they are read;
     // left at their default they would assert `false`, and a part's refusal
     // would name the wrong fix (review of #466). The stores stay unread.
-    use crate::onboarding::on_path;
+    use crate::onboarding::find_program;
     let facts = crate::feature::Facts {
-        has_mail_binary: on_path("mecha-mail"),
-        has_docs_binary: on_path("mecha-docs"),
-        has_graph_binary: on_path("mecha-graph-mcp"),
-        has_factory_binary: on_path("factory-publish"),
+        has_mail_binary: find_program("mecha-mail").is_some(),
+        has_docs_binary: find_program("mecha-docs").is_some(),
+        has_graph_binary: find_program("mecha-graph-mcp").is_some(),
+        has_factory_binary: find_program("factory-publish").is_some(),
         config: config.clone(),
         ..Default::default()
     };
