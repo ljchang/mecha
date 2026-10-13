@@ -8,7 +8,8 @@
   import { replyContext } from './speech.js';
   import EditModal from './EditModal.svelte';
   import { composeEditMessage, composeRegenerateMessage, maskName } from './image-edit.js';
-  import { pictureOf, stillOut, waitingPictures, repeatedPictures, downloadPicture, pictureVersions, shownVersion } from './picture.js';
+  import { pictureOf, clipOf, stillOut, waitingPictures, repeatedPictures, downloadPicture, pictureVersions, shownVersion } from './picture.js';
+  import ClipPlayer from './ClipPlayer.svelte';
   import { carriesFiles, droppedFiles, withAttachments } from './attach.js';
   import { rowSummary, ROUTING_KEYS } from './outbox-view.js';
   import { features } from './features.svelte.js';
@@ -492,6 +493,9 @@
             row.pending = false;
             row.is_error = ev.is_error;
             row.preview = ev.preview;
+            // The server's mark that the call's tool defers (§8): what makes
+            // a `being made` row still out, and its clip playable.
+            if (ev.deferred) row.deferred = true;
           }
           // Every plan change already arrives here as a tool call, so the
           // list needs no event of its own — re-read on the one that means
@@ -2035,6 +2039,7 @@
         {@const digest = toolDigest(entry.draft)}
         {@const detail = !!(entry.draft || entry.args || entry.preview)}
         {@const picture = pictureOf(entry)}
+        {@const clip = clipOf(entry)}
         {@const repeat = repeats.has(i)}
         {@const fold = versions.folded.get(i)}
         <div class="tool" class:err={entry.is_error} class:blocked={entry.blocked}>
@@ -2051,12 +2056,14 @@
           {#if entry.pending}<span class="tool-state">running…</span>
           {:else if entry.blocked}<span class="tool-state">blocked</span>
           {:else if entry.is_error}<span class="tool-state">failed</span>
-          {:else if stillOut(entry)}<span class="tool-state">{queuedPictures.has(i) ? 'waiting its turn…' : 'drawing a picture…'}</span>{/if}
+          {:else if stillOut(entry)}<span class="tool-state">{queuedPictures.has(i) ? 'waiting its turn…' : entry.name === 'image_generate' ? 'drawing a picture…' : 'running…'}</span>{/if}
         </div>
         <!-- Still being drawn past the turn that asked for it (§5.4): it
              lands on this row when done. Its Stop ends the picture alone,
              never a reply that is running (review of #583). -->
-        {#if stillOut(entry)}<button class="qmore" onclick={() => stopPicture(entry.id)}>Stop the picture</button>{/if}
+        {#if stillOut(entry)}<button class="qmore" onclick={() => stopPicture(entry.id)}>{entry.name === 'image_generate' ? 'Stop the picture' : 'Stop'}</button>{/if}
+        <!-- A clip a deferring tool made (§8), played where its call is. -->
+        {#if clip}<ClipPlayer src={workspaceFile(clip)} />{/if}
         {#if entry.open}
           <div class="toolpanel">
             {#if entry.draft}
