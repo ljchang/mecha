@@ -657,6 +657,7 @@ Repeatable. Each entry is a stdio MCP server connected at startup. Its tools app
 | `network` | bool | inherits `[sandbox] network` | Network for this server alone. |
 | `capabilities` | table | all `false` | Capabilities forced onto every tool this server exposes. |
 | `trust_result_claims` | bool | `false` | Believe this server's claims about its own results. Global config only. See below. |
+| `personas` | bool | `false` | Offer this server's tools to persona chats. Global config only. See below. |
 | `disabled` | bool | `false` | Skip this server without deleting its config. |
 
 The environment is an allowlist, not an inheritance. The child's environment is
@@ -669,7 +670,7 @@ environment inherits every provider key in it.
 Per-server `network` exists so a third-party server can reach its own API, confined,
 while `shell` still has no way off the machine.
 
-`trust_result_claims = true` is the one setting that trusts a server *more*. The
+`trust_result_claims = true` is one of two settings that trust a server *more*. The
 server's own claims about a result are believed. Today that is a single claim: that
 a failed call was refused before any request, so nothing it could have sent went
 anywhere. With it, the outbox settles such a send as not delivered, and the draft can
@@ -685,6 +686,17 @@ name = "mail"
 command = "~/.cargo/bin/mecha-mail"
 trust_result_claims = true
 ```
+
+`personas = true` is the other. It is your statement that the server reads none of
+your private stores, so a persona chat may be given its tools. A remote server cannot
+be trusted to say that of itself. It admits nothing alone: each persona still lists
+the tools it may use, and a tool that sends to a recipient the model names is still
+refused there. Like `trust_result_claims`, it is off by default and honoured only
+from your global config. A project's `mecha.toml` or an experiment environment's
+setting is ignored, with a warning. A persona's background call to such a server
+names the persona in `_meta["mecha-factory.ai/persona"]`: its folder name, its
+library character and its voice-library voice. It never sends the persona's prompt,
+display name or anything the persona said.
 
 ### `[[mcp]].capabilities`
 
