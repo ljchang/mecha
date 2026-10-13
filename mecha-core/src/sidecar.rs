@@ -35,7 +35,10 @@ use crate::recommend::{self, Machine, Source};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", content = "name", rename_all = "snake_case")]
 pub enum Evidence {
-    /// A systemd user unit of this name, in any of the user unit directories.
+    /// A user service definition of this file name, in any of the
+    /// `Machinery::unit_dirs`: a systemd user unit on Linux, a launchd agent's
+    /// plist on macOS. A sidecar that installs on both names both spellings;
+    /// neither system looks in the other's directories.
     UserUnit(&'static str),
     /// A binary on `PATH`.
     OnPath(&'static str),
@@ -82,7 +85,10 @@ pub const SIDECARS: &[Sidecar] = &[
         label: "the chat router",
         needed_by: &[],
         serves: &["chat"],
-        evidence: &[Evidence::UserUnit("llama-local.service")],
+        evidence: &[
+            Evidence::UserUnit("llama-local.service"),
+            Evidence::UserUnit("ai.mecha-factory.llama-local.plist"),
+        ],
         installer: "7c-2",
         models_in_hub: true,
     },
@@ -339,6 +345,9 @@ impl Manifest {
 pub struct Machinery {
     pub home: PathBuf,
     pub mecha_home: PathBuf,
+    /// Where user services are defined: systemd's user unit directories on
+    /// Linux, launchd's agents directories on macOS. The first is where mecha
+    /// writes.
     pub unit_dirs: Vec<PathBuf>,
     pub path: Vec<PathBuf>,
     pub docker: Box<dyn Fn(&str) -> Lookup>,
@@ -358,25 +367,35 @@ impl Machinery {
     pub fn real() -> Result<Machinery> {
         let home = dirs::home_dir().context("no home directory")?;
         let mecha_home = crate::work::mecha_home()?;
-        // systemd's user search path, as `Facts::read` finds the config
-        // directory (`dirs`, so `XDG_CONFIG_HOME` and `XDG_DATA_HOME` count):
-        // a package's unit in /usr/share is as much a hand install as one in
-        // ~/.config.
-        let mut unit_dirs: Vec<PathBuf> = [dirs::config_dir(), dirs::data_dir()]
-            .into_iter()
-            .flatten()
-            .map(|d| d.join("systemd/user"))
-            .collect();
-        unit_dirs.extend(
-            [
-                "/etc/systemd/user",
-                "/usr/local/lib/systemd/user",
-                "/usr/local/share/systemd/user",
-                "/usr/lib/systemd/user",
-                "/usr/share/systemd/user",
+        let unit_dirs = if cfg!(target_os = "macos") {
+            // launchd's agents directories: the user's, where mecha writes,
+            // then the machine's (`launchd.rs`).
+            vec![
+                crate::launchd::agents_dir(&home),
+                PathBuf::from("/Library/LaunchAgents"),
             ]
-            .map(PathBuf::from),
-        );
+        } else {
+            // systemd's user search path, as `Facts::read` finds the config
+            // directory (`dirs`, so `XDG_CONFIG_HOME` and `XDG_DATA_HOME`
+            // count): a package's unit in /usr/share is as much a hand
+            // install as one in ~/.config.
+            let mut dirs: Vec<PathBuf> = [dirs::config_dir(), dirs::data_dir()]
+                .into_iter()
+                .flatten()
+                .map(|d| d.join("systemd/user"))
+                .collect();
+            dirs.extend(
+                [
+                    "/etc/systemd/user",
+                    "/usr/local/lib/systemd/user",
+                    "/usr/local/share/systemd/user",
+                    "/usr/lib/systemd/user",
+                    "/usr/share/systemd/user",
+                ]
+                .map(PathBuf::from),
+            );
+            dirs
+        };
         let path = std::env::var_os("PATH")
             .map(|p| std::env::split_paths(&p).collect())
             .unwrap_or_default();

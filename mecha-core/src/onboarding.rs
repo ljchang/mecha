@@ -317,12 +317,13 @@ pub fn plan(cfg: &Config, provider_name: &str, facts: &Facts) -> Vec<Step> {
             // presumes a server the machine may not have.
             None => {
                 // `setup chat` is offered where it can run, and only for a
-                // table that names this router: it installs systemd user
-                // units (refusing elsewhere before asking anything), and it
+                // table that names this router: it installs a systemd user
+                // unit or a launchd agent (refusing elsewhere before asking
+                // anything), and it
                 // leaves a local provider pointing somewhere else alone — so
                 // for one of those it would download a model and not clear
                 // this step (found on review of #627).
-                let installs_here = cfg!(target_os = "linux")
+                let installs_here = crate::router_unit::installs_here()
                     && crate::router_unit::names_this_router(
                         pcfg,
                         crate::router_unit::Naming::shipped().port,
@@ -2468,10 +2469,13 @@ mod tests {
         // Nothing answering is a fresh install's state since ruling F12, so
         // the remedy is the command that installs a server — where it runs.
         let remedy = step(&steps, "local-server").remedy.as_ref();
-        if cfg!(target_os = "linux") {
+        if crate::router_unit::installs_here() {
             assert_eq!(remedy.unwrap().argv, ["mecha", "setup", "chat"]);
         } else {
-            assert!(remedy.is_none(), "`setup chat` refuses off Linux");
+            assert!(
+                remedy.is_none(),
+                "`setup chat` refuses without systemd or launchd"
+            );
         }
     }
 

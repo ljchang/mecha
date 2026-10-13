@@ -343,6 +343,13 @@ pub(crate) enum Engine {
 }
 
 impl Engine {
+    /// The `llama-server` it names.
+    pub(crate) fn path(&self) -> &Path {
+        match self {
+            Engine::Mecha(p) | Engine::Provided(p) => p,
+        }
+    }
+
     pub(crate) fn resolve(m: &Machinery) -> Result<Engine> {
         let managed = crate::engine_gate::managed_binary(&m.mecha_home);
         if managed.is_file() {

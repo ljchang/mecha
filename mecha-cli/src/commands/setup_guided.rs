@@ -475,19 +475,22 @@ pub(super) async fn run(
                 mecha_core::router_unit::Naming::shipped().port,
             )
     });
-    let ready =
-        if !chat_answering(steps) && !server_disagrees && !elsewhere && cfg!(target_os = "linux") {
-            // Prints its own reason when it will not install here.
-            match super::setup_chat::prepare().await {
-                Ok(r) => r,
-                Err(e) => {
-                    println!("  {e:#}");
-                    None
-                }
+    let ready = if !chat_answering(steps)
+        && !server_disagrees
+        && !elsewhere
+        && mecha_core::router_unit::installs_here()
+    {
+        // Prints its own reason when it will not install here.
+        match super::setup_chat::prepare().await {
+            Ok(r) => r,
+            Err(e) => {
+                println!("  {e:#}");
+                None
             }
-        } else {
-            None
-        };
+        }
+    } else {
+        None
+    };
     let chat = if chat_answering(steps) {
         if let Some(s) = steps.iter().find(|s| s.id == "local-server") {
             println!("\n✓ Chat: {}", s.detail);

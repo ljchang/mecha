@@ -101,6 +101,7 @@ pub mod imagegen;
 pub mod imagelib;
 pub mod install;
 pub mod jobs;
+pub mod launchd;
 pub mod layers;
 pub mod layout;
 pub mod learning;
