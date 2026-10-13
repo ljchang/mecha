@@ -695,8 +695,10 @@ duplicate there is not a regression E12 covers.
     slim jeans), so build is visible in the picture, which E9's stated
     trench coat hid, and a grey leak is told apart from what was asked.
 
-  Passes if build visibly carries over with no clothing leak and no
-  duplicate person.
+  Passes if build visibly carries over with no clothing leak, no
+  duplicate person, and **identity held** (review of #680, pass 21: arm B is
+  E9's B2 shape, a second image bound to one person, so identity is the
+  other half of that risk).
   **All three clothing sources must be told apart** (review of #680, pass 18): the scene's stated
   clothing, arm B's grey reference, and each portrait's own. A portrait whose clothing shares a
   colour with either makes a leak unscoreable.
@@ -711,6 +713,8 @@ duplicate there is not a regression E12 covers.
     hips and waist, the lanky one still lanky.
   - **B, leak and duplicates:** no grey from the references, and no duplicate person (two people
     in both seeds).
+  - **B, identity:** both characters recognisable in both seeds, **by eye** (the owner reviewed the
+    sheet); not ArcFace-scored. The judge (`face_id`, R50) can score it if the ruling is revisited.
   - **B, side effect:** one character's reference pose (a hip-shifted stance) carried over in both
     seeds.
   - **Reading:** passes E9b's bar on this pair, with pose transfer noted. **Owner, 2026-10-13:
@@ -724,7 +728,8 @@ duplicate there is not a regression E12 covers.
       both walking toward the camera in the stated navy and jeans; face crops only against face
       crop plus full body, bound per person; seeds 101 and 202.
     - Face only: builds converge, as in E9b's F. Both seeds also show turbo artifacts on the backdrop.
-    - With the body: seed 101 separates the builds cleanly, with no grey leak. Seed 202 adds **an
+    - With the body: seed 101 separates the builds cleanly, with no grey leak, and identity holds by
+      eye (not scored). Seed 202 adds **an
       extra, child-sized person** for the whole clip.
     - Reading: **fails** the bar, with an extra person in one seed of two. Video stays on face crops
       until a retest (20 steps, or four references without the bound wording) says otherwise.
