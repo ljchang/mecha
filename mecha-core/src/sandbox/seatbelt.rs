@@ -185,6 +185,13 @@ pub fn resolve_program(program: &str, path_var: Option<&std::ffi::OsStr>) -> Res
 /// absolute paths as they resolve on disk. Libraries in the shared cache
 /// (`/usr/lib`, `/System`) are covered by the system's reads and skipped, as
 /// is anything that does not resolve: dyld would fail on it unconfined too.
+///
+/// Two places this is narrower than dyld, both failing closed — a denial at
+/// load, never a read granted — and the first place to look when a Mac
+/// reports a dyld failure under the profile: `@rpath` is resolved against
+/// the loading file's own `LC_RPATH`s only, where dyld also searches the
+/// loader chain's (the main executable's included); and the walk stops at
+/// 512 files.
 pub fn library_closure(binary: &Path) -> Vec<PathBuf> {
     let mut seen: Vec<PathBuf> = Vec::new();
     let mut queue = vec![binary.to_path_buf()];

@@ -208,8 +208,8 @@ mark_untrusted_output = true
 # PDFs: the `document_read` tool and `mecha document extract`. Each page's
 # own text layer (exact — what a quote is checked against) and, for scans or
 # when asked, a local OCR model's Markdown transcript. poppler runs confined
-# (bwrap by default; a confinement that cannot run fails the extraction, it
-# never falls back). The OCR server must be on this machine — page images of
+# (bwrap by default on Linux, seatbelt on a Mac; a confinement that cannot
+# run fails the extraction, it never falls back). The OCR server must be on this machine — page images of
 # your documents go to it. Global file only. See
 # docs/DOCUMENT-EXTRACTION-DESIGN.md; scripts/llama/install.sh installs the
 # on-demand OCR server this points at.
@@ -217,7 +217,8 @@ mark_untrusted_output = true
 # ocr = true
 # ocr_url = "http://127.0.0.1:8085"    # llama-ocr.socket; starts on first use
 # ocr_model = "paddleocr-vl-1.6"
-# confine = "bwrap"                     # bwrap | landlock | none
+# confine = "bwrap"                     # Linux: bwrap | landlock | none;
+#                                       # a Mac: seatbelt | none
 # max_file_mb = 100
 # max_pages = 2000
 # max_ocr_pages = 30                    # per call; the rest are named, not lost
