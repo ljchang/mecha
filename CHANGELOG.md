@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.24] - 2026-10-13
+
+### Added
+
+- **A server's tool can run as a background job.** An MCP server marks a
+  tool `_meta: {"mecha-factory.ai/background": true}` in its tool list, and a
+  call to it answers "being made" at once and runs past the turn as the
+  chat's job — queued, reorderable and stoppable, like a picture — with the
+  result landing on the same row when it is done. The call carries the chat's
+  folder as an absolute path (`_meta["mecha-factory.ai/workspace"]`) for the
+  server to write into, and a result whose first line is
+  `video: <path>.mp4`, the path relative to that folder, plays under its row,
+  once per clip. Stop sends the server `notifications/cancelled`, a job
+  is bounded at two hours, and a job a restart of `mecha serve` left running
+  is settled as not made rather than left with a dead Stop. Only the server
+  can opt a tool in; no setting does, and a tool that sends to a recipient
+  the model names is never deferred.
+- **Persona chats can be given a server's tools.** `[[mcp]] personas = true` —
+  global config only, off by default — is your statement that the server reads
+  none of your private stores. Each persona still lists the tools it may use,
+  and a persona chat still refuses a tool that is not read-only — an MCP tool
+  is read-only only where its server declares `readOnlyHint` — or that sends
+  to a recipient the model names. A persona's background call names its
+  folder, its library character and its voice-library voice in
+  `_meta["mecha-factory.ai/persona"]`, so a server that makes sound can use
+  the persona's voice; never its prompt, display name or anything it said.
+  While such a job runs the chat says "working on it…", and the call screen
+  says so beside a picture being drawn. No server's background job reaches an
+  incognito chat.
+
 ### Changed
 
 - **argon2 0.6 and rusqlite 0.40.** A library lock set before the upgrade
@@ -5255,7 +5285,8 @@ under Added; later releases will record only what changed.
   benchmarks, the TUI survey, and a branching design recorded as a deliberate
   non-implementation.
 
-[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.23...HEAD
+[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.24...HEAD
+[0.1.24]: https://github.com/ljchang/mecha/releases/tag/v0.1.24
 [0.1.23]: https://github.com/ljchang/mecha/releases/tag/v0.1.23
 [0.1.22]: https://github.com/ljchang/mecha/releases/tag/v0.1.22
 [0.1.21]: https://github.com/ljchang/mecha/releases/tag/v0.1.21

@@ -340,7 +340,22 @@ set `prefix_tools = false` and register them under their raw names. That
 setting is a promise of distinct names, and the promise is enforced: an
 unprefixed tool that collides with anything already registered fails startup
 loudly rather than shadowing it. Protocol version `2025-06-18`; each request
-has a 120s timeout.
+has a 120s timeout, except a background call's (below).
+
+**A server can run a tool in the background.** A tool whose `tools/list` entry
+carries `_meta: {"mecha-factory.ai/background": true}` answers "being made" at
+once. The work then runs past the turn as the chat's job: queued, reorderable and
+stoppable, like a picture. The result lands on the same row when it is done.
+
+- **Who can opt a tool in:** only the server. No setting does, and a tool that
+  sends to a recipient the model names is never deferred.
+- **Where the result goes:** the call carries the chat's folder as an absolute path
+  in `_meta["mecha-factory.ai/workspace"]`, for the server to write into. A result
+  whose first line is `video: <path>.mp4`, with a path relative to that folder,
+  plays under its row.
+- **Stop:** sends the server `notifications/cancelled`. A background call is
+  bounded at two hours rather than 120 s.
+- **Incognito:** no server's background job reaches an incognito chat.
 
 What to expect when a server misbehaves:
 
