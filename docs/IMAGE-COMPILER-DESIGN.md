@@ -420,16 +420,22 @@ characters/<name>/entry.toml
   cached by blob.
   - A `face` reference is for the owner who wants a better face than the
     portrait shows. At most one per character.
-  - When attached, it replaces the portrait as the source of video's face
-    crop. Pictures keep sending the whole portrait (E10), since they have no
-    crop to replace; using a `face` reference there would want its own
-    measurement. The portrait stays the picture the library shows.
-  - **The crop's source moves, not its cache** (review of #680, passes 24
+  - **Stored, and read by mecha only once something is measured** (review
+    of #680, pass 27). Pictures *do* have a crop: every edit-shaped render
+    sends one (`face::cached`, reading `entry.portrait` through
+    `read_portrait`; "an edit sends faces only", §9.4). Re-sourcing that
+    read would change every edit with no measurement behind it. So a
+    `face` reference is the video tool's crop source, read at that tool's
+    call site (outside this repository until the port); mecha's own crop
+    stays the portrait's. Pictures keep sending the whole portrait for a
+    new picture (E10), and the portrait's crop for an edit, until a
+    measurement or the owner's ruling says a `face` reference should
+    replace it. The portrait stays the picture the library shows.
+  - **When it is read, the crop's source moves, not its cache** (passes 24
     and 25). `face::cache_paths` already keys a crop and its "no face"
-    marker by the blob's stem; what is hardwired is the read, since
-    `face::cached` takes `entry.portrait` through `read_portrait`. So the
-    face reference is read through `read_reference`, under its own hash
-    check, and cropped under its own key.
+    marker by the blob's stem; what is hardwired is the read. So the face
+    reference is read through `read_reference`, under its own hash check,
+    and cropped under its own key.
   - **A `face` reference with no face in it is said, never silently passed
     over.** `add-reference --as face` runs the detector when it is
     installed and refuses a picture it finds no face in. At generation, a
@@ -859,9 +865,10 @@ repository, never their names or images.
 - **L7, the order:**
   1. E9b and V-B, one session with shared references;
   2. the references, in two halves (review of #680, pass 23):
-     - **2a,** the store and CLI for `face`, `full_body` and `detail`. A
-       `face` reference changes video's crop source and needs no picture
-       measurement, so it ships here (review of #680, pass 17);
+     - **2a,** the store and CLI for `face`, `full_body` and `detail`.
+       mecha reads no `face` reference: it is the video tool's crop source,
+       and pictures' edit crop stays the portrait's until measured (§9.3;
+       review of #680, passes 17 and 27);
      - **2b,** the picture compiler sending `full_body` (§9.4): the
        two-images-one-person binding, all-or-nothing bodies, the image cap,
        edits on faces only. 2a alone would leave an attached body stored
