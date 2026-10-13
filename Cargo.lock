@@ -1680,7 +1680,7 @@ dependencies = [
 
 [[package]]
 name = "mecha-cli"
-version = "0.1.23"
+version = "0.1.24"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1716,7 +1716,7 @@ dependencies = [
 
 [[package]]
 name = "mecha-core"
-version = "0.1.23"
+version = "0.1.24"
 dependencies = [
  "anyhow",
  "argon2",
@@ -1747,7 +1747,7 @@ dependencies = [
 
 [[package]]
 name = "mecha-mail"
-version = "0.1.23"
+version = "0.1.24"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1776,7 +1776,7 @@ dependencies = [
 
 [[package]]
 name = "mecha-slack"
-version = "0.1.23"
+version = "0.1.24"
 dependencies = [
  "anyhow",
  "chrono",
