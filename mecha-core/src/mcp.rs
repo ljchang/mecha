@@ -348,7 +348,7 @@ impl McpClient {
             .await?
         {
             Answer::Result(v) => Ok(v),
-            Answer::Cancelled => unreachable!("a request with no token is never cancelled"),
+            Answer::Cancelled(_) => unreachable!("a request with no token is never cancelled"),
         }
     }
 
@@ -393,22 +393,11 @@ impl McpClient {
             },
             () = stopped => {
                 self.pending.lock().unwrap().remove(&id);
-                // Bounded: the notice goes through the server's stdin, and a
-                // server that has stopped reading it would block the write —
-                // the very server this branch exists to walk away from
-                // (review of #666, pass 2).
-                let notice = self.notify(
-                    "notifications/cancelled",
-                    json!({"requestId": id, "reason": "stopped by the owner"}),
-                );
-                match tokio::time::timeout(CANCEL_NOTICE_TIMEOUT, notice).await {
-                    Ok(Ok(())) => {}
-                    Ok(Err(e)) => {
-                        tracing::debug!(server = %self.name, "cancel notice not sent: {e:#}")
-                    }
-                    Err(_) => tracing::debug!(server = %self.name, "cancel notice timed out"),
-                }
-                return Ok(Answer::Cancelled);
+                // The server is told by the caller, from a task of its own:
+                // the write goes through the server's stdin, and a deadline on
+                // it could drop a line half-written and corrupt the stream for
+                // a server that later reads again (review of #666, pass 6).
+                return Ok(Answer::Cancelled(id));
             }
         };
 
@@ -598,7 +587,9 @@ impl McpClient {
 /// What [`McpClient::request_until`] came back with.
 enum Answer {
     Result(Value),
-    Cancelled,
+    /// Stopped by its token: the request's id, for the cancel notice the
+    /// caller sends.
+    Cancelled(u64),
 }
 
 /// The `_meta` key a server sets on a `tools/list` entry to have that tool's
@@ -616,9 +607,6 @@ pub const WORKSPACE_META: &str = "mecha-factory.ai/workspace";
 /// a job or awaited inline. A bound on purpose: with no sink the run itself
 /// waits, and "no upper limit" is not a decision anyone made (§8).
 pub const BACKGROUND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2 * 3600);
-
-/// How long a Stop waits to tell the server, before it answers anyway.
-const CANCEL_NOTICE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// The chat's workspace as the call carries it (§8): canonical, from the
 /// jail. `None` when it does not resolve, which refuses the call rather than
@@ -740,7 +728,26 @@ impl McpTool {
                         out
                     }
                 }
-                Ok(Answer::Cancelled) => ToolOutput::err("not made: stopped"),
+                Ok(Answer::Cancelled(id)) => {
+                    // Told best-effort, from a task of its own: the job answers
+                    // now, and a server that has stopped reading holds only
+                    // that task, never the chat's line — nor a half-written
+                    // line in its input, which a deadline on the write could
+                    // leave (review of #666, pass 6).
+                    let notice = Arc::clone(&client);
+                    tokio::spawn(async move {
+                        let sent = notice
+                            .notify(
+                                "notifications/cancelled",
+                                json!({"requestId": id, "reason": "stopped by the owner"}),
+                            )
+                            .await;
+                        if let Err(e) = sent {
+                            tracing::debug!(server = %notice.name, "cancel notice not sent: {e:#}");
+                        }
+                    });
+                    ToolOutput::err("not made: stopped")
+                }
                 // The server's own `error.message` can be in here, so it is
                 // marked as from outside, as the inline path marks it.
                 Err(e) => ToolOutput::err(format!("not made: {e}")).from_outside(),
@@ -1462,5 +1469,6 @@ for line in sys.stdin:
         let dotted = sub.join("..");
         assert_eq!(chat_folder(&dotted).as_deref(), root.to_str());
         assert_eq!(chat_folder(&root.join("mecha-no-such-dir-at-all")), None);
+        let _ = std::fs::remove_dir_all(&sub);
     }
 }
