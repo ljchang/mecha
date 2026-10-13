@@ -718,8 +718,16 @@ duplicate there is not a regression E12 covers.
   reference set with V-B below.
 - **Library v2, the video side** (2026-10-13; the video tool, MiniMax H3,
   built outside this repository for now; its own design moves in with it):
-  - **V-B (open).** E9b's question in H3's subject binding: a face crop
+  - **V-B (measured 2026-10-13).** E9b's question in H3's subject binding: a face crop
     against a face crop plus a full body, two seeds, E9b's bar.
+    - Setup: the same pair and full-body references as E9b; H3 full-reference, turbo 4 steps, 6.6 s;
+      both walking toward the camera in the stated navy and jeans; face crops only against face
+      crop plus full body, bound per person; seeds 101 and 202.
+    - Face only: builds converge, as in E9b's F. Both seeds also show turbo artifacts on the backdrop.
+    - With the body: seed 101 separates the builds cleanly, with no grey leak. Seed 202 adds **an
+      extra, child-sized person** for the whole clip.
+    - Reading: **fails** the bar, with an extra person in one seed of two. Video stays on face crops
+      until a retest (20 steps, or four references without the bound wording) says otherwise.
   - **V-D (open).** Does a labelled detail image (a tattoo) carry the mark
     better than the label alone? Passes if the mark matches the detail
     image in both seeds.
