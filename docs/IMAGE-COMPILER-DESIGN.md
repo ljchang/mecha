@@ -364,7 +364,8 @@ characters/<name>/entry.toml
   label = "standing, front view"                     # required for detail, e.g. "left-forearm tattoo"
 ```
 
-- **`kind` is a closed enum in an on-disk store, so it's a wire format.** An unknown `kind` loads, is shown in the library, and is **never sent to a generator**. That's the fail-closed reading: a reference nobody can classify carries nothing into a picture.
+- **`kind` is a closed enum in an on-disk store, so it's a wire format.** An unknown `kind` loads, is shown in the library, and is **never sent to a generator**.
+  - So is a known kind on the wrong entry kind: a `face` on a location, or a `view` on a character. Each entry kind allows its own kinds, and anything else is read as unknown, so a hand-edited entry can't put a picture where a person's face goes. That's the fail-closed reading: a reference nobody can classify carries nothing into a picture.
 - **No `face` entry is needed today.** The face is the portrait's crop, cached by blob.
   - A `face` reference is for the owner who wants a better face than the portrait shows. At most one per character.
   - When attached, it replaces the portrait as the source of video's face crop. Pictures keep sending the whole portrait (E10), since they have no crop to replace; using a `face` reference there would want its own measurement. The portrait stays the picture the library shows.
@@ -393,7 +394,9 @@ characters/<name>/entry.toml
 | `Outfit` | `text` (≤ 300), optional `for` (a character, or none for anyone), optional image | **text only**: pasted into `wearing` | text only: pasted into `wearing` |
 
 - **Outfits stay text.** An image of clothes is the leak §9.1 measured, delivered on purpose. The image is for browsing.
-- **An outfit's `for` is a suggestion, not a lock.** A scene that dresses someone else in it resolves anyway, and the result says so.
+- **An outfit's `for` is a suggestion, not a lock.** A scene that dresses someone else in it resolves anyway.
+  - The note says "that outfit was made for someone else", and **never names who**. `for` is never surfaced to a model, since a character name the call didn't supply is the roster leak `imagelib::missing` guards (review of #680, pass 7).
+- **An outfit expands only when it fills `wearing` whole.** A `wearing` that only mentions an outfit's name stays the model's text, so the expansion always sits inside `wearing`'s own 300 characters.
 - **Who writes:** both new kinds follow §1. The owner creates approved entries; a model's proposal is a candidate, with no images, as above.
 - **Not stored yet:** a location's own clip or soundscape. Nothing would read them yet; they arrive with whatever does.
 
@@ -430,6 +433,8 @@ characters/<name>/entry.toml
     - A new picture carries at most five reference images.
     - Faces come first. A `full_body` is added only while the total stays at four or fewer, so in practice a cast of one or two.
     - What was left out is said.
+    - **The four is E9b's to establish, not settled** (review of #680, pass 7). E12 measured four *different* faces with no duplicate, while two people with a body each is E9's B2 arm, which drew one person twice. So that configuration is exactly what E9b must pass.
+    - **An edit sends faces only.** Its canvas plus five crops already fill `EDIT_REFERENCE_BUDGET` (6), and E9b's arms are new pictures. An edit gets bodies only with a measurement of its own.
   - A cast that can't fit its faces is refused in the scene's own terms, as today.
 - **Pictures with two images per person need new wording.** §3's grammar ("each of the N people from the images appears exactly once") assumes one image per person. If E9b passes, the compiled prompt binds them: "`<image1>` and `<image2>` show one person, Maya: her face and her build". It counts people, not images. E9b's bound arm must run with that wording, with a cast of two (four images).
 
@@ -446,7 +451,7 @@ characters/<name>/entry.toml
   - So a locked entry's images stay unfetchable by hash, the leak the #385 review closed. Every kind carries its own `locked` flag.
 - **Blob size:** owner-written blobs of every kind follow the owner portrait's existing rule. `MAX_PROPOSED_PORTRAIT_BYTES` stays a proposal-only cap, since candidates carry no new blobs.
 - **Names offered to a model** (review of #680, pass 6). Locations and outfits follow styles, not characters:
-  - their **approved, unlocked** names are listed to the model, sorted, so the list is stable in the cached prefix, as `style_names` is;
+  - their **approved, unlocked** names are listed to the model as written, sorted, so the list is stable in the cached prefix. That's as `style_names` is, whose order comes from `Library::load`'s sort by kind and name. A location or outfit name that contains a character's name would expose it, so the owner's doors warn when one does;
   - so is the quarantined extraction;
   - a locked one isn't listed, which is how the owner hides a place.
 
@@ -456,7 +461,7 @@ characters/<name>/entry.toml
   - a scene names a location in `setting.location`, and a person's `wearing` may name an outfit.
 
   The compiler resolves both, and an unknown name stays plain text.
-- **How a scene record stores a location** (review of #680). `scene::Setting` is a closed enum read leniently, and an unknown variant reads as "no setting". An unknown variant reads as `Setting::Unknown`, untrusted and drawing nothing. So a location isn't a new variant: it's recorded as today's `Words`, holding the location's resolved text, plus an optional `location` name. A build that predates it reads the words and loses only the link.
+- **How a scene record stores a location** (review of #680). `scene::Setting` is a closed enum read leniently: an unknown variant reads as `Setting::Unknown`, untrusted and drawing nothing. So a location isn't a new variant: it's recorded as today's `Words`, holding the location's resolved text, plus an optional `location` name. A build that predates it reads the words and loses only the link.
 - **Untrusted text naming a location.** The quarantined extraction (`IMAGE-DESIGN.md` §5.3) would learn the field. A location name from an untrusted-origin record resolves like any name: it selects owner-approved words, and adds none of its own.
   - It's the same rule as a non-library `who` being drawn from words (`IMAGE-DESIGN.md` §8).
   - The record keeps the origin of the write that set it, as every `scene::Field` does; an unreadable setting stays `Setting::Unknown` and untrusted.
@@ -483,12 +488,12 @@ E9b and V-B use the same reference set, so one set of images answers both genera
   - every blob any entry names getting the portrait's name check on load and hash check on read;
   - `add-reference` refused on a candidate;
   - the image route serving only blobs a visible entry names;
-  - unknown kinds never sent;
+  - unknown kinds, and known kinds on the wrong entry kind, never sent;
   - a location stored in a scene record as words plus its name, the name field `#[serde(default)]` so older records still parse as `Words`.
 - **L2, the portrait stays canonical:** no migration. The face is its crop, and existing manifests stay valid.
 - **L3, each generator's references gated on its measurement** (§9.4), with the owner ruling on each result, and the slot-filling order of §9.4.
 - **L4, outfits are text:** an image is for browsing only.
-- **L5, names offered to a model:** location and outfit names are listed like styles, approved and unlocked only; characters stay unlisted.
+- **L5, names offered to a model:** location and outfit names are listed like styles, approved and unlocked only; characters stay unlisted, and an outfit's `for` is never named to a model.
 - **L6, references stay local:** a generator whose backend isn't on this machine (loopback) is given no library references (face, body, detail, location) without the owner's ruling for that generator.
 - **L7, the order:**
   1. E9b and V-B, one session with shared references;
