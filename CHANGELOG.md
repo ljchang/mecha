@@ -17,8 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   chat's job — queued, reorderable and stoppable, like a picture — with the
   result landing on the same row when it is done. The call carries the chat's
   folder as an absolute path (`_meta["mecha-factory.ai/workspace"]`) for the
-  server to write into, and a result naming a `.mp4` there plays under its
-  row, once per clip. Stop sends the server `notifications/cancelled`, a job
+  server to write into, and a result whose first line is
+  `video: <path>.mp4`, the path relative to that folder, plays under its row,
+  once per clip. Stop sends the server `notifications/cancelled`, a job
   is bounded at two hours, and a job a restart of `mecha serve` left running
   is settled as not made rather than left with a dead Stop. Only the server
   can opt a tool in; no setting does, and a tool that sends to a recipient
@@ -31,8 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `_meta["mecha-factory.ai/persona"]`, so a server that makes sound can use
   the persona's voice; never its prompt, display name or anything it said.
   While such a job runs the chat says "working on it…", and the call screen
-  says so beside a picture being drawn. Incognito chats get no server tools,
-  as before.
+  says so beside a picture being drawn. No background job reaches an
+  incognito chat.
 
 ### Changed
 
