@@ -456,22 +456,38 @@ pub async fn install(
         &r(ROUTER_LAUNCHER),
         0o755,
     )?;
-    if cfg!(target_os = "macos") {
-        start_agent(m, naming, &bin, &presets, &engine, &preset.alias, say)?;
+    let agent_domain = if cfg!(target_os = "macos") {
+        Some(start_agent(
+            m,
+            naming,
+            &bin,
+            &presets,
+            &engine,
+            &preset.alias,
+            say,
+        )?)
     } else {
         start_unit(m, naming, &bin, &engine, &preset.alias, &r, say)?;
-    }
-    // llama-server answers /health with 503 while the model loads. Under
-    // systemd the restart has already waited that out (`ExecStartPost=
-    // mecha-wait-healthy 8080 540`); `bootstrap` returns at once, so on a Mac
-    // this wait is the cold load, and gets the unit's whole start budget
-    // (`TimeoutStartSec=600`, review of #678).
+        None
+    };
+    // Under systemd the restart has already waited for /health (`ExecStart
+    // Post=mecha-wait-healthy 8080 540`); `bootstrap` returns at once, so on
+    // a Mac this wait is the router's whole start, and gets the unit's start
+    // budget (`TimeoutStartSec=600`, review of #678). The model's own load
+    // is `router::load`'s, after it.
     let budget = Duration::from_secs(if cfg!(target_os = "macos") { 600 } else { 180 });
     check(naming, &preset.alias, &logs_hint(&m.home, naming), budget).await?;
-    if cfg!(target_os = "macos") {
-        say("the router starts again at each login");
-    } else {
-        linger_note(say);
+    match agent_domain {
+        Some(crate::launchd::Domain::Gui) => say("the router starts again at each login"),
+        // Loaded with nobody at the screen: launchd reads the agents
+        // directory at a graphical login, so a headless Mac's router does not
+        // come back after a restart until someone logs in at the console
+        // (review of #678) — said, as the Linux linger note is.
+        Some(crate::launchd::Domain::User) => say(
+            "nobody is logged in at this Mac's screen, so after a restart the router starts \
+             only once someone logs in there — macOS loads login agents at a graphical login",
+        ),
+        None => linger_note(say),
     }
     Manifest::finish(home, ID)?;
     Ok(preset.alias)
@@ -533,7 +549,7 @@ fn start_agent(
     engine: &Engine,
     alias: &str,
     say: Say<'_>,
-) -> Result<()> {
+) -> Result<crate::launchd::Domain> {
     let home = &m.mecha_home;
     let plist = crate::engine_gate::unit_dir(m)?.join(crate::launchd::plist_name(&naming.stem));
     let log = crate::launchd::log_path(&m.home, &naming.stem);
