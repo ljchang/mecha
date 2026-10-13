@@ -58,6 +58,8 @@ struct State {
 /// Run until killed: hold the port, start the server on demand, stop it when
 /// idle.
 pub async fn run(spec: Spec) -> Result<()> {
+    // Only mecha's own launcher (`log_cap::mecha_s_own`'s reason).
+    crate::log_cap::mecha_s_own(&spec.launcher)?;
     let listener = TcpListener::bind(spec.listen)
         .await
         .with_context(|| format!("holding {}", spec.listen))?;
