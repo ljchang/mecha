@@ -682,7 +682,30 @@ duplicate there is not a regression E12 covers.
 
 - **E9b — build, re-run with fitted clothing** so build is visible, and
   with height stated in text; decides whether any body reference joins the
-  format before tier D's LoRAs are the answer.
+  format before tier D's LoRAs are the answer. Arms (library v2, design §9):
+  F, face only, against B, face + full body bound by person with the
+  two-images-one-person wording (design §9.4), each with height in text; two
+  seeds; E9's opposite builds in fitted grey clothes. Passes if build visibly
+  carries over with no clothing leak and no duplicate person. It shares its
+  reference set with V-B below.
+- **Library v2, the video side** (2026-10-13; the video tool, MiniMax H3,
+  built outside this repository for now; its own design moves in with it):
+  - **V0 (measured).** A whole portrait sent as H3's reference carried its
+    outfit into every clip, both seeds, even with the prompt saying the
+    clothing wasn't taken from it. `face::anchor_crop`'s crop stopped the
+    leak and held identity, as well as a looser head-and-shoulders crop did
+    (owner's review). Clothing stated per clip then landed exactly. This is
+    E9's leak and E10's crop, on a second model.
+  - **V-B (open).** E9b's question in H3's subject binding: a face crop
+    against a face crop plus a full body, two seeds, E9b's bar.
+  - **V-D (open).** Does a labelled detail image (a tattoo) carry the mark
+    better than the label alone? Passes if the mark matches the detail
+    image in both seeds.
+  - **V-L (open).** A location as an environment subject against its text
+    alone. Passes if the place is recognisable and the head count holds.
+- **E13 — a location reference for pictures** (open; design §9). Text only
+  against text plus a location image; passes if the place is recognisable,
+  it doesn't become a person, and the cast's head count holds.
 - **Identity under expression**: more seeds per condition, and a second
   canonical view (a smiling three-quarter crop) as the *measurement*
   reference, to separate model drift from ArcFace's penalty on a laugh.

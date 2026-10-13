@@ -340,7 +340,7 @@ The decisions that are this design's rather than the owner's:
 ### 9.1 Why now
 
 - **A second consumer.** The video tool (`video_generate`, MiniMax H3; built outside this repository for now, with its design moving in when it's ported) reads the same library. H3's full-reference mode binds several pictures to one person natively, "`<Subject 1>` … whose appearance comes from `<Picture 1>` and `<Picture 2>`". It has up to nine image slots, three voice slots and three video slots.
-- **What the video measurements showed** (2026-10-13; the owner reviewed the clips):
+- **What the video measurements showed** (2026-10-13; the owner reviewed the clips; recorded as V0 in `IMAGE-COMPILER-RESEARCH.md`):
   - A whole portrait carried its outfit into every clip, even with the prompt saying the clothing wasn't taken from it.
   - A face crop stopped the leak. That's the crop `face::anchor_crop` already makes for picture edits, tight at 1.12× the face, and it held identity as well as a looser head-and-shoulders crop.
   - Clothing stated per clip then landed exactly. This is E9's leak and E10's crop again, on a second model.
@@ -370,17 +370,24 @@ characters/<name>/entry.toml
 - **`kind` is a closed enum in an on-disk store, so it's a wire format.** An unknown `kind` loads, is shown in the library, and is **never sent to a generator**. That's the fail-closed reading: a reference nobody can classify carries nothing into a picture.
 - **No `face` entry is needed today.** The face is the portrait's crop, cached by blob. A `face` kind is there for the owner who wants a better face than the portrait shows.
 - **Each reference is a blob,** content-addressed like the portrait, so the existing versioning (`history/v<N>.toml`) and lock apply unchanged.
-- **Limits:** at most 1 `full_body` and 4 `detail` per character. These are budget limits, set by video's nine image slots across up to three people.
+- **Only the owner writes references** (review of #680): the CLI and the web page. `image_library_propose` can't add one, and a candidate carries none. So:
+  - the entry's one `origin` and `status` (§2) still describe everything in it;
+  - a reference added to an approved entry is an owner write and a new version, as an owner `update` is (§6);
+  - `reject`'s portrait-only clean-up and `MAX_PROPOSED_PORTRAIT_BYTES` stay correct as written. A proposal that tried to carry references would be refused, not trimmed.
+- **`label` is at most 100 characters.** Labels appended to a compiled prompt count against `MAX_COMPILED_PROMPT`, as the description does.
+- **Store limits:** at most 1 `full_body` and 4 `detail` per character. That's what the owner can attach, not what a call sends. §9.4 says how a call fits the generator's slots.
 
-**Two new kinds**, beside `Character` and `Style`:
+**Two new kinds**, beside `Character` and `Style`, each its own directory (`locations/<name>/`, `outfits/<name>/`), since an entry's kind is derived from its directory (`Entry.kind`).
+- **§2's tree gains both.** Everything that walks the store, `blob_referenced` included, reads its directories from `Kind::ALL` rather than a hand-kept list, so a blob only a location names is never taken for an orphan.
 
 | Kind | Fields | Pictures | Video |
 |---|---|---|---|
-| `Location` | `text` (≤ 400), 1–3 images, optional short clip blob, optional `soundscape` | unmeasured as a reference (E13); until then its text goes into the scene | an environment `<Subject>`, "the place in `<Picture k>`" (V-L) |
+| `Location` | `text` (≤ 400), 1–3 images | unmeasured as a reference (E13); until then its text goes into the scene | an environment `<Subject>`, "the place in `<Picture k>`" (V-L) |
 | `Outfit` | `text` (≤ 300), optional `for` (a character, or none for anyone), optional image | **text only**: pasted into `wearing` | text only: pasted into `wearing` |
 
 - **Outfits stay text.** An image of clothes is the leak §9.1 measured, delivered on purpose. The image is for browsing.
-- **Who writes:** both new kinds follow §1. The owner creates approved entries; a model's proposal is a candidate.
+- **Who writes:** both new kinds follow §1. The owner creates approved entries; a model's proposal is a candidate, with no images, as above.
+- **Not stored yet:** a location's own clip or soundscape. Nothing would read them yet; they arrive with whatever does.
 
 ### 9.4 What each generator sends
 
@@ -393,6 +400,14 @@ characters/<name>/entry.toml
 | outfit | its text as `wearing` | its text as `wearing` |
 
 - **Every row marked "if" is off until its measurement passes,** and the owner rules on the result. A reference a generator doesn't send still costs nothing: the description and labels carry the facts in words.
+- **Fitting the slots** (review of #680). A call fills the generator's image budget in a fixed order, and says what it left out in the result:
+  1. every person's face;
+  2. each person's `full_body`, in cast order;
+  3. details, in cast order, then in each character's own order.
+  - **Video** has nine slots, less any pinned or other reference images. Two people fit with a body each and up to five details; three fit with a body each and three details.
+  - **Pictures** keep their existing budgets (`MAX_CAST`, `EDIT_REFERENCE_BUDGET`, `IMAGE-DESIGN.md` §15.5).
+  - A cast that can't fit its faces is refused in the scene's own terms, as today.
+- **Pictures with two images per person need new wording.** §3's grammar ("each of the N people from the images appears exactly once") assumes one image per person. If E9b passes, the compiled prompt binds them: "`<image1>` and `<image2>` show one person, Maya: her face and her build". It counts people, not images. E9b's bound arm must run with that wording.
 
 ### 9.5 Surfaces
 
@@ -408,24 +423,32 @@ characters/<name>/entry.toml
   - a scene names a location in `setting.location`, and a person's `wearing` may name an outfit.
 
   The compiler resolves both, and an unknown name stays plain text.
+- **How a scene record stores a location** (review of #680). `scene::Setting` is a closed enum read leniently, and an unknown variant reads as "no setting". So a location isn't a new variant: it's recorded as today's `Words`, holding the location's resolved text, plus an optional `location` name. A build that predates it reads the words and loses only the link.
+- **Untrusted text naming a location.** The quarantined extraction (§5.2) would learn the field. A location name from an untrusted-origin record resolves like any name: it selects owner-approved words, and adds none of its own. The record keeps its origin, as a cast name does (`demote_unknown`).
 
 ### 9.6 Measurements, before anything is built
 
-| Id | Generator | Question | Arms | Passes if |
-|---|---|---|---|---|
-| **E9b** | pictures | Does a full-body reference in fitted neutral clothing carry build, now that build is visible? | F (face only), B (face + body, bound by person), each with height in text; 2 seeds; opposite builds (E9's Maya and John) | build visibly carries over with no clothing leak and no duplicate person |
-| **V-B** | video | The same, in H3's subject binding | face crop vs face crop + full body, 2 seeds | the same bar |
-| **V-D** | video | Does a labelled detail image carry a mark (a tattoo) better than the label alone? | label only vs label + detail crop | the mark matches the detail image in both seeds |
-| **E13** | pictures | Does a location reference place people in that place without becoming a person or replacing the cast? | text only vs text + location image | the place is recognisable and the head count holds |
-| **V-L** | video | The same in H3 | text only vs environment `<Subject>` | the same bar |
+The arms and pass bars are in `IMAGE-COMPILER-RESEARCH.md` under **Still open** (review of #680: evidence lives there, decisions here). This section only says what each one gates:
+
+| Id | Gates |
+|---|---|
+| **E9b** | `full_body` for pictures (§9.4), and the two-images-one-person wording |
+| **V-B** | `full_body` for video |
+| **V-D** | `detail` images for video |
+| **E13** | a location reference for pictures |
+| **V-L** | a location reference for video |
 
 E9b and V-B use the same reference set, so one set of images answers both generators.
 
 ### 9.7 Rulings asked
 
-- **L1, the store shape:** `[[reference]]` with `kind`, `blob` and `label` on characters; the `Location` and `Outfit` kinds; unknown kinds never sent.
+- **L1, the store shape:**
+  - `[[reference]]` with `kind`, `blob` and `label` (≤ 100 characters) on characters, written by the owner only;
+  - the `Location` and `Outfit` kinds as their own directories, with every store walk derived from `Kind::ALL`;
+  - unknown kinds never sent;
+  - a location stored in a scene record as words plus its name.
 - **L2, the portrait stays canonical:** no migration. The face is its crop, and existing manifests stay valid.
-- **L3, each generator's references gated on its measurement** (§9.4), with the owner ruling on each result.
+- **L3, each generator's references gated on its measurement** (§9.4), with the owner ruling on each result, and the slot-filling order of §9.4.
 - **L4, outfits are text:** an image is for browsing only.
 - **L5, the order:**
   1. E9b and V-B, one session with shared references;
