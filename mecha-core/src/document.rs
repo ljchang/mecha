@@ -1118,13 +1118,18 @@ impl OcrClient {
             .map_err(|e| {
                 if e.is_connect() {
                     anyhow!(
-                        "the OCR server at {} is not reachable ({e}) — is its socket listening? \
-                         {} (install: `mecha features enable documents`)",
+                        "the OCR server at {} is not reachable ({e}) — {} (install: `mecha \
+                         features enable documents`)",
                         self.base,
                         if cfg!(target_os = "macos") {
-                            "`launchctl print gui/$(id -u)/ai.mecha-factory.llama-ocr`"
+                            // gui/ with someone at the screen, user/ without
+                            // (`launchd::Domain`; review of #678).
+                            "is its agent holding the port? `launchctl print \
+                             gui/$(id -u)/ai.mecha-factory.llama-ocr`, or `user/$(id -u)/…` on \
+                             a Mac nobody is logged in to; its log is \
+                             ~/Library/Logs/mecha/llama-ocr.log"
                         } else {
-                            "`systemctl --user status llama-ocr.socket`"
+                            "is its socket listening? `systemctl --user status llama-ocr.socket`"
                         }
                     )
                 } else if e.is_timeout() {
