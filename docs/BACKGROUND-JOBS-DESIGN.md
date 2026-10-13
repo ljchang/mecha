@@ -555,7 +555,8 @@ or reach getting any trust they do not already have?
     reads as out. Read back from the transcript, not only from the live event, so the state
     survives the reload every settle does.
 - **Wording follows the tool.** A still-out `image_generate` row keeps "drawing a picture…" and
-  "Stop the picture". Any other deferred row reads "running…" and "Stop". The loop's closing
+  "Stop the picture". Any other deferred row reads "working on it…" (`picture.js` `makingText`,
+  one function for every surface) and "Stop". The loop's closing
   lines follow the job too: a job may carry its own (`DeferredJob::with_closings`), and an
   MCP tool's does (`WORK_ON_ITS_WAY`, `WORK_STILL_RUNNING`: "what this turn asked for is being
   made…"). A job that carries none closes on the picture's measured lines, so pictures speak
@@ -572,3 +573,55 @@ or reach getting any trust they do not already have?
   "only images render inline", and no Range support is needed for the phone.
 - **Incognito is unchanged.** MCP tools are withheld there (`ALLOWED_BUILTINS`), so no MCP job
   reaches a RAM room.
+
+## 9. A persona's background work (2026-10-12)
+
+**Status:** owner's ruling, 2026-10-12 ("let's go ahead and work on wiring into personas too").
+Built on §8 in `agent/persona-mcp-jobs`.
+
+**The question:** §8 gave the assistant's chat a server's slow tool as a job. A persona chat is
+a narrower surface (`PERSONA-DESIGN.md` §3.3), lives under another producer directory, closes
+its run once its work is queued (`end_after_deferral`), and has a call screen with a picture
+slot. What has to change so the same tool can be a persona's?
+
+**The answer:** eligibility on the owner's word, a persona form that says who is asking, and
+nothing on the persona's surfaces that assumes the work is a picture.
+
+- **Eligible only on the owner's word.** `McpServerConfig::personas`: the owner's statement
+  that the server reads none of the owner's private stores, the one thing a persona form
+  declares. Global layer only, like `trust_result_claims`, and stripped loudly from a project or
+  experiment file. Off by default, so no server's tools reach a persona until the owner says
+  so. Each persona still names the tools it wants, and the persona registry still refuses a
+  `Chosen` one.
+- **Read-only, as a persona's run is.** The persona agent's approver is read-only, so the
+  persona registry refuses, by name, any form that says it changes things, rather than offering
+  a tool every call of which is then blocked. Every built-in persona tool already declares
+  read-only. A server's tool must declare `readOnlyHint` to be given to a persona, as
+  `image_generate` declares read-only for writing a new picture into the chat's own folder.
+- **A server's words, so untrusted on a persona.** The persona form declares `untrusted_input`
+  whatever the server's annotations say, because its results are a server's. So a persona that
+  answers from its files only is refused it (`PERSONA-DESIGN.md` §10.4, the rule
+  `document_read` follows), and on a persona that may have it, the loop wraps and taints its
+  results as it does any outside content.
+- **The persona form says who is asking.** `McpTool::for_persona_as` clones the tool with the
+  `PersonaSelf`, and its background calls carry `_meta["mecha-factory.ai/persona"]`: the
+  persona's folder name and its linked library character, never its prompt, its display name
+  or anything it said. A server may read that character as `self`.
+- **The chat's folder is absolute** (§8), which is what lets a persona's chat, under
+  `work/persona`, be named to a server spawned under `work/web`.
+- **The run closes on the job's own lines** (§8's `with_closings`): a persona that queued a
+  clip says "what this turn asked for is being made", never that a picture is.
+- **The persona host keys on the call, as the assistant's does.** The restart repair uses
+  `may_be_orphan` over the persona agent's own registry. The transcript a settle re-reads marks a
+  deferring tool's rows from the install's pool, deliberately: a job still running after the
+  persona's tool list was narrowed mid-chat keeps its row and its Stop. The run's live result
+  events are marked from the persona agent's own registry.
+- **The persona page and the call screen.** The live fold keeps the server's `deferred` mark
+  (`persona.js` `applyEvent`). A still-out row says `makingText`: a picture keeps "drawing a
+  picture…", and anything else reads "working on it…". A finished clip plays under its row
+  (`ClipPlayer`, through the chat's file route, unlock token and all). On a call, the slot says
+  the same words, and a finished clip is noted in the call's transcript as "a clip, in the chat".
+  The call screen draws pictures, not clips.
+- **Incognito is unchanged.** An incognito room's folder is not a kept chat's, and the server
+  must refuse it. The private video server does, writing only under `work/web` or `work/persona`.
+
