@@ -742,7 +742,9 @@ pub fn min_available_mb_on(os: &str) -> u64 {
 /// measured with the Q4 GGUF on 2026-10-02, not re-measured for the int8
 /// file. macOS: 14 GiB, the 13,571 MB ComfyUI's log says the bf16 model
 /// loads to on MPS (2026-10-13) rounded up — a reload's own cost is not
-/// measured there, and what `/free` gives back on MPS is not either.
+/// measured there, and what `/free` gives back on MPS is not either. A Mac's
+/// server never reads as loaded (`loaded_from_stats` is `None` on MPS), so
+/// its figure is kept only so the arithmetic stays whole, not one a Mac asks.
 fn reload_mb_on(os: &str) -> u64 {
     if os == "macos" {
         14_336
@@ -754,7 +756,7 @@ fn reload_mb_on(os: &str) -> u64 {
 /// What loading the model costs on `os`, which a server that has loaded it
 /// has already paid: the default cold figure less a reload's need.
 pub fn load_cost_mb_on(os: &str) -> u64 {
-    min_available_mb_on(os) - reload_mb_on(os)
+    min_available_mb_on(os).saturating_sub(reload_mb_on(os))
 }
 
 /// [`load_cost_mb_on`] on this system.
