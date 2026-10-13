@@ -1969,6 +1969,13 @@ and `WorkingDirectory=`), so a Mac runs exactly what Linux runs and a change
 to a unit reaches both. A unit whose command would need a shell's quoting is
 refused rather than split wrongly; none of the shipped ones does.
 
+- **A loaded agent is not a started program.** The units' `Type=exec` makes
+  a missing interpreter fail `systemctl restart` itself; launchd's
+  `bootstrap` succeeds once the job is loaded, so on a Mac a program that
+  cannot start restarts on its throttle until the install's own check times
+  out, and the install then stops it — the same outcome, later and with a
+  vaguer message. The reader carries a closed set of directives (anything
+  else is refused, not dropped), and refuses a home with a space in it.
 - **The environments are the Linux locks**, unchanged: all four install with
   `--require-hashes` on macOS arm64 (measured 2026-10-13).
 - **The speech engine is built for Metal** on Apple silicon:
