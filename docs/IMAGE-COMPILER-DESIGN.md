@@ -424,10 +424,12 @@ characters/<name>/entry.toml
     crop. Pictures keep sending the whole portrait (E10), since they have no
     crop to replace; using a `face` reference there would want its own
     measurement. The portrait stays the picture the library shows.
-  - **The crop is keyed by the blob it was cut from** (review of #680, pass
-    24). `face::cached` keys today on `entry.portrait`, so a crop or a
-    recorded "no face" for the portrait would otherwise be served for a
-    different picture.
+  - **The crop's source moves, not its cache** (review of #680, passes 24
+    and 25). `face::cache_paths` already keys a crop and its "no face"
+    marker by the blob's stem; what is hardwired is the read, since
+    `face::cached` takes `entry.portrait` through `read_portrait`. So the
+    face reference is read through `read_reference`, under its own hash
+    check, and cropped under its own key.
   - **A `face` reference with no face in it is said, never silently passed
     over.** `add-reference --as face` runs the detector when it is
     installed and refuses a picture it finds no face in. At generation, a
@@ -536,6 +538,12 @@ kind is derived from its directory (`Entry.kind`).
     `Capabilities::default()` because nothing private comes back, only a
     path and a seed. A result naming labels would arm `private_data` on
     every picture-drawing conversation. Counts keep the declaration true.
+  - **The manifest keeps the same rule** (review of #680, pass 25). It is
+    written inside the jail, so `fs_read` reaches it. Its `cast` rows gain
+    the hash of each reference image actually sent (a `full_body` beside
+    its `portrait`), and never a label: a detail's label is in the prompt
+    and nowhere a model can read back, as `clothes_in_act` already carries
+    library names only and described people by count.
   - **Labels are the first thing dropped when the compiled prompt would pass
     `MAX_COMPILED_PROMPT`** (review of #680, pass 9). The 9,000 isn't free
     room: at `MAX_CAST`, each person's description, `wearing` and `doing`
@@ -691,8 +699,11 @@ kind is derived from its directory (`Entry.kind`).
     `style_names` is, whose order comes from `Library::load`'s sort by kind
     and name. A location or outfit name that contains a character's name
     would expose it, so the owner's doors warn when one does, **in both
-    orders** (review of #680, pass 23): adding a location or outfit whose
-    name contains an existing character's, and adding or approving a
+    orders** (review of #680, pass 23): adding **or approving** a location
+    or outfit whose name contains an existing character's (pass 25:
+    approve is the only door a model-proposed name passes where the check
+    can fire, since saying so at propose would name the roster to the
+    model, as `imagelib::missing` refuses to), and adding or approving a
     character whose name an existing location or outfit contains. The
     second is the likelier order, and the one a one-way check misses. A
     warning
