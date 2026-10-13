@@ -414,6 +414,7 @@ fn start_agent(
             ("HF_HUB".into(), hub.display().to_string()),
         ],
         workdir: None,
+        throttle_secs: crate::launchd::THROTTLE_SECS,
         log,
     };
     write_owned(home, id, &plist, &crate::launchd::plist_text(&agent), 0o644)?;
