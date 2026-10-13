@@ -509,7 +509,7 @@ pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
             continue;
         }
         seen.push(*f);
-        match find_program(wiring.program) {
+        match mecha_core::onboarding::find_program(wiring.program) {
             Some(command) => items.push((*f, wiring, command)),
             None => println!(
                 "`{}` is not installed, so no [[mcp]] entry was written — `{}`, then `mecha \
@@ -644,25 +644,6 @@ pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// A program's absolute path: the first on PATH, else `~/.cargo/bin`, where
-/// `cargo install` puts it and a fresh shell may not have it on PATH yet.
-fn find_program(name: &str) -> Option<std::path::PathBuf> {
-    // Absolute only: a relative PATH entry (or an empty one, the cwd) would
-    // write a relative `command`, the failure this exists to prevent (review
-    // of #669).
-    let on_path = std::env::var_os("PATH").and_then(|p| {
-        std::env::split_paths(&p)
-            .filter(|d| d.is_absolute())
-            .map(|d| d.join(name))
-            .find(|f| f.is_file())
-    });
-    on_path.or_else(|| {
-        dirs::home_dir()
-            .map(|h| h.join(".cargo/bin").join(name))
-            .filter(|f| f.is_file())
-    })
 }
 
 /// What `enable` knows when it decides about the turbo model.
