@@ -641,6 +641,15 @@ kind is derived from its directory (`Entry.kind`).
   - The scene's `doing` still states each person's pose, as
     `IMAGE-DESIGN.md` §2.8 requires. A pose the scene states is what the
     picture should follow, with the reference's stance only a fallback.
+- **As built in step 2b** (2026-10-13), three choices beside E9b's arm:
+  - the binding names the person where E9b's said "her" ("`<image1>` is
+    Maya's portrait, `<image2>` Maya's full figure"), since the library
+    holds anyone and a description settles no pronoun;
+  - the head count stays E12's (no total without extras), not arm B's
+    "Exactly two people": a total erased a person the prose described;
+  - a picture the layers switch may build compiles without bodies, so a
+    layered build's fallback single pass draws what its cutouts would
+    have; the result says so, in a count.
 - **Pictures with two images per person need new wording.** §3's grammar
   ("each of the N people from the images appears exactly once") assumes one
   image per person. The compiled prompt binds them, naming what each image
@@ -707,6 +716,13 @@ kind is derived from its directory (`Entry.kind`).
     entry names it, for every blob any entry names, whatever the kind.
   - So a locked entry's images stay unfetchable by hash, the leak the #385
     review closed. Every kind carries its own `locked` flag.
+  - **Both halves of #385's answer widen together** (review of #680, pass
+    30). `serve::library::portrait` closes it twice: the visible-entry
+    lookup that answers 404, and the `open` fold that sends
+    `Cache-Control: no-store` for a blob only a locked entry names instead
+    of a year's `immutable`. Each widens from `entry.portrait` to every
+    blob any entry names, with the `!e.locked` fold kept, or a locked
+    entry's `full_body` lands in the browser cache for a year.
 - **Blob size:** owner-written blobs of every kind follow the owner
   portrait's existing rule. `MAX_PROPOSED_PORTRAIT_BYTES` stays a
   proposal-only cap, since candidates carry no new blobs.
@@ -861,10 +877,12 @@ repository, never their names or images.
 - **L6, references stay local:** a generator whose backend isn't on this
   machine (loopback) is given no library references (face, body, detail,
   location) without the owner's ruling for that generator. **The two
-  generators differ** (review of #680, passes 18 and 21). For
-  `image_generate` it's enforced where references are read: the
-  reference-read path (§9.3) refuses a blob to a non-loopback backend, as
-  `imagegen::loopback_url` does for its server. For the video tool it's a
+  generators differ** (review of #680, passes 18, 21 and 30). For
+  `image_generate` it's already held at the URL door: `Client::for_config`
+  refuses a non-loopback server through `imagegen::loopback_url` before a
+  client exists, so no reference can reach one. A reference-read check
+  would be a branch that cannot be taken; it becomes one only if a
+  non-loopback picture backend is ever ruled in. For the video tool it's a
   convention until the port: that tool is built outside this repository and
   calls none of this read path, so the check is on its port checklist, and
   until then video is held to L6 by the owner's private server alone, not by
