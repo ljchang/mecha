@@ -182,16 +182,22 @@ fn unload_in(domain: &str, label: &str) -> Result<()> {
 
 /// Load (or reload) the agent at `plist`, which starts it: the old
 /// definition is unloaded first, so launchd reads the file as written now.
+///
+/// Unloaded from both domains, not only the one it goes into: an agent
+/// bootstrapped into `user/<uid>` over SSH is loaded again into `gui/<uid>`
+/// at the next login, and a reinstall that replaced only one copy would leave
+/// the other holding the port (review of #678).
 pub fn load(plist: &Path, label: &str) -> Result<()> {
-    let domain = domain();
-    unload_in(&domain, label)?;
-    launchctl(&["bootstrap", &domain, &plist.display().to_string()])
+    unload(label)?;
+    launchctl(&["bootstrap", &domain(), &plist.display().to_string()])
 }
 
-/// Stop and unload the agent, wherever it is loaded.
+/// Stop and unload the agent, wherever it is loaded. Both domains are tried
+/// whatever the first answers; the first failure is returned after.
 pub fn unload(label: &str) -> Result<()> {
-    unload_in(&format!("gui/{}", uid()), label)?;
-    unload_in(&format!("user/{}", uid()), label)
+    let gui = unload_in(&format!("gui/{}", uid()), label);
+    let user = unload_in(&format!("user/{}", uid()), label);
+    gui.and(user)
 }
 
 #[cfg(test)]
