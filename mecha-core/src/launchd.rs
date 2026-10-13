@@ -122,18 +122,36 @@ fn uid() -> u32 {
     unsafe { libc::getuid() }
 }
 
-/// `gui/<uid>` when there is a login session to load into, else `user/<uid>`
-/// (module doc).
-fn domain() -> String {
-    let gui = format!("gui/{}", uid());
+/// Where an agent was loaded (module doc).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Domain {
+    /// `gui/<uid>`: a login session, which also loads the agent at each
+    /// graphical login.
+    Gui,
+    /// `user/<uid>`: nobody at the screen. The agent runs now, and is loaded
+    /// again only at the next graphical login, not at boot.
+    User,
+}
+
+impl Domain {
+    fn spec(self) -> String {
+        match self {
+            Domain::Gui => format!("gui/{}", uid()),
+            Domain::User => format!("user/{}", uid()),
+        }
+    }
+}
+
+/// `gui/<uid>` when there is a login session to load into, else `user/<uid>`.
+fn domain() -> Domain {
     let has_gui = std::process::Command::new("launchctl")
-        .args(["print", &gui])
+        .args(["print", &Domain::Gui.spec()])
         .output()
         .is_ok_and(|o| o.status.success());
     if has_gui {
-        gui
+        Domain::Gui
     } else {
-        format!("user/{}", uid())
+        Domain::User
     }
 }
 
@@ -187,16 +205,19 @@ fn unload_in(domain: &str, label: &str) -> Result<()> {
 /// bootstrapped into `user/<uid>` over SSH is loaded again into `gui/<uid>`
 /// at the next login, and a reinstall that replaced only one copy would leave
 /// the other holding the port (review of #678).
-pub fn load(plist: &Path, label: &str) -> Result<()> {
+/// The domain it went into is returned, for the caller to say what that means.
+pub fn load(plist: &Path, label: &str) -> Result<Domain> {
     unload(label)?;
-    launchctl(&["bootstrap", &domain(), &plist.display().to_string()])
+    let domain = domain();
+    launchctl(&["bootstrap", &domain.spec(), &plist.display().to_string()])?;
+    Ok(domain)
 }
 
 /// Stop and unload the agent, wherever it is loaded. Both domains are tried
 /// whatever the first answers; the first failure is returned after.
 pub fn unload(label: &str) -> Result<()> {
-    let gui = unload_in(&format!("gui/{}", uid()), label);
-    let user = unload_in(&format!("user/{}", uid()), label);
+    let gui = unload_in(&Domain::Gui.spec(), label);
+    let user = unload_in(&Domain::User.spec(), label);
     gui.and(user)
 }
 
