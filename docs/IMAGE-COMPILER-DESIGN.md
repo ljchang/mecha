@@ -367,7 +367,7 @@ characters/<name>/entry.toml
 - **`kind` is a closed enum in an on-disk store, so it's a wire format.** An unknown `kind` loads, is shown in the library, and is **never sent to a generator**. That's the fail-closed reading: a reference nobody can classify carries nothing into a picture.
 - **No `face` entry is needed today.** The face is the portrait's crop, cached by blob.
   - A `face` reference is for the owner who wants a better face than the portrait shows. At most one per character.
-  - When attached, it replaces the portrait as the source of the face crop, for both generators. The portrait stays the picture the library shows.
+  - When attached, it replaces the portrait as the source of video's face crop. Pictures keep sending the whole portrait (E10), since they have no crop to replace; using a `face` reference there would want its own measurement. The portrait stays the picture the library shows.
 - **Each reference is a blob,** content-addressed like the portrait, so the existing versioning (`history/v<N>.toml`) and lock apply unchanged.
 - **The portrait's two checks extend to every new blob name:** each reference's `blob`, and a location's images.
   - On load, the name check: no path separators, no leading dot, so a hand-edited entry can't point outside `blobs/`.
@@ -406,15 +406,20 @@ characters/<name>/entry.toml
 | location | its text in the scene | its images as an environment `<Subject>`, if V-L passes |
 | outfit | its text as `wearing` | its text as `wearing` |
 
+- **Both consumers keep references on this machine** (review of #680, pass 4).
+  - `image_generate` is loopback-only, `Egress::None`, enforced by `loopback_url`.
+  - The video tool renders on a local ComfyUI over loopback, H3's open weights, not MiniMax's hosted API, and declares no open world.
+
+  That's why sending a portrait, a full body, a labelled mark or a location's images costs nothing against the interlock today. A generator that isn't local gets no library references without the owner's ruling (L6). A hosted backend would send exactly these images off the machine.
 - **Every row marked "if" is off until its measurement passes,** and the owner rules on the result. A reference a generator doesn't send still costs no image slot: the description and labels carry the facts in words.
 - **Labels have their own budget per person,** at most 300 characters of detail labels appended to one description (review of #680, pass 2).
   - Labels past it are dropped, in the character's own order, and the result says so.
   - A label never causes a refusal. A full cast of `MAX_CAST` adds at most 1,500 characters against `MAX_COMPILED_PROMPT`'s 9,000, so attaching details can't make every later picture fail with a message blaming a scene that didn't grow.
 - **Locations and outfits expand the same way,** from a short name the model wrote into owner text. Each is bounded by its own cap:
-  - an outfit is held to `wearing`'s `MAX_CAST_FIELD` (300), as typed text is;
+  - an outfit fills `wearing` under `wearing`'s own `MAX_CAST_FIELD` (300), so it substitutes for typed text rather than adding to it;
   - a location's 400 characters are added once per scene.
 
-  With labels, a full cast's worst case is about 3,400 characters of library text. If `MAX_COMPILED_PROMPT` is still reached, the message names the library text that filled it, never "shorten the scene".
+  So the new pressure is about 1,900 characters: labels plus the location. If `MAX_COMPILED_PROMPT` is still reached, the message names the library text that filled it, never "shorten the scene".
 - **Fitting the slots** (review of #680). A call fills the generator's image budget in a fixed order, and says what it left out in the result:
   1. every person's face;
   2. each person's `full_body`, in cast order;
@@ -427,7 +432,7 @@ characters/<name>/entry.toml
 ### 9.5 Surfaces
 
 - **CLI:**
-  - `mecha imagelib add-reference <name> --kind full_body|detail <file> [--label …]` and `remove-reference`;
+  - `mecha imagelib add-reference <name> --kind face|full_body|detail <file> [--label …]` and `remove-reference`;
   - `add-location`;
   - `add-outfit [--for <character>]`.
 
@@ -441,7 +446,7 @@ characters/<name>/entry.toml
 
   The compiler resolves both, and an unknown name stays plain text.
 - **How a scene record stores a location** (review of #680). `scene::Setting` is a closed enum read leniently, and an unknown variant reads as "no setting". So a location isn't a new variant: it's recorded as today's `Words`, holding the location's resolved text, plus an optional `location` name. A build that predates it reads the words and loses only the link.
-- **Untrusted text naming a location.** The quarantined extraction (§5.2) would learn the field. A location name from an untrusted-origin record resolves like any name: it selects owner-approved words, and adds none of its own.
+- **Untrusted text naming a location.** The quarantined extraction (`IMAGE-DESIGN.md` §5.2) would learn the field. A location name from an untrusted-origin record resolves like any name: it selects owner-approved words, and adds none of its own.
   - It's the same rule as a non-library `who` being drawn from words (`IMAGE-DESIGN.md` §8).
   - The record keeps the origin of the write that set it, as every `scene::Field` does; an unreadable setting stays `Setting::Unknown` and untrusted.
 
@@ -471,6 +476,7 @@ E9b and V-B use the same reference set, so one set of images answers both genera
 - **L2, the portrait stays canonical:** no migration. The face is its crop, and existing manifests stay valid.
 - **L3, each generator's references gated on its measurement** (§9.4), with the owner ruling on each result, and the slot-filling order of §9.4.
 - **L4, outfits are text:** an image is for browsing only.
+- **L6, references stay local:** a generator whose backend isn't on this machine (loopback) is given no library references (face, body, detail, location) without the owner's ruling for that generator.
 - **L5, the order:**
   1. E9b and V-B, one session with shared references;
   2. the store and CLI for `full_body` and `detail`;
