@@ -806,13 +806,13 @@ Global file only — a project layer's `[image]` is ignored with a warning.
 |---|---|---|---|
 | `backend` | string | `comfyui` | The image server's kind. `comfyui` is the only one today. |
 | `url` | string | `http://127.0.0.1:8188` | The server. Must be on this machine (`127.0.0.1`, `::1` or `localhost`); anything else is refused at startup. |
-| `diffusion_model` | string | `qwen_image_2.1_int8_convrot.safetensors` | File names as the server lists them. A `.gguf` file loads through the ComfyUI-GGUF node, any other through ComfyUI's own loader. |
-| `turbo_model` | string | `qwen_image_2.1_turbo_int8_convrot.safetensors` | The turbo distillation a persona's picture settings may choose instead. It needs only this file beside the others; the text encoder and VAE are shared. |
+| `diffusion_model` | string | `qwen_image_2.1_int8_convrot.safetensors` (`qwen_image_2.1_bf16.safetensors` on a Mac) | File names as the server lists them. A `.gguf` file loads through the ComfyUI-GGUF node, any other through ComfyUI's own loader. |
+| `turbo_model` | string | `qwen_image_2.1_turbo_int8_convrot.safetensors` (`qwen_image_2.1_turbo_bf16.safetensors` on a Mac) | The turbo distillation a persona's picture settings may choose instead. It needs only this file beside the others; the text encoder and VAE are shared. |
 | `text_encoder` | string | `qwen3vl_8b_w4a8.safetensors` | |
 | `vae` | string | `qwen_image_2.1_vae_bf16.safetensors` | |
 | `steps` | integer | `40` | Denoising steps; 40 is the model's reference setting. |
 | `timeout_secs` | integer | `600` | A generation running longer is abandoned on the server. |
-| `min_available_mb` | integer | `20480` | What a generation needs when the image server holds no model (just started, or its stats can't be read). A server that has already loaded the model needs this figure less the ~8 GB a load costs (12 GB at the default). The [memory floor](#system) adds its reserve on top and refuses under memory pressure. `0` skips the check. |
+| `min_available_mb` | integer | `20480` (`34816` on a Mac) | What a generation needs when the image server holds no model (just started, or its stats can't be read). A server that has already loaded the model needs this figure less what a load costs (12 GB at the Linux default). A Mac's server cannot report whether it has loaded, so a Mac always asks this figure. The [memory floor](#system) adds its reserve on top and refuses under memory pressure. `0` skips the check. |
 | `unload_after_secs` | integer | `900` | Ask the server to unload its models after this long idle. `0` keeps them loaded. |
 | `server_temp_dir` | path | unset | The directory the server writes temp files into — for ComfyUI, the `--temp-directory` path with `temp` appended. When set, each job's uploaded references and preview are deleted there after the job. Unset, they stay until the server restarts, and incognito chats cannot generate images. |
 

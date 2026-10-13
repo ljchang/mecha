@@ -98,7 +98,6 @@ fn uv_asset(target: &str) -> Option<(&'static str, &'static str, u64)> {
 pub fn installable(id: &str) -> bool {
     match id {
         "layout" | "llama" => true,
-        // systemd user units or launchd agents (§12).
         // systemd user units or launchd agents (§12); ComfyUI on a Mac is
         // MPS torch (§12.3).
         "embed-server" | "ocr-server" | "stt" | "voice-worker" | "speech" | "comfyui" => {
@@ -725,9 +724,9 @@ pub async fn install(
             // scratch home must not read or edit the operator's config
             // (review of #645).
             let path = m.mecha_home.join("config.toml");
-            // ComfyUI-GGUF is not installed (the int8 default needs only the
-            // core loader), so a configured `.gguf` would fail at the first
-            // picture — said now rather than then.
+            // ComfyUI-GGUF is not installed (the safetensors default needs
+            // only the core loader), so a configured `.gguf` would fail at the
+            // first picture — said now rather than then.
             let configured = std::fs::read_to_string(&path)
                 .ok()
                 .and_then(|t| toml::from_str::<toml::Value>(&t).ok())
@@ -741,7 +740,8 @@ pub async fn install(
                 say(&format!(
                     "[image] diffusion_model is {model} — a GGUF, which needs the ComfyUI-GGUF \
                      node this install does not bring; remove the line to use the installed \
-                     int8 model"
+                     {}",
+                    crate::sampling::standard_model()
                 ));
             }
             // The switch alone reads off with no `[image]` table; one naming
@@ -956,6 +956,30 @@ mod tests {
             download_bytes: 5,
             nothing_to_do: false,
         };
+        // Apple silicon fits whatever the NVIDIA reading (MPS, §12.3): its
+        // priced path is the last leg's, and the refusals below are Linux's
+        // (review of #681).
+        if crate::comfyui_unit::fits(
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            crate::engine::Nvidia::None,
+        )
+        .is_ok()
+        {
+            assert_eq!(
+                std::env::consts::OS,
+                "macos",
+                "only a Mac fits without NVIDIA"
+            );
+            let mut mac = comfy();
+            price(&mut mac, true, || crate::engine::Nvidia::None);
+            let b = crate::comfyui_unit::env_bytes("macos", std::env::consts::ARCH).unwrap();
+            assert_eq!(
+                (mac.sidecars[0].bytes, mac.download_bytes),
+                (Some(b), 5 + b)
+            );
+            return;
+        }
         let mut no_gpu = comfy();
         price(&mut no_gpu, true, || crate::engine::Nvidia::None);
         assert_eq!((no_gpu.sidecars[0].bytes, no_gpu.download_bytes), (None, 5));
@@ -1011,6 +1035,13 @@ mod tests {
                 "macos",
                 "only a Mac fits without NVIDIA"
             );
+            // Offered, and its clip priced with it (review of #679 — this
+            // branch asserted nothing else).
+            price(&mut p, true, || crate::engine::Nvidia::None);
+            let clip: u64 = crate::speech_unit::VOICE.iter().map(|f| f.bytes).sum();
+            assert_eq!(p.sidecars[0].bytes, Some(clip));
+            assert_eq!(p.download_bytes, 105 + clip);
+            assert!(p.sidecars[0].not_offered.is_none());
             return;
         }
         price(&mut p, true, || crate::engine::Nvidia::None);

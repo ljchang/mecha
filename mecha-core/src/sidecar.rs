@@ -427,7 +427,16 @@ impl Machinery {
             mecha_home,
             unit_dirs,
             path,
-            docker: Box::new(docker_image),
+            // The one Docker evidence is the Chatterbox speech container, a
+            // CUDA image that never ran on a Mac — and Docker Desktop is
+            // usually not running there, which read every Mac as "unknown"
+            // and withheld the speech server for good (found on the owner's
+            // Mac, 2026-10-13). On macOS no image is evidence.
+            docker: if cfg!(target_os = "macos") {
+                Box::new(|_| Lookup::Absent)
+            } else {
+                Box::new(docker_image)
+            },
         })
     }
 
