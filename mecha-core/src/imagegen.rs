@@ -3796,6 +3796,11 @@ impl Tool for ImageGenerate {
                     }
                 }
                 let style = plan.next.style.as_ref().map(|s| s.value.clone());
+                // Layers are weighed before the compile: a picture they may
+                // draw is compiled from portraits alone, so the fallback
+                // single pass draws what the cutouts would have (§9.4).
+                let layers_wanted =
+                    ctx.layers && plan.route == "new" && people.len() >= 2 && as_called;
                 let compile_from = |people: &[crate::scene::Person],
                                     words: &crate::scene::Scene,
                                     together: bool| {
@@ -3840,7 +3845,7 @@ impl Tool for ImageGenerate {
                             }
                         }
                     }
-                    crate::imagelib::compile(
+                    crate::imagelib::compile_with(
                         &lib,
                         &match &plan.also {
                             // A retouch given for a new picture, or beside a
@@ -3851,6 +3856,7 @@ impl Tool for ImageGenerate {
                         &cast,
                         &extras,
                         style.as_deref(),
+                        !layers_wanted,
                     )
                     .map(|c| (c, in_act))
                 };
@@ -3871,6 +3877,7 @@ impl Tool for ImageGenerate {
                 };
                 req.prompt = compiled.prompt;
                 clothes_said = in_act;
+                dropped.extend(compiled.notes);
                 req.references = compiled
                     .references
                     .into_iter()
@@ -3899,7 +3906,7 @@ impl Tool for ImageGenerate {
                 // Layers (IMAGE-DESIGN.md §15): the owner's switch, a new
                 // picture, two or more people sharing an act. Decided here,
                 // before anything is drawn, so the layers are kept.
-                if ctx.layers && plan.route == "new" && people.len() >= 2 && as_called {
+                if layers_wanted {
                     let portraits: Vec<Option<(Vec<u8>, &'static str)>> = people
                         .iter()
                         .map(|p| match &p.who {
@@ -4358,6 +4365,7 @@ impl Tool for ImageGenerate {
                             name: p.who.key(),
                             version: e.version,
                             portrait: e.portrait.clone(),
+                            full_body: None,
                         });
                     }
                 }
@@ -4402,6 +4410,7 @@ impl Tool for ImageGenerate {
                                 name,
                                 version: entry.version,
                                 portrait: None,
+                                full_body: None,
                             });
                         }
                         None => {
@@ -4740,7 +4749,17 @@ impl Tool for ImageGenerate {
                 // Who was drawn, by name and entry version: what save-to-library
                 // reads. Never the scene itself, which lives outside the jail.
                 "cast": used.iter().filter(|u| u.kind == crate::imagelib::Kind::Character)
-                    .map(|u| json!({"name": u.name, "version": u.version, "portrait": u.portrait}))
+                    .map(|u| {
+                        let mut row =
+                            json!({"name": u.name, "version": u.version, "portrait": u.portrait});
+                        // The figure that went beside the portrait (§9.4),
+                        // by hash like the portrait: the version says only
+                        // that one was attached.
+                        if let Some(blob) = &u.full_body {
+                            row["full_body"] = json!(blob);
+                        }
+                        row
+                    })
                     .collect::<Vec<_>>(),
                 "style": used.iter().find(|u| u.kind == crate::imagelib::Kind::Style)
                     .map(|u| json!({"name": u.name, "version": u.version})),
@@ -7284,6 +7303,135 @@ mod tests {
         assert!(manifest.get("prompt").is_none(), "{manifest}");
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
+    }
+
+    fn attach_body(lib: &std::path::Path, name: &str, rgb: [u8; 3]) {
+        let img = image::RgbImage::from_pixel(2, 2, image::Rgb(rgb));
+        let mut png = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        crate::imagelib::add_reference(
+            lib,
+            name,
+            crate::imagelib::RefKind::FullBody,
+            &png.into_inner(),
+            None,
+        )
+        .unwrap();
+    }
+
+    /// Library v2 step 2b (IMAGE-COMPILER-DESIGN.md §9.4): a cast of two with
+    /// a full body each sends four images, bound by person, and the manifest
+    /// says which figure went.
+    #[tokio::test]
+    async fn a_cast_with_bodies_sends_four_images_bound_by_person() {
+        let (url, seen) = fake(vec![done()], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya", "john"]);
+        attach_body(&lib, "maya", [70, 1, 1]);
+        attach_body(&lib, "john", [70, 2, 2]);
+        let t = tool(&url).with_library_dir(lib.clone());
+        let out = t
+            .call(
+                json!({"scene": {"setting": "a studio", "people": two_people()}, "seed": 5}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(!out.content.contains("Full-figure"), "{}", out.content);
+        let seen = seen.lock().unwrap().clone();
+        let uploads = seen
+            .iter()
+            .filter(|l| l.starts_with("POST /upload/image"))
+            .count();
+        assert_eq!(uploads, 4, "a portrait and a full figure per person");
+        let submitted = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+        assert!(
+            submitted.contains(
+                "<image3> and <image4> show one person, John: <image3> is John's portrait, \
+                 <image4> John's full figure."
+            ),
+            "{submitted}"
+        );
+        let png = out
+            .content
+            .lines()
+            .next()
+            .unwrap()
+            .strip_prefix("image: ")
+            .unwrap();
+        let manifest: Value =
+            serde_json::from_slice(&std::fs::read(dir.join(png.replace(".png", ".json"))).unwrap())
+                .unwrap();
+        assert!(manifest["cast"][1]["full_body"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256-"));
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// One body in a cast of two goes to no one, and the model is told in a
+    /// count, never which person or what the picture is labelled.
+    #[tokio::test]
+    async fn a_lone_body_is_not_sent_and_the_result_says_so_in_counts() {
+        let (url, seen) = fake(vec![done()], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya", "john"]);
+        attach_body(&lib, "maya", [70, 3, 3]);
+        let t = tool(&url).with_library_dir(lib.clone());
+        let out = t
+            .call(
+                json!({"scene": {"setting": "a studio", "people": two_people()}}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains(
+                "Full-figure references were not sent: 1 of the two people has one attached"
+            ),
+            "{}",
+            out.content
+        );
+        let seen = seen.lock().unwrap().clone();
+        let uploads = seen
+            .iter()
+            .filter(|l| l.starts_with("POST /upload/image"))
+            .count();
+        assert_eq!(uploads, 2);
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// A picture layers may draw is compiled from portraits, so a layered
+    /// build's fallback single pass draws no figure the cutouts did not.
+    #[tokio::test]
+    async fn a_picture_planned_in_layers_sends_no_bodies() {
+        let (url, seen) = fake(vec![done(); 8], "200 OK").await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        attach_body(&lib, "maya", [70, 4, 4]);
+        attach_body(&lib, "john", [70, 5, 5]);
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.layers = true;
+        let out = t.call(touching_call(), &cx).await.unwrap();
+        assert!(
+            out.content.contains(
+                "Full-figure references were not sent: a picture planned in layers is drawn \
+                 from portraits."
+            ),
+            "{}",
+            out.content
+        );
+        let seen = seen.lock().unwrap().clone();
+        assert!(
+            seen.iter()
+                .filter(|l| l.starts_with("POST /prompt"))
+                .all(|l| !l.contains("full figure")),
+            "{seen:?}"
+        );
     }
 
     /// A replay's seed stream (`ToolCtx::image_seeds`): two arms stamped
