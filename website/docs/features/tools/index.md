@@ -355,7 +355,7 @@ stoppable, like a picture. The result lands on the same row when it is done.
   plays under its row.
 - **Stop:** sends the server `notifications/cancelled`. A background call is
   bounded at two hours rather than 120 s.
-- **Incognito:** no background job reaches an incognito chat.
+- **Incognito:** no server's background job reaches an incognito chat.
 
 What to expect when a server misbehaves:
 
