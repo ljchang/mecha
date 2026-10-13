@@ -200,11 +200,60 @@ pub fn fits(
     arch: &str,
     nvidia: crate::engine::Nvidia,
 ) -> std::result::Result<(), String> {
+    // The macOS version, read only on a Mac: off one there is nothing to ask.
+    let macos = if os == "macos" && cfg!(target_os = "macos") {
+        macos_major()
+    } else {
+        None
+    };
+    fits_with(os, arch, nvidia, macos)
+}
+
+/// The oldest macOS the Mac lock's torch runs on: its wheels are tagged
+/// `macosx_14_0_arm64`, and on an older system `uv` finds no wheel and fails
+/// mid-install with its own words (review of #681).
+pub const MACOS_FLOOR: u32 = 14;
+
+/// The running macOS's major version, from `sw_vers -productVersion`.
+fn macos_major() -> Option<u32> {
+    let out = std::process::Command::new("sw_vers")
+        .arg("-productVersion")
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .split('.')
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// [`fits`] over what was read, so every row is a test. `macos` is the
+/// running macOS's major version, `None` where it was not read — refused on
+/// a Mac, since unknown is never new enough.
+fn fits_with(
+    os: &str,
+    arch: &str,
+    nvidia: crate::engine::Nvidia,
+    macos: Option<u32>,
+) -> std::result::Result<(), String> {
     use crate::engine::Nvidia;
     match os {
         "linux" => {}
-        // MPS, from PyPI's torch: no driver to ask (§12.3).
-        "macos" if arch == "aarch64" => return Ok(()),
+        // MPS, from PyPI's torch: no driver to ask (§12.3), but a floor.
+        "macos" if arch == "aarch64" => {
+            return match macos {
+                Some(v) if v >= MACOS_FLOOR => Ok(()),
+                Some(v) => Err(format!(
+                    "this Mac runs macOS {v}; the pinned torch needs macOS {MACOS_FLOOR} or \
+                     newer — update macOS to install image generation"
+                )),
+                None => Err(format!(
+                    "this Mac's macOS version could not be read (`sw_vers -productVersion`), and \
+                     the pinned torch needs macOS {MACOS_FLOOR} or newer"
+                )),
+            }
+        }
         "macos" => {
             return Err(
                 "image generation on a Mac needs Apple silicon: the pinned torch draws on MPS, \
@@ -1080,8 +1129,16 @@ mod tests {
             .unwrap_err()
             .contains("nvidia-smi"));
         assert!(fits("linux", "riscv64", Driver(580, 0)).is_err());
-        // MPS: no driver asked (§12.3); an Intel Mac has no MPS.
-        assert!(fits("macos", "aarch64", None).is_ok());
+        // MPS: no driver asked (§12.3), a macOS floor instead; an Intel
+        // Mac has no MPS.
+        assert!(fits_with("macos", "aarch64", None, Some(MACOS_FLOOR)).is_ok());
+        assert!(fits_with("macos", "aarch64", None, Some(27)).is_ok());
+        assert!(fits_with("macos", "aarch64", None, Some(13))
+            .unwrap_err()
+            .contains("macOS 13"));
+        assert!(fits_with("macos", "aarch64", None, Option::None)
+            .unwrap_err()
+            .contains("could not be read"));
         assert!(fits("macos", "x86_64", None)
             .unwrap_err()
             .contains("Apple silicon"));

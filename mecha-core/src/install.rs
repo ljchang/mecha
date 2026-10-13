@@ -98,7 +98,6 @@ fn uv_asset(target: &str) -> Option<(&'static str, &'static str, u64)> {
 pub fn installable(id: &str) -> bool {
     match id {
         "layout" | "llama" => true,
-        // systemd user units or launchd agents (§12).
         // systemd user units or launchd agents (§12); ComfyUI on a Mac is
         // MPS torch (§12.3).
         "embed-server" | "ocr-server" | "stt" | "voice-worker" | "speech" | "comfyui" => {

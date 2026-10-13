@@ -2018,6 +2018,8 @@ the turbo it fetches; Linux keeps its constants, untouched. The environment
 is its own lock, `locks/comfyui-macos-arm64.txt`: ComfyUI's requirements at
 the commit with stock PyPI torch, held to the cu130 locks' versions where a
 package is in both (~0.76 GB of wheels, a fifth of Linux's, none of CUDA's).
+Its torch wheels are `macosx_14_0_arm64`, so `comfyui_unit::fits` refuses a
+Mac below macOS 14 (`MACOS_FLOOR`) before anything is fetched.
 The unit goes through `user_service`, the agent read from the same rendered
 unit; the install makes the temp directory itself, the unit's
 `ExecStartPre` having no launchd equivalent.
