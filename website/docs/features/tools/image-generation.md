@@ -44,7 +44,8 @@ is a launchd agent, `ai.mecha-factory.mecha-comfyui`, logging to
 `~/Library/Logs/mecha/mecha-comfyui.log`. There is no idle timer on a Mac: a
 loaded model stays in memory (about 14 GB) until `[image] unload_after_secs`
 unloads it. The text encoder runs on the CPU there, which adds about 13 s to a
-new prompt. An Intel Mac is not offered the install.
+new prompt. It needs macOS 14 or newer; an Intel Mac is not offered the
+install.
 
 To run your own instead:
 
