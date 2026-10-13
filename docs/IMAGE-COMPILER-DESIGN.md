@@ -121,10 +121,11 @@ The rules, each a measurement:
   reference, and their description rides beside the pointer.
 - **One reference per character, left to right, each appearing exactly once**
   (E2, E9: every slot tends to become a person). *(Ruled 2026-10-13, to be
-  built: §9.4 adds two images per person, all or nothing, since E9b passed.)* One person is "the person in
-  the image"; two or more are `<image1>…<imageN>` in `cast` order, "from left
-  to right", and "each of the N people from the images appears exactly once;
-  anyone else the scene describes is a new person". No total: a total with
+  built: §9.4 adds two images per person, all or nothing, since E9b
+  passed.)* One person is "the person in the image"; two or more are
+  `<image1>…<imageN>` in `cast` order, "from left to right", and "each of
+  the N people from the images appears exactly once; anyone else the scene
+  describes is a new person". No total: a total with
   no extras erased a waiter the prose described, and without it four cast
   still drew exactly four (E12). With `extras`, a total that counts them.
 - **`wearing` and `doing` are required** (E3, E8: a reference supplies its own
@@ -135,7 +136,10 @@ The rules, each a measurement:
 - **References are sent at 512²** (E2: four at 1024² cost 190 s, four at 512²
   79 s; E10: a whole portrait at 512² holds identity). `Request` gains a
   backend-neutral `reference_size`; plain edits keep 1024.
-- **At most five cast members** (`MAX_CAST`; the owner's **provisional** ceiling C5, `IMAGE-DESIGN.md` §11 and §5.2: five whole portraits drew all five, 3/3, up from E3's measured four; to be revisited after a closer look).
+- **At most five cast members** (`MAX_CAST`; the owner's **provisional**
+  ceiling C5, `IMAGE-DESIGN.md` §11 and §5.2: five whole portraits drew all
+  five, 3/3, up from E3's measured four; to be revisited after a closer
+  look).
 - **Anyone else is an `extra`, and is counted** (E11). A waiter described in
   the scene beside a cast of three, with "Exactly three people" compiled in,
   was kept in the picture but pushed into the background; listed as
@@ -328,8 +332,9 @@ The decisions that are this design's rather than the owner's:
 
 ## 8. Not yet built
 
-- **Locations, scene assets, lineage and branching** (draft §6–7, §20). §9 proposes the
-  library half of this: typed character references, locations and wardrobe.
+- **Locations, scene assets, lineage and branching** (draft §6–7, §20).
+  §9 proposes the library half of this: typed character references,
+  locations and wardrobe.
 - **Tier B checks** (face embedding, detector, VLM) and the repair loop.
 - **Cast plus an edit canvas in one call** — needs a per-reference
   resolution (ComfyUI's `resolution = 0` keeps each at its own size), which
@@ -396,7 +401,9 @@ characters/<name>/entry.toml
   [[reference]]
   kind  = "full_body"                  # face | full_body | detail
   blob  = "sha256-….png"
-  label = "standing, front view"                     # optional here (browsing only); required on a detail, e.g. "left-forearm tattoo"
+  label = "standing, front view"       # optional here (browsing only)
+                                       # required on a detail, e.g.
+                                       # "left-forearm tattoo"
 ```
 
 - **`kind` is a closed enum in an on-disk store, so it's a wire format.** An
@@ -550,10 +557,13 @@ kind is derived from its directory (`Entry.kind`).
   3. details, in cast order, then in each character's own order. That's
      greedy, so it's the mixed shape the next bullets call unmeasured; it
      waits on V-D, whose arms include that shape.
-  - **Video** has nine slots, less any pinned or other reference images. Two
-    people fit with a body each and up to five details; three fit with a
-    body each and three details.
-  - **Bodies are all or nothing in both generators** (review of #680, pass
+  - **Video sends no bodies today: V-B failed** (the table above). What
+    follows is the arithmetic a retest would inherit if one passes, not a
+    rule in force (review of #680, pass 22). Video has nine slots, less any
+    pinned or other reference images. Two people would fit with a body each
+    and up to five details; three with a body each and three details.
+  - **Bodies are all or nothing in both generators**, once video's retest
+    passes; in pictures from step 2b (review of #680, pass
     10). Bodies are sent only when **every person in the cast has one
     attached and they all fit** beside every face; otherwise none is (review
     of #680, pass 13). So a cast where one character has a body and another
@@ -570,7 +580,8 @@ kind is derived from its directory (`Entry.kind`).
     duplicate-free evidence at four (E12).
     - A new picture carries at most five reference images. That's
       `IMAGE-DESIGN.md` §5.2's measurement: five whole portraits drew all
-      five people, 3/3.
+      five people, 3/3. It is the provisional C5 (§3), so if C5 goes back
+      to four this cap moves with it (review of #680, pass 22).
     - Faces come first. **Bodies are all or nothing** (review of #680, pass
       8): every person gets their `full_body`, or none does, and only while
       the total stays at four or fewer. So that's a cast of one or two. A
@@ -579,10 +590,13 @@ kind is derived from its directory (`Entry.kind`).
       measured. Attached and fitting both: a person with no `full_body`
       attached means no one in that cast gets one.
     - What was left out is said.
-    - **The four is E9b's to establish, not settled** (review of #680, pass
-      7). E12 measured four *different* faces with no duplicate, while two
+    - **The four is established by E9b** (review of #680, passes 7 and
+      22). E12 measured four *different* faces with no duplicate, while two
       people with a body each is E9's B2 arm, which drew one person twice.
-      So that configuration is exactly what E9b must pass.
+      E9b ran that configuration, a cast of two with a body each, and drew
+      two people in both seeds with no grey from the references; pose
+      transfer was its one side effect (next bullet). It was judged by
+      eye, not ArcFace-scored (`IMAGE-COMPILER-RESEARCH.md`).
     - **An edit sends faces only.** Its canvas plus five crops already fill
       `EDIT_REFERENCE_BUDGET` (6), and E9b's arms are new pictures. An edit
       gets bodies only with a measurement of its own.
@@ -599,13 +613,13 @@ kind is derived from its directory (`Entry.kind`).
     picture should follow, with the reference's stance only a fallback.
 - **Pictures with two images per person need new wording.** §3's grammar
   ("each of the N people from the images appears exactly once") assumes one
-  image per person. If E9b passes, the compiled prompt binds them, naming
-  what each image is. For pictures the first is the whole portrait (§9.3),
+  image per person. The compiled prompt binds them, naming what each image
+  is. For pictures the first is the whole portrait (§9.3),
   so: "`<image1>` and `<image2>` show one person, Maya: `<image1>` is her
   portrait, `<image2>` her full figure". Naming how each person is shown is
   what E9 found prevents duplicates (review of #680, pass 17). It counts
-  people, not images. E9b's bound arm must run with that wording, with a
-  cast of two (four images).
+  people, not images. E9b's bound arm ran with exactly that wording, on a
+  cast of two (four images), and passed (review of #680, pass 22).
 
 ### 9.5 Surfaces
 
