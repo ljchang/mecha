@@ -255,9 +255,9 @@ you a picture.
 ### A Mac
 
 A Mac mini or Studio with generous unified memory is a reasonable dedicated
-box, and llama.cpp's Metal backend is well supported. mecha's own installers
-are Linux-only, though: on a Mac you start `llama-server` yourself, and the
-image and voice servers are yours to run too — see
+box, and llama.cpp's Metal backend is well supported. `mecha setup chat`
+installs the chat model on a Mac from the same rows as the GB10 (both are one
+pool of memory), but the image and voice servers are yours to run — see
 [Installation](/docs/getting-started/installation#on-a-mac).
 
 :::note Unmeasured here
@@ -279,7 +279,7 @@ Two Mac-specific notes that do transfer:
 
 ## What to do once you have chosen
 
-Do not type the numbers from this page into your config. On Linux,
+Do not type the numbers from this page into your config.
 `mecha setup chat` installs the model recommended for this machine's memory
 and writes its settings for you. With a server you started yourself, let
 mecha read them back:
