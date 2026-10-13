@@ -461,7 +461,13 @@ pub async fn install(
     } else {
         start_unit(m, naming, &bin, &engine, &preset.alias, &r, say)?;
     }
-    check(naming, &preset.alias, &logs_hint(&m.home, naming)).await?;
+    // llama-server answers /health with 503 while the model loads. Under
+    // systemd the restart has already waited that out (`ExecStartPost=
+    // mecha-wait-healthy 8080 540`); `bootstrap` returns at once, so on a Mac
+    // this wait is the cold load, and gets the unit's whole start budget
+    // (`TimeoutStartSec=600`, review of #678).
+    let budget = Duration::from_secs(if cfg!(target_os = "macos") { 600 } else { 180 });
+    check(naming, &preset.alias, &logs_hint(&m.home, naming), budget).await?;
     if cfg!(target_os = "macos") {
         say("the router starts again at each login");
     } else {
@@ -559,7 +565,7 @@ fn start_agent(
 
 /// The router answers, and the model is resident — asked of the router, never
 /// inferred from the service starting.
-async fn check(naming: &Naming, alias: &str, logs: &str) -> Result<()> {
+async fn check(naming: &Naming, alias: &str, logs: &str, budget: Duration) -> Result<()> {
     let base = naming.base();
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
@@ -573,10 +579,11 @@ async fn check(naming: &Naming, alias: &str, logs: &str) -> Result<()> {
         .await
         .is_ok_and(|r| r.status().is_success())
     {
-        if started.elapsed() > Duration::from_secs(180) {
+        if started.elapsed() > budget {
             bail!(
-                "the router on :{} did not answer /health within 180 s — {logs}",
-                naming.port
+                "the router on :{} did not answer /health within {} s — {logs}",
+                naming.port,
+                budget.as_secs()
             );
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -626,7 +633,9 @@ pub fn remove(m: &Machinery, naming: &Naming) -> Result<()> {
     let home = &m.mecha_home;
     let stem = &naming.stem;
     if cfg!(target_os = "macos") {
-        let _ = crate::launchd::unload(&crate::launchd::label(stem));
+        // A job launchd still holds is not deleted out from under it: its
+        // plist stays, so a second `remove` can try again (review of #678).
+        crate::launchd::unload(&crate::launchd::label(stem))?;
     } else {
         let _ = crate::engine_gate::systemctl("disable", &["--now", &format!("{stem}.service")]);
     }
