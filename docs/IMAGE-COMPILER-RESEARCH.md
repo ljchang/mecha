@@ -702,7 +702,7 @@ duplicate there is not a regression E12 covers.
   colour with either makes a leak unscoreable.
 
   **Measured 2026-10-13** (two of the owner's characters with contrasting stored builds; 1024²,
-  40 steps, references at 512, seeds 101 and 202; F and B share the compiled prompt):
+  40 steps, references at 512, seeds 101 and 202; F and B share the scene, the people and the seeds, and B's prompt adds the two-images-one-person wording, "`<image1>` is her portrait, `<image2>` her full figure"):
   - The portraits wore a third pair of colours (a crop top and shorts; a bikini). No portrait
     clothing appeared in either arm.
   - **F:** identity held and the stated clothing landed. The two builds converged on one generic
@@ -713,8 +713,8 @@ duplicate there is not a regression E12 covers.
     in both seeds).
   - **B, side effect:** one character's reference pose (a hip-shifted stance) carried over in both
     seeds.
-  - **Reading:** passes E9b's bar on this pair, with pose transfer noted. The owner rules on the
-    result (design L3). It shares its
+  - **Reading:** passes E9b's bar on this pair, with pose transfer noted. **Owner, 2026-10-13:
+    on for pictures**, with references in a neutral stance (design §9.4). It shares its
   reference set with V-B below.
 - **Library v2, the video side** (2026-10-13; the video tool, MiniMax H3,
   built outside this repository for now; its own design moves in with it):
