@@ -150,9 +150,9 @@ and asks before it downloads anything:
 1. **The chat model.** If something already answers on `:8080`, setup offers
    to write down what it serves. Otherwise it offers the model recommended for
    this machine's memory, a GGUF you already have, or a hosted model
-   (Anthropic, with `ANTHROPIC_API_KEY` set in your shell). Installing a local
-   model needs Linux; on a Mac choose the hosted model, or start your own
-   server and run `mecha setup --write`.
+   (Anthropic, with `ANTHROPIC_API_KEY` set in your shell). The local model
+   installs on Linux as a systemd user service and on a Mac as a launchd
+   agent.
 2. **Each optional feature**, one at a time: what it does, what it downloads,
    and `y`, `N` or `never`. A feature that needs another says so.
 3. **One summary and one `Start?`**: everything you said yes to and the total
@@ -283,12 +283,11 @@ mecha setup --write --provider local
 
 ### If nothing is running
 
-On Linux, let mecha install the server: `mecha setup chat` (or the first
-question of the guided `mecha setup`) installs llama.cpp, the model
-recommended for this machine and the router that serves it — see
-[A local model](#a-local-model-the-default) above. On a Mac it refuses, because
-the router is a systemd user unit; start `llama-server` yourself and run
-`mecha setup --write`.
+Let mecha install the server: `mecha setup chat` (or the first question of
+the guided `mecha setup`) installs llama.cpp, the model recommended for this
+machine and the router that serves it — a systemd user service on Linux, a
+launchd agent on a Mac. See [A local model](#a-local-model-the-default)
+above.
 
 Otherwise use a hosted model, which needs an API key that `mecha setup` will
 not write. mecha stores the **name** of an environment variable rather than a

@@ -273,8 +273,8 @@ fn the_blocking_step_offers_a_way_out_rather_than_a_viewer() {
     };
     match local["status"].as_str().unwrap() {
         // Nothing answers here: the way out installs one, in setup's own verb
-        // — on Linux, the one place `setup chat` runs.
-        "missing" if cfg!(target_os = "linux") => {
+        // — on Linux and macOS, where `setup chat` runs.
+        "missing" if cfg!(any(target_os = "linux", target_os = "macos")) => {
             assert_eq!(argv(local), ["mecha", "setup", "chat"])
         }
         "missing" => assert!(argv(local).is_empty(), "{local:#}"),

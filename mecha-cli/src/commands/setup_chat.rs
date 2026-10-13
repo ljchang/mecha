@@ -69,13 +69,12 @@ impl Ready {
 /// server here is someone else's and nothing is installed over it.
 pub async fn prepare() -> Result<Option<Ready>> {
     // Refused before anything is asked or fetched: the router is a systemd
-    // user unit, and the engine download ahead of it would otherwise run
-    // and then fail (found on review of #568).
+    // user unit or a launchd agent, and the engine download ahead of it
+    // would otherwise run and then fail (found on review of #568).
     anyhow::ensure!(
-        cfg!(target_os = "linux"),
-        "`mecha setup chat` installs the router as a systemd user unit, which this system does \
-         not have — start llama-server by hand and run `mecha setup --write` (FEATURES-DESIGN \
-         §10.5)"
+        router_unit::installs_here(),
+        "`mecha setup chat` installs the router as a systemd user unit or a launchd agent, and \
+         this system has neither — start llama-server by hand and run `mecha setup --write`"
     );
     let m = mecha_core::sidecar::Machinery::real()?;
     let machine = mecha_core::recommend::Machine::read()?;
@@ -128,21 +127,42 @@ pub async fn prepare() -> Result<Option<Ready>> {
         return Ok(None);
     }
 
-    // A machine no pinned engine build fits is told so before it is asked
-    // anything — the answer is to fix the driver, not to say yes (found on
-    // review of #568). A machine with a llama-server of its own probes no
-    // driver.
-    // Its download is priced from the pin for this machine's build, never
+    // The router runs mecha's own engine, installed beside any other — a
+    // provided `llama-server` is left alone and not run (§12). A machine no
+    // pinned engine build fits is told so before it is asked anything — the
+    // answer is to fix the driver, not to say yes (found on review of #568) —
+    // unless it has an engine of its own, which is then the one there is.
+    // The download is priced from the pin for this machine's build, never
     // remembered: a CPU build is a fiftieth of a CUDA one.
-    let (engine_bytes, engine_built) = if mecha_core::llama_units::has_engine(&m) {
-        (None, false)
-    } else {
-        let target = mecha_core::engine::choose_here()
-            .map_err(|why| anyhow::anyhow!("the router needs the llama.cpp engine, and {why}"))?;
-        (
-            Some(mecha_core::engine::download_bytes(target)),
-            target.is_built(),
-        )
+    use mecha_core::llama_units::RouterEngine;
+    let (engine_bytes, engine_built) = match mecha_core::llama_units::router_engine(&m) {
+        RouterEngine::Ours => (None, false),
+        other => match mecha_core::engine::choose_here() {
+            Ok(target) => {
+                if let RouterEngine::Beside(path) = &other {
+                    println!(
+                        "{} is left as it is: the chat router runs mecha's own pinned \
+                         llama.cpp, installed beside it under ~/.mecha.",
+                        path.display()
+                    );
+                }
+                (
+                    Some(mecha_core::engine::download_bytes(target)),
+                    target.is_built(),
+                )
+            }
+            Err(why) => match other {
+                RouterEngine::Beside(path) => {
+                    println!(
+                        "No pinned llama.cpp build fits this machine ({why}), so the router \
+                         runs {} instead.",
+                        path.display()
+                    );
+                    (None, false)
+                }
+                _ => anyhow::bail!("the router needs the llama.cpp engine, and {why}"),
+            },
+        },
     };
 
     let slot = mecha_core::recommend::SLOTS
@@ -227,7 +247,7 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
 
     // The engine first, when the machine has none to run.
     println!(
-        "\nThis installs{} the router (a systemd user service on :{}) serving that model, \
+        "\nThis installs{} the router ({} on :{}) serving that model, \
          starts it, and loads the model — a large one takes several minutes. Then it offers to \
          point mecha's config at it.",
         match (ready.engine_bytes, ready.engine_built) {
@@ -244,6 +264,7 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
             ),
             (None, _) => String::new(),
         },
+        router_unit::service_kind(),
         ready.naming.port
     );
     if !matches!(ask("Go ahead? [y/N] ")?.as_str(), "y" | "Y" | "yes") {
