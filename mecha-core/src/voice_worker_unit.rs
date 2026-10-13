@@ -472,7 +472,7 @@ mod tests {
         Manifest::record(
             &m.mecha_home,
             ID,
-            &root.join("units/mecha-test-worker-whose.service"),
+            &crate::user_service::file(&m, &naming.unit).unwrap(),
         )
         .unwrap();
         let ours = someone_elses(&m, &naming).unwrap();
