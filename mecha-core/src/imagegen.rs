@@ -763,11 +763,24 @@ pub fn load_cost_mb() -> u64 {
 }
 
 /// Whether ComfyUI's `/system_stats` says it has loaded a model since it
-/// started. Its `torch_vram_total` is 0 in a fresh process and stays above 0
-/// once anything has loaded - through a `/free`, too, so it answers "has
-/// loaded", never "holds now". `None` for a reply this cannot read.
+/// started. On CUDA its `torch_vram_total` is 0 in a fresh process and stays
+/// above 0 once anything has loaded - through a `/free`, too, so it answers
+/// "has loaded", never "holds now". `None` for a reply this cannot read.
+///
+/// **`None` on MPS and the CPU, whatever the figure.** ComfyUI's
+/// `get_total_memory` answers the machine's whole RAM for those devices, so
+/// the field is above 0 from the first request and says nothing about a
+/// load — read as warm, a Mac's cold 34 GiB would never be asked (review of
+/// #681). Unknown is never warm: a Mac pays cold on every picture.
 pub fn loaded_from_stats(stats: &Value) -> Option<bool> {
-    let total = stats.pointer("/devices/0/torch_vram_total")?.as_f64()?;
+    let device = stats.pointer("/devices/0")?;
+    if matches!(
+        device.get("type").and_then(Value::as_str),
+        Some("mps" | "cpu")
+    ) {
+        return None;
+    }
+    let total = device.get("torch_vram_total")?.as_f64()?;
     Some(total > 0.0)
 }
 
@@ -5231,6 +5244,17 @@ mod tests {
         assert_eq!(loaded_from_stats(&stats(json!("5 GB"))), None);
         assert_eq!(loaded_from_stats(&json!({"devices": []})), None);
         assert_eq!(loaded_from_stats(&json!({"system": {}})), None);
+        // MPS and the CPU report the machine's RAM there from the start
+        // (`get_total_memory` at `comfyui_unit::COMMIT`): never a load's
+        // sign, so never warm.
+        for kind in ["mps", "cpu"] {
+            let fresh = json!({"devices": [{"name": kind, "type": kind,
+                "torch_vram_total": 137_438_953_472u64}]});
+            assert_eq!(loaded_from_stats(&fresh), None, "{kind}");
+        }
+        let cuda = json!({"devices": [{"name": "cuda:0", "type": "cuda",
+            "torch_vram_total": 0}]});
+        assert_eq!(loaded_from_stats(&cuda), Some(false));
     }
 
     /// A loopback address nothing listens on yet.

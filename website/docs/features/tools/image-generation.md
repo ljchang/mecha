@@ -47,7 +47,7 @@ To run your own instead:
 ```toml
 [image]
 url = "http://127.0.0.1:8188"
-diffusion_model = "qwen_image_2.1_int8_convrot.safetensors"
+diffusion_model = "qwen_image_2.1_int8_convrot.safetensors"   # qwen_image_2.1_bf16.safetensors on a Mac
 text_encoder = "qwen3vl_8b_w4a8.safetensors"
 vae = "qwen_image_2.1_vae_bf16.safetensors"
 ```
@@ -78,7 +78,8 @@ picture's.
 Either page can switch pictures to the turbo model. It draws in
 about 8 steps instead of 40, so a picture takes 10 to 15 seconds, but it is
 weaker on two people acting together. Turbo needs one more file from the
-same repository, `qwen_image_2.1_turbo_int8_convrot.safetensors`, also under
+same repository, `qwen_image_2.1_turbo_int8_convrot.safetensors` (the
+`qwen_image_2.1_turbo_bf16.safetensors` on a Mac), also under
 `models/diffusion_models/` (`[image] turbo_model` names it). The install does
 not fetch it unless asked: `mecha features enable image --turbo` does, and so
 does `mecha features enable image` once the chat's or a persona's picture
@@ -313,7 +314,9 @@ stay in its cache until you clear the site's data.
   running out takes more than the image down. Before each picture the tool
   asks the image server whether it already holds the model. If it does, a
   picture needs 12 GB at the default, since most of the cost is already paid; if
-  it doesn't, it needs `min_available_mb` (20 GB). On top of that it keeps
+  it doesn't, it needs `min_available_mb` (20 GB). A Mac's image server cannot
+  say whether it holds the model, so a Mac always asks the full figure, 34 GB
+  for its bf16 model. On top of that it keeps
   the [memory floor's](/docs/reference/configuration#system) reserve free
   (8 GB by default) and declines while the machine is already stalling on
   memory. When it declines it says why, and which kinds of work hold the most

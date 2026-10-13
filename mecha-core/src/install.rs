@@ -947,7 +947,7 @@ mod tests {
             download_bytes: 5,
             nothing_to_do: false,
         };
-        // Apple silicon fits with no NVIDIA reading at all (MPS, §12.3): its
+        // Apple silicon fits whatever the NVIDIA reading (MPS, §12.3): its
         // priced path is the last leg's, and the refusals below are Linux's
         // (review of #681).
         if crate::comfyui_unit::fits(

@@ -1201,7 +1201,7 @@ mod tests {
                 "{} has no 128 GB unified row",
                 s.id
             );
-            for r in s.rows {
+            for r in s.rows.iter().chain(s.mac_rows) {
                 assert!(TIERS.contains(&r.tier_gb), "{}: tier {}", s.id, r.tier_gb);
             }
         }

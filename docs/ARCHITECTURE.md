@@ -604,11 +604,14 @@ workspace**. Six decisions, each a bug if undone:
   is already gone from the available pool: a server that has loaded nothing
   since it started, or whose `/system_stats` cannot be read, is asked for the
   whole `min_available_mb`; one that has loaded the model is asked for that
-  figure less `LOAD_COST_MB` (~8 GB, what loading cost; 12 GB at the default),
-  so an operator's added margin is kept. ComfyUI's `torch_vram_total` is 0 in a fresh
+  figure less `load_cost_mb_on` (~8 GB on Linux, what loading cost; 12 GB at
+  the default), so an operator's added margin is kept. On CUDA, ComfyUI's
+  `torch_vram_total` is 0 in a fresh
   process and stays above 0 through a `/free`, so it cannot tell a server
   still holding the model (~2 GB more) from a freed one (~9-12 GB more to
-  reload), and the larger is asked.
+  reload), and the larger is asked. On MPS the field is the machine's RAM
+  from the first request, so `loaded_from_stats` reads it as unknown and a
+  Mac asks the cold figure on every picture.
 - **Idle memory is released beside the server, not by mecha.** A loaded
   ComfyUI holds ~13.6 GB. `scripts/comfyui/comfyui-idle-reset` (a one-minute
   user timer: `mecha-comfyui-idle-reset` from `scripts/comfyui/install.sh`
