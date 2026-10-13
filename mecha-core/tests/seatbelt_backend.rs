@@ -166,6 +166,37 @@ async fn the_network_is_closed_unless_the_call_opens_it() {
     std::fs::remove_dir_all(ws).ok();
 }
 
+/// A program started through a link sees the link as the path it was
+/// started by, as under every other backend — the layout worker's venv
+/// `python` depends on it (review of #682): run by its target, CPython would
+/// not find the venv's packages.
+#[tokio::test]
+async fn a_linked_program_runs_as_named() {
+    let ws = support::tmpdir("sb-link");
+    let bin = ws.join("venv").join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let link = bin.join("me");
+    std::os::unix::fs::symlink("/bin/sh", &link).unwrap();
+    let out = run(
+        &seatbelt(false),
+        link.to_str().unwrap(),
+        &["-c", "echo \"$0\""],
+        &ws,
+    )
+    .await;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        link.to_str().unwrap(),
+        "the program was started by its target, not its name"
+    );
+    std::fs::remove_dir_all(ws).ok();
+}
+
 /// A `[sandbox]` (shell) command is refused under Seatbelt, never run.
 #[tokio::test]
 async fn a_shell_command_is_refused_under_seatbelt() {
