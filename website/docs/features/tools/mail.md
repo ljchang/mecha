@@ -26,9 +26,14 @@ model.
 **Mail needs its `[features]` switch as well as the entry below** — an absent
 switch is off, and with it off the server is not started and the `mecha mail`
 verbs refuse. `mecha features enable mail` writes the switch (or say yes when
-`mecha setup` offers it); it does not write the `[[mcp]]` entry, install the
-binary or sign anyone in, which stay yours: `cargo install mecha-mail
---locked`, the entry, then [signing in](#signing-in).
+`mecha setup` offers it) and, where no `[[mcp]]` entry runs `mecha-mail` or is
+called `mail`, writes the one below: the program by its absolute path, its
+results untrusted, and its sends in an `[outbox]` when you have none. It
+never edits an entry or an `[outbox]` you wrote — it names what yours lacks —
+and it writes no `[outbox]` where a `[[rule]]` of yours names one of those
+sends, saying which. Installing the binary (`cargo install mecha-mail
+--locked`) and [signing in](#signing-in) stay yours; `mecha setup` runs the
+sign-in on its yes.
 
 ```toml
 [[mcp]]
