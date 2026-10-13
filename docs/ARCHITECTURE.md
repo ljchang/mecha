@@ -4885,7 +4885,7 @@ tool in with `_meta: {"mecha-factory.ai/background": true}` on its
 A persona may be given such a tool only on the owner's word: `personas =
 true` in the server's `[[mcp]]` entry, global layer only. Its persona form
 tells a background call which persona is asking (`mecha-factory.ai/persona`:
-folder name and linked character), and the persona page and call screen say
+folder name, linked character and voice name), and the persona page and call screen say
 "working on it…" for anything but a picture (design §9).
 
 `Tool::defers` is what the hosts key on, never the words: the restart repair
@@ -10341,7 +10341,7 @@ exhaustive `match`, so the build asks; the ones that are not say so.
         instead of the declined line, until review.
 13. **Enabling it leaves it working, not just switched on.** A feature that
     is an MCP server gets its `[[mcp]]` entry from `feature::mcp_wiring` /
-    `write_mcp_entry` when `features enable` runs (mail's sends staged in the
+    `write_mcp_entries` when `features enable` runs (mail's sends staged in the
     outbox), and an installer writes the settings its server needs
     (`[image]`, `[voice] voices_dir`) — each only where nothing names it, an
     owner's own table never edited. `mail` and `voices_dir` once switched on

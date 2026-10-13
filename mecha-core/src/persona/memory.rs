@@ -1077,7 +1077,9 @@ impl Memory {
             let mut stmt = self.conn.prepare(&format!(
                 "SELECT uid FROM {t} WHERE substr(uid, 1, ?2) = ?1"
             ))?;
-            let rows = stmt.query_map(params![short, short.len()], |r| r.get::<_, String>(0))?;
+            let rows = stmt.query_map(params![short, short.len() as i64], |r| {
+                r.get::<_, String>(0)
+            })?;
             hits.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
         }
         match hits.len() {
@@ -1809,7 +1811,9 @@ impl Shared {
             .conn
             .prepare("SELECT uid FROM shared_facts WHERE substr(uid, 1, ?2) = ?1")?;
         let mut hits = stmt
-            .query_map(params![short, short.len()], |r| r.get::<_, String>(0))?
+            .query_map(params![short, short.len() as i64], |r| {
+                r.get::<_, String>(0)
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         match hits.len() {
             1 => Ok(hits.remove(0)),

@@ -1904,7 +1904,9 @@ pub async fn transcript(
         None => return (StatusCode::NOT_FOUND, "no such session\n").into_response(),
     };
     let running = ws.live.is_some();
-    let defers = super::late::deferring(chat.follower.current().agent.registry());
+    // The binding followed above, as the repair sites take it (review of
+    // #666, pass 6).
+    let defers = super::late::deferring(bound.agent.registry());
     let defers = |name: &str| defers.contains(name);
     let (entries, taint) = match (&ws.conversation, &ws.live) {
         (Some(convo), _) => (
