@@ -105,14 +105,14 @@
 </script>
 
 {#if items.length > 1}
-  <div class="pq" role="region" aria-label="pictures in line">
+  <div class="pq" role="region" aria-label="in line in this chat">
     <div class="pqhead">In line: {items.length}</div>
     {#if running}
       <div class="pqrow on">
-        <span class="pqstate">drawing</span>
+        <span class="pqstate">{running.tool === 'image_generate' ? 'drawing' : 'running'}</span>
         <span class="pqlabel" title={running.label}>{running.label || running.tool}</span>
         <span class="pqclock">{clock((running.elapsed_ms ?? 0) + (now - seenAt))}</span>
-        <button class="pqbtn stop" onclick={() => oncancel(running.call_id)} aria-label="stop this picture">Stop</button>
+        <button class="pqbtn stop" onclick={() => oncancel(running.call_id)} aria-label="stop this one">Stop</button>
       </div>
     {/if}
     <!-- Keyed by position, not call id: a server that leaves tool ids empty

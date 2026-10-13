@@ -853,6 +853,9 @@ impl mecha_core::tool::Tool for AnswerUnparsed {
     fn read_only(&self) -> bool {
         self.inner.read_only()
     }
+    fn defers(&self) -> bool {
+        self.inner.defers()
+    }
     fn capabilities(&self) -> mecha_core::tool::Capabilities {
         self.inner.capabilities()
     }

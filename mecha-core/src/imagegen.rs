@@ -3223,6 +3223,12 @@ impl Tool for ImageGenerate {
         "image_generate"
     }
 
+    /// Its calls answer `being made: <path>` and draw as the chat's job
+    /// (BACKGROUND-JOBS-DESIGN.md §2.1).
+    fn defers(&self) -> bool {
+        true
+    }
+
     /// Eligible for a persona (`docs/PERSONA-DESIGN.md` §3.3): its request goes only
     /// to the loopback image server `[image]` names, and it reads no owner store.
     fn for_persona(self: Arc<Self>) -> Option<Arc<dyn Tool>> {

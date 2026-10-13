@@ -394,6 +394,34 @@ pub const ON_ITS_WAY: Closing = Closing {
     reply: PICTURE_ON_ITS_WAY_REPLY,
 };
 
+/// Work that is not a picture is queued: an MCP server's background tool
+/// (BACKGROUND-JOBS-DESIGN.md §8). The picture's lines stay the picture's;
+/// these are the job's own, set with `DeferredJob::with_closings`.
+pub const WORK_ON_ITS_WAY: Closing = Closing {
+    line: WORK_STARTED,
+    reply: WORK_STARTED_REPLY,
+};
+
+/// The same work refused because the chat's line is already full.
+pub const WORK_STILL_RUNNING: Closing = Closing {
+    line: WORK_STILL_BEING_MADE,
+    reply: WORK_NOT_STARTED_REPLY,
+};
+
+/// [`WORK_ON_ITS_WAY`]'s line: [`PICTURE_ON_ITS_WAY`] with the thing
+/// unnamed, since the loop does not know what a tool makes.
+pub const WORK_STARTED: &str = "(From the harness: what this turn asked for is being made and reaches the owner's screen when it is done. No tool is needed now; answer the owner in a sentence or two.)";
+
+/// [`WORK_STILL_RUNNING`]'s line.
+pub const WORK_STILL_BEING_MADE: &str = "(From the harness: work from an earlier turn is still being made and reaches the owner's screen when it is done. No tool is needed now; answer the owner in a sentence or two.)";
+
+/// What the owner sees in place of an empty reply to [`WORK_STARTED`].
+pub const WORK_STARTED_REPLY: &str = "It's on its way.";
+
+/// What the owner sees in place of an empty reply to [`WORK_STILL_BEING_MADE`].
+pub const WORK_NOT_STARTED_REPLY: &str =
+    "What's already been asked for fills the line, so this wasn't started. Send it again once one of them lands.";
+
 /// This turn's picture was refused because an earlier one is still drawing.
 pub const STILL_BEING_MADE: Closing = Closing {
     line: PICTURE_STILL_BEING_MADE,
@@ -458,6 +486,62 @@ pub(crate) struct RunPictures {
     /// Set this turn: a tool refused busy earlier in this run was called
     /// again — the retry loop, not a slow picture.
     busy_again: bool,
+    /// The closing a started job asked for (`DeferredJob::with_closings`),
+    /// and whether any started job asked for none — a picture, whose lines
+    /// then win, being the measured ones (BACKGROUND-JOBS-DESIGN.md §8).
+    started_closing: Option<Closing>,
+    started_picture: bool,
+    /// Run-scoped, like `started`: the closing each started tool's job
+    /// carried (`None` for a picture), so a repeat of it in a later turn —
+    /// refused before it runs, its job never seen — closes on the same lines
+    /// (review of #666, pass 6).
+    closings_of: std::collections::BTreeMap<String, Option<Closing>>,
+    /// The same, for a job refused busy.
+    busy_closing: Option<Closing>,
+    busy_picture: bool,
+}
+
+impl RunPictures {
+    fn note_started(&mut self, name: &str, job: &crate::jobs::DeferredJob) {
+        let own = job.closings().map(|(started, _)| started);
+        self.closings_of.insert(name.to_string(), own);
+        match own {
+            Some(started) => self.started_closing = Some(started),
+            None => self.started_picture = true,
+        }
+    }
+
+    /// A repeat of a tool this run already started: its lines, as its job
+    /// set them when it started.
+    fn note_repeat(&mut self, name: &str) {
+        match self.closings_of.get(name) {
+            Some(Some(own)) => self.started_closing = Some(*own),
+            _ => self.started_picture = true,
+        }
+    }
+
+    fn note_busy(&mut self, job: &crate::jobs::DeferredJob) {
+        match job.closings() {
+            Some((_, busy)) => self.busy_closing = Some(busy),
+            None => self.busy_picture = true,
+        }
+    }
+
+    /// The line a run closes on once its work is queued.
+    fn on_its_way(&self) -> Closing {
+        match self.started_closing {
+            Some(own) if !self.started_picture => own,
+            _ => ON_ITS_WAY,
+        }
+    }
+
+    /// The line a run closes on once its work was refused busy.
+    fn still_running(&self) -> Closing {
+        match self.busy_closing {
+            Some(own) if !self.busy_picture => own,
+            _ => STILL_BEING_MADE,
+        }
+    }
 }
 
 /// How much of a cut-off call's arguments the transcript keeps.
@@ -1621,6 +1705,8 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
         || text == EMPTY_TURN_NUDGE
         || text == PICTURE_ON_ITS_WAY
         || text == PICTURE_STILL_BEING_MADE
+        || text == WORK_STARTED
+        || text == WORK_STILL_BEING_MADE
         || text == crate::planning::CRITERION_OBSERVATION
         || text == "A declared plan check was not run; completion remains unverified."
         || text == "The declared plan check did not establish completion. Review its result before claiming the step is verified."
@@ -3645,9 +3731,9 @@ impl Agent {
                     // pass 3).
                     closing =
                         if pictures.repeated || (cx.end_after_deferral && pictures.started_now) {
-                            Some(ON_ITS_WAY)
+                            Some(pictures.on_its_way())
                         } else if pictures.busy_again || (cx.end_after_deferral && pictures.busy) {
-                            Some(STILL_BEING_MADE)
+                            Some(pictures.still_running())
                         } else {
                             None
                         };
@@ -3666,6 +3752,13 @@ impl Agent {
                     pictures.started_now = false;
                     pictures.busy = false;
                     pictures.busy_again = false;
+                    // Per turn, as the flags they decide beside: a picture in
+                    // an earlier turn must not word a later turn's clip
+                    // (review of #666, pass 5).
+                    pictures.started_closing = None;
+                    pictures.started_picture = false;
+                    pictures.busy_closing = None;
+                    pictures.busy_picture = false;
                     // Finish the original tool batch before dispatching checks. This
                     // preserves tool-use/result pairing and serializes verification
                     // after every sibling's work, through the same guards as any call.
@@ -4954,6 +5047,7 @@ impl Agent {
                      its way. Answer the owner now."
                 );
                 run_pictures.repeated = true;
+                run_pictures.note_repeat(name);
                 emit(
                     events,
                     AgentEvent::ToolResult {
@@ -5868,6 +5962,7 @@ impl Agent {
                     // run, IMAGE-DESIGN.md §5.5).
                     Some(_) if defer && run_pictures.started.contains(&name) => {
                         run_pictures.repeated = true;
+                        run_pictures.note_repeat(&name);
                         ToolOutput::refusal(format!(
                             "Not run: `{name}` was already started in this run, and its result \
                              is on its way. Answer the owner now."
@@ -5878,6 +5973,7 @@ impl Agent {
                             Ok(submitted) => {
                                 run_pictures.started.insert(name.clone());
                                 run_pictures.started_now = true;
+                                run_pictures.note_started(&name, &job);
                                 // Queued, not started: the first line stays the
                                 // tool's own ("being made: …"), which the page
                                 // and the restart repair read; the queue's words
@@ -5900,8 +5996,10 @@ impl Agent {
                             // and a retry of it is the loop (review of #596,
                             // pass 3).
                             Err(crate::jobs::Busy) => {
+                                run_pictures.note_busy(&job);
                                 if run_pictures.started.contains(&name) {
                                     run_pictures.repeated = true;
+                                    run_pictures.note_repeat(&name);
                                 } else if run_pictures.refused_busy.insert(name.clone()) {
                                     run_pictures.busy = true;
                                 } else {
@@ -8666,6 +8764,84 @@ mod tests {
         go.notify_one();
     }
 
+    /// A deferring tool that is not a picture: its job carries its own closing
+    /// lines (`DeferredJob::with_closings`), as an MCP background tool's does.
+    struct Clip(Arc<tokio::sync::Notify>);
+    #[async_trait]
+    impl Tool for Clip {
+        fn name(&self) -> &str {
+            "clip"
+        }
+        fn description(&self) -> &str {
+            "Make a clip."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+            let go = Arc::clone(&self.0);
+            let cancel = CancellationToken::new();
+            let token = cancel.clone();
+            let job = crate::jobs::DeferredJob::new(
+                async move {
+                    tokio::select! {
+                        _ = go.notified() => ToolOutput::ok("video: videos/a.mp4"),
+                        _ = token.cancelled() => ToolOutput::err("not made: stopped"),
+                    }
+                },
+                cancel,
+                "Not run: the line is full.",
+            )
+            .with_closings(WORK_ON_ITS_WAY, WORK_STILL_RUNNING);
+            Ok(ToolOutput::deferred("being made: `clip` is running.", job))
+        }
+    }
+
+    /// A job that is not a picture closes its run on its own lines: two
+    /// calls of a background tool in one batch, in the assistant's chat,
+    /// never tell the model or the owner a picture is coming (review of
+    /// #666, pass 3). The picture's measured lines stay the picture's.
+    #[tokio::test]
+    async fn a_job_that_is_not_a_picture_closes_on_its_own_lines() {
+        let go = Arc::new(tokio::sync::Notify::new());
+        let queue = crate::jobs::JobQueue::new(|_| {});
+        let clip = |id: &str| Block::ToolUse {
+            id: id.into(),
+            name: "clip".into(),
+            input: json!({}),
+        };
+        let (agent, provider) = agent_with_tools(
+            vec![
+                assistant(vec![clip("c1"), clip("c2")], StopReason::ToolUse),
+                assistant(
+                    vec![Block::text(
+                        "<tool_call><function=clip></function></tool_call>",
+                    )],
+                    StopReason::EndTurn,
+                ),
+            ],
+            vec![Arc::new(Clip(Arc::clone(&go)))],
+            PermissionMode::Allow,
+        );
+        let mut cx = agent.context().as_ref().clone();
+        cx.jobs = Some(queue.sink("chat", 0));
+        let mut convo = Conversation::user("two clips");
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+        {
+            let seen = provider.seen.lock().unwrap();
+            assert_eq!(seen.len(), 2);
+            let tail = tail_text(&seen[1]);
+            assert!(tail.ends_with(WORK_STARTED), "{tail}");
+            assert!(!tail.contains("picture"), "{tail}");
+        }
+        assert_eq!(outcome.text, WORK_STARTED_REPLY);
+        assert!(is_harness_voice(WORK_STARTED) && is_harness_voice(WORK_STILL_BEING_MADE));
+        go.notify_one();
+    }
+
     /// The assistant keeps working after one busy refusal, since a slow
     /// earlier picture says nothing about its run; a retry of the refused
     /// call is the loop, and closes it (review of #596, pass 3).
@@ -8779,6 +8955,149 @@ mod tests {
         let mut convo = Conversation::user("draw it again");
         let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
         assert_eq!(outcome.text, PICTURE_NOT_STARTED_REPLY);
+        hold.notify_one();
+        go.notify_one();
+    }
+
+    /// The choice is per turn: a picture an earlier turn started does not
+    /// word a later turn's clips (review of #666, pass 5).
+    #[tokio::test]
+    async fn an_earlier_turns_picture_does_not_word_a_later_turns_clip() {
+        let go = Arc::new(tokio::sync::Notify::new());
+        let queue = crate::jobs::JobQueue::new(|_| {});
+        let use_ = |id: &str, name: &str| Block::ToolUse {
+            id: id.into(),
+            name: name.into(),
+            input: json!({}),
+        };
+        let (agent, provider) = agent_with_tools(
+            vec![
+                assistant(vec![use_("d1", "draw")], StopReason::ToolUse),
+                assistant(
+                    vec![use_("c1", "clip"), use_("c2", "clip")],
+                    StopReason::ToolUse,
+                ),
+                assistant(
+                    vec![Block::text(
+                        "<tool_call><function=clip></function></tool_call>",
+                    )],
+                    StopReason::EndTurn,
+                ),
+            ],
+            vec![
+                Arc::new(Later(Arc::clone(&go))),
+                Arc::new(Clip(Arc::clone(&go))),
+            ],
+            PermissionMode::Allow,
+        );
+        let mut cx = agent.context().as_ref().clone();
+        cx.jobs = Some(queue.sink("chat", 0));
+        let mut convo = Conversation::user("a picture, then two clips");
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+        {
+            let seen = provider.seen.lock().unwrap();
+            assert_eq!(seen.len(), 3);
+            let tail = tail_text(&seen[2]);
+            assert!(tail.ends_with(WORK_STARTED), "{tail}");
+        }
+        assert_eq!(outcome.text, WORK_STARTED_REPLY);
+        go.notify_waiters();
+    }
+
+    /// A repeat in a later turn is refused before it runs, so its job is never
+    /// seen; it closes on the lines the tool's first job carried, never the
+    /// picture's (review of #666, pass 6).
+    #[tokio::test]
+    async fn a_later_turns_repeat_of_a_clip_closes_on_the_clips_lines() {
+        let go = Arc::new(tokio::sync::Notify::new());
+        let queue = crate::jobs::JobQueue::new(|_| {});
+        let clip = |id: &str| Block::ToolUse {
+            id: id.into(),
+            name: "clip".into(),
+            input: json!({}),
+        };
+        let (agent, provider) = agent_with_tools(
+            vec![
+                assistant(vec![clip("c1")], StopReason::ToolUse),
+                assistant(vec![clip("c2")], StopReason::ToolUse),
+                assistant(
+                    vec![Block::text(
+                        "<tool_call><function=clip></function></tool_call>",
+                    )],
+                    StopReason::EndTurn,
+                ),
+            ],
+            vec![Arc::new(Clip(Arc::clone(&go)))],
+            PermissionMode::Allow,
+        );
+        let mut cx = agent.context().as_ref().clone();
+        cx.jobs = Some(queue.sink("chat", 0));
+        let mut convo = Conversation::user("a clip, and again");
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+        {
+            let seen = provider.seen.lock().unwrap();
+            assert_eq!(seen.len(), 3);
+            let tail = tail_text(&seen[2]);
+            assert!(tail.ends_with(WORK_STARTED), "{tail}");
+        }
+        assert_eq!(outcome.text, WORK_STARTED_REPLY);
+        go.notify_waiters();
+    }
+
+    /// The busy side of the same: a non-picture job refused because the line
+    /// is full closes on its own "still being made" line and reply, never
+    /// the picture's (review of #666, pass 4).
+    #[tokio::test]
+    async fn a_busy_close_for_work_that_is_not_a_picture_says_so() {
+        let go = Arc::new(tokio::sync::Notify::new());
+        let queue = crate::jobs::JobQueue::new(|_| {});
+        let call = || {
+            assistant(
+                vec![Block::ToolUse {
+                    id: "c1".into(),
+                    name: "clip".into(),
+                    input: json!({}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let (agent, provider) = agent_with_tools(
+            vec![call(), call()],
+            vec![Arc::new(Clip(Arc::clone(&go)))],
+            PermissionMode::Allow,
+        );
+        let mut cx = agent.context().as_ref().clone();
+        cx.jobs = Some(queue.sink("chat", 0));
+        cx.end_after_deferral = true;
+        let hold = Arc::new(tokio::sync::Notify::new());
+        let held = Arc::clone(&hold);
+        let earlier = crate::jobs::DeferredJob::new(
+            async move {
+                held.notified().await;
+                ToolOutput::ok("video: videos/earlier.mp4")
+            },
+            CancellationToken::new(),
+            "busy",
+        );
+        queue.submit("chat", 0, "e1", "clip", earlier).unwrap();
+        for n in 0..crate::jobs::MAX_WAITING {
+            let wait = crate::jobs::DeferredJob::new(
+                async { ToolOutput::ok("video: videos/later.mp4") },
+                CancellationToken::new(),
+                "busy",
+            );
+            queue
+                .submit("chat", 0, &format!("w{n}"), "clip", wait)
+                .unwrap();
+        }
+        let mut convo = Conversation::user("another clip");
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+        {
+            let seen = provider.seen.lock().unwrap();
+            let tail = tail_text(seen.last().unwrap());
+            assert!(tail.ends_with(WORK_STILL_BEING_MADE), "{tail}");
+        }
+        assert_eq!(outcome.text, WORK_NOT_STARTED_REPLY);
         hold.notify_one();
         go.notify_one();
     }
