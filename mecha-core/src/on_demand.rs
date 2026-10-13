@@ -256,12 +256,17 @@ http.server.HTTPServer(("127.0.0.1", {backend}), H).serve_forever()
         script
     }
 
+    /// A free port below every system's ephemeral range (Linux's starts at
+    /// 32768, macOS's at 49152). A port the kernel handed out and took back
+    /// is the next one it hands out: the test client's own outgoing
+    /// connection took it on macOS, and the stand-in could not bind (macOS
+    /// CI on #678).
     fn free_port() -> u16 {
-        std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port()
+        let seed = std::process::id() as u16 ^ (uuid::Uuid::new_v4().as_u128() as u16);
+        (0..2000u16)
+            .map(|i| 20_000 + (seed.wrapping_add(i * 7) % 10_000))
+            .find(|p| std::net::TcpListener::bind(("127.0.0.1", *p)).is_ok())
+            .expect("a free port in 20000..30000")
     }
 
     fn starts(dir: &std::path::Path) -> usize {
@@ -279,6 +284,12 @@ http.server.HTTPServer(("127.0.0.1", {backend}), H).serve_forever()
             .output()
             .is_err()
         {
+            // A skip reads as a pass in CI: refused where backends are
+            // required (CLAUDE.md, testing without credentials).
+            assert!(
+                std::env::var_os("MECHA_TEST_REQUIRE_BACKENDS").is_none(),
+                "no python3, and MECHA_TEST_REQUIRE_BACKENDS is set"
+            );
             eprintln!("no python3: skipped");
             return;
         }
