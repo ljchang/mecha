@@ -1315,6 +1315,14 @@ mod tests {
             .map(|m| m.id)
             .collect();
         let cleaned = remove(&m, &naming);
+        // A test router's log is the test's: `remove` keeps a real router's
+        // for the owner, as the journal keeps a unit's, but this one goes,
+        // and its directory with it when nothing else is in it.
+        let log = crate::launchd::log_path(&m.home, &naming.stem);
+        let _ = std::fs::remove_file(&log);
+        if let Some(dir) = log.parent() {
+            let _ = std::fs::remove_dir(dir);
+        }
         eprintln!("{said:#?}\noffered: {offered:?}");
         assert_eq!(r.unwrap(), want);
         assert_eq!(offered, [want.as_str()]);

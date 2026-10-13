@@ -389,11 +389,29 @@ impl Engine {
     }
 }
 
-/// Whether a `llama-server` is there for a unit to run — mecha's or a
-/// provided one — so a door that installs units knows whether the engine
-/// must come first.
-pub fn has_engine(m: &Machinery) -> bool {
-    Engine::resolve(m).is_ok()
+/// The engine the chat router runs, asked before anything is fetched: always
+/// mecha's own, installed beside any other (`docs/FEATURES-DESIGN.md` §12).
+/// A provided `llama-server` — Homebrew's, a distribution's, a hand build — is
+/// left where it is and not run: the router's presets were measured on the
+/// pin, and a package manager's binary changes under a running router on its
+/// next upgrade, past the measurement gate (Homebrew's on a Mac was 1,431
+/// builds behind the pin, 2026-10-13).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RouterEngine {
+    /// mecha's engine is installed.
+    Ours,
+    /// It is not; this provided one is on the PATH, and stays there.
+    Beside(PathBuf),
+    /// It is not, and there is no other.
+    Absent,
+}
+
+pub fn router_engine(m: &Machinery) -> RouterEngine {
+    match Engine::resolve(m) {
+        Ok(Engine::Mecha(_)) => RouterEngine::Ours,
+        Ok(Engine::Provided(path)) => RouterEngine::Beside(path),
+        Err(_) => RouterEngine::Absent,
+    }
 }
 
 /// The drop-in naming the hub a server's model was fetched into.

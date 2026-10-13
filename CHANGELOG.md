@@ -16,7 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   installed as a launchd agent at
   `~/Library/LaunchAgents/ai.mecha-factory.llama-local.plist` that starts at
   each login and logs to `~/Library/Logs/mecha/llama-local.log`. A router or
-  agent mecha did not install is never written over. The embeddings and OCR
+  agent mecha did not install is never written over. On every system, the
+  router now runs mecha's own pinned llama.cpp, installed under `~/.mecha`
+  beside any `llama-server` already on the PATH (Homebrew's, say), which is
+  left alone; only a machine no pinned build fits runs its own. The embeddings and OCR
   servers, the image and voice servers and `mecha setup engine --adopt` are
   still Linux-only.
 
