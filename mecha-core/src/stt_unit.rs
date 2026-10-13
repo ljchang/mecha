@@ -18,7 +18,8 @@
 //! socket trio: the model loads in seconds and holds about 700 MB of RAM,
 //! and a dictation must not wait on a cold start. The unit's name and port
 //! are parameters, so a test installs one beside the live server and removes
-//! it. Linux only, as the other units are (§10.5).
+//! it. A systemd user unit on Linux, a launchd agent on a Mac read from the
+//! same unit (`user_service`, FEATURES-DESIGN §12.2).
 
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
