@@ -21,7 +21,8 @@ not exist.
 mecha does not run the image model itself; it talks to a local server. Today
 that server is [ComfyUI](https://github.com/comfyanonymous/ComfyUI) running
 Qwen-Image 2.1, with the diffusion model as the int8 file from
-[Comfy-Org/Qwen-Image-2.1](https://huggingface.co/Comfy-Org/Qwen-Image-2.1).
+[Comfy-Org/Qwen-Image-2.1](https://huggingface.co/Comfy-Org/Qwen-Image-2.1)
+(the bf16 file on a Mac, below).
 
 **On Linux with an NVIDIA driver 580 or newer, `mecha features enable image`
 installs it**: ComfyUI at a pinned commit, torch for CUDA 13 from a
@@ -33,6 +34,17 @@ checks that the server has every
 node and model mecha's pictures use, and writes an `[image]` table naming the
 server's temp directory if your config has none. A ComfyUI you already run on
 `:8188` is left alone and used.
+
+**On a Mac with Apple silicon, the same command installs it too**, drawing on
+the GPU through MPS: ComfyUI at the same commit, PyPI's torch from its own
+hash-pinned lock (about 0.76 GB), and the **bf16** model files (about 21 GB) —
+Apple's GPU has no int8 kernels, so the int8 file is emulated there and
+slower (about 128 s a picture against 79 s for bf16 on an M5 Max). The server
+is a launchd agent, `ai.mecha-factory.mecha-comfyui`, logging to
+`~/Library/Logs/mecha/mecha-comfyui.log`. There is no idle timer on a Mac: a
+loaded model stays in memory (about 14 GB) until `[image] unload_after_secs`
+unloads it. The text encoder runs on the CPU there, which adds about 13 s to a
+new prompt. An Intel Mac is not offered the install.
 
 To run your own instead:
 

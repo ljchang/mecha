@@ -543,6 +543,11 @@ pub async fn install(
             };
             return Err(e.context(stopped));
         }
+        say(&format!(
+            "a loaded model stays in memory between pictures (~14 GB) until `[image] \
+             unload_after_secs` ({} s by default) unloads it — a Mac has no idle reset",
+            crate::imagegen::ImageConfig::default().unload_after_secs
+        ));
         return Manifest::finish(home, ID);
     }
     let (idle_service, idle_timer) = render_idle(&dir, naming);
@@ -1414,17 +1419,28 @@ mod tests {
             std::fs::read_to_string(dir(&m.mecha_home).join("ComfyUI").join(COMMIT_STAMP));
         let turbo = turbo_linked(&m.mecha_home);
         let timer = format!("{}.timer", naming.idle());
-        let ticking = std::process::Command::new("systemctl")
-            .args(["--user", "is-active", "--quiet", &timer])
-            .status()
-            .is_ok_and(|s| s.success());
+        // The idle reset is Linux's (module doc): a Mac installs no timer.
+        let macos = cfg!(target_os = "macos");
+        let ticking = macos
+            || std::process::Command::new("systemctl")
+                .args(["--user", "is-active", "--quiet", &timer])
+                .status()
+                .is_ok_and(|s| s.success());
+        // The service's own file, written on either system: its removal is
+        // measured on a Mac too, where the timer's never existed (review of
+        // #681).
+        let service = crate::user_service::file(&m, &naming.unit).unwrap();
+        let written = service.exists();
         let cleaned = remove(&m, &naming);
         let units = crate::engine_gate::unit_dir(&m).unwrap().to_path_buf();
-        let left: Vec<PathBuf> = [timer.clone(), format!("{}.service", naming.idle())]
-            .into_iter()
-            .map(|n| units.join(n))
-            .filter(|p| p.exists())
-            .collect();
+        let left: Vec<PathBuf> = [
+            units.join(&timer),
+            units.join(format!("{}.service", naming.idle())),
+            service,
+        ]
+        .into_iter()
+        .filter(|p| p.exists())
+        .collect();
         eprintln!("{said:#?}");
         let man = Manifest::read(&m.mecha_home);
         let _ = std::fs::remove_dir_all(&root);
@@ -1432,6 +1448,7 @@ mod tests {
         cleaned.unwrap();
         assert_eq!(stamped.unwrap(), COMMIT);
         assert!(turbo, "the turbo model was linked");
+        assert!(written, "the service's definition was written");
         assert!(ticking, "{timer} was started");
         assert!(left.is_empty(), "removal left {left:?}");
         let man = man.unwrap();
