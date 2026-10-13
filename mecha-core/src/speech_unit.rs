@@ -6,10 +6,12 @@
 //! **The engine is built here, from a pinned commit.** The Breeze port lives
 //! on the `breeze` branch of `github.com/ljchang/qwentts.cpp` (published
 //! 2026-10-11, the owner's ruling); there is no release to fetch. The source
-//! is fetched by its hash and checked against it, built for CUDA with
-//! `$ORIGIN` RUNPATH, and copied flat with the toolkit's runtime beside it —
-//! `engine::build_from_source`'s recipe, through its helpers — and the
-//! build must report the pinned commit and pass `engine::self_contained`.
+//! is fetched by its hash and checked against it, and built — for CUDA with
+//! `$ORIGIN` RUNPATH on Linux, copied flat with the toolkit's runtime beside
+//! it, or for Metal with `@loader_path` on Apple silicon (§12.2) —
+//! `engine::build_from_source`'s recipe, through its helpers. The build must
+//! report the pinned commit once its source tree is gone, and on Linux pass
+//! `engine::self_contained`.
 //!
 //! **The weights are published, so they are pins.** The converted GGUF and
 //! the codec are the `tts` slot's sources (`recommend::SLOTS`), on
@@ -26,8 +28,8 @@
 //! **The check is a spoken sentence.** The install asks the adapter, which
 //! asks the engine, to say a sentence in the default voice and reads back a
 //! WAV of plausible length — the whole path a call takes, not a process
-//! that started. Linux with an NVIDIA GPU only: on the CPU the engine runs
-//! slower than real time.
+//! that started. Linux with an NVIDIA GPU, or Apple silicon: on a CPU the
+//! engine runs slower than real time.
 
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
@@ -370,6 +372,8 @@ pub async fn install(
     }
     let weights = weights(machine)?;
     let (model, codec) = model_and_codec(&weights)?;
+    // Before anything is fetched or recorded (review of #679).
+    crate::user_service::preflight(m)?;
     Manifest::begin(home, ID)?;
     Manifest::record(home, ID, &dir)?;
     std::fs::create_dir_all(&dir)?;
@@ -499,6 +503,15 @@ async fn build_engine(dir: &Path, engine: &Path, tc: &Toolchain, say: Say<'_>) -
     std::fs::create_dir_all(&part)?;
     let built = build_into(&src, &part, tc, say).await;
     let _ = std::fs::remove_dir_all(&src);
+    // Checked once the source tree is gone: with `build/` still there, a
+    // library named by an absolute path into it would load and pass (review
+    // of #679), so the check would prove nothing about `@loader_path` or
+    // `$ORIGIN`.
+    let built = built.and_then(|()| {
+        engine_health(&part)?;
+        std::fs::write(part.join(COMMIT_STAMP), COMMIT)?;
+        Ok(())
+    });
     if let Err(e) = built {
         let _ = std::fs::remove_dir_all(&part);
         return Err(e);
@@ -655,8 +668,6 @@ async fn build_into(src: &Path, part: &Path, tc: &Toolchain, say: Say<'_>) -> Re
             copied.join(", ")
         ));
     }
-    engine_health(part)?;
-    std::fs::write(part.join(COMMIT_STAMP), COMMIT)?;
     Ok(())
 }
 
@@ -1180,6 +1191,9 @@ mod tests {
     /// blobs' times on macOS).
     #[test]
     fn the_voice_pair_is_stamped_as_installed() {
+        // The install copies `VOICE` in order, so the clip must come first
+        // for its transcript to land newer (review of #679).
+        assert!(VOICE[0].path.ends_with(".wav") && VOICE[1].path.ends_with(".txt"));
         let d = std::env::temp_dir().join(format!("mecha-voice-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&d).unwrap();
         let (wav, txt) = (d.join("blob-wav"), d.join("blob-txt"));
