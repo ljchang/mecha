@@ -170,20 +170,44 @@ async fn the_network_is_closed_unless_the_call_opens_it() {
 /// started by, as under every other backend — the layout worker's venv
 /// `python` depends on it (review of #682): run by its target, CPython would
 /// not find the venv's packages.
+///
+/// The fixture is a program built here that prints the path the kernel
+/// started it by (`_NSGetExecutablePath`, what CPython reads for its venv):
+/// `/bin/sh` will not do, since on macOS it is a shim that execs `/bin/bash`,
+/// a second program the profile rightly refuses (first CI run of this test).
 #[tokio::test]
 async fn a_linked_program_runs_as_named() {
+    let cc = std::process::Command::new("cc")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if support::unavailable("a C compiler (cc)", cc) {
+        return;
+    }
     let ws = support::tmpdir("sb-link");
+    std::fs::write(
+        ws.join("whoami.c"),
+        "#include <mach-o/dyld.h>\n#include <stdint.h>\n#include <stdio.h>\n\
+         int main(void) { char b[4096]; uint32_t n = sizeof b;\n\
+         if (_NSGetExecutablePath(b, &n) != 0) return 1; puts(b); return 0; }\n",
+    )
+    .unwrap();
+    let built = std::process::Command::new("cc")
+        .arg("-o")
+        .arg(ws.join("whoami"))
+        .arg(ws.join("whoami.c"))
+        .output()
+        .unwrap();
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
     let bin = ws.join("venv").join("bin");
     std::fs::create_dir_all(&bin).unwrap();
-    let link = bin.join("me");
-    std::os::unix::fs::symlink("/bin/sh", &link).unwrap();
-    let out = run(
-        &seatbelt(false),
-        link.to_str().unwrap(),
-        &["-c", "echo \"$0\""],
-        &ws,
-    )
-    .await;
+    let link = bin.join("python");
+    std::os::unix::fs::symlink(ws.join("whoami"), &link).unwrap();
+    let out = run(&seatbelt(false), link.to_str().unwrap(), &[], &ws).await;
     assert!(
         out.status.success(),
         "{}",
