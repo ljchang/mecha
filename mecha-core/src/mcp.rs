@@ -106,6 +106,18 @@ impl McpClient {
             );
         }
 
+        // Seatbelt confines the PDF parser only: an MCP server's confinement
+        // narrows what it declares, and this profile is not measured against
+        // a server's reach. `Config::validate` refuses it in `[sandbox]`; a
+        // sandbox built in code reaches here without that (review of #682).
+        if cfg.sandbox && sandbox.backend() == crate::sandbox::Backend::Seatbelt {
+            bail!(
+                "MCP server `{}`: {}",
+                cfg.name,
+                crate::sandbox::SEATBELT_IS_DOCUMENTS_ONLY
+            );
+        }
+
         let mut command = if cfg.sandbox {
             let confined = match cfg.network {
                 Some(network) => sandbox.with_network(network),

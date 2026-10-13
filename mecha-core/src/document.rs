@@ -199,6 +199,29 @@ impl Default for DocumentsConfig {
 }
 
 impl DocumentsConfig {
+    /// Whether `confine` names a confinement this system has. Called from
+    /// `Config::validate` as well, so a Mac given Linux's `bwrap` (the
+    /// default until macOS had its own) refuses the start by name rather
+    /// than leaving `document_read` unregistered behind a stderr line
+    /// (review of #682).
+    pub fn confine_here(&self) -> Result<()> {
+        // Each system's confinements are its own: a Mac has no user
+        // namespaces or Landlock, and Linux no Seatbelt.
+        match (self.confine, cfg!(target_os = "macos")) {
+            (Backend::Bwrap | Backend::Landlock, true) => bail!(
+                "[documents] confine = \"{}\" is Linux's; on a Mac poppler is confined by \
+                 \"seatbelt\" (the default here)",
+                self.confine.as_str()
+            ),
+            (Backend::Seatbelt, false) => bail!(
+                "[documents] confine = \"seatbelt\" is macOS's sandbox; here use \"bwrap\" \
+                 (default) or \"landlock\""
+            ),
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// Refuse a configuration whose promises cannot be kept, at registration
     /// — never at the first page.
     pub fn validate(&self) -> Result<()> {
@@ -226,21 +249,7 @@ impl DocumentsConfig {
                 }
             );
         }
-        // Each system's confinements are its own: a Mac has no user
-        // namespaces or Landlock, and Linux no Seatbelt. Refused at load,
-        // never at the first PDF.
-        match (self.confine, cfg!(target_os = "macos")) {
-            (Backend::Bwrap | Backend::Landlock, true) => bail!(
-                "[documents] confine = \"{}\" is Linux's; on a Mac poppler is confined by \
-                 \"seatbelt\" (the default here)",
-                self.confine.as_str()
-            ),
-            (Backend::Seatbelt, false) => bail!(
-                "[documents] confine = \"seatbelt\" is macOS's sandbox; here use \"bwrap\" \
-                 (default) or \"landlock\""
-            ),
-            _ => {}
-        }
+        self.confine_here()?;
         if self.max_file_mb == 0 || self.max_pages == 0 || self.memory_mb == 0 {
             bail!("[documents] max_file_mb, max_pages and memory_mb must be greater than zero");
         }

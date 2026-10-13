@@ -95,6 +95,45 @@ async fn the_profile_reaches_its_scratch_and_nothing_else_on_disk() {
     std::fs::remove_dir_all(outside).ok();
 }
 
+/// The home rule, measured apart from `(deny default)`: a file in the home
+/// reads unconfined and not under the profile, and the same file named in
+/// `readable` reads — the call's own paths come after the home's denial
+/// (review of #682: the sibling-of-scratch case alone passes without it).
+#[tokio::test]
+async fn the_home_is_denied_unless_the_call_names_a_path_in_it() {
+    let home = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+        .canonicalize()
+        .unwrap();
+    let file = home.join(format!(".mecha-sb-home-{}", std::process::id()));
+    std::fs::write(&file, "HOME-SECRET").unwrap();
+    let plain = std::process::Command::new("/bin/cat")
+        .arg(&file)
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&plain.stdout), "HOME-SECRET");
+
+    let ws = support::tmpdir("sb-home");
+    let denied = run(&seatbelt(false), "/bin/cat", &[file.to_str().unwrap()], &ws).await;
+    let named = Sandbox::new(SandboxConfig {
+        kind: Backend::Seatbelt,
+        readable: vec![file.clone()],
+        ..SandboxConfig::default()
+    });
+    let allowed = run(&named, "/bin/cat", &[file.to_str().unwrap()], &ws).await;
+    std::fs::remove_file(&file).ok();
+    std::fs::remove_dir_all(&ws).ok();
+    assert!(
+        !denied.status.success() && !String::from_utf8_lossy(&denied.stdout).contains("SECRET"),
+        "a file in the home was read under the profile"
+    );
+    assert!(
+        allowed.status.success(),
+        "a path the call names inside the home reads: {}",
+        String::from_utf8_lossy(&allowed.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&allowed.stdout), "HOME-SECRET");
+}
+
 /// No network unless asked: the same connection opens unconfined and with
 /// `network = true`, and fails under the default profile. An address, not a
 /// name, so the denial measured is the connection's, not the resolver's;
