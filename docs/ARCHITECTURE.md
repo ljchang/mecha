@@ -4885,7 +4885,7 @@ tool in with `_meta: {"mecha-factory.ai/background": true}` on its
 A persona may be given such a tool only on the owner's word: `personas =
 true` in the server's `[[mcp]]` entry, global layer only. Its persona form
 tells a background call which persona is asking (`mecha-factory.ai/persona`:
-folder name and linked character), and the persona page and call screen say
+folder name, linked character and voice name), and the persona page and call screen say
 "working on it…" for anything but a picture (design §9).
 
 `Tool::defers` is what the hosts key on, never the words: the restart repair

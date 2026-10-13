@@ -50,6 +50,21 @@ export function repeatedPictures(entries) {
   return again;
 }
 
+// The rows naming a clip an earlier row already names (§8): the first plays
+// it, and a later one says where it is rather than play the same file twice
+// (review of #668, pass 5).
+export function repeatedClips(entries) {
+  const seen = new Set();
+  const again = new Set();
+  entries.forEach((entry, i) => {
+    const clip = clipOf(entry);
+    if (!clip) return;
+    if (seen.has(clip)) again.add(i);
+    else seen.add(clip);
+  });
+  return again;
+}
+
 // Every picture the tool rows drew, in order, each once.
 export function picturesIn(entries) {
   const out = [];
@@ -99,6 +114,17 @@ export function stillOut(entry) {
 // cannot name (§9).
 export function makingText(entry) {
   return entry?.name === 'image_generate' ? 'drawing a picture…' : 'working on it…';
+}
+
+// What the call screen's one slot says while work is out. Its one Stop stops
+// all of it, so a picture beside other work names both, rather than call a
+// clip a picture or a picture "it" (review of #668, pass 5).
+export function slotText(entries) {
+  const out = (entries ?? []).filter(stillOut);
+  const picture = out.some((e) => e.name === 'image_generate');
+  const other = out.some((e) => e.name !== 'image_generate');
+  if (picture && other) return 'drawing a picture, and working on something else…';
+  return makingText(out[0]);
 }
 
 // A clip under its tool row (§8): read off the first line of a deferring

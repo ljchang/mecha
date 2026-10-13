@@ -328,12 +328,14 @@ fn unit_finding(unit: &str, dead_auth: bool) -> Finding {
     }
 }
 
-/// Name every `[[mcp]]` server whose result claims are believed
-/// (`trust_result_claims`). Not a finding: it is a decision the operator
-/// made, not distress, and a finding would make every run exit non-zero.
-/// Printed so the one switch that trusts a server *more* is visible wherever
-/// the operator looks at the machine's health (docs/PROVENANCE-DESIGN.md §3).
-/// The global config only, because that is the only layer allowed to set it.
+/// Name every `[[mcp]]` server the operator vouches for, one note per
+/// switch: result claims believed (`trust_result_claims`,
+/// docs/PROVENANCE-DESIGN.md §3), and offered to persona chats (`personas`,
+/// BACKGROUND-JOBS-DESIGN.md §9). Not findings: each is a decision the
+/// operator made, not distress, and a finding would make every run exit
+/// non-zero. Printed so the switches that trust a server *more* are visible
+/// wherever the operator looks at the machine's health. The global config
+/// only, because that is the only layer allowed to set either.
 fn vouched_note() {
     let Ok(config) = mecha_core::config::Config::load_global() else {
         return; // doctor never fails on its own examination

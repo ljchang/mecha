@@ -8159,6 +8159,7 @@ mod tests {
             name: "maya".into(),
             display: "Maya".into(),
             character: Some("maya".into()),
+            voice: None,
         }
     }
 
