@@ -17,8 +17,8 @@ document holds the decisions and does not re-argue them.
 Settled; the build follows them and does not re-ask.
 
 - **v1 is characters and styles.** Locations stay free text in the scene
-  until a location reference is measured. *(Reopened by §9.2: locations as a
-  kind, gated by E13 and V-L.)*
+  until a location reference is measured. *(Reopened by §9.2: a `Location`
+  kind, text-only now; its images gated by E13 and V-L.)*
 - **The model proposes, the owner approves — and the owner may also create
   directly.** An entry the owner makes is approved on creation; one the
   model makes is a candidate until the owner approves it.
@@ -437,11 +437,11 @@ characters/<name>/entry.toml
   2. each person's `full_body`, in cast order;
   3. details, in cast order, then in each character's own order.
   - **Video** has nine slots, less any pinned or other reference images. Two people fit with a body each and up to five details; three fit with a body each and three details.
-  - **Bodies are all or nothing in both generators** (review of #680, pass 10). If every person's `full_body` doesn't fit beside every face, none is sent. So a cast of five (5 faces + 5 bodies over 9), or four with two pinned images, sends faces only, never four bound people beside one unbound.
+  - **Bodies are all or nothing in both generators** (review of #680, pass 10). Bodies are sent only when **every person in the cast has one attached and they all fit** beside every face; otherwise none is (review of #680, pass 13). So a cast where one character has a body and another doesn't sends faces only. So a cast of five (5 faces + 5 bodies over 9), or four with two pinned images, sends faces only, never four bound people beside one unbound.
   - Details also bind a second image to one person, so they're the same mixed shape. V-D's arms must include one person with a detail beside one without, before details ship.
   - **Pictures** keep their people budgets (`MAX_CAST`, `EDIT_REFERENCE_BUDGET`, `IMAGE-DESIGN.md` §5.2, "Budgets, as measured") and gain an **image** cap (review of #680, pass 6). `MAX_CAST` counts people, and the measured ceiling is five reference images, with duplicate-free evidence at four (E12).
     - A new picture carries at most five reference images. That's `IMAGE-DESIGN.md` §5.2's measurement: five whole portraits drew all five people, 3/3.
-    - Faces come first. **Bodies are all or nothing** (review of #680, pass 8): every person gets their `full_body`, or none does, and only while the total stays at four or fewer. So that's a cast of one or two. A cast of three gets no bodies, never one person bound to two images beside others bound to one, which no wording covers and nothing has measured.
+    - Faces come first. **Bodies are all or nothing** (review of #680, pass 8): every person gets their `full_body`, or none does, and only while the total stays at four or fewer. So that's a cast of one or two. A cast of three gets no bodies, never one person bound to two images beside others bound to one, which no wording covers and nothing has measured. Attached and fitting both: a person with no `full_body` attached means no one in that cast gets one.
     - What was left out is said.
     - **The four is E9b's to establish, not settled** (review of #680, pass 7). E12 measured four *different* faces with no duplicate, while two people with a body each is E9's B2 arm, which drew one person twice. So that configuration is exactly what E9b must pass.
     - **An edit sends faces only.** Its canvas plus five crops already fill `EDIT_REFERENCE_BUDGET` (6), and E9b's arms are new pictures. An edit gets bodies only with a measurement of its own.
@@ -464,7 +464,7 @@ characters/<name>/entry.toml
   - their **approved, unlocked** names are listed to the model as written, sorted, so the list is stable in the cached prefix. That's as `style_names` is, whose order comes from `Library::load`'s sort by kind and name. A location or outfit name that contains a character's name would expose it, so the owner's doors warn when one does. A warning rather than a refusal is deliberate: the owner is the authority on their own names, where `imagelib::missing`'s roster rule guards against a model;
   - so is the quarantined extraction;
   - a locked one isn't listed, which is how the owner hides a place.
-  - A guessed locked name still resolves for generation, as §1 rules for all locked entries, but the result never names it back, and the call reads the same as for a name the library doesn't hold. So the lock hides the place from the model, not only from the list.
+  - A guessed locked name still resolves for generation, as §1 rules for all locked entries, but the result never names it back, and the call reads the same as for a name the library doesn't hold. So **no surface names a locked entry**: not the list, not a result's text, not the manifest. The lock hides names, not appearance (review of #680, pass 13). A model that guesses a locked name and then views the picture it drew (`image_view`) sees the hidden place rendered. That follows from §1's ruling that generation always has access to locked entries. Refusing to resolve a locked location or outfit for a model-written name would close it, and that would be a separate ruling.
   - **The picture's manifest is a result too** (review of #680, pass 12). `write_manifest` writes `images/<stem>.json` inside the chat's folder, beside the picture, and today it names every entry used, by name and version (`Compiled.used`). A model can read it, so it already confirms a guessed locked style.
     - Under §9, the in-folder manifest names only unlocked entries. A locked one is recorded as `{kind, locked: true, version}` with no name.
     - The full record, name and version, goes to a usage log in the library store, outside any chat's folder, where the owner's audit reads it.

@@ -688,7 +688,9 @@ duplicate there is not a regression E12 covers.
   F, face only, against B, face + full body bound by person with the
   two-images-one-person wording (design §9.4), each with height in text; two
   seeds; E9's opposite builds. **Both halves fitted** (review of #680, pass 8):
-  - the references are full-body shots in fitted grey clothes;
+  - arm F's one reference per person is the character's normal portrait, as
+    pictures send today; arm B adds a full-body shot in fitted grey clothes as
+    each person's second image (review of #680, pass 13);
   - the scene states fitted clothing of another colour (a navy T-shirt and
     slim jeans), so build is visible in the picture, which E9's stated
     trench coat hid, and a grey leak is told apart from what was asked.
