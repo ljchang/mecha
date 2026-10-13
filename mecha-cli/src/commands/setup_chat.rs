@@ -69,13 +69,12 @@ impl Ready {
 /// server here is someone else's and nothing is installed over it.
 pub async fn prepare() -> Result<Option<Ready>> {
     // Refused before anything is asked or fetched: the router is a systemd
-    // user unit, and the engine download ahead of it would otherwise run
-    // and then fail (found on review of #568).
+    // user unit or a launchd agent, and the engine download ahead of it
+    // would otherwise run and then fail (found on review of #568).
     anyhow::ensure!(
-        cfg!(target_os = "linux"),
-        "`mecha setup chat` installs the router as a systemd user unit, which this system does \
-         not have — start llama-server by hand and run `mecha setup --write` (FEATURES-DESIGN \
-         §10.5)"
+        router_unit::installs_here(),
+        "`mecha setup chat` installs the router as a systemd user unit or a launchd agent, and \
+         this system has neither — start llama-server by hand and run `mecha setup --write`"
     );
     let m = mecha_core::sidecar::Machinery::real()?;
     let machine = mecha_core::recommend::Machine::read()?;
@@ -227,7 +226,7 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
 
     // The engine first, when the machine has none to run.
     println!(
-        "\nThis installs{} the router (a systemd user service on :{}) serving that model, \
+        "\nThis installs{} the router ({} on :{}) serving that model, \
          starts it, and loads the model — a large one takes several minutes. Then it offers to \
          point mecha's config at it.",
         match (ready.engine_bytes, ready.engine_built) {
@@ -244,6 +243,7 @@ pub async fn run(cfg: &mecha_core::config::Config) -> Result<()> {
             ),
             (None, _) => String::new(),
         },
+        router_unit::service_kind(),
         ready.naming.port
     );
     if !matches!(ask("Go ahead? [y/N] ")?.as_str(), "y" | "Y" | "yes") {
