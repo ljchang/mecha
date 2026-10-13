@@ -32,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 mod docker;
+pub mod seatbelt;
 pub(crate) use docker::DockerContainer;
 
 /// Push a run of arguments. A closure would borrow the vector for its whole
@@ -75,6 +76,14 @@ pub enum Backend {
     /// `/tmp` is shared rather than private, `/proc` shows every process,
     /// and there is no PID/IPC isolation.
     Landlock,
+    /// macOS's own sandbox: `sandbox-exec` with a Seatbelt profile built per
+    /// call ([`seatbelt`]) — deny by default, the program and the libraries
+    /// its load commands name, the call's scratch directory, no network.
+    /// **Documents only** (`[documents] confine`, the default on a Mac):
+    /// `[sandbox]` refuses it for `shell` and MCP servers, whose confinement
+    /// narrows the capabilities a tool declares, until a shell's reach has
+    /// been measured under it (`Config::validate`).
+    Seatbelt,
 }
 
 impl Backend {
@@ -84,6 +93,7 @@ impl Backend {
             Backend::Bwrap => "bwrap",
             Backend::Docker => "docker",
             Backend::Landlock => "landlock",
+            Backend::Seatbelt => "seatbelt",
         }
     }
 }
@@ -135,6 +145,12 @@ impl Default for SandboxConfig {
         }
     }
 }
+
+/// Why `[sandbox]` refuses Seatbelt (`Backend::Seatbelt`'s doc).
+pub const SEATBELT_IS_DOCUMENTS_ONLY: &str =
+    "[sandbox] kind = \"seatbelt\" confines document extraction only ([documents] confine); \
+     it is not measured against a shell's or an MCP server's reach, and their confinement is \
+     what narrows the capabilities they declare. On a Mac use kind = \"docker\" for shell";
 
 #[derive(Debug, Clone, Default)]
 pub struct Sandbox {
@@ -220,6 +236,9 @@ impl Sandbox {
         workspace: &Path,
         cwd: &Path,
     ) -> Result<tokio::process::Command> {
+        if self.cfg.kind == Backend::Seatbelt {
+            anyhow::bail!("{}", SEATBELT_IS_DOCUMENTS_ONLY);
+        }
         match self.cfg.kind {
             Backend::None => {
                 let mut c = tokio::process::Command::new("bash");
@@ -243,6 +262,9 @@ impl Sandbox {
         cwd: &Path,
         env: &[(&str, &str)],
     ) -> Result<tokio::process::Command> {
+        if self.cfg.kind == Backend::Seatbelt {
+            anyhow::bail!("{}", SEATBELT_IS_DOCUMENTS_ONLY);
+        }
         let argv = ["-lc".to_string(), command.to_string()];
         match self.cfg.kind {
             Backend::None => {
@@ -324,6 +346,16 @@ impl Sandbox {
             }
             Backend::Landlock => {
                 let mut c = self.landlock_command(program, args, workspace, cwd)?;
+                for (k, v) in env {
+                    c.env(k, v);
+                }
+                Ok(c)
+            }
+            Backend::Seatbelt => {
+                if !cfg!(target_os = "macos") {
+                    anyhow::bail!("the seatbelt sandbox is macOS's own; it does not run here");
+                }
+                let mut c = seatbelt::command(program, args, workspace, cwd, &self.cfg)?;
                 for (k, v) in env {
                     c.env(k, v);
                 }
@@ -705,6 +737,11 @@ impl Sandbox {
     pub async fn preflight(&self, workspace: &Path) -> Result<()> {
         if !self.is_enabled() {
             return Ok(());
+        }
+        // Documents only: its preflight is the renderer's, which runs
+        // poppler through the real profile (`document::Renderer::preflight`).
+        if self.cfg.kind == Backend::Seatbelt {
+            anyhow::bail!("{}", SEATBELT_IS_DOCUMENTS_ONLY);
         }
         // A degenerate limit is refused, not rendered: `CPUQuota=0%` and
         // `MemoryMax=0M` mean nothing sensible, and docker reads `--cpus 0`

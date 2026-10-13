@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **PDFs on a Mac, confined by macOS's own sandbox.** `[documents] confine =
+  "seatbelt"`, the default on macOS, runs poppler under `sandbox-exec` with a
+  profile built for each call: deny by default, the program and the
+  libraries its own load commands name, the scratch directory as the only
+  place it reads input from or writes to, the home denied, and no network.
+  Measured by new macOS tests in CI. `bwrap` and `landlock` are refused on a
+  Mac (and `seatbelt` on Linux) by name; `[sandbox] kind = "seatbelt"` is
+  refused — it confines the parser, not `shell`. On a Mac the parser's
+  address-space ceiling (`memory_mb`) is not applied; its CPU and file-size
+  ceilings and the per-page timeout are.
+
 ## [0.1.24] - 2026-10-13
 
 ### Added
