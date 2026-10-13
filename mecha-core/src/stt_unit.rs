@@ -210,7 +210,7 @@ pub async fn install(m: &Machinery, naming: &Naming, say: Say<'_>) -> Result<()>
     // `bootstrap` succeeds for a program that cannot start, and the agent
     // would otherwise relaunch forever after an install that failed (review
     // of #679).
-    let checked = match crate::user_service::restart(m, &[&naming.unit]) {
+    let checked = match crate::user_service::restart(m, &[&naming.unit], &mut *say) {
         Ok(()) => {
             say(&format!(
                 "starting it on :{} and transcribing a second of silence",

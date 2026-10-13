@@ -10,7 +10,7 @@
 //! in manager.
 
 use anyhow::{Context, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::sidecar::Machinery;
 
@@ -60,15 +60,31 @@ pub fn write(m: &Machinery, id: &str, stem: &str, unit: &str) -> Result<()> {
 
 /// Enable and (re)start services, in order: a restart, never a start alone,
 /// so a reinstall reaches a running server with its new files.
-pub fn restart(m: &Machinery, stems: &[&str]) -> Result<()> {
+///
+/// On a Mac loaded with nobody at the screen, says so, as the router does:
+/// the agents return after a restart only at a console login (review of
+/// #679).
+pub fn restart(m: &Machinery, stems: &[&str], say: crate::install::Say<'_>) -> Result<()> {
     if cfg!(target_os = "macos") {
         // launchd opens the log before it runs anything and does not make
         // its directory.
-        if let Some(dir) = crate::launchd::log_path(&m.home, "x").parent() {
+        if let Some(dir) = stems.first().and_then(|s| {
+            crate::launchd::log_path(&m.home, s)
+                .parent()
+                .map(Path::to_path_buf)
+        }) {
             std::fs::create_dir_all(dir)?;
         }
+        let mut headless = false;
         for stem in stems {
-            crate::launchd::load(&file(m, stem)?, &crate::launchd::label(stem))?;
+            let domain = crate::launchd::load(&file(m, stem)?, &crate::launchd::label(stem))?;
+            headless |= domain == crate::launchd::Domain::User;
+        }
+        if headless {
+            say(
+                "nobody is logged in at this Mac's screen, so after a restart these servers come \
+                 back only once someone logs in there",
+            );
         }
         Ok(())
     } else {
@@ -312,6 +328,11 @@ mod tests {
     /// A command a shell would have to unquote is refused, never split.
     #[test]
     fn a_quoted_command_is_refused() {
+        let unit = "[Service]\nExecStart=-/bin/run\nRestart=on-failure\n";
+        assert!(
+            crate::launchd::agent_from_unit("p", unit, "/h".as_ref(), "/l".into()).is_err(),
+            "a systemd prefix is refused, not taken as the program's name"
+        );
         let unit = "[Service]\nExecStart=/bin/sh -c \"echo hi\"\n";
         assert!(crate::launchd::agent_from_unit("q", unit, "/h".as_ref(), "/l".into()).is_err());
         let unit = "[Service]\nExecStart=%h/bin/run --x\nRestart=on-failure\n";

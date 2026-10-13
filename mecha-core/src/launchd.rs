@@ -81,7 +81,10 @@ pub fn agent_from_unit(label: &str, unit: &str, home: &Path, log: PathBuf) -> Re
     let mut throttle = THROTTLE_SECS;
     for line in unit.lines().map(str::trim) {
         if let Some(cmd) = line.strip_prefix("ExecStart=") {
-            if cmd.contains(['"', '\\', '\'', '$']) {
+            // systemd's prefixes (`-` ignore failure, `@`, `+`, `!`, `:`)
+            // mean something an agent cannot say: refused, never taken as
+            // part of the program's name (review of #679).
+            if cmd.starts_with(['-', '@', '+', '!', ':']) || cmd.contains(['"', '\\', '\'', '$']) {
                 bail!("{label}'s command needs a shell's quoting, which an agent does not have: {cmd}");
             }
             program = Some(cmd.split_whitespace().map(expand).collect::<Vec<_>>());

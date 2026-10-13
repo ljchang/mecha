@@ -459,7 +459,7 @@ pub async fn install(
     let names = [naming.engine_unit.as_str(), naming.adapter_unit.as_str()];
     // A restart, so a reinstall reaches running servers; a failed restart or
     // check stops both before the install says so (#639's pattern).
-    let checked = match crate::user_service::restart(m, &names) {
+    let checked = match crate::user_service::restart(m, &names, &mut *say) {
         Ok(()) => {
             say(&format!(
                 "starting the engine on :{} and the adapter on :{}, and speaking a sentence \

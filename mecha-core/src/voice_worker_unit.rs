@@ -143,7 +143,7 @@ pub async fn install(m: &Machinery, naming: &Naming, say: Say<'_>) -> Result<()>
     // not left enabled to restart forever at boot — `Type=exec` makes a bad
     // start fail the restart itself, so that is the likeliest way here
     // (review of #639).
-    let checked = match crate::user_service::restart(m, &[service]) {
+    let checked = match crate::user_service::restart(m, &[service], &mut *say) {
         Ok(()) => {
             say(&format!(
                 "starting it on :{} and checking the direct door is shut",
