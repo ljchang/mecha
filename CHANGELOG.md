@@ -34,7 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   installs ComfyUI on Apple silicon with PyPI's torch (MPS) from its own
   hash lock, as a launchd agent. A Mac draws with the bf16 Qwen-Image 2.1
   files — MPS has no int8 kernels, so the GB10's int8 file is emulated
-  there and slower (~79 s a picture against ~128 s on an M5 Max) — and
+  there and slower (~128 s a picture against bf16's ~79 s on an M5 Max) — and
   `--turbo` fetches the turbo bf16 (~16 s a picture). The text encoder runs
   on the CPU there, adding ~13 s to a new prompt. There is no idle reset on
   a Mac; `[image] unload_after_secs` still unloads. `mecha setup engine
