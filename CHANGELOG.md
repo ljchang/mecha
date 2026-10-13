@@ -7,16 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.25] - 2026-10-13
-
-### Changed
-
-- **The configuration page names where `personas` shows.** A server set to
-  `[[mcp]] personas = true` is reported by `mecha tools` (each tool marked
-  "offered to persona chats") and by `mecha doctor`, as `trust_result_claims`
-  already was; the page now says so beside the other setting that trusts a
-  server more.
-
 ## [0.1.24] - 2026-10-13
 
 ### Added
@@ -5295,8 +5285,7 @@ under Added; later releases will record only what changed.
   benchmarks, the TUI survey, and a branching design recorded as a deliberate
   non-implementation.
 
-[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.25...HEAD
-[0.1.25]: https://github.com/ljchang/mecha/releases/tag/v0.1.25
+[Unreleased]: https://github.com/ljchang/mecha/compare/v0.1.24...HEAD
 [0.1.24]: https://github.com/ljchang/mecha/releases/tag/v0.1.24
 [0.1.23]: https://github.com/ljchang/mecha/releases/tag/v0.1.23
 [0.1.22]: https://github.com/ljchang/mecha/releases/tag/v0.1.22
