@@ -23,6 +23,13 @@ would depend on directly.
 mecha-cli code knows that Google or Microsoft exists — and neither does the
 model.
 
+**Mail needs its `[features]` switch as well as the entry below** — an absent
+switch is off, and with it off the server is not started and the `mecha mail`
+verbs refuse. `mecha features enable mail` writes the switch (or say yes when
+`mecha setup` offers it); it does not write the `[[mcp]]` entry, install the
+binary or sign anyone in, which stay yours: `cargo install mecha-mail
+--locked`, the entry, then [signing in](#signing-in).
+
 ```toml
 [[mcp]]
 name = "mail"
