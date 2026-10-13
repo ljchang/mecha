@@ -221,6 +221,16 @@ pub fn answers_like_a_model_server(props: &crate::provider::preflight::Props) ->
     props.model_alias.is_some() || props.default_generation_settings.n_ctx.is_some()
 }
 
+/// Where `mecha setup chat` runs, said beside it where it does not run here:
+/// nothing on Linux and macOS, which are both of its homes.
+fn setup_chat_where() -> &'static str {
+    if crate::router_unit::installs_here() {
+        ""
+    } else {
+        " (on Linux or macOS)"
+    }
+}
+
 /// Where to look for a local server when the configured provider cannot
 /// answer.
 ///
@@ -317,12 +327,13 @@ pub fn plan(cfg: &Config, provider_name: &str, facts: &Facts) -> Vec<Step> {
             // presumes a server the machine may not have.
             None => {
                 // `setup chat` is offered where it can run, and only for a
-                // table that names this router: it installs systemd user
-                // units (refusing elsewhere before asking anything), and it
+                // table that names this router: it installs a systemd user
+                // unit or a launchd agent (refusing elsewhere before asking
+                // anything), and it
                 // leaves a local provider pointing somewhere else alone — so
                 // for one of those it would download a model and not clear
                 // this step (found on review of #627).
-                let installs_here = cfg!(target_os = "linux")
+                let installs_here = crate::router_unit::installs_here()
                     && crate::router_unit::names_this_router(
                         pcfg,
                         crate::router_unit::Naming::shipped().port,
@@ -663,18 +674,21 @@ fn provider_step(provider_name: &str, cfg: &Config, facts: &Facts) -> Step {
         LocalProbe::NothingAnswered => format!(
             concat!(
                 "1. Run a model locally — the target rather than the fallback. ",
-                "`mecha setup chat` installs one and points mecha at it (Linux); a ",
+                "`mecha setup chat` installs one and points mecha at it{where_}; a ",
                 "server you run yourself, `mecha setup --write` reads the settings ",
                 "off. Nothing was answering at {tried} when this ran."
             ),
+            where_ = setup_chat_where(),
             tried = local_probe_candidates().join(", ")
         ),
-        _ => concat!(
-            "1. Run a model locally — the target rather than the fallback. ",
-            "`mecha setup chat` installs one and points mecha at it (Linux); a ",
-            "server you run yourself, `mecha setup --write` reads the settings off."
-        )
-        .to_string(),
+        _ => format!(
+            concat!(
+                "1. Run a model locally — the target rather than the fallback. ",
+                "`mecha setup chat` installs one and points mecha at it{where_}; a ",
+                "server you run yourself, `mecha setup --write` reads the settings off."
+            ),
+            where_ = setup_chat_where()
+        ),
     };
     step(format!(
         "Nothing can answer a prompt yet, so nothing below this can be tested. \
@@ -2468,10 +2482,15 @@ mod tests {
         // Nothing answering is a fresh install's state since ruling F12, so
         // the remedy is the command that installs a server — where it runs.
         let remedy = step(&steps, "local-server").remedy.as_ref();
-        if cfg!(target_os = "linux") {
+        // Spelled out rather than asked of `installs_here`, so the test can
+        // disagree with it (review of #678).
+        if cfg!(any(target_os = "linux", target_os = "macos")) {
             assert_eq!(remedy.unwrap().argv, ["mecha", "setup", "chat"]);
         } else {
-            assert!(remedy.is_none(), "`setup chat` refuses off Linux");
+            assert!(
+                remedy.is_none(),
+                "`setup chat` refuses without systemd or launchd"
+            );
         }
     }
 

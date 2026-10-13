@@ -85,19 +85,26 @@ cannot switch a feature on — only your global file can.
 
 ## On a Mac
 
-mecha builds and runs on macOS, but the parts of it that install or supervise
-other programs are Linux-only today. What that means on a Mac:
+mecha builds and runs on macOS, and installs its local chat model there as
+it does on Linux. Most of the other parts that install or supervise programs
+are Linux-only today. What that means on a Mac:
 
-- **The local-model installer is Linux-only.** `mecha setup chat` installs
-  llama.cpp's router as a systemd user unit and refuses elsewhere. On a Mac,
-  start `llama-server` yourself and run `mecha setup --write` (see
-  [below](#a-local-model)), or use a hosted model.
+- **The local model installs.** `mecha setup chat` (or the first question
+  of the guided `mecha setup`) installs llama.cpp's Metal build, the model
+  recommended for your Mac's memory and the router that serves it, as a
+  launchd agent (`~/Library/LaunchAgents/ai.mecha-factory.llama-local.plist`)
+  that starts again at each login. Its log is
+  `~/Library/Logs/mecha/llama-local.log`. A Mac's memory is one pool, so it
+  gets the same recommendation as any unified-memory machine of its size.
 - **The sandbox is Docker only.** `[sandbox] kind = "bwrap"` and `"landlock"`
   are Linux kernel features; on a Mac, `kind = "docker"` is the backend that
   confines `shell`.
-- **No systemd user units.** The trigger runner, `mecha serve` as a service,
-  the Slack connector and the on-demand embeddings and OCR servers are shipped
-  as systemd units. On a Mac, run those commands yourself.
+- **The embeddings and OCR servers install too**, on demand: a launchd agent
+  holds the port and starts the server at the first request, then stops it
+  after ten idle minutes.
+- **No other services.** The trigger runner, `mecha serve` as a service and
+  the Slack connector are shipped as systemd units. On a Mac, run those
+  commands yourself.
 - **The image and voice installers need Linux and an NVIDIA GPU.**
   `mecha features enable image` and `mecha features enable voice` install
   their servers only there; on a Mac each switches on for a server you start

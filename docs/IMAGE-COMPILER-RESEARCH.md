@@ -678,11 +678,84 @@ in the image" on the same reasoning with no arm of its own: it is carried by
 inference from the three- and four-person arms, not measured, so a
 duplicate there is not a regression E12 covers.
 
+**V0, the video tool's portraits** (2026-10-13; MiniMax H3, built outside
+this repository for now). A whole portrait sent as H3's reference carried
+its outfit into every clip, both seeds, even with the prompt saying the
+clothing wasn't taken from it. `face::anchor_crop`'s crop stopped the leak
+and held identity, as well as a looser head-and-shoulders crop did (owner's
+review). Clothing stated per clip then landed exactly. This is E9's leak and
+E10's crop, on a second model.
+
+**E9b, a body reference for pictures** (2026-10-13; library v2, design §9).
+Build, re-run with fitted clothing so build is visible, and with height
+stated in text; it decided whether any body reference joins the format
+before tier D's LoRAs are the answer.
+
+- **Arms.** F, face only, against B, face + full body bound by person with
+  the two-images-one-person wording ("`<image1>` is her portrait,
+  `<image2>` her full figure"), each with height in text; two seeds; E9's
+  opposite builds.
+  - Arm F's one reference per person is the character's normal portrait,
+    as pictures send today; arm B adds a full-body shot in fitted grey
+    clothes as each person's second image (review of #680, pass 13).
+  - The scene states fitted clothing of another colour (a navy T-shirt and
+    slim jeans), so build is visible in the picture, which E9's stated
+    trench coat hid, and a grey leak is told apart from what was asked
+    (passes 8 and 16).
+- **Bar.** Build visibly carries over with no clothing leak, no duplicate
+  person, and identity held (pass 21: arm B is E9's B2 shape, a second
+  image bound to one person, so identity is the other half of that risk).
+  All three clothing sources must be told apart (pass 18): the scene's
+  stated clothing, arm B's grey reference, and each portrait's own.
+- **Setup.** Two of the owner's characters with contrasting stored builds;
+  1024², 40 steps, references at 512, seeds 101 and 202. F and B share the
+  scene, the people and the seeds; B's prompt adds the binding wording.
+  The portraits wore a third pair of colours (a crop top and shorts; a
+  bikini), and no portrait clothing appeared in either arm.
+- **F:** identity held and the stated clothing landed. The two builds
+  converged on one generic slim figure in both seeds, though each
+  description states its build.
+- **B:** the builds separated in both seeds: the athletic, fuller character
+  curvier through the hips and waist, the lanky one still lanky. No grey
+  from the references, and no duplicate person (two people in both seeds).
+  Both characters recognisable in both seeds, **by eye** (the owner
+  reviewed the sheet); not ArcFace-scored. The judge (`face_id`, R50) can
+  score it if the ruling is revisited.
+- **Side effect:** one character's reference pose (a hip-shifted stance)
+  carried over in both seeds.
+- **Reading:** passes on this pair, with pose transfer noted. **Owner,
+  2026-10-13: on for pictures**, with references in a neutral stance
+  (design §9.4).
+
+**V-B, a body reference for video** (2026-10-13). E9b's question in H3's
+subject binding, on E9b's reference set and bar: a face crop against a face
+crop plus a full body.
+
+- **Setup.** H3 full-reference, turbo 4 steps, 6.6 s; both walking toward
+  the camera in the stated navy and jeans; face crops only against face
+  crop plus full body, bound per person; seeds 101 and 202.
+- **Face only:** builds converge, as in E9b's F. Both seeds also show turbo
+  artifacts on the backdrop.
+- **With the body:** seed 101 separates the builds cleanly, with no grey
+  leak, and identity holds by eye (not scored). Seed 202 adds **an extra,
+  child-sized person** for the whole clip.
+- **Reading: fails** the bar, with an extra person in one seed of two.
+  Video stays on face crops.
+
 **Still open**, in the order they would change the design:
 
-- **E9b — build, re-run with fitted clothing** so build is visible, and
-  with height stated in text; decides whether any body reference joins the
-  format before tier D's LoRAs are the answer.
+- **Library v2, the video side** (2026-10-13; the video tool, MiniMax H3,
+  built outside this repository for now; its own design moves in with it):
+  - **V-B's retest (open).** 20 steps, or four references without the bound
+    wording; video sends a body only if it passes V-B's bar.
+  - **V-D (open).** Does a labelled detail image (a tattoo) carry the mark
+    better than the label alone? Passes if the mark matches the detail
+    image in both seeds.
+  - **V-L (open).** A location as an environment subject against its text
+    alone. Passes if the place is recognisable and the head count holds.
+- **E13 — a location reference for pictures** (open; design §9). Text only
+  against text plus a location image; passes if the place is recognisable,
+  it doesn't become a person, and the cast's head count holds.
 - **Identity under expression**: more seeds per condition, and a second
   canonical view (a smiling three-quarter crop) as the *measurement*
   reference, to separate model drift from ArcFace's penalty on a laugh.

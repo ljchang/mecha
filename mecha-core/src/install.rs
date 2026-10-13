@@ -98,10 +98,10 @@ fn uv_asset(target: &str) -> Option<(&'static str, &'static str, u64)> {
 pub fn installable(id: &str) -> bool {
     match id {
         "layout" | "llama" => true,
+        // systemd user units or launchd agents (§12).
+        "embed-server" | "ocr-server" => crate::router_unit::installs_here(),
         // systemd user units: on macOS they stay manual (§10.5).
-        "embed-server" | "ocr-server" | "stt" | "voice-worker" | "comfyui" | "speech" => {
-            cfg!(target_os = "linux")
-        }
+        "stt" | "voice-worker" | "comfyui" | "speech" => cfg!(target_os = "linux"),
         _ => false,
     }
 }
@@ -1099,6 +1099,9 @@ mod tests {
         // The on-demand servers' installer is built, for systemd machines.
         let built: &[&str] = if cfg!(target_os = "linux") {
             &["7a-3", "7b", "7c-1", "7c-2", "7d-1", "7d-2", "7e", "7f"]
+        } else if cfg!(target_os = "macos") {
+            // launchd agents for the on-demand servers (§12).
+            &["7a-3", "7b", "7c-1"]
         } else {
             &["7a-3", "7b"]
         };
