@@ -10,7 +10,7 @@
 //! in manager.
 
 use anyhow::Result;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::sidecar::Machinery;
 
@@ -69,7 +69,7 @@ pub fn stop(stems: &[&str]) -> Result<()> {
     if cfg!(target_os = "macos") {
         let mut first = Ok(());
         for stem in stems {
-            let r = crate::launchd::unload(&crate::launchd::label(stem));
+            let r = crate::launchd::disable(&crate::launchd::label(stem));
             if first.is_ok() {
                 first = r;
             }
@@ -96,12 +96,15 @@ pub fn after_remove() -> Result<()> {
 /// The command that stops them by hand, for an error that could not.
 pub fn stop_by_hand(stems: &[&str]) -> String {
     if cfg!(target_os = "macos") {
+        // Both domains, as `launchd::disable` tries them: an install over SSH
+        // loads into `user/` (review of #679).
         stems
             .iter()
             .map(|s| {
+                let l = crate::launchd::label(s);
                 format!(
-                    "launchctl bootout gui/$(id -u)/{}",
-                    crate::launchd::label(s)
+                    "launchctl bootout gui/$(id -u)/{l}; launchctl bootout user/$(id -u)/{l}; \
+                     launchctl disable gui/$(id -u)/{l}"
                 )
             })
             .collect::<Vec<_>>()
@@ -128,18 +131,6 @@ pub fn logs_anywhere() -> &'static str {
     }
 }
 
-/// Where a service's own output says why it failed.
-pub fn logs_hint(home: &Path, stem: &str) -> String {
-    if cfg!(target_os = "macos") {
-        format!(
-            "{} says why",
-            crate::launchd::log_path(home, stem).display()
-        )
-    } else {
-        format!("`journalctl --user -u {stem}` says why")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     /// Every shipped unit that runs on a Mac reads as an agent: a command, no
@@ -163,6 +154,14 @@ mod tests {
                     .replace("@DIR@", "/d")
                     .replace("@NO_PAGE@", "http://no.page")
                     .replace("@PORT@", "7860"),
+            ),
+            (
+                "engine",
+                include_str!("../units/mecha-breeze-tts.service")
+                    .replace("@DIR@", "/d")
+                    .replace("@MODEL@", "m.gguf")
+                    .replace("@CODEC@", "c.gguf")
+                    .replace("@ENGINE_PORT@", "8886"),
             ),
             (
                 "adapter",
@@ -206,6 +205,42 @@ mod tests {
             adapter.program,
             ["/d/venv/bin/python", "-B", "breeze_server.py"]
         );
+    }
+
+    /// `Environment=` as systemd reads it: several assignments a line, one
+    /// with a space in it quoted whole; what this reader cannot read is
+    /// refused, never folded into a neighbour's value (review of #679).
+    #[test]
+    fn environment_lines_read_as_systemd_reads_them() {
+        let unit = "[Service]\nExecStart=/bin/run\nEnvironment=A=1 B=two\n\
+                    Environment=\"GREETING=hello there\" C=%h/c\nRestartSec=5\n";
+        let a =
+            crate::launchd::agent_from_unit("e", unit, "/Users/a".as_ref(), "/l".into()).unwrap();
+        for want in [
+            ("A", "1"),
+            ("B", "two"),
+            ("GREETING", "hello there"),
+            ("C", "/Users/a/c"),
+        ] {
+            assert!(
+                a.env.contains(&(want.0.into(), want.1.into())),
+                "{want:?} in {:?}",
+                a.env
+            );
+        }
+        assert_eq!(a.throttle_secs, 5);
+        for bad in [
+            "Environment=A='x y'\n",
+            "Environment=A=x\\ y\n",
+            "Environment=\"A=x\n",
+            "Environment=JUSTAKEY\n",
+        ] {
+            let unit = format!("[Service]\nExecStart=/bin/run\n{bad}");
+            assert!(
+                crate::launchd::agent_from_unit("e", &unit, "/h".as_ref(), "/l".into()).is_err(),
+                "{bad}"
+            );
+        }
     }
 
     /// A command a shell would have to unquote is refused, never split.
