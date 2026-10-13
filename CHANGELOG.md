@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **argon2 0.6 and rusqlite 0.40.** A library lock set before the upgrade
+  still opens; a new lock's salt comes from argon2 itself. A dashboard query
+  whose timeout or read-only authorizer cannot be installed is now refused
+  rather than run without it.
+
 ## [0.1.23] - 2026-10-12
 
 ### Added
