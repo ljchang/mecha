@@ -418,7 +418,9 @@ characters/<name>/entry.toml
 - **Every row marked "if" is off until its measurement passes,** and the owner rules on the result. A reference a generator doesn't send still costs no image slot: the description and labels carry the facts in words.
 - **Labels have their own budget per person,** at most 300 characters of detail labels appended to one description (review of #680, pass 2).
   - Labels past it are dropped, in the character's own order, and the result says so.
-  - A label never causes a refusal. A full cast of `MAX_CAST` adds at most 1,500 characters against `MAX_COMPILED_PROMPT`'s 9,000, so attaching details can't make every later picture fail with a message blaming a scene that didn't grow.
+  - **Labels are the first thing dropped when the compiled prompt would pass `MAX_COMPILED_PROMPT`** (review of #680, pass 9). The 9,000 isn't free room: at `MAX_CAST`, each person's description, `wearing` and `doing` (about 1,010 together) plus a style already take about 6,000.
+    - So the compiler drops labels, last person first, until the prompt fits, and says which. A label alone never causes a refusal.
+    - If the prompt is still over (the location's text is the setting and is kept), the next bullet's message applies.
 - **Locations and outfits expand the same way,** from a short name the model wrote into owner text. Each is bounded by its own cap:
   - an outfit fills `wearing` under `wearing`'s own `MAX_CAST_FIELD` (300), so it substitutes for typed text rather than adding to it;
   - a location's 400 characters are added once per scene.
