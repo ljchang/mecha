@@ -352,7 +352,7 @@ The decisions that are this design's rather than the owner's:
 - **§1, "a character is a portrait plus a description … no body reference (E9), no required crop (E10)."**
   - Kept for pictures, until E9b says otherwise.
   - Video takes face crops now, and a body reference becomes a measurement for it too (§9.6).
-- **§1, "locations stay free text in the scene until a location reference is measured."** Kept as the rule. §9.6 is that measurement, for each generator.
+- **§1, "locations stay free text in the scene until a location reference is measured."** Kept as the rule for **references**, the images. §9.6 is that measurement, for each generator. A text-only `Location` kind is still text in the scene: named owner text resolved into the setting, as a style is. So it ships without waiting for E13 or V-L, which gate only a location's images.
 
 ### 9.3 The store
 
@@ -473,7 +473,11 @@ characters/<name>/entry.toml
   - a scene names a location in `setting.location`, and a person's `wearing` may name an outfit.
 
   The compiler resolves both, and an unknown name stays plain text.
-- **How a scene record stores a location** (review of #680). `scene::Setting` is a closed enum read leniently: an unknown variant reads as `Setting::Unknown`, untrusted and drawing nothing. So a location isn't a new variant: it's recorded as today's `Words`, holding the location's resolved text, plus an optional `location` name. A build that predates it reads the words and loses only the link.
+- **How a scene record stores a location** (review of #680). `scene::Setting` is a closed enum read leniently: an unknown variant reads as `Setting::Unknown`, untrusted and drawing nothing. So a location isn't a new variant. It's recorded as today's `Words`, holding **the model's own words** for the place (at least the name it wrote), plus an optional `location` name.
+  - **Never the library text** (review of #680, pass 11). `scene::Scene` keeps names, not library text, for characters (`Who::Library`) and styles, and `scene::note` renders `Words` back into a persona's run notes every turn (`NOTE_PLACE_CHARS` 240). Recorded library text would hand a locked location's description back to the model, the very thing L5 says can't happen.
+  - The compiler resolves the name to the owner's text at render time, as it does a description and a style. So an edit to the location reaches the next restage.
+  - Outfits are the same: `wearing` records what the model wrote, and the outfit's text is resolved at compile time.
+  - A build that predates the field reads the model's words and loses only the link.
 - **Untrusted text naming a location.** The quarantined extraction (`IMAGE-DESIGN.md` §5.3) would learn the field. A location name from an untrusted-origin record resolves like any name: it selects owner-approved words, and adds none of its own.
   - It's the same rule as a non-library `who` being drawn from words (`IMAGE-DESIGN.md` §8).
   - The record keeps the origin of the write that set it, as every `scene::Field` does; an unreadable setting stays `Setting::Unknown` and untrusted.
@@ -513,5 +517,5 @@ E9b and V-B use the same reference set, so one set of images answers both genera
   1. E9b and V-B, one session with shared references;
   2. the store and CLI for `full_body` and `detail`;
   3. V-D;
-  4. locations (E13 and V-L, then the kind);
+  4. locations: the kind ships **text-only**, like styles; E13 and V-L then gate only its images (review of #680, pass 11);
   5. outfits, last, being text and the cheapest.
