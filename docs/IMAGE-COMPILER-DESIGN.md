@@ -340,29 +340,55 @@ The decisions that are this design's rather than the owner's:
 
 ## 9. Library v2: typed references, locations and wardrobe (ruled 2026-10-13)
 
-**Status:** ruled 2026-10-13 (L1–L7, §9.7); the owner approved the direction the same day (the video design's R6). Nothing in this section is built. **Step 1 is measured and ruled (owner, 2026-10-13):**
-  - E9b passed, so pictures send `full_body`, in a neutral, square-on stance;
-  - V-B failed, with an extra person in one seed of two, so video stays on face crops.
+**Status:** ruled 2026-10-13 (L1–L7, §9.7); the owner approved the direction
+the same day (the video design's R6). Nothing in this section is built.
+**Step 1 is measured and ruled (owner, 2026-10-13):**
+  - E9b passed, so pictures send `full_body`, in a neutral, square-on
+    stance;
+  - V-B failed, with an extra person in one seed of two, so video stays on
+    face crops.
 
-  Step 2, the store and CLI, is next. It reopens two of §1's settled rulings with new evidence, and says which, rather than re-arguing them silently.
+  Step 2, the store and CLI, is next. It reopens two of §1's settled rulings
+  with new evidence, and says which, rather than re-arguing them silently.
 
 ### 9.1 Why now
 
-- **A second consumer.** The video tool (`video_generate`, MiniMax H3; built outside this repository for now, with its design moving in when it's ported) reads the same library. H3's full-reference mode binds several pictures to one person natively, "`<Subject 1>` … whose appearance comes from `<Picture 1>` and `<Picture 2>`". It has up to nine image slots, three voice slots and three video slots.
-- **What the video measurements showed:** V0 in `IMAGE-COMPILER-RESEARCH.md` (2026-10-13). A whole portrait leaked its outfit into clips, a face crop stopped it, and clothing stated per clip landed.
-- **What text alone doesn't carry well.** A distinguishing mark (a forearm tattoo came out heavier than "fine-line") and build: E9 never got to test build, because its trench coat hid it.
-- **The owner's ask:** several typed images per character (face, full body, details), a location library, and named outfits, shared by pictures and video.
+- **A second consumer.** The video tool (`video_generate`, MiniMax H3; built
+  outside this repository for now, with its design moving in when it's
+  ported) reads the same library. H3's full-reference mode binds several
+  pictures to one person natively, "`<Subject 1>` … whose appearance comes
+  from `<Picture 1>` and `<Picture 2>`". It has up to nine image slots,
+  three voice slots and three video slots.
+- **What the video measurements showed:** V0 in `IMAGE-COMPILER-RESEARCH.md`
+  (2026-10-13). A whole portrait leaked its outfit into clips, a face crop
+  stopped it, and clothing stated per clip landed.
+- **What text alone doesn't carry well.** A distinguishing mark (a forearm
+  tattoo came out heavier than "fine-line") and build: E9 never got to test
+  build, because its trench coat hid it.
+- **The owner's ask:** several typed images per character (face, full body,
+  details), a location library, and named outfits, shared by pictures and
+  video.
 
 ### 9.2 What it reopens
 
-- **§1, "a character is a portrait plus a description … no body reference (E9), no required crop (E10)."**
-  - **Changed for pictures by E9b** (passed; owner, 2026-10-13): a `full_body` reference is sent, bound to its portrait (§9.4).
-  - **Kept for video:** face crops only. V-B failed with an extra person, so a body reference waits on a retest.
-- **§1, "locations stay free text in the scene until a location reference is measured."** Kept as the rule for **references**, the images. §9.6 is that measurement, for each generator. A text-only `Location` kind is still text in the scene: named owner text resolved into the setting, as a style is. So it ships without waiting for E13 or V-L, which gate only a location's images.
+- **§1, "a character is a portrait plus a description … no body reference
+  (E9), no required crop (E10)."**
+  - **Changed for pictures by E9b** (passed; owner, 2026-10-13): a
+    `full_body` reference is sent, bound to its portrait (§9.4).
+  - **Kept for video:** face crops only. V-B failed with an extra person, so
+    a body reference waits on a retest.
+- **§1, "locations stay free text in the scene until a location reference is
+  measured."** Kept as the rule for **references**, the images. §9.6 is that
+  measurement, for each generator. A text-only `Location` kind is still text
+  in the scene: named owner text resolved into the setting, as a style is.
+  So it ships without waiting for E13 or V-L, which gate only a location's
+  images.
 
 ### 9.3 The store
 
-A character entry gains typed references beside its portrait. The portrait stays: it's what the Library tab shows, what `face::anchor_crop` crops, and what every existing manifest names.
+A character entry gains typed references beside its portrait. The portrait
+stays: it's what the Library tab shows, what `face::anchor_crop` crops, and
+what every existing manifest names.
 
 ```
 characters/<name>/entry.toml
@@ -373,41 +399,91 @@ characters/<name>/entry.toml
   label = "standing, front view"                     # optional here (browsing only); required on a detail, e.g. "left-forearm tattoo"
 ```
 
-- **`kind` is a closed enum in an on-disk store, so it's a wire format.** An unknown `kind` loads, is shown in the library, and is **never sent to a generator**.
-  - So is a known kind on the wrong entry kind: a `face` on a location, or a `view` on a character. Each entry kind allows its own kinds, and anything else is read as unknown, so a hand-edited entry can't put a picture where a person's face goes. That's the fail-closed reading: a reference nobody can classify carries nothing into a picture.
-- **No `face` entry is needed today.** The face is the portrait's crop, cached by blob.
-  - A `face` reference is for the owner who wants a better face than the portrait shows. At most one per character.
-  - When attached, it replaces the portrait as the source of video's face crop. Pictures keep sending the whole portrait (E10), since they have no crop to replace; using a `face` reference there would want its own measurement. The portrait stays the picture the library shows.
-- **Each reference is a blob,** content-addressed like the portrait, so the existing versioning (`history/v<N>.toml`) and lock apply unchanged.
-- **The portrait's two checks extend to every blob any entry names:** references, a location's images, an outfit's image. Stated over the set, not by list.
-  - On load, the name check: no path separators, no leading dot, so a hand-edited entry can't point outside `blobs/`.
-  - On read, the hash check: bytes swapped under an approved hash are refused, not sent.
+- **`kind` is a closed enum in an on-disk store, so it's a wire format.** An
+  unknown `kind` loads, is shown in the library, and is **never sent to a
+  generator**.
+  - So is a known kind on the wrong entry kind: a `face` on a location, or a
+    `view` on a character. Each entry kind allows its own kinds, and
+    anything else is read as unknown, so a hand-edited entry can't put a
+    picture where a person's face goes. That's the fail-closed reading: a
+    reference nobody can classify carries nothing into a picture.
+- **No `face` entry is needed today.** The face is the portrait's crop,
+  cached by blob.
+  - A `face` reference is for the owner who wants a better face than the
+    portrait shows. At most one per character.
+  - When attached, it replaces the portrait as the source of video's face
+    crop. Pictures keep sending the whole portrait (E10), since they have no
+    crop to replace; using a `face` reference there would want its own
+    measurement. The portrait stays the picture the library shows.
+- **Each reference is a blob,** content-addressed like the portrait, so the
+  existing versioning (`history/v<N>.toml`) and lock apply unchanged.
+- **The portrait's two checks extend to every blob any entry names:**
+  references, a location's images, an outfit's image. Stated over the set,
+  not by list.
+  - On load, the name check: no path separators, no leading dot, so a
+    hand-edited entry can't point outside `blobs/`.
+  - On read, the hash check: bytes swapped under an approved hash are
+    refused, not sent.
 
   Today both read `entry.portrait` only, so neither carries over by itself.
-- **Only the owner writes references** (review of #680): the CLI and the web page. `image_library_propose` can't add one, and **`add-reference` refuses a candidate**: the owner approves the entry first. So a candidate never holds a reference, and:
-  - the entry's one `origin` and `status` (§2) still describe everything in it;
-  - a reference added to an approved entry is an owner write and a new version, as an owner `update` is (§6). `update`'s "nothing to change" comparison includes the references, and the version bump is what changes `shown_digest`, so a reference write can't slip past a displayed approval;
-  - `reject`'s portrait-only clean-up and `MAX_PROPOSED_PORTRAIT_BYTES` stay correct as written. A proposal that tried to carry references would be refused, not trimmed.
-- **`label` is at most 100 characters.** Only a `detail`'s label is ever sent; on a `face` or `full_body` it's for browsing. Sent labels count against `MAX_COMPILED_PROMPT`, as the description does.
-- **Store limits:** at most 1 `face`, 1 `full_body` and 4 `detail` per character. That's what the owner can attach, not what a call sends. §9.4 says how a call fits the generator's slots.
+- **Only the owner writes references** (review of #680): the CLI and the web
+  page. `image_library_propose` can't add one, and **`add-reference` refuses
+  a candidate**: the owner approves the entry first. So a candidate never
+  holds a reference, and:
+  - the entry's one `origin` and `status` (§2) still describe everything in
+    it;
+  - a reference added to an approved entry is an owner write and a new
+    version, as an owner `update` is (§6). `update`'s "nothing to change"
+    comparison includes the references, and the version bump is what changes
+    `shown_digest`, so a reference write can't slip past a displayed
+    approval;
+  - `reject`'s portrait-only clean-up and `MAX_PROPOSED_PORTRAIT_BYTES` stay
+    correct as written. A proposal that tried to carry references would be
+    refused, not trimmed.
+- **`label` is at most 100 characters.** Only a `detail`'s label is ever
+  sent; on a `face` or `full_body` it's for browsing. Sent labels count
+  against `MAX_COMPILED_PROMPT`, as the description does.
+- **Store limits:** at most 1 `face`, 1 `full_body` and 4 `detail` per
+  character. That's what the owner can attach, not what a call sends. §9.4
+  says how a call fits the generator's slots.
 
-**Two new kinds**, beside `Character` and `Style`. A location's or outfit's images are `[[reference]]` rows too, with the kind `view`, so every blob an entry names lives in one table, under one set of checks. Each new kind is its own directory (`locations/<name>/`, `outfits/<name>/`), since an entry's kind is derived from its directory (`Entry.kind`).
+**Two new kinds**, beside `Character` and `Style`. A location's or outfit's
+images are `[[reference]]` rows too, with the kind `view`, so every blob an
+entry names lives in one table, under one set of checks. Each new kind is
+its own directory (`locations/<name>/`, `outfits/<name>/`), since an entry's
+kind is derived from its directory (`Entry.kind`).
 - **§2's tree gains both.**
   - **Loading** reads the directories this build knows (`Kind::ALL`).
-  - **Deleting** a blob is decided by walking every `*.toml` under the store root, whatever directory it sits in (review of #680, pass 5). `blob_referenced` gates a delete, so it must be fail-closed for kinds this build doesn't know: a later build's fifth directory is unseen, not unreadable. That walk also reads `lock.toml` and `autolock.toml`; a blob name never matches in them, so it's harmless and the safe direction.
-  - That walk also covers `removed/`, which keeps a removed entry's blobs alive for the manifests that name them (§6), and a blob only a location names.
+  - **Deleting** a blob is decided by walking every `*.toml` under the store
+    root, whatever directory it sits in (review of #680, pass 5).
+    `blob_referenced` gates a delete, so it must be fail-closed for kinds
+    this build doesn't know: a later build's fifth directory is unseen, not
+    unreadable. That walk also reads `lock.toml` and `autolock.toml`; a blob
+    name never matches in them, so it's harmless and the safe direction.
+  - That walk also covers `removed/`, which keeps a removed entry's blobs
+    alive for the manifests that name them (§6), and a blob only a location
+    names.
 
 | Kind | Fields | Pictures | Video |
 |---|---|---|---|
 | `Location` | `text` (≤ 400), 0–3 images (optional until E13 or V-L makes them mean something) | unmeasured as a reference (E13); until then its text goes into the scene | an environment `<Subject>`, "the place in `<Picture k>`" (V-L) |
 | `Outfit` | `text` (≤ 300), optional `for` (a character, or none for anyone), optional image | **text only**: pasted into `wearing` | text only: pasted into `wearing` |
 
-- **Outfits stay text.** An image of clothes is the leak §9.1 measured, delivered on purpose. The image is for browsing.
-- **An outfit's `for` is a suggestion, not a lock.** A scene that dresses someone else in it resolves anyway.
-  - The note says "that outfit was made for someone else", and **never names who**. `for` is never surfaced to a model, since a character name the call didn't supply is the roster leak `imagelib::missing` guards (review of #680, pass 7).
-- **An outfit expands only when it fills `wearing` whole.** A `wearing` that only mentions an outfit's name stays the model's text, so the expansion always sits inside `wearing`'s own 300 characters.
-- **Who writes:** both new kinds follow §1. The owner creates approved entries; a model's proposal is a candidate, with no images, as above.
-- **Not stored yet:** a location's own clip or soundscape. Nothing would read them yet; they arrive with whatever does.
+- **Outfits stay text.** An image of clothes is the leak §9.1 measured,
+  delivered on purpose. The image is for browsing.
+- **An outfit's `for` is a suggestion, not a lock.** A scene that dresses
+  someone else in it resolves anyway.
+  - The note says "that outfit was made for someone else", and **never names
+    who**. `for` is never surfaced to a model, since a character name the
+    call didn't supply is the roster leak `imagelib::missing` guards (review
+    of #680, pass 7).
+- **An outfit expands only when it fills `wearing` whole.** A `wearing` that
+  only mentions an outfit's name stays the model's text, so the expansion
+  always sits inside `wearing`'s own 300 characters.
+- **Who writes:** both new kinds follow §1. The owner creates approved
+  entries; a model's proposal is a candidate, with no images, as above.
+- **Not stored yet:** a location's own clip or soundscape. Nothing would
+  read them yet; they arrive with whatever does.
 
 ### 9.4 What each generator sends
 
@@ -419,88 +495,233 @@ characters/<name>/entry.toml
 | location | its text in the scene | its images as an environment `<Subject>`, if V-L passes |
 | outfit | its text as `wearing` | its text as `wearing` |
 
-- **Both consumers keep references on this machine** (review of #680, pass 4).
-  - `image_generate` is loopback-only, `Egress::None`, enforced by `loopback_url`.
-  - The video tool renders on a local ComfyUI over loopback, H3's open weights, not MiniMax's hosted API, and declares no open world.
+- **Both consumers keep references on this machine** (review of #680, pass
+  4).
+  - `image_generate` is loopback-only, `Egress::None`, enforced by
+    `loopback_url`.
+  - The video tool renders on a local ComfyUI over loopback, H3's open
+    weights, not MiniMax's hosted API, and declares no open world.
 
-  That's why sending a portrait, a full body, a labelled mark or a location's images costs nothing against the interlock today. A generator that isn't local gets no library references without the owner's ruling (L6). A hosted backend would send exactly these images off the machine.
-- **Every row marked "if" is off until its measurement passes,** and the owner rules on the result. A reference a generator doesn't send still costs no image slot: the description and labels carry the facts in words.
-- **Labels have their own budget per person,** at most 300 characters of detail labels appended to one description (review of #680, pass 2).
-  - Labels past it are dropped, in the character's own order, and the result says how many, **never which** (review of #680, pass 20). A label describes a person, and `image_generate` declares `Capabilities::default()` because nothing private comes back, only a path and a seed. A result naming labels would arm `private_data` on every picture-drawing conversation. Counts keep the declaration true.
-  - **Labels are the first thing dropped when the compiled prompt would pass `MAX_COMPILED_PROMPT`** (review of #680, pass 9). The 9,000 isn't free room: at `MAX_CAST`, each person's description, `wearing` and `doing` (about 1,010 together) plus a style already take about 6,000.
-    - So the compiler drops labels, last person first, until the prompt fits, and says how many, never which (the same capability reason). A label alone never causes a refusal.
-    - If the prompt is still over (the location's text is the setting and is kept), the next bullet's message applies.
-- **Locations and outfits expand the same way,** from a short name the model wrote into owner text. Each is bounded by its own cap:
-  - an outfit fills `wearing` under `wearing`'s own `MAX_CAST_FIELD` (300), so it substitutes for typed text rather than adding to it;
+  That's why sending a portrait, a full body, a labelled mark or a
+  location's images costs nothing against the interlock today. A generator
+  that isn't local gets no library references without the owner's ruling
+  (L6). A hosted backend would send exactly these images off the machine.
+- **Every row marked "if" is off until its measurement passes,** and the
+  owner rules on the result. A reference a generator doesn't send still
+  costs no image slot: the description and labels carry the facts in words.
+- **Labels have their own budget per person,** at most 300 characters of
+  detail labels appended to one description (review of #680, pass 2).
+  - Labels past it are dropped, in the character's own order, and the result
+    says how many, **never which** (review of #680, pass 20). A label
+    describes a person, and `image_generate` declares
+    `Capabilities::default()` because nothing private comes back, only a
+    path and a seed. A result naming labels would arm `private_data` on
+    every picture-drawing conversation. Counts keep the declaration true.
+  - **Labels are the first thing dropped when the compiled prompt would pass
+    `MAX_COMPILED_PROMPT`** (review of #680, pass 9). The 9,000 isn't free
+    room: at `MAX_CAST`, each person's description, `wearing` and `doing`
+    (about 1,010 together) plus a style already take about 6,000.
+    - So the compiler drops labels, last person first, until the prompt
+      fits, and says how many, never which (the same capability reason). A
+      label alone never causes a refusal.
+    - If the prompt is still over (the location's text is the setting and is
+      kept), the next bullet's message applies.
+- **Locations and outfits expand the same way,** from a short name the model
+  wrote into owner text. Each is bounded by its own cap:
+  - an outfit fills `wearing` under `wearing`'s own `MAX_CAST_FIELD` (300),
+    so it substitutes for typed text rather than adding to it;
   - a location's 400 characters are added once per scene.
 
   So the new pressure is about 1,900 characters: labels plus the location.
-- **The prompt can already overflow before §9 adds anything** (review of #680, pass 10). The scene's own prose (`PROMPT_CAP` 4,000) and up to four extras (about 900 each) sit beside the cast fields and the style, a ceiling of about 13,650 against 9,000.
-  - So an overflow message names **what filled it, by share**: the scene's prose, the extras, or the library text (descriptions, location, labels left after dropping).
-  - It's never library text by default, and never "shorten the scene" when the scene didn't grow.
-- **Fitting the slots** (review of #680). A call fills the generator's image budget in a fixed order, and says what it left out in the result:
-  1. every person's face: the portrait for pictures (E10), the face crop for video;
+- **The prompt can already overflow before §9 adds anything** (review of
+  #680, pass 10). The scene's own prose (`PROMPT_CAP` 4,000) and up to four
+  extras (about 900 each) sit beside the cast fields and the style, a
+  ceiling of about 13,650 against 9,000.
+  - So an overflow message names **what filled it, by share**: the scene's
+    prose, the extras, or the library text (descriptions, location, labels
+    left after dropping).
+  - It's never library text by default, and never "shorten the scene" when
+    the scene didn't grow.
+- **Fitting the slots** (review of #680). A call fills the generator's image
+  budget in a fixed order, and says what it left out in the result:
+  1. every person's face: the portrait for pictures (E10), the face crop for
+     video;
   2. each person's `full_body`, in cast order;
-  3. details, in cast order, then in each character's own order. That's greedy, so it's the mixed shape the next bullets call unmeasured; it waits on V-D, whose arms include that shape.
-  - **Video** has nine slots, less any pinned or other reference images. Two people fit with a body each and up to five details; three fit with a body each and three details.
-  - **Bodies are all or nothing in both generators** (review of #680, pass 10). Bodies are sent only when **every person in the cast has one attached and they all fit** beside every face; otherwise none is (review of #680, pass 13). So a cast where one character has a body and another doesn't sends faces only. So a cast of five (5 faces + 5 bodies over 9), or four with two pinned images, sends faces only, never four bound people beside one unbound.
-  - Details also bind a second image to one person, so they're the same mixed shape. V-D's arms must include one person with a detail beside one without, before details ship.
-  - **Pictures** keep their people budgets (`MAX_CAST`, `EDIT_REFERENCE_BUDGET`, `IMAGE-DESIGN.md` §5.2, "Budgets, as measured") and gain an **image** cap (review of #680, pass 6). `MAX_CAST` counts people, and the measured ceiling is five reference images, with duplicate-free evidence at four (E12).
-    - A new picture carries at most five reference images. That's `IMAGE-DESIGN.md` §5.2's measurement: five whole portraits drew all five people, 3/3.
-    - Faces come first. **Bodies are all or nothing** (review of #680, pass 8): every person gets their `full_body`, or none does, and only while the total stays at four or fewer. So that's a cast of one or two. A cast of three gets no bodies, never one person bound to two images beside others bound to one, which no wording covers and nothing has measured. Attached and fitting both: a person with no `full_body` attached means no one in that cast gets one.
+  3. details, in cast order, then in each character's own order. That's
+     greedy, so it's the mixed shape the next bullets call unmeasured; it
+     waits on V-D, whose arms include that shape.
+  - **Video** has nine slots, less any pinned or other reference images. Two
+    people fit with a body each and up to five details; three fit with a
+    body each and three details.
+  - **Bodies are all or nothing in both generators** (review of #680, pass
+    10). Bodies are sent only when **every person in the cast has one
+    attached and they all fit** beside every face; otherwise none is (review
+    of #680, pass 13). So a cast where one character has a body and another
+    doesn't sends faces only. So a cast of five (5 faces + 5 bodies over 9),
+    or four with two pinned images, sends faces only, never four bound
+    people beside one unbound.
+  - Details also bind a second image to one person, so they're the same
+    mixed shape. V-D's arms must include one person with a detail beside one
+    without, before details ship.
+  - **Pictures** keep their people budgets (`MAX_CAST`,
+    `EDIT_REFERENCE_BUDGET`, `IMAGE-DESIGN.md` §5.2, "Budgets, as measured")
+    and gain an **image** cap (review of #680, pass 6). `MAX_CAST` counts
+    people, and the measured ceiling is five reference images, with
+    duplicate-free evidence at four (E12).
+    - A new picture carries at most five reference images. That's
+      `IMAGE-DESIGN.md` §5.2's measurement: five whole portraits drew all
+      five people, 3/3.
+    - Faces come first. **Bodies are all or nothing** (review of #680, pass
+      8): every person gets their `full_body`, or none does, and only while
+      the total stays at four or fewer. So that's a cast of one or two. A
+      cast of three gets no bodies, never one person bound to two images
+      beside others bound to one, which no wording covers and nothing has
+      measured. Attached and fitting both: a person with no `full_body`
+      attached means no one in that cast gets one.
     - What was left out is said.
-    - **The four is E9b's to establish, not settled** (review of #680, pass 7). E12 measured four *different* faces with no duplicate, while two people with a body each is E9's B2 arm, which drew one person twice. So that configuration is exactly what E9b must pass.
-    - **An edit sends faces only.** Its canvas plus five crops already fill `EDIT_REFERENCE_BUDGET` (6), and E9b's arms are new pictures. An edit gets bodies only with a measurement of its own.
-  - A cast that can't fit its faces is refused in the scene's own terms, as today.
-- **A body reference carries its pose too** (E9b; review of #680, pass 19). One character's hip-shifted reference stance came through in both seeds of the bound arm.
-  - So a `full_body` reference should be a neutral, square-on stance, arms relaxed. It's guidance the CLI and web page show when one is added, since no check can read a stance.
-  - The scene's `doing` still states each person's pose, as `IMAGE-DESIGN.md` §2.8 requires. A pose the scene states is what the picture should follow, with the reference's stance only a fallback.
-- **Pictures with two images per person need new wording.** §3's grammar ("each of the N people from the images appears exactly once") assumes one image per person. If E9b passes, the compiled prompt binds them, naming what each image is. For pictures the first is the whole portrait (§9.3), so: "`<image1>` and `<image2>` show one person, Maya: `<image1>` is her portrait, `<image2>` her full figure". Naming how each person is shown is what E9 found prevents duplicates (review of #680, pass 17). It counts people, not images. E9b's bound arm must run with that wording, with a cast of two (four images).
+    - **The four is E9b's to establish, not settled** (review of #680, pass
+      7). E12 measured four *different* faces with no duplicate, while two
+      people with a body each is E9's B2 arm, which drew one person twice.
+      So that configuration is exactly what E9b must pass.
+    - **An edit sends faces only.** Its canvas plus five crops already fill
+      `EDIT_REFERENCE_BUDGET` (6), and E9b's arms are new pictures. An edit
+      gets bodies only with a measurement of its own.
+  - A cast that can't fit its faces is refused in the scene's own terms, as
+    today.
+- **A body reference carries its pose too** (E9b; review of #680, pass 19).
+  One character's hip-shifted reference stance came through in both seeds of
+  the bound arm.
+  - So a `full_body` reference should be a neutral, square-on stance, arms
+    relaxed. It's guidance the CLI and web page show when one is added,
+    since no check can read a stance.
+  - The scene's `doing` still states each person's pose, as
+    `IMAGE-DESIGN.md` §2.8 requires. A pose the scene states is what the
+    picture should follow, with the reference's stance only a fallback.
+- **Pictures with two images per person need new wording.** §3's grammar
+  ("each of the N people from the images appears exactly once") assumes one
+  image per person. If E9b passes, the compiled prompt binds them, naming
+  what each image is. For pictures the first is the whole portrait (§9.3),
+  so: "`<image1>` and `<image2>` show one person, Maya: `<image1>` is her
+  portrait, `<image2>` her full figure". Naming how each person is shown is
+  what E9 found prevents duplicates (review of #680, pass 17). It counts
+  people, not images. E9b's bound arm must run with that wording, with a
+  cast of two (four images).
 
 ### 9.5 Surfaces
 
 - **CLI:**
-  - `mecha imagelib add-reference <name> --as face|full_body|detail|view <file> [--label …]` and `remove-reference`;
+  - `mecha imagelib add-reference <name> --as face|full_body|detail|view
+    <file> [--label …]` and `remove-reference`;
   - `add-location`;
   - `add-outfit [--for <character>]`.
 
   Each writes a new version.
-  - **The web routes parse an entry kind once, into `Kind`** (review of #680, pass 14). Today `parse_kind` allowlists a string and `visible` re-matches it with a Character fallback, so a new kind added to one and not the other would resolve a location against a same-named character, with every test green. One typed parse lets the compiler find every site, as `Config` and `ConfigLayer` rely on.
-  - **Every kind-matching site, not only the web's** (review of #680, pass 20). `tool/image_library.rs`'s `parse_kind` and its schema enum, `image_library_propose`'s match and schema enum, the CLI's `KindArg`, `serve/library.rs`'s `parse_kind` and `visible`, and `load_entry`'s character-only portrait rule all spell kinds by hand today. Each becomes an exhaustive match on `Kind`, so a new variant fails the build at every one, where today `kind: "location"` would be refused by the listing tool that §9.5 says lists it.
-  - `--kind` keeps its existing meaning, the entry kind that tells apart a character and a style sharing a name; `resolve`'s message then names every kind holding the name, not just the two.
-- **Web:** the character page shows its references in a strip with their kinds and labels, and adds or removes one. That's an owner write, through the same door as §7's edit page. The Library tab gains Locations and Outfits beside Characters and Styles.
-  - **The image route widens without widening the lock.** `GET /api/library/portrait/{blob}` serves a blob only when some **visible** entry names it, for every blob any entry names, whatever the kind.
-  - So a locked entry's images stay unfetchable by hash, the leak the #385 review closed. Every kind carries its own `locked` flag.
-- **Blob size:** owner-written blobs of every kind follow the owner portrait's existing rule. `MAX_PROPOSED_PORTRAIT_BYTES` stays a proposal-only cap, since candidates carry no new blobs.
-- **Names offered to a model** (review of #680, pass 6). Locations and outfits follow styles, not characters:
-  - their **approved, unlocked** names are listed to the model as written, sorted, so the list is stable in the cached prefix. That's as `style_names` is, whose order comes from `Library::load`'s sort by kind and name. A location or outfit name that contains a character's name would expose it, so the owner's doors warn when one does. A warning rather than a refusal is deliberate: the owner is the authority on their own names, where `imagelib::missing`'s roster rule guards against a model;
+  - **The web routes parse an entry kind once, into `Kind`** (review of
+    #680, pass 14). Today `parse_kind` allowlists a string and `visible`
+    re-matches it with a Character fallback, so a new kind added to one and
+    not the other would resolve a location against a same-named character,
+    with every test green. One typed parse lets the compiler find every
+    site, as `Config` and `ConfigLayer` rely on.
+  - **Every kind-matching site, not only the web's** (review of #680, pass
+    20). `tool/image_library.rs`'s `parse_kind` and its schema enum,
+    `image_library_propose`'s match and schema enum, the CLI's `KindArg`,
+    `serve/library.rs`'s `parse_kind` and `visible`, and `load_entry`'s
+    character-only portrait rule all spell kinds by hand today. Each becomes
+    an exhaustive match on `Kind`, so a new variant fails the build at every
+    one, where today `kind: "location"` would be refused by the listing tool
+    that §9.5 says lists it.
+  - `--kind` keeps its existing meaning, the entry kind that tells apart a
+    character and a style sharing a name; `resolve`'s message then names
+    every kind holding the name, not just the two.
+- **Web:** the character page shows its references in a strip with their
+  kinds and labels, and adds or removes one. That's an owner write, through
+  the same door as §7's edit page. The Library tab gains Locations and
+  Outfits beside Characters and Styles.
+  - **The image route widens without widening the lock.** `GET
+    /api/library/portrait/{blob}` serves a blob only when some **visible**
+    entry names it, for every blob any entry names, whatever the kind.
+  - So a locked entry's images stay unfetchable by hash, the leak the #385
+    review closed. Every kind carries its own `locked` flag.
+- **Blob size:** owner-written blobs of every kind follow the owner
+  portrait's existing rule. `MAX_PROPOSED_PORTRAIT_BYTES` stays a
+  proposal-only cap, since candidates carry no new blobs.
+- **Names offered to a model** (review of #680, pass 6). Locations and
+  outfits follow styles, not characters:
+  - their **approved, unlocked** names are listed to the model as written,
+    sorted, so the list is stable in the cached prefix. That's as
+    `style_names` is, whose order comes from `Library::load`'s sort by kind
+    and name. A location or outfit name that contains a character's name
+    would expose it, so the owner's doors warn when one does. A warning
+    rather than a refusal is deliberate: the owner is the authority on their
+    own names, where `imagelib::missing`'s roster rule guards against a
+    model;
   - so is the quarantined extraction;
-  - a locked one isn't in that passive list, as a locked style isn't (`style_names`). That's the existing behaviour, not a new hiding.
-  - **The lock is for browsing** (§1, §4; the owner reaffirmed it 2026-10-13, after passes 10–17 of this review drifted to treating it as model-facing).
-    - A locked location or outfit resolves for generation, as every locked entry does.
-    - `image_library` lists it, and the manifest beside a picture names it, as both do for characters and styles today. Pictures already in chats are untouched by a lock (§1).
-    - What the lock hides is the owner's browsing without the unlock: the Library tab, the image route (below), and the save dialog's `source`, which returns a yes or no and never names (#385).
-- **Where the lists sit:** the location and outfit names are appended after the styles sentence at the end of the description (`imagegen::described`). What keeps the cached prefix stable is that the description is built when the tool is built, not per turn: in `ImageGenerate::new` (and `with_library_dir`), and again in `persona_form` whenever a persona's agent is rebuilt (on a persona edit, or a new binding).
-  - So a new location reaches a running chat on a restart or a persona rebuild. Each of those already re-pays the prefix.
-  - A rebuild per turn would re-pay it wherever the lists sit (review of #680, passes 16 and 19).
+  - a locked one isn't in that passive list, as a locked style isn't
+    (`style_names`). That's the existing behaviour, not a new hiding.
+  - **The lock is for browsing** (§1, §4; the owner reaffirmed it
+    2026-10-13, after passes 10–17 of this review drifted to treating it as
+    model-facing).
+    - A locked location or outfit resolves for generation, as every locked
+      entry does.
+    - `image_library` lists it, and the manifest beside a picture names it,
+      as both do for characters and styles today. Pictures already in chats
+      are untouched by a lock (§1).
+    - What the lock hides is the owner's browsing without the unlock: the
+      Library tab, the image route (below), and the save dialog's `source`,
+      which returns a yes or no and never names (#385).
+- **Where the lists sit:** the location and outfit names are appended after
+  the styles sentence at the end of the description (`imagegen::described`).
+  What keeps the cached prefix stable is that the description is built when
+  the tool is built, not per turn: in `ImageGenerate::new` (and
+  `with_library_dir`), and again in `persona_form` whenever a persona's
+  agent is rebuilt (on a persona edit, or a new binding).
+  - So a new location reaches a running chat on a restart or a persona
+    rebuild. Each of those already re-pays the prefix.
+  - A rebuild per turn would re-pay it wherever the lists sit (review of
+    #680, passes 16 and 19).
 - **Tools:**
-  - `image_library` lists the new kinds as it lists characters and styles: approved entries, locked ones included (§4: "the lock is for browsing");
-  - a scene names a location in `setting.location`, and a person's `wearing` may name an outfit.
+  - `image_library` lists the new kinds as it lists characters and styles:
+    approved entries, locked ones included (§4: "the lock is for browsing");
+  - a scene names a location in `setting.location`, and a person's `wearing`
+    may name an outfit.
 
   The compiler resolves both, and an unknown name stays plain text.
-- **How a scene record stores a location** (review of #680). `scene::Setting` is a closed enum read leniently: an unknown variant reads as `Setting::Unknown`, untrusted and drawing nothing. So a location isn't a new variant. It's recorded as today's `Words`, holding **the model's own words** for the place (at least the name it wrote), plus an optional `location` name.
-  - **Never the library text** (review of #680, pass 11). `scene::Scene` keeps names, not library text, for characters (`Who::Library`) and styles, so a restage picks up the owner's later edits instead of a snapshot. `scene::note` renders `Words` back into a persona's run notes every turn (`NOTE_PLACE_CHARS` 240), so a location's 400 characters there would also crowd the note.
-  - The compiler resolves the name to the owner's text at render time, as it does a description and a style. So an edit to the location reaches the next restage.
-  - Outfits are the same: `wearing` records what the model wrote, and the outfit's text is resolved at compile time.
-  - `scene::note` renders the words, never the `location` field, so the note stays the model's own words.
-  - A build that predates the field reads the model's words and loses only the link.
-- **Untrusted text naming a location.** The quarantined extraction (`IMAGE-DESIGN.md` §5.3) would learn the field. A location name from an untrusted-origin record resolves like any name: it selects owner-approved words, and adds none of its own.
-  - It's the same rule as a non-library `who` being drawn from words (`IMAGE-DESIGN.md` §8).
-  - The record keeps the origin of the write that set it, as every `scene::Field` does; an unreadable setting stays `Setting::Unknown` and untrusted.
+- **How a scene record stores a location** (review of #680).
+  `scene::Setting` is a closed enum read leniently: an unknown variant reads
+  as `Setting::Unknown`, untrusted and drawing nothing. So a location isn't
+  a new variant. It's recorded as today's `Words`, holding **the model's own
+  words** for the place (at least the name it wrote), plus an optional
+  `location` name.
+  - **Never the library text** (review of #680, pass 11). `scene::Scene`
+    keeps names, not library text, for characters (`Who::Library`) and
+    styles, so a restage picks up the owner's later edits instead of a
+    snapshot. `scene::note` renders `Words` back into a persona's run notes
+    every turn (`NOTE_PLACE_CHARS` 240), so a location's 400 characters
+    there would also crowd the note.
+  - The compiler resolves the name to the owner's text at render time, as it
+    does a description and a style. So an edit to the location reaches the
+    next restage.
+  - Outfits are the same: `wearing` records what the model wrote, and the
+    outfit's text is resolved at compile time.
+  - `scene::note` renders the words, never the `location` field, so the note
+    stays the model's own words.
+  - A build that predates the field reads the model's words and loses only
+    the link.
+- **Untrusted text naming a location.** The quarantined extraction
+  (`IMAGE-DESIGN.md` §5.3) would learn the field. A location name from an
+  untrusted-origin record resolves like any name: it selects owner-approved
+  words, and adds none of its own.
+  - It's the same rule as a non-library `who` being drawn from words
+    (`IMAGE-DESIGN.md` §8).
+  - The record keeps the origin of the write that set it, as every
+    `scene::Field` does; an unreadable setting stays `Setting::Unknown` and
+    untrusted.
 
 ### 9.6 Measurements, before anything is built
 
-The arms and pass bars are in `IMAGE-COMPILER-RESEARCH.md` under **Still open** (review of #680: evidence lives there, decisions here). This section only says what each one gates:
+The arms and pass bars are in `IMAGE-COMPILER-RESEARCH.md` under **Still
+open** (review of #680: evidence lives there, decisions here). This section
+only says what each one gates:
 
 | Id | Gates |
 |---|---|
@@ -510,29 +731,60 @@ The arms and pass bars are in `IMAGE-COMPILER-RESEARCH.md` under **Still open** 
 | **E13** | a location reference for pictures |
 | **V-L** | a location reference for video |
 
-E9b and V-B use the same reference set, so one set of images answers both generators.
+E9b and V-B use the same reference set, so one set of images answers both
+generators.
 
 ### 9.7 Rulings
 
-**Ruled by the owner, 2026-10-13: L1–L7 as recommended below** ("let's go with your recommendations for now"). E9b and V-B run on the owner's own characters. Only numbers and a generic description of them enter this repository, never their names or images.
+**Ruled by the owner, 2026-10-13: L1–L7 as recommended below** ("let's go
+with your recommendations for now"). E9b and V-B run on the owner's own
+characters. Only numbers and a generic description of them enter this
+repository, never their names or images.
 
 - **L1, the store shape:**
-  - `[[reference]]` with `kind`, `blob` and `label` (≤ 100 characters), written by the owner only: `face | full_body | detail` on characters, `view` on locations and outfits;
-  - the `Location` and `Outfit` kinds as their own directories, with deletes decided by a walk of the whole store root;
-  - every blob any entry names getting the portrait's name check on load and hash check on read;
+  - `[[reference]]` with `kind`, `blob` and `label` (≤ 100 characters),
+    written by the owner only: `face | full_body | detail` on characters,
+    `view` on locations and outfits;
+  - the `Location` and `Outfit` kinds as their own directories, with deletes
+    decided by a walk of the whole store root;
+  - every blob any entry names getting the portrait's name check on load and
+    hash check on read;
   - `add-reference` refused on a candidate;
-  - the image route serving only blobs a visible entry names, with the entry kind parsed once into `Kind`;
-  - `create`'s and `validate`'s kind checks made exhaustive over `Kind`, not wildcards, for the same reason;
+  - the image route serving only blobs a visible entry names, with the entry
+    kind parsed once into `Kind`;
+  - `create`'s and `validate`'s kind checks made exhaustive over `Kind`, not
+    wildcards, for the same reason;
   - unknown kinds, and known kinds on the wrong entry kind, never sent;
-  - a location stored in a scene record as words plus its name, the name field `#[serde(default)]` so older records still parse as `Words`.
-- **L2, the portrait stays canonical:** no migration. The face is its crop, and existing manifests stay valid.
-- **L3, each generator's references gated on its measurement** (§9.4), with the owner ruling on each result, and the slot-filling order of §9.4.
+  - a location stored in a scene record as words plus its name, the name
+    field `#[serde(default)]` so older records still parse as `Words`.
+- **L2, the portrait stays canonical:** no migration. The face is its crop,
+  and existing manifests stay valid.
+- **L3, each generator's references gated on its measurement** (§9.4), with
+  the owner ruling on each result, and the slot-filling order of §9.4.
 - **L4, outfits are text:** an image is for browsing only.
-- **L5, names offered to a model:** location and outfit names appear in `image_generate`'s description as styles do (approved, unlocked); `image_library` lists them, locked included, as it lists everything (§4); characters stay unlisted in the description, and an outfit's `for` is never named to a model. The lock is for browsing (§1), reaffirmed 2026-10-13.
-- **L6, references stay local:** a generator whose backend isn't on this machine (loopback) is given no library references (face, body, detail, location) without the owner's ruling for that generator. **The two generators differ** (review of #680, passes 18 and 21). For `image_generate` it's enforced where references are read: the reference-read path (§9.3) refuses a blob to a non-loopback backend, as `imagegen::loopback_url` does for its server. For the video tool it's a convention until the port: that tool is built outside this repository and calls none of this read path, so the check is on its port checklist, and until then video is held to L6 by the owner's private server alone, not by mecha.
+- **L5, names offered to a model:** location and outfit names appear in
+  `image_generate`'s description as styles do (approved, unlocked);
+  `image_library` lists them, locked included, as it lists everything (§4);
+  characters stay unlisted in the description, and an outfit's `for` is
+  never named to a model. The lock is for browsing (§1), reaffirmed
+  2026-10-13.
+- **L6, references stay local:** a generator whose backend isn't on this
+  machine (loopback) is given no library references (face, body, detail,
+  location) without the owner's ruling for that generator. **The two
+  generators differ** (review of #680, passes 18 and 21). For
+  `image_generate` it's enforced where references are read: the
+  reference-read path (§9.3) refuses a blob to a non-loopback backend, as
+  `imagegen::loopback_url` does for its server. For the video tool it's a
+  convention until the port: that tool is built outside this repository and
+  calls none of this read path, so the check is on its port checklist, and
+  until then video is held to L6 by the owner's private server alone, not by
+  mecha.
 - **L7, the order:**
   1. E9b and V-B, one session with shared references;
-  2. the store and CLI for `face`, `full_body` and `detail`. A `face` reference changes video's crop source and needs no picture measurement, so it ships here (review of #680, pass 17);
+  2. the store and CLI for `face`, `full_body` and `detail`. A `face`
+     reference changes video's crop source and needs no picture measurement,
+     so it ships here (review of #680, pass 17);
   3. V-D;
-  4. locations: the kind ships **text-only**, like styles; E13 and V-L then gate only its images (review of #680, pass 11);
+  4. locations: the kind ships **text-only**, like styles; E13 and V-L then
+     gate only its images (review of #680, pass 11);
   5. outfits, last, being text and the cheapest.
