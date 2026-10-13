@@ -145,8 +145,8 @@ The rules, each a measurement:
   was kept in the picture but pushed into the background; listed as
   "Also in the scene, not from any image: …" with a head count of four — "the
   three from the images, each exactly once, and one new person" — he stood
-  where the scene put him. Extras carry no reference, so the four-reference
-  ceiling does not bound them; `MAX_EXTRAS` is four, unmeasured beyond. They
+  where the scene put him. Extras carry no reference, so the reference
+  ceiling (five, above) does not bound them; `MAX_EXTRAS` is four, unmeasured beyond. They
   are read by the named-character guard too: "John waving" as an extra is
   John drawn from words.
 - **A cast name the library does not hold is drawn as an extra** (owner,
@@ -424,6 +424,16 @@ characters/<name>/entry.toml
     crop. Pictures keep sending the whole portrait (E10), since they have no
     crop to replace; using a `face` reference there would want its own
     measurement. The portrait stays the picture the library shows.
+  - **The crop is keyed by the blob it was cut from** (review of #680, pass
+    24). `face::cached` keys today on `entry.portrait`, so a crop or a
+    recorded "no face" for the portrait would otherwise be served for a
+    different picture.
+  - **A `face` reference with no face in it is said, never silently passed
+    over.** `add-reference --as face` runs the detector when it is
+    installed and refuses a picture it finds no face in. At generation, a
+    reference the detector finds no face in falls back to the portrait's
+    crop, and the result says so: the owner asked for that face, so
+    dropping it without a word is the silently degrading guard.
 - **Each reference is a blob,** content-addressed like the portrait, so the
   existing versioning (`history/v<N>.toml`) and lock apply unchanged.
 - **The portrait's two checks extend to every blob any entry names:**
@@ -649,6 +659,16 @@ kind is derived from its directory (`Entry.kind`).
     an exhaustive match on `Kind`, so a new variant fails the build at every
     one, where today `kind: "location"` would be refused by the listing tool
     that §9.5 says lists it.
+  - **Two sites are declarations, not matches, and no match can guard
+    them** (review of #680, pass 24). `Kind::ALL` is a hand-written array,
+    and it's what `Library::load` walks: a `Location` wired through every
+    match but missing there compiles, and every location loads as absent
+    with the typed tests green. The CLI's `KindArg` converts *into* `Kind`,
+    so a new `Kind` can't make it fail either. Both take
+    `charter::SensorKind::ALL`'s fix, the same incident one module over:
+    one declaration the list is derived from, plus a test that walks
+    `Kind::ALL` and asserts every other list agrees with it (for `KindArg`,
+    a `From<Kind>` the compiler checks).
   - `--kind` keeps its existing meaning, the entry kind that tells apart a
     character and a style sharing a name; `resolve`'s message then names
     every kind holding the name, not just the two.
@@ -777,7 +797,8 @@ repository, never their names or images.
   - the image route serving only blobs a visible entry names, with the entry
     kind parsed once into `Kind`;
   - `create`'s and `validate`'s kind checks made exhaustive over `Kind`, not
-    wildcards, for the same reason;
+    wildcards, for the same reason; `Kind::ALL` and `KindArg`, which no
+    match can guard, held to `Kind` by a test (§9.5);
   - unknown kinds, and known kinds on the wrong entry kind, never sent;
   - a location stored in a scene record as words plus its name, the name
     field `#[serde(default)]` so older records still parse as `Words`.
