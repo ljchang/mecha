@@ -99,11 +99,11 @@ pub fn installable(id: &str) -> bool {
     match id {
         "layout" | "llama" => true,
         // systemd user units or launchd agents (§12).
-        "embed-server" | "ocr-server" | "stt" | "voice-worker" | "speech" => {
+        // systemd user units or launchd agents (§12); ComfyUI on a Mac is
+        // MPS torch (§12.3).
+        "embed-server" | "ocr-server" | "stt" | "voice-worker" | "speech" | "comfyui" => {
             crate::router_unit::installs_here()
         }
-        // CUDA torch: on macOS ComfyUI stays manual (§10.5).
-        "comfyui" => cfg!(target_os = "linux"),
         _ => false,
     }
 }
@@ -243,15 +243,18 @@ pub fn price(plan: &mut Plan, chat_here: bool, nvidia: impl FnOnce() -> crate::e
             Err(why) => not_offered(plan, crate::speech_unit::ID, &why),
         }
     }
-    // ComfyUI's environment is torch for CUDA and its libraries — ~3.6 GiB,
-    // too much to leave out of the total the way the voice worker's 250 MB
-    // is. The models are the image slot's files, priced by the plan already.
+    // ComfyUI's environment is torch for CUDA and its libraries — ~3.6 GiB
+    // (~0.7 on a Mac), too much to leave out of the total the way the voice
+    // worker's 250 MB is. The models are the image slot's files, priced by the plan already.
     // A machine `comfyui_unit::fits` refuses is priced at nothing, as one
     // `engine::choose` refuses is (review of #645) — its models included.
     if wanted(plan, crate::comfyui_unit::ID) {
         let fits =
             crate::comfyui_unit::fits(std::env::consts::OS, std::env::consts::ARCH, nvidia());
-        match (fits, crate::comfyui_unit::env_bytes(std::env::consts::ARCH)) {
+        match (
+            fits,
+            crate::comfyui_unit::env_bytes(std::env::consts::OS, std::env::consts::ARCH),
+        ) {
             (Ok(()), Some(bytes)) => {
                 if let Some(s) = plan
                     .sidecars
@@ -956,7 +959,7 @@ mod tests {
             crate::engine::Nvidia::Driver(580, 95)
         });
         assert!(reads <= 1);
-        match crate::comfyui_unit::env_bytes(std::env::consts::ARCH) {
+        match crate::comfyui_unit::env_bytes(std::env::consts::OS, std::env::consts::ARCH) {
             Some(b) if installable(crate::comfyui_unit::ID) => {
                 assert_eq!(fits.sidecars[0].bytes, Some(b));
                 assert_eq!(fits.download_bytes, 5 + b);
@@ -1111,14 +1114,17 @@ mod tests {
         let built: &[&str] = if cfg!(target_os = "linux") {
             &["7a-3", "7b", "7c-1", "7c-2", "7d-1", "7d-2", "7e", "7f"]
         } else if cfg!(target_os = "macos") {
-            // launchd agents for the on-demand servers and voice (§12).
-            &["7a-3", "7b", "7c-1", "7d-1", "7d-2", "7f"]
+            // launchd agents for the on-demand servers, voice and images (§12).
+            &["7a-3", "7b", "7c-1", "7d-1", "7d-2", "7e", "7f"]
         } else {
             &["7a-3", "7b"]
         };
         assert!(installable("layout"));
         assert!(installable("llama"));
-        assert_eq!(installable("comfyui"), cfg!(target_os = "linux"));
+        assert_eq!(
+            installable("comfyui"),
+            cfg!(any(target_os = "linux", target_os = "macos"))
+        );
         assert_eq!(
             installable("speech"),
             cfg!(any(target_os = "linux", target_os = "macos"))

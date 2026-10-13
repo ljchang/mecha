@@ -142,9 +142,10 @@ impl Default for ImageConfig {
             // about 0.7 GB more at peak and the same pictures seed for seed
             // (measured 2026-10-04; ARCHITECTURE §Image generation). A GGUF
             // re-quantises every weight on every step; the ConvRot file
-            // runs on native int8 kernels.
-            diffusion_model: "qwen_image_2.1_int8_convrot.safetensors".into(),
-            turbo_model: crate::sampling::TURBO_MODEL.into(),
+            // runs on native int8 kernels. bf16 on a Mac, which has none
+            // (`sampling::standard_model`).
+            diffusion_model: crate::sampling::standard_model().into(),
+            turbo_model: crate::sampling::turbo_model().into(),
             text_encoder: "qwen3vl_8b_w4a8.safetensors".into(),
             vae: "qwen_image_2.1_vae_bf16.safetensors".into(),
             steps: 40,
@@ -1124,7 +1125,7 @@ impl ComfyUi {
                 // Only the pinned file: `--turbo` fetches nothing else, and a
                 // configured `turbo_model` it cannot supply keeps the
                 // settings' own refusal (review of #650).
-                if turbo && input == "unet_name" && want == crate::sampling::TURBO_MODEL {
+                if turbo && input == "unet_name" && want == crate::sampling::turbo_model() {
                     bail!(
                         "the image server has no `{want}`, the turbo model this persona's \
                          picture settings choose — `mecha features enable image --turbo` \
@@ -5463,9 +5464,9 @@ mod tests {
                         let files = |input: &str, name: &str| json!({node: {"input": {"required": {input: [[name], {}]}}}});
                         json_reply(match node {
                             "UNETLoader" => {
-                                let mut unets = vec!["qwen_image_2.1_int8_convrot.safetensors"];
+                                let mut unets = vec![crate::sampling::standard_model()];
                                 if !no_turbo {
-                                    unets.push(crate::sampling::TURBO_MODEL);
+                                    unets.push(crate::sampling::turbo_model());
                                 }
                                 json!({node: {"input": {"required": {"unet_name": [unets, {}]}}}})
                             }
@@ -5738,7 +5739,7 @@ mod tests {
         let g = comfy_graph(&cfg, &req(turbo.resolve(cfg.steps)), &[], None);
         assert_eq!(
             g["unet"]["inputs"]["unet_name"],
-            crate::sampling::TURBO_MODEL
+            crate::sampling::turbo_model()
         );
         assert_eq!(g["unet"]["class_type"], "UNETLoader");
         assert_eq!(g["sample"]["inputs"]["steps"], crate::sampling::TURBO_STEPS);
@@ -9721,9 +9722,12 @@ mod tests {
         let out = t.call(call.clone(), &cx).await.unwrap();
         assert!(!out.is_error, "{}", out.content);
         assert_eq!(sent(&seen), ["free", "prompt"]);
-        assert!(last_prompt(&seen).contains(crate::sampling::TURBO_MODEL));
+        assert!(last_prompt(&seen).contains(crate::sampling::turbo_model()));
         let m = manifest_of(&dir, &out.content);
-        assert_eq!(m["model"]["diffusion_model"], crate::sampling::TURBO_MODEL);
+        assert_eq!(
+            m["model"]["diffusion_model"],
+            crate::sampling::turbo_model()
+        );
         assert_eq!(m["steps"], crate::sampling::TURBO_STEPS);
         assert_eq!(m["sampling"]["negative"], false);
         // Back to standard: turbo out first.
@@ -9903,7 +9907,7 @@ mod tests {
     fn a_released_server_has_nothing_to_unload() {
         let addr: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
         let server = server_at(addr);
-        let (standard, turbo) = ("standard.safetensors", crate::sampling::TURBO_MODEL);
+        let (standard, turbo) = ("standard.safetensors", crate::sampling::turbo_model());
         assert!(!server.switching(standard, standard));
         assert!(
             server.switching(turbo, standard),
@@ -9923,7 +9927,7 @@ mod tests {
     fn a_fresh_process_reads_the_held_model_from_the_record() {
         let record = tempdir().join("held-model.json");
         let addr: std::net::SocketAddr = "127.0.0.1:11".parse().unwrap();
-        let (standard, turbo) = ("standard.safetensors", crate::sampling::TURBO_MODEL);
+        let (standard, turbo) = ("standard.safetensors", crate::sampling::turbo_model());
         let earlier = server_at(addr);
         earlier.model_record.set(record.clone()).unwrap();
         earlier.drew_with(turbo);
@@ -9950,7 +9954,7 @@ mod tests {
     #[test]
     fn an_unwritten_record_falls_back_to_what_this_process_drew() {
         let addr: std::net::SocketAddr = "127.0.0.1:13".parse().unwrap();
-        let (standard, turbo) = ("standard.safetensors", crate::sampling::TURBO_MODEL);
+        let (standard, turbo) = ("standard.safetensors", crate::sampling::turbo_model());
         let server = server_at(addr);
         server
             .model_record
@@ -9973,7 +9977,7 @@ mod tests {
         let record = tempdir().join("held-model.json");
         // Nothing listens on port 1: the /free fails.
         let addr: std::net::SocketAddr = "127.0.0.1:1".parse().unwrap();
-        let (standard, turbo) = ("standard.safetensors", crate::sampling::TURBO_MODEL);
+        let (standard, turbo) = ("standard.safetensors", crate::sampling::turbo_model());
         let server = server_at(addr);
         server.model_record.set(record.clone()).unwrap();
         server.drew_with(turbo);
