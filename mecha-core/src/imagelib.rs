@@ -1407,20 +1407,21 @@ pub fn compile_with(
             notes.push(format!(
                 "{not_sent}: a picture planned in layers is drawn from portraits."
             ));
-        } else if attached < n {
-            notes.push(format!(
-                "{not_sent}: {attached} of the {} people {} one attached, and they go to \
-                 everyone or no one.",
-                number(n),
-                if attached == 1 { "has" } else { "have" }
-            ));
+        // The cap first: past it, attaching more cannot help, so the note
+        // must not suggest it (review of #685).
         } else if 2 * n > MAX_BOUND_IMAGES {
             notes.push(format!(
-                "{not_sent}: {} people with one each would be {} images, and a new picture \
-                 binds at most {}.",
+                "{not_sent}: they go only to a picture of one or two people, and this one \
+                 has {}.",
+                number(n)
+            ));
+        } else if attached < n {
+            notes.push(format!(
+                "{not_sent}: {} of the {} people {} one attached, and they go to everyone or \
+                 no one.",
+                number(attached),
                 number(n),
-                number(2 * n),
-                number(MAX_BOUND_IMAGES)
+                if attached == 1 { "has" } else { "have" }
             ));
         } else {
             let read: Vec<_> = members
@@ -2804,19 +2805,29 @@ mod tests {
         assert_eq!(
             c.notes,
             [
-                "Full-figure references were not sent: 1 of the two people has one attached, and \
-              they go to everyone or no one."
+                "Full-figure references were not sent: one of the two people has one attached, \
+                 and they go to everyone or no one."
             ]
         );
 
+        // Past the cap the cap is the reason, attached or not: attaching
+        // a body to the one without could not help.
+        let partial = [member("maya"), member("jo"), member("theo")];
+        let c = compile(&lib, "a studio", &partial, &[], None).unwrap();
+        faces_only(&c);
+        assert!(
+            c.notes[0].ends_with("and this one has three."),
+            "{:?}",
+            c.notes
+        );
         let three = [member("maya"), member("theo"), member("ada")];
         let c = compile(&lib, "a studio", &three, &[], None).unwrap();
         faces_only(&c);
         assert_eq!(
             c.notes,
             [
-                "Full-figure references were not sent: three people with one each would be six \
-              images, and a new picture binds at most four."
+                "Full-figure references were not sent: they go only to a picture of one or \
+                 two people, and this one has three."
             ]
         );
 

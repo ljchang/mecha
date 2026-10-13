@@ -7390,7 +7390,7 @@ mod tests {
         assert!(!out.is_error, "{}", out.content);
         assert!(
             out.content.contains(
-                "Full-figure references were not sent: 1 of the two people has one attached"
+                "Full-figure references were not sent: one of the two people has one attached"
             ),
             "{}",
             out.content
@@ -7432,6 +7432,9 @@ mod tests {
                 .all(|l| !l.contains("full figure")),
             "{seen:?}"
         );
+        for d in [dir, store, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
     }
 
     /// A replay's seed stream (`ToolCtx::image_seeds`): two arms stamped
