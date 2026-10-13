@@ -77,7 +77,13 @@ async fn serve(listener: TcpListener, spec: Spec) -> Result<()> {
         idle_since: Instant::now(),
     }));
     let open = Arc::new(AtomicUsize::new(0));
-    let mut tick = tokio::time::interval(Duration::from_secs(5).min(spec.idle));
+    // At least a second: `interval` panics on zero, and `--idle-secs 0`
+    // would otherwise take the proxy down.
+    let mut tick = tokio::time::interval(
+        Duration::from_secs(5)
+            .min(spec.idle)
+            .max(Duration::from_secs(1)),
+    );
     let mut term = signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut int = signal(tokio::signal::unix::SignalKind::interrupt())?;
     loop {

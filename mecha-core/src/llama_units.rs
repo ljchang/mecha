@@ -543,11 +543,24 @@ async fn check(which: Which, port: u16) -> Result<()> {
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
-    let health = client
-        .get(format!("{base}/health"))
-        .send()
-        .await
-        .with_context(|| format!("the server on :{port} did not answer its first request"))?;
+    // Refused connections are waited out for a short while: `systemctl
+    // enable --now` returns with the socket already listening, but launchd's
+    // `bootstrap` returns before the agent has bound the port, so on a Mac
+    // the first request can come too early (review of #678). Once something
+    // listens, the one request below outwaits the cold start.
+    let started = std::time::Instant::now();
+    let health = loop {
+        match client.get(format!("{base}/health")).send().await {
+            Err(e) if e.is_connect() && started.elapsed() < Duration::from_secs(30) => {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            r => {
+                break r.with_context(|| {
+                    format!("the server on :{port} did not answer its first request")
+                })?
+            }
+        }
+    };
     if !health.status().is_success() {
         bail!(
             "the server on :{port} answered {}: {}",
