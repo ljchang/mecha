@@ -29,7 +29,7 @@ Settled; the build follows them and does not re-ask.
 - **A character is a portrait plus a description** that carries build and
   height — no body reference (E9), no required crop (E10: the whole portrait
   at 512² held identity within a few hundredths of a tight crop).
-  *(Ruled 2026-10-13 by §9.2, to be built in step 2: pictures will send a
+  *(Ruled 2026-10-13 by §9.2, to be built in step 2b: pictures will send a
   `full_body` reference, since E9b passed; video stays without one, since V-B
   failed.)*
 - **The web surface ships second**, minimal: save to library, browse, lock.
@@ -204,8 +204,10 @@ The rules, each a measurement:
   `read_only` on the footing `image_generate` has: a web chat starts
   read-only and proposing a character should be one request in it.
 
-No tool description changes per turn; the library is never listed in the
-system prompt (the cached prefix). An incognito chat may call
+No tool description changes per turn; no character is ever listed in the
+system prompt (the cached prefix). Approved, unlocked style names are, in
+`image_generate`'s description since 2026-10-08, and §9.5 adds location and
+outfit names on the same footing. An incognito chat may call
 `image_library` and generate with a cast — both only read — and
 `image_library_propose` stages there **locked** (`ToolCtx::stage_locked`;
 the owner's ruling, 2026-10-12, on `persona_propose`'s footing): the write
@@ -554,16 +556,17 @@ kind is derived from its directory (`Entry.kind`).
   1. every person's face: the portrait for pictures (E10), the face crop for
      video;
   2. each person's `full_body`, in cast order;
-  3. details, in cast order, then in each character's own order. That's
-     greedy, so it's the mixed shape the next bullets call unmeasured; it
-     waits on V-D, whose arms include that shape.
+  3. details, in cast order, then in each character's own order, for video
+     only: pictures never send a detail image (the table above), only its
+     label. That's greedy, so it's the mixed shape the next bullets call
+     unmeasured; it waits on V-D, whose arms include that shape.
   - **Video sends no bodies today: V-B failed** (the table above). What
     follows is the arithmetic a retest would inherit if one passes, not a
     rule in force (review of #680, pass 22). Video has nine slots, less any
     pinned or other reference images. Two people would fit with a body each
     and up to five details; three with a body each and three details.
   - **Bodies are all or nothing in both generators**, once video's retest
-    passes; in pictures from step 2b (review of #680, pass
+    passes; in pictures from L7's step 2b (review of #680, pass
     10). Bodies are sent only when **every person in the cast has one
     attached and they all fit** beside every face; otherwise none is (review
     of #680, pass 13). So a cast where one character has a body and another
@@ -625,7 +628,9 @@ kind is derived from its directory (`Entry.kind`).
 
 - **CLI:**
   - `mecha imagelib add-reference <name> --as face|full_body|detail|view
-    <file> [--label …]` and `remove-reference`;
+    <file> [--label …]` and `remove-reference`, which keeps the picture in
+    `blobs/`: the history still names it, as an `update` keeps an old
+    portrait;
   - `add-location`;
   - `add-outfit [--for <character>]`.
 
@@ -665,7 +670,12 @@ kind is derived from its directory (`Entry.kind`).
     sorted, so the list is stable in the cached prefix. That's as
     `style_names` is, whose order comes from `Library::load`'s sort by kind
     and name. A location or outfit name that contains a character's name
-    would expose it, so the owner's doors warn when one does. A warning
+    would expose it, so the owner's doors warn when one does, **in both
+    orders** (review of #680, pass 23): adding a location or outfit whose
+    name contains an existing character's, and adding or approving a
+    character whose name an existing location or outfit contains. The
+    second is the likelier order, and the one a one-way check misses. A
+    warning
     rather than a refusal is deliberate: the owner is the authority on their
     own names, where `imagelib::missing`'s roster rule guards against a
     model;
@@ -731,7 +741,7 @@ kind is derived from its directory (`Entry.kind`).
     `scene::Field` does; an unreadable setting stays `Setting::Unknown` and
     untrusted.
 
-### 9.6 Measurements, before anything is built
+### 9.6 Measurements, and what each gates
 
 The arms and pass bars are in `IMAGE-COMPILER-RESEARCH.md` under **Still
 open** (review of #680: evidence lives there, decisions here). This section
@@ -795,9 +805,14 @@ repository, never their names or images.
   mecha.
 - **L7, the order:**
   1. E9b and V-B, one session with shared references;
-  2. the store and CLI for `face`, `full_body` and `detail`. A `face`
-     reference changes video's crop source and needs no picture measurement,
-     so it ships here (review of #680, pass 17);
+  2. the references, in two halves (review of #680, pass 23):
+     - **2a,** the store and CLI for `face`, `full_body` and `detail`. A
+       `face` reference changes video's crop source and needs no picture
+       measurement, so it ships here (review of #680, pass 17);
+     - **2b,** the picture compiler sending `full_body` (§9.4): the
+       two-images-one-person binding, all-or-nothing bodies, the image cap,
+       edits on faces only. 2a alone would leave an attached body stored
+       and unused, so the two ship back to back;
   3. V-D;
   4. locations: the kind ships **text-only**, like styles; E13 and V-L then
      gate only its images (review of #680, pass 11);
