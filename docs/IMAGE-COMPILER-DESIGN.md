@@ -151,7 +151,7 @@ The rules, each a measurement:
   "John waving" as an extra is John drawn from words.
 - **A cast name the library does not hold is drawn as an extra** (owner,
   2026-09-30: a named character not in the library "blocks image generation
-  when it shouldn't"). `picture::resolve` moves it, with its
+  when it shouldn't"). `imagegen`'s `compile_from` moves it, with its
   `wearing` and `doing`, into the extras before compiling, and the result
   says so. Only a name with no trace moves: a candidate, or an entry that did
   not load, stays in the cast and gets its own refusal, because drawing a
@@ -520,7 +520,7 @@ kind is derived from its directory (`Entry.kind`).
 | Reference | `image_generate` (Qwen-Image) | `video_generate` (H3) |
 |---|---|---|
 | face | the whole portrait at 512² for a new picture (E10), its crop for an edit, as now | the face crop, as now; from an attached `face` reference when there is one, else from the portrait |
-| full_body | **sent**, bound to its portrait (E9b passed; owner, 2026-10-13) | **not sent**: V-B failed (an extra person in one seed); face crops only until a retest passes |
+| full_body | **sent** to a new picture of one or two people when everyone has one, bound to the portrait (E9b passed; owner, 2026-10-13); faces only otherwise, and on edits | **not sent**: V-B failed (an extra person in one seed); face crops only until a retest passes |
 | detail | not sent; its `label` is appended to the description | sent with its label ("`<Picture k>` shows her left-forearm tattoo"), if V-D passes |
 | location | its text in the scene | its images as an environment `<Subject>`, if V-L passes |
 | outfit | its text as `wearing` | its text as `wearing` |
@@ -686,14 +686,15 @@ kind is derived from its directory (`Entry.kind`).
     one declaration the list is derived from, plus a test that walks
     `Kind::ALL` and asserts every other list agrees with it (for `KindArg`,
     a `From<Kind>` the compiler checks).
-  - **Three more of that shape in `imagelib` itself** (pass 26).
-    `update`'s two `kind != Kind::Character` guards ("a style has no
-    portrait") let a `Location` through with a style's message, since `!=`
-    can't fail a build; they become matches. And `default_kind()`'s
-    Character fallback types any `Entry` read on a path that forgets to
-    stamp its kind from the directory (a `history/v<N>.toml` read, say) as a
-    character: `visible`'s defect one module over. Every such read stamps
-    the kind, and a test reads each kind's history back.
+  - **Four more of that shape in `imagelib` itself** (passes 26 and 29):
+    `create`'s `_ => {}` wildcard, which a new kind falls through silently,
+    and these three. `update`'s two `kind != Kind::Character` guards ("a style
+    has no portrait") let a `Location` through with a style's message, since
+    `!=` can't fail a build; they become matches. And `default_kind()`'s
+    Character fallback types any `Entry` read on a path that forgets to stamp
+    its kind from the directory (a `history/v<N>.toml` read, say) as a
+    character: `visible`'s defect one module over. Every such read stamps the
+    kind, and a test reads each kind's history back.
   - `--kind` keeps its existing meaning, the entry kind that tells apart a
     character and a style sharing a name; `resolve`'s message then names
     every kind holding the name, not just the two.
@@ -826,9 +827,12 @@ repository, never their names or images.
   - the image route serving only blobs a visible entry names, with the entry
     kind parsed once into `Kind`;
   - `create`'s wildcard and `update`'s two `kind != Kind::Character` guards
-    made exhaustive matches over `Kind` (`validate_text` already is), for
-    the same reason; `Kind::ALL` and `KindArg`, which no
-    match can guard, held to `Kind` by a test (§9.5);
+    made exhaustive matches over `Kind` (`validate_text` already is), for the
+    same reason; `default_kind()`'s Character fallback held by every read
+    stamping the kind from its directory, since a wrong kind defeats the
+    "wrong entry kind is unknown" rule (§9.5; review of #680, pass 29);
+    `Kind::ALL` and `KindArg`, which no match can guard, held to `Kind` by a
+    test (§9.5);
   - unknown kinds, and known kinds on the wrong entry kind, never sent;
   - a location stored in a scene record as words plus its name, the name
     field `#[serde(default)]` so older records still parse as `Words`.
@@ -843,15 +847,17 @@ repository, never their names or images.
   characters stay unlisted in the description, and an outfit's `for` is
   never named to a model. The lock is for browsing (§1), reaffirmed
   2026-10-13.
-  - **Its cost, stated as `docs/TRIFECTA.md` asks** (review of #680, pass
-    26). The 2026-10-08 ruling it inherits was about style names, a
-    rendering idiom; a location name may be a place the owner goes. The
-    description sits in every chat that can draw, persona and incognito
-    included, with nothing armed, since `image_generate` declares
+  - **Its cost** (review of #680, passes 26 and 29). `docs/TRIFECTA.md`
+    doesn't yet mention the library, styles' 2026-10-08 ruling included, so
+    L7's step 4 adds the row there, in its switches-and-costs table, for style
+    and location names together. The 2026-10-08 ruling it inherits was about
+    style names, a rendering idiom; a location name may be a place the owner
+    goes. The description sits in every chat that can draw, persona and
+    incognito included, with nothing armed, since `image_generate` declares
     `Capabilities::default()`. So an unarmed conversation can read every
     approved, unlocked location name from its own prefix and hand it to a
-    `Chosen` sender. Locking a location is the owner's lever for a name
-    they don't want listed.
+    `Chosen` sender. Locking a location is the owner's lever for a name they
+    don't want listed.
 - **L6, references stay local:** a generator whose backend isn't on this
   machine (loopback) is given no library references (face, body, detail,
   location) without the owner's ruling for that generator. **The two
@@ -876,5 +882,6 @@ repository, never their names or images.
        and unused, so the two ship back to back;
   3. V-D;
   4. locations: the kind ships **text-only**, like styles; E13 and V-L then
-     gate only its images (review of #680, pass 11);
+     gate only its images (review of #680, pass 11). The `docs/TRIFECTA.md`
+     row for listed library names (L5's cost) ships with it (pass 29);
   5. outfits, last, being text and the cheapest.
