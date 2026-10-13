@@ -405,8 +405,13 @@ pub(super) async fn enable_unwired(
             }
             println!(
                 "Enabling {} installs, from pinned sources — into ~/.mecha/sidecars/, and, for a \
-                 server, its systemd user units, started once to check them:",
-                ids.join(" ")
+                 server, its {}, started once to check them:",
+                ids.join(" "),
+                if cfg!(target_os = "macos") {
+                    "launchd agents"
+                } else {
+                    "systemd user units"
+                }
             );
             let turbo_line = match &fetch_turbo {
                 Some((why, download, reinstall)) => format!(
