@@ -2090,6 +2090,13 @@ mod tests {
             ],
             &["mail_triage"],
         );
+        crate::mcp::assert_enable_stages_every_send(
+            &tool_definitions(
+                &names(&["campus", "personal"]),
+                &conf(Some("campus"), None, None),
+            ),
+            "mail",
+        );
         crate::mcp::assert_private_writes(
             &tool_definitions(
                 &names(&["campus", "personal"]),

@@ -1910,6 +1910,17 @@ and the servers start by hand, for now. **The chat model is never
 model is chosen, so switching on the web app does not stand behind a chat
 model's download. A file mecha did not write is never replaced.
 
+`enable mail`, `docs` and `graph` also write the feature's `[[mcp]]` entry
+where none runs its program or carries its name — the program by its
+absolute path, from `PATH` or `~/.cargo/bin`, results untrusted — and, where
+the config has no `[outbox]`, one staging mail's sends and documents' writes.
+Every server of one command shares that one `[outbox]`, as do the yeses of one
+`mecha setup`. An entry or `[outbox]` you wrote is never edited: `enable`
+names what it lacks. No `[outbox]` is written where a `[[rule]]` of yours
+names a call it would stage, and the rule is named. `enable voice` writes
+`[voice] voices_dir` for the installed speech server where no `[voice]` table
+exists.
+
 Answering no writes nothing. `--no-install` writes the switch without
 installing. Without a terminal, an `enable` that would install refuses and
 names `--no-install`. A program that is already on the machine — or a server

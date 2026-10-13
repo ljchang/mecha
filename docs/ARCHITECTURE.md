@@ -10339,7 +10339,14 @@ exhaustive `match`, so the build asks; the ones that are not say so.
       - Its Settings pane goes in `PANE_FEATURE`. #654 missed the pane, so a
         deep link to Settings → Images with images off showed a raw error
         instead of the declined line, until review.
-13. **A config switch a `harness::Lever` reads moves with the feature.** If
+13. **Enabling it leaves it working, not just switched on.** A feature that
+    is an MCP server gets its `[[mcp]]` entry from `feature::mcp_wiring` /
+    `write_mcp_entries` when `features enable` runs (mail's sends staged in the
+    outbox), and an installer writes the settings its server needs
+    (`[image]`, `[voice] voices_dir`) — each only where nothing names it, an
+    owner's own table never edited. `mail` and `voices_dir` once switched on
+    and read off or "not configured" after a complete install (2026-10-12).
+14. **A config switch a `harness::Lever` reads moves with the feature.** If
     the feature replaces such a switch, the lever reads the feature instead,
     so `mecha eval`'s bare run still turns it off.
 

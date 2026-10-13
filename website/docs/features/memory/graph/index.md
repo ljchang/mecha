@@ -44,8 +44,9 @@ launcher under `~/.mecha/sidecars/bin/`, and three systemd user units that hold
 the port from boot, load the model on the first request and stop it after ten
 idle minutes; the install starts it once to check it answers. An embeddings
 server this machine already runs is left alone and used. `mecha setup` offers the same
-step. It does not install `mecha-graph` or write the `[[mcp]]` entry below —
-those stay yours.
+step. It does not install `mecha-graph`, which stays yours; once
+`mecha-graph-mcp` is installed, it writes the `[[mcp]]` entry below where none
+runs it or is called `graph`.
 
 By hand — on macOS, or a server you would rather run yourself — the
 launcher's source is `scripts/llama/mecha-embed-server` in a mecha checkout.

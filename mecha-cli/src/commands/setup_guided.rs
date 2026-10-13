@@ -696,6 +696,10 @@ pub(super) async fn run(
     // all-or-nothing in `plan_enable`, so one yes whose requirement was
     // answered no cost every other yes (found on review of #631).
     let mut enabled = Vec::new();
+    // Every feature a yes switched on, its dependencies with it: wired in one
+    // write after the last, so one `[outbox]` stages every server feature's
+    // sends (review of #669, pass 4).
+    let mut switched = Vec::new();
     for f in &chosen {
         // Caught like the writes above: one config that will not load must
         // not cost the yeses after it and the checklist.
@@ -711,10 +715,22 @@ pub(super) async fn run(
             continue;
         }
         println!("\nEnabling {}…", ids.join(", "));
-        match super::features::enable(&ids, false, false, true).await {
-            Ok(()) => enabled.push(*f),
+        match super::features::enable_unwired(&ids, false, false, true).await {
+            Ok(on) => {
+                enabled.push(*f);
+                switched.extend(on);
+            }
             Err(e) => println!("`{}` not enabled: {e:#} — `mecha setup` asks again", f.id()),
         }
+    }
+    // Caught like the writes above: a config that will not take the wiring
+    // must not cost the sign-ins and the checklist after it.
+    if let Err(e) = super::features::mcp_entries(&switched) {
+        let ids: Vec<&str> = switched.iter().map(|f| f.id()).collect();
+        println!(
+            "the servers were not wired: {e:#} — `mecha features enable {}` writes them",
+            ids.join(" ")
+        );
     }
     if !enabled.is_empty() {
         // Caught like the writes above: a sign-in that cannot be read must

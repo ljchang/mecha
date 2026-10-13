@@ -110,6 +110,110 @@ pub fn dir(mecha_home: &Path) -> PathBuf {
     mecha_home.join("sidecars").join(ID)
 }
 
+/// Where the installed adapter reads its voices (`VOICES_DIR` in its unit),
+/// and so what `[voice] voices_dir` must name for recording and cloning to
+/// reach it.
+pub fn voices_dir(mecha_home: &Path) -> PathBuf {
+    dir(mecha_home).join("voices")
+}
+
+/// What to say about a [`write_voices_dir`] outcome — one wording for the
+/// installer and for `features enable voice`, which reaches an install that
+/// already has the speech server and so never runs the installer (review of
+/// #669). `None` when there is nothing to say.
+pub fn voices_dir_said(
+    outcome: &anyhow::Result<VoicesDir>,
+    voices: &Path,
+    config: &Path,
+) -> Option<String> {
+    Some(match outcome {
+        Ok(VoicesDir::Wrote) => format!(
+            "wrote [voice] voices_dir = \"{}\" into {}",
+            voices.display(),
+            config.display()
+        ),
+        Ok(VoicesDir::AlreadyNamed(dir)) if dir != voices => format!(
+            "[voice] voices_dir names {}, but the installed speech server reads {} — recorded \
+             voices will not reach it until they agree",
+            dir.display(),
+            voices.display()
+        ),
+        Ok(VoicesDir::AlreadyNamed(_)) => return None,
+        Ok(VoicesDir::OwnersTable) => format!(
+            "your [voice] table is left as it is — for recording and cloning to reach the speech \
+             server, it needs voices_dir = \"{}\"",
+            voices.display()
+        ),
+        Err(e) => format!(
+            "[voice] voices_dir was not written ({e:#}) — add voices_dir = \"{}\" under [voice]",
+            voices.display()
+        ),
+    })
+}
+
+/// What [`write_voices_dir`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VoicesDir {
+    /// No `[voice]` table and no voices directory named: one was written.
+    Wrote,
+    /// A voices directory is already named (`[voice]`, or the old `[web]`
+    /// key still read for one release): left as it is.
+    AlreadyNamed(PathBuf),
+    /// The owner's own `[voice]` table names none: never edited, so the
+    /// caller says the line to add.
+    OwnersTable,
+}
+
+/// Name the installed adapter's voices directory in `[voice] voices_dir`
+/// where nothing names one, so recording and cloning in the web app reach
+/// the voices the speech server reads. Without it they said "not
+/// configured" after a complete install (found 2026-10-12). A `[voice]`
+/// table the owner wrote is never edited — `comfyui_unit::write_image_table`'s
+/// rule — and the file's comments stay (`toml_edit`).
+pub fn write_voices_dir(path: &Path, voices: &Path) -> Result<VoicesDir> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    let mut doc: toml_edit::DocumentMut = text
+        .parse()
+        .with_context(|| format!("{} is not valid TOML; nothing was changed", path.display()))?;
+    // Expanded as the loader expands it (`Config::expand_home`), so a `~/`
+    // form naming the right directory is not taken for another (review of
+    // #669).
+    let named = |table: &str| {
+        doc.get(table)
+            .and_then(|t| t.get("voices_dir"))
+            .and_then(|v| v.as_str())
+            .map(|v| match v.strip_prefix("~/") {
+                Some(rest) => dirs::home_dir()
+                    .map(|h| h.join(rest))
+                    .unwrap_or_else(|| PathBuf::from(v)),
+                None => PathBuf::from(v),
+            })
+    };
+    if let Some(dir) = named("voice").or_else(|| named("web")) {
+        return Ok(VoicesDir::AlreadyNamed(dir));
+    }
+    if doc.contains_key("voice") {
+        return Ok(VoicesDir::OwnersTable);
+    }
+    let mut table = toml_edit::Table::new();
+    table.insert("voices_dir", toml_edit::value(voices.display().to_string()));
+    doc.insert("voice", toml_edit::Item::Table(table));
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    let tmp = path.with_extension("toml.voice-tmp");
+    std::fs::write(&tmp, doc.to_string()).with_context(|| format!("writing {}", tmp.display()))?;
+    if let Ok(meta) = std::fs::metadata(path) {
+        let _ = std::fs::set_permissions(&tmp, meta.permissions());
+    }
+    std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
+    Ok(VoicesDir::Wrote)
+}
+
 /// The slot's pinned files — the model and the codec — for this machine.
 fn weights(
     machine: &crate::recommend::Machine,
@@ -710,6 +814,53 @@ pub fn remove(m: &Machinery, naming: &Naming) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The installed adapter's voices directory is named where nothing names
+    /// one; one already named (either key) and an owner's own `[voice]` table
+    /// are left untouched, comments kept.
+    #[test]
+    fn the_voices_dir_is_named_only_where_nothing_names_one() {
+        let root = std::env::temp_dir().join(format!("mecha-voices-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let voices = voices_dir(&root.join(".mecha"));
+        let case = |name: &str, text: &str| {
+            let p = root.join(name);
+            std::fs::write(&p, text).unwrap();
+            let got = write_voices_dir(&p, &voices).unwrap();
+            (got, std::fs::read_to_string(&p).unwrap())
+        };
+        let (fresh, text) = case("fresh.toml", "# mine\ndefault_provider = \"local\"\n");
+        let (named, named_text) = case("named.toml", "[voice]\nvoices_dir = \"/srv/v\"\n");
+        let (legacy, _) = case("legacy.toml", "[web]\nvoices_dir = \"/srv/old\"\n");
+        let (owned, owned_text) = case("owned.toml", "[voice]\nstt_url = \"http://x\"\n");
+        let (tilde, _) = case("tilde.toml", "[voice]\nvoices_dir = \"~/v\"\n");
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(fresh, VoicesDir::Wrote);
+        assert!(text.starts_with("# mine"), "{text}");
+        let parsed: toml::Value = toml::from_str(&text).unwrap();
+        assert_eq!(parsed["voice"]["voices_dir"].as_str(), voices.to_str());
+        assert!(voices.ends_with("sidecars/speech/voices"));
+        assert_eq!(named, VoicesDir::AlreadyNamed("/srv/v".into()));
+        assert_eq!(named_text, "[voice]\nvoices_dir = \"/srv/v\"\n");
+        assert_eq!(legacy, VoicesDir::AlreadyNamed("/srv/old".into()));
+        assert_eq!(owned, VoicesDir::OwnersTable);
+        // `~/` is expanded as the loader expands it.
+        assert_eq!(
+            tilde,
+            VoicesDir::AlreadyNamed(dirs::home_dir().unwrap().join("v"))
+        );
+        assert_eq!(owned_text, "[voice]\nstt_url = \"http://x\"\n");
+    }
+
+    /// The adapter's unit reads the directory `voices_dir` names.
+    #[test]
+    fn the_adapter_reads_the_voices_dir_the_config_names() {
+        assert!(ADAPTER_UNIT.contains("Environment=VOICES_DIR=@DIR@/voices"));
+        assert_eq!(
+            voices_dir(Path::new("/h/.mecha")),
+            dir(Path::new("/h/.mecha")).join("voices")
+        );
+    }
 
     /// What runs is what the hand install runs, byte for byte.
     #[test]

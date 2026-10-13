@@ -1180,7 +1180,7 @@ pub async fn voice_clone(
     let Some(dir) = state.voices_dir.as_ref() else {
         return (
             StatusCode::NOT_IMPLEMENTED,
-            "voice cloning is not configured — set [voice] voices_dir to the directory the TTS reads its voices from (~/models/voices by default)\n",
+            "voice cloning is not configured — set [voice] voices_dir to the directory the TTS reads its voices from (~/.mecha/sidecars/speech/voices for the speech server `mecha features enable voice` installs, ~/models/voices for a hand-built one)\n",
         )
             .into_response();
     };

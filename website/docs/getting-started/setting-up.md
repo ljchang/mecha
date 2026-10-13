@@ -342,15 +342,17 @@ be able to record.
 
 | | What it gives you | Switch on | Then |
 |---|---|---|---|
-| **Mail and calendar** | Gmail and Outlook behind one surface. The model names an *account*, never a provider. | `mecha features enable mail` | an `[[mcp]]` entry for `mecha-mail`, then `mecha-mail auth` (asks Google or Outlook, and a name) |
-| **Documents** | Google Docs, Sheets and Slides under `drive.file` — only files it created or you handed it in Google's own picker. | `mecha features enable docs` | an `[[mcp]]` entry for `mecha-docs`, then `mecha-docs auth` (the account is `--account`, default `personal`) |
+| **Mail and calendar** | Gmail and Outlook behind one surface. The model names an *account*, never a provider. | `mecha features enable mail` | `mecha-mail auth` (asks Google or Outlook, and a name) |
+| **Documents** | Google Docs, Sheets and Slides under `drive.file` — only files it created or you handed it in Google's own picker. | `mecha features enable docs` | `mecha-docs auth` (the account is `--account`, default `personal`) |
 | **Slack** | A remote control: watch a run from a phone, approve sends, pass files both ways. | `mecha features enable slack` | `mecha slack auth` |
-| **Knowledge graph** | Memory — who people are, what happened when. A separate project, wired in over MCP. | `mecha features enable graph` | `cargo install mecha-graph mecha-graph-mcp --locked`, then an `[[mcp]]` entry for `mecha-graph-mcp` |
+| **Knowledge graph** | Memory — who people are, what happened when. A separate project, wired in over MCP. | `mecha features enable graph` | `cargo install mecha-graph mecha-graph-mcp --locked` before it, so it finds the program |
 
-`mecha features enable` writes the switch only. **It does not write the
-`[[mcp]]` entry** for mail, documents or the graph; until you add one, the
-feature reads *unready* in `mecha features` and that row names what to add.
-Each feature's page has the entry to paste:
+For mail, documents and the graph, `mecha features enable` also writes the
+**`[[mcp]]` entry** that runs the server — found on your `PATH` or in
+`~/.cargo/bin`, so install the program first — with its results marked
+untrusted, and stages mail's sends and documents' writes in an `[outbox]` for
+your review when you have none. An entry or `[outbox]` you wrote is never
+edited; `enable` says what yours lacks. Each feature's page shows the entry:
 [Mail and calendar](/docs/features/tools/mail),
 [Documents](/docs/features/tools/documents),
 [Memory](/docs/features/memory).

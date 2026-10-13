@@ -760,6 +760,16 @@ pub async fn install(
                 "the speech server answers on :{} — the voice worker's default",
                 naming.adapter_port
             ));
+            // Recording and cloning in the web app write where the adapter
+            // reads; named here, or they say "not configured" after a whole
+            // install. This install's home, never the process's (review of
+            // #645's rule). Said, never fatal: the server is installed.
+            let path = m.mecha_home.join("config.toml");
+            let voices = crate::speech_unit::voices_dir(&m.mecha_home);
+            let outcome = crate::speech_unit::write_voices_dir(&path, &voices);
+            if let Some(line) = crate::speech_unit::voices_dir_said(&outcome, &voices, &path) {
+                say(&line);
+            }
             Ok(())
         }
         "voice-worker" => {

@@ -203,9 +203,10 @@ one, and it takes speaker ids, never a URL.
 
 **Cloning your own** happens in Library → Voices: record someone reading the
 passage there, or upload a WAV recorded elsewhere. It needs `[voice] voices_dir` pointed at the directory the
-TTS reads its voices from — the one above; the install does not set it for
-you. Unset, the endpoint answers *not configured* rather than failing
-obscurely. A reference is **5 to 120 seconds** — under five
+TTS reads its voices from — the one above. `mecha features enable voice`
+writes it for the server it installs, unless you have a `[voice]` table of
+your own, which it never edits; it names the line to add instead. Unset, the
+endpoint answers *not configured* rather than failing obscurely. A reference is **5 to 120 seconds** — under five
 the engine has too little voice to condition on, and past two minutes the extra
 audio buys nothing while the file stores that much more of somebody's speech.
 Uploads are capped at 32 MB and refused on size before anything is parsed, must
