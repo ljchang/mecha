@@ -245,6 +245,24 @@ pub async fn install(
     let proxyd = if macos { "" } else { socket_proxyd()? };
     let units = crate::engine_gate::unit_dir(m)?.to_path_buf();
     let bin = bin_dir(home);
+    // On a Mac nothing binds the port at install — `bootstrap` returns before
+    // the agent does — so a port another server holds would give a proxy that
+    // restarts every ten seconds while the stranger answers the check: refused
+    // here instead, unless the agent there is mecha's own (`router_unit`'s
+    // rule; review of #678). systemd's socket fails to bind on its own.
+    if macos {
+        let ours = Manifest::read(home)?
+            .entries
+            .iter()
+            .any(|e| e.sidecar == id && !e.wrote.is_empty());
+        if !ours && crate::router_unit::port_answers(naming.public) {
+            bail!(
+                "something already answers on :{} and mecha did not install it — nothing is \
+                 installed over it",
+                naming.public
+            );
+        }
+    }
     Manifest::begin(home, id)?;
 
     // The engine before anything is fetched: a machine with none would
@@ -288,7 +306,15 @@ pub async fn install(
     let r = |t: &str| render(t, which, naming, &bin, proxyd);
     write_owned(home, id, &bin.join(launcher_name), &r(launcher), 0o755)?;
     if macos {
-        start_agent(m, which, naming, &bin.join(launcher_name), &engine, hub)?;
+        let domain = start_agent(m, which, naming, &bin.join(launcher_name), &engine, hub)?;
+        // As the router says it: loaded with nobody at the screen, the agent
+        // returns after a restart only at a console login (review of #678).
+        if domain == crate::launchd::Domain::User {
+            say(
+                "nobody is logged in at this Mac's screen, so after a restart this server's port \
+                 is held again only once someone logs in there",
+            );
+        }
     } else {
         start_units(
             m,
@@ -382,7 +408,7 @@ fn start_agent(
     launcher: &Path,
     engine: &Engine,
     hub: &Path,
-) -> Result<()> {
+) -> Result<crate::launchd::Domain> {
     let id = which.sidecar();
     let home = &m.mecha_home;
     // The proxy is this binary: the one `mecha features enable` runs as,
@@ -418,8 +444,7 @@ fn start_agent(
         log,
     };
     write_owned(home, id, &plist, &crate::launchd::plist_text(&agent), 0o644)?;
-    crate::launchd::load(&plist, &agent.label)?;
-    Ok(())
+    crate::launchd::load(&plist, &agent.label)
 }
 
 /// Ten minutes, as the proxy unit's `MECHA_LLAMA_IDLE`.
