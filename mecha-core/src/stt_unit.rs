@@ -489,7 +489,9 @@ mod tests {
         Manifest::record(
             &m.mecha_home,
             ID,
-            &root.join("units/mecha-test-stt-whose.service"),
+            // The service's own file on this system: a `.service` unit, or a
+            // launchd plist on a Mac (macOS CI on #679).
+            &crate::user_service::file(&m, &naming.unit).unwrap(),
         )
         .unwrap();
         let ours = someone_elses(&m, &naming).unwrap();
