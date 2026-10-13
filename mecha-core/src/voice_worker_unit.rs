@@ -20,7 +20,8 @@
 //! handler). So the install needs nothing machine-specific.
 //!
 //! **One unit, rendered,** as `stt_unit`'s: name and port are parameters, so
-//! a test installs one beside the live worker and removes it. Linux only.
+//! a test installs one beside the live worker and removes it. A launchd
+//! agent on a Mac, read from the same unit (`user_service`, §12.2).
 
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
