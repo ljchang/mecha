@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The local chat model installs on a Mac.** `mecha setup chat`, and the
+  chat question of the guided `mecha setup`, now run on macOS: llama.cpp's
+  pinned Metal build, the model recommended for the Mac's memory (the same
+  rows as any unified-memory machine), and the router that serves it,
+  installed as a launchd agent at
+  `~/Library/LaunchAgents/ai.mecha-factory.llama-local.plist` that starts at
+  each login and logs to `~/Library/Logs/mecha/llama-local.log`. A router or
+  agent mecha did not install is never written over. The embeddings and OCR
+  servers, the image and voice servers and `mecha setup engine --adopt` are
+  still Linux-only.
+
 ## [0.1.24] - 2026-10-13
 
 ### Added
