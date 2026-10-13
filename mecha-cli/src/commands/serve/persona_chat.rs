@@ -2025,6 +2025,11 @@ impl PersonaChats {
         // (§9), and one a restart removed (review of #666) — while the tools
         // only a persona has (its files, its memory) keep their words, which
         // the assistant's pool would have taken for orphans (review of #668).
+        // The other direction is the cost: a tool the owner has since taken
+        // off this persona's list reads as unregistered, so a past result of
+        // it is a candidate too. Only one whose first line is the
+        // `being made: ` placeholder is ever rewritten, which no tool but a
+        // deferring one writes (review of #668, pass 5).
         super::late::repair_orphans(&session, &workspace, &mut conversation, &|name| {
             super::late::may_be_orphan(agent.registry(), name)
         });
@@ -2693,7 +2698,10 @@ impl PersonaChats {
             (None, None) => &[],
         };
         // A deferring tool's row is marked, so a clip still out keeps its
-        // state past this re-read (§9).
+        // state past this re-read (§9). From the install's pool, not the
+        // persona's registry, and on purpose: a job still running after the
+        // owner narrowed this persona's tools mid-chat keeps its row and its
+        // Stop. Do not "fix" it into the persona's (review of #668, pass 3).
         let defers = super::late::deferring(bound.agent.registry());
         let entries = chat::transcript_entries_with(messages, &|name| defers.contains(name));
         // Checked once the lock is let go: the session file is read whole.
@@ -5874,6 +5882,8 @@ mod tests {
         Say(String),
         /// Answers after reasoning this plan, as a thinking model does.
         Think(String),
+        /// Calls this tool once, then answers once its result is in.
+        Call(String),
     }
 
     /// What the crisis judge answers in a test world.
@@ -5992,7 +6002,27 @@ mod tests {
                 Mode::Hang => std::future::pending::<()>().await,
                 Mode::Gate(open) => open.notified().await,
                 Mode::Fail => anyhow::bail!("the model is not loaded"),
-                Mode::Say(_) | Mode::Think(_) => {}
+                Mode::Say(_) | Mode::Think(_) | Mode::Call(_) => {}
+            }
+            if let Mode::Call(tool) = &self.1 {
+                let answered = req
+                    .messages
+                    .last()
+                    .is_some_and(|m| !mecha_core::agent::is_plain_user_text(m));
+                if !answered {
+                    return Ok(CompletionResponse {
+                        message: Message::assistant(vec![Block::ToolUse {
+                            id: "v1".into(),
+                            name: tool.clone(),
+                            input: serde_json::json!({}),
+                        }]),
+                        stop_reason: StopReason::ToolUse,
+                        usage: Usage::default(),
+                        refusal: None,
+                        model: "test".into(),
+                        malformed_tool_args: 0,
+                    });
+                }
             }
             let text = match &self.1 {
                 Mode::Say(text) => text.clone(),
@@ -6130,11 +6160,63 @@ mod tests {
         }
     }
 
+    /// A stand-in for an MCP server's background tool (§9): read-only,
+    /// offered to a persona, and its call is the chat's job. The clip lands
+    /// at once; what the tests ask is how its row is marked.
+    struct ClipStub;
+
+    #[async_trait::async_trait]
+    impl mecha_core::tool::Tool for ClipStub {
+        fn name(&self) -> &str {
+            "video_generate"
+        }
+        fn description(&self) -> &str {
+            "stub"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        fn defers(&self) -> bool {
+            true
+        }
+        fn for_persona(self: Arc<Self>) -> Option<Arc<dyn mecha_core::tool::Tool>> {
+            Some(self)
+        }
+        async fn call(
+            &self,
+            _: serde_json::Value,
+            _: &mecha_core::tool::ToolCtx,
+        ) -> anyhow::Result<mecha_core::tool::ToolOutput> {
+            Ok(mecha_core::tool::ToolOutput::deferred(
+                "being made: `video_generate` is running.",
+                mecha_core::jobs::DeferredJob::new(
+                    async { mecha_core::tool::ToolOutput::ok("video: videos/a.mp4") },
+                    tokio_util::sync::CancellationToken::new(),
+                    "busy",
+                ),
+            ))
+        }
+    }
+
     /// `world_tuned`, and with `draws` the persona has `image_generate`.
     fn world_built(
         mode: Mode,
         tune: impl FnOnce(&mut mecha_core::config::Config),
         draws: bool,
+    ) -> World {
+        world_full(mode, tune, draws, false)
+    }
+
+    /// `world_built`, and with `clips` the persona has a background
+    /// `video_generate` (`ClipStub`) too.
+    fn world_full(
+        mode: Mode,
+        tune: impl FnOnce(&mut mecha_core::config::Config),
+        draws: bool,
+        clips: bool,
     ) -> World {
         let root = std::env::temp_dir().join(format!("mecha-pchat-{}", uuid::Uuid::new_v4()));
         let dir = root.join("personas");
@@ -6154,10 +6236,14 @@ mod tests {
         let toml = dir.join("mara/persona.toml");
         let text = std::fs::read_to_string(&toml).unwrap().replace(
             "allow = [\"web_search\"]",
-            if draws {
-                "allow = [\"fs_read\", \"image_generate\", \"image_view\", \"web_search\"]"
-            } else {
-                "allow = [\"fs_read\", \"image_view\", \"web_search\"]"
+            match (draws, clips) {
+                (true, _) => {
+                    "allow = [\"fs_read\", \"image_generate\", \"image_view\", \"web_search\"]"
+                }
+                (false, true) => {
+                    "allow = [\"fs_read\", \"image_view\", \"video_generate\", \"web_search\"]"
+                }
+                (false, false) => "allow = [\"fs_read\", \"image_view\", \"web_search\"]",
             },
         );
         std::fs::write(&toml, text).unwrap();
@@ -6198,6 +6284,9 @@ mod tests {
         let drawn = Arc::new(StdMutex::new(Vec::new()));
         let drawn_untrusted = Arc::new(StdMutex::new(Vec::new()));
         let draw_takes = Arc::new(StdMutex::new(None));
+        if clips {
+            pool.insert(Arc::new(ClipStub));
+        }
         if draws {
             pool.insert(Arc::new(DrawStub(
                 Arc::clone(&drawn),
@@ -10021,6 +10110,95 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains(r#""record":"late_result""#), "{text}");
         assert!(text.contains(super::super::late::RESTARTED), "{text}");
+    }
+
+    /// A clip's row is marked as a deferring tool's on both of the persona
+    /// host's paths: the live result event the run forwards, and the
+    /// transcript a settle re-reads. Unmarked, the page's still-out state,
+    /// its Stop and its player go with it (§9, review of #668, pass 5).
+    #[tokio::test]
+    async fn a_persona_chats_clip_row_is_marked_live_and_on_re_read() {
+        let w = world_full(Mode::Call("video_generate".into()), |_| {}, false, true);
+        let key = open_chat(&w).await;
+        let events = turn_events(&w, &key, "make a clip", None).await;
+        let marked: Vec<bool> = events
+            .iter()
+            .filter_map(|e| match e {
+                WireEvent::ToolResult { name, deferred, .. } if name == "video_generate" => {
+                    Some(*deferred)
+                }
+                _ => None,
+            })
+            .collect();
+        // The placeholder, and the clip once its job lands: every one marked.
+        assert!(
+            !marked.is_empty() && marked.iter().all(|m| *m),
+            "{events:?}"
+        );
+        let t = w
+            .personas()
+            .transcript(&w.chat, &w.library, &key, None)
+            .await
+            .unwrap();
+        let row = t["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["kind"] == "tool" && e["name"] == "video_generate")
+            .expect("the clip's row")
+            .clone();
+        assert_eq!(row["deferred"], true, "{row}");
+    }
+
+    /// The restart repair over a clip tool the persona's registry *holds*:
+    /// settled because it defers (`may_be_orphan`'s `defers()` arm), where
+    /// the test above it reaches only the unregistered arm (review of #668,
+    /// pass 4). And the resumed chat's row keeps its mark.
+    #[tokio::test]
+    async fn a_resumed_chat_settles_a_clip_its_registry_holds() {
+        let w = world_full(Mode::Answer, |_| {}, false, true);
+        let key = open_chat(&w).await;
+        let (path, id) = {
+            let mut sessions = w.chat.personas.sessions.lock().await;
+            let ps = sessions.get_mut(&key).unwrap();
+            let turn = vec![
+                Message::user("make a clip"),
+                Message::assistant(vec![Block::ToolUse {
+                    id: "v1".into(),
+                    name: "video_generate".into(),
+                    input: serde_json::json!({}),
+                }]),
+                Message::tool_results(vec![Block::ToolResult {
+                    tool_use_id: "v1".into(),
+                    content: "being made: `video_generate` is running.".into(),
+                    is_error: false,
+                }]),
+                Message::assistant(vec![Block::text("It is on its way.")]),
+            ];
+            ps.session.append_messages(&turn).unwrap();
+            (ps.session.path.clone(), ps.session.meta.id.clone())
+        };
+        w.chat.personas.sessions.lock().await.clear();
+        let resumed = w
+            .personas()
+            .resume(&w.chat, &w.library, "mara", &id, None)
+            .await
+            .unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(super::super::late::RESTARTED), "{text}");
+        let t = w
+            .personas()
+            .transcript(&w.chat, &w.library, resumed["key"].as_str().unwrap(), None)
+            .await
+            .unwrap();
+        let row = t["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["kind"] == "tool" && e["name"] == "video_generate")
+            .expect("the clip's row")
+            .clone();
+        assert_eq!(row["deferred"], true, "{row}");
     }
 
     /// A chat resumed after a restart holds a "being made" result with no
