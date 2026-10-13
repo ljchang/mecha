@@ -287,6 +287,18 @@ pub(super) async fn enable_unwired(
                 todo.retain(|(id, ..)| *id != mecha_core::comfyui_unit::ID);
             }
         }
+        // The graph's MCP server is built with cargo: a machine without it is
+        // told so, and graph stays switched on for a server installed later
+        // — the footnote below says it is not working until then (§13).
+        if todo.iter().any(|(id, ..)| *id == mecha_core::graph_mcp::ID) {
+            if let Err(why) = mecha_core::graph_mcp::fits() {
+                println!(
+                    "{} is not installed: {why}.",
+                    mecha_core::graph_mcp::PROGRAM
+                );
+                todo.retain(|(id, ..)| *id != mecha_core::graph_mcp::ID);
+            }
+        }
         // Likewise the speech server: voice may be spoken by a server the
         // owner runs — Chatterbox, or Breeze by hand — so a machine that
         // cannot build the engine is not offered it, and keeps the switch.
@@ -438,6 +450,8 @@ pub(super) async fn enable_unwired(
                      non-commercial use only"
                 } else if *id == comfy::ID {
                     &turbo_line
+                } else if *id == mecha_core::graph_mcp::ID {
+                    ", built here with cargo from its pinned commit — a few minutes"
                 } else {
                     ""
                 };
@@ -493,6 +507,9 @@ pub(super) async fn enable_unwired(
     if features.contains(&Feature::Image) {
         image_table()?;
     }
+    if features.contains(&Feature::Documents) {
+        documents_table().await?;
+    }
     if features.contains(&Feature::Voice) {
         voices_dir()?;
     }
@@ -540,8 +557,26 @@ pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
             continue;
         }
         seen.push(*f);
-        match mecha_core::onboarding::find_program(wiring.program) {
+        // The owner's own on the PATH first; else the build mecha installed
+        // into its own tree (`graph_mcp`), which no PATH names.
+        let own_build = path
+            .parent()
+            .filter(|home| {
+                wiring.program == mecha_core::graph_mcp::PROGRAM
+                    && mecha_core::graph_mcp::installed(home)
+            })
+            .map(mecha_core::graph_mcp::binary);
+        match mecha_core::onboarding::find_program(wiring.program).or(own_build) {
             Some(command) => items.push((*f, wiring, command)),
+            // Where `enable` is the installer, the feature is said to be not
+            // working rather than left as a footnote under "enabled" (§13).
+            None if wiring.install.starts_with("mecha features enable") => println!(
+                "{} is switched on, but not working: `{}` is not installed, so no [[mcp]] entry \
+                 was written — `{}` installs it",
+                f.id(),
+                wiring.program,
+                wiring.install
+            ),
             None => println!(
                 "`{}` is not installed, so no [[mcp]] entry was written — `{}`, then `mecha \
                  features enable {}` again writes it",
@@ -811,6 +846,90 @@ fn turbo_step(f: TurboFacts, unfit: impl FnOnce() -> Option<String>) -> TurboSte
     })
 }
 
+/// `documents` reads unready with no `[documents]` table, whatever the
+/// switch says, so `enable` writes one where there is none (§13): the
+/// settings that match what is here — OCR where its server is installed or
+/// provided, layout where its environment is — and the parser's confinement
+/// as this machine runs it, asked of each backend's own preflight. On a Mac
+/// no confinement exists yet: PDFs are refused until the macOS sandbox
+/// lands, and layout, confined the same way, stays off (the owner's ruling,
+/// 2026-10-13). A table the owner wrote is never edited.
+async fn documents_table() -> Result<()> {
+    use mecha_core::sidecar::SidecarState;
+    let cfg = Config::load_global()?;
+    if cfg.documents.is_some() {
+        return Ok(());
+    }
+    let path = Config::global_path().context("no mecha home to find config.toml in")?;
+    let m = sidecar::Machinery::real()?;
+    let machine = recommend::Machine::read()?;
+    let hub = mecha_core::fetch::hub_dir()?;
+    let p = sidecar::plan(Feature::Documents, &m, &machine, &hub, false)?;
+    let here = |id: &str| {
+        p.sidecars.iter().any(|s| {
+            s.id == id
+                && matches!(
+                    s.state,
+                    SidecarState::Installed | SidecarState::Provided { .. }
+                )
+        })
+    };
+    let macos = cfg!(target_os = "macos");
+    let ocr = here("ocr-server");
+    let layout_here = here("layout");
+    let (confine, pdfs) = if macos {
+        (
+            None,
+            Some(
+                "PDFs are refused on a Mac until the macOS sandbox is built — the parser never \
+                 runs unconfined; pictures are read by OCR"
+                    .to_string(),
+            ),
+        )
+    } else {
+        match mecha_core::document::working_confinement().await {
+            Ok(b) => (Some(b), None),
+            Err(why) => (
+                None,
+                Some(format!(
+                    "PDFs will be refused until the parser can be confined here ({why}) — \
+                     install poppler-utils, and bubblewrap or a kernel with Landlock"
+                )),
+            ),
+        }
+    };
+    let choice = mecha_core::document::TableChoice {
+        ocr,
+        layout: ocr && layout_here && !macos,
+        confine,
+    };
+    if mecha_core::document::write_documents_table(&path, &choice)? {
+        println!(
+            "Wrote a [documents] table into {}: ocr = {}, layout = {}{}",
+            path.display(),
+            choice.ocr,
+            choice.layout,
+            choice
+                .confine
+                .map(|c| format!(", confine = \"{}\"", c.as_str()))
+                .unwrap_or_default()
+        );
+        if let Some(line) = pdfs {
+            println!("  {line}");
+        }
+        if macos && layout_here {
+            println!(
+                "  layout is off on a Mac: the layout model is confined as the parser is, and \
+                 waits for the same sandbox; pages are read whole"
+            );
+        }
+        if !ocr {
+            println!("  ocr is off: no OCR server is installed or running here");
+        }
+    }
+    Ok(())
+}
+
 /// `image` reads off with no `[image]` table, whatever the switch says, and
 /// only an install writes one — so a server used as it is (`--no-install`,
 /// or one already on `:8188` that was left alone) would leave images off.
@@ -1063,6 +1182,12 @@ fn render_plan(p: &sidecar::Plan, chat_here: bool) -> String {
             SidecarState::Missing { .. } if s.not_offered.is_some() => format!(
                 "not offered here — {}",
                 s.not_offered.as_deref().unwrap_or_default()
+            ),
+            // A build is said as one: its wait is a compile, not a download.
+            SidecarState::Missing { .. } if s.id == mecha_core::graph_mcp::ID => format!(
+                "not here — `mecha features enable {}` builds it from its pinned commit (a few \
+                 minutes; needs cargo and a C compiler)",
+                p.feature.id()
             ),
             SidecarState::Missing { .. } if mecha_core::install::installable(s.id) => format!(
                 "not here — `mecha features enable {}` installs it",
