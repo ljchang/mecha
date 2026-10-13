@@ -170,7 +170,20 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         } else {
             ""
         };
-        println!("{}  [{}{}{}]", tool.name(), access, routing, claims);
+        // Marked as the header promises (review of #668, pass 2).
+        let personas = if offered_to_personas(tool.name()) {
+            " · offered to persona chats"
+        } else {
+            ""
+        };
+        println!(
+            "{}  [{}{}{}{}]",
+            tool.name(),
+            access,
+            routing,
+            claims,
+            personas
+        );
         for line in tool.description().lines() {
             println!("    {line}");
         }
