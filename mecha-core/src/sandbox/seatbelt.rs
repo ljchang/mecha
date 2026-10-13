@@ -22,8 +22,9 @@
 //! - no network: `(deny network*)` unless the call asks for it.
 //!
 //! The user's home is denied explicitly after the base profile, so nothing
-//! `system.sb` allows can reach it, and the call's own paths are allowed
-//! after that — the last matching rule wins in SBPL.
+//! `system.sb` allows can reach it; the call's own paths inside the home are
+//! carved out of that deny with `require-not`, since a later allow does not
+//! reliably override it ([`profile`]).
 //!
 //! Metadata (`stat`, `readlink`) is readable everywhere: dyld and path
 //! resolution need it along every ancestor, and a name or a size is not a
@@ -103,15 +104,32 @@ pub fn profile(p: &Policy) -> Result<String> {
         list("literal", &devices)?
     ));
     out.push_str("(allow file-write* (literal \"/dev/null\"))\n");
-    // The home goes after everything the base profile and the system grant,
-    // and the call's own paths after it, so they win where they are inside.
-    // Contents, xattrs and writes — not metadata, which path resolution
-    // needs along every ancestor of an interpreter that lives in the home
-    // (the layout worker's, under `~/.mecha`).
+    // The home's contents, xattrs and writes are denied — not metadata,
+    // which path resolution needs along every ancestor of an interpreter
+    // that lives in the home (the layout worker's, under `~/.mecha`). The
+    // call's own paths inside the home are carved out of the denial itself
+    // with `require-not`, never left to rule order: on macOS 26 a later
+    // `file-read*` allow did not override this operation-specific deny, and
+    // a named path in the home was refused (measured, macOS CI on #682).
     if let Some(home) = &p.home {
+        let mut except = String::new();
+        for (kind, paths) in [
+            ("subpath", &p.read_trees),
+            ("subpath", &p.write_trees),
+            ("literal", &p.read_files),
+            ("literal", &p.exec),
+        ] {
+            for path in paths.iter().filter(|x| x.starts_with(home)) {
+                except.push_str(&format!(" (require-not ({kind} {}))", quote(path)?));
+            }
+        }
+        let filter = if except.is_empty() {
+            format!("(subpath {})", quote(home)?)
+        } else {
+            format!("(require-all (subpath {}){except})", quote(home)?)
+        };
         out.push_str(&format!(
-            "(deny file-read-data file-read-xattr file-write* (subpath {}))\n",
-            quote(home)?
+            "(deny file-read-data file-read-xattr file-write* {filter})\n"
         ));
     }
     if !p.read_trees.is_empty() || !p.read_files.is_empty() || !p.exec.is_empty() {
@@ -549,15 +567,25 @@ mod tests {
         assert!(t.contains(
             "(allow file-read* file-write* (subpath \"/private/var/folders/x/T/mecha-doc-1\"))"
         ));
-        let home = t
-            .find("(deny file-read-data file-read-xattr file-write* (subpath \"/Users/a\"))")
-            .unwrap();
-        let named = t
-            .find("(literal \"/Users/a/.mecha/layout/model.onnx\")")
-            .unwrap();
+        // The named path in the home is carved out of the denial itself,
+        // not left to rule order.
         assert!(
-            home < named,
-            "the call's own paths come after the home's denial:\n{t}"
+            t.contains(
+                "(deny file-read-data file-read-xattr file-write* (require-all (subpath \
+                 \"/Users/a\") (require-not (literal \"/Users/a/.mecha/layout/model.onnx\"))))"
+            ),
+            "{t}"
+        );
+        let bare = profile(&Policy {
+            read_files: vec![],
+            ..p.clone()
+        })
+        .unwrap();
+        assert!(
+            bare.contains(
+                "(deny file-read-data file-read-xattr file-write* (subpath \"/Users/a\"))"
+            ),
+            "{bare}"
         );
         assert!(
             !t.contains("(allow file-write* (subpath \"/Users/a\""),

@@ -110,10 +110,11 @@ load commands name** (read in Rust, `@rpath`/`@loader_path` resolved — not
 guessed, and no `otool` needed), of the Homebrew kegs those live in and that
 prefix's fontconfig and poppler data; read and write of the scratch
 directory alone; and `(deny network*)`. The user's home is denied (contents,
-xattrs and writes) after the base profile and the system's reads, and the
-call's own paths are allowed after that — the last matching rule wins, so a
-layout interpreter under `~/.mecha` stays reachable while nothing else in the
-home is. Metadata is readable everywhere: path resolution needs it along
+xattrs and writes), with the call's own paths inside it carved out of that
+denial with `require-not` — so a layout interpreter under `~/.mecha` stays
+reachable while nothing else in the home is. Not by rule order: macOS CI
+measured a later `file-read*` allow failing to override the operation-specific
+home deny, so the exception is written into the deny itself. Metadata is readable everywhere: path resolution needs it along
 every ancestor, a name or a size is not a file's contents, and with no
 network and no write outside the scratch there is nowhere to send what a
 `stat` learns. A path a profile cannot express — a control character, a
