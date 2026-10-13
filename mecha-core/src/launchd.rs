@@ -124,6 +124,11 @@ pub fn agent_from_unit(label: &str, unit: &str, home: &Path, log: PathBuf) -> Re
         }
     }
     let program = program.with_context(|| format!("{label}'s unit has no ExecStart="))?;
+    // Every agent restarts on a failed exit, so a unit that does not would
+    // mean one thing on Linux and another here (review of #679).
+    if !unit.lines().any(|l| l.trim() == "Restart=on-failure") {
+        bail!("{label}'s unit has no `Restart=on-failure`, which every agent is");
+    }
     if !env.iter().any(|(k, _)| k == "PATH") {
         env.insert(0, ("PATH".into(), SYSTEM_PATH.into()));
     }

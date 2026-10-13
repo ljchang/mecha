@@ -228,7 +228,7 @@ mod tests {
     /// refused, never folded into a neighbour's value (review of #679).
     #[test]
     fn environment_lines_read_as_systemd_reads_them() {
-        let unit = "[Service]\nExecStart=/bin/run\nEnvironment=A=1 B=two\n\
+        let unit = "[Service]\nExecStart=/bin/run\nRestart=on-failure\nEnvironment=A=1 B=two\n\
                     Environment=\"GREETING=hello there\" C=%h/c\nRestartSec=5\n";
         let a =
             crate::launchd::agent_from_unit("e", unit, "/Users/a".as_ref(), "/l".into()).unwrap();
@@ -251,7 +251,7 @@ mod tests {
             "Environment=\"A=x\n",
             "Environment=JUSTAKEY\n",
         ] {
-            let unit = format!("[Service]\nExecStart=/bin/run\n{bad}");
+            let unit = format!("[Service]\nExecStart=/bin/run\nRestart=on-failure\n{bad}");
             assert!(
                 crate::launchd::agent_from_unit("e", &unit, "/h".as_ref(), "/l".into()).is_err(),
                 "{bad}"
@@ -280,12 +280,41 @@ mod tests {
         }
     }
 
+    /// Each voice sidecar's evidence names the plist its install writes: a
+    /// renamed stem would otherwise read every Mac's server as absent
+    /// (#678's test, for the voice agents; review of #679).
+    #[test]
+    fn the_voice_agents_are_their_sidecars_evidence() {
+        let speech = crate::speech_unit::Naming::shipped();
+        for (id, stem) in [
+            (crate::stt_unit::ID, crate::stt_unit::Naming::shipped().unit),
+            (
+                crate::voice_worker_unit::ID,
+                crate::voice_worker_unit::Naming::shipped().unit,
+            ),
+            (crate::speech_unit::ID, speech.engine_unit.clone()),
+            (crate::speech_unit::ID, speech.adapter_unit.clone()),
+        ] {
+            let name = crate::launchd::plist_name(&stem);
+            let s = crate::sidecar::SIDECARS
+                .iter()
+                .find(|s| s.id == id)
+                .unwrap();
+            assert!(
+                s.evidence
+                    .iter()
+                    .any(|e| matches!(e, crate::sidecar::Evidence::UserUnit(n) if *n == name)),
+                "{name} is not in {id}'s evidence"
+            );
+        }
+    }
+
     /// A command a shell would have to unquote is refused, never split.
     #[test]
     fn a_quoted_command_is_refused() {
         let unit = "[Service]\nExecStart=/bin/sh -c \"echo hi\"\n";
         assert!(crate::launchd::agent_from_unit("q", unit, "/h".as_ref(), "/l".into()).is_err());
-        let unit = "[Service]\nExecStart=%h/bin/run --x\n";
+        let unit = "[Service]\nExecStart=%h/bin/run --x\nRestart=on-failure\n";
         let a =
             crate::launchd::agent_from_unit("h", unit, "/Users/a".as_ref(), "/l".into()).unwrap();
         assert_eq!(a.program, ["/Users/a/bin/run", "--x"]);
