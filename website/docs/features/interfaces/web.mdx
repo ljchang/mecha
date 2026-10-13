@@ -113,12 +113,14 @@ run inside the server so active conversations stay coordinated.
 | Page | What it is |
 |---|---|
 | **Home** | Counts and doors: what waits on you — mail that needs you, outbox drafts, questions a run is paused on, tasks to do next — then one card per review queue, a **Follow-through** line and the doctor's findings. Every card opens its tab; nothing a tab already lists is repeated. A count that could not be read is a dash, never a zero. |
-| **Chat** | A streaming conversation with the agent — steering, cancel, a context gauge, approval cards, and a session drawer holding both live and recorded conversations, each naming itself after its first turn and again as it grows, from your own turns only (never the model's text or tool results). The waveform button opens a [voice call](/docs/features/interfaces/voice) into *this* conversation, and the model chip [switches the model](/docs/features/models/switching) for the whole machine |
+| **Chat** | A streaming conversation with the agent — steering, cancel, a context gauge, approval cards, and a session drawer holding both live and recorded conversations, each naming itself after its first turn and again as it grows, from your own turns only (never the model's text or tool results). Replies render as Markdown; each finished reply has **Copy** and **Download** (the reply as written, as a `.md` file) and every code block its own **Copy**. The waveform button opens a [voice call](/docs/features/interfaces/voice) into *this* conversation, and the model chip [switches the model](/docs/features/models/switching) for the whole machine |
 | **Mail** | Five lane chips: the triage queue split into *Needs you*, *FYI*, *Parked* and *In the outbox*, plus a plain *Inbox* (what just arrived). Reading, triaging, and drafting — see [mail](/docs/features/tools/mail). On a window at least 1200px wide it becomes a keyboard-driven desk: lanes, list and thread side by side, with `e`/`d`/`t` to archive, dismiss or make a task, and a multi-thread selection (⇧-click or ⌘/Ctrl-click) acted on by ⇧E/⇧D/⇧T or ⌘/Ctrl-E/D |
 | **Graph** | One surface over the [knowledge graph](/docs/features/memory/graph): capture a note (typed or dictated) with the graph's own confirmation of what it linked, a recent-notes list with in-place edit, one find field over everything (hybrid keyword + semantic search, ⌘K focuses it), and entity pages — facts with Confirm/Refute on anything unreviewed, aliases, per-source coverage, the connected neighborhood, history with superseded facts, and recent evidence. Opening an entity is itself a review trigger; see [the graph](/docs/features/memory/graph#where-you-review-what-it-proposes). The old `#notes` address still works |
 | **Review** | [Outbox](/docs/features/security/outbox), the graph's merge queue, the [front door](/docs/features/public-surface/frontdoor), and **Proposals** — harness changes, rule proposals and graph entity proposals, each accepted or rejected after its detail is shown — every approval surface in one place. A mail draft reads as mail, beside the thread it answers (reread when you open it), and Send is one press; a reply goes out from the account the thread was received on |
 | **Tasks** | The GTD board, with the views in a drawer and one tap per status change. The **workflows** view holds [workflows](/docs/features/automation/workflows) — tasks connected to their conversations, drafts, questions, and completion evidence — and finished ones can be reopened there |
-| **Settings** | Behind the gear — upper-right on *every* view, since settings is chrome rather than a place to be. An index of three features, each opening its own pane: the [charter](/docs/features/appraisal/charter) (edited as a list — tap a line, drag its grip to re-rank — behind a validated two-tap save), the [learning](/docs/features/learning) store — reflections and rules, read, edited and refused — and the [voice](/docs/features/interfaces/voice) stack's health and preferences. Each row says what is in there — a count, or a dash where the store could not be read |
+| **Personas** | Characters you write and talk to, apart from the assistant: each persona's chats, its files, its picture settings and a call in its voice. Everything goes through the persona door, so nothing here reads or writes one of the assistant's conversations. Shares the library's lock |
+| **Library** | The character and style library [`image_generate`](/docs/features/tools/image-generation#recurring-characters-the-image-library) compiles a scene against, in four panes — **Characters**, **Styles**, **Voices** (every voice a persona can speak in, with recording and cloning) and **Candidates** (entries a model proposed, approved or rejected from their detail view). Locked entries stay hidden until you unlock |
+| **Settings** | Behind the gear — upper-right on *every* view, since settings is chrome rather than a place to be. An index of six panes: the [charter](/docs/features/appraisal/charter) (edited as a list — tap a line, drag its grip to re-rank — behind a validated two-tap save); the [learning](/docs/features/learning) store — reflections and rules, read, edited and refused; the [voice](/docs/features/interfaces/voice) stack's health and preferences; **Images**, the chat's [picture settings](/docs/features/tools/image-generation), which a persona follows wherever it leaves one at "chat"; **Lock**, how long an unlock of the library and Personas lasts; and **Features**, every optional part of mecha, off ones included, with the command that turns each on — shown, never run. Each row says what is in there — a count, or a dash where the store could not be read |
 
 On a wider screen the app changes shape rather than stretching a phone
 column: from 900px the bottom nav becomes a left rail, and from 1180px the chat's
@@ -141,8 +143,19 @@ turn.
 
 ### Settings, and what a browser may write
 
-Four things on this page write, and each is fenced for what it is putting on
-disk. Everything else is a read.
+![Settings: six rows — Charter, Learning, Voice, Images, Lock and Features — each with a one-line summary of what is in it](/img/screens/ref-web-settings.png)
+
+**Features** is where a feature that is off can still be found: the nav drops
+a view whose feature is off, and this pane lists every one, off included, with
+the command that turns it on. The page shows the command and never runs it —
+turning most features on means installing something, authorising an account or
+starting a server, which is a terminal's job on this machine.
+
+![Settings → Features: rows for image generation, personas, voice and its parts, incognito chat and the front door read on; messages between sessions reads off, with the command mecha features enable messages beneath it](/img/screens/ref-web-settings-features.png)
+
+Four of the things settings write are fenced for what they put on disk, and
+are worth knowing; the picture settings and the lock's span are on
+[Image generation](/docs/features/tools/image-generation).
 
 **The charter** is what every run's prompt carries, so its fences are about
 what a valid charter *is*. The body is **refused above 64 KB before the TOML
@@ -344,6 +357,12 @@ typing still works.
   writes one, for the reason [the charter](/docs/features/appraisal/charter) gives.
 
 ## Installing the app itself
+
+**The web app has a switch in [`[features]`](/docs/reference/configuration#features),
+and `mecha serve` refuses to start without it** — an absent switch is off.
+Turn it on once with `mecha features enable web` (or say yes when
+`mecha setup` offers it); views whose own feature is off are left out of the
+nav, and Settings → Features lists them with the command for each.
 
 The web assets are a **build artifact**, not part of the crate — so
 `cargo install` updates the binary and not the pages:

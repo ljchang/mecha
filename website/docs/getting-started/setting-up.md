@@ -162,6 +162,10 @@ and asks before it downloads anything:
    sign-in app, once (see
    [Mail and calendar](/docs/features/tools/mail#signing-in)), then open
    theirs. Slack takes its two tokens from your shell (`mecha slack auth`).
+   Mail, documents and the graph also need an `[[mcp]]` entry in
+   `~/.mecha/config.toml`; setup names it and does not write it, so add the
+   entry (see [§4](#4-wire-in-personal-context)) and the sign-in runs on the
+   next `mecha setup`.
 5. **Whatever is still open**, with the command for each.
 
 What it looks like, trimmed:
@@ -205,10 +209,12 @@ exits 1 while anything is outstanding:
     → mecha setup --write
 
 · Mail and calendar  [not set up]
-    → mecha-mail auth
+    Mail and calendar, behind one server that names an account, never a provider. Off until it is switched on.
+    → mecha features enable mail
 
 · Google Docs, Sheets and Slides  [not set up]
-    → mecha-docs auth
+    Google Docs, Sheets and Slides — only files it made or you hand it in Google's picker. Off until it is switched on.
+    → mecha features enable docs
 
 · Your charter  [not set up]
     Nothing written yet — every run is proceeding un-chartered. …
@@ -277,8 +283,16 @@ mecha setup --write --provider local
 
 ### If nothing is running
 
-Then you need an API key, and `mecha setup` will not write one. mecha stores the
-**name** of an environment variable rather than a secret:
+On Linux, let mecha install the server: `mecha setup chat` (or the first
+question of the guided `mecha setup`) installs llama.cpp, the model
+recommended for this machine and the router that serves it — see
+[A local model](#a-local-model-the-default) above. On a Mac it refuses, because
+the router is a systemd user unit; start `llama-server` yourself and run
+`mecha setup --write`.
+
+Otherwise use a hosted model, which needs an API key that `mecha setup` will
+not write. mecha stores the **name** of an environment variable rather than a
+secret:
 
 ```toml
 [providers.anthropic]
@@ -292,13 +306,17 @@ commit to a dotfiles repo.
 ## 4. Wire in personal context
 
 Everything below is optional and independent — mecha is useful with none of it.
-`mecha setup` lists whichever you have not done yet, with the command for each.
+Each is a feature, and **every feature is off until it is switched on** in
+`[features]`: the install and sign-in commands in the table below do not turn
+anything on by themselves. Let `mecha setup` ask, or switch one on yourself with
+`mecha features enable <id>`; `mecha setup` lists whichever you have not
+answered yet, with the command for each.
 
 **And you can say no.** At each offer the answer is `y`, `N`, or `never`:
 
 ```text
-Watch a run from a phone, approve what it wants to send, and hand files in and out.
-run `mecha slack auth`? [y/N/never] never
+Run `mecha features enable slack`.
+run `mecha features enable slack`? [y/N/never] never
 noted — `slack` will not be offered again (`mecha setup --undecline slack` undoes it)
 ```
 
@@ -309,20 +327,33 @@ list — a declined step is **not outstanding**, so `mecha setup` exits 0 and is
 usable as your own health check. `mecha setup --undecline <step>` (or `all`)
 asks again.
 
-Only the integrations and the charter can be declined — mail, documents,
-Slack, the graph, and the charter. Everything else is not a preference but
-something the install needs: a config file, a provider that can answer, a local
-server that agrees with its config, the timezone once a server is wired, and a
-scheduler once triggers exist. Nor can you decline anything that is *broken*
-rather than merely absent. "I don't want mail" is a preference; "stop telling me
-my mail is broken" is not one a setup tool should be able to record.
+Every optional feature whose switch you have not answered can be declined —
+mail, documents, Slack, the graph, web search, images, voice, the web app and
+the rest. So can the charter, though setup only names it: it is asked
+`later, or never?` and never opens an editor. A switch you wrote `false` is
+already an answer, and `mecha features enable <id>` is the way back from it.
+Everything else is not a preference but something the install needs: a config
+file, a provider that can answer, a local server that agrees with its config,
+the timezone once a server is wired, and a scheduler once triggers exist. Nor
+can you decline anything that is *broken* rather than merely absent — including
+a feature you switched on that does not work yet. "I don't want mail" is a
+preference; "stop telling me my mail is broken" is not one a setup tool should
+be able to record.
 
-| | What it gives you | Start with |
-|---|---|---|
-| **Mail and calendar** | Gmail and Outlook behind one surface. The model names an *account*, never a provider. | `mecha-mail auth` (asks Google or Outlook, and a name) |
-| **Documents** | Google Docs, Sheets and Slides under `drive.file` — only files it created or you handed it in Google's own picker. | `mecha-docs auth` (the account is `--account`, default `personal`) |
-| **Slack** | A remote control: watch a run from a phone, approve sends, pass files both ways. | `mecha slack auth` |
-| **Knowledge graph** | Memory — who people are, what happened when. A separate project, wired in over MCP. | `cargo install mecha-graph-mcp` |
+| | What it gives you | Switch on | Then |
+|---|---|---|---|
+| **Mail and calendar** | Gmail and Outlook behind one surface. The model names an *account*, never a provider. | `mecha features enable mail` | an `[[mcp]]` entry for `mecha-mail`, then `mecha-mail auth` (asks Google or Outlook, and a name) |
+| **Documents** | Google Docs, Sheets and Slides under `drive.file` — only files it created or you handed it in Google's own picker. | `mecha features enable docs` | an `[[mcp]]` entry for `mecha-docs`, then `mecha-docs auth` (the account is `--account`, default `personal`) |
+| **Slack** | A remote control: watch a run from a phone, approve sends, pass files both ways. | `mecha features enable slack` | `mecha slack auth` |
+| **Knowledge graph** | Memory — who people are, what happened when. A separate project, wired in over MCP. | `mecha features enable graph` | `cargo install mecha-graph mecha-graph-mcp --locked`, then an `[[mcp]]` entry for `mecha-graph-mcp` |
+
+`mecha features enable` writes the switch only. **It does not write the
+`[[mcp]]` entry** for mail, documents or the graph; until you add one, the
+feature reads *unready* in `mecha features` and that row names what to add.
+Each feature's page has the entry to paste:
+[Mail and calendar](/docs/features/tools/mail),
+[Documents](/docs/features/tools/documents),
+[Memory](/docs/features/memory).
 
 Three things worth knowing before you start:
 
@@ -334,8 +365,9 @@ Three things worth knowing before you start:
   turn (about five minutes), then signs you in. Google Docs needs none of this:
   it signs in with mecha's own Drive app, which can only reach files mecha made
   or you pick.
-- **Mail and documents are separate crates.** `cargo install mecha-mail`
-  installs `mecha-mail`, `mecha-docs`, `mecha-google` and `mecha-outlook`.
+- **Mail and documents come from the `mecha-mail` crate**, which
+  `cargo install mecha-cli mecha-mail --locked` installs beside `mecha`:
+  `mecha-mail`, `mecha-docs`, `mecha-google` and `mecha-outlook`.
 - **The knowledge graph's own sources** — ambient conversations, a calendar
   feed, messages — are configured with `mecha-graph source`, in that project.
   mecha reaches the graph only through its MCP tools and deliberately knows

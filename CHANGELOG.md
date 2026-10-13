@@ -1062,8 +1062,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   everything this install had set up. An MCP server that belongs to no
   feature starts as before; the graph server stays off for `distill`,
   `gossip`, `vet` and `corroborate` too. Slack, personas, voice, incognito
-  and the front door (its queue and publishing) keep working for now whatever their switch
-  says, and the start-up line tells them apart. Experiment trials keep their
+  and the front door were left running whatever their switch said at first;
+  later in this release they follow their switches too (see "Slack, personas,
+  voice, incognito, the front door and messages follow their switches too"
+  above). Experiment trials keep their
   graph: it is on when the environment declares its own graph server or the
   manifest brings yours in with `live_servers`, unless the environment says
   `false`; search follows your own switch.
@@ -1148,7 +1150,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The image tool's memory check matches what a generation costs.** It now
   asks the image server what it holds first. A server that has loaded
   nothing (just restarted, or unreadable) needs the full `min_available_mb`,
-  now 19 GB, up from 16. A generation from an idle server needs ~18.5 GB above
+  now 20 GB (20480 MB), up from 16. A generation from an idle server needs ~18.5 GB above
   its idle footprint, and the old figure counted only the GPU side. A server
   that has already loaded the model needs ~7 GB less (12 GB at the default),
   so a second picture soon after the first is no longer refused for memory
