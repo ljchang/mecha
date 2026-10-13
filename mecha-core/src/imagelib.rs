@@ -462,6 +462,16 @@ impl Library {
         entry: &Entry,
         reference: &Reference,
     ) -> Result<(Vec<u8>, &'static str)> {
+        // "Never sent" is a property of the read, not a filter a caller must
+        // remember (review of #684): an unknown kind, a kind this entry kind
+        // doesn't take, or one past its limit is refused here.
+        if !entry.sendable_references().contains(&reference) {
+            bail!(
+                "`{}`'s {} reference is not one it may send",
+                entry.name,
+                reference.kind.label()
+            );
+        }
         self.read_checked(
             &reference.blob,
             &format!("`{}`'s {} reference", entry.name, reference.kind.label()),
@@ -537,7 +547,7 @@ fn blob_name(bytes: &[u8], ext: &str) -> String {
 fn store_blob(dir: &Path, bytes: &[u8]) -> Result<String> {
     if bytes.len() as u64 > MAX_PORTRAIT_BYTES {
         bail!(
-            "the portrait is {} MB; portraits are capped at {} MB",
+            "the picture is {} MB; library pictures are capped at {} MB",
             bytes.len() / (1024 * 1024),
             MAX_PORTRAIT_BYTES / (1024 * 1024)
         );
@@ -739,13 +749,6 @@ pub fn update(
     {
         bail!("nothing to change");
     }
-    let history = entry_dir(dir, kind, name).join("history");
-    std::fs::create_dir_all(&history)?;
-    write_atomic(
-        &history.join(format!("v{}.toml", old.version)),
-        toml::to_string_pretty(&old)?.as_bytes(),
-    )?;
-    entry.version = old.version + 1;
     // Only a rewritten text is the owner's. A new portrait or seed is not a
     // reading of the text, so it must not approve a candidate or relabel its
     // provenance — that would launder a model's text past `approve`'s
@@ -754,9 +757,8 @@ pub fn update(
         entry.origin = Origin::Owner;
         entry.status = Status::Approved;
     }
-    entry.updated = now();
-    write_entry(dir, &entry)?;
-    Ok(entry)
+    // One place cuts a version (review of #684).
+    new_version(dir, old, entry)
 }
 
 /// Reject a candidate: deleted outright, and its portrait with it unless
@@ -863,6 +865,23 @@ pub fn add_reference(
             held,
             kind.label(),
             if held == 1 { "" } else { "s" }
+        );
+    }
+    // Two of one kind under one label could never be told apart again:
+    // `remove_reference` names a reference by its kind and label (review of
+    // #684). Checked before the picture is stored, so a refusal leaves none.
+    if old
+        .references
+        .iter()
+        .any(|r| r.kind == kind && r.label == label)
+    {
+        bail!(
+            "`{name}` already has a {} reference{}; use another label",
+            kind.label(),
+            label
+                .as_deref()
+                .map(|l| format!(" labelled \"{l}\""))
+                .unwrap_or_default()
         );
     }
     let blob = store_blob(dir, bytes)?;
@@ -2434,6 +2453,49 @@ mod tests {
         assert_eq!(after.version, 4);
         assert_eq!(after.references.len(), 1);
         assert!(dir.path().join("blobs").join(gone).is_file());
+    }
+
+    /// Two details under one label could never be told apart for removal,
+    /// so the second is refused before its picture is stored (review of #684).
+    #[test]
+    fn a_label_is_unique_within_its_kind() {
+        let dir = scratch();
+        create(dir.path(), character("wren", Origin::Owner)).unwrap();
+        add_reference(
+            dir.path(),
+            "wren",
+            RefKind::Detail,
+            &png_of([1, 3, 0]),
+            Some("tattoo".into()),
+        )
+        .unwrap();
+        let dup = add_reference(
+            dir.path(),
+            "wren",
+            RefKind::Detail,
+            &png_of([1, 4, 0]),
+            Some(" tattoo ".into()),
+        )
+        .unwrap_err();
+        assert!(dup.to_string().contains("use another label"), "{dup}");
+        let blobs = std::fs::read_dir(dir.path().join("blobs")).unwrap().count();
+        assert_eq!(blobs, 2, "the refused picture was stored");
+    }
+
+    /// The read itself refuses a reference the entry may not send, so no
+    /// caller can ship one by iterating `references` (review of #684).
+    #[test]
+    fn a_reference_that_may_not_be_sent_cannot_be_read() {
+        let dir = scratch();
+        create(dir.path(), character("wren", Origin::Owner)).unwrap();
+        let path = entry_dir(dir.path(), Kind::Character, "wren").join("entry.toml");
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str("\n[[reference]]\nkind = \"view\"\nblob = \"sha256-bb.png\"\n");
+        std::fs::write(&path, text).unwrap();
+        let lib = Library::load(dir.path()).0;
+        let wren = lib.get(Kind::Character, "wren").unwrap();
+        let err = lib.read_reference(wren, &wren.references[0]).unwrap_err();
+        assert!(err.to_string().contains("not one it may send"), "{err}");
     }
 
     /// The delete gate walks the whole store: a blob named only under a
