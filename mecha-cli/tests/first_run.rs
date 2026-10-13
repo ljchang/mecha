@@ -920,6 +920,51 @@ fn tools_runs_with_nothing_configured() {
     );
 }
 
+/// `offered_to_personas` in `--json` is `null` only where the *name* is what
+/// cannot be told apart — an offered server that is unprefixed. A tool no
+/// persona can ever be given (one that writes, or one that aims) is a
+/// definite `false` whichever server it came from (review of #668, pass 4).
+#[test]
+fn a_tool_no_persona_can_be_given_is_never_offered_as_unknown() {
+    let home = Home::new("tools-personas");
+    std::fs::write(
+        home.path().join("config.toml"),
+        r#"
+[tools]
+enabled = ["fs_read", "fs_write", "http_fetch"]
+
+[[mcp]]
+name = "unprefixed"
+command = "true"
+prefix_tools = false
+personas = true
+"#,
+    )
+    .expect("writing the config");
+    let json = mecha(&home, &["tools", "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap_or_else(|e| {
+        panic!(
+            "tools --json ({e}):\n{}",
+            String::from_utf8_lossy(&json.stderr)
+        )
+    });
+    let tools = v.as_array().expect("`mecha tools --json` emits an array");
+    let offered = |name: &str| {
+        tools
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap_or_else(|| panic!("`{name}` is not in the registry: {tools:#?}"))
+            ["offered_to_personas"]
+            .clone()
+    };
+    // Admissible, and the unprefixed server could have served one by that
+    // name: unknown, honestly.
+    assert_eq!(offered("fs_read"), serde_json::Value::Null);
+    // Writes, or aims: no persona is given either, so the answer is known.
+    assert_eq!(offered("fs_write"), serde_json::Value::Bool(false));
+    assert_eq!(offered("http_fetch"), serde_json::Value::Bool(false));
+}
+
 /// `doctor` reads every store in one pass, and on a fresh install every one
 /// of them is absent. Absent must not read as broken, or the first thing a
 /// new user sees is a wall of alarm about stores nobody has created yet.
