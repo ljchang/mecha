@@ -191,6 +191,18 @@ pub const SIDECARS: &[Sidecar] = &[
         // from the hub, read there as ComfyUI's are (review of #649).
         models_in_hub: false,
     },
+    // The knowledge graph's MCP server: one on the PATH is the owner's, used
+    // as it is; otherwise `enable graph` builds the pinned commit into
+    // mecha's tree (`graph_mcp.rs`, the owner's ruling of 2026-10-13).
+    Sidecar {
+        id: "graph-mcp",
+        label: "the knowledge graph's MCP server (mecha-graph-mcp)",
+        needed_by: &[Feature::Graph],
+        serves: &[],
+        evidence: &[Evidence::OnPath("mecha-graph-mcp")],
+        installer: "13",
+        models_in_hub: true,
+    },
 ];
 
 /// The record of what mecha itself wrote under `~/.mecha/sidecars/` (§10.2

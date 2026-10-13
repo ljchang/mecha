@@ -89,6 +89,7 @@ pub mod forget;
 pub mod frontdoor;
 pub mod goal;
 pub mod gossip;
+pub mod graph_mcp;
 pub mod grounding;
 pub mod guilt;
 pub mod harness;

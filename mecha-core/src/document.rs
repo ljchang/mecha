@@ -1722,6 +1722,82 @@ enum Stage {
 /// The layout model's hash, remembered while the file is unchanged.
 type HashMemo = std::sync::Mutex<Option<(PathBuf, u64, std::time::SystemTime, String)>>;
 
+/// Why a PDF is refused before anything runs, on a system whose configured
+/// confinement cannot exist: bubblewrap and Landlock are Linux's, and a Mac
+/// has neither — so the refusal names that, early, rather than as a
+/// confused wrapper failure (the owner's ruling, 2026-10-13: a Mac reads
+/// pictures, and PDFs wait for the macOS sandbox). `none` is the operator's
+/// explicit choice and is not refused here.
+pub fn pdf_refused_on(os: &str, confine: Backend) -> Option<&'static str> {
+    (os == "macos" && matches!(confine, Backend::Bwrap | Backend::Landlock)).then_some(
+        "PDFs on a Mac need the macOS sandbox, which is not built yet — the PDF parser is never \
+         run unconfined. Pictures (PNG, JPEG, WebP, GIF) are read by OCR.",
+    )
+}
+
+/// What `mecha features enable documents` writes when the config has no
+/// `[documents]` table: the settings that match what is installed here.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TableChoice {
+    pub ocr: bool,
+    pub layout: bool,
+    /// The confinement proved to run here; `None` leaves the default.
+    pub confine: Option<Backend>,
+}
+
+/// Give the config a `[documents]` table when it has none (§13) — the switch
+/// alone leaves documents unready. A table the owner wrote is never edited:
+/// `Ok(false)`. In place through `toml_edit`, so the file's comments stay
+/// (`comfyui_unit::write_image_table`'s shape).
+pub fn write_documents_table(path: &Path, choice: &TableChoice) -> Result<bool> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    let mut doc: toml_edit::DocumentMut = text
+        .parse()
+        .with_context(|| format!("{} is not valid TOML; nothing was changed", path.display()))?;
+    if doc.contains_key("documents") {
+        return Ok(false);
+    }
+    let mut table = toml_edit::Table::new();
+    table.insert("ocr", toml_edit::value(choice.ocr));
+    table.insert("layout", toml_edit::value(choice.layout));
+    if let Some(c) = choice.confine {
+        table.insert("confine", toml_edit::value(c.as_str()));
+    }
+    doc.insert("documents", toml_edit::Item::Table(table));
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    let tmp = path.with_extension("toml.documents-tmp");
+    std::fs::write(&tmp, doc.to_string()).with_context(|| format!("writing {}", tmp.display()))?;
+    if let Ok(meta) = std::fs::metadata(path) {
+        let _ = std::fs::set_permissions(&tmp, meta.permissions());
+    }
+    std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
+    Ok(true)
+}
+
+/// The confinement the PDF parser actually runs under here, asked of each
+/// candidate's own preflight (poppler started inside it): bubblewrap, else
+/// Landlock. `Err` carries every reason, for a system where neither runs.
+pub async fn working_confinement() -> std::result::Result<Backend, String> {
+    let mut why = Vec::new();
+    for backend in [Backend::Bwrap, Backend::Landlock] {
+        let cfg = DocumentsConfig {
+            confine: backend,
+            ..DocumentsConfig::default()
+        };
+        match Renderer::new(&cfg).preflight().await {
+            Ok(()) => return Ok(backend),
+            Err(e) => why.push(format!("{}: {e:#}", backend.as_str())),
+        }
+    }
+    Err(why.join("; "))
+}
+
 /// The extractor: config, the confined renderer, the OCR client if any, the
 /// cache if any. Cheap to build; holds no connection until used.
 pub struct Extractor {
@@ -2077,6 +2153,9 @@ impl Extractor {
     async fn open(&self, kind: Kind, bytes: &[u8]) -> Result<Source> {
         match kind {
             Kind::Pdf => {
+                if let Some(why) = pdf_refused_on(std::env::consts::OS, self.cfg.confine) {
+                    bail!("{why}");
+                }
                 self.renderer.preflight().await?;
                 Ok(Source::Pdf(Scratch::new(bytes)?))
             }
