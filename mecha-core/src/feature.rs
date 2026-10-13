@@ -941,6 +941,26 @@ pub struct McpWiring {
     pub outbox: &'static [&'static str],
 }
 
+impl McpWiring {
+    /// The staged calls as an entry called `name` registers them: `outbox` is
+    /// spelled for the entry this wiring writes (`<name>__<tool>`), and an
+    /// owner's entry may be called otherwise or unprefixed (review of #669,
+    /// pass 4).
+    pub fn routes_as(&self, name: &str, prefix: bool) -> Vec<String> {
+        let own = format!("{}__", self.name);
+        self.outbox
+            .iter()
+            .map(|t| {
+                let tool = t.strip_prefix(own.as_str()).unwrap_or(t);
+                match prefix {
+                    true => format!("{name}__{tool}"),
+                    false => tool.to_string(),
+                }
+            })
+            .collect()
+    }
+}
+
 /// The wiring `features enable` writes for a feature, where it has one: the
 /// shape the docs have always given (`mail.md`, `documents.md`, the graph
 /// page), so a yes in `mecha setup` ends at a sign-in page rather than at "add
@@ -995,8 +1015,14 @@ fn installs(f: Feature) -> &'static str {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpWrite {
     /// Whether the `[[mcp]]` entry was written; false when one already runs
-    /// the program (enabled or not), which is left as it is.
+    /// the program or carries the feature's name (enabled or not), which is
+    /// left as it is.
     pub wrote_entry: bool,
+    /// The feature's staged calls as the registry will name them: off the
+    /// entry that serves it — the owner's own `name` and `prefix_tools` where
+    /// one exists, never the docs' spelling — so the routing written or
+    /// advised is routing that routes (review of #669, pass 4).
+    pub routes: Vec<String>,
     /// Whether an `[outbox]` table was written, where there was none.
     pub wrote_outbox: bool,
     /// The routing the owner's own `[outbox]` lacks — never edited, so the
@@ -1004,42 +1030,52 @@ pub struct McpWrite {
     /// written: a hand-wired install is the one most likely to lack it
     /// (review of #669).
     pub outbox_missing: Vec<String>,
+    /// Routes an operator rule names, which kept the `[outbox]` unwritten:
+    /// for the caller to name with the rule.
+    pub ruled: Vec<String>,
     /// An existing entry that does not force `untrusted_input = true`: never
     /// edited, named by the caller (review of #669).
     pub untrusted_missing: bool,
 }
 
-/// Write one feature's wiring — [`write_mcp_entries`] with a single item.
+/// Write one feature's wiring — [`write_mcp_entries`] with a single item and
+/// no operator rules.
 pub fn write_mcp_entry(
     path: &Path,
     wiring: &McpWiring,
     command: &Path,
 ) -> anyhow::Result<McpWrite> {
-    Ok(write_mcp_entries(path, &[(wiring, command)], true)?.remove(0))
+    Ok(write_mcp_entries(path, &[(wiring, command)], &|_| false)?.remove(0))
 }
 
 /// Write each feature's `[[mcp]]` entry, running its command, into the global
-/// config where no entry runs that program, with `untrusted_input` forced on —
-/// every one of these servers carries other people's words — and their staged
-/// calls in one `[outbox]` when there is none yet. One call decides the
-/// outbox for every feature in it, so `enable mail docs` routes both rather
-/// than the second finding the first's fresh table and leaving it (review of
-/// #669). An entry or `[outbox]` the owner wrote is never edited; what an
-/// existing entry lacks of the forced capability, and what an existing
-/// `[outbox]` lacks of the routing, is returned for the caller to name. In
-/// place through `toml_edit`, comments kept, written beside and renamed, and
-/// not written at all when nothing changed.
+/// config where no entry runs that program or carries its name, with
+/// `untrusted_input` forced on — every one of these servers carries other
+/// people's words — and their staged calls in one `[outbox]` when there is
+/// none yet. One call decides the outbox for every feature in it, so `enable
+/// mail docs` (and `mecha setup`'s yeses, wired together after the last)
+/// routes both rather than the second finding the first's fresh table and
+/// leaving it (review of #669). An entry or `[outbox]` the owner wrote is
+/// never edited; what an existing entry lacks of the forced capability, and
+/// what an existing `[outbox]` lacks of the routing, is returned for the
+/// caller to name. In place through `toml_edit`, comments kept, written
+/// beside and renamed, and not written at all when nothing changed.
 ///
-/// `stage` false writes no `[outbox]` — the caller found an operator rule on
-/// a tool it would route: an `allow`/`prompt` there `setup::live_rules`
-/// refuses at every start, and a `forbid` the route would turn into a
-/// releasable draft (review of #669). Nothing is reported missing then: there
-/// is no table to add to, and the caller has named the rule, which is what
-/// stands in the way.
+/// A name matches as well as a command: an entry called `mail` that runs a
+/// wrapper is the owner's mail, and a second `mail` beside it would shadow
+/// one server's tools with the other's — for the graph's unprefixed names,
+/// fail every start (review of #669, pass 4).
+///
+/// `ruled` says whether an operator rule names a tool. Where one names a
+/// route and no `[outbox]` exists, none is written: an `allow`/`prompt` there
+/// `setup::live_rules` refuses at every start, and a `forbid` the route would
+/// turn into a releasable draft (review of #669). The ruled routes are
+/// returned and nothing is reported missing — there is no table to add to,
+/// and the rule is what stands in the way.
 pub fn write_mcp_entries(
     path: &Path,
     items: &[(&McpWiring, &Path)],
-    stage: bool,
+    ruled: &dyn Fn(&str) -> bool,
 ) -> anyhow::Result<Vec<McpWrite>> {
     use anyhow::Context;
     let text = match std::fs::read_to_string(path) {
@@ -1054,16 +1090,18 @@ pub fn write_mcp_entries(
     let mut results = Vec::new();
     let mut changed = false;
     for (wiring, command) in items {
-        let runs = |t: &toml_edit::Table| {
-            t.get("command")
+        let serves = |t: &toml_edit::Table| {
+            let runs = t
+                .get("command")
                 .and_then(|c| c.as_str())
                 .and_then(|c| Path::new(c).file_name().map(|n| n == wiring.program))
-                .unwrap_or(false)
+                .unwrap_or(false);
+            runs || t.get("name").and_then(|n| n.as_str()) == Some(wiring.name)
         };
         let existing = doc
             .get("mcp")
             .and_then(|m| m.as_array_of_tables())
-            .and_then(|servers| servers.iter().find(|t| runs(t)).cloned());
+            .and_then(|servers| servers.iter().find(|t| serves(t)).cloned());
         // An entry the owner wrote that does not force the capability: named,
         // never edited. It is the stronger gap — a mail read declares only
         // `readOnlyHint`, so without it a mail body never arms the untrusted
@@ -1074,6 +1112,19 @@ pub fn write_mcp_entries(
                 .and_then(|v| v.as_bool())
                 != Some(true)
         });
+        // The registry prefixes a tool with its entry's name unless the entry
+        // says `prefix_tools = false` (`mcp.rs`).
+        let (name, prefix) = match &existing {
+            Some(t) => (
+                t.get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or(wiring.name)
+                    .to_string(),
+                t.get("prefix_tools").and_then(|v| v.as_bool()) != Some(false),
+            ),
+            None => (wiring.name.to_string(), wiring.prefix_tools),
+        };
+        let routes = wiring.routes_as(&name, prefix);
         if existing.is_none() {
             let mut entry = toml_edit::Table::new();
             entry.insert("name", toml_edit::value(wiring.name));
@@ -1101,28 +1152,32 @@ pub fn write_mcp_entries(
         }
         results.push(McpWrite {
             wrote_entry: existing.is_none(),
+            ruled: if outbox_existed {
+                Vec::new()
+            } else {
+                routes.iter().filter(|t| ruled(t)).cloned().collect()
+            },
+            routes,
             wrote_outbox: false,
             outbox_missing: Vec::new(),
             untrusted_missing,
         });
     }
-    let wanted: Vec<&str> = items
-        .iter()
-        .flat_map(|(w, _)| w.outbox.iter().copied())
-        .collect();
     if !outbox_existed {
-        // `stage` false: nothing written and nothing missing (see above).
-        if stage && !wanted.is_empty() {
+        // A rule on any route: nothing written and nothing missing (see
+        // above).
+        let wanted: Vec<&String> = results.iter().flat_map(|r| &r.routes).collect();
+        if !wanted.is_empty() && results.iter().all(|r| r.ruled.is_empty()) {
             let mut tools = toml_edit::Array::new();
-            for t in &wanted {
-                tools.push(*t);
+            for t in wanted {
+                tools.push(t.as_str());
             }
             let mut table = toml_edit::Table::new();
             table.insert("tools", toml_edit::value(tools));
             doc.insert("outbox", toml_edit::Item::Table(table));
             changed = true;
-            for ((w, _), r) in items.iter().zip(results.iter_mut()) {
-                r.wrote_outbox = !w.outbox.is_empty();
+            for r in results.iter_mut() {
+                r.wrote_outbox = !r.routes.is_empty();
             }
         }
     } else {
@@ -1136,12 +1191,12 @@ pub fn write_mcp_entries(
                     .collect()
             })
             .unwrap_or_default();
-        for ((w, _), r) in items.iter().zip(results.iter_mut()) {
-            r.outbox_missing = w
-                .outbox
+        for r in results.iter_mut() {
+            r.outbox_missing = r
+                .routes
                 .iter()
-                .filter(|t| !routed.iter().any(|x| x == *t))
-                .map(|t| t.to_string())
+                .filter(|t| !routed.contains(t))
+                .cloned()
                 .collect();
         }
     }
@@ -1541,7 +1596,7 @@ mod tests {
             let p = root.join(name);
             let items: Vec<(&McpWiring, &Path)> =
                 order.iter().map(|w| (*w, Path::new("/b/x"))).collect();
-            let done = write_mcp_entries(&p, &items, true).unwrap();
+            let done = write_mcp_entries(&p, &items, &|_| false).unwrap();
             assert!(done
                 .iter()
                 .all(|d| d.wrote_entry && d.wrote_outbox && d.outbox_missing.is_empty()));
@@ -1565,12 +1620,76 @@ mod tests {
         let root = std::env::temp_dir().join(format!("mecha-mcp-n-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let p = root.join("ruled.toml");
-        let done = write_mcp_entries(&p, &[(&mail, Path::new("/b/mecha-mail"))], false).unwrap();
+        let done = write_mcp_entries(&p, &[(&mail, Path::new("/b/mecha-mail"))], &|t| {
+            t == "mail__mail_send"
+        })
+        .unwrap();
         let text = std::fs::read_to_string(&p).unwrap();
         let _ = std::fs::remove_dir_all(&root);
         assert!(done[0].wrote_entry && !done[0].wrote_outbox);
         assert!(done[0].outbox_missing.is_empty(), "{:?}", done[0]);
+        assert_eq!(done[0].ruled, ["mail__mail_send"]);
         assert!(!text.contains("[outbox]"), "{text}");
+    }
+
+    /// The routing is spelled off the entry that serves the feature, not the
+    /// docs' entry: an owner's `gmail` entry running `mecha-mail` is routed
+    /// as `gmail__…`, an unprefixed one by the bare names, and an entry named
+    /// `mail` that runs a wrapper is the owner's mail — no second `mail` is
+    /// appended beside it (review of #669, pass 4). Each of these wrote
+    /// `mail__…` names that route nothing, or a duplicate entry, before.
+    #[test]
+    fn the_routing_is_named_off_the_entry_that_serves_it() {
+        let root = std::env::temp_dir().join(format!("mecha-mcp-r-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mail = mcp_wiring(Feature::Mail).unwrap();
+        let write = |name: &str, text: &str| {
+            let p = root.join(name);
+            std::fs::write(&p, text).unwrap();
+            let done = write_mcp_entry(&p, &mail, Path::new("/b/mecha-mail")).unwrap();
+            let v: toml::Value = toml::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+            (done, v)
+        };
+        let (renamed, renamed_v) = write(
+            "renamed.toml",
+            "[[mcp]]\nname = \"gmail\"\ncommand = \"~/.cargo/bin/mecha-mail\"\n",
+        );
+        let (bare, _) = write(
+            "bare.toml",
+            "[[mcp]]\nname = \"mail\"\ncommand = \"/b/mecha-mail\"\nprefix_tools = false\n\n\
+             [outbox]\ntools = [\"mail_send\"]\n",
+        );
+        let (wrapped, wrapped_v) = write(
+            "wrapped.toml",
+            "[[mcp]]\nname = \"mail\"\ncommand = \"/usr/local/bin/mail-wrap\"\n",
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert!(!renamed.wrote_entry && renamed.wrote_outbox);
+        let tools: Vec<&str> = renamed_v["outbox"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t.as_str())
+            .collect();
+        assert_eq!(tools.len(), mail.outbox.len());
+        assert!(tools.iter().all(|t| t.starts_with("gmail__")), "{tools:?}");
+        assert!(tools.contains(&"gmail__mail_send"));
+
+        assert!(!bare.wrote_entry && !bare.wrote_outbox);
+        assert_eq!(
+            bare.outbox_missing,
+            [
+                "mail_reply",
+                "calendar_create_event",
+                "calendar_update_event",
+                "calendar_delete_event"
+            ]
+        );
+
+        assert!(!wrapped.wrote_entry);
+        assert_eq!(wrapped_v["mcp"].as_array().unwrap().len(), 1);
+        assert_eq!(wrapped.routes, mail.outbox);
     }
 
     /// `enable mail` writes the entry the docs give, untrusted, with its sends
