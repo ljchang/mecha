@@ -8,7 +8,7 @@
   import { replyContext } from './speech.js';
   import EditModal from './EditModal.svelte';
   import { composeEditMessage, composeRegenerateMessage, maskName } from './image-edit.js';
-  import { pictureOf, clipOf, stillOut, waitingPictures, repeatedPictures, downloadPicture, pictureVersions, shownVersion } from './picture.js';
+  import { pictureOf, clipOf, stillOut, waitingPictures, repeatedPictures, downloadPicture, pictureVersions, shownVersion, makingText } from './picture.js';
   import ClipPlayer from './ClipPlayer.svelte';
   import { carriesFiles, droppedFiles, withAttachments } from './attach.js';
   import { rowSummary, ROUTING_KEYS } from './outbox-view.js';
@@ -2056,7 +2056,7 @@
           {#if entry.pending}<span class="tool-state">running…</span>
           {:else if entry.blocked}<span class="tool-state">blocked</span>
           {:else if entry.is_error}<span class="tool-state">failed</span>
-          {:else if stillOut(entry)}<span class="tool-state">{queuedPictures.has(i) ? 'waiting its turn…' : entry.name === 'image_generate' ? 'drawing a picture…' : 'running…'}</span>{/if}
+          {:else if stillOut(entry)}<span class="tool-state">{queuedPictures.has(i) ? 'waiting its turn…' : makingText(entry)}</span>{/if}
         </div>
         <!-- Still being drawn past the turn that asked for it (§5.4): it
              lands on this row when done. Its Stop ends the picture alone,

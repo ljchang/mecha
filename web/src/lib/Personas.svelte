@@ -13,7 +13,8 @@
   import { features } from './features.svelte.js';
   import { isShown } from './features.js';
   import { composeEditMessage, composeRegenerateMessage, composeRegionsMessage, maskName } from './image-edit.js';
-  import { pictureOf, stillOut, waitingPictures, repeatedPictures, turnsWithoutPicture, downloadPicture, picturesIn, picturesSince, pictureVersions, shownVersion } from './picture.js';
+  import { pictureOf, clipOf, stillOut, waitingPictures, repeatedPictures, turnsWithoutPicture, downloadPicture, picturesIn, picturesSince, pictureVersions, shownVersion, makingText } from './picture.js';
+  import ClipPlayer from './ClipPlayer.svelte';
   import { carriesFiles, droppedFiles, withAttachments } from './attach.js';
   import { watchIdle, idleSpan } from './autolock.js';
   import { repairComments, changesOf } from './tomlform.js';
@@ -2014,6 +2015,7 @@
           {:else if entry.kind === 'tool'}
             {@const status = toolStatus(run.entries, i)}
             {@const picture = pictureOf(entry)}
+            {@const clip = clipOf(entry)}
             {@const fold = versions.folded.get(i)}
             {@const tr = toolRun(run.entries, i, (e) => !pictureOf(e), (e) => e.is_error === true)}
             {#if tr.first}
@@ -2058,10 +2060,12 @@
               {#if queuedPictures.has(i)}
                 <span class="genwait">waiting its turn…</span>
               {:else}
-                <span class="genwait">drawing a picture…{entry.started ? ` ${clockOf(now - entry.started)}` : ''}</span>
+                <span class="genwait">{makingText(entry)}{entry.started ? ` ${clockOf(now - entry.started)}` : ''}</span>
               {/if}
               <button class="genedit" onclick={() => stopPicture(entry.id)}>Stop</button>
             {/if}
+            <!-- A clip a deferring tool made (§9), played where its call is. -->
+            {#if clip}<ClipPlayer src={pictureUrl(clip)} />{/if}
           {:else if entry.kind === 'notice'}
             <div class="notice">{entry.text}</div>
           {:else if entry.kind === 'crisis'}
@@ -2278,6 +2282,7 @@
       ondismiss={(id) => (dismissed = new Set([...dismissed, id]))}
       {pictureUrl}
       making={callEntries.some(stillOut)}
+      makingLabel={makingText(callEntries.find((e) => stillOut(e) && e.name === 'image_generate') ?? callEntries.find(stillOut))}
       onstoppicture={() => stopPicture()}
       ondownload={savePicture}
       onedit={editInCall}

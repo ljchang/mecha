@@ -56,6 +56,29 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // unknown, and `--json` says `null` rather than a `false` a script would
     // read as "no" (review of #290 — a dash is never zero).
     let unattributable = vouched.iter().any(|s| s.prefix_tools == Some(false));
+    // Servers offered to persona chats (`[[mcp]] personas`), named for the
+    // same reason: the switch is the owner vouching that a server reads no
+    // private store (BACKGROUND-JOBS-DESIGN.md §9).
+    let offered: Vec<&mecha_core::config::McpServerConfig> = prepared
+        .config
+        .mcp
+        .iter()
+        .filter(|s| s.personas && !s.disabled)
+        .collect();
+    // Per tool, honestly: this tool is one a persona's registry would admit
+    // — read-only, and not able to aim (review of #668, pass 3) — and its
+    // server is offered. Only the second half depends on the name, so only
+    // it can make the answer unknowable (pass 4).
+    let admissible_to_a_persona = |t: &dyn mecha_core::tool::Tool| {
+        t.read_only() && t.capabilities().egress < mecha_core::tool::Egress::Chosen
+    };
+    let offered_to_personas = |t: &dyn mecha_core::tool::Tool| {
+        admissible_to_a_persona(t)
+            && offered.iter().any(|s| {
+                s.prefix_tools != Some(false) && t.name().starts_with(&format!("{}__", s.name))
+            })
+    };
+    let offered_unattributable = offered.iter().any(|s| s.prefix_tools == Some(false));
 
     if args.json {
         let specs: Vec<_> = registry
@@ -76,6 +99,15 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     "result_claims_believed": if claims_believed(t.name()) {
                         serde_json::Value::Bool(true)
                     } else if unattributable {
+                        serde_json::Value::Null
+                    } else {
+                        serde_json::Value::Bool(false)
+                    },
+                    // A persona chat may be given this tool, on the owner's
+                    // word about its server — see `[[mcp]] personas`.
+                    "offered_to_personas": if offered_to_personas(t.as_ref()) {
+                        serde_json::Value::Bool(true)
+                    } else if offered_unattributable && admissible_to_a_persona(t.as_ref()) {
                         serde_json::Value::Null
                     } else {
                         serde_json::Value::Bool(false)
@@ -115,7 +147,18 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             }
         );
     }
-    if !vouched.is_empty() {
+    for s in &offered {
+        println!(
+            "offered to persona chats: `{}` (personas){}",
+            s.name,
+            if s.prefix_tools == Some(false) {
+                " — its tools are unprefixed, so not marked below"
+            } else {
+                ""
+            }
+        );
+    }
+    if !vouched.is_empty() || !offered.is_empty() {
         println!();
     }
 
@@ -135,7 +178,20 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         } else {
             ""
         };
-        println!("{}  [{}{}{}]", tool.name(), access, routing, claims);
+        // Marked as the header promises (review of #668, pass 2).
+        let personas = if offered_to_personas(tool.as_ref()) {
+            " · offered to persona chats"
+        } else {
+            ""
+        };
+        println!(
+            "{}  [{}{}{}{}]",
+            tool.name(),
+            access,
+            routing,
+            claims,
+            personas
+        );
         for line in tool.description().lines() {
             println!("    {line}");
         }

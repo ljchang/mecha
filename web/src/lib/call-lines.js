@@ -2,7 +2,7 @@
 // call shows the whole conversation, in persona chats and the assistant's
 // alike). Pure, so `web/test/call-lines.mjs` imports it.
 
-import { pictureOf, stillOut } from './picture.js';
+import { pictureOf, clipOf, stillOut, makingText } from './picture.js';
 import { ownWords } from './persona.js';
 
 // A line of the owner's that the chat received: not one still queued.
@@ -39,6 +39,7 @@ function dropped(e) {
 export function historyLines(entries) {
   const lines = [];
   const pictures = new Set();
+  const clips = new Set();
   for (const e of entries ?? []) {
     if (e.kind === 'user') {
       const lost = dropped(e);
@@ -60,7 +61,12 @@ export function historyLines(entries) {
       } else if (stillOut(e)) {
         // Still being drawn past its turn (§5.4): its place in the
         // conversation, which the picture takes when it lands.
-        lines.push({ who: 'persona', making: true, text: 'drawing a picture…' });
+        lines.push({ who: 'persona', making: true, text: makingText(e) });
+      } else if (clipOf(e) && !clips.has(clipOf(e))) {
+        // A clip made during the call plays in the chat, not on the call
+        // screen; its place here says where it is, once (§9).
+        clips.add(clipOf(e));
+        lines.push({ who: 'persona', text: 'a clip, in the chat' });
       }
     }
   }

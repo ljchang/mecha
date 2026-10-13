@@ -480,11 +480,16 @@ export function applyEvent(state, ev) {
     }
     // The preview is kept: its first line names the picture a finished
     // `image_generate` drew, which the page shows under the row (`picture.js`).
+    // The server's `deferred` mark rides along: it is what makes another
+    // deferring tool's row still out, and its clip playable
+    // (BACKGROUND-JOBS-DESIGN.md §9).
     case 'tool_result':
       return {
         ...state,
         entries: state.entries.map((e) =>
-          e.kind === 'tool' && e.id === ev.id ? { ...e, is_error: ev.is_error, preview: ev.preview } : e,
+          e.kind === 'tool' && e.id === ev.id
+            ? { ...e, is_error: ev.is_error, preview: ev.preview, ...(ev.deferred ? { deferred: true } : {}) }
+            : e,
         ),
       };
     // The crisis sensor fired and the persona paused: the plain voice's

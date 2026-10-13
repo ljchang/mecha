@@ -7,7 +7,9 @@
 // chat-relative `.mp4` path. And a deferred row is still out only while its
 // first line says `being made: `, keyed on the mark, never the words.
 import { readFileSync } from 'node:fs';
-import { clipOf, stillOut } from '../src/lib/picture.js';
+import { clipOf, stillOut, makingText } from '../src/lib/picture.js';
+import { applyEvent } from '../src/lib/persona.js';
+import { historyLines } from '../src/lib/call-lines.js';
 
 let passed = 0;
 let failed = 0;
@@ -51,6 +53,38 @@ is(
   null,
   'only the envelope the loop writes, line for line'
 );
+
+// A persona's chat (§9): the live fold keeps the server's mark, so a clip
+// still out has its state and Stop, and the clip plays once it lands.
+{
+  let state = { entries: [] };
+  state = applyEvent(state, { type: 'tool', id: 'v1', name: 'video_generate' });
+  state = applyEvent(state, { type: 'tool_result', id: 'v1', is_error: false, preview: making, deferred: true });
+  is(stillOut(state.entries[0]), true, 'a persona row the server marked is still out');
+  state = applyEvent(state, { type: 'tool_result', id: 'v1', is_error: false, preview: 'video: videos/v1.mp4', deferred: true });
+  is(clipOf(state.entries[0]), 'videos/v1.mp4', 'and its clip plays once it lands');
+  let plain = { entries: [] };
+  plain = applyEvent(plain, { type: 'tool', id: 's1', name: 'shell' });
+  plain = applyEvent(plain, { type: 'tool_result', id: 's1', is_error: false, preview: making });
+  is(stillOut(plain.entries[0]), false, 'an unmarked row with the same words is not');
+}
+
+is(makingText({ name: 'image_generate' }), 'drawing a picture…', 'a picture keeps its words');
+is(makingText({ name: 'video_generate' }), 'working on it…', 'anything else is not called a picture');
+
+{
+  const lines = historyLines([
+    row(making, { id: 'v1', name: 'video_generate' }),
+    row('video: videos/v2.mp4', { id: 'v2', name: 'video_generate' }),
+  ]);
+  is(lines[0]?.text, 'working on it…', 'the call screen says a clip is being made, not a picture');
+  is(lines[1]?.text, 'a clip, in the chat', 'and where a finished clip is');
+  const twice = historyLines([
+    row('video: videos/v2.mp4', { id: 'v2', name: 'video_generate' }),
+    row('video: videos/v2.mp4', { id: 'v3', name: 'video_generate' }),
+  ]);
+  is(twice.length, 1, 'one clip is noted once');
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

@@ -351,6 +351,22 @@ fn vouched_note() {
             names.join(", ")
         );
     }
+    // The other switch that vouches for a server: that it reads none of the
+    // owner's private stores, so persona chats may be given its tools
+    // (BACKGROUND-JOBS-DESIGN.md §9). A note, on the same rule.
+    let offered: Vec<&str> = config
+        .mcp
+        .iter()
+        .filter(|s| s.personas && !s.disabled)
+        .map(|s| s.name.as_str())
+        .collect();
+    if !offered.is_empty() {
+        println!(
+            "\nnote: offered to persona chats, on your word that they read no private store \
+             (personas): {}",
+            offered.join(", ")
+        );
+    }
 }
 
 /// Name a learning store's leftover `.git` and what it holds. Not a finding,

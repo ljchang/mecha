@@ -53,6 +53,9 @@ pub struct McpClient {
     /// Whether this server's `_meta` claims about a result are believed.
     /// See [`McpServerConfig::trust_result_claims`].
     trust_result_claims: bool,
+    /// The owner offered this server's tools to persona chats
+    /// ([`McpServerConfig::personas`]).
+    personas: bool,
     stdin: tokio::sync::Mutex<Option<ChildStdin>>,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>>,
     next_id: AtomicU64,
@@ -241,6 +244,7 @@ impl McpClient {
             prefix_tools: cfg.prefix_tools.unwrap_or(true),
             forced: cfg.capabilities.into(),
             trust_result_claims: cfg.trust_result_claims,
+            personas: cfg.personas,
             stdin: tokio::sync::Mutex::new(Some(stdin)),
             pending,
             next_id: AtomicU64::new(1),
@@ -473,6 +477,7 @@ impl McpClient {
 
                 Some(Arc::new(McpTool {
                     background,
+                    persona: None,
                     // Only a forced `destructive` contradicts a read-only
                     // claim; the others are orthogonal to it and dropping the
                     // exemption for them was wrong. `untrusted_input` says the
@@ -603,6 +608,12 @@ pub const BACKGROUND_META: &str = "mecha-factory.ai/background";
 /// one root. The server proves the folder is somewhere it may write.
 pub const WORKSPACE_META: &str = "mecha-factory.ai/workspace";
 
+/// The `_meta` key a persona's background call carries: which persona is
+/// asking, by folder name, and its linked library character if it has one,
+/// so a server can take `self` to mean it (§9). Never the persona's prompt
+/// or anything it said.
+pub const PERSONA_META: &str = "mecha-factory.ai/persona";
+
 /// How long a background call may take before it is given up on, hosted as
 /// a job or awaited inline. A bound on purpose: with no sink the run itself
 /// waits, and "no upper limit" is not a decision anyone made (§8).
@@ -620,9 +631,12 @@ fn chat_folder(workspace: &Path) -> Option<String> {
         .flatten()
 }
 
+#[derive(Clone)]
 struct McpTool {
     /// The server asked for this tool's calls to run as background jobs.
     background: bool,
+    /// The persona this form serves, when a persona chat holds it (§9).
+    persona: Option<crate::tool::PersonaSelf>,
     read_only: bool,
     capabilities: Capabilities,
     local_name: String,
@@ -669,6 +683,29 @@ impl Tool for McpTool {
         self.background
     }
 
+    /// Offered to a persona only when the owner said so of this server
+    /// (`personas` in its `[[mcp]]` entry; §9): a server's own word is
+    /// never enough, since what a persona form declares — that it reads
+    /// none of the owner's stores — is exactly what a remote server could
+    /// claim falsely.
+    fn for_persona(self: Arc<Self>) -> Option<Arc<dyn Tool>> {
+        // No persona named: the form says nothing about one, as
+        // `image_generate`'s does for the same question (review of #668).
+        if !self.client.personas {
+            return None;
+        }
+        Some(Arc::new(self.persona_form(None)))
+    }
+
+    /// The same, knowing which persona: a background call tells the server
+    /// who is asking, so `self` can mean the persona's character.
+    fn for_persona_as(self: Arc<Self>, who: &crate::tool::PersonaSelf) -> Option<Arc<dyn Tool>> {
+        if !self.client.personas {
+            return None;
+        }
+        Some(Arc::new(self.persona_form(Some(who.clone()))))
+    }
+
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         if self.background {
             return Ok(self.deferred_call(input, ctx));
@@ -686,6 +723,19 @@ impl Tool for McpTool {
 }
 
 impl McpTool {
+    /// The form a persona is given (§9). Its results are a server's words,
+    /// whatever the server's annotations say, so the form declares untrusted
+    /// input: that is what keeps it off a persona that answers from its files
+    /// only (`answers = "files"`, PERSONA-DESIGN.md §10.4, the rule
+    /// `document_read` follows), and what has the loop wrap and taint its
+    /// results there as it does any outside content (review of #668, pass 2).
+    fn persona_form(&self, who: Option<crate::tool::PersonaSelf>) -> McpTool {
+        let mut form = self.clone();
+        form.persona = who;
+        form.capabilities.untrusted_input = true;
+        form
+    }
+
     /// A background tool's call (BACKGROUND-JOBS-DESIGN.md §8): answered at
     /// once in the harness's words, the server's call handed over as the
     /// chat's job. The job owns an `Arc` of the client and the call's
@@ -700,10 +750,17 @@ impl McpTool {
                  not be found, so its result could not reach this chat."
             ));
         };
+        let mut meta = json!({WORKSPACE_META: folder});
+        if let Some(who) = &self.persona {
+            meta[PERSONA_META] = json!({
+                "name": who.name,
+                "character": who.character,
+            });
+        }
         let params = json!({
             "name": self.remote_name,
             "arguments": input,
-            "_meta": {WORKSPACE_META: folder},
+            "_meta": meta,
         });
         let cancel = tokio_util::sync::CancellationToken::new();
         let token = cancel.clone();
@@ -1139,6 +1196,7 @@ for line in sys.stdin:
     elif method == "tools/list":
         result = {"tools": [
             {"name": "render", "description": "slow", "inputSchema": {"type": "object"},
+             "annotations": {"readOnlyHint": True},
              "_meta": {"mecha-factory.ai/background": True}},
             {"name": "quick", "description": "fast", "inputSchema": {"type": "object"}},
             {"name": "sender", "description": "sends", "inputSchema": {"type": "object"},
@@ -1176,6 +1234,10 @@ for line in sys.stdin:
 
     impl Slow {
         async fn start(name: &str) -> Slow {
+            Slow::start_with(name, false).await
+        }
+
+        async fn start_with(name: &str, personas: bool) -> Slow {
             let root =
                 std::env::temp_dir().join(format!("mecha-mcp-slow-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&root);
@@ -1189,6 +1251,7 @@ for line in sys.stdin:
                 command: "python3".into(),
                 args: vec![script.display().to_string(), log.display().to_string()],
                 prefix_tools: Some(false),
+                personas,
                 ..Default::default()
             };
             let client = McpClient::connect(&cfg, &unconfined(), &root)
@@ -1459,6 +1522,81 @@ for line in sys.stdin:
         assert!(late.is_error);
         assert!(late.content.starts_with("not made:"), "{}", late.content);
         assert!(!late.external, "the harness's words, quoting nothing");
+    }
+
+    /// A persona is offered a server's tools only on the owner's word
+    /// (`personas` in its `[[mcp]]` entry), never on the server's; and its
+    /// form tells a background call which persona is asking, so `self` can
+    /// mean its character (BACKGROUND-JOBS-DESIGN.md §9).
+    #[tokio::test]
+    async fn a_persona_gets_a_servers_tools_only_on_the_owners_word() {
+        let who = crate::tool::PersonaSelf {
+            name: "mara".into(),
+            display: "Mara".into(),
+            character: Some("maya".into()),
+        };
+        let closed = Slow::start_with("persona-closed", false).await;
+        assert!(closed.tool("render").for_persona_as(&who).is_none());
+        assert!(closed.tool("render").for_persona().is_none());
+
+        let open = Slow::start_with("persona-open", true).await;
+        let form = open.tool("render").for_persona_as(&who).expect("offered");
+        assert_eq!(form.name(), "render", "the persona form keeps its name");
+        assert!(form.defers());
+        // A server's words, whatever its annotations: untrusted, so a persona
+        // that answers from its files only is never given it (review of #668,
+        // pass 2), and the assistant's own form is unchanged.
+        assert!(form.capabilities().untrusted_input);
+        assert!(!open.tool("render").capabilities().untrusted_input);
+        let out = form
+            .call(json!({"mode": "ok"}), &open.ctx(open.root.join("chat-1")))
+            .await
+            .unwrap();
+        crate::jobs::run_inline(&out.deferred.unwrap(), None).await;
+        let meta = &open.calls()[0]["params"]["_meta"];
+        assert_eq!(meta[PERSONA_META]["name"], "mara");
+        assert_eq!(meta[PERSONA_META]["character"], "maya");
+        assert!(
+            meta[PERSONA_META].get("display").is_none(),
+            "who is asking, never more"
+        );
+
+        // Through the persona registry itself: a persona that answers from
+        // its files only is refused the tool; an open one is given it.
+        let mut pool = crate::tool::Registry::new();
+        pool.insert(open.tool("render"));
+        let mut settings: crate::persona::Settings = toml::from_str("").unwrap();
+        settings.tools.allow = vec!["render".into()];
+        settings.files.answers = crate::persona::Answers::Files;
+        let built = crate::persona::agent::registry_as(&pool, "mara", &settings);
+        assert!(
+            built.registry.iter().next().is_none(),
+            "files only: refused"
+        );
+        assert!(
+            built.refused[0].why.contains("files only"),
+            "{}",
+            built.refused[0].why
+        );
+        settings.files.answers = crate::persona::Answers::Open;
+        let built = crate::persona::agent::registry_as(&pool, "mara", &settings);
+        assert_eq!(
+            built.registry.iter().map(|t| t.name()).collect::<Vec<_>>(),
+            ["render"],
+            "{:?}",
+            built.refused.iter().map(|r| r.why).collect::<Vec<_>>()
+        );
+
+        // The assistant's own form says nothing about a persona.
+        let out = open
+            .tool("render")
+            .call(json!({"mode": "ok"}), &open.ctx(open.root.join("chat-1")))
+            .await
+            .unwrap();
+        crate::jobs::run_inline(&out.deferred.unwrap(), None).await;
+        assert!(open.calls()[1]["params"]["_meta"]
+            .get(PERSONA_META)
+            .is_none());
     }
 
     #[test]
