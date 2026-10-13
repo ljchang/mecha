@@ -6237,7 +6237,10 @@ mod tests {
         let text = std::fs::read_to_string(&toml).unwrap().replace(
             "allow = [\"web_search\"]",
             match (draws, clips) {
-                (true, _) => {
+                (true, true) => {
+                    "allow = [\"fs_read\", \"image_generate\", \"image_view\", \"video_generate\", \"web_search\"]"
+                }
+                (true, false) => {
                     "allow = [\"fs_read\", \"image_generate\", \"image_view\", \"web_search\"]"
                 }
                 (false, true) => {
@@ -10130,7 +10133,8 @@ mod tests {
                 _ => None,
             })
             .collect();
-        // The placeholder, and the clip once its job lands: every one marked.
+        // The placeholder at least; the clip's own result too when its job
+        // lands before `Done`. Whichever arrived, every one is marked.
         assert!(
             !marked.is_empty() && marked.iter().all(|m| *m),
             "{events:?}"
@@ -10155,7 +10159,7 @@ mod tests {
     /// the test above it reaches only the unregistered arm (review of #668,
     /// pass 4). And the resumed chat's row keeps its mark.
     #[tokio::test]
-    async fn a_resumed_chat_settles_a_clip_its_registry_holds() {
+    async fn a_resumed_persona_chat_settles_a_clip_its_registry_holds() {
         let w = world_full(Mode::Answer, |_| {}, false, true);
         let key = open_chat(&w).await;
         let (path, id) = {
@@ -10185,6 +10189,7 @@ mod tests {
             .await
             .unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(r#""record":"late_result""#), "{text}");
         assert!(text.contains(super::super::late::RESTARTED), "{text}");
         let t = w
             .personas()
