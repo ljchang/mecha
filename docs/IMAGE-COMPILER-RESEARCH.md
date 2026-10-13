@@ -687,7 +687,7 @@ duplicate there is not a regression E12 covers.
   format before tier D's LoRAs are the answer. Arms (library v2, design §9):
   F, face only, against B, face + full body bound by person with the
   two-images-one-person wording (design §9.4), each with height in text; two
-  seeds; E9's opposite builds. **Both halves fitted** (review of #680, pass 8):
+  seeds; E9's opposite builds. **Fitted where it matters** (review of #680, passes 8 and 16): the scene states fitted clothing in both arms, and arm B's added reference is fitted grey.
   - arm F's one reference per person is the character's normal portrait, as
     pictures send today; arm B adds a full-body shot in fitted grey clothes as
     each person's second image (review of #680, pass 13);
