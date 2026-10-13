@@ -105,10 +105,12 @@ are Linux-only today. What that means on a Mac:
 - **No other services.** The trigger runner, `mecha serve` as a service and
   the Slack connector are shipped as systemd units. On a Mac, run those
   commands yourself.
-- **The image and voice installers need Linux and an NVIDIA GPU.**
-  `mecha features enable image` and `mecha features enable voice` install
-  their servers only there; on a Mac each switches on for a server you start
-  yourself.
+- **Image generation and voice install on Apple silicon.** `mecha features
+  enable image` installs ComfyUI with PyPI's torch, drawing on the GPU through
+  MPS with the bf16 model files (about 79 s a picture on an M5 Max; `--turbo`
+  adds the 8-step turbo, about 16 s). `mecha features enable voice` builds the
+  speech engine for Metal, which needs Homebrew's `cmake`. On an Intel Mac,
+  each switches on for a server you start yourself.
 - **The web app needs a git checkout and an npm build**, on any platform: the
   pages are a build artifact and do not come with `cargo install` (see
   [the web surface](/docs/features/interfaces/web#installing-the-app-itself)).
