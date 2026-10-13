@@ -24,15 +24,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is settled as not made rather than left with a dead Stop. Only the server
   can opt a tool in; no setting does, and a tool that sends to a recipient
   the model names is never deferred.
-- **Persona chats can be given a server's tools.** `[[mcp]] personas = true`
-  — global config only, off by default — is your statement that the server
-  reads none of your private stores, and each persona still lists the tools
-  it may use. A persona's background call names its folder, its library
-  character and its voice-library voice in
+- **Persona chats can be given a server's tools.** `[[mcp]] personas = true` —
+  global config only, off by default — is your statement that the server reads
+  none of your private stores. Each persona still lists the tools it may use,
+  and a persona chat still refuses a tool that is not read-only — an MCP tool
+  is read-only only where its server declares `readOnlyHint` — or that sends
+  to a recipient the model names. A persona's background call names its
+  folder, its library character and its voice-library voice in
   `_meta["mecha-factory.ai/persona"]`, so a server that makes sound can use
   the persona's voice; never its prompt, display name or anything it said.
   While such a job runs the chat says "working on it…", and the call screen
-  says so beside a picture being drawn. No background job reaches an
+  says so beside a picture being drawn. No server's background job reaches an
   incognito chat.
 
 ### Changed

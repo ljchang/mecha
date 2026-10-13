@@ -689,9 +689,14 @@ trust_result_claims = true
 
 `personas = true` is the other. It is your statement that the server reads none of
 your private stores, so a persona chat may be given its tools. A remote server cannot
-be trusted to say that of itself. It admits nothing alone: each persona still lists
-the tools it may use, and a tool that sends to a recipient the model names is still
-refused there. Like `trust_result_claims`, it is off by default and honoured only
+be trusted to say that of itself. It admits nothing alone. Each persona still lists
+the tools it may use, and a persona chat still refuses two kinds of tool:
+
+- one that is not read-only (an MCP tool counts as read-only only where its server
+  declares `readOnlyHint`, so a server that sends no annotations offers personas
+  nothing);
+- one that sends to a recipient the model names.
+ Like `trust_result_claims`, it is off by default and honoured only
 from your global config. A project's `mecha.toml` or an experiment environment's
 setting is ignored, with a warning. A persona's background call to such a server
 names the persona in `_meta["mecha-factory.ai/persona"]`: its folder name, its
