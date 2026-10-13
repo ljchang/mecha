@@ -65,12 +65,15 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         .iter()
         .filter(|s| s.personas && !s.disabled)
         .collect();
-    // Per tool, honestly: the server is offered, and this tool is one a
-    // persona's registry would admit — read-only, and not able to aim
-    // (review of #668, pass 3).
+    // Per tool, honestly: this tool is one a persona's registry would admit
+    // — read-only, and not able to aim (review of #668, pass 3) — and its
+    // server is offered. Only the second half depends on the name, so only
+    // it can make the answer unknowable (pass 4).
+    let admissible_to_a_persona = |t: &dyn mecha_core::tool::Tool| {
+        t.read_only() && t.capabilities().egress < mecha_core::tool::Egress::Chosen
+    };
     let offered_to_personas = |t: &dyn mecha_core::tool::Tool| {
-        t.read_only()
-            && t.capabilities().egress < mecha_core::tool::Egress::Chosen
+        admissible_to_a_persona(t)
             && offered.iter().any(|s| {
                 s.prefix_tools != Some(false) && t.name().starts_with(&format!("{}__", s.name))
             })
@@ -104,7 +107,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     // word about its server — see `[[mcp]] personas`.
                     "offered_to_personas": if offered_to_personas(t.as_ref()) {
                         serde_json::Value::Bool(true)
-                    } else if offered_unattributable {
+                    } else if offered_unattributable && admissible_to_a_persona(t.as_ref()) {
                         serde_json::Value::Null
                     } else {
                         serde_json::Value::Bool(false)
