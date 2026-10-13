@@ -7,8 +7,17 @@ description: The web_search tool — a chain of search backends tried in order, 
 # Web search
 
 `web_search` lets a run look something up on the web. It is registered only
-when at least one `[[search]]` backend is configured; with none, the tool does
-not exist and the model cannot call it.
+when the `search` switch in [`[features]`](/docs/reference/configuration#features)
+is on **and** at least one `[[search]]` backend is configured; without either,
+the tool does not exist and the model cannot call it. An absent switch is off.
+
+```bash
+mecha features enable search      # or say yes when `mecha setup` offers it
+```
+
+That writes the switch and nothing else: the `[[search]]` entries below are
+yours to add, and until one is there `mecha features` keeps `search` off and
+names the backend to add as its next step.
 
 ## Configure a chain of backends
 

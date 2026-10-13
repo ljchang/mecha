@@ -191,9 +191,10 @@ mecha tui -w ~/code/my-project
 
 ## `serve`
 
-Serve the [web app](/docs/features/interfaces/web) on loopback behind Tailscale. Configure
-`[web] owner_login` in the global config; `assets` points to a separately built
-copy of `web/dist`.
+Serve the [web app](/docs/features/interfaces/web) on loopback behind Tailscale. It
+refuses to start unless `[features] web = true` — an absent switch is off, and
+`mecha features enable web` writes it — and unless `[web] owner_login` is set
+in the global config; `assets` points to a separately built copy of `web/dist`.
 
 | Flag | Description |
 |---|---|
@@ -214,9 +215,12 @@ reading its transcript or events. See [The web surface](/docs/features/interface
 
 ## `voice-serve`
 
-Standalone loopback facade for the local voice worker. The normal browser setup
+Standalone loopback facade for the local voice worker. Refuses unless
+`[features] voice = true`. The normal browser setup
 mounts this inside `mecha serve`; use a separate process when that separation is
-needed. The transcription and speech stack is installed separately.
+needed. The transcription and speech stack runs beside it: on Linux,
+`mecha features enable voice` installs it, and a machine it does not fit is
+told why and keeps the switch, for servers you run yourself.
 
 ```bash
 mecha voice-serve --port 8990
@@ -757,7 +761,10 @@ See [The work directory](/docs/features/automation/work).
 
 Extract a PDF from the terminal: each page's own text layer and, for pages
 with none (a scan) or with `--mode ocr|both`, a local OCR model's transcript.
-Needs a `[documents]` table in `~/.mecha/config.toml`. Shares the cache with
+A picture of text — PNG, JPEG, WebP or GIF — is one page, read by OCR only;
+HEIC and TIFF are refused with the format to convert to. Needs
+`[features] documents = true` (`mecha features enable documents`) and a
+`[documents]` table in `~/.mecha/config.toml`. Shares the cache with
 the `document_read` tool, so a page read here is not transcribed again.
 
 ```
@@ -1670,8 +1677,10 @@ dependency is offered before it:
 | switched on, but waiting on another feature or not ready | wrong, not declinable — you said yes and it does not work; the next command or the edit it needs, and `mecha features disable` turns it off instead |
 | unknown | unknown, offering nothing |
 
-Setup only ever *runs* a command; an edit to `config.toml` (an `[[mcp]]` entry, an
-`[image]` table) is named in the step and left to you. After a command works,
+Setup only ever *runs* a command; an edit to `config.toml` (an `[[mcp]]` entry,
+a `[[search]]` backend, a `[documents]` table) is named in the step and left to
+you. The one table written for you is `[image]`: `mecha features enable image`
+writes it on its defaults when there is none. After a command works,
 it reads the feature again and says where it stands and what is next. Mail,
 docs and the graph count as set up only with an enabled `[[mcp]]` entry naming
 their server, as their tools do — an installed binary alone is not mail. And it
@@ -1693,8 +1702,10 @@ It also offers the **charter** — the ranked standing priorities every run
 carries. That step exists because nothing else named the feature to a new
 install: `doctor` correctly says nothing about a charter that has never been
 written, since not having one is not a fault, so the only ways to discover it
-were the TUI's `/help` and the web settings gear. The remedy hands over
-`$EDITOR`; nothing here composes a priority.
+were the TUI's `/help` and the web settings gear. The step runs nothing: it
+names `mecha charter edit` and Settings → Charter in the web app, and asks only
+*later, or never?* — writing priorities is a sitting of its own, and nothing
+here composes one.
 
 ### Saying no, and meaning it
 
@@ -1848,33 +1859,64 @@ reads provided, never missing.
 
 **`enable` installs what the feature needs and this machine lacks, when mecha
 can install it**. It shows the plan first, installs on one yes, and writes the
-switch only after every install has passed its check. So far that covers
-layout's environment — a pinned `uv`, a Python 3.12 it builds, the hash-locked
-packages and the pinned model, all under `~/.mecha/sidecars/layout/` — and the
-llama.cpp engine: the official release for this machine (CUDA by the NVIDIA
-driver's version, Metal on Apple silicon, else the CPU build), checked by
-sha256, under `~/.mecha/sidecars/llama/<tag>/` with a `current` link. Where
-no release build fits — an NVIDIA driver older than the release's CUDA needs,
-or a Linux architecture no release covers — the same pinned version is built
-on the machine from its commit, which needs git, cmake, a C++ compiler and,
-for CUDA, the toolkit's `nvcc`; what is missing is named before anything is
-asked. The
-engine is offered only where the feature runs something on it — an embeddings
-or OCR server. **The chat model is never `enable`'s**: its engine, model and
-router are `mecha setup chat`'s, where the model is chosen, so switching on the
-web app does not stand behind a chat model's download. A machine
-whose NVIDIA device `nvidia-smi` cannot read gets no engine rather than the
-CPU build. On Linux it also covers the **embeddings and OCR servers** — the
-pinned model, a launcher under `~/.mecha/sidecars/bin/`, and the three systemd
-user units that start the server on its first request and stop it after ten
-idle minutes; the install starts it once to check it answers. A file mecha did
-not write is never replaced. (On macOS these start by hand, for now.)
+switch only after every install has passed its check. What it can install:
+
+- **Layout's environment** (`documents`) — a pinned `uv`, a Python 3.12 it builds, the
+  hash-locked packages and the pinned model, all under
+  `~/.mecha/sidecars/layout/`.
+- **The llama.cpp engine** — the official release for this machine (CUDA by
+  the NVIDIA driver's version, Metal on Apple silicon, else the CPU build),
+  checked by sha256, under `~/.mecha/sidecars/llama/<tag>/` with a `current`
+  link. Where no release build fits — an NVIDIA driver older than the
+  release's CUDA needs, or a Linux architecture no release covers — the same
+  pinned version is built on the machine from its commit, which needs git,
+  cmake, a C++ compiler and, for CUDA, the toolkit's `nvcc`; what is missing
+  is named before anything is asked. The engine is offered only where the
+  feature runs something on it — an embeddings or OCR server. A machine whose
+  NVIDIA device `nvidia-smi` cannot read gets no engine rather than the CPU
+  build.
+- **The embeddings and OCR servers** (embeddings for `graph`, `documents`
+  and `personas`; OCR for `documents`) — the pinned model, a launcher under
+  `~/.mecha/sidecars/bin/`, and the three systemd user units that start the
+  server on its first request and stop it after ten idle minutes; the install
+  starts it once to check it answers.
+- **ComfyUI** (`image`) — a pinned commit with a hash-locked torch for CUDA
+  13, the image slot's pinned models and `mecha-comfyui.service` on `:8188`,
+  under `~/.mecha/sidecars/comfyui/`, plus a one-minute idle timer that hands a
+  loaded model's memory back. It needs an NVIDIA driver 580 or newer on
+  aarch64 or x86_64; elsewhere it is not offered and images switch on for a
+  ComfyUI you run yourself. The check asks the server for every node and
+  model a picture uses and draws nothing. `enable image` also writes an
+  `[image]` table on its defaults when there is none.
+- **Speech to text** (`voice`) — Parakeet on sherpa-onnx from a hash-locked
+  environment and its pinned model, `mecha-parakeet.service` on `:8992`,
+  under `~/.mecha/sidecars/stt/`.
+- **The speech server** (`voice`) — Breeze TTS 2: the engine built here from
+  a pinned commit, its published weights and a default voice fetched by
+  sha256, and its adapter, as `mecha-breeze-tts.service` on `:8886` and
+  `mecha-breeze-adapter.service` on `:8887`, under
+  `~/.mecha/sidecars/speech/`. It needs an NVIDIA GPU and the CUDA toolkit;
+  elsewhere voice switches on for a speech server you run yourself. The
+  weights are research and non-commercial only, and the install says so
+  before fetching them. The check is a spoken sentence.
+- **The voice worker** (`voice`) — pipecat from a hash-locked environment,
+  `mecha-voice-worker.service` on `:7860`, under
+  `~/.mecha/sidecars/voice-worker/`, reachable only through `mecha serve`'s
+  relay.
+
+Every systemd unit is Linux only: on macOS the engine and the models install,
+and the servers start by hand, for now. **The chat model is never
+`enable`'s**: its engine, model and router are `mecha setup chat`'s, where the
+model is chosen, so switching on the web app does not stand behind a chat
+model's download. A file mecha did not write is never replaced.
+
 Answering no writes nothing. `--no-install` writes the switch without
 installing. Without a terminal, an `enable` that would install refuses and
-names `--no-install`. A program that is already on the machine is left alone.
+names `--no-install`. A program that is already on the machine — or a server
+already answering where an install would put one — is left alone and used.
 `--turbo`, with `image`, also fetches the turbo model (6.8 GiB) into the image
-server mecha installs. Without it, the turbo model is fetched only once a
-persona's picture settings choose it, and then `enable image` offers it,
+server mecha installs. Without it, the turbo model is fetched only once the
+chat's or a persona's picture settings choose it, and then `enable image` offers it,
 restarting a server already installed to link it. The turbo model never costs
 the switch: without a terminal that restart is skipped, and answering no to it
 alone still switches images on.
@@ -1885,7 +1927,10 @@ the table is created when it is missing. `enable` refuses a part (`ocr`: switch
 on `documents` and set `[documents] ocr`), and a feature whose dependency is
 not on, printing the command that switches both (`mecha features enable web
 incognito`). `disable` says what it leaves blocked. A service that is already
-running reads the change when it restarts.
+running reads the change when it restarts. Beyond `[image]`, `enable` writes no
+settings: the `[[mcp]]` entry mail, docs and the graph need, a `[[search]]`
+backend and a `[documents]` table stay yours, and until they are there the
+feature's row stays off, naming the one missing as its next step.
 
 Exit 0 whatever the list finds: an install with features off is a light
 install, not a broken one. A global `config.toml` that does not parse is an
