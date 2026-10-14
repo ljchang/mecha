@@ -2789,7 +2789,7 @@ pub const DESCRIPTION: &str = "Draw a picture with the local image model, or cha
      is done, and you are told then; it is not a failure, so do not draw it again, and change \
      it only after you are told it is done. A line under it beginning `Queued:` means it waits \
      behind other pictures and starts when they are done. Results are not shown to you, so never say what a \
-     picture shows, and never judge whether one came out right or draw it again on your own: \
+     picture shows, and never judge whether one came out right, or draw it again, on your own: \
      the owner sees it and says what to change. A change always makes a new file and leaves the original as it was: never \
      write or copy a result over the picture it was edited from. If image_view is among your \
      tools, look at a picture only when the task needs you to see it (the user asked you to \
@@ -6070,7 +6070,7 @@ mod tests {
         );
         assert!(d.contains("never say what a picture shows"), "{d}");
         assert!(
-            d.contains("never judge whether one came out right or draw it again on your own"),
+            d.contains("never judge whether one came out right, or draw it again, on your own"),
             "{d}"
         );
     }
