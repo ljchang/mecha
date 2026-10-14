@@ -246,6 +246,7 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         // below rather than swallowed — a checklist that quietly stopped
         // honouring your answers would be the worse half of this feature.
         declined: honoured,
+        stale_services: stale_services(&home, &cfg),
     };
 
     let mut steps = onboarding::plan(&cfg, &name, &facts);
@@ -617,6 +618,48 @@ fn record_never(home: &std::path::Path, s: &Step) {
 
 /// The registry's rows against the global configuration — empty when it does
 /// not load, which the plan's own config step already reports.
+/// The services an older mecha wrote, each with the switched-on feature whose
+/// `enable` would refresh it — or none, for the chat router (`mecha setup
+/// chat`'s). One no switched-on feature offers is not listed: nothing here
+/// would refresh it, and `features enable` does once the feature is back on.
+fn stale_services(
+    home: &std::path::Path,
+    cfg: &mecha_core::config::Config,
+) -> Vec<(&'static str, Option<Feature>)> {
+    use mecha_core::install;
+    let stale = match mecha_core::sidecar::stale_services(home) {
+        Ok(stale) => stale,
+        Err(e) => {
+            // Said, as the declined store's failure is: unknown, not current.
+            eprintln!(
+                "mecha: what mecha installed could not be read ({e:#}); whether its services \
+                 are current is unknown"
+            );
+            return Vec::new();
+        }
+    };
+    let chat_here = install::chat_runs_here(cfg);
+    let on: Vec<Feature> = feature_rows(home)
+        .into_iter()
+        .filter(|r| r.part_of.is_none() && r.switch == Some(feature::Switch::On))
+        .map(|r| r.id)
+        .collect();
+    stale
+        .into_iter()
+        .filter_map(|s| {
+            if s.id == mecha_core::router_unit::ID {
+                return chat_here.then_some((s.label, None));
+            }
+            let f = on.iter().copied().find(|f| {
+                install::installable(s.id)
+                    && mecha_core::sidecar::needed(*f).any(|n| n.id == s.id)
+                    && install::not_needed(s.id, *f, chat_here).is_none()
+            })?;
+            Some((s.label, Some(f)))
+        })
+        .collect()
+}
+
 fn feature_rows(home: &std::path::Path) -> Vec<mecha_core::feature::Row> {
     mecha_core::config::Config::load_global()
         .map(|global| feature::all(&feature::Facts::read(home, &global)))

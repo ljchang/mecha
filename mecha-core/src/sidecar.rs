@@ -582,6 +582,11 @@ pub struct PlannedSidecar {
     pub id: &'static str,
     pub label: &'static str,
     pub state: SidecarState,
+    /// Installed by mecha, with services an older build wrote (or forced by
+    /// `enable --reinstall`): `enable` and `setup` offer to refresh them —
+    /// its install run again, fetching nothing current.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub stale: bool,
     /// What installing it downloads, where that is known before the install
     /// (`install::price`): the engine's pinned archives for this machine.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -659,6 +664,49 @@ pub fn needed(named: Feature) -> impl Iterator<Item = &'static Sidecar> {
     SIDECARS
         .iter()
         .filter(move |s| s.needed_by.is_empty() || s.needed_by.iter().any(|f| within(named, *f)))
+}
+
+/// Whether any service definition mecha wrote for `id` carries a revision
+/// older than `rev`, or none — `Err` naming one that could not be read.
+fn stale_definitions(entry: Option<&Entry>, id: &str, rev: u32) -> Result<bool, String> {
+    let Some(entry) = entry else {
+        return Ok(false);
+    };
+    for path in entry
+        .wrote
+        .iter()
+        .filter(|p| crate::user_service::is_definition(p))
+    {
+        match std::fs::read_to_string(path) {
+            Ok(text) => {
+                if crate::user_service::rev_of(&text, id).is_none_or(|r| r < rev) {
+                    return Ok(true);
+                }
+            }
+            // Gone is the record's business (`Incomplete`), not this one's.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        }
+    }
+    Ok(false)
+}
+
+/// The sidecars mecha installed, finished, whose services an older build
+/// wrote — what `mecha setup` offers to refresh (`user_service::REVS`). A
+/// definition that cannot be read is left to `features plan`, which says it
+/// is unknown; only what is positively out of date is listed.
+pub fn stale_services(mecha_home: &Path) -> Result<Vec<&'static Sidecar>> {
+    let manifest = Manifest::read(mecha_home)?;
+    Ok(SIDECARS
+        .iter()
+        .filter(|s| {
+            let Some(rev) = crate::user_service::rev(s.id) else {
+                return false;
+            };
+            let entry = manifest.entry(s.id).filter(|e| !e.incomplete);
+            entry.is_some() && stale_definitions(entry, s.id, rev) == Ok(true)
+        })
+        .collect())
 }
 
 /// The plan for a feature (a part resolves to its parent, as `mecha setup
@@ -743,12 +791,25 @@ pub fn plan(
             }
             other => other,
         };
+        // Installed, and its services written by an older build: stale, so
+        // `enable` offers to refresh them (`user_service::REVS`). A
+        // definition that cannot be read is unknown, never current.
+        let (state, stale) = match (state, crate::user_service::rev(s.id)) {
+            (SidecarState::Installed, Some(rev)) => {
+                match stale_definitions(manifest.entry(s.id), s.id, rev) {
+                    Ok(stale) => (SidecarState::Installed, stale),
+                    Err(why) => (SidecarState::Unknown { why }, false),
+                }
+            }
+            (state, _) => (state, false),
+        };
         sidecars.push(PlannedSidecar {
             id: s.id,
             label: s.label,
             state,
             bytes: None,
             not_offered: None,
+            stale,
         });
     }
 
@@ -905,11 +966,13 @@ pub fn plan(
             _ => 0,
         })
         .sum();
+    // A stale install is something to do: its refresh.
     let nothing_to_do = sidecars.iter().all(|s| {
-        matches!(
-            s.state,
-            SidecarState::Provided { .. } | SidecarState::Installed
-        )
+        !s.stale
+            && matches!(
+                s.state,
+                SidecarState::Provided { .. } | SidecarState::Installed
+            )
     }) && files.iter().all(|f| {
         matches!(
             f.state,
@@ -931,6 +994,40 @@ pub fn plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A finished install's services read stale when a definition carries
+    /// no stamp or an older number, and current when every one carries this
+    /// build's; a program file beside them is not a definition, and an
+    /// unfinished install is `enable`'s to resume, not to refresh.
+    #[test]
+    fn a_service_from_an_older_build_reads_stale() {
+        let home = std::env::temp_dir().join(format!("mecha-stale-{}", uuid::Uuid::new_v4()));
+        let unit = home.join("units/mecha-parakeet.service");
+        std::fs::create_dir_all(unit.parent().unwrap()).unwrap();
+        Manifest::begin(&home, "stt").unwrap();
+        let write = |text: &str| {
+            std::fs::write(&unit, text).unwrap();
+            Manifest::record(&home, "stt", &unit).unwrap();
+        };
+        let ids = |home: &Path| -> Vec<&str> {
+            stale_services(home).unwrap().iter().map(|s| s.id).collect()
+        };
+        write("[Unit]\n");
+        assert!(ids(&home).is_empty(), "an unfinished install is not stale");
+        Manifest::finish(&home, "stt").unwrap();
+        assert_eq!(ids(&home), ["stt"], "no stamp: written before the stamp");
+        write(&crate::user_service::stamp("stt", "[Unit]\n"));
+        assert!(ids(&home).is_empty(), "this build's stamp is current");
+        write("# mecha-service-rev: stt 0\n[Unit]\n");
+        assert_eq!(ids(&home), ["stt"], "an older number");
+        write(&crate::user_service::stamp("stt", "[Unit]\n"));
+        let script = home.join("stt/parakeet_server.py");
+        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+        std::fs::write(&script, "print()\n").unwrap();
+        Manifest::record(&home, "stt", &script).unwrap();
+        assert!(ids(&home).is_empty(), "a program file carries no stamp");
+        let _ = std::fs::remove_dir_all(&home);
+    }
 
     /// An entry emptied by a removal is dropped; one still naming a path, or
     /// another sidecar's, is kept.

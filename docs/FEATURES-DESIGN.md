@@ -2128,3 +2128,45 @@ the owner's Mac, 2026-10-13: every child checked confined, no denial logged).
 The interim refusal this section first carried, for PDFs on a Mac until the
 sandbox landed, went with it.
 
+## 14. An installed service is refreshed when mecha changes it
+
+**2026-10-14.** Found on the owner's Mac: `mecha features enable image` on a
+machine that had ComfyUI from before #689 wrote the switch and nothing else.
+The old agent — ComfyUI started directly, no proxy, no log cap — stayed, so
+the on-demand start and idle stop never reached it. The same held for every
+service an older build wrote (the embeddings and OCR agents before #678,
+voice before #679), and on Linux too: `offered` re-ran an installed sidecar
+only when its model was gone.
+
+**The owner's ruling: both.** Detect a stale service in `enable` and
+`setup` and offer to refresh it, and give `enable` an explicit
+`--reinstall`.
+
+- **A revision, stamped into what the install writes.** `user_service::REVS`
+  gives each sidecar with services a number; every `.service`, `.socket`,
+  `.timer` and `.plist` mecha writes carries it as a comment (first line of a
+  unit; after the XML declaration of a plist). `sidecar::plan` reads the
+  definitions the manifest records for an installed sidecar: a missing or
+  older number is `PlannedSidecar::stale`; one that cannot be read is
+  `Unknown`, never current.
+- **The number follows the bytes, by test.** Each installer's test hashes
+  everything it renders with fixed inputs and pins the hash beside the
+  number, so a changed unit, launcher, drop-in, program file or Mac agent
+  fails the build until the number is raised. A forgotten bump cannot ship.
+- **A refresh is the install run again.** Installs are idempotent: the
+  pinned build is kept when its commit stamp matches, cached models are not
+  fetched, and the services are rewritten and restarted. `enable` lists a
+  stale row as "its service is from an older mecha: rewritten and restarted,
+  nothing downloaded" and asks the usual yes; `features plan` says which
+  command refreshes it.
+- **`--reinstall`** marks every installed sidecar with services stale for
+  that command — the way to rewrite a service by hand, without editing a
+  file. It does not go with `--no-install`.
+- **The router is `mecha setup chat`'s** (F13): its stale row says so, and
+  `enable` never offers it.
+- **`mecha setup` lists stale services as one step,** *wrong* rather than
+  missing (a service older than the build is the machine disagreeing with
+  it), whose remedy enables each switched-on feature that needs one — the
+  same offer `enable` makes. A stale service no switched-on feature needs is
+  not listed: nothing would refresh it, and enabling the feature again does.
+
