@@ -199,9 +199,16 @@ pub const SIDECARS: &[Sidecar] = &[
         label: "the knowledge graph's MCP server (mecha-graph-mcp)",
         needed_by: &[Feature::Graph],
         serves: &[],
-        evidence: &[Evidence::OnPath("mecha-graph-mcp")],
+        // `~/.cargo/bin` as well as PATH, as `onboarding::find_program`
+        // looks: a `cargo install`ed server not on this shell's PATH is still
+        // the owner's, never rebuilt beside (review of #683).
+        evidence: &[
+            Evidence::OnPath("mecha-graph-mcp"),
+            Evidence::Home(".cargo/bin/mecha-graph-mcp"),
+        ],
         installer: "13",
-        models_in_hub: true,
+        // No models: nothing of the hub's is its to hold.
+        models_in_hub: false,
     },
 ];
 
