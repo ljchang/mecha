@@ -769,17 +769,16 @@ pub fn load_cost_mb() -> u64 {
 /// above 0 once anything has loaded - through a `/free`, too, so it answers
 /// "has loaded", never "holds now". `None` for a reply this cannot read.
 ///
-/// **`None` on MPS and the CPU, whatever the figure.** ComfyUI's
-/// `get_total_memory` answers the machine's whole RAM for those devices, so
-/// the field is above 0 from the first request and says nothing about a
-/// load — read as warm, a Mac's cold 34 GiB would never be asked (review of
-/// #681). Unknown is never warm: a Mac pays cold on every picture.
+/// **Read on CUDA only; any other device is `None`, whatever the figure.**
+/// ComfyUI's `get_total_memory` answers the machine's whole RAM for MPS and
+/// the CPU, so the field is above 0 from the first request and says nothing
+/// about a load — read as warm, a Mac's cold 34 GiB would never be asked
+/// (review of #681). An allowlist, not a denylist: a device type this has
+/// not seen, or a reply naming none, is unknown, and unknown is never warm
+/// (review of #681, pass 2).
 pub fn loaded_from_stats(stats: &Value) -> Option<bool> {
     let device = stats.pointer("/devices/0")?;
-    if matches!(
-        device.get("type").and_then(Value::as_str),
-        Some("mps" | "cpu")
-    ) {
+    if device.get("type").and_then(Value::as_str) != Some("cuda") {
         return None;
     }
     let total = device.get("torch_vram_total")?.as_f64()?;
@@ -2268,10 +2267,21 @@ impl ImageGenerate {
         );
         match verdict.sentence("a generation") {
             None => Ok(()),
-            Some(why) => Err(format!(
-                "{why} Try again once something large (a build, another model) is done. The \
-                 operator can set `[image] min_available_mb = 0` to skip this check."
-            )),
+            Some(why) => {
+                // The off switch is the operator's, said in the operator's
+                // log and never to the model: told it, a model retried six
+                // times in twenty seconds and then recommended the owner
+                // switch the guard off (owner's Mac, 2026-10-13).
+                tracing::warn!(
+                    "image generation refused for memory: {why} — `[image] min_available_mb` \
+                     sets the need, and 0 switches the check off"
+                );
+                Err(format!(
+                    "{why} This will not change by retrying within this turn: say so to the \
+                     owner and stop — it can be tried again later, once something large (a \
+                     build, another model) has finished."
+                ))
+            }
         }
     }
 
@@ -3844,9 +3854,17 @@ impl Tool for ImageGenerate {
                     }
                 }
                 let style = plan.next.style.as_ref().map(|s| s.value.clone());
+                // A picture layers may draw is compiled from portraits alone,
+                // so a layered build's fallback single pass draws what its
+                // cutouts would have (§9.4). Should layers then decline, the
+                // single pass is the picture, and it is compiled again with
+                // the bodies (review of #685).
+                let layers_wanted =
+                    ctx.layers && plan.route == "new" && people.len() >= 2 && as_called;
                 let compile_from = |people: &[crate::scene::Person],
                                     words: &crate::scene::Scene,
-                                    together: bool| {
+                                    together: bool,
+                                    bodies: bool| {
                     let mut cast = Vec::new();
                     let mut extras = Vec::new();
                     let mut in_act = Vec::new();
@@ -3888,7 +3906,7 @@ impl Tool for ImageGenerate {
                             }
                         }
                     }
-                    crate::imagelib::compile(
+                    crate::imagelib::compile_with(
                         &lib,
                         &match &plan.also {
                             // A retouch given for a new picture, or beside a
@@ -3899,6 +3917,7 @@ impl Tool for ImageGenerate {
                         &cast,
                         &extras,
                         style.as_deref(),
+                        bodies,
                     )
                     .map(|c| (c, in_act))
                 };
@@ -3906,28 +3925,36 @@ impl Tool for ImageGenerate {
                 // into a refusal: parts the compiler will not take (a
                 // described person's part naming a library character, say)
                 // fall back to the call as sent (review of #609).
-                let (compiled, in_act) = match compile_from(&people, &words_scene, together) {
-                    Ok(c) => c,
-                    Err(_) if roles_said.as_deref() == Some("applied") => {
-                        roles_said = Some("fell back: the split's parts did not compile".into());
-                        match compile_from(&plan.people, &plan.next, as_called) {
-                            Ok(c) => c,
-                            Err(why) => return Ok(refused(why)),
+                let mut from_split = true;
+                let (compiled, in_act) =
+                    match compile_from(&people, &words_scene, together, !layers_wanted) {
+                        Ok(c) => c,
+                        Err(_) if roles_said.as_deref() == Some("applied") => {
+                            roles_said =
+                                Some("fell back: the split's parts did not compile".into());
+                            from_split = false;
+                            match compile_from(&plan.people, &plan.next, as_called, !layers_wanted)
+                            {
+                                Ok(c) => c,
+                                Err(why) => return Ok(refused(why)),
+                            }
                         }
-                    }
-                    Err(why) => return Ok(refused(why)),
-                };
+                        Err(why) => return Ok(refused(why)),
+                    };
                 req.prompt = compiled.prompt;
                 clothes_said = in_act;
-                req.references = compiled
-                    .references
-                    .into_iter()
-                    .map(|(name, bytes, ext)| Reference {
-                        path: format!("library:{name}"),
-                        bytes,
-                        ext,
-                    })
-                    .collect();
+                // Said once layers have decided, since a decline recompiles.
+                let mut body_notes = compiled.notes;
+                let library_refs = |refs: Vec<(String, Vec<u8>, &'static str)>| {
+                    refs.into_iter()
+                        .map(|(name, bytes, ext)| Reference {
+                            path: format!("library:{name}"),
+                            bytes,
+                            ext,
+                        })
+                        .collect::<Vec<_>>()
+                };
+                req.references = library_refs(compiled.references);
                 req.reference_size = crate::imagelib::REFERENCE_SIZE;
                 used = compiled.used;
                 // Never the seed that drew a portrait: sampling there redraws it.
@@ -3947,7 +3974,7 @@ impl Tool for ImageGenerate {
                 // Layers (IMAGE-DESIGN.md §15): the owner's switch, a new
                 // picture, two or more people sharing an act. Decided here,
                 // before anything is drawn, so the layers are kept.
-                if ctx.layers && plan.route == "new" && people.len() >= 2 && as_called {
+                if layers_wanted {
                     let portraits: Vec<Option<(Vec<u8>, &'static str)>> = people
                         .iter()
                         .map(|p| match &p.who {
@@ -4149,6 +4176,34 @@ impl Tool for ImageGenerate {
                         }
                     }
                 }
+                // Layers considered and declined: the single pass is the
+                // picture, so it is drawn with the bodies after all, on the
+                // compile route that succeeded (review of #685).
+                if layers_wanted && layers_plan.is_none() {
+                    let again = if from_split {
+                        compile_from(&people, &words_scene, together, true)
+                    } else {
+                        compile_from(&plan.people, &plan.next, as_called, true)
+                    };
+                    match again {
+                        Ok((c, _)) => {
+                            req.prompt = c.prompt;
+                            req.references = library_refs(c.references);
+                            used = c.used;
+                            body_notes = c.notes;
+                        }
+                        // The faces-only compile stands. `compile_with`
+                        // keeps the prompt cap to itself, so a failure here
+                        // is one the bodies did not cause: said as it is,
+                        // since the layers note would no longer be true.
+                        Err(why) => {
+                            tracing::warn!("image_generate: recompile with bodies: {why}");
+                            body_notes =
+                                vec![format!("Full-figure references were not sent: {why}")]
+                        }
+                    }
+                }
+                dropped.extend(body_notes);
             }
             crate::picture::Render::Edit {
                 canvas,
@@ -4406,6 +4461,7 @@ impl Tool for ImageGenerate {
                             name: p.who.key(),
                             version: e.version,
                             portrait: e.portrait.clone(),
+                            full_body: None,
                         });
                     }
                 }
@@ -4450,6 +4506,7 @@ impl Tool for ImageGenerate {
                                 name,
                                 version: entry.version,
                                 portrait: None,
+                                full_body: None,
                             });
                         }
                         None => {
@@ -4788,7 +4845,17 @@ impl Tool for ImageGenerate {
                 // Who was drawn, by name and entry version: what save-to-library
                 // reads. Never the scene itself, which lives outside the jail.
                 "cast": used.iter().filter(|u| u.kind == crate::imagelib::Kind::Character)
-                    .map(|u| json!({"name": u.name, "version": u.version, "portrait": u.portrait}))
+                    .map(|u| {
+                        let mut row =
+                            json!({"name": u.name, "version": u.version, "portrait": u.portrait});
+                        // The figure that went beside the portrait (§9.4),
+                        // by hash like the portrait: the version says only
+                        // that one was attached.
+                        if let Some(blob) = &u.full_body {
+                            row["full_body"] = json!(blob);
+                        }
+                        row
+                    })
                     .collect::<Vec<_>>(),
                 "style": used.iter().find(|u| u.kind == crate::imagelib::Kind::Style)
                     .map(|u| json!({"name": u.name, "version": u.version})),
@@ -5236,8 +5303,7 @@ mod tests {
     /// and after `/free`; anything else reads as unknown.
     #[test]
     fn loaded_is_read_from_the_servers_stats() {
-        let stats =
-            |total: Value| json!({"devices": [{"name": "cuda:0", "torch_vram_total": total}]});
+        let stats = |total: Value| json!({"devices": [{"name": "cuda:0", "type": "cuda", "torch_vram_total": total}]});
         assert_eq!(loaded_from_stats(&stats(json!(0))), Some(false));
         assert_eq!(
             loaded_from_stats(&stats(json!(6_000_000_000u64))),
@@ -5257,6 +5323,14 @@ mod tests {
         let cuda = json!({"devices": [{"name": "cuda:0", "type": "cuda",
             "torch_vram_total": 0}]});
         assert_eq!(loaded_from_stats(&cuda), Some(false));
+        // A device that names no type, or one this has not seen, is unknown
+        // — never warm (review of #681, pass 2).
+        for device in [
+            json!({"name": "cuda:0", "torch_vram_total": 6_000_000_000u64}),
+            json!({"name": "xpu:0", "type": "xpu", "torch_vram_total": 6_000_000_000u64}),
+        ] {
+            assert_eq!(loaded_from_stats(&json!({"devices": [device]})), None);
+        }
     }
 
     /// A loopback address nothing listens on yet.
@@ -5877,20 +5951,18 @@ mod tests {
         assert_eq!(tool.persona_form(None).floor, floor);
     }
 
+    /// A Mac's available memory is macOS's own level (the owner's ruling,
+    /// 2026-10-13): a percentage, and anything else unread.
     #[test]
-    fn macos_available_memory_is_read_from_vm_stat() {
-        let sample = "Mach Virtual Memory Statistics: (page size of 16384 bytes)\n\
-            Pages free:                               65536.\n\
-            Pages active:                            900000.\n\
-            Pages inactive:                          131072.\n\
-            Pages speculative:                        32768.\n\
-            Pages throttled:                              0.\n\
-            Pages wired down:                        200000.\n\
-            Pages purgeable:                          16384.\n";
-        // (65536 + 131072 + 32768 + 16384) pages × 16 KiB = 3840 MB.
-        let parse = crate::system::source::parse_vm_stat;
-        assert_eq!(parse(sample), Some(3_840 * 1024 * 1024));
-        assert_eq!(parse("not vm_stat output"), None);
+    fn macos_available_memory_is_its_memorystatus_level() {
+        let parse = crate::system::source::parse_memorystatus_level;
+        assert_eq!(parse("37\n"), Some(37));
+        assert_eq!(parse("0"), Some(0));
+        assert_eq!(parse("100"), Some(100));
+        assert_eq!(parse("101"), None);
+        assert_eq!(parse("-3"), None);
+        assert_eq!(parse("sysctl: unknown oid"), None);
+        assert_eq!(parse(""), None);
     }
 
     /// §5.2 moved the result's guidance into the description; these two
@@ -7361,6 +7433,174 @@ mod tests {
         assert!(manifest.get("prompt").is_none(), "{manifest}");
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
+    }
+
+    fn attach_body(lib: &std::path::Path, name: &str, rgb: [u8; 3]) {
+        let img = image::RgbImage::from_pixel(2, 2, image::Rgb(rgb));
+        let mut png = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        crate::imagelib::add_reference(
+            lib,
+            name,
+            crate::imagelib::RefKind::FullBody,
+            &png.into_inner(),
+            None,
+        )
+        .unwrap();
+    }
+
+    /// Library v2 step 2b (IMAGE-COMPILER-DESIGN.md §9.4): a cast of two with
+    /// a full body each sends four images, bound by person, and the manifest
+    /// says which figure went.
+    #[tokio::test]
+    async fn a_cast_with_bodies_sends_four_images_bound_by_person() {
+        let (url, seen) = fake(vec![done()], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya", "john"]);
+        attach_body(&lib, "maya", [70, 1, 1]);
+        attach_body(&lib, "john", [70, 2, 2]);
+        let t = tool(&url).with_library_dir(lib.clone());
+        let out = t
+            .call(
+                json!({"scene": {"setting": "a studio", "people": two_people()}, "seed": 5}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(!out.content.contains("Full-figure"), "{}", out.content);
+        let seen = seen.lock().unwrap().clone();
+        let uploads = seen
+            .iter()
+            .filter(|l| l.starts_with("POST /upload/image"))
+            .count();
+        assert_eq!(uploads, 4, "a portrait and a full figure per person");
+        let submitted = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+        assert!(
+            submitted.contains(
+                "<image3> and <image4> show one person, John: <image3> is John's portrait, \
+                 <image4> John's full figure."
+            ),
+            "{submitted}"
+        );
+        let png = out
+            .content
+            .lines()
+            .next()
+            .unwrap()
+            .strip_prefix("image: ")
+            .unwrap();
+        let manifest: Value =
+            serde_json::from_slice(&std::fs::read(dir.join(png.replace(".png", ".json"))).unwrap())
+                .unwrap();
+        assert!(manifest["cast"][1]["full_body"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256-"));
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// One body in a cast of two goes to no one, and the model is told in a
+    /// count, never which person or what the picture is labelled.
+    #[tokio::test]
+    async fn a_lone_body_is_not_sent_and_the_result_says_so_in_counts() {
+        let (url, seen) = fake(vec![done()], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya", "john"]);
+        attach_body(&lib, "maya", [70, 3, 3]);
+        let t = tool(&url).with_library_dir(lib.clone());
+        let out = t
+            .call(
+                json!({"scene": {"setting": "a studio", "people": two_people()}}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains(
+                "Full-figure references were not sent: one of the two people has one attached"
+            ),
+            "{}",
+            out.content
+        );
+        let seen = seen.lock().unwrap().clone();
+        let uploads = seen
+            .iter()
+            .filter(|l| l.starts_with("POST /upload/image"))
+            .count();
+        assert_eq!(uploads, 2);
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// A picture layers may draw is compiled from portraits, so a layered
+    /// build's fallback single pass draws no figure the cutouts did not.
+    #[tokio::test]
+    async fn a_picture_planned_in_layers_sends_no_bodies() {
+        let (url, seen) = fake(vec![done(); 8], "200 OK").await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        attach_body(&lib, "maya", [70, 4, 4]);
+        attach_body(&lib, "john", [70, 5, 5]);
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.layers = true;
+        let out = t.call(touching_call(), &cx).await.unwrap();
+        assert!(
+            out.content.contains(
+                "Full-figure references were not sent: a picture planned in layers is drawn \
+                 from portraits."
+            ),
+            "{}",
+            out.content
+        );
+        let seen = seen.lock().unwrap().clone();
+        assert!(
+            seen.iter()
+                .filter(|l| l.starts_with("POST /prompt"))
+                .all(|l| !l.contains("full figure")),
+            "{seen:?}"
+        );
+        for d in [dir, store, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
+    }
+
+    /// Layers considered and then declined (a described person here): the
+    /// single pass is the picture, so it carries the bodies, and the result
+    /// says only why layers declined (review of #685).
+    #[tokio::test]
+    async fn layers_that_decline_leave_the_bodies_in_the_single_pass() {
+        let (url, seen) = fake(vec![done()], "200 OK").await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya"]));
+        attach_body(&lib, "maya", [70, 6, 6]);
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.layers = true;
+        let call = json!({"scene": {
+            "setting": "a studio",
+            "people": [
+                {"who": "maya", "wearing": "a yellow raincoat", "doing": "laughing"},
+                {"who": "a waiter with a tray", "wearing": "a white apron", "doing": "smiling"}
+            ],
+            "together": "the waiter hands Maya a cup"
+        }});
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("not in layers"), "{}", out.content);
+        assert!(!out.content.contains("Full-figure"), "{}", out.content);
+        let seen = seen.lock().unwrap().clone();
+        let uploads = seen
+            .iter()
+            .filter(|l| l.starts_with("POST /upload/image"))
+            .count();
+        assert_eq!(uploads, 2, "the portrait and the full figure");
+        let submitted = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+        assert!(submitted.contains("Maya's full figure"), "{submitted}");
+        for d in [dir, store, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
     }
 
     /// A replay's seed stream (`ToolCtx::image_seeds`): two arms stamped

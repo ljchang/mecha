@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **PDFs on a Mac, confined by macOS's own sandbox.** `[documents] confine =
+  "seatbelt"`, the default on macOS, runs poppler under `sandbox-exec` with a
+  profile built for each call: deny by default, the program and the
+  libraries its own load commands name, the scratch directory as the only
+  place it reads input from or writes to, the home denied, and no network.
+  Measured by new macOS tests in CI. `bwrap` and `landlock` are refused on a
+  Mac (and `seatbelt` on Linux) by name; `[sandbox] kind = "seatbelt"` is
+  refused — it confines the parser, not `shell`. On a Mac the parser's
+  address-space ceiling (`memory_mb`) is not applied; its CPU and file-size
+  ceilings and the per-page timeout are.
 - **`mecha features enable graph` installs the graph's MCP server.** When no
   `mecha-graph-mcp` is on your `PATH`, enable builds it with cargo from a
   pinned commit of `ljchang/mecha-graph` into `~/.mecha/sidecars/graph-mcp/`
@@ -17,8 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cargo install`. A failed build switches nothing on.
 - **`mecha features enable documents` writes the `[documents]` table** it
   needs, where there is none: OCR and layout as installed, and on Linux the
-  confinement this machine runs. On a Mac, PDFs are refused by name until
-  the macOS sandbox lands; pictures are read.
+  confinement this machine runs. On a Mac the table names no `confine`, so
+  PDFs run under the macOS sandbox, the default there.
 
 - **The local chat model installs on a Mac.** `mecha setup chat`, and the
   chat question of the guided `mecha setup`, now run on macOS: llama.cpp's
@@ -31,6 +41,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   router now runs mecha's own pinned llama.cpp, installed under `~/.mecha`
   beside any `llama-server` already on the PATH (Homebrew's, say), which is
   left alone; only a machine no pinned build fits runs its own.
+- **A Mac's service logs are capped.** Each launchd agent mecha installs
+  writes to `~/Library/Logs/mecha/<name>.log` through a small wrapper that
+  rotates it at 20 MiB, keeping one older file — launchd itself never rotates
+  a log.
 - **The embeddings and OCR servers install on a Mac**, on demand as on
   Linux: `mecha features enable graph` (or `documents`, `personas`) installs
   a launchd agent that holds the port and starts the server at the first

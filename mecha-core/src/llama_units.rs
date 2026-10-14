@@ -245,6 +245,24 @@ pub async fn install(
     let proxyd = if macos { "" } else { socket_proxyd()? };
     let units = crate::engine_gate::unit_dir(m)?.to_path_buf();
     let bin = bin_dir(home);
+    // On a Mac nothing binds the port at install — `bootstrap` returns before
+    // the agent does — so a port another server holds would give a proxy that
+    // restarts every ten seconds while the stranger answers the check: refused
+    // here instead, unless the agent there is mecha's own (`router_unit`'s
+    // rule; review of #678). systemd's socket fails to bind on its own.
+    if macos {
+        let ours = Manifest::read(home)?
+            .entries
+            .iter()
+            .any(|e| e.sidecar == id && !e.wrote.is_empty());
+        if !ours && crate::router_unit::port_answers(naming.public) {
+            bail!(
+                "something already answers on :{} and mecha did not install it — nothing is \
+                 installed over it",
+                naming.public
+            );
+        }
+    }
     Manifest::begin(home, id)?;
 
     // The engine before anything is fetched: a machine with none would
@@ -288,7 +306,15 @@ pub async fn install(
     let r = |t: &str| render(t, which, naming, &bin, proxyd);
     write_owned(home, id, &bin.join(launcher_name), &r(launcher), 0o755)?;
     if macos {
-        start_agent(m, which, naming, &bin.join(launcher_name), &engine, hub)?;
+        let domain = start_agent(m, which, naming, &bin.join(launcher_name), &engine, hub)?;
+        // As the router says it: loaded with nobody at the screen, the agent
+        // returns after a restart only at a console login (review of #678).
+        if domain == crate::launchd::Domain::User {
+            say(
+                "nobody is logged in at this Mac's screen, so after a restart this server's port \
+                 is held again only once someone logs in there",
+            );
+        }
     } else {
         start_units(
             m,
@@ -382,7 +408,7 @@ fn start_agent(
     launcher: &Path,
     engine: &Engine,
     hub: &Path,
-) -> Result<()> {
+) -> Result<crate::launchd::Domain> {
     let id = which.sidecar();
     let home = &m.mecha_home;
     // The proxy is this binary: the one `mecha features enable` runs as,
@@ -395,31 +421,39 @@ fn start_agent(
     }
     let agent = crate::launchd::Agent {
         label: crate::launchd::label(&naming.stem),
-        program: vec![
-            mecha.display().to_string(),
-            "features".into(),
-            "on-demand".into(),
-            "--listen".into(),
-            format!("127.0.0.1:{}", naming.public),
-            "--backend".into(),
-            naming.backend.to_string(),
-            "--idle-secs".into(),
-            IDLE_SECS.to_string(),
-            "--launcher".into(),
-            launcher.display().to_string(),
-        ],
+        program: crate::log_cap::wrap(
+            &mecha,
+            &log,
+            vec![
+                mecha.display().to_string(),
+                "features".into(),
+                "on-demand".into(),
+                "--listen".into(),
+                format!("127.0.0.1:{}", naming.public),
+                "--backend".into(),
+                naming.backend.to_string(),
+                "--idle-secs".into(),
+                IDLE_SECS.to_string(),
+                "--launcher".into(),
+                launcher.display().to_string(),
+            ],
+        ),
         env: vec![
             ("PATH".into(), crate::launchd::SYSTEM_PATH.into()),
             ("LLAMA_SERVER".into(), engine.path().display().to_string()),
             ("HF_HUB".into(), hub.display().to_string()),
+            // `log-cap` (and `on-demand`) resolve the mecha home from the
+            // environment to check they run only mecha's own programs: an
+            // agent under a MECHA_HOME other than ~/.mecha must carry it
+            // (review of #679).
+            ("MECHA_HOME".into(), m.mecha_home.display().to_string()),
         ],
         workdir: None,
         throttle_secs: crate::launchd::THROTTLE_SECS,
         log,
     };
     write_owned(home, id, &plist, &crate::launchd::plist_text(&agent), 0o644)?;
-    crate::launchd::load(&plist, &agent.label)?;
-    Ok(())
+    crate::launchd::load(&plist, &agent.label)
 }
 
 /// Ten minutes, as the proxy unit's `MECHA_LLAMA_IDLE`.
@@ -659,6 +693,60 @@ pub fn remove(m: &Machinery, which: Which, naming: &Naming) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The router's engine is mecha's own or none: a `llama-server` on the
+    /// PATH is `Beside`, never run by the router — and once mecha's is
+    /// installed, it is `Ours` whatever else is on the PATH (review of #678:
+    /// nothing failed if this folded back into "any engine will do").
+    #[test]
+    fn the_router_runs_mecha_s_engine_never_a_provided_one() {
+        let root = std::env::temp_dir().join(format!("mecha-re-{}", uuid::Uuid::new_v4()));
+        let provided = root.join("bin");
+        std::fs::create_dir_all(&provided).unwrap();
+        let m = |path: Vec<PathBuf>| Machinery {
+            home: root.clone(),
+            mecha_home: root.join(".mecha"),
+            unit_dirs: vec![root.join("units")],
+            path,
+            docker: Box::new(|_| crate::sidecar::Lookup::Absent),
+        };
+        assert_eq!(
+            router_engine(&m(vec![provided.clone()])),
+            RouterEngine::Absent
+        );
+        std::fs::write(provided.join("llama-server"), b"#!/bin/sh\n").unwrap();
+        assert_eq!(
+            router_engine(&m(vec![provided.clone()])),
+            RouterEngine::Beside(provided.join("llama-server"))
+        );
+        let managed = crate::engine_gate::managed_binary(&root.join(".mecha"));
+        std::fs::create_dir_all(managed.parent().unwrap()).unwrap();
+        std::fs::write(&managed, b"#!/bin/sh\n").unwrap();
+        assert_eq!(router_engine(&m(vec![provided])), RouterEngine::Ours);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The plist each on-demand install writes is the one the plan looks
+    /// for: a renamed stem would otherwise read every Mac's server as absent
+    /// (review of #678).
+    #[test]
+    fn the_shipped_agents_are_the_servers_evidence() {
+        for which in [Which::Embeddings, Which::Ocr] {
+            let name = crate::launchd::plist_name(&which.shipped().stem);
+            let sidecar = crate::sidecar::SIDECARS
+                .iter()
+                .find(|s| s.id == which.sidecar())
+                .unwrap();
+            assert!(
+                sidecar
+                    .evidence
+                    .iter()
+                    .any(|e| matches!(e, crate::sidecar::Evidence::UserUnit(n) if *n == name)),
+                "{name} is not in {:?}",
+                sidecar.evidence
+            );
+        }
+    }
 
     /// The units and launchers in the binary are the ones in `scripts/llama/`:
     /// one set of files, two copies, held equal so they cannot drift.

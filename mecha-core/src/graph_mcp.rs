@@ -97,6 +97,13 @@ async fn install_with(m: &Machinery, cargo: &Path, say: Say<'_>) -> Result<()> {
         ])
         .arg(&root)
         .arg(PROGRAM)
+        // As the engine's and the speech engine's builds: no stdin, and
+        // git's credential prompt disarmed, so a prompting helper fails the
+        // fetch instead of holding `enable` at the terminal; and the build
+        // goes with this process (review of #683).
+        .stdin(std::process::Stdio::null())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .kill_on_drop(true)
         .status()
         .await
         .with_context(|| format!("running {}", cargo.display()))?;
@@ -301,5 +308,34 @@ mod tests {
         std::fs::remove_file(root.join(".crates2.json")).unwrap();
         assert!(!installed(&home), "no record");
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The real build, with real cargo: what the fake cargo above cannot
+    /// say — that cargo takes these arguments, and writes `.crates2.json`
+    /// the way `built_from_pin` reads it (review of #683). Builds the pinned
+    /// commit into a scratch mecha home; minutes, and the network.
+    #[tokio::test]
+    #[ignore]
+    async fn the_pinned_server_builds_with_real_cargo() {
+        let cargo = fits().expect("cargo on PATH");
+        let root = std::env::temp_dir().join(format!("mecha-gmcp-{}", uuid::Uuid::new_v4()));
+        let m = Machinery {
+            home: root.clone(),
+            mecha_home: root.join(".mecha"),
+            unit_dirs: vec![root.join("units")],
+            path: Vec::new(),
+            docker: Box::new(|_| crate::sidecar::Lookup::Absent),
+        };
+        let mut said = Vec::new();
+        install_with(&m, &cargo, &mut |s| said.push(s.to_string()))
+            .await
+            .unwrap();
+        assert!(installed(&m.mecha_home), "{said:?}");
+        // A second run keeps the build rather than rebuilding it.
+        install_with(&m, &cargo, &mut |s| said.push(s.to_string()))
+            .await
+            .unwrap();
+        assert!(said.last().unwrap().contains("already"), "{said:?}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

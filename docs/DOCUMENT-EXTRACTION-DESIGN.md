@@ -91,7 +91,59 @@ one writable directory, a fresh 0700 scratch holding a *copy* of the file —
 plus `RLIMIT_AS` (2 GB), `RLIMIT_CPU`, `RLIMIT_FSIZE` (256 MB) and a
 wall-clock timeout. This does not reuse the operator's `[sandbox]`, which may
 be `none` or docker (whose image has no poppler); `[documents] confine`
-chooses `bwrap`, `landlock` or an explicit `none`, and `docker` is refused.
+chooses `bwrap`, `landlock` or an explicit `none` on Linux, `seatbelt` (the
+default, §3.1) or `none` on a Mac, and `docker` is refused. Each system's
+confinement is refused on the other at load, naming the one that runs there.
+
+### 3.1 On a Mac: Seatbelt
+
+**2026-10-13, the owner's ruling:** a Mac's poppler is confined by macOS's
+own sandbox, measured before it is trusted; until it lands a Mac reads
+pictures and refuses PDFs. A Mac has neither user namespaces nor Landlock,
+and docker's image carries no poppler, so this is the one confinement there.
+
+`sandbox::seatbelt` runs each call as `sandbox-exec -p <profile>`, the
+profile built for that call: `(deny default)` over Apple's `system.sb`;
+`process-exec` of the program alone, as named and as resolved; reads of the
+system's libraries and data, of the program and **every library its Mach-O
+load commands name** (read in Rust, `@rpath`/`@loader_path` resolved — not
+guessed, and no `otool` needed), of the Homebrew kegs those live in and that
+prefix's fontconfig and poppler data; read and write of the scratch
+directory alone; and `(deny network*)`. The user's home is denied (contents,
+xattrs and writes), with the call's own paths inside it carved out of that
+denial with `require-not` — so a layout interpreter under `~/.mecha` stays
+reachable while nothing else in the home is. Not by rule order: macOS CI
+measured a later `file-read*` allow failing to override the operation-specific
+home deny, so the exception is written into the deny itself. Metadata is readable everywhere: path resolution needs it along
+every ancestor, a name or a size is not a file's contents, and with no
+network and no write outside the scratch there is nowhere to send what a
+`stat` learns. A path a profile cannot express — a control character, a
+name that is not UTF-8 — is refused, never mangled.
+
+**No address-space ceiling on a Mac.** Every process maps the dyld shared
+cache, so a renderer-sized `RLIMIT_AS` would refuse the exec if XNU applied
+it, and XNU's handling of it is undocumented; a limit nobody has measured
+holding is not set and believed. `RLIMIT_CPU`, `RLIMIT_FSIZE` and the wall
+clock still bound each call.
+
+**Documents only.** `[sandbox] kind = "seatbelt"` is a load error: a
+confined `shell` or MCP server declares narrower capabilities, and the
+interlock believes it, so the backend that earns that must have been
+measured against a shell's reach — reading the home through every tool a
+shell can run, every network route including the system's own services.
+That has not been done, and a shell confinement weaker than the capabilities
+it lets `shell` declare is the worst outcome this design has; poppler's reach
+(one input, one directory, one program) is what the measurements below
+cover.
+
+**Measured, in `mecha-core/tests/seatbelt_backend.rs`** (macOS CI with
+`MECHA_TEST_REQUIRE_BACKENDS=1`, and the owner's Mac): a file beside the
+scratch is readable unconfined and not under the profile; a write outside
+the scratch fails while one inside lands; an address that answers unconfined
+and with `network = true` does not under the default profile, so the denial
+is the network rule's; and poppler under the profile passes the renderer's
+own preflight, renders a page, and returns its text layer exact through the
+`Extractor` a document takes.
 
 **No unconfined fallback.** Each uncached extraction first runs `pdfinfo -v`
 through the confinement; if that fails, the extraction fails and says why.

@@ -1197,7 +1197,7 @@ pub fn write_mcp_entries(
                 None => {
                     let mut servers = toml_edit::ArrayOfTables::new();
                     servers.push(entry);
-                    doc.insert("mcp", toml_edit::Item::ArrayOfTables(servers));
+                    crate::config::append_tables(&mut doc, "mcp", servers);
                 }
             }
             changed = true;
@@ -1229,7 +1229,7 @@ pub fn write_mcp_entries(
             }
             let mut table = toml_edit::Table::new();
             table.insert("tools", toml_edit::value(tools));
-            doc.insert("outbox", toml_edit::Item::Table(table));
+            crate::config::append_table(&mut doc, "outbox", table);
             changed = true;
             for r in results.iter_mut() {
                 r.wrote_outbox = !r.routes.is_empty();
@@ -1291,9 +1291,14 @@ pub fn write_switches(path: &Path, changes: &[(Feature, bool)]) -> anyhow::Resul
     let mut doc: toml_edit::DocumentMut = text
         .parse()
         .with_context(|| format!("{} is not valid TOML; nothing was changed", path.display()))?;
+    // A new `[features]` goes after the file's closing comments, as every
+    // other new table does (`config::append_table`; review of #681).
+    if !doc.contains_key("features") {
+        crate::config::append_table(&mut doc, "features", toml_edit::Table::new());
+    }
     let table = doc
-        .entry("features")
-        .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()))
+        .get_mut("features")
+        .context("the [features] table just written is not there")?
         .as_table_mut()
         .with_context(|| format!("`features` in {} is not a table", path.display()))?;
     for (f, on) in changes {

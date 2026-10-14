@@ -9,8 +9,8 @@
 //! servers keep their own launchd halves: theirs differ in shape, not only
 //! in manager.
 
-use anyhow::Result;
-use std::path::PathBuf;
+use anyhow::{Context, Result};
+use std::path::{Path, PathBuf};
 
 use crate::sidecar::Machinery;
 
@@ -25,17 +25,47 @@ pub fn file(m: &Machinery, stem: &str) -> Result<PathBuf> {
     })
 }
 
+/// What a service install can know before anything is fetched: on a Mac, a
+/// home or mecha home with a space in it cannot become an agent's command
+/// line (the unit's paths are split on spaces), so it is refused here,
+/// before the build and the downloads (review of #679). systemd would
+/// mis-split it too, but Linux keeps its own behaviour.
+pub fn preflight(m: &Machinery) -> Result<()> {
+    if cfg!(target_os = "macos") {
+        for root in [&m.mecha_home, &m.home] {
+            if root.to_string_lossy().contains(char::is_whitespace) {
+                anyhow::bail!(
+                    "{} has a space in it, which this install cannot write into a service's \
+                     command line — install it by hand",
+                    root.display()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Write a service's definition from its rendered unit, recorded under `id`.
 pub fn write(m: &Machinery, id: &str, stem: &str, unit: &str) -> Result<()> {
     let path = file(m, stem)?;
     let text = if cfg!(target_os = "macos") {
+        // Asked again here, the last door before a command line is split;
+        // the installs ask it first, before anything is fetched.
+        preflight(m)?;
         let log = crate::launchd::log_path(&m.home, stem);
-        crate::launchd::plist_text(&crate::launchd::agent_from_unit(
-            &crate::launchd::label(stem),
-            unit,
-            &m.home,
-            log,
-        )?)
+        let mut agent =
+            crate::launchd::agent_from_unit(&crate::launchd::label(stem), unit, &m.home, log)?;
+        // Under the log cap, as the router and on-demand agents are
+        // (`log_cap.rs`): launchd never rotates a log.
+        let mecha = std::env::current_exe().context("finding the mecha binary for the agent")?;
+        agent.program = crate::log_cap::wrap(&mecha, &agent.log, agent.program);
+        // The wrapper's own-program check resolves the mecha home from the
+        // environment: an agent carries it, or one under a MECHA_HOME other
+        // than ~/.mecha refuses its own program (review of #679).
+        agent
+            .env
+            .push(("MECHA_HOME".into(), m.mecha_home.display().to_string()));
+        crate::launchd::plist_text(&agent)
     } else {
         unit.to_string()
     };
@@ -44,15 +74,31 @@ pub fn write(m: &Machinery, id: &str, stem: &str, unit: &str) -> Result<()> {
 
 /// Enable and (re)start services, in order: a restart, never a start alone,
 /// so a reinstall reaches a running server with its new files.
-pub fn restart(m: &Machinery, stems: &[&str]) -> Result<()> {
+///
+/// On a Mac loaded with nobody at the screen, says so, as the router does:
+/// the agents return after a restart only at a console login (review of
+/// #679).
+pub fn restart(m: &Machinery, stems: &[&str], say: crate::install::Say<'_>) -> Result<()> {
     if cfg!(target_os = "macos") {
         // launchd opens the log before it runs anything and does not make
         // its directory.
-        if let Some(dir) = crate::launchd::log_path(&m.home, "x").parent() {
+        if let Some(dir) = stems.first().and_then(|s| {
+            crate::launchd::log_path(&m.home, s)
+                .parent()
+                .map(Path::to_path_buf)
+        }) {
             std::fs::create_dir_all(dir)?;
         }
+        let mut headless = false;
         for stem in stems {
-            crate::launchd::load(&file(m, stem)?, &crate::launchd::label(stem))?;
+            let domain = crate::launchd::load(&file(m, stem)?, &crate::launchd::label(stem))?;
+            headless |= domain == crate::launchd::Domain::User;
+        }
+        if headless {
+            say(
+                "nobody is logged in at this Mac's screen, so after a restart these servers come \
+                 back only once someone logs in there",
+            );
         }
         Ok(())
     } else {
@@ -104,7 +150,7 @@ pub fn stop_by_hand(stems: &[&str]) -> String {
                 let l = crate::launchd::label(s);
                 format!(
                     "launchctl bootout gui/$(id -u)/{l}; launchctl bootout user/$(id -u)/{l}; \
-                     launchctl disable gui/$(id -u)/{l}"
+                     launchctl disable gui/$(id -u)/{l}; launchctl disable user/$(id -u)/{l}"
                 )
             })
             .collect::<Vec<_>>()
@@ -212,7 +258,7 @@ mod tests {
     /// refused, never folded into a neighbour's value (review of #679).
     #[test]
     fn environment_lines_read_as_systemd_reads_them() {
-        let unit = "[Service]\nExecStart=/bin/run\nEnvironment=A=1 B=two\n\
+        let unit = "[Service]\nExecStart=/bin/run\nRestart=on-failure\nEnvironment=A=1 B=two\n\
                     Environment=\"GREETING=hello there\" C=%h/c\nRestartSec=5\n";
         let a =
             crate::launchd::agent_from_unit("e", unit, "/Users/a".as_ref(), "/l".into()).unwrap();
@@ -235,7 +281,7 @@ mod tests {
             "Environment=\"A=x\n",
             "Environment=JUSTAKEY\n",
         ] {
-            let unit = format!("[Service]\nExecStart=/bin/run\n{bad}");
+            let unit = format!("[Service]\nExecStart=/bin/run\nRestart=on-failure\n{bad}");
             assert!(
                 crate::launchd::agent_from_unit("e", &unit, "/h".as_ref(), "/l".into()).is_err(),
                 "{bad}"
@@ -243,12 +289,67 @@ mod tests {
         }
     }
 
+    /// A directive the reader has no answer for is refused, not dropped.
+    #[test]
+    fn an_unknown_directive_is_refused() {
+        let unit = "[Service]\nExecStart=/bin/run\nExecStartPre=/bin/prep\n";
+        let e = crate::launchd::agent_from_unit("u", unit, "/h".as_ref(), "/l".into())
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("ExecStartPre"), "{e}");
+        let unit = "[Unit]\nDescription=x\nAfter=y\n[Service]\nType=exec\nExecStart=/bin/run\n\
+                    Restart=on-failure\n[Install]\nWantedBy=default.target\n";
+        assert!(crate::launchd::agent_from_unit("k", unit, "/h".as_ref(), "/l".into()).is_ok());
+        // The two read by value: a meaning an agent does not have is refused.
+        for bad in ["Type=oneshot", "Restart=always", "Restart=no"] {
+            let unit = format!("[Service]\nExecStart=/bin/run\n{bad}\n");
+            assert!(
+                crate::launchd::agent_from_unit("v", &unit, "/h".as_ref(), "/l".into()).is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    /// Each voice sidecar's evidence names the plist its install writes: a
+    /// renamed stem would otherwise read every Mac's server as absent
+    /// (#678's test, for the voice agents; review of #679).
+    #[test]
+    fn the_voice_agents_are_their_sidecars_evidence() {
+        let speech = crate::speech_unit::Naming::shipped();
+        for (id, stem) in [
+            (crate::stt_unit::ID, crate::stt_unit::Naming::shipped().unit),
+            (
+                crate::voice_worker_unit::ID,
+                crate::voice_worker_unit::Naming::shipped().unit,
+            ),
+            (crate::speech_unit::ID, speech.engine_unit.clone()),
+            (crate::speech_unit::ID, speech.adapter_unit.clone()),
+        ] {
+            let name = crate::launchd::plist_name(&stem);
+            let s = crate::sidecar::SIDECARS
+                .iter()
+                .find(|s| s.id == id)
+                .unwrap();
+            assert!(
+                s.evidence
+                    .iter()
+                    .any(|e| matches!(e, crate::sidecar::Evidence::UserUnit(n) if *n == name)),
+                "{name} is not in {id}'s evidence"
+            );
+        }
+    }
+
     /// A command a shell would have to unquote is refused, never split.
     #[test]
     fn a_quoted_command_is_refused() {
+        let unit = "[Service]\nExecStart=-/bin/run\nRestart=on-failure\n";
+        assert!(
+            crate::launchd::agent_from_unit("p", unit, "/h".as_ref(), "/l".into()).is_err(),
+            "a systemd prefix is refused, not taken as the program's name"
+        );
         let unit = "[Service]\nExecStart=/bin/sh -c \"echo hi\"\n";
         assert!(crate::launchd::agent_from_unit("q", unit, "/h".as_ref(), "/l".into()).is_err());
-        let unit = "[Service]\nExecStart=%h/bin/run --x\n";
+        let unit = "[Service]\nExecStart=%h/bin/run --x\nRestart=on-failure\n";
         let a =
             crate::launchd::agent_from_unit("h", unit, "/Users/a".as_ref(), "/l".into()).unwrap();
         assert_eq!(a.program, ["/Users/a/bin/run", "--x"]);

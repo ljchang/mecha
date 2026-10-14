@@ -73,6 +73,19 @@ pub enum Cmd {
         #[arg(long)]
         verify: bool,
     },
+    /// Internal: run a program with its output in a log that rotates at a
+    /// cap — the journal's part, for every launchd agent mecha installs on
+    /// macOS (`mecha_core::log_cap`). Run by launchd, not by hand.
+    #[command(hide = true)]
+    LogCap {
+        #[arg(long)]
+        log: std::path::PathBuf,
+        #[arg(long, default_value_t = mecha_core::log_cap::MAX_MB)]
+        max_mb: u64,
+        /// The program and its arguments, after `--`.
+        #[arg(last = true, required = true)]
+        program: Vec<String>,
+    },
     /// Internal: hold a port and start the server behind it on its first
     /// request, stopping it when idle — the program of the on-demand
     /// embeddings and OCR servers' launchd agents on macOS
@@ -104,6 +117,19 @@ pub async fn execute(args: Args) -> Result<()> {
         }) => return enable(&ids, no_install, turbo, false).await,
         Some(Cmd::Disable { ids }) => return set(&ids, false),
         Some(Cmd::Plan { id, json, verify }) => return plan(&id, json, verify),
+        Some(Cmd::LogCap {
+            log,
+            max_mb,
+            program,
+        }) => {
+            let code = mecha_core::log_cap::run(mecha_core::log_cap::Spec {
+                log,
+                max_bytes: max_mb.max(1) << 20,
+                program,
+            })
+            .await?;
+            crate::exit_with(code);
+        }
         Some(Cmd::OnDemand {
             listen,
             backend,
@@ -874,10 +900,10 @@ fn turbo_step(f: TurboFacts, unfit: impl FnOnce() -> Option<String>) -> TurboSte
 /// switch says, so `enable` writes one where there is none (§13): the
 /// settings that match what is here — OCR where its server is installed or
 /// provided, layout where its environment is — and the parser's confinement
-/// as this machine runs it, asked of each backend's own preflight. On a Mac
-/// no confinement exists yet: PDFs are refused until the macOS sandbox
-/// lands, and layout, confined the same way, stays off (the owner's ruling,
-/// 2026-10-13). A table the owner wrote is never edited.
+/// as this machine runs it, asked of each backend's own preflight — Seatbelt
+/// on a Mac (left as its default, unnamed), bubblewrap then Landlock on
+/// Linux. A check that could not run writes nothing (unknown is never a
+/// no). A table the owner wrote is never edited.
 async fn documents_table() -> Result<()> {
     use mecha_core::sidecar::SidecarState;
     // The file's own answer, as `image_table`'s: `write_documents_table`
@@ -897,42 +923,56 @@ async fn documents_table() -> Result<()> {
     let machine = recommend::Machine::read()?;
     let hub = mecha_core::fetch::hub_dir()?;
     let p = sidecar::plan(Feature::Documents, &m, &machine, &hub, false)?;
+    let state = |id: &str| p.sidecars.iter().find(|s| s.id == id).map(|s| &s.state);
+    // A check that could not run is not a no: written down, `ocr = false`
+    // would outlive the reason it was read (review of #683). So nothing is
+    // written while one is unknown, and the owner is told what to look at.
+    for id in ["ocr-server", "layout"] {
+        if let Some(SidecarState::Unknown { why }) = state(id) {
+            println!(
+                "No [documents] table written: {id} could not be checked ({why}). `mecha \
+                 features plan documents` shows it; `mecha features enable documents` again \
+                 writes the table once it can be read."
+            );
+            return Ok(());
+        }
+    }
     let here = |id: &str| {
-        p.sidecars.iter().any(|s| {
-            s.id == id
-                && matches!(
-                    s.state,
-                    SidecarState::Installed | SidecarState::Provided { .. }
-                )
-        })
-    };
-    let macos = cfg!(target_os = "macos");
-    let ocr = here("ocr-server");
-    let layout_here = here("layout");
-    let (confine, pdfs) = if macos {
-        (
-            None,
-            Some(
-                "PDFs are refused on a Mac until the macOS sandbox is built — the parser never \
-                 runs unconfined; pictures are read by OCR"
-                    .to_string(),
-            ),
+        matches!(
+            state(id),
+            Some(SidecarState::Installed | SidecarState::Provided { .. })
         )
-    } else {
-        match mecha_core::document::working_confinement().await {
-            Ok(b) => (Some(b), None),
-            Err(why) => (
-                None,
-                Some(format!(
+    };
+    // An OCR server run by hand on its port is one too: the sidecar's
+    // evidence is unit files and agents, and a server started from a
+    // terminal has neither (review of #683).
+    let ocr_port = mecha_core::llama_units::Which::Ocr.shipped().public;
+    let ocr = here("ocr-server") || mecha_core::router_unit::port_answers(ocr_port);
+    let layout_here = here("layout");
+    // The confinement this machine runs, asked of each of its own backends:
+    // Seatbelt on a Mac (written as no `confine`, its default there),
+    // bubblewrap then Landlock on Linux (written as the one that worked).
+    let macos = cfg!(target_os = "macos");
+    let (confine, pdfs) = match mecha_core::document::working_confinement().await {
+        Ok(b) => (if macos { None } else { Some(b) }, None),
+        Err(why) => (
+            None,
+            Some(if macos {
+                format!(
+                    "PDFs will be refused until poppler runs under the macOS sandbox here \
+                     ({why}) — `brew install poppler`"
+                )
+            } else {
+                format!(
                     "PDFs will be refused until the parser can be confined here ({why}) — \
                      install poppler-utils, and bubblewrap or a kernel with Landlock"
-                )),
-            ),
-        }
+                )
+            }),
+        ),
     };
     let choice = mecha_core::document::TableChoice {
         ocr,
-        layout: ocr && layout_here && !macos,
+        layout: ocr && layout_here,
         confine,
     };
     if mecha_core::document::write_documents_table(&path, &choice)? {
@@ -948,12 +988,6 @@ async fn documents_table() -> Result<()> {
         );
         if let Some(line) = pdfs {
             println!("  {line}");
-        }
-        if macos && layout_here {
-            println!(
-                "  layout is off on a Mac: the layout model is confined as the parser is, and \
-                 waits for the same sandbox; pages are read whole"
-            );
         }
         if !ocr {
             println!("  ocr is off: no OCR server is installed or running here");

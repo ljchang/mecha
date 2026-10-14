@@ -106,6 +106,18 @@ impl McpClient {
             );
         }
 
+        // Seatbelt confines the PDF parser only: an MCP server's confinement
+        // narrows what it declares, and this profile is not measured against
+        // a server's reach. `Config::validate` refuses it in `[sandbox]`; a
+        // sandbox built in code reaches here without that (review of #682).
+        if cfg.sandbox && sandbox.backend() == crate::sandbox::Backend::Seatbelt {
+            bail!(
+                "MCP server `{}`: {}",
+                cfg.name,
+                crate::sandbox::SEATBELT_IS_DOCUMENTS_ONLY
+            );
+        }
+
         let mut command = if cfg.sandbox {
             let confined = match cfg.network {
                 Some(network) => sandbox.with_network(network),
@@ -952,6 +964,27 @@ mod tests {
         assert_eq!(response_id(&json!({"id": "not-ours"})), None);
         assert_eq!(response_id(&json!({"id": null})), None);
         assert_eq!(response_id(&json!({})), None);
+    }
+
+    #[test]
+    fn a_server_is_never_confined_by_seatbelt() {
+        // A sandbox built in code never meets `Config::validate`'s refusal:
+        // the construction site refuses it too (review of #682).
+        let cfg = McpServerConfig {
+            name: "nosy".into(),
+            command: "/usr/bin/env".into(),
+            sandbox: true,
+            ..Default::default()
+        };
+        let seatbelt = Sandbox::new(SandboxConfig {
+            kind: crate::sandbox::Backend::Seatbelt,
+            ..SandboxConfig::default()
+        });
+        let err = McpClient::build_command(&cfg, &seatbelt, Path::new("/tmp"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("document extraction only"), "{err}");
+        assert!(err.contains("nosy"), "{err}");
     }
 
     #[test]
