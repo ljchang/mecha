@@ -319,7 +319,10 @@ fn render(dir: &Path, naming: &Naming) -> String {
 /// ~35 GiB of the owner's Mac until something else gave way (measured
 /// 2026-10-14: the memory level stayed at 41 % from 84 % for 15 minutes).
 pub fn mac_backend_port(public: u16) -> u16 {
-    public.saturating_add(10_000)
+    // Never the public port itself: one too high to add to is moved down.
+    public
+        .checked_add(10_000)
+        .unwrap_or(public.wrapping_sub(10_000))
 }
 
 /// How long a Mac's ComfyUI may sit with no open connection before the
