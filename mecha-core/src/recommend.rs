@@ -191,9 +191,69 @@ pub struct Slot {
     pub runs_on: RunsOn,
     pub residency: Residency,
     pub rows: &'static [Recommendation],
+    /// A Mac's own rows, where the model differs there, chosen in place of
+    /// `rows` on macOS (`rows_on`); empty where a Mac takes the same rows.
+    /// Kept out of the page's table, which is the GB10's (FEATURES-DESIGN
+    /// §12.3: the image model, int8 emulated on MPS).
+    pub mac_rows: &'static [Recommendation],
+}
+
+/// The rows a machine running `os` picks from: a slot's Mac rows on macOS
+/// when it has them, else its own.
+pub fn rows_on(slot: &'static Slot, os: &str) -> &'static [Recommendation] {
+    if os == "macos" && !slot.mac_rows.is_empty() {
+        slot.mac_rows
+    } else {
+        slot.rows
+    }
 }
 
 const GB10: &str = "DGX Spark (GB10)";
+
+/// The image slot on a Mac (the owner, 2026-10-13: bf16 by default, the
+/// turbo bf16 on demand). MPS has no int8 kernels: comfy-kitchen emulates the
+/// ConvRot file's every op, 3.1 s a step against bf16's 1.7-2.0, so the
+/// int8 picture took ~128 s and the bf16 ~79 s warm (FEATURES-DESIGN §12.3).
+/// The text encoder and VAE are the GB10's files; the encoder runs on the CPU
+/// there, its float8 scales having no MPS type.
+const IMAGE_MAC: &[Recommendation] = &[Recommendation {
+    tier_gb: 128,
+    memory: Memory::Unified {
+        // The process's peak on a load from cold, the 14 GB file read and
+        // cast; MPS allocations are not all counted in RSS, so it is a floor.
+        peak: Peak::Measured {
+            mb: 33_485,
+            machine: MAC_M5,
+            date: "2026-10-13",
+        },
+    },
+    model: "Qwen-Image 2.1 bf16, in ComfyUI on MPS",
+    counts: "the process's peak from cold, 32.7 GiB as RSS while the 14 GB file is read and cast; ~13.6 GB loaded on MPS and ~6 GiB RSS warm — MPS allocations are not all counted in RSS, so a floor",
+    sources: &[Source::HuggingFace {
+        repo: "Comfy-Org/Qwen-Image-2.1",
+        revision: "df94239739eef7205973a145ffa6f441f7b64e84",
+        files: &[
+            HubFile {
+                path: "diffusion_models/qwen_image_2.1_bf16.safetensors",
+                sha256: "89f4158d066cc33906a199fca85634f766892dd78f49b6698dabf187ac86c4bc",
+                bytes: 14_230_280_616,
+            },
+            HubFile {
+                path: "text_encoders/qwen3vl_8b_w4a8.safetensors",
+                sha256: "7754425e55e7bea2bfde4dde59a4cc236cb44e5ee9c215ea66ef8d47012824eb",
+                bytes: 6_312_105_364,
+            },
+            HubFile {
+                path: "vae/qwen_image_2.1_vae_bf16.safetensors",
+                sha256: "bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9",
+                bytes: 675_509_688,
+            },
+        ],
+    }],
+    excludes: Some("what a loaded server holds between pictures: there is no idle reset on a Mac, so ~13.6 GB on MPS and ~6 GiB RSS stay until `[image] unload_after_secs` sends /free, and what /free gives back on MPS is not measured; and the CPU text encoder's own memory, not measured apart from the process"),
+}];
+
+const MAC_M5: &str = "MacBook Pro (M5 Max)";
 
 const QWEN36_FILES: &[HubFile] = &[
     HubFile {
@@ -332,6 +392,7 @@ pub const SLOTS: &[Slot] = &[
         needed_by: &[],
         runs_on: RunsOn::Gpu,
         residency: Residency::Resident,
+        mac_rows: &[],
         rows: &[
             // The pinned files and four 262k slots' cache, as the router
             // runs it. No reading of this file exists yet: on 2026-10-02 the
@@ -411,6 +472,7 @@ pub const SLOTS: &[Slot] = &[
         needed_by: &[Feature::Graph, Feature::Documents, Feature::Personas],
         runs_on: RunsOn::Gpu,
         residency: Residency::OnDemand,
+        mac_rows: &[],
         rows: &[Recommendation {
             tier_gb: 128,
             memory: Memory::Unified {
@@ -441,6 +503,7 @@ pub const SLOTS: &[Slot] = &[
         needed_by: &[Feature::Ocr],
         runs_on: RunsOn::Gpu,
         residency: Residency::OnDemand,
+        mac_rows: &[],
         rows: &[Recommendation {
             tier_gb: 128,
             memory: Memory::Unified {
@@ -471,6 +534,7 @@ pub const SLOTS: &[Slot] = &[
         needed_by: &[Feature::Layout],
         runs_on: RunsOn::Cpu,
         residency: Residency::PerRequest,
+        mac_rows: &[],
         rows: &[Recommendation {
             tier_gb: 128,
             memory: Memory::Unified {
@@ -497,6 +561,7 @@ pub const SLOTS: &[Slot] = &[
         needed_by: &[Feature::Image],
         runs_on: RunsOn::Gpu,
         residency: Residency::ReleasedOnIdle,
+        mac_rows: IMAGE_MAC,
         rows: &[Recommendation {
             tier_gb: 128,
             memory: Memory::Unified {
@@ -540,6 +605,7 @@ pub const SLOTS: &[Slot] = &[
         needed_by: &[Feature::Voice],
         runs_on: RunsOn::Cpu,
         residency: Residency::Resident,
+        mac_rows: &[],
         rows: &[Recommendation {
             tier_gb: 128,
             memory: Memory::Unified {
@@ -563,6 +629,7 @@ pub const SLOTS: &[Slot] = &[
         needed_by: &[Feature::Voice],
         runs_on: RunsOn::Gpu,
         residency: Residency::Resident,
+        mac_rows: &[],
         rows: &[
             Recommendation {
                 tier_gb: 128,
@@ -604,6 +671,7 @@ pub const SLOTS: &[Slot] = &[
         needed_by: &[Feature::Voice],
         runs_on: RunsOn::Cpu,
         residency: Residency::Resident,
+        mac_rows: &[],
         rows: &[Recommendation {
             tier_gb: 128,
             memory: Memory::Unified {
@@ -903,15 +971,34 @@ pub fn row_for(slot: &'static Slot, machine: &Machine) -> Option<(&'static Recom
     pick(slot, machine, machine.tier_gb())
 }
 
+/// [`row_for`] as a machine running `os` reads it.
+pub fn row_for_os(
+    slot: &'static Slot,
+    machine: &Machine,
+    os: &str,
+) -> Option<(&'static Recommendation, bool)> {
+    pick_on(slot, machine, machine.tier_gb(), os)
+}
+
 fn pick(
     slot: &'static Slot,
     machine: &Machine,
     tier: Option<u32>,
 ) -> Option<(&'static Recommendation, bool)> {
+    pick_on(slot, machine, tier, std::env::consts::OS)
+}
+
+fn pick_on(
+    slot: &'static Slot,
+    machine: &Machine,
+    tier: Option<u32>,
+    os: &str,
+) -> Option<(&'static Recommendation, bool)> {
+    let rows = rows_on(slot, os);
     let discrete = matches!(machine, Machine::Discrete { .. });
     let shape_ok = |r: &Recommendation| matches!(r.memory, Memory::Discrete { .. }) == discrete;
     if let Some(t) = tier {
-        if let Some(r) = slot.rows.iter().find(|r| r.tier_gb == t && shape_ok(r)) {
+        if let Some(r) = rows.iter().find(|r| r.tier_gb == t && shape_ok(r)) {
             return Some((r, true));
         }
     }
@@ -922,9 +1009,9 @@ fn pick(
     if slot.needed_by.is_empty() {
         return None;
     }
-    let same: Vec<&'static Recommendation> = slot.rows.iter().filter(|r| shape_ok(r)).collect();
+    let same: Vec<&'static Recommendation> = rows.iter().filter(|r| shape_ok(r)).collect();
     let pool: Vec<&'static Recommendation> = if same.is_empty() {
-        slot.rows.iter().collect()
+        rows.iter().collect()
     } else {
         same
     };
@@ -1075,7 +1162,7 @@ mod tests {
     #[test]
     fn every_source_is_pinned_and_sized() {
         for s in SLOTS {
-            for r in s.rows {
+            for r in s.rows.iter().chain(s.mac_rows) {
                 for src in r.sources {
                     assert!(src.bytes() > 0, "{}: a source with no size", s.id);
                     match src {
@@ -1114,7 +1201,7 @@ mod tests {
                 "{} has no 128 GB unified row",
                 s.id
             );
-            for r in s.rows {
+            for r in s.rows.iter().chain(s.mac_rows) {
                 assert!(TIERS.contains(&r.tier_gb), "{}: tier {}", s.id, r.tier_gb);
             }
         }
@@ -1298,7 +1385,14 @@ mod tests {
         };
         let b = budget(m, &[Feature::Graph, Feature::Image]);
         assert_eq!(b.gpu.loaded_mb, None);
-        assert_eq!(b.gpu.loaded_floor.known_mb, 5_243 + 20_790);
+        // The image figure is this system's row: a Mac reads its own
+        // (bf16) row, having no discrete one, through `pick`'s fallback.
+        let image = if std::env::consts::OS == "macos" {
+            33_485
+        } else {
+            20_790
+        };
+        assert_eq!(b.gpu.loaded_floor.known_mb, 5_243 + image);
         // Each line's floor is its own: nothing resident is known here, and
         // image generation (released on idle) is not charged to it.
         assert_eq!(b.gpu.resident_floor.known_mb, 0);
@@ -1315,7 +1409,7 @@ mod tests {
                 "{}",
                 s.id
             );
-            for r in s.rows {
+            for r in s.rows.iter().chain(s.mac_rows) {
                 for text in [r.model, r.counts, r.excludes.unwrap_or("")] {
                     assert!(
                         !text.contains('|') && !text.contains('\n'),
@@ -1377,5 +1471,42 @@ mod tests {
         assert_eq!(Band::of(61, 100), Band::Fits);
         assert_eq!(Band::of(98, 100), Band::Tight);
         assert_eq!(Band::of(99, 100), Band::TooTight);
+    }
+
+    /// A Mac draws with the bf16 file (the owner's ruling, §12.3); every
+    /// other system keeps the GB10's int8 row. The encoder and VAE are the
+    /// same files either way, so a hub holds them once.
+    #[test]
+    fn a_mac_draws_with_the_bf16_image_model() {
+        let slot = SLOTS.iter().find(|s| s.id == "image").unwrap();
+        let m = Machine::Unified {
+            total_mb: 131_072,
+            gpu_unread: false,
+        };
+        let files = |os: &str| -> Vec<&'static str> {
+            let (row, _) = row_for_os(slot, &m, os).unwrap();
+            row.sources
+                .iter()
+                .flat_map(|s| match s {
+                    Source::HuggingFace { files, .. } => files.iter().map(|f| f.path).collect(),
+                    _ => Vec::new(),
+                })
+                .collect()
+        };
+        let mac = files("macos");
+        let linux = files("linux");
+        assert!(
+            mac.contains(&"diffusion_models/qwen_image_2.1_bf16.safetensors"),
+            "{mac:?}"
+        );
+        assert!(
+            linux.contains(&"diffusion_models/qwen_image_2.1_int8_convrot.safetensors"),
+            "{linux:?}"
+        );
+        assert_eq!(&mac[1..], &linux[1..], "the encoder and VAE are shared");
+        // Every other slot reads the same on either system.
+        for s in SLOTS.iter().filter(|s| s.id != "image") {
+            assert!(s.mac_rows.is_empty(), "{}", s.id);
+        }
     }
 }
