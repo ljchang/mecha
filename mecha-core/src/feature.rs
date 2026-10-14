@@ -575,8 +575,9 @@ pub struct Facts {
     /// with a `persona.toml`); `None` where it could not be read.
     pub personas_stored: Option<bool>,
     /// Whether a voice unit file is installed for this user
-    /// (`mecha-voice-serve.service` or `mecha-voice-worker.service`).
-    /// Installed, not running: a socket-activated unit is idle until asked.
+    /// (`mecha-voice-serve.service` or `mecha-voice-worker.service`, or the
+    /// worker's launchd agent on a Mac). Installed, not running: a
+    /// socket-activated unit is idle until asked.
     pub voice_unit_installed: bool,
     /// The **global** configuration — the only one any row reads.
     ///
@@ -612,6 +613,10 @@ impl Facts {
                 ["mecha-voice-serve.service", "mecha-voice-worker.service"]
                     .iter()
                     .any(|u| units.join(u).is_file())
+            }) || dirs::home_dir().is_some_and(|h| {
+                crate::launchd::agents_dir(&h)
+                    .join(crate::launchd::plist_name("mecha-voice-worker"))
+                    .is_file()
             }),
             config: global.clone(),
         }

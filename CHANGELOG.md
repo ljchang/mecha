@@ -19,6 +19,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refused — it confines the parser, not `shell`. On a Mac the parser's
   address-space ceiling (`memory_mb`) is not applied; its CPU and file-size
   ceilings and the per-page timeout are.
+- **The local chat model installs on a Mac.** `mecha setup chat`, and the
+  chat question of the guided `mecha setup`, now run on macOS: llama.cpp's
+  pinned Metal build, the model recommended for the Mac's memory (the same
+  rows as any unified-memory machine), and the router that serves it,
+  installed as a launchd agent at
+  `~/Library/LaunchAgents/ai.mecha-factory.llama-local.plist` that starts at
+  each login and logs to `~/Library/Logs/mecha/llama-local.log`. A router or
+  agent mecha did not install is never written over. On every system, the
+  router now runs mecha's own pinned llama.cpp, installed under `~/.mecha`
+  beside any `llama-server` already on the PATH (Homebrew's, say), which is
+  left alone; only a machine no pinned build fits runs its own.
+- **A Mac's service logs are capped.** Each launchd agent mecha installs
+  writes to `~/Library/Logs/mecha/<name>.log` through a small wrapper that
+  rotates it at 20 MiB, keeping one older file — launchd itself never rotates
+  a log.
+- **The embeddings and OCR servers install on a Mac**, on demand as on
+  Linux: `mecha features enable graph` (or `documents`, `personas`) installs
+  a launchd agent that holds the port and starts the server at the first
+  request, stopping it after ten idle minutes — mecha's own small proxy,
+  since llama-server cannot take a socket launchd holds.
+- **Voice installs on a Mac.** `mecha features enable voice` installs
+  speech to text, the voice worker and the speech server as launchd agents
+  on Apple silicon, the speech engine built for Metal (it needs `cmake`, from
+  Homebrew). Each agent is read from the same unit Linux installs, so the two
+  run the same command. Image generation and `mecha setup engine --adopt`
+  are still Linux-only.
+
+### Fixed
+
+- **The speech server's default voice keeps its transcript.** The clip and
+  its transcript are copied into the speech server's voices directory rather
+  than linked to the model cache, so the transcript is never older than its
+  clip — a cache filled by `hf download` wrote it first, and the adapter then
+  re-transcribed the voice and could overwrite the shipped transcript.
 
 ## [0.1.24] - 2026-10-13
 

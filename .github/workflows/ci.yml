@@ -456,10 +456,11 @@ jobs:
           jq -e 'all(.[]; .id != "provider-credential")' steps.json
 
           # And the blocking step offers a way *out*, not a viewer. Nothing is
-          # serving on a CI runner, so on Linux its remedy is the command that
-          # installs a local model; elsewhere `setup chat` cannot run, so it
-          # offers none rather than one that always fails.
-          if [ "$(uname)" = Linux ]; then
+          # serving on a CI runner, so on Linux and macOS its remedy is the
+          # command that installs a local model (a systemd unit or a launchd
+          # agent); elsewhere `setup chat` cannot run, so it offers none
+          # rather than one that always fails.
+          if [ "$(uname)" = Linux ] || [ "$(uname)" = Darwin ]; then
             jq -e '.[] | select(.id == "local-server") | .remedy.argv
                    == ["mecha", "setup", "chat"]' steps.json
           else

@@ -261,6 +261,8 @@ llama_units.rs the on-demand embeddings and OCR servers from nothing: units and
              launchers shipped in the binary, rendered, started through their socket
 router_unit.rs the resident router from nothing: its unit, launcher and presets
              from the tier's chat geometry or the owner's GGUF; `mecha setup chat`
+launchd.rs   a systemd user unit's macOS twin: a plist in ~/Library/LaunchAgents,
+             unloaded from both domains before it is bootstrapped into one
 stt_unit.rs  speech to text from nothing: a hash-locked environment, the model by
              its pin, one rendered unit; a server mecha did not write is left alone
 comfyui_unit.rs the image server from nothing: ComfyUI by its commit, torch from a
