@@ -1225,7 +1225,7 @@ pub fn write_mcp_entries(
             }
             let mut table = toml_edit::Table::new();
             table.insert("tools", toml_edit::value(tools));
-            doc.insert("outbox", toml_edit::Item::Table(table));
+            crate::config::append_table(&mut doc, "outbox", table);
             changed = true;
             for r in results.iter_mut() {
                 r.wrote_outbox = !r.routes.is_empty();

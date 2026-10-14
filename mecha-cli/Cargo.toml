@@ -68,3 +68,6 @@ image.workspace = true
 # Only to write a source with rows for the dashboard proposal routes' tests.
 # Querying belongs to mecha-core's confined runner.
 rusqlite.workspace = true
+# Only to edit the starter config as `features enable` does, in its test.
+# Editing belongs to mecha-core (`config::append_table`).
+toml_edit = "0.25"

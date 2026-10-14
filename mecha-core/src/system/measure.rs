@@ -522,7 +522,7 @@ impl Reader {
         }
     }
 
-    /// macOS's total, from `sysctl`, on its own: a `vm_stat` that cannot be
+    /// macOS's total, from `sysctl`, on its own: a level that cannot be
     /// read must not cost the total.
     fn mac_total(&self) -> Option<u64> {
         *self.mac_total.get_or_init(|| {
@@ -533,17 +533,24 @@ impl Reader {
         })
     }
 
+    /// macOS's own available figure: its memory-status level (a percentage)
+    /// of the total (`source::parse_memorystatus_level` holds the ruling).
     fn mac_available(&self) -> Option<u64> {
         *self.mac_available.get_or_init(|| {
-            match source::run_bounded("vm_stat", &[], self.budget()) {
-                Ran::Out(t) => source::parse_vm_stat(&t),
-                _ => None,
-            }
+            let level = match source::run_bounded(
+                "sysctl",
+                &["-n", "kern.memorystatus_level"],
+                self.budget(),
+            ) {
+                Ran::Out(t) => source::parse_memorystatus_level(&t)?,
+                _ => return None,
+            };
+            Some(self.mac_total()? / 100 * level)
         })
     }
 
     /// `/proc/meminfo`, parsed once. On macOS the two figures that matter
-    /// come from `sysctl` and `vm_stat` instead; swap is not read there.
+    /// come from `sysctl` instead; swap is not read there.
     pub fn meminfo(&self) -> Result<MemInfo, Reading> {
         self.meminfo
             .get_or_init(|| {
@@ -555,7 +562,7 @@ impl Reader {
                             ..MemInfo::default()
                         }),
                         _ => Err(Reading::unread(
-                            "sysctl hw.memsize or vm_stat could not be read",
+                            "sysctl hw.memsize or kern.memorystatus_level could not be read",
                         )),
                     };
                 }
@@ -706,7 +713,7 @@ impl Reader {
             ),
             MemoryAvailable if cfg!(target_os = "macos") => Reading::of(
                 self.mac_available().map(|v| v as f64),
-                "vm_stat could not be read",
+                "sysctl kern.memorystatus_level could not be read",
             ),
             MemoryTotal => mem(|m| Some(m.total)),
             MemoryAvailable => mem(|m| Some(m.available)),

@@ -2046,3 +2046,21 @@ back at ~1.1 GB — does not run on Darwin. mecha's own `[image]
 unload_after_secs` (`/free` after fifteen idle minutes) still runs; how much
 of the ~13.6 GB it gives back on MPS is not measured yet.
 
+
+**What "available" means on a Mac** (owner's ruling, 2026-10-13). Measured on
+the owner's Mac with the chat model (45 GiB, wired on Metal) and voice
+resident, every picture was refused: the gate read 24.0 GB available —
+`vm_stat`'s free, inactive, speculative and purgeable pages — against the
+bf16 file's 34 + 8 GB, while `memory_pressure` reported 37 % free (~47 GB),
+with 20.8 GiB compressed. `vm_stat`'s free and inactive pages leave out what
+macOS reclaims without pressure. So `memory.available` on macOS is
+`kern.memorystatus_level` (the percentage `memory_pressure` prints) × the
+total (`system::source::parse_memorystatus_level`); an unreadable level is
+unread, never a number. Owed: one bf16 picture on that Mac with chat and
+voice resident, watching swap and pressure, before the figure is trusted.
+
+**The refusal is said to the owner, not offered to the model.** Told the off
+switch, the model retried the picture six times in twenty seconds and then
+recommended `[image] min_available_mb = 0` to the owner. The tool's text now
+says the refusal will not change within the turn; the switch is named in the
+operator's log only.

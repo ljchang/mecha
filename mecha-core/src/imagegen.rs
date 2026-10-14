@@ -2268,10 +2268,21 @@ impl ImageGenerate {
         );
         match verdict.sentence("a generation") {
             None => Ok(()),
-            Some(why) => Err(format!(
-                "{why} Try again once something large (a build, another model) is done. The \
-                 operator can set `[image] min_available_mb = 0` to skip this check."
-            )),
+            Some(why) => {
+                // The off switch is the operator's, said in the operator's
+                // log and never to the model: told it, a model retried six
+                // times in twenty seconds and then recommended the owner
+                // switch the guard off (owner's Mac, 2026-10-13).
+                tracing::warn!(
+                    "image generation refused for memory: {why} — `[image] min_available_mb` \
+                     sets the need, and 0 switches the check off"
+                );
+                Err(format!(
+                    "{why} This will not change by retrying within this turn: say so to the \
+                     owner and stop — it can be tried again later, once something large (a \
+                     build, another model) has finished."
+                ))
+            }
         }
     }
 
@@ -5934,20 +5945,18 @@ mod tests {
         assert_eq!(tool.persona_form(None).floor, floor);
     }
 
+    /// A Mac's available memory is macOS's own level (the owner's ruling,
+    /// 2026-10-13): a percentage, and anything else unread.
     #[test]
-    fn macos_available_memory_is_read_from_vm_stat() {
-        let sample = "Mach Virtual Memory Statistics: (page size of 16384 bytes)\n\
-            Pages free:                               65536.\n\
-            Pages active:                            900000.\n\
-            Pages inactive:                          131072.\n\
-            Pages speculative:                        32768.\n\
-            Pages throttled:                              0.\n\
-            Pages wired down:                        200000.\n\
-            Pages purgeable:                          16384.\n";
-        // (65536 + 131072 + 32768 + 16384) pages × 16 KiB = 3840 MB.
-        let parse = crate::system::source::parse_vm_stat;
-        assert_eq!(parse(sample), Some(3_840 * 1024 * 1024));
-        assert_eq!(parse("not vm_stat output"), None);
+    fn macos_available_memory_is_its_memorystatus_level() {
+        let parse = crate::system::source::parse_memorystatus_level;
+        assert_eq!(parse("37\n"), Some(37));
+        assert_eq!(parse("0"), Some(0));
+        assert_eq!(parse("100"), Some(100));
+        assert_eq!(parse("101"), None);
+        assert_eq!(parse("-3"), None);
+        assert_eq!(parse("sysctl: unknown oid"), None);
+        assert_eq!(parse(""), None);
     }
 
     /// §5.2 moved the result's guidance into the description; these two

@@ -1286,6 +1286,29 @@ impl ConfigLayer {
 /// the text on someone else's servers; a fallback would re-send the whole
 /// conversation there on a transient local error, silently (INCOGNITO-DESIGN.md
 /// §6.1).
+/// Add a new table at the end of a config file being edited — after the
+/// comments the file ends with, never above them.
+///
+/// `toml_edit` keeps a file's closing comments as the document's trailing
+/// text and renders a new table before it, so the starter's commented
+/// `[features]` switches (`# web = false …`) ended up under a newly written
+/// `[voice]` or `[image]`, where uncommenting one would switch nothing on
+/// (found on the owner's Mac, 2026-10-13). The trailing text becomes the new
+/// table's prefix, so it stays with the table it was written under.
+pub fn append_table(doc: &mut toml_edit::DocumentMut, key: &str, mut table: toml_edit::Table) {
+    let trailing = doc.trailing().as_str().unwrap_or("").to_string();
+    if !trailing.trim().is_empty() {
+        let mut prefix = trailing;
+        if !prefix.ends_with('\n') {
+            prefix.push('\n');
+        }
+        prefix.push('\n');
+        table.decor_mut().set_prefix(prefix);
+        doc.set_trailing("");
+    }
+    doc.insert(key, toml_edit::Item::Table(table));
+}
+
 pub fn provider_is_local(config: &Config, provider_name: &str) -> std::result::Result<(), String> {
     let Some(provider) = config.providers.get(provider_name) else {
         return Err(format!("the provider `{provider_name}` is not configured"));
