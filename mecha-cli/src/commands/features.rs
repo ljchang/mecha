@@ -464,9 +464,15 @@ pub(super) async fn enable_unwired(
                 } else if *id == mecha_core::speech_unit::ID {
                     // Always a build, and the weights' licence is said
                     // before the yes, not only at the fetch (review of #649).
-                    ", built here from its pinned commit (about seven minutes on a GB10), then \
-                     its model; Breeze TTS 2's weights are licensed for research and \
-                     non-commercial use only"
+                    if cfg!(target_os = "macos") {
+                        ", built here from its pinned commit (under a minute on Apple silicon), \
+                         then its model; Breeze TTS 2's weights are licensed for research and \
+                         non-commercial use only"
+                    } else {
+                        ", built here from its pinned commit (about seven minutes on a GB10), \
+                         then its model; Breeze TTS 2's weights are licensed for research and \
+                         non-commercial use only"
+                    }
                 } else if *id == comfy::ID {
                     &turbo_line
                 } else {

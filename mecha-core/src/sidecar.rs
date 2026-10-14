@@ -148,7 +148,10 @@ pub const SIDECARS: &[Sidecar] = &[
         label: "the speech-to-text server",
         needed_by: &[Feature::Voice],
         serves: &["stt"],
-        evidence: &[Evidence::UserUnit("mecha-parakeet.service")],
+        evidence: &[
+            Evidence::UserUnit("mecha-parakeet.service"),
+            Evidence::UserUnit("ai.mecha-factory.mecha-parakeet.plist"),
+        ],
         installer: "7d-1",
         // Unpacked from its release tarball into its own tree, never the hub.
         models_in_hub: false,
@@ -158,7 +161,10 @@ pub const SIDECARS: &[Sidecar] = &[
         label: "the voice worker",
         needed_by: &[Feature::Voice],
         serves: &["turn"],
-        evidence: &[Evidence::UserUnit("mecha-voice-worker.service")],
+        evidence: &[
+            Evidence::UserUnit("mecha-voice-worker.service"),
+            Evidence::UserUnit("ai.mecha-factory.mecha-voice-worker.plist"),
+        ],
         installer: "7d-2",
         models_in_hub: true,
     },
@@ -174,6 +180,8 @@ pub const SIDECARS: &[Sidecar] = &[
         evidence: &[
             Evidence::UserUnit("mecha-breeze-tts.service"),
             Evidence::UserUnit("mecha-breeze-adapter.service"),
+            Evidence::UserUnit("ai.mecha-factory.mecha-breeze-tts.plist"),
+            Evidence::UserUnit("ai.mecha-factory.mecha-breeze-adapter.plist"),
             Evidence::DockerImage("mecha/chatterbox"),
         ],
         installer: "7f",
@@ -406,7 +414,22 @@ impl Machinery {
             mecha_home,
             unit_dirs,
             path,
-            docker: Box::new(docker_image),
+            // The one Docker evidence is the Chatterbox speech container.
+            // Docker Desktop is usually not running on a Mac, which read
+            // every Mac as "unknown" and withheld the speech server for good
+            // (found on the owner's Mac, 2026-10-13): there, a daemon that
+            // does not answer reads as no container.
+            docker: if cfg!(target_os = "macos") {
+                // A daemon that does not answer is not a container serving
+                // speech; an image that is there still is one (review of
+                // #679: dropping `Found` too would offer Breeze over it).
+                Box::new(|repo| match docker_image(repo) {
+                    Lookup::Unknown(_) => Lookup::Absent,
+                    other => other,
+                })
+            } else {
+                Box::new(docker_image)
+            },
         })
     }
 
@@ -1582,5 +1605,21 @@ mod tests {
                     bytes: files[0].bytes
                 })));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The one Docker evidence is Chatterbox's: on a Mac an unanswering
+    /// daemon reads as no container, a rule written for that image alone. A
+    /// second `DockerImage` would inherit it quietly (review of #679).
+    #[test]
+    fn chatterbox_is_the_only_docker_evidence() {
+        let docker: Vec<&str> = SIDECARS
+            .iter()
+            .flat_map(|s| s.evidence)
+            .filter_map(|e| match e {
+                Evidence::DockerImage(r) => Some(*r),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(docker, ["mecha/chatterbox"]);
     }
 }
