@@ -932,8 +932,8 @@ fn services_step(
     }
     let router = stale.iter().any(|(_, f)| f.is_none());
     let mut detail = format!(
-        "Written by an older mecha: {}. Refreshing rewrites and restarts them; nothing current \
-         is downloaded.",
+        "Written by an older mecha: {}. Refreshing rewrites and restarts them, fetching only \
+         what is missing.",
         labels.join(", ")
     );
     let step = Step::new(
