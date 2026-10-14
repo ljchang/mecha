@@ -1572,7 +1572,11 @@ fn own_state(facts: &Facts, f: Feature) -> State {
         // inside `[image]`, which `image`'s own row answers for.
         Feature::Library => match crate::imagelib::Library::default_dir() {
             Ok(dir) => {
-                let withheld: Vec<&str> = ["image_library", "image_library_propose"]
+                let withheld: Vec<&str> = [
+                    "image_library",
+                    "image_library_propose",
+                    "image_library_reference",
+                ]
                     .into_iter()
                     .filter(|t| !cfg.tools.registers(t))
                     .collect();

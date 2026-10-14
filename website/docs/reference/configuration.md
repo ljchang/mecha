@@ -458,8 +458,9 @@ that belong to them — `mecha mail`, `tasks`, `kg`, `review` (all but
 `queues`), `document extract`, and the `imagelib` commands that change an
 entry — refuse with one sentence and the command that turns the feature on;
 and `mecha serve` will not start without `web = true`. The library is part of
-image: it is on whenever image is, and `[tools]` withholding `image_library`
-or `image_library_propose` only keeps those tools from the model. Reading the
+image: it is on whenever image is, and `[tools]` withholding `image_library`,
+`image_library_propose` or `image_library_reference` only keeps those tools
+from the model. Reading the
 library, pruning or forgetting cached extractions, and the library's lock
 password stay open whatever the switches say. Slack, personas, voice (with
 dictation, voice calls and cloning), incognito, the front door (its queue,
