@@ -2153,8 +2153,12 @@ only when its model was gone.
   everything it renders with fixed inputs and pins the hash beside the
   number, so a changed unit, launcher, drop-in, presets file, program file or
   Mac agent fails the build until the number is raised. The dependency locks
-  and pinned commits are not hashed: a change there is an upgrade that
-  downloads, not a refresh, and a program file that needs it changes with it.
+  and pinned commits are not hashed, **and nothing else detects their change
+  yet**: a lock or commit bump alone reaches no installed machine until its
+  install runs again (`enable --reinstall`). The graph's MCP server is the one
+  sidecar whose plan compares its pinned commit; the others' `.mecha-commit`
+  and `.mecha-lock-installed` records are where the same check would read.
+  A known gap, open (review of #691, pass 7).
 - **`mecha setup <feature>` shows only that feature's step;** the services
   step is the bare `mecha setup`'s, and `enable <feature>` makes the offer.
 - **A definition path an install stops writing stays recorded** (the
