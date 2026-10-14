@@ -87,8 +87,8 @@ pub enum Cmd {
         program: Vec<String>,
     },
     /// Internal: hold a port and start the server behind it on its first
-    /// request, stopping it when idle — the program of the on-demand
-    /// embeddings and OCR servers' launchd agents on macOS
+    /// request, stopping it when idle — the program of the embeddings, OCR
+    /// and image (ComfyUI) servers' launchd agents on macOS
     /// (`mecha_core::on_demand`). Run by launchd, not by hand.
     #[command(hide = true)]
     OnDemand {
@@ -100,6 +100,9 @@ pub enum Cmd {
         idle_secs: u64,
         #[arg(long)]
         launcher: std::path::PathBuf,
+        /// What answers 2xx once the server is ready.
+        #[arg(long, default_value = "/health")]
+        ready_path: String,
     },
 }
 
@@ -135,6 +138,7 @@ pub async fn execute(args: Args) -> Result<()> {
             backend,
             idle_secs,
             launcher,
+            ready_path,
         }) => {
             return mecha_core::on_demand::run(mecha_core::on_demand::Spec {
                 listen,
@@ -143,6 +147,13 @@ pub async fn execute(args: Args) -> Result<()> {
                 // `mecha-wait-healthy`'s budget for these servers' start.
                 start_timeout: std::time::Duration::from_secs(180),
                 launcher,
+                // A path, always: `system_stats` alone would build
+                // `http://127.0.0.1:18188system_stats`.
+                ready_path: if ready_path.starts_with('/') {
+                    ready_path
+                } else {
+                    format!("/{ready_path}")
+                },
             })
             .await;
         }
