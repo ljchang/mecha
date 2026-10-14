@@ -36,6 +36,7 @@ use std::path::Path;
 #[serde(rename_all = "snake_case")]
 pub enum Feature {
     Web,
+    Incognito,
     Slack,
     Mail,
     Docs,
@@ -52,7 +53,6 @@ pub enum Feature {
     Dictate,
     Calls,
     Cloning,
-    Incognito,
     Frontdoor,
     Publishing,
     Messages,

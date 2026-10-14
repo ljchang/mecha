@@ -13,7 +13,7 @@
 
 use anyhow::{Context, Result};
 use mecha_core::config::Config;
-use mecha_core::feature::{self, Feature, Row, State, Switch};
+use mecha_core::feature::{self, Feature, Row, State};
 use mecha_core::recommend::{self, Budget, Floor, Machine, Peak, Sum};
 use mecha_core::sidecar;
 
@@ -168,6 +168,20 @@ pub async fn execute(args: Args) -> Result<()> {
     let rows = feature::all(&facts);
     for key in feature::unknown_switches(&cfg) {
         eprintln!("mecha: `[features] {key}` is not a feature this build knows — a newer build's, or a typo; ignored");
+    }
+    // Said where the owner asks what is on, never on every start: a line an
+    // older `enable` wrote that nothing reads now (review of #695 — an
+    // `incognito = false` written for a reason is otherwise overridden with
+    // no trace).
+    for key in feature::RETIRED_SWITCHES
+        .iter()
+        .filter(|k| cfg.features.get(k).is_some())
+    {
+        eprintln!(
+            "mecha: `[features] {key}` is no longer read — `{key}` is part of `{}` now; the line \
+             can go",
+            Feature::parse(key).map_or("another feature", |f| f.switch_owner().id())
+        );
     }
     if args.probe {
         let shown: Vec<Feature> = rows.iter().filter(|r| r.shown).map(|r| r.id).collect();
@@ -1091,18 +1105,32 @@ fn set(ids: &[String], on: bool) -> Result<()> {
         path.display()
     );
     if !on {
-        // What a disable leaves blocked, said rather than discovered.
-        for dependent in Feature::ALL.iter().filter(|g| {
-            g.has_switch()
-                && feature::switch(&cfg, **g) == Some(Switch::On)
-                && !features.contains(g)
-                && g.requires().iter().any(|d| features.contains(d))
-        }) {
+        for dependent in left_blocked(&cfg, &features) {
             println!("  `{}` needs it, and now reads blocked", dependent.id());
         }
     }
     println!("Services that are already running pick this up when they restart.");
     Ok(())
+}
+
+/// What disabling `features` leaves blocked, said rather than discovered: each
+/// feature or part another switch owns that is on now and would not be after.
+/// A part of a disabled feature is that feature, and not listed. Asked through
+/// `switched_on`, so a part's need counts as a switch's does — `disable web`
+/// names `dictate`, `calls` and `cloning`, voice's parts that live in the web
+/// app (review of #695: since incognito became a part, a filter on switches
+/// with a `requires` edge matched nothing).
+fn left_blocked(cfg: &Config, features: &[Feature]) -> Vec<Feature> {
+    let mut after = cfg.clone();
+    for f in features {
+        feature::set_switch(&mut after, *f, false);
+    }
+    Feature::ALL
+        .iter()
+        .copied()
+        .filter(|g| !features.contains(&g.switch_owner()))
+        .filter(|g| feature::switched_on(cfg, *g) && !feature::switched_on(&after, *g))
+        .collect()
 }
 
 /// What the global configuration says about `f` right now, if it refuses:
@@ -1735,6 +1763,24 @@ mod tests {
             ..base(Some(&missing))
         };
         assert_eq!(turbo_step(f, fits), TurboStep::Nothing);
+    }
+
+    /// A disable names what it leaves blocked through a part's needs as well
+    /// as a switch's — the web app's voice parts — and never the disabled
+    /// feature's own parts (review of #695).
+    #[test]
+    fn a_disable_names_what_it_leaves_blocked() {
+        let mut cfg = Config::default();
+        for f in [Feature::Web, Feature::Voice] {
+            feature::set_switch(&mut cfg, f, true);
+        }
+        assert_eq!(
+            left_blocked(&cfg, &[Feature::Web]),
+            [Feature::Dictate, Feature::Calls, Feature::Cloning]
+        );
+        assert!(left_blocked(&cfg, &[Feature::Voice]).is_empty());
+        feature::set_switch(&mut cfg, Feature::Voice, false);
+        assert!(left_blocked(&cfg, &[Feature::Web]).is_empty());
     }
 
     /// `--turbo` is the image model's, and fetches: both refusals come
