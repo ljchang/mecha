@@ -502,8 +502,10 @@ Three rules carry the design:
    it reads only config and the disk. **`mecha features enable|disable
    <id>`** writes the bool into the global `[features]` table (`codex
    features enable`); an enable whose dependency is off is refused with the
-   chained command (`mecha features enable web voice` for `dictate`), as Claude Code
-   refuses a disable that would break another plugin. A **part** id (`ocr`,
+   chained command, as Claude Code refuses a disable that would break another
+   plugin. (Since F15 no feature with a switch has a dependency — incognito,
+   the one that did, became a part of `web` — so that branch waits for the
+   next one.) A **part** id (`ocr`,
    `dictate`, `library`) has no bool, so `enable ocr` is refused by name and
    points at the parent's switch and the setting that turns the part on
    (`[documents] ocr = true`).
@@ -618,7 +620,8 @@ it. So, in step 1, the `tool_availability_notices` shape Hermes uses:
   `web` is still absent, and `enable incognito` alone would land in
   `Blocked` — *"`incognito`: needs `web` — `mecha features
   enable web incognito`"* — never offered alone into a `Blocked` it cannot
-  leave;
+  leave (the incognito case is history since F15, which made it a part of
+  `web`; the rule stands for the next feature with a dependency);
 - `mecha features` shows that case as its own row (switch absent, would
   otherwise be usable), not a bare `off`, as it does an off front door with requests
   waiting;
@@ -883,7 +886,8 @@ Three things make it deliberate rather than accidental:
   `false`. The permitted set, said out loud, is **`frontdoor`** alone — a
   binary on PATH and the trial's own `requests` store; every other
   top-level feature is `false` (found on review of #427, pass 14). Not
-  `incognito`: its evidence is `provider_is_local` over `default_provider`
+  `incognito` (a top-level feature until F15 made it a part of `web`; an
+  environment's leftover `incognito = false` is allowed, `true` refused): its evidence is `provider_is_local` over `default_provider`
   and `providers`, both `MACHINE_TABLES` copied from the operator, so it
   fails the test on its own terms, not only by needing `web` (#435). **Not `graph`**, though an
   environment may declare its own graph server: a manifest's `live_servers =
