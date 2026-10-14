@@ -1097,7 +1097,11 @@ fn runs_its_arguments(segment: &[String]) -> bool {
         | "nohup" | "nice" | "ionice" | "timeout" | "watch" | "eval" | "exec" | "command"
         | "builtin" | "chroot" | "strace" | "ltrace" | "gdb" | "setsid" | "stdbuf" | "flock"
         | "unshare" | "nsenter" | "parallel" | "chrt" | "taskset" | "script" | "expect" | "ssh"
-        | "docker" | "podman" | "kubectl" | "systemd-run" | "firejail" | "bwrap" => true,
+        | "docker" | "podman" | "kubectl" | "systemd-run" | "firejail" | "bwrap"
+        // macOS's own: a sandbox profile, then the program it confines; an
+        // architecture, then the program; a power assertion held while the
+        // program runs. Each runs its arguments (review of #682).
+        | "sandbox-exec" | "arch" | "caffeinate" => true,
         _ => false,
     }
 }
@@ -1553,6 +1557,9 @@ mod tests {
             "sh -c 'rm -rf x'",
             "bash -ec 'cd /tmp ; rm -rf x'",
             "xargs rm -rf",
+            "sandbox-exec -p '(version 1)(allow default)' rm -rf x",
+            "arch -arm64 rm -rf x",
+            "caffeinate -i rm -rf x",
         ] {
             assert_eq!(
                 p.decide("shell", &cmd(laundered)).unwrap().decision,
