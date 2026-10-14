@@ -1098,10 +1098,27 @@ fn runs_its_arguments(segment: &[String]) -> bool {
         | "builtin" | "chroot" | "strace" | "ltrace" | "gdb" | "setsid" | "stdbuf" | "flock"
         | "unshare" | "nsenter" | "parallel" | "chrt" | "taskset" | "script" | "expect" | "ssh"
         | "docker" | "podman" | "kubectl" | "systemd-run" | "firejail" | "bwrap"
-        // macOS's own: a sandbox profile, then the program it confines; an
-        // architecture, then the program; a power assertion held while the
-        // program runs. Each runs its arguments (review of #682).
-        | "sandbox-exec" | "arch" | "caffeinate" => true,
+        // macOS's sandbox: always a profile, then the program it confines
+        // (review of #682).
+        | "sandbox-exec" => true,
+        // A wrapper only when a command follows: bare `arch` prints the
+        // machine's architecture (coreutils on Linux) and `caffeinate -t
+        // 3600` only holds an assertion — neither runs anything, and as
+        // wrappers they would prompt where they never did (review of #686).
+        // `-t`/`-w` take a value; any other word is the program.
+        "arch" | "caffeinate" => {
+            let mut words = rest.iter();
+            let mut found = false;
+            while let Some(w) = words.next() {
+                if head == "caffeinate" && matches!(w.as_str(), "-t" | "-w") {
+                    words.next();
+                } else if !w.starts_with('-') {
+                    found = true;
+                    break;
+                }
+            }
+            found
+        }
         _ => false,
     }
 }
@@ -1557,15 +1574,27 @@ mod tests {
             "sh -c 'rm -rf x'",
             "bash -ec 'cd /tmp ; rm -rf x'",
             "xargs rm -rf",
+            // The paren-free spellings are the ones the wrapper arm decides:
+            // a command with `(` anywhere takes the opaque word search, which
+            // found `rm -rf x` before this arm existed (review of #686).
+            "sandbox-exec -f /tmp/p.sb rm -rf x",
+            "sandbox-exec -n no-network rm -rf x",
             "sandbox-exec -p '(version 1)(allow default)' rm -rf x",
             "arch -arm64 rm -rf x",
             "caffeinate -i rm -rf x",
+            "caffeinate -t 60 rm -rf x",
         ] {
             assert_eq!(
                 p.decide("shell", &cmd(laundered)).unwrap().decision,
                 RuleDecision::Forbid,
                 "{laundered}"
             );
+        }
+        // `arch` and `caffeinate` with no program after them run nothing, so
+        // they are judged as themselves, not as wrappers (review of #686).
+        for bare in ["arch", "caffeinate -t 3600", "caffeinate -w 123 -i"] {
+            let words: Vec<String> = bare.split_whitespace().map(String::from).collect();
+            assert!(!runs_its_arguments(&words), "{bare}");
         }
         // A wrapper around something merely allowed is still a prompt: the
         // wrapper's own semantics are not vouched for by a rule on the inner
