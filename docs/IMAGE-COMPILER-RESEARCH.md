@@ -740,14 +740,40 @@ crop plus a full body.
   leak, and identity holds by eye (not scored). Seed 202 adds **an extra,
   child-sized person** for the whole clip.
 - **Reading: fails** the bar, with an extra person in one seed of two.
-  Video stays on face crops.
+  Video stayed on face crops until its retest, below.
+
+**V-B's retest, four pictures unbound** (2026-10-14). The same pair, scene,
+references and turbo settings. Arm U sends B's four pictures without the
+face/figure binding: each person is "the person in `<Picture 1>` and
+`<Picture 2>`", with no face-from / build-from split. B ran again on two new
+seeds to see how often it adds someone.
+
+- **U, seeds 101, 202, 303 and 404:** two people in all four. That includes
+  202, where B drew the extra child. No grey from the references, and the
+  stated clothing landed.
+- **B, seeds 303 and 404:** two people in both. So B's extra person is
+  1 of 4 seeds, and U's is 0 of 4.
+- **The tattoo** stayed on its owner's arm. The other person's forearms were
+  checked frame by frame and are clean.
+- **Builds and identity:** judged **by eye** (the owner reviewed the clips),
+  not scored.
+- **Quality, every arm, faces-only F included:** swirling backdrops in a few
+  clips, and slight distortion of one face mid-walk. Both are turbo
+  4-step / 480p effects, not the body reference's (V-B's F already showed
+  backdrop artifacts). Measured separately, below.
+- **Reading: passes** on duplicates, with the binding wording as the likely
+  cause of B's extra person. **Owner, 2026-10-14: on for video**, unbound
+  and all or nothing (design §9.4).
 
 **Still open**, in the order they would change the design:
 
 - **Library v2, the video side** (2026-10-13; the video tool, MiniMax H3,
   built outside this repository for now; its own design moves in with it):
-  - **V-B's retest (open).** 20 steps, or four references without the bound
-    wording; video sends a body only if it passes V-B's bar.
+  - **Video quality at turbo (open, 2026-10-14).** The swirling backdrops and
+    mid-walk face distortion every V-B arm showed. One seed (U-202) three
+    ways, each against the turbo 4-step 480p clip: turbo at 8 steps, the
+    full model at 20 steps, and turbo at 1280×720. Decides the default the
+    video tool renders at.
   - **V-D (open).** Does a labelled detail image (a tattoo) carry the mark
     better than the label alone? Passes if the mark matches the detail
     image in both seeds.
