@@ -33,8 +33,8 @@ pub const MAX_CAST: usize = 5;
 /// `wearing` and `doing`, each.
 pub const MAX_CAST_FIELD: usize = 300;
 /// People in a scene who are no library character — a waiter, a crowd's
-/// front row. They carry no reference, so the reference ceiling
-/// ([`MAX_CAST`]) does not bound them; four is what has been asked of the model alongside
+/// front row. They carry no reference, so the reference ceilings
+/// ([`MAX_CAST`], [`MAX_BOUND_IMAGES`]) do not bound them; four is what has been asked of the model alongside
 /// a cast, not a measured limit.
 pub const MAX_EXTRAS: usize = 4;
 /// Candidates waiting on the owner. A model that proposes in a loop fills a
@@ -1302,6 +1302,8 @@ pub fn compile_with(
             extras.len()
         ));
     }
+    // Kept whole for the faces-only retry past the prompt cap.
+    let given_extras = extras;
     let extras: Vec<&str> = extras
         .iter()
         .map(|e| e.trim().trim_end_matches('.'))
@@ -1595,6 +1597,19 @@ pub fn compile_with(
         prompt.push_str(&format!(" Style: {text}"));
     }
     if prompt.chars().count() > MAX_COMPILED_PROMPT {
+        // The binding is prompt-only, so it must never turn a picture that
+        // draws from faces into a refusal: past the cap, the faces-only
+        // compile stands, said (review of #685). Its notes are replaced,
+        // since the only one it could carry is the layers note.
+        if both {
+            let mut faces = compile_with(lib, scene, cast, given_extras, style, false)?;
+            faces.notes = vec![
+                "Full-figure references were not sent: the prompt would run over its limit \
+                 with them."
+                    .into(),
+            ];
+            return Ok(faces);
+        }
         return Err(format!(
             "The compiled prompt is over {MAX_COMPILED_PROMPT} characters; shorten the scene."
         ));
@@ -2845,6 +2860,43 @@ mod tests {
         // Nobody has one: nothing was left out, so nothing is said.
         let c = compile(&lib, "a studio", &[member("jo")], &[], None).unwrap();
         assert!(c.notes.is_empty(), "{:?}", c.notes);
+    }
+
+    /// The binding is prompt-only: a scene that draws from faces just under
+    /// the cap still draws, faces only and said, never refused (review of
+    /// #685).
+    #[test]
+    fn bodies_past_the_prompt_cap_fall_back_to_faces() {
+        let dir = scratch();
+        with_body(dir.path(), "maya", [9, 9, 1]);
+        with_body(dir.path(), "jo", [9, 9, 2]);
+        let lib = Library::load(dir.path()).0;
+        let two = [member("maya"), member("jo")];
+        let base = compile_with(&lib, "x", &two, &[], None, false)
+            .unwrap()
+            .prompt
+            .chars()
+            .count();
+        // "x" becomes a scene ten characters under the cap, faces only.
+        let scene = "a".repeat(MAX_COMPILED_PROMPT - 10 - (base - 1));
+        let faces = compile_with(&lib, &scene, &two, &[], None, false).unwrap();
+        assert_eq!(faces.prompt.chars().count(), MAX_COMPILED_PROMPT - 10);
+        let c = compile(&lib, &scene, &two, &[], None).unwrap();
+        assert_eq!(c.prompt, faces.prompt);
+        assert_eq!(c.references.len(), 2);
+        assert!(c.used.iter().all(|u| u.full_body.is_none()));
+        assert_eq!(
+            c.notes,
+            [
+                "Full-figure references were not sent: the prompt would run over its limit with \
+              them."
+            ]
+        );
+        // Over the cap from faces alone is still the scene's to shorten.
+        let long = "a".repeat(MAX_COMPILED_PROMPT);
+        assert!(compile(&lib, &long, &two, &[], None)
+            .unwrap_err()
+            .contains("shorten the scene"));
     }
 
     /// A body whose bytes no longer match their hash is not sent, and with it
