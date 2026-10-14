@@ -327,4 +327,33 @@ mod tests {
         assert_eq!(cfg.features.get("web"), Some(true), "{after}");
         assert_eq!(cfg.features.0.len(), 1, "{after}");
     }
+
+    /// A table `features enable` adds lands after the starter's commented
+    /// `[features]` switches, so uncommenting one still switches a feature
+    /// on (found on the owner's Mac: `[voice]` and `[image]` were written
+    /// above them, and `# web = false` would have landed in `[image]`).
+    #[test]
+    fn a_new_table_goes_after_the_starters_commented_switches() {
+        let mut doc: toml_edit::DocumentMut = global_starter().parse().unwrap();
+        let mut voice = toml_edit::Table::new();
+        voice.insert("voices_dir", toml_edit::value("/v"));
+        mecha_core::config::append_table(&mut doc, "voice", voice);
+        let mut image = toml_edit::Table::new();
+        image.insert("server_temp_dir", toml_edit::value("/t"));
+        mecha_core::config::append_table(&mut doc, "image", image);
+        let text = doc.to_string();
+        let switch = text.find("# web = false").expect("the commented switch");
+        assert!(switch < text.find("[voice]").unwrap(), "{text}");
+        assert!(
+            text.find("[voice]").unwrap() < text.find("[image]").unwrap(),
+            "{text}"
+        );
+        // Uncommenting the switch lands it in [features], as the header says.
+        let on: toml_edit::DocumentMut = text
+            .replacen("# web = false", "web = true", 1)
+            .parse()
+            .unwrap();
+        assert_eq!(on["features"]["web"].as_bool(), Some(true), "{text}");
+        assert!(on["image"].get("web").is_none());
+    }
 }

@@ -519,31 +519,16 @@ pub fn parse_failed_units(text: &str) -> u64 {
 
 // ---- macOS ----
 
-/// `vm_stat`'s pages that can be handed to a new allocation without
-/// swapping — free, inactive, speculative and purgeable — times its page
-/// size, in bytes. The closest macOS analogue of Linux's `MemAvailable`.
-pub fn parse_vm_stat(text: &str) -> Option<u64> {
-    let page: u64 = text
-        .lines()
-        .next()?
-        .split("page size of ")
-        .nth(1)?
-        .split_whitespace()
-        .next()?
-        .parse()
-        .ok()?;
-    let pages = |key: &str| -> Option<u64> {
-        let line = text.lines().find(|l| l.starts_with(key))?;
-        line.rsplit(':')
-            .next()?
-            .trim()
-            .trim_end_matches('.')
-            .parse()
-            .ok()
-    };
-    let total = pages("Pages free")?
-        + pages("Pages inactive")?
-        + pages("Pages speculative").unwrap_or(0)
-        + pages("Pages purgeable").unwrap_or(0);
-    Some(total * page)
+/// `sysctl -n kern.memorystatus_level`: the share of memory macOS itself
+/// counts as available, 0 to 100 — the figure `memory_pressure` prints as
+/// "System-wide memory free percentage". The owner's ruling (2026-10-13):
+/// a Mac's available memory is this, not `vm_stat`'s free and inactive
+/// pages, which leave out what macOS reclaims without pressure (compressed
+/// and file-backed memory) — on the owner's Mac with the chat model and
+/// voice resident, `vm_stat` read 24 GB where this read 37 %, 47 GB, and
+/// every picture was refused. Anything but a whole number in range is
+/// unread, never a figure.
+pub fn parse_memorystatus_level(text: &str) -> Option<u64> {
+    let level: u64 = text.trim().parse().ok()?;
+    (level <= 100).then_some(level)
 }
