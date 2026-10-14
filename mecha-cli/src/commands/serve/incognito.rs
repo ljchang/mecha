@@ -48,7 +48,7 @@ pub fn new_key() -> String {
 }
 
 /// Builtins an incognito chat may call. Everything that writes stays in the
-/// room, but for the two proposers at the end, which stage locked; search
+/// room, but for the writers at the end, which stage locked; search
 /// reaches a search engine, which the page says before the first search
 /// (R4). `shell` and `image_generate` are here conditionally
 /// ([`withheld`]): each only where what it leaves outside the room can be
@@ -74,8 +74,11 @@ const ALLOWED_BUILTINS: &[&str] = &[
     // for the owner's approval, hidden until unlocked: a persona on the
     // Personas page (the owner's ruling, 2026-10-01: "these will likely be
     // locked profiles"), and a character or style in the image library
-    // (2026-10-12), so a persona proposed here can have a portrait.
+    // (2026-10-12), so a persona proposed here can have a portrait. A
+    // character's reference picture stages the same way (2026-10-14): from
+    // here never direct, always a locked change waiting on the owner.
     "image_library_propose",
+    "image_library_reference",
     "persona_propose",
 ];
 
@@ -499,6 +502,7 @@ mod tests {
             ("image_generate", true),
             ("image_library", true),
             ("image_library_propose", true),
+            ("image_library_reference", true),
             ("persona_propose", true),
             ("research", false),
             ("http_fetch", true),
