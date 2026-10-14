@@ -545,7 +545,16 @@ pub(super) async fn enable_unwired(
         image_table()?;
     }
     if features.contains(&Feature::Documents) {
-        documents_table().await?;
+        // Said, never fatal: the switch is already written, and a failure
+        // here must not stop the steps after it (graph's `[[mcp]]` entry
+        // among them) and leave a half-on install — the state §13 exists to
+        // end (review of #683).
+        if let Err(e) = documents_table().await {
+            println!(
+                "No [documents] table written: {e:#}. `mecha features enable documents` again \
+                 writes it once that is fixed."
+            );
+        }
     }
     if features.contains(&Feature::Voice) {
         voices_dir()?;
