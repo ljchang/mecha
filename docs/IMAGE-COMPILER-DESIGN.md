@@ -523,7 +523,7 @@ kind is derived from its directory (`Entry.kind`).
 | Reference | `image_generate` (Qwen-Image) | `video_generate` (H3) |
 |---|---|---|
 | face | the whole portrait at 512² for a new picture (E10), its crop for an edit, as now | the face crop, as now; from an attached `face` reference when there is one, else from the portrait |
-| full_body | **sent** to a new picture of one or two people when everyone has one, bound to the portrait (E9b passed; owner, 2026-10-13); faces only otherwise, and on edits | **sent** beside the face crop when everyone has one and all fit, **unbound**: "the person in `<Picture 1>` and `<Picture 2>`", never the face-from/build-from wording that drew an extra person (V-B's retest passed; owner, 2026-10-14) |
+| full_body | **sent** to a new picture of one or two people when everyone has one, bound to the portrait (E9b passed; owner, 2026-10-13); faces only otherwise, and on edits | **sent** beside the face crop when everyone has one and all fit, **unbound**: "the person in `<Picture 1>` and `<Picture 2>`", not the face-from/build-from wording, the likely cause of V-B's extra person (V-B's retest passed for a cast of two; owner, 2026-10-14) |
 | detail | not sent; its `label` is appended to the description | sent with its label ("`<Picture k>` shows her left-forearm tattoo"), if V-D passes |
 | location | its text in the scene | its images as an environment `<Subject>`, if V-L passes |
 | outfit | its text as `wearing` | its text as `wearing` |
@@ -590,13 +590,18 @@ kind is derived from its directory (`Entry.kind`).
      only: pictures never send a detail image (the table above), only its
      label. That's greedy, so it's the mixed shape the next bullets call
      unmeasured; it waits on V-D, whose arms include that shape.
-  - **Video sends bodies, unbound** (V-B's retest; owner, 2026-10-14;
-    the table above). To be built in the video tool, outside this
-    repository until the port. Video has nine slots, less any
+  - **Video sends bodies, unbound, to a cast of one or two** (V-B's retest;
+    owner, 2026-10-14; the table above), as pictures do: the retest
+    measured two people, so three with a body each needs its own
+    measurement first (review of #693). To be built in the video tool,
+    outside this repository until the port. The slot arithmetic below is
+    what a measured three would inherit, not a rule in force. Video has
+    nine slots, less any
     pinned or other reference images. Two people would fit with a body each
     and up to five details; three with a body each and three details.
-  - **Bodies are all or nothing in both generators**, once video's retest
-    passes; in pictures from L7's step 2b (review of #680, pass
+  - **Bodies are all or nothing in both generators**: in video from V-B's
+    retest (owner, 2026-10-14); in pictures from L7's step 2b (review of
+    #680, pass
     10). Bodies are sent only when **every person in the cast has one
     attached and they all fit** beside every face; otherwise none is (review
     of #680, pass 13). So a cast where one character has a body and another
