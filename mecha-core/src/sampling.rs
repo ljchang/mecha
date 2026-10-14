@@ -48,6 +48,40 @@ impl Model {
 
 /// The turbo model's file, as Comfy-Org ships it beside the standard one.
 pub const TURBO_MODEL: &str = "qwen_image_2.1_turbo_int8_convrot.safetensors";
+/// The standard model's file: int8 ConvRot, on native int8 kernels.
+pub const STANDARD_MODEL: &str = "qwen_image_2.1_int8_convrot.safetensors";
+/// The two files on a Mac: bf16, since MPS has no int8 kernels and emulating
+/// them costs ~1.6x per step (the owner, 2026-10-13; FEATURES-DESIGN §12.3).
+pub const TURBO_MODEL_MAC: &str = "qwen_image_2.1_turbo_bf16.safetensors";
+pub const STANDARD_MODEL_MAC: &str = "qwen_image_2.1_bf16.safetensors";
+
+/// The turbo model's file on this system.
+pub fn turbo_model() -> &'static str {
+    turbo_model_on(std::env::consts::OS)
+}
+
+/// The standard model's file on this system.
+pub fn standard_model() -> &'static str {
+    standard_model_on(std::env::consts::OS)
+}
+
+/// [`turbo_model`] on `os`.
+pub fn turbo_model_on(os: &str) -> &'static str {
+    if os == "macos" {
+        TURBO_MODEL_MAC
+    } else {
+        TURBO_MODEL
+    }
+}
+
+/// [`standard_model`] on `os`.
+pub fn standard_model_on(os: &str) -> &'static str {
+    if os == "macos" {
+        STANDARD_MODEL_MAC
+    } else {
+        STANDARD_MODEL
+    }
+}
 
 /// The turbo model's own setting, from its model card: few steps, no
 /// guidance. 10-15 s a picture against ~35 s (mecha-a3, 2026-10-11).

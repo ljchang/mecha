@@ -203,7 +203,7 @@ pub fn write_voices_dir(path: &Path, voices: &Path) -> Result<VoicesDir> {
     }
     let mut table = toml_edit::Table::new();
     table.insert("voices_dir", toml_edit::value(voices.display().to_string()));
-    doc.insert("voice", toml_edit::Item::Table(table));
+    crate::config::append_table(&mut doc, "voice", table);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
