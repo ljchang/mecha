@@ -431,11 +431,24 @@ impl Tool for ImageLibraryReference {
         true
     }
 
+    /// Nothing private comes back, only what the call named; but it writes an
+    /// approved version of a character with no approver from a clean
+    /// conversation, so it says so as every other writing builtin does — and
+    /// that is what keeps it from a `research` child (review of #692).
     fn capabilities(&self) -> Capabilities {
-        Capabilities::default()
+        Capabilities::default().destructive()
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
+        // Planning is read-only exploration, and the phase gate admits this
+        // tool on its `read_only` flag, as it admits `message_send`: so the
+        // refusal is here, nothing written or staged (review of #696).
+        if ctx.phase == crate::agent::Phase::Plan {
+            return Ok(ToolOutput::err(
+                "image_library_reference is not available while planning: it changes a \
+                 library character. Nothing was attached or staged.",
+            ));
+        }
         let kind = match input.get("as").and_then(Value::as_str) {
             Some("full_body") => imagelib::RefKind::FullBody,
             Some("face") => imagelib::RefKind::Face,
@@ -991,6 +1004,35 @@ mod tests {
         std::fs::remove_dir_all(ws).ok();
     }
 
+    /// Planning changes nothing: not attached, not staged, even from a clean
+    /// conversation (review of #696).
+    #[tokio::test]
+    async fn planning_never_writes_a_reference() {
+        let (lib, ws) = library_with_wren();
+        let planning = ToolCtx {
+            phase: crate::agent::Phase::Plan,
+            ..ctx(&ws, Some(Taint::default()))
+        };
+        let out = ImageLibraryReference::new(lib.clone())
+            .call(
+                json!({"name": "wren", "as": "full_body", "picture": "images/tattoo.png"}),
+                &planning,
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(out.content.contains("planning"), "{}", out.content);
+        let wren = Library::load(&lib)
+            .0
+            .get(Kind::Character, "wren")
+            .unwrap()
+            .clone();
+        assert!(wren.references.is_empty());
+        assert!(imagelib::pending_references(&lib).0.is_empty());
+        std::fs::remove_dir_all(lib).ok();
+        std::fs::remove_dir_all(ws).ok();
+    }
+
     /// A name the library does not hold is answered as `image_library`
     /// answers it — only what the call named — and nothing is staged.
     #[tokio::test]
@@ -1054,6 +1096,10 @@ mod tests {
         // A proposal returns a sentence about itself, nothing from the store.
         let propose = ImageLibraryPropose::new(PathBuf::new()).capabilities();
         assert!(!propose.private_data && !propose.untrusted_input && !propose.destructive);
+        // The reference writer changes an approved entry: declared, so a
+        // profile can tell it from a public read.
+        let reference = ImageLibraryReference::new(PathBuf::new()).capabilities();
+        assert!(reference.destructive && !reference.private_data);
         assert_eq!(propose.egress, crate::tool::Egress::None);
     }
 }

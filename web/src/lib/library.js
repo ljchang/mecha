@@ -32,6 +32,11 @@ export function counts(entries, pending = []) {
   return out;
 }
 
+// Only an action this build can apply is offered Approve; anything else (a
+// later build's, a hand-edited file) is Reject-only, since the server would
+// refuse it every time (review of #692, measured on #696).
+export const refApprovable = (p) => p.action === 'add' || p.action === 'remove';
+
 // One staged reference change, said as the owner decides it.
 export function pendingLine(p) {
   const kind = { full_body: 'full body', face: 'face', detail: 'detail' }[p.kind] ?? p.kind;
