@@ -168,6 +168,9 @@ pub struct Facts {
     /// feature whose `enable` refreshes it — `None` for the chat router,
     /// which `mecha setup chat` refreshes (F13).
     pub stale_services: Vec<(&'static str, Option<crate::feature::Feature>)>,
+    /// Why what mecha installed could not be read, when it could not: whether
+    /// its services are current is then unknown, never "current".
+    pub services_unknown: Option<String>,
 }
 
 /// A local server nobody has configured yet: where it is, and what it says
@@ -429,7 +432,10 @@ pub fn plan(cfg: &Config, provider_name: &str, facts: &Facts) -> Vec<Step> {
     }
 
     steps.extend(feature_steps(facts));
-    steps.extend(services_step(&facts.stale_services));
+    steps.extend(services_step(
+        &facts.stale_services,
+        facts.services_unknown.as_deref(),
+    ));
     steps.extend(timezone_step(cfg));
     steps.push(charter_step(&facts.charter));
 
@@ -900,7 +906,20 @@ fn feature_steps(facts: &Facts) -> Vec<Step> {
 /// `enable`, which offers them, or `mecha setup chat` for the router alone.
 /// Wrong rather than missing: a service that predates a fix is the machine
 /// disagreeing with this build, never a feature going unused.
-fn services_step(stale: &[(&str, Option<crate::feature::Feature>)]) -> Option<Step> {
+fn services_step(
+    stale: &[(&str, Option<crate::feature::Feature>)],
+    unknown: Option<&str>,
+) -> Option<Step> {
+    if let Some(why) = unknown {
+        return Some(Step::new(
+            "services",
+            "The services mecha installed are this build's",
+            Status::Unknown,
+            format!(
+                "What mecha installed could not be read ({why}), so whether they are is unknown."
+            ),
+        ));
+    }
     if stale.is_empty() {
         return None;
     }
@@ -1494,13 +1513,19 @@ mod tests {
     #[test]
     fn stale_services_are_one_step_with_their_refresh() {
         use crate::feature::Feature;
-        assert!(services_step(&[]).is_none());
-        let s = services_step(&[
-            ("ComfyUI", Some(Feature::Image)),
-            ("speech", Some(Feature::Voice)),
-            ("stt", Some(Feature::Voice)),
-            ("router", None),
-        ])
+        assert!(services_step(&[], None).is_none());
+        let s = services_step(&[], Some("bad json")).unwrap();
+        assert_eq!(s.status, Status::Unknown);
+        assert!(s.detail.contains("bad json"), "{}", s.detail);
+        let s = services_step(
+            &[
+                ("ComfyUI", Some(Feature::Image)),
+                ("speech", Some(Feature::Voice)),
+                ("stt", Some(Feature::Voice)),
+                ("router", None),
+            ],
+            None,
+        )
         .unwrap();
         assert_eq!(s.status, Status::Wrong);
         assert_eq!(
@@ -1513,7 +1538,7 @@ mod tests {
             s.detail
         );
         assert!(s.detail.contains("mecha setup chat"), "{}", s.detail);
-        let s = services_step(&[("router", None)]).unwrap();
+        let s = services_step(&[("router", None)], None).unwrap();
         assert_eq!(s.remedy.unwrap().argv, ["mecha", "setup", "chat"]);
     }
 
@@ -1533,6 +1558,7 @@ mod tests {
             local_probe: LocalProbe::NotAttempted,
             declined: Default::default(),
             stale_services: Vec::new(),
+            services_unknown: None,
         }
     }
 

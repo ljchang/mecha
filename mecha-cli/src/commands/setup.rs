@@ -230,6 +230,7 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         && only.is_some_and(|f| {
             onboarding::decline_keys(f.id()).fold(false, |had, k| honoured.remove(&k) | had)
         });
+    let stale = stale_services(&home, &cfg);
     let facts = Facts {
         // The registry's readout against the global config, as `mecha
         // features` reads it — the feature steps are built from it.
@@ -246,7 +247,8 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         // below rather than swallowed — a checklist that quietly stopped
         // honouring your answers would be the worse half of this feature.
         declined: honoured,
-        stale_services: stale_services(&home, &cfg),
+        stale_services: stale.0,
+        services_unknown: stale.1,
     };
 
     let mut steps = onboarding::plan(&cfg, &name, &facts);
@@ -618,23 +620,17 @@ fn record_never(home: &std::path::Path, s: &Step) {
 
 /// The services an older mecha wrote, each with the switched-on feature whose
 /// `enable` would refresh it — or none, for the chat router (`mecha setup
-/// chat`'s). One no switched-on feature offers is not listed: nothing here
+/// chat`'s) — and why the record could not be read, when it could not. One no switched-on feature offers is not listed: nothing here
 /// would refresh it, and `features enable` does once the feature is back on.
 fn stale_services(
     home: &std::path::Path,
     cfg: &mecha_core::config::Config,
-) -> Vec<(&'static str, Option<Feature>)> {
+) -> (Vec<(&'static str, Option<Feature>)>, Option<String>) {
     use mecha_core::install;
     let stale = match mecha_core::sidecar::stale_services(home) {
         Ok(stale) => stale,
-        Err(e) => {
-            // Said, as the declined store's failure is: unknown, not current.
-            eprintln!(
-                "mecha: what mecha installed could not be read ({e:#}); whether its services \
-                 are current is unknown"
-            );
-            return Vec::new();
-        }
+        // A step of its own, unknown: never read as current (review of #691).
+        Err(e) => return (Vec::new(), Some(format!("{e:#}"))),
     };
     let chat_here = install::chat_runs_here(cfg);
     let on: Vec<Feature> = feature_rows(home)
@@ -642,7 +638,7 @@ fn stale_services(
         .filter(|r| r.part_of.is_none() && r.switch == Some(feature::Switch::On))
         .map(|r| r.id)
         .collect();
-    stale
+    let stale = stale
         .into_iter()
         .filter_map(|s| {
             if s.id == mecha_core::router_unit::ID {
@@ -655,7 +651,8 @@ fn stale_services(
             })?;
             Some((s.label, Some(f)))
         })
-        .collect()
+        .collect();
+    (stale, None)
 }
 
 /// The registry's rows against the global configuration — empty when it does

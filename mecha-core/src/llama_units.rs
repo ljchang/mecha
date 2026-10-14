@@ -573,7 +573,7 @@ fn hub_text(hub: &Path) -> String {
 
 /// The drop-in naming a provided `llama-server`: the one found on the PATH
 /// mecha ran with, left where it is.
-fn provided_engine_text(engine: &Path) -> String {
+pub(crate) fn provided_engine_text(engine: &Path) -> String {
     format!(
         "# Written by `mecha features enable`: the llama-server this server runs, found\n\
          # on the PATH mecha ran with, which can be wider than the unit's own. The\n\

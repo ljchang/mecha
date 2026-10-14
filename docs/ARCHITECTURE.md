@@ -10336,7 +10336,10 @@ exhaustive `match`, so the build asks; the ones that are not say so.
       as everything before the stamp does) then reads *stale*, and `enable`
       and `mecha setup` offer to run it again (FEATURES-DESIGN §14). An
       existing install never got a fixed service otherwise: #689's ComfyUI
-      proxy reached no Mac that had ComfyUI already (2026-10-14).
+      proxy reached no Mac that had ComfyUI already (2026-10-14). A
+      definition an install stops writing (a renamed or retired unit) must
+      leave the record through `Manifest::unrecord` in the same change, or
+      it reads stale after every refresh.
 11. **It asks the way `enable` asks.** Without a terminal, `features enable`
     installs nothing and says how to proceed (`--no-install` writes the
     switch alone). The guided `mecha setup` lists every download and install
