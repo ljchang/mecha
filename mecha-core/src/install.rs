@@ -650,7 +650,9 @@ pub(crate) async fn locked_env(
     // the venv's interpreter links into (`install_layout`'s reason).
     Manifest::record(home, id, &venv)?;
     Manifest::record(home, id, &dir.join("python"))?;
-    if !python.exists() {
+    // Asked before the venv is built below, which would make it true.
+    let had_env = python.exists();
+    if !had_env {
         say(&format!("building a Python {python_version} environment"));
         let mut c = std::process::Command::new(&uv);
         c.args(["venv", "--quiet", "--clear", "--python", python_version])
@@ -659,14 +661,23 @@ pub(crate) async fn locked_env(
         run(&mut c, "uv venv")?;
     }
     let lock_file = dir.join("requirements.txt");
-    // An environment built from this very lock is checked, not installed:
-    // its figure to fetch would be a false one on a refresh (#691, on the
-    // owner's Mac — the venv was untouched).
-    let current =
-        python.exists() && std::fs::read_to_string(&lock_file).is_ok_and(|on_disk| on_disk == lock);
+    // What the environment was last *finished* from: written after the
+    // install succeeds, never before it as the lock is, so an interrupted
+    // install never reads as done (review of #691, pass 4). An environment
+    // finished from this very lock is checked, not priced as a fetch (#691,
+    // on the owner's Mac — the venv was untouched); one that exists without
+    // the record (installed before it) is told it fetches only what it
+    // lacks.
+    let installed = dir.join(".mecha-lock-installed");
+    let finished = had_env && std::fs::read_to_string(&installed).is_ok_and(|done| done == lock);
     crate::llama_units::write_owned(home, id, &lock_file, lock, 0o644)?;
-    if current {
+    if finished {
         say("checking its Python environment against the lock — installed, nothing to fetch");
+    } else if had_env {
+        say(&format!(
+            "bringing its Python environment to the lock: {what}, less what it already has, \
+             every file checked against the lock"
+        ));
     } else {
         say(&format!(
             "installing {what}, every file checked against the lock"
@@ -679,6 +690,7 @@ pub(crate) async fn locked_env(
         .arg(&lock_file);
     uv_env(&mut c, dir);
     run(&mut c, "uv pip install")?;
+    crate::llama_units::write_owned(home, id, &installed, lock, 0o644)?;
     let _ = std::fs::remove_dir_all(dir.join(".uv-cache"));
     Ok(())
 }
