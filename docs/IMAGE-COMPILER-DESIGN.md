@@ -649,7 +649,9 @@ kind is derived from its directory (`Entry.kind`).
     "Exactly two people": a total erased a person the prose described;
   - a picture the layers switch may build compiles without bodies, so a
     layered build's fallback single pass draws what its cutouts would
-    have; the result says so, in a count.
+    have, and the result says so. If layers then decline (three people, a
+    described person, a place they can't split), the single pass is the
+    picture and is compiled again with the bodies (review of #685).
 - **Pictures with two images per person need new wording.** §3's grammar
   ("each of the N people from the images appears exactly once") assumes one
   image per person. The compiled prompt binds them, naming what each image

@@ -3796,14 +3796,17 @@ impl Tool for ImageGenerate {
                     }
                 }
                 let style = plan.next.style.as_ref().map(|s| s.value.clone());
-                // Layers are weighed before the compile: a picture they may
-                // draw is compiled from portraits alone, so the fallback
-                // single pass draws what the cutouts would have (§9.4).
+                // A picture layers may draw is compiled from portraits alone,
+                // so a layered build's fallback single pass draws what its
+                // cutouts would have (§9.4). Should layers then decline, the
+                // single pass is the picture, and it is compiled again with
+                // the bodies (review of #685).
                 let layers_wanted =
                     ctx.layers && plan.route == "new" && people.len() >= 2 && as_called;
                 let compile_from = |people: &[crate::scene::Person],
                                     words: &crate::scene::Scene,
-                                    together: bool| {
+                                    together: bool,
+                                    bodies: bool| {
                     let mut cast = Vec::new();
                     let mut extras = Vec::new();
                     let mut in_act = Vec::new();
@@ -3856,7 +3859,7 @@ impl Tool for ImageGenerate {
                         &cast,
                         &extras,
                         style.as_deref(),
-                        !layers_wanted,
+                        bodies,
                     )
                     .map(|c| (c, in_act))
                 };
@@ -3864,29 +3867,36 @@ impl Tool for ImageGenerate {
                 // into a refusal: parts the compiler will not take (a
                 // described person's part naming a library character, say)
                 // fall back to the call as sent (review of #609).
-                let (compiled, in_act) = match compile_from(&people, &words_scene, together) {
-                    Ok(c) => c,
-                    Err(_) if roles_said.as_deref() == Some("applied") => {
-                        roles_said = Some("fell back: the split's parts did not compile".into());
-                        match compile_from(&plan.people, &plan.next, as_called) {
-                            Ok(c) => c,
-                            Err(why) => return Ok(refused(why)),
+                let mut from_split = true;
+                let (compiled, in_act) =
+                    match compile_from(&people, &words_scene, together, !layers_wanted) {
+                        Ok(c) => c,
+                        Err(_) if roles_said.as_deref() == Some("applied") => {
+                            roles_said =
+                                Some("fell back: the split's parts did not compile".into());
+                            from_split = false;
+                            match compile_from(&plan.people, &plan.next, as_called, !layers_wanted)
+                            {
+                                Ok(c) => c,
+                                Err(why) => return Ok(refused(why)),
+                            }
                         }
-                    }
-                    Err(why) => return Ok(refused(why)),
-                };
+                        Err(why) => return Ok(refused(why)),
+                    };
                 req.prompt = compiled.prompt;
                 clothes_said = in_act;
-                dropped.extend(compiled.notes);
-                req.references = compiled
-                    .references
-                    .into_iter()
-                    .map(|(name, bytes, ext)| Reference {
-                        path: format!("library:{name}"),
-                        bytes,
-                        ext,
-                    })
-                    .collect();
+                // Said once layers have decided, since a decline recompiles.
+                let mut body_notes = compiled.notes;
+                let library_refs = |refs: Vec<(String, Vec<u8>, &'static str)>| {
+                    refs.into_iter()
+                        .map(|(name, bytes, ext)| Reference {
+                            path: format!("library:{name}"),
+                            bytes,
+                            ext,
+                        })
+                        .collect::<Vec<_>>()
+                };
+                req.references = library_refs(compiled.references);
                 req.reference_size = crate::imagelib::REFERENCE_SIZE;
                 used = compiled.used;
                 // Never the seed that drew a portrait: sampling there redraws it.
@@ -4108,6 +4118,34 @@ impl Tool for ImageGenerate {
                         }
                     }
                 }
+                // Layers considered and declined: the single pass is the
+                // picture, so it is drawn with the bodies after all, on the
+                // compile route that succeeded (review of #685).
+                if layers_wanted && layers_plan.is_none() {
+                    let again = if from_split {
+                        compile_from(&people, &words_scene, together, true)
+                    } else {
+                        compile_from(&plan.people, &plan.next, as_called, true)
+                    };
+                    match again {
+                        Ok((c, _)) => {
+                            req.prompt = c.prompt;
+                            req.references = library_refs(c.references);
+                            used = c.used;
+                            body_notes = c.notes;
+                        }
+                        // The faces-only compile stands; its layers note
+                        // would no longer be true.
+                        Err(_) => {
+                            body_notes = vec![
+                                "Full-figure references were not sent: the prompt would run \
+                                 over its limit with them."
+                                    .into(),
+                            ]
+                        }
+                    }
+                }
+                dropped.extend(body_notes);
             }
             crate::picture::Render::Edit {
                 canvas,
@@ -7432,6 +7470,42 @@ mod tests {
                 .all(|l| !l.contains("full figure")),
             "{seen:?}"
         );
+        for d in [dir, store, lib] {
+            std::fs::remove_dir_all(d).ok();
+        }
+    }
+
+    /// Layers considered and then declined (a described person here): the
+    /// single pass is the picture, so it carries the bodies, and the result
+    /// says only why layers declined (review of #685).
+    #[tokio::test]
+    async fn layers_that_decline_leave_the_bodies_in_the_single_pass() {
+        let (url, seen) = fake(vec![done()], "200 OK").await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya"]));
+        attach_body(&lib, "maya", [70, 6, 6]);
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        cx.layers = true;
+        let call = json!({"scene": {
+            "setting": "a studio",
+            "people": [
+                {"who": "maya", "wearing": "a yellow raincoat", "doing": "laughing"},
+                {"who": "a waiter with a tray", "wearing": "a white apron", "doing": "smiling"}
+            ],
+            "together": "the waiter hands Maya a cup"
+        }});
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("not in layers"), "{}", out.content);
+        assert!(!out.content.contains("Full-figure"), "{}", out.content);
+        let seen = seen.lock().unwrap().clone();
+        let uploads = seen
+            .iter()
+            .filter(|l| l.starts_with("POST /upload/image"))
+            .count();
+        assert_eq!(uploads, 2, "the portrait and the full figure");
+        let submitted = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+        assert!(submitted.contains("Maya's full figure"), "{submitted}");
         for d in [dir, store, lib] {
             std::fs::remove_dir_all(d).ok();
         }
