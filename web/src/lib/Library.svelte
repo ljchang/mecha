@@ -4,7 +4,7 @@
   import { features } from './features.svelte.js';
   import { opens, isShown } from './features.js';
   import {
-    PANES, paneOf, entriesFor, counts, originLabel, listUrl, tameName,
+    PANES, paneOf, entriesFor, counts, pendingLine, originLabel, listUrl, tameName,
     TEXT_MAX, PORTRAIT_EDGE, fitWithin, formProblem, formBody, previewOf,
     REF_KINDS, REF_TITLE, LABEL_MAX, refNote, refAddable, refProblem, refBody, refRemoveBody,
   } from './library.js';
@@ -90,7 +90,8 @@
       closeRef();
     });
   });
-  const tally = $derived(counts(data?.entries));
+  const tally = $derived(counts(data?.entries, data?.pending_references));
+  const pendingRefs = $derived(data?.pending_references ?? []);
 
   async function load() {
     try {
@@ -266,6 +267,24 @@
       if (!res.ok) throw new Error((await res.text()).trim());
       say(`Added ${REF_TITLE[refForm.kind].toLowerCase()} to ${entry.name}`);
       closeRef();
+      await load();
+    } catch (e) {
+      say(String(e?.message ?? e));
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function actPending(p, action) {
+    busy = true;
+    try {
+      const res = await fetch(`/api/library/pending/${p.id}/${action}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ unlock: token ?? undefined }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      say(action === 'approve' ? `Applied to ${p.name}` : 'Dropped');
       await load();
     } catch (e) {
       say(String(e?.message ?? e));
@@ -507,7 +526,7 @@
                 <div class="ref">
                   <img src={r.picture} alt="{open.name}, {REF_TITLE[r.kind] ?? r.kind}" loading="lazy" />
                   <span class="refkind">
-                    {(REF_TITLE[r.kind] ?? r.kind) + (r.label ? ` · ${r.label}` : '')}{#if !r.sendable}<span class="lockmark">{' · not sent'}</span>{/if}
+                    {(REF_TITLE[r.kind] ?? r.kind) + (r.label ? ` · ${r.label}` : '') + (r.from_chat ? ' · from a chat' : '')}{#if !r.sendable}<span class="lockmark">{' · not sent'}</span>{/if}
                   </span>
                   <!-- Only the kinds the page can name: a kind a later build
                        wrote is shown and kept, never offered a remove that
@@ -551,7 +570,7 @@
           {/if}
         {/if}
       {/if}
-    {:else if data && shown.length === 0 && pane === 'candidates'}
+    {:else if data && shown.length === 0 && pane === 'candidates' && pendingRefs.length === 0}
       <div class="empty">Nothing is waiting.</div>
     {:else if pane === 'styles'}
       <button class="rowbtn card addrow" onclick={() => startAdd('style')}>
@@ -564,7 +583,7 @@
           <span class="readingline">{e.text}</span>
         </button>
       {/each}
-    {:else}
+    {:else if !(pane === 'candidates' && shown.length === 0)}
       <div class="grid">
         {#if pane === 'characters'}
           <button class="tile addtile" onclick={() => startAdd('character')}>
@@ -580,11 +599,33 @@
         {/each}
       </div>
     {/if}
+    {#if !form && !open && pane === 'candidates' && pendingRefs.length}
+      <!-- A model's reference changes, staged because its conversation had
+           read outside content or was incognito (§9.3, 2026-10-14). The
+           picture is shown, so what is approved is what was seen. -->
+      <div class="refhead">Reference changes from chats</div>
+      {#each pendingRefs as p (p.id)}
+        <div class="card pendref">
+          {#if p.picture}<img src={p.picture} alt={pendingLine(p)} loading="lazy" />{/if}
+          <div class="pendbody">
+            <span class="topic">{pendingLine(p)}</span>
+            <span class="readingline">{originLabel(p.origin)}{p.locked ? ' · locked' : ''}</span>
+            <div class="btnrow">
+              <button class="abtn" disabled={busy} onclick={() => actPending(p, 'reject')}>Reject</button>
+              <button class="abtn primary" disabled={busy} onclick={() => actPending(p, 'approve')}>Approve</button>
+            </div>
+          </div>
+        </div>
+      {/each}
+    {/if}
     {#if !form && !open && data && shown.length === 0 && pane === 'characters'}
       <div class="empty">No characters yet. Add one from a portrait, or tap <b>Save to library</b> under a picture in chat.</div>
     {/if}
     {#if data?.unreadable}
       <div class="warnline">{data.unreadable} {data.unreadable === 1 ? 'entry' : 'entries'} could not be read — <code>mecha imagelib list</code></div>
+    {/if}
+    {#if data?.pending_unreadable}
+      <div class="warnline">{data.pending_unreadable} staged {data.pending_unreadable === 1 ? 'change' : 'changes'} could not be read — <code>mecha imagelib pending</code></div>
     {/if}
     {/if}
   </div>
@@ -701,6 +742,9 @@
   .refkind { font-family: var(--mono); font-size: 11px; color: var(--text-muted); overflow-wrap: anywhere; }
   .refx { min-height: 36px; background: none; border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text-muted); font-size: 12px; cursor: pointer; }
   .refadd { display: flex; flex-wrap: wrap; gap: 10px; }
+  .pendref { display: flex; gap: 12px; padding: 12px; align-items: flex-start; }
+  .pendref img { width: 96px; aspect-ratio: 3 / 4; object-fit: contain; background: var(--bg); border-radius: var(--radius); flex-shrink: 0; }
+  .pendbody { display: flex; flex-direction: column; gap: 8px; flex: 1; min-width: 0; }
   .drop.tall { aspect-ratio: 3 / 4; max-width: 240px; }
   .drop.tall img { object-fit: contain; }
 </style>
