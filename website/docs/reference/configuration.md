@@ -463,9 +463,10 @@ image: it is on whenever image is, and `[tools]` withholding `image_library`,
 from the model. Reading the
 library, pruning or forgetting cached extractions, and the library's lock
 password stay open whatever the switches say. Slack, personas, voice (with
-dictation, voice calls and cloning), incognito, the front door (its queue,
-its polls and its publishing server) and messages follow their switches the
-same way: their web pages answer `feature_off`, and `mecha slack`, `persona`,
+dictation, voice calls and cloning), the front door (its queue, its polls and
+its publishing server) and messages follow their switches the same way, and
+incognito follows the web app's, offered wherever the chat model runs on this
+machine: their web pages answer `feature_off`, and `mecha slack`, `persona`,
 `msg`, `frontdoor`, `polls` and `voice-serve` refuse, and so do the TUI's
 `/send` and `/remote-control`. What stays open: `slack status`, `auth`,
 `threads`, `remote` (without `--sweep`) and `unlink`, and `persona list`, `show`
