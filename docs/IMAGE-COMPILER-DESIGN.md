@@ -557,8 +557,10 @@ kind is derived from its directory (`Entry.kind`).
   face, one full body, four details), so a clean conversation can make at
   most six changes before one must be removed; every write is a new version
   with the old one kept in `history/`; the character page's remove; and the
-  `[tools]` off switch. A `research` subagent never keeps the tool, though
-  it reads as a public read (`ToolProfile::narrow`). A direct picture is held to the owner's own cap
+  `[tools]` off switch. A `research` subagent never keeps the tool (it
+  declares `destructive`, which `ToolProfile::narrow` reads), and the
+  planning phase refuses it in `call`, as `message_send` is refused, since
+  the phase gate keys on `read_only`. A direct picture is held to the owner's own cap
   (`MAX_PORTRAIT_BYTES`), a staged one to the proposal cap. A tool cannot see the
   chat's permission mode, so "a read-only chat stages instead" would need
   that plumbed first.
