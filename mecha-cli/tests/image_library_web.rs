@@ -410,5 +410,35 @@ image = true
     .await;
     assert!(r.status().is_success(), "{}", r.text().await.unwrap());
 
+    // A model's staged change (2026-10-14), approved from the page: applied
+    // with the model's origin, shown "from a chat", and gone from the queue.
+    let staged = mecha_core::imagelib::propose_reference(
+        &home.join("imagelib"),
+        "maya",
+        mecha_core::imagelib::RefKind::Face,
+        mecha_core::imagelib::PendingAction::Add,
+        Some(&png(64)),
+        None,
+        mecha_core::imagelib::Origin::ModelUntrusted,
+        false,
+    )
+    .unwrap();
+    let r = post(
+        &format!("/api/library/pending/{}/approve", staged.id),
+        serde_json::json!({}),
+    )
+    .await;
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    let shown = mecha(&home, &["imagelib", "show", "maya"]);
+    let shown = String::from_utf8_lossy(&shown.stdout);
+    assert!(shown.contains("reference: face"), "{shown}");
+    assert!(shown.contains("(from a chat)"), "{shown}");
+    let pending = mecha(&home, &["imagelib", "pending"]);
+    assert!(
+        String::from_utf8_lossy(&pending.stdout).contains("No reference changes are waiting"),
+        "{}",
+        String::from_utf8_lossy(&pending.stdout)
+    );
+
     let _ = child.kill().await;
 }

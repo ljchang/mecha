@@ -226,6 +226,9 @@ fn references_json(entry: &Entry, token: Option<&str>) -> Vec<serde_json::Value>
                 "label": r.label,
                 "picture": picture_url(entry, &r.blob, token),
                 "sendable": sendable.iter().any(|s| std::ptr::eq(*s, r)),
+                // Attached by a model from a clean conversation (the owner's
+                // ruling of 2026-10-14); absent is the owner's own.
+                "from_chat": r.origin.is_some(),
             })
         })
         .collect()
@@ -241,10 +244,17 @@ pub async fn list(State(state): St, Query(q): Query<UnlockQuery>) -> Response {
     let dir = lib_state.dir.clone();
     let loaded = tokio::task::spawn_blocking(move || {
         let (lib, errors) = Library::load(&dir);
-        (lib, errors, imagelib::has_lock_password(&dir))
+        let (pending, pending_errors) = imagelib::pending_references(&dir);
+        (
+            lib,
+            errors,
+            imagelib::has_lock_password(&dir),
+            pending,
+            pending_errors.len(),
+        )
     })
     .await;
-    let Ok((lib, errors, has_password)) = loaded else {
+    let Ok((lib, errors, has_password, pending, pending_unreadable)) = loaded else {
         return (StatusCode::INTERNAL_SERVER_ERROR, "reading the library\n").into_response();
     };
     // No count of what is hidden goes out: "one hidden" tells whoever holds
@@ -269,15 +279,137 @@ pub async fn list(State(state): St, Query(q): Query<UnlockQuery>) -> Response {
             })
         })
         .collect();
+    // A model's staged reference changes (§9.3, 2026-10-14), hidden as an
+    // entry is: one staged locked (incognito), or for a locked character,
+    // only while unlocked. Its picture rides the one image route, which
+    // serves a pending picture only as `pending_picture` below allows.
+    let pending: Vec<serde_json::Value> = pending
+        .iter()
+        .filter(|p| {
+            let character_locked = lib.get(Kind::Character, &p.name).is_none_or(|e| e.locked);
+            (!p.locked && !character_locked) || unlocked
+        })
+        .map(|p| {
+            serde_json::json!({
+                "id": p.id,
+                "name": p.name,
+                "kind": p.kind.label(),
+                "action": p.action,
+                "label": p.label,
+                "origin": p.origin,
+                "locked": p.locked,
+                "created": p.created,
+                "picture": p.blob.as_deref().map(|b| pending_url(&p.id, b, token.as_deref())),
+            })
+        })
+        .collect();
     no_store(
         Json(serde_json::json!({
             "entries": entries,
+            "pending_references": pending,
             "unlocked": unlocked,
             "has_password": has_password,
             "unreadable": errors.len(),
+            // Said apart, since `mecha imagelib pending` is what shows them.
+            "pending_unreadable": pending_unreadable,
         }))
         .into_response(),
     )
+}
+
+fn pending_url(id: &str, blob: &str, token: Option<&str>) -> String {
+    match token {
+        Some(t) => format!("/api/library/pending/{id}/{blob}?unlock={t}"),
+        None => format!("/api/library/pending/{id}/{blob}"),
+    }
+}
+
+/// GET /api/library/pending/{id}/{blob} — a staged reference's picture, so
+/// the owner sees what they approve. Only the blob that pending change names,
+/// hidden as the listing hides it, and never cached: it may be rejected.
+pub async fn pending_picture(
+    State(state): St,
+    UrlPath((id, blob)): UrlPath<(String, String)>,
+    Query(q): Query<UnlockQuery>,
+) -> Response {
+    if !valid_blob(&blob) || id.is_empty() || !id.chars().all(|c| c.is_ascii_hexdigit()) {
+        return (StatusCode::NOT_FOUND, "no such picture\n").into_response();
+    }
+    let unlocked = state.library.unlocked(q.unlock.as_deref());
+    let dir = state.library.dir.clone();
+    let read = tokio::task::spawn_blocking(move || {
+        let (pending, _) = imagelib::pending_references(&dir);
+        let p = pending.into_iter().find(|p| p.id == id)?;
+        if p.blob.as_deref() != Some(blob.as_str()) {
+            return None;
+        }
+        let lib = Library::load(&dir).0;
+        let character_locked = lib.get(Kind::Character, &p.name).is_none_or(|e| e.locked);
+        if (p.locked || character_locked) && !unlocked {
+            return None;
+        }
+        let bytes = std::fs::read(lib.blob_path(&blob)).ok()?;
+        let ext = imagelib::picture_type(&bytes).ok()?;
+        (imagelib::blob_name_of(&bytes, ext) == blob).then_some((bytes, ext))
+    })
+    .await;
+    let Ok(Some((bytes, ext))) = read else {
+        return (StatusCode::NOT_FOUND, "no such picture\n").into_response();
+    };
+    let content_type = match ext {
+        "jpg" => "image/jpeg",
+        "webp" => "image/webp",
+        _ => "image/png",
+    };
+    (
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, "no-store"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
+#[derive(Deserialize, Default)]
+pub struct PendingBody {
+    #[serde(default)]
+    unlock: Option<String>,
+}
+
+/// POST /api/library/pending/{id}/{approve|reject} — the owner rules on a
+/// staged reference change: `mecha imagelib approve-reference` /
+/// `reject-reference`. Hidden answers as missing, as for an entry.
+pub async fn act_pending(
+    State(state): St,
+    UrlPath((id, action)): UrlPath<(String, String)>,
+    body: Option<Json<PendingBody>>,
+) -> Response {
+    let verb = match action.as_str() {
+        "approve" => "approve-reference",
+        "reject" => "reject-reference",
+        _ => return (StatusCode::NOT_FOUND, "no such action\n").into_response(),
+    };
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_hexdigit()) {
+        return (StatusCode::BAD_REQUEST, "not a pending id\n").into_response();
+    }
+    let body = body.map(|Json(b)| b).unwrap_or_default();
+    let unlocked = state.library.unlocked(body.unlock.as_deref());
+    let dir = state.library.dir.clone();
+    let want = id.clone();
+    let visible = tokio::task::spawn_blocking(move || {
+        let (pending, _) = imagelib::pending_references(&dir);
+        let p = pending.into_iter().find(|p| p.id == want)?;
+        let lib = Library::load(&dir).0;
+        let character_locked = lib.get(Kind::Character, &p.name).is_none_or(|e| e.locked);
+        Some(!(p.locked || character_locked) || unlocked)
+    })
+    .await;
+    if visible.ok().flatten() != Some(true) {
+        return (StatusCode::NOT_FOUND, "no such pending change\n").into_response();
+    }
+    super::review::verb(&state, &["imagelib", verb, &id]).await
 }
 
 /// A blob name as the store writes it, and nothing else.
@@ -2097,6 +2229,107 @@ mod route_tests {
         assert!(js.contains(&limits), "library.js lacks `{limits}`");
         let label = format!("export const LABEL_MAX = {};", imagelib::MAX_LABEL);
         assert!(js.contains(&label), "library.js lacks `{label}`");
+    }
+
+    /// A model's staged reference changes (2026-10-14): listed with a
+    /// picture the owner sees before approving, hidden as their character
+    /// is while locked, the picture uncached and only that change's own;
+    /// a hidden change answers as missing, and approving one applies it.
+    #[tokio::test]
+    async fn staged_reference_changes_follow_the_lock() {
+        let f = fixture();
+        let stage = |name: &str, shade: u8| {
+            imagelib::propose_reference(
+                &f.dir,
+                name,
+                imagelib::RefKind::FullBody,
+                imagelib::PendingAction::Add,
+                Some(&png(shade)),
+                None,
+                imagelib::Origin::ModelUntrusted,
+                false,
+            )
+            .unwrap()
+        };
+        let maya = stage("maya", 80);
+        let theo = stage("theo", 90);
+
+        let list = json(f.app.clone().oneshot(get("/api/library")).await.unwrap()).await;
+        let pending = list["pending_references"].as_array().unwrap();
+        assert_eq!(pending.len(), 1, "theo is locked: {list}");
+        assert_eq!(pending[0]["id"], maya.id.as_str());
+        let url = pending[0]["picture"].as_str().unwrap();
+        let r = f.app.clone().oneshot(get(url)).await.unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(r.headers()[header::CACHE_CONTROL], "no-store");
+        // Only the blob that change names, and not a locked one's.
+        let other = format!(
+            "/api/library/pending/{}/{}",
+            maya.id,
+            theo.blob.as_ref().unwrap()
+        );
+        assert_eq!(
+            f.app.clone().oneshot(get(&other)).await.unwrap().status(),
+            StatusCode::NOT_FOUND
+        );
+        let hidden = format!(
+            "/api/library/pending/{}/{}",
+            theo.id,
+            theo.blob.as_ref().unwrap()
+        );
+        assert_eq!(
+            f.app.clone().oneshot(get(&hidden)).await.unwrap().status(),
+            StatusCode::NOT_FOUND
+        );
+        let r = f
+            .app
+            .clone()
+            .oneshot(post(
+                &format!("/api/library/pending/{}/approve", theo.id),
+                serde_json::json!({}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            r.status(),
+            StatusCode::NOT_FOUND,
+            "a hidden change answers as missing"
+        );
+        for bad in [
+            "/api/library/pending/zz!/approve",
+            "/api/library/pending/abc/detonate",
+        ] {
+            let r = f
+                .app
+                .clone()
+                .oneshot(post(bad, serde_json::json!({})))
+                .await
+                .unwrap();
+            assert!(
+                r.status() == StatusCode::BAD_REQUEST || r.status() == StatusCode::NOT_FOUND,
+                "{bad}"
+            );
+        }
+        // Unlocked, theo's shows too.
+        let r = f
+            .app
+            .clone()
+            .oneshot(post(
+                "/api/library/unlock",
+                serde_json::json!({"password": "correct horse"}),
+            ))
+            .await
+            .unwrap();
+        let token = json(r).await["token"].as_str().unwrap().to_string();
+        let list = json(
+            f.app
+                .clone()
+                .oneshot(get(&format!("/api/library?unlock={token}")))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(list["pending_references"].as_array().unwrap().len(), 2);
     }
 
     /// A portrait at the store's cap fits the body limit; axum's 2 MB default
