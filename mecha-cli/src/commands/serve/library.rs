@@ -309,7 +309,9 @@ pub async fn list(State(state): St, Query(q): Query<UnlockQuery>) -> Response {
             "pending_references": pending,
             "unlocked": unlocked,
             "has_password": has_password,
-            "unreadable": errors.len() + pending_unreadable,
+            "unreadable": errors.len(),
+            // Said apart, since `mecha imagelib pending` is what shows them.
+            "pending_unreadable": pending_unreadable,
         }))
         .into_response(),
     )

@@ -583,7 +583,7 @@
           <span class="readingline">{e.text}</span>
         </button>
       {/each}
-    {:else}
+    {:else if !(pane === 'candidates' && shown.length === 0)}
       <div class="grid">
         {#if pane === 'characters'}
           <button class="tile addtile" onclick={() => startAdd('character')}>
@@ -623,6 +623,9 @@
     {/if}
     {#if data?.unreadable}
       <div class="warnline">{data.unreadable} {data.unreadable === 1 ? 'entry' : 'entries'} could not be read — <code>mecha imagelib list</code></div>
+    {/if}
+    {#if data?.pending_unreadable}
+      <div class="warnline">{data.pending_unreadable} staged {data.pending_unreadable === 1 ? 'change' : 'changes'} could not be read — <code>mecha imagelib pending</code></div>
     {/if}
     {/if}
   </div>

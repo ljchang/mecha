@@ -327,7 +327,14 @@ fn describe(lib: &Library, e: &Entry) {
             lib.blob_path(&r.blob).display()
         );
     }
-    let (pending, _) = imagelib::pending_references(lib.dir());
+    let (pending, unreadable) = imagelib::pending_references(lib.dir());
+    if e.kind == Kind::Character && !unreadable.is_empty() {
+        println!(
+            "  waiting: {} staged change{} could not be read — `mecha imagelib pending`",
+            unreadable.len(),
+            if unreadable.len() == 1 { "" } else { "s" }
+        );
+    }
     // Only a character's: a style sharing the name has no references.
     for p in pending
         .iter()

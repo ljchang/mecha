@@ -984,9 +984,11 @@ pub struct PendingReference {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PendingAction {
-    #[default]
     Add,
     Remove,
+    /// Unrecognised or missing: a truncated or hand-edited file degrades to
+    /// this, never to an add (review of #692). This build always writes it.
+    #[default]
     #[serde(other)]
     Unknown,
 }
@@ -1064,14 +1066,41 @@ pub fn propose_reference(
     {
         bail!("a label is capped at {MAX_LABEL} characters");
     }
-    let (pending, _) = pending_references(dir);
-    if pending.len() >= MAX_PENDING {
+    // Unreadable files count: an unknown is never room on a resource bound.
+    let (pending, unreadable) = pending_references(dir);
+    if pending.len() + unreadable.len() >= MAX_PENDING {
         bail!("{MAX_PENDING} reference changes are already waiting on the owner");
     }
     let blob = match (action, bytes) {
         (PendingAction::Add, Some(bytes)) => {
             if kind == RefKind::Detail && label.is_none() {
                 bail!("a detail needs a label saying what it shows, e.g. \"left-forearm tattoo\"");
+            }
+            // The write's own refusals, before the picture is stored, so the
+            // owner is never shown an Approve that cannot succeed and a
+            // doomed proposal leaves no blob (review of #692). Approval
+            // checks again: the character may change meanwhile.
+            let held = entry.references.iter().filter(|r| r.kind == kind).count();
+            if held >= kind.limit() {
+                bail!(
+                    "`{name}` already has {held} {} reference{}; remove one first",
+                    kind.label(),
+                    if held == 1 { "" } else { "s" }
+                );
+            }
+            if entry
+                .references
+                .iter()
+                .any(|r| r.kind == kind && r.label == label)
+            {
+                bail!(
+                    "`{name}` already has a {} reference{}; use another label",
+                    kind.label(),
+                    label
+                        .as_deref()
+                        .map(|l| format!(" labelled \"{l}\""))
+                        .unwrap_or_default()
+                );
             }
             // A proposal's bytes stay on disk until the owner rules, from a
             // conversation the owner has not seen: the proposal cap, as for
@@ -3241,6 +3270,55 @@ mod tests {
         reject_reference(dir.path(), &p.id).unwrap();
         assert!(!blob.exists());
         assert!(pending_references(dir.path()).0.is_empty());
+    }
+
+    /// A staged change the store would refuse is refused at the door, with
+    /// no picture left behind; one whose action is missing or unknown loads
+    /// but never applies (review of #692).
+    #[test]
+    fn a_doomed_proposal_is_refused_and_an_unknown_action_never_applies() {
+        let dir = scratch();
+        create(dir.path(), character("wren", Origin::Owner)).unwrap();
+        add_reference(
+            dir.path(),
+            "wren",
+            RefKind::FullBody,
+            &png_of([8, 1, 1]),
+            None,
+        )
+        .unwrap();
+        let blobs = || std::fs::read_dir(dir.path().join("blobs")).unwrap().count();
+        let before = blobs();
+        let full = propose_reference(
+            dir.path(),
+            "wren",
+            RefKind::FullBody,
+            PendingAction::Add,
+            Some(&png_of([8, 2, 2])),
+            None,
+            Origin::ModelUntrusted,
+            false,
+        )
+        .unwrap_err();
+        assert!(full.to_string().contains("remove one first"), "{full}");
+        assert_eq!(blobs(), before, "a refused proposal stored its picture");
+
+        let pending = dir.path().join("pending");
+        std::fs::create_dir_all(&pending).unwrap();
+        for (id, action) in [("aa", "action = \"replace\"\n"), ("bb", "")] {
+            std::fs::write(
+                pending.join(format!("{id}.toml")),
+                format!("id = \"{id}\"\nname = \"wren\"\nkind = \"face\"\n{action}origin = \"model_untrusted\"\n"),
+            )
+            .unwrap();
+            let p = pending_references(dir.path())
+                .0
+                .into_iter()
+                .find(|p| p.id == id)
+                .unwrap();
+            assert_eq!(p.action, PendingAction::Unknown, "{id}");
+            assert!(approve_reference(dir.path(), id).is_err(), "{id} applied");
+        }
     }
 
     /// Removing a character takes its staged changes with it: they could
