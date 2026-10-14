@@ -2059,8 +2059,72 @@ total (`system::source::parse_memorystatus_level`); an unreadable level is
 unread, never a number. Owed: one bf16 picture on that Mac with chat and
 voice resident, watching swap and pressure, before the figure is trusted.
 
+**ComfyUI runs on demand on a Mac** (owner's ruling, 2026-10-14). The
+measurement the ruling above owed: on the owner's Mac with chat and voice
+resident, the gate admitted bf16 pictures (113 s cold, 91 s warm with a new
+prompt, 155 s for an edit), the memory level dipping to 21 % and swap
+growing once by 285 MB — and then nothing gave the memory back. Fifteen
+minutes after the last picture ComfyUI still held the model and the level
+sat at 41 % (from 84 %): `[image] unload_after_secs` is a timer in the
+drawing process, which `mecha run` ends at once, and Linux's idle reset is
+`/proc` and `systemctl`. So a Mac's ComfyUI agent runs mecha's on-demand
+proxy — the embeddings and OCR servers' (§12.1) — which holds `:8188`,
+starts ComfyUI on `:18188` at the first picture (ready when
+`/system_stats` answers), and stops it after fifteen idle minutes. A cold
+picture pays ComfyUI's start (~20 s) on top of the model's load. An open
+ComfyUI browser tab holds a websocket, which counts as a connection and
+keeps it up, as on Linux. Also measured: the first chat after pictures took
+22.6 s while its weights paged back in, then 0.7 s.
+
 **The refusal is said to the owner, not offered to the model.** Told the off
 switch, the model retried the picture six times in twenty seconds and then
 recommended `[image] min_available_mb = 0` to the owner. The tool's text now
 says the refusal will not change within the turn; the switch is named in the
 operator's log only.
+
+## 13. `enable` finishes what it starts
+
+**2026-10-13.** Two gaps, found installing on the owner's Mac, and two
+rulings. `enable graph` wrote `graph = true` and a footnote — "`mecha-graph-mcp`
+is not installed, so no [[mcp]] entry was written" — and left the feature
+half-on; `enable documents` installed the OCR server, the embeddings server
+and the layout environment and wrote no `[documents]` table, so the feature it
+had just installed read *unready* and `mecha document extract` refused. Not
+Mac-specific: a fresh Linux install had both.
+
+**The graph's server is a sidecar** (`graph_mcp.rs`). The owner: `enable
+graph` offers to install `mecha-graph-mcp` when it is missing — **only the
+server, not the `mecha-graph` CLI**, "to be cleaner" — and setup runs each
+feature's enable, so there is one installer per feature.
+
+- **Pinned, never the registry's latest:** `cargo install --git
+  https://github.com/ljchang/mecha-graph --rev <REV> --locked --root
+  ~/.mecha/sidecars/graph-mcp mecha-graph-mcp`. It is code that will hold the
+  owner's graph, so it is the reviewed commit, as the engine's and the speech
+  engine's builds are.
+- **One on the PATH is the owner's** (`Evidence::OnPath`): used as it is,
+  never installed over. Mecha's build is on no PATH; the `[[mcp]]` entry names
+  it absolutely, so a unit or an agent with a short PATH finds it.
+- **Priced as a build**, said as one before the yes: a few minutes, cargo and
+  a C compiler (SQLCipher is built from source). No cargo: not offered, with
+  why, and graph reads *switched on, but not working* until it is installed.
+- **Fail loud.** A build that fails stops `enable` before the switch, as
+  every installer here does — never "enabled `graph`" over a footnote. The
+  check never starts the server, which would open (and create) the owner's
+  graph database; it asks cargo's own record, `.crates2.json`, for this
+  package from this commit.
+
+**`enable documents` writes the table** where there is none, never over the
+owner's: `ocr` where the OCR server is installed or provided, `layout` where
+its environment is, and on Linux the confinement this machine actually runs —
+each backend's own preflight asked in turn (bubblewrap, then Landlock),
+`confine` written as the one that started poppler. None working: the table is
+written, and PDFs are said to be refused until one does, with the fix.
+
+**On a Mac the table names no `confine`**, so PDFs run under the macOS
+sandbox, Seatbelt, the default there since #682 — and `layout` is written as
+installed, since the layout worker runs under the same profile (measured on
+the owner's Mac, 2026-10-13: every child checked confined, no denial logged).
+The interim refusal this section first carried, for PDFs on a Mac until the
+sandbox landed, went with it.
+
