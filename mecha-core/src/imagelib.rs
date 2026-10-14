@@ -489,6 +489,20 @@ impl Library {
         )
     }
 
+    /// A picture this entry names, its portrait or any reference, under the
+    /// portrait's hash check: for the owner's browsing, which shows a
+    /// reference whatever its kind, where [`Library::read_reference`] is the
+    /// generators' read and refuses one the entry may not send.
+    pub fn read_named(&self, entry: &Entry, blob: &str) -> Result<(Vec<u8>, &'static str)> {
+        if entry.portrait.as_deref() == Some(blob) {
+            return self.read_portrait(entry);
+        }
+        if !entry.references.iter().any(|r| r.blob == blob) {
+            bail!("`{}` names no picture `{blob}`", entry.name);
+        }
+        self.read_checked(blob, &format!("`{}`'s reference", entry.name))
+    }
+
     fn read_checked(&self, blob: &str, what: &str) -> Result<(Vec<u8>, &'static str)> {
         let bytes =
             std::fs::read(self.blob_path(blob)).with_context(|| format!("reading {what}"))?;

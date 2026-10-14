@@ -153,3 +153,67 @@ export function formBody(form, entry = null, token = null) {
     ...(token ? { unlock: token } : {}),
   };
 }
+
+// A character's typed pictures (docs/IMAGE-COMPILER-DESIGN.md §9.3), in the
+// order the page offers them, with the store's limits (imagelib.rs
+// RefKind::limit): the page hides an add the store would refuse, and the
+// store still refuses it.
+export const REF_KINDS = ['full_body', 'face', 'detail'];
+export const REF_LIMIT = { face: 1, full_body: 1, detail: 4 };
+export const REF_TITLE = { face: 'Face', full_body: 'Full body', detail: 'Detail' };
+// A detail's label is sent beside the description, so it is short.
+export const LABEL_MAX = 100;
+
+// What each kind is for and what it does, said where it is added.
+export function refNote(kind) {
+  return {
+    full_body:
+      'Head to toe, standing square-on with arms relaxed: its stance carries into pictures. Sent with a new picture of one or two people when everyone in it has one.',
+    face:
+      'A clearer face than the portrait shows. Kept for the video tool; pictures use the portrait.',
+    detail:
+      'A close-up of a mark, such as a tattoo, with a label saying what and where. Pictures use the label, not the picture.',
+  }[kind];
+}
+
+// Whether another `kind` fits: approved characters only, under the limit.
+export function refAddable(entry, kind) {
+  if (!entry || entry.kind !== 'character' || entry.status !== 'approved') return false;
+  const have = (entry.references ?? []).filter((r) => r.kind === kind).length;
+  return have < (REF_LIMIT[kind] ?? 0);
+}
+
+// Why the reference form cannot be saved yet, or null. `form` is
+// { kind, label, picture } with `picture` the prepared base64.
+export function refProblem(form, entry = null) {
+  const label = (form.label ?? '').trim();
+  if (!form.picture) return 'a picture';
+  if (form.kind === 'detail' && !label) return 'a label: what it shows and where';
+  if (label.length > LABEL_MAX) return `a label of at most ${LABEL_MAX} characters`;
+  if (entry && (entry.references ?? []).some((r) => r.kind === form.kind && (r.label ?? '') === label && label))
+    return 'a label it does not already have';
+  return null;
+}
+
+// The body POST /api/library/reference takes.
+export function refBody(form, entry, token = null) {
+  const label = (form.label ?? '').trim();
+  return {
+    name: entry.name,
+    as: form.kind,
+    picture: form.picture,
+    ...(label ? { label } : {}),
+    ...(token ? { unlock: token } : {}),
+  };
+}
+
+// The body POST /api/library/reference/remove takes: the label says which,
+// and a single face or full body needs none.
+export function refRemoveBody(entry, ref, token = null) {
+  return {
+    name: entry.name,
+    as: ref.kind,
+    ...(ref.label ? { label: ref.label } : {}),
+    ...(token ? { unlock: token } : {}),
+  };
+}
