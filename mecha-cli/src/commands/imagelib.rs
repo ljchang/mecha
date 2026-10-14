@@ -291,8 +291,10 @@ fn describe(lib: &Library, e: &Entry) {
     let sendable = e.sendable_references();
     for r in &e.references {
         // A kind this build does not know, or one this entry kind does not
-        // take, is shown as such: kept, never sent (§9.3).
-        let note = if sendable.contains(&r) {
+        // take, is shown as such: kept, never sent (§9.3). By identity, as
+        // `read_reference` asks, so a hand-edited copy past the limit reads
+        // as not sent (review of #685).
+        let note = if sendable.iter().any(|s| std::ptr::eq(*s, r)) {
             ""
         } else {
             " (not sent)"
@@ -553,7 +555,11 @@ fn run(dir: &std::path::Path, cmd: Cmd) -> Result<()> {
                 kind.label()
             );
             if kind == RefKind::FullBody {
-                println!("A full-body picture's stance carries into pictures: neutral and square-on works best.");
+                println!(
+                    "A full-body picture's stance carries into pictures: neutral and square-on \
+                     works best. It goes with a new picture of one or two people when everyone \
+                     in it has one; edits and layered pictures use portraits."
+                );
             }
         }
         Cmd::RemoveReference {
