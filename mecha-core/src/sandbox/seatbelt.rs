@@ -104,6 +104,14 @@ pub fn profile(p: &Policy) -> Result<String> {
         list("literal", &devices)?
     ));
     out.push_str("(allow file-write* (literal \"/dev/null\"))\n");
+    // The data volume is a second spelling of every user file — the home
+    // under it reads as `/System/Volumes/Data/Users/<name>` — and `/System`
+    // above is allowed whole. A call's own paths arrive canonical
+    // (`/Users/…`, `/opt/homebrew/…`, `/private/var/…`), so nothing it needs
+    // is spelled this way; denied outright (review of #682).
+    out.push_str(
+        "(deny file-read-data file-read-xattr file-write* (subpath \"/System/Volumes/Data\"))\n",
+    );
     // The home's contents, xattrs and writes are denied — not metadata,
     // which path resolution needs along every ancestor of an interpreter
     // that lives in the home (the layout worker's, under `~/.mecha`). The
@@ -111,26 +119,41 @@ pub fn profile(p: &Policy) -> Result<String> {
     // with `require-not`, never left to rule order: on macOS 26 a later
     // `file-read*` allow did not override this operation-specific deny, and
     // a named path in the home was refused (measured, macOS CI on #682).
+    //
+    // Two denials, not one: a read is carved out for every path the call
+    // names, a write only for the trees it may write. One carve-out for both
+    // lifted the write denial on paths the call may only read — the layout
+    // worker's environment among them, which a process reading
+    // attacker-chosen pixels must not be able to change (review of #682).
     if let Some(home) = &p.home {
-        let mut except = String::new();
-        for (kind, paths) in [
+        let except = |sets: &[(&str, &Vec<PathBuf>)]| -> Result<String> {
+            let mut out = String::new();
+            for (kind, paths) in sets {
+                for path in paths.iter().filter(|x| x.starts_with(home)) {
+                    out.push_str(&format!(" (require-not ({kind} {}))", quote(path)?));
+                }
+            }
+            Ok(out)
+        };
+        let filter = |except: String| -> Result<String> {
+            Ok(if except.is_empty() {
+                format!("(subpath {})", quote(home)?)
+            } else {
+                format!("(require-all (subpath {}){except})", quote(home)?)
+            })
+        };
+        let reads = except(&[
             ("subpath", &p.read_trees),
             ("subpath", &p.write_trees),
             ("literal", &p.read_files),
             ("literal", &p.exec),
-        ] {
-            for path in paths.iter().filter(|x| x.starts_with(home)) {
-                except.push_str(&format!(" (require-not ({kind} {}))", quote(path)?));
-            }
-        }
-        let filter = if except.is_empty() {
-            format!("(subpath {})", quote(home)?)
-        } else {
-            format!("(require-all (subpath {}){except})", quote(home)?)
-        };
+        ])?;
+        let writes = except(&[("subpath", &p.write_trees)])?;
         out.push_str(&format!(
-            "(deny file-read-data file-read-xattr file-write* {filter})\n"
+            "(deny file-read-data file-read-xattr {})\n",
+            filter(reads)?
         ));
+        out.push_str(&format!("(deny file-write* {})\n", filter(writes)?));
     }
     // Never empty: `exec` was proven non-empty above.
     out.push_str(&format!(
@@ -607,10 +630,23 @@ mod tests {
         // not left to rule order.
         assert!(
             t.contains(
-                "(deny file-read-data file-read-xattr file-write* (require-all (subpath \
-                 \"/Users/a\") (require-not (literal \"/Users/a/.mecha/layout/model.onnx\"))))"
+                "(deny file-read-data file-read-xattr (require-all (subpath \"/Users/a\") \
+                 (require-not (literal \"/Users/a/.mecha/layout/model.onnx\"))))"
             ),
             "{t}"
+        );
+        // A path the call may only read stays unwritable: the write denial
+        // carves out nothing it may not write (review of #682).
+        assert!(
+            t.contains("(deny file-write* (subpath \"/Users/a\"))"),
+            "{t}"
+        );
+        assert!(
+            t.contains(
+                "(deny file-read-data file-read-xattr file-write* (subpath \
+                 \"/System/Volumes/Data\"))"
+            ),
+            "the data volume's second spelling of the home is denied:\n{t}"
         );
         let bare = profile(&Policy {
             read_files: vec![],
@@ -618,9 +654,8 @@ mod tests {
         })
         .unwrap();
         assert!(
-            bare.contains(
-                "(deny file-read-data file-read-xattr file-write* (subpath \"/Users/a\"))"
-            ),
+            bare.contains("(deny file-read-data file-read-xattr (subpath \"/Users/a\"))")
+                && bare.contains("(deny file-write* (subpath \"/Users/a\"))"),
             "{bare}"
         );
         assert!(
