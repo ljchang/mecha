@@ -324,6 +324,11 @@ to use the tool, and what to do next, lives **once**, in the tool's description.
   before its rewording, showed the owner-asked control at 5/8; the 12-sample run did not repeat it.
   The same deployed setup scored 3/8 at M2 in that earlier run, so these cells vary between runs,
   and only comparisons within one run are read.
+- **Never judged unseen** (the owner's ruling, 2026-10-14): the description also says "never judge
+  whether one came out right, or draw it again, on your own: the owner sees it and says what to
+  change". On the owner's Mac a run judged two pictures it could not see as wrong and drew again,
+  once over a picture that was right — about four and a half of seven minutes. Not measured with
+  the table above; pinned by `the_description_keeps_the_prohibitions`.
 - The leading `image: <path>` line stays exactly as it was: the page reads it to draw the picture
   (`web/src/lib/picture.js`). A reply that repeats it is to be hidden from the chat and from speech by
   #578.
