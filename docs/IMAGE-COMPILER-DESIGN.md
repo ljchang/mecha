@@ -527,13 +527,22 @@ kind is derived from its directory (`Entry.kind`).
     character, so this is learning's provenance split (`docs/ARCHITECTURE.md`,
     learning), not a new rule;
   - from an **incognito** chat, staged locked, on `image_library_propose`'s
-    footing.
+    footing (`docs/INCOGNITO-DESIGN.md` R3's third exception).
 
   A staged picture is held to the proposal cap (`MAX_PROPOSED_PORTRAIT_BYTES`)
-  and the pending queue to `MAX_PENDING`; its file protects its blob, and a
-  rejection deletes the blob once nothing names it. The tool declares
-  `read_only`, as `image_generate` does, so a default web chat can do what
-  the owner asked in it: provenance, not the permission mode, bounds it.
+  and the pending queue to `MAX_PENDING`; its file protects its blob, a
+  rejection deletes the blob once nothing names it, and removing the
+  character drops its staged changes.
+- **The load-bearing choice: the tool declares `read_only`** (review of
+  #692). So no approver is asked: from a clean conversation it writes a new
+  approved version of a character, which rides into every later picture,
+  with no human in the loop — in a read-only web chat too, so a default chat
+  can do what the owner asked in it. `image_library_propose`'s `read_only`
+  rests on a candidate reaching no prompt; this one does not, and provenance
+  is what bounds it instead. Its brakes are the `[tools]` off switch,
+  `MAX_PENDING`, and the character page's remove. A tool cannot see the
+  chat's permission mode, so "a read-only chat stages instead" would need
+  that plumbed first.
 - **Not stored yet:** a location's own clip or soundscape. Nothing would
   read them yet; they arrive with whatever does.
 

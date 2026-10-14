@@ -485,7 +485,6 @@ impl Tool for ImageLibraryReference {
         // proposal's origin is recorded (`ImageLibraryPropose`).
         let origin = Origin::of_proposal(ctx.recorded_taint.as_ref());
         let direct = origin == Origin::ModelClean && !ctx.stage_locked;
-        let what = if remove { "removal of" } else { "" };
         if direct {
             let done = match &bytes {
                 Some(bytes) => {
@@ -526,13 +525,13 @@ impl Tool for ImageLibraryReference {
                 } else {
                     "this conversation has read outside content"
                 };
+                let change = if remove { "removing" } else { "adding" };
                 Ok(ToolOutput::ok(format!(
-                    "Staged the {what}{}{} reference for `{}` for the owner's approval, since \
-                     {why}: the library's Waiting pane, or `mecha imagelib approve-reference {}`. \
-                     It is not used until then.",
-                    if what.is_empty() { "" } else { " " },
-                    kind.label(),
+                    "Staged {change} `{}`'s {} reference for the owner's approval, since {why}: \
+                     the library's Waiting pane, or `mecha imagelib approve-reference {}`. It \
+                     is not used until then.",
                     p.name,
+                    kind.label(),
                     p.id
                 )))
             }

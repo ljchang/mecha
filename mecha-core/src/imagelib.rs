@@ -1162,7 +1162,14 @@ pub fn approve_reference(dir: &Path, id: &str) -> Result<Entry> {
                 Some(p.origin),
             )?
         }
-        PendingAction::Remove => remove_reference(dir, &p.name, p.kind, p.label.as_deref())?,
+        PendingAction::Remove => {
+            // A kind this build does not know, or one a character does not
+            // take, is shown and kept, never removed on a model's say-so.
+            if !p.kind.allowed_on(Kind::Character) {
+                bail!("this build cannot apply that pending change");
+            }
+            remove_reference(dir, &p.name, p.kind, p.label.as_deref())?
+        }
         PendingAction::Unknown => bail!("this build cannot apply that pending change"),
     };
     std::fs::remove_file(pending_dir(dir).join(format!("{id}.toml")))?;
@@ -1246,6 +1253,18 @@ pub fn remove(dir: &Path, kind: Kind, name: &str) -> Result<()> {
         entry_dir(dir, kind, name),
         removed.join(format!("{}-{name}-{stamp}", kind.label())),
     )?;
+    // A removed character's staged reference changes can never apply: they
+    // go with it, and their pictures once nothing names them, rather than
+    // holding a `MAX_PENDING` slot and a blob forever (review of #692).
+    if kind == Kind::Character {
+        for p in pending_references(dir)
+            .0
+            .into_iter()
+            .filter(|p| p.name == name)
+        {
+            reject_reference(dir, &p.id)?;
+        }
+    }
     Ok(())
 }
 
@@ -3222,6 +3241,39 @@ mod tests {
         reject_reference(dir.path(), &p.id).unwrap();
         assert!(!blob.exists());
         assert!(pending_references(dir.path()).0.is_empty());
+    }
+
+    /// Removing a character takes its staged changes with it: they could
+    /// never apply, and would otherwise hold a queue slot and a picture
+    /// forever (review of #692).
+    #[test]
+    fn removing_a_character_drops_its_staged_changes() {
+        let dir = scratch();
+        create(dir.path(), character("wren", Origin::Owner)).unwrap();
+        create(dir.path(), character("jo", Origin::Owner)).unwrap();
+        let stage = |name: &str, rgb| {
+            propose_reference(
+                dir.path(),
+                name,
+                RefKind::FullBody,
+                PendingAction::Add,
+                Some(&png_of(rgb)),
+                None,
+                Origin::ModelUntrusted,
+                false,
+            )
+            .unwrap()
+        };
+        let wren = stage("wren", [7, 1, 1]);
+        let jo = stage("jo", [7, 2, 2]);
+        remove(dir.path(), Kind::Character, "wren").unwrap();
+        let left: Vec<String> = pending_references(dir.path())
+            .0
+            .into_iter()
+            .map(|p| p.id)
+            .collect();
+        assert_eq!(left, [jo.id]);
+        assert!(!dir.path().join("blobs").join(wren.blob.unwrap()).exists());
     }
 
     /// A pending removal names exactly one reference, and approving it

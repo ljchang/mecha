@@ -327,18 +327,18 @@ fn describe(lib: &Library, e: &Entry) {
             lib.blob_path(&r.blob).display()
         );
     }
-    let (pending, _) = imagelib::pending_references(&lib_dir_of(lib));
-    for p in pending.iter().filter(|p| p.name == e.name) {
+    let (pending, _) = imagelib::pending_references(lib.dir());
+    // Only a character's: a style sharing the name has no references.
+    for p in pending
+        .iter()
+        .filter(|p| e.kind == Kind::Character && p.name == e.name)
+    {
         println!(
             "  waiting: {} (`mecha imagelib approve-reference {}`)",
             pending_line(p),
             p.id
         );
     }
-}
-
-fn lib_dir_of(lib: &Library) -> PathBuf {
-    lib.dir().to_path_buf()
 }
 
 /// One staged change, as `pending` and `show` say it.
