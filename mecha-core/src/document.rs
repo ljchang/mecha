@@ -140,11 +140,14 @@ pub struct DocumentsConfig {
     /// At most this many pages are sent to OCR in one call; the answer names
     /// the pages it left for the next call.
     pub max_ocr_pages: u32,
-    /// How poppler is confined: `bwrap` (default), `landlock`, or `none` —
-    /// which must be written out, and is printed on every extraction.
+    /// How poppler is confined: `bwrap` (the default on Linux), `landlock`,
+    /// `seatbelt` (the default on macOS, and the only one there), or `none`
+    /// — which must be written out, and is printed on every extraction.
     /// `docker` is refused: the sandbox image carries no poppler.
     pub confine: Backend,
-    /// Address-space ceiling for each poppler process, in MB.
+    /// Address-space ceiling for each poppler process, in MB. Not applied on
+    /// macOS ([`limit`] says why); the CPU and file-size ceilings and the
+    /// wall clock still are.
     pub memory_mb: u64,
     /// Cache extractions under `~/.mecha/documents/`.
     pub cache: bool,
@@ -165,7 +168,8 @@ pub struct DocumentsConfig {
     pub layout_model: Option<PathBuf>,
     /// CPU threads for the layout model (it never touches the GPU).
     pub layout_threads: u32,
-    /// Address-space ceiling for the layout worker, in MB.
+    /// Address-space ceiling for the layout worker, in MB. Not applied on
+    /// macOS, as `memory_mb` is not ([`limit`]).
     pub layout_memory_mb: u64,
 }
 
@@ -182,7 +186,7 @@ impl Default for DocumentsConfig {
             max_file_mb: 100,
             max_pages: 2000,
             max_ocr_pages: 30,
-            confine: Backend::Bwrap,
+            confine: default_confine(),
             memory_mb: 2048,
             cache: true,
             cache_days: 30,
@@ -196,6 +200,29 @@ impl Default for DocumentsConfig {
 }
 
 impl DocumentsConfig {
+    /// Whether `confine` names a confinement this system has. Called from
+    /// `Config::validate` as well, so a Mac given Linux's `bwrap` (the
+    /// default until macOS had its own) refuses the start by name rather
+    /// than leaving `document_read` unregistered behind a stderr line
+    /// (review of #682).
+    pub fn confine_here(&self) -> Result<()> {
+        // Each system's confinements are its own: a Mac has no user
+        // namespaces or Landlock, and Linux no Seatbelt.
+        match (self.confine, cfg!(target_os = "macos")) {
+            (Backend::Bwrap | Backend::Landlock, true) => bail!(
+                "[documents] confine = \"{}\" is Linux's; on a Mac poppler is confined by \
+                 \"seatbelt\" (the default here)",
+                self.confine.as_str()
+            ),
+            (Backend::Seatbelt, false) => bail!(
+                "[documents] confine = \"seatbelt\" is macOS's sandbox; here use \"bwrap\" \
+                 (default) or \"landlock\""
+            ),
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// Refuse a configuration whose promises cannot be kept, at registration
     /// — never at the first page.
     pub fn validate(&self) -> Result<()> {
@@ -215,9 +242,15 @@ impl DocumentsConfig {
         if self.confine == Backend::Docker {
             bail!(
                 "[documents] confine = \"docker\" is not supported — the sandbox image has no \
-                 poppler; use \"bwrap\" (default) or \"landlock\""
+                 poppler; use {}",
+                if cfg!(target_os = "macos") {
+                    "\"seatbelt\" (the default here)"
+                } else {
+                    "\"bwrap\" (default) or \"landlock\""
+                }
             );
         }
+        self.confine_here()?;
         if self.max_file_mb == 0 || self.max_pages == 0 || self.memory_mb == 0 {
             bail!("[documents] max_file_mb, max_pages and memory_mb must be greater than zero");
         }
@@ -649,9 +682,26 @@ enum Source {
     Image(std::sync::Arc<image::RgbImage>),
 }
 
+/// The confinement poppler gets when `[documents]` names none: bwrap on
+/// Linux, Seatbelt on a Mac — each system's own, and on a Mac the only one.
+pub fn default_confine() -> Backend {
+    if cfg!(target_os = "macos") {
+        Backend::Seatbelt
+    } else {
+        Backend::Bwrap
+    }
+}
+
 /// Address space, CPU seconds and the largest file a confined child may
 /// write, set between fork and exec and inherited through bwrap's exec by
 /// the program it runs — poppler, or the layout worker.
+///
+/// **No address-space ceiling on macOS.** Every process there maps the
+/// multi-gigabyte dyld shared cache, so an address-space ceiling sized for a
+/// renderer would refuse the exec if XNU applied it, and XNU's handling of
+/// `RLIMIT_AS` is not documented — a limit nobody has measured holding is
+/// not set and believed (unmeasured on a Mac as of 2026-10-13). The CPU and
+/// file-size ceilings are set there, and the wall clock bounds the rest.
 pub(crate) fn limit(cmd: &mut tokio::process::Command, memory: u64, cpu: u64, fsize: u64) {
     #[cfg(unix)]
     unsafe {
@@ -667,7 +717,9 @@ pub(crate) fn limit(cmd: &mut tokio::process::Command, memory: u64, cpu: u64, fs
                 }
                 Ok(())
             };
-            set(libc::RLIMIT_AS, memory)?;
+            if !cfg!(target_os = "macos") {
+                set(libc::RLIMIT_AS, memory)?;
+            }
             set(libc::RLIMIT_CPU, cpu)?;
             set(libc::RLIMIT_FSIZE, fsize)?;
             Ok(())
@@ -770,10 +822,15 @@ impl Renderer {
             .map_err(|e| anyhow!("{e:#}"))
             .with_context(|| {
                 format!(
-                    "the PDF renderer cannot run under {} confinement — install poppler-utils, \
-                     fix the confinement, or set [documents] confine explicitly; there is no \
-                     silent fallback to an unconfined parse",
-                    self.sandbox.backend().as_str()
+                    "the PDF renderer cannot run under {} confinement — install {}, fix the \
+                     confinement, or set [documents] confine explicitly; there is no silent \
+                     fallback to an unconfined parse",
+                    self.sandbox.backend().as_str(),
+                    if cfg!(target_os = "macos") {
+                        "poppler (`brew install poppler`)"
+                    } else {
+                        "poppler-utils"
+                    }
                 )
             })
     }
@@ -1568,15 +1625,17 @@ impl std::fmt::Display for ParserSaid {
 impl std::error::Error for ParserSaid {}
 
 /// Whether a failed confined command's stderr is only the sandbox's own —
-/// bwrap refusing to start (no user namespaces, a missing path) — so poppler
-/// never ran and nothing in it came from a document.
+/// bwrap or `sandbox-exec` refusing to start (no user namespaces, a profile
+/// it will not load, a missing path) — so poppler never ran and nothing in
+/// it came from a document.
 fn stderr_is_the_sandboxs(stderr: &str) -> bool {
     let mut lines = stderr
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
         .peekable();
-    lines.peek().is_some() && lines.all(|l| l.starts_with("bwrap:"))
+    lines.peek().is_some()
+        && lines.all(|l| l.starts_with("bwrap:") || l.starts_with("sandbox-exec:"))
 }
 
 /// Whether `e`, anywhere in its chain, carries a parser's words about the
@@ -2396,6 +2455,14 @@ mod tests {
             "bwrap: warning\nSyntax Error (12): Illegal character <2f> in (hi)\n"
         ));
         assert!(!stderr_is_the_sandboxs(""));
+        // `sandbox-exec` refusing a profile is ours as well; a poppler line
+        // after it is still the document's.
+        assert!(stderr_is_the_sandboxs(
+            "sandbox-exec: sandbox_apply: Operation not permitted\n"
+        ));
+        assert!(!stderr_is_the_sandboxs(
+            "sandbox-exec: x\nSyntax Error: Couldn't find trailer dictionary\n"
+        ));
     }
 
     /// A parser's words survive context-wrapping as document text; our own
@@ -2816,6 +2883,42 @@ mod tests {
         assert!(cfg.validate().is_ok());
         cfg.confine = Backend::Docker;
         assert!(cfg.validate().is_err());
+    }
+
+    /// Each system confines poppler with its own sandbox, by default and
+    /// only: the other system's is a load error naming this one's.
+    #[test]
+    fn each_system_confines_poppler_with_its_own_sandbox() {
+        let mac = cfg!(target_os = "macos");
+        let own = if mac {
+            Backend::Seatbelt
+        } else {
+            Backend::Bwrap
+        };
+        assert_eq!(default_confine(), own);
+        assert_eq!(DocumentsConfig::default().confine, own);
+        let with = |b| {
+            DocumentsConfig {
+                confine: b,
+                ..DocumentsConfig::default()
+            }
+            .validate()
+        };
+        assert!(with(own).is_ok());
+        assert!(
+            with(Backend::None).is_ok(),
+            "written out, `none` is the owner's"
+        );
+        assert_eq!(with(Backend::Seatbelt).is_ok(), mac);
+        assert_eq!(with(Backend::Bwrap).is_ok(), !mac);
+        assert_eq!(with(Backend::Landlock).is_ok(), !mac);
+        let foreign = if mac {
+            Backend::Bwrap
+        } else {
+            Backend::Seatbelt
+        };
+        let e = format!("{:#}", with(foreign).unwrap_err());
+        assert!(e.contains(if mac { "seatbelt" } else { "bwrap" }), "{e}");
     }
 
     #[test]

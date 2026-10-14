@@ -1,0 +1,394 @@
+//! The macOS Seatbelt confinement, measured: a process under the profile
+//! `Sandbox` builds cannot read a file outside its inputs, cannot write
+//! outside its scratch directory, and cannot reach the network — and poppler
+//! still renders a page under it, through the same `Extractor` a document
+//! takes.
+//!
+//! Every negative is checked against its positive first: the file outside
+//! is readable unconfined, the address answers unconfined, and the network
+//! denial is shown to be the network rule by the same call succeeding with
+//! `network = true`. A refusal that would have happened anyway proves
+//! nothing.
+//!
+//! macOS only. Skips when poppler or the network is missing;
+//! `MECHA_TEST_REQUIRE_BACKENDS=1` turns each skip into a failure.
+
+#![cfg(target_os = "macos")]
+
+mod support;
+
+use mecha_core::document::{DocumentsConfig, Extractor, Mode, Renderer};
+use mecha_core::sandbox::{Backend, Sandbox, SandboxConfig};
+use std::path::Path;
+use std::process::Output;
+
+const LINE: &str = "Priya reviewed the ledger with Ada on Tuesday.";
+
+fn seatbelt(network: bool) -> Sandbox {
+    Sandbox::new(SandboxConfig {
+        kind: Backend::Seatbelt,
+        network,
+        ..SandboxConfig::default()
+    })
+}
+
+async fn run(sandbox: &Sandbox, program: &str, args: &[&str], ws: &Path) -> Output {
+    let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    sandbox
+        .wrap_argv(program, &args, ws, ws)
+        .unwrap()
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .unwrap()
+}
+
+/// The scratch directory is readable and writable; a file beside it is
+/// neither, though it is readable unconfined.
+#[tokio::test]
+async fn the_profile_reaches_its_scratch_and_nothing_else_on_disk() {
+    let ws = support::tmpdir("sb-ws");
+    let outside = support::tmpdir("sb-outside");
+    let secret = outside.join("id_ed25519");
+    std::fs::write(&secret, "SECRET-KEY-MATERIAL").unwrap();
+    std::fs::write(ws.join("in.txt"), "THE-INPUT").unwrap();
+
+    // Not vacuous: the file is there and readable without the profile.
+    let plain = std::process::Command::new("/bin/cat")
+        .arg(&secret)
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&plain.stdout),
+        "SECRET-KEY-MATERIAL"
+    );
+
+    let sb = seatbelt(false);
+    let inside = run(&sb, "/bin/cat", &[ws.join("in.txt").to_str().unwrap()], &ws).await;
+    assert!(
+        inside.status.success(),
+        "the scratch is readable: {}",
+        String::from_utf8_lossy(&inside.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&inside.stdout), "THE-INPUT");
+
+    let read = run(&sb, "/bin/cat", &[secret.to_str().unwrap()], &ws).await;
+    assert!(!read.status.success(), "a file outside its inputs was read");
+    assert!(!String::from_utf8_lossy(&read.stdout).contains("SECRET"));
+
+    let beside = outside.join("planted");
+    let write = run(&sb, "/usr/bin/touch", &[beside.to_str().unwrap()], &ws).await;
+    assert!(
+        !write.status.success() && !beside.exists(),
+        "a write landed outside the scratch"
+    );
+
+    let ok = ws.join("made-here");
+    let write = run(&sb, "/usr/bin/touch", &[ok.to_str().unwrap()], &ws).await;
+    assert!(
+        write.status.success() && ok.exists(),
+        "the scratch is writable: {}",
+        String::from_utf8_lossy(&write.stderr)
+    );
+
+    std::fs::remove_dir_all(ws).ok();
+    std::fs::remove_dir_all(outside).ok();
+}
+
+/// The home rule, measured apart from `(deny default)`: a file in the home
+/// reads unconfined and not under the profile, and the same file named in
+/// `readable` reads — the call's own paths come after the home's denial
+/// (review of #682: the sibling-of-scratch case alone passes without it).
+#[tokio::test]
+async fn the_home_is_denied_unless_the_call_names_a_path_in_it() {
+    let home = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+        .canonicalize()
+        .unwrap();
+    let file = home.join(format!(".mecha-sb-home-{}", std::process::id()));
+    std::fs::write(&file, "HOME-SECRET").unwrap();
+    let plain = std::process::Command::new("/bin/cat")
+        .arg(&file)
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&plain.stdout), "HOME-SECRET");
+
+    let ws = support::tmpdir("sb-home");
+    let denied = run(&seatbelt(false), "/bin/cat", &[file.to_str().unwrap()], &ws).await;
+    let named = Sandbox::new(SandboxConfig {
+        kind: Backend::Seatbelt,
+        readable: vec![file.clone()],
+        ..SandboxConfig::default()
+    });
+    let allowed = run(&named, "/bin/cat", &[file.to_str().unwrap()], &ws).await;
+    std::fs::remove_file(&file).ok();
+    std::fs::remove_dir_all(&ws).ok();
+    assert!(
+        !denied.status.success() && !String::from_utf8_lossy(&denied.stdout).contains("SECRET"),
+        "a file in the home was read under the profile"
+    );
+    assert!(
+        allowed.status.success(),
+        "a path the call names inside the home reads: {}",
+        String::from_utf8_lossy(&allowed.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&allowed.stdout), "HOME-SECRET");
+}
+
+/// The data volume is a second path to the home: the same file, spelled
+/// `/System/Volumes/Data/Users/…`, under a profile that allows `/System`.
+/// It reads unconfined and is refused under the profile (review of #682).
+#[tokio::test]
+async fn the_home_is_denied_through_the_data_volume_too() {
+    let home = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+        .canonicalize()
+        .unwrap();
+    let file = home.join(format!(".mecha-sb-data-{}", std::process::id()));
+    std::fs::write(&file, "DATA-SECRET").unwrap();
+    let via_data =
+        std::path::Path::new("/System/Volumes/Data").join(file.strip_prefix("/").unwrap());
+    let plain = std::process::Command::new("/bin/cat")
+        .arg(&via_data)
+        .output()
+        .unwrap();
+    let ws = support::tmpdir("sb-data");
+    let confined = run(
+        &seatbelt(false),
+        "/bin/cat",
+        &[via_data.to_str().unwrap()],
+        &ws,
+    )
+    .await;
+    std::fs::remove_file(&file).ok();
+    std::fs::remove_dir_all(&ws).ok();
+    assert_eq!(
+        String::from_utf8_lossy(&plain.stdout),
+        "DATA-SECRET",
+        "the negative below is not vacuous: the data volume does reach the home"
+    );
+    assert!(
+        !confined.status.success() && !String::from_utf8_lossy(&confined.stdout).contains("SECRET"),
+        "a home file was read through /System/Volumes/Data under the profile"
+    );
+}
+
+/// A path the call may only read cannot be written: the write denial is
+/// carved out only for the trees the call may write (review of #682).
+#[tokio::test]
+async fn a_path_the_call_may_read_is_not_writable() {
+    let home = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+        .canonicalize()
+        .unwrap();
+    let dir = home.join(format!(".mecha-sb-ro-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let target = dir.join("written");
+    let sb = Sandbox::new(SandboxConfig {
+        kind: Backend::Seatbelt,
+        readable: vec![dir.clone()],
+        ..SandboxConfig::default()
+    });
+    let ws = support::tmpdir("sb-ro");
+    let wrote = run(&sb, "/usr/bin/touch", &[target.to_str().unwrap()], &ws).await;
+    let exists = target.exists();
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::remove_dir_all(&ws).ok();
+    assert!(
+        !wrote.status.success() && !exists,
+        "a tree the call may only read was written under the profile"
+    );
+}
+
+/// No network unless asked: the same connection opens unconfined and with
+/// `network = true`, and fails under the default profile. An address, not a
+/// name, so the denial measured is the connection's, not the resolver's;
+/// and `nc`, a bare TCP connect that reads no configuration — `curl` loads
+/// `/etc/ssl/openssl.cnf`, which the profile denies, so its control failed
+/// on a file read and proved nothing about the network (first CI run).
+#[tokio::test]
+async fn the_network_is_closed_unless_the_call_opens_it() {
+    let args = ["-z", "-G", "5", "-w", "5", "1.1.1.1", "80"];
+    let plain = std::process::Command::new("/usr/bin/nc")
+        .args(args)
+        .output()
+        .unwrap();
+    if support::unavailable("network to 1.1.1.1:80", plain.status.success()) {
+        return;
+    }
+    let ws = support::tmpdir("sb-net");
+    let closed = run(&seatbelt(false), "/usr/bin/nc", &args, &ws).await;
+    assert!(
+        !closed.status.success(),
+        "a connection opened under the profile"
+    );
+    let open = run(&seatbelt(true), "/usr/bin/nc", &args, &ws).await;
+    assert!(
+        open.status.success(),
+        "with network = true the same connection opens, so the refusal above is the \
+         network rule: {}",
+        String::from_utf8_lossy(&open.stderr)
+    );
+    std::fs::remove_dir_all(ws).ok();
+}
+
+/// A program started through a link sees the link as the path it was
+/// started by, as under every other backend — the layout worker's venv
+/// `python` depends on it (review of #682): run by its target, CPython would
+/// not find the venv's packages.
+///
+/// The fixture is a program built here that prints the path the kernel
+/// started it by (`_NSGetExecutablePath`, what CPython reads for its venv):
+/// `/bin/sh` will not do, since on macOS it is a shim that execs `/bin/bash`,
+/// a second program the profile rightly refuses (first CI run of this test).
+#[tokio::test]
+async fn a_linked_program_runs_as_named() {
+    let cc = std::process::Command::new("cc")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if support::unavailable("a C compiler (cc)", cc) {
+        return;
+    }
+    let ws = support::tmpdir("sb-link");
+    std::fs::write(
+        ws.join("whoami.c"),
+        "#include <mach-o/dyld.h>\n#include <stdint.h>\n#include <stdio.h>\n\
+         int main(void) { char b[4096]; uint32_t n = sizeof b;\n\
+         if (_NSGetExecutablePath(b, &n) != 0) return 1; puts(b); return 0; }\n",
+    )
+    .unwrap();
+    let built = std::process::Command::new("cc")
+        .arg("-o")
+        .arg(ws.join("whoami"))
+        .arg(ws.join("whoami.c"))
+        .output()
+        .unwrap();
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let bin = ws.join("venv").join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let link = bin.join("python");
+    std::os::unix::fs::symlink(ws.join("whoami"), &link).unwrap();
+    let out = run(&seatbelt(false), link.to_str().unwrap(), &[], &ws).await;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        link.to_str().unwrap(),
+        "the program was started by its target, not its name"
+    );
+    std::fs::remove_dir_all(ws).ok();
+}
+
+/// A `[sandbox]` (shell) command is refused under Seatbelt, never run.
+#[tokio::test]
+async fn a_shell_command_is_refused_under_seatbelt() {
+    let ws = support::tmpdir("sb-shell");
+    let sb = seatbelt(false);
+    assert!(sb.command("echo hi", &ws, &ws).is_err());
+    assert!(sb.preflight(&ws).await.is_err());
+    std::fs::remove_dir_all(ws).ok();
+}
+
+fn poppler() -> bool {
+    mecha_core::sandbox::seatbelt::resolve_program("pdftoppm", std::env::var_os("PATH").as_deref())
+        .is_ok()
+}
+
+/// A PDF whose objects are given in order; the xref is computed.
+fn pdf(objects: &[Vec<u8>]) -> Vec<u8> {
+    let mut out = b"%PDF-1.4\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, body) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
+        out.extend_from_slice(body);
+        out.extend_from_slice(b"\nendobj\n");
+    }
+    let xref = out.len();
+    out.extend_from_slice(
+        format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
+    );
+    for o in offsets {
+        out.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            objects.len() + 1
+        )
+        .as_bytes(),
+    );
+    out
+}
+
+fn text_pdf() -> Vec<u8> {
+    let content = format!("BT /F1 24 Tf 60 700 Td ({LINE}) Tj ET");
+    let mut stream = format!("<< /Length {} >>\nstream\n", content.len()).into_bytes();
+    stream.extend_from_slice(content.as_bytes());
+    stream.extend_from_slice(b"\nendstream");
+    pdf(&[
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>".to_vec(),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec(),
+        stream,
+    ])
+}
+
+/// poppler under the profile: the renderer's own preflight passes, a page
+/// renders to a PNG in the scratch, and the text layer comes back exact
+/// through the `Extractor` a document takes — confined by Seatbelt, the
+/// default here.
+#[tokio::test]
+async fn poppler_renders_and_reads_a_page_under_seatbelt() {
+    if support::unavailable("poppler (`brew install poppler`)", poppler()) {
+        return;
+    }
+    let cfg = DocumentsConfig {
+        ocr: false,
+        cache: false,
+        layout: false,
+        ..DocumentsConfig::default()
+    };
+    assert_eq!(cfg.confine, Backend::Seatbelt, "the default on a Mac");
+    Renderer::new(&cfg)
+        .preflight()
+        .await
+        .expect("pdfinfo runs under the profile");
+
+    let ws = support::tmpdir("sb-pdf");
+    std::fs::write(ws.join("in.pdf"), text_pdf()).unwrap();
+    let out = run(
+        &seatbelt(false),
+        "pdftoppm",
+        &["-r", "50", "-png", "in.pdf", "page"],
+        &ws,
+    )
+    .await;
+    assert!(
+        out.status.success(),
+        "pdftoppm under the profile: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let pngs: Vec<_> = std::fs::read_dir(&ws)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".png"))
+        .collect();
+    assert_eq!(pngs.len(), 1, "one page, one PNG");
+
+    let ex = Extractor::new(cfg, None).unwrap();
+    let got = ex
+        .extract(&text_pdf(), "all", Mode::Text, true, None)
+        .await
+        .unwrap();
+    assert_eq!(got.confinement, "seatbelt");
+    let text = got.pages[0].text.as_deref().unwrap_or_default();
+    assert!(mecha_core::grounding::holds(text, LINE), "{text:?}");
+    std::fs::remove_dir_all(ws).ok();
+}
