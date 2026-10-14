@@ -578,23 +578,29 @@ pub const MAX_WRITE_BODY: usize =
 
 /// A portrait as the page sends it — base64 — decoded, capped, and staged in
 /// a private scratch directory for the child to read.
-async fn stage_portrait(b64: &str) -> Result<tempdir::Dir, Box<Response>> {
+async fn stage_portrait(b64: &str, what: &str) -> Result<tempdir::Dir, Box<Response>> {
     use base64::Engine;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(b64.trim())
         .map_err(|_| {
-            Box::new((StatusCode::BAD_REQUEST, "the portrait is not base64\n").into_response())
+            Box::new(
+                (
+                    StatusCode::BAD_REQUEST,
+                    format!("the {what} is not base64\n"),
+                )
+                    .into_response(),
+            )
         })?;
     if bytes.is_empty() {
         return Err(Box::new(
-            (StatusCode::BAD_REQUEST, "the portrait is empty\n").into_response(),
+            (StatusCode::BAD_REQUEST, format!("the {what} is empty\n")).into_response(),
         ));
     }
     if bytes.len() as u64 > imagelib::MAX_PORTRAIT_BYTES {
         return Err(Box::new(
             (
                 StatusCode::PAYLOAD_TOO_LARGE,
-                "the picture is over the portrait cap\n",
+                format!("the {what} is over the picture cap\n"),
             )
                 .into_response(),
         ));
@@ -650,7 +656,7 @@ pub async fn add(State(state): St, Json(body): Json<AddBody>) -> Response {
         _ => format!("--text={}", body.text),
     };
     let staged = match (kind, body.portrait.as_deref()) {
-        ("character", Some(b64)) => match stage_portrait(b64).await {
+        ("character", Some(b64)) => match stage_portrait(b64, "portrait").await {
             Ok(dir) => Some(dir),
             Err(refusal) => return *refusal,
         },
@@ -724,7 +730,7 @@ pub async fn edit(State(state): St, Json(body): Json<EditBody>) -> Response {
             .into_response();
     }
     let staged = match body.portrait.as_deref() {
-        Some(b64) => match stage_portrait(b64).await {
+        Some(b64) => match stage_portrait(b64, "portrait").await {
             Ok(dir) => Some(dir),
             Err(refusal) => return *refusal,
         },
@@ -825,7 +831,7 @@ pub async fn add_reference(State(state): St, Json(body): Json<ReferenceBody>) ->
     let Some(b64) = body.picture.as_deref() else {
         return (StatusCode::BAD_REQUEST, "a reference needs its picture\n").into_response();
     };
-    let staged = match stage_portrait(b64).await {
+    let staged = match stage_portrait(b64, "picture").await {
         Ok(dir) => dir,
         Err(refusal) => return *refusal,
     };
@@ -2042,12 +2048,6 @@ mod route_tests {
                 serde_json::json!({"name": "nobody", "as": "face", "picture": b64}),
                 StatusCode::NOT_FOUND,
             ),
-            // A candidate takes none (imagelib refuses it too).
-            (
-                add,
-                serde_json::json!({"name": "sam", "as": "face", "picture": b64}),
-                StatusCode::CONFLICT,
-            ),
             (
                 remove,
                 serde_json::json!({"name": "theo", "as": "face"}),
@@ -2061,8 +2061,42 @@ mod route_tests {
         ] {
             assert_eq!(status(uri, body.clone()).await, want, "{uri} {body}");
         }
+        // A candidate takes none, in the handler's own words: a failed child
+        // answers 409 too, so the status alone would pass without the guard
+        // (review of #688).
+        let r = f
+            .app
+            .clone()
+            .oneshot(post(
+                add,
+                serde_json::json!({"name": "sam", "as": "face", "picture": b64}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::CONFLICT);
+        let text =
+            String::from_utf8(to_bytes(r.into_body(), 10_000).await.unwrap().to_vec()).unwrap();
+        assert!(text.contains("waiting for a decision"), "{text}");
         let lib = Library::load(&f.dir).0;
         assert!(lib.all().iter().all(|e| e.references.is_empty()));
+    }
+
+    /// The page's copies of the store's reference rules match the store:
+    /// a drifted limit would hide an add the store allows, or offer one it
+    /// refuses (review of #688).
+    #[test]
+    fn the_pages_reference_limits_are_the_stores() {
+        use imagelib::RefKind;
+        let js = include_str!("../../../../web/src/lib/library.js");
+        let limits = format!(
+            "export const REF_LIMIT = {{ face: {}, full_body: {}, detail: {} }};",
+            RefKind::Face.limit(),
+            RefKind::FullBody.limit(),
+            RefKind::Detail.limit()
+        );
+        assert!(js.contains(&limits), "library.js lacks `{limits}`");
+        let label = format!("export const LABEL_MAX = {};", imagelib::MAX_LABEL);
+        assert!(js.contains(&label), "library.js lacks `{label}`");
     }
 
     /// A portrait at the store's cap fits the body limit; axum's 2 MB default

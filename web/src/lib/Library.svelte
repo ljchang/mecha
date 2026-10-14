@@ -45,7 +45,7 @@
   let error = $state(null);
   let token = $state(null);
   let open = $state(null); // the entry in the detail view
-  let sheet = $state(null); // 'unlock' | 'remove' | 'reject' | null
+  let sheet = $state(null); // 'unlock' | 'remove' | 'reject' | 'remref' | null
   let password = $state('');
   let busy = $state(false);
   let toast = $state(null);
@@ -496,7 +496,12 @@
                   <span class="refkind">
                     {(REF_TITLE[r.kind] ?? r.kind) + (r.label ? ` · ${r.label}` : '')}{#if !r.sendable}<span class="lockmark">{' · not sent'}</span>{/if}
                   </span>
-                  <button class="refx" disabled={busy} onclick={() => { refPending = r; sheet = 'remref'; }}>Remove</button>
+                  <!-- Only the kinds the page can name: a kind a later build
+                       wrote is shown and kept, never offered a remove that
+                       would be refused. -->
+                  {#if REF_KINDS.includes(r.kind)}
+                    <button class="refx" disabled={busy} onclick={() => { refPending = r; sheet = 'remref'; }}>Remove</button>
+                  {/if}
                 </div>
               {/each}
             </div>
