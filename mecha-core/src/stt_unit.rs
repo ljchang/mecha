@@ -18,7 +18,8 @@
 //! socket trio: the model loads in seconds and holds about 700 MB of RAM,
 //! and a dictation must not wait on a cold start. The unit's name and port
 //! are parameters, so a test installs one beside the live server and removes
-//! it. Linux only, as the other units are (§10.5).
+//! it. A systemd user unit on Linux, a launchd agent on a Mac read from the
+//! same unit (`user_service`, FEATURES-DESIGN §12.2).
 
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
@@ -106,16 +107,14 @@ pub fn download_bytes() -> Option<u64> {
 }
 
 pub async fn install(m: &Machinery, naming: &Naming, say: Say<'_>) -> Result<()> {
-    if !cfg!(target_os = "linux") {
+    if !crate::router_unit::installs_here() {
         bail!(
-            "the speech-to-text server is a systemd user unit, which this system does not have — \
-             on macOS start it by hand until launchd is designed (FEATURES-DESIGN §10.5)"
+            "the speech-to-text server installs as a systemd user unit or a launchd agent, and \
+             this system has neither — start it by hand"
         );
     }
     let home = &m.mecha_home;
     let dir = dir(home);
-    let units = crate::engine_gate::unit_dir(m)?.to_path_buf();
-    let unit = units.join(format!("{}.service", naming.unit));
     // A server on the port whose unit mecha did not write is someone's — a
     // Parakeet started from a terminal, or under another unit name. Nothing
     // is installed beside it: it would answer the check below while mecha's
@@ -131,6 +130,8 @@ pub async fn install(m: &Machinery, naming: &Naming, say: Say<'_>) -> Result<()>
             naming.port
         );
     }
+    // Before anything is fetched or recorded (review of #679).
+    crate::user_service::preflight(m)?;
     Manifest::begin(home, ID)?;
     Manifest::record(home, ID, &dir)?;
     std::fs::create_dir_all(&dir)?;
@@ -202,19 +203,38 @@ pub async fn install(m: &Machinery, naming: &Naming, say: Say<'_>) -> Result<()>
 
     // --- the server and its unit
     write_owned(home, ID, &dir.join("parakeet_server.py"), SERVER, 0o644)?;
-    write_owned(home, ID, &unit, &render(&dir, naming), 0o644)?;
-    crate::engine_gate::systemctl("daemon-reload", &[])?;
-    let service = format!("{}.service", naming.unit);
-    crate::engine_gate::systemctl("enable", &[&service])?;
+    crate::user_service::write(m, ID, &naming.unit, &render(&dir, naming))?;
     // A restart, not `enable --now`: a reinstall over a running server must
     // reach it with the new script and model, or `check` passes against the
     // old process (`router_unit`'s reason; review of #638).
-    crate::engine_gate::systemctl("restart", &[&service])?;
-    say(&format!(
-        "starting it on :{} and transcribing a second of silence",
-        naming.port
-    ));
-    check(naming.port).await?;
+    // A failed start or check stops the server before the install says so,
+    // as the worker's and the speech server's do (#639's pattern): on a Mac,
+    // `bootstrap` succeeds for a program that cannot start, and the agent
+    // would otherwise relaunch forever after an install that failed (review
+    // of #679).
+    let checked = match crate::user_service::restart(m, &[&naming.unit], &mut *say) {
+        Ok(()) => {
+            say(&format!(
+                "starting it on :{} and transcribing a second of silence",
+                naming.port
+            ));
+            check(naming.port).await
+        }
+        Err(e) => Err(e),
+    };
+    if let Err(e) = checked {
+        let service = naming.unit.as_str();
+        let stopped = match crate::user_service::stop(&[service]) {
+            Ok(()) => format!("{service} was stopped and disabled"),
+            Err(stop) => format!(
+                "{service} could NOT be stopped ({stop:#}) — it may still be listening on :{}; \
+                 run `{}`",
+                naming.port,
+                crate::user_service::stop_by_hand(&[service])
+            ),
+        };
+        return Err(e.context(stopped));
+    }
     Manifest::finish(home, ID)
 }
 
@@ -230,7 +250,7 @@ async fn ready(r: reqwest::Response) -> bool {
 /// install would be refused, so it is never offered: it is used as it is.
 /// One loopback connect; nothing is sent.
 pub fn someone_elses(m: &Machinery, naming: &Naming) -> Result<bool> {
-    let unit = crate::engine_gate::unit_dir(m)?.join(format!("{}.service", naming.unit));
+    let unit = crate::user_service::file(m, &naming.unit)?;
     Ok(!wrote_unit(&m.mecha_home, &unit)? && crate::router_unit::port_answers(naming.port))
 }
 
@@ -276,7 +296,8 @@ async fn check(port: u16) -> Result<()> {
                 return Err(e).with_context(|| {
                     format!(
                         "the speech-to-text server on :{port} did not answer within two minutes \
-                         — `journalctl --user -u <its unit>` says why"
+                         — {}",
+                        crate::user_service::logs_anywhere()
                     )
                 })
             }
@@ -336,16 +357,15 @@ fn silent_wav(rate: u32) -> Vec<u8> {
 /// stand on it.
 pub fn remove(m: &Machinery, naming: &Naming) -> Result<()> {
     let home = &m.mecha_home;
-    let unit = format!("{}.service", naming.unit);
-    let _ = crate::engine_gate::systemctl("disable", &["--now", &unit]);
-    let path = crate::engine_gate::unit_dir(m)?.join(&unit);
+    let _ = crate::user_service::stop(&[&naming.unit]);
+    let path = crate::user_service::file(m, &naming.unit)?;
     match std::fs::remove_file(&path) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e).with_context(|| format!("removing {}", path.display())),
     }
     Manifest::unrecord(home, ID, &path)?;
-    crate::engine_gate::systemctl("daemon-reload", &[])?;
+    crate::user_service::after_remove()?;
     let dir = dir(home);
     // A record is forgotten only after its file is gone, so a removal that
     // fails keeps it, and the next install does not refuse mecha's own file.
@@ -494,7 +514,9 @@ mod tests {
         Manifest::record(
             &m.mecha_home,
             ID,
-            &root.join("units/mecha-test-stt-whose.service"),
+            // The service's own file on this system: a `.service` unit, or a
+            // launchd plist on a Mac (macOS CI on #679).
+            &crate::user_service::file(&m, &naming.unit).unwrap(),
         )
         .unwrap();
         let ours = someone_elses(&m, &naming).unwrap();
