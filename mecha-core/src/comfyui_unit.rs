@@ -22,25 +22,39 @@
 //! ~19 GiB of a unified pool the chat model shares, and the check must not
 //! be the thing that starves it.
 //!
-//! **CUDA 13 only, for now.** The locks are torch's cu130 builds, which need
-//! a 580 driver (`engine::CUDA13_DRIVER`'s reason); any other machine is
-//! told so before anything is fetched. ComfyUI-GGUF is not installed: since
-//! #560 the default model is int8 safetensors through the core loader, and
-//! the GGUF node is needed only for an owner's own `.gguf`.
+//! **CUDA 13 on Linux, MPS on Apple silicon.** The Linux locks are torch's
+//! cu130 builds, which need a 580 driver (`engine::CUDA13_DRIVER`'s reason);
+//! the Mac's (`locks/comfyui-macos-arm64.txt`) is stock PyPI torch, which
+//! carries MPS. Any other machine is told so before anything is fetched.
+//! ComfyUI-GGUF is not installed: since #560 the default model is int8
+//! safetensors through the core loader, and the GGUF node is needed only for
+//! an owner's own `.gguf`.
 //!
-//! **Idle memory goes back the way the hand install's does.** A loaded
-//! server holds ~13.6 GB until something unloads it, so the install also
-//! writes `scripts/comfyui/comfyui-idle-reset` — byte for byte, a test holds
+//! **A Mac draws with bf16 files** (the owner, 2026-10-13; FEATURES-DESIGN
+//! §12.3): MPS has no int8 kernels, and the emulated int8 picture took ~128 s
+//! against ~79 s for bf16. The image slot's Mac row
+//! (`recommend::Slot::mac_rows`) and [`turbo_file`] name them, and
+//! `[image]`'s defaults follow (`sampling::standard_model`). The text encoder
+//! stays on the CPU there: its float8 scales have no MPS type, so the unit
+//! never passes `--gpu-only`.
+//!
+//! **Idle memory goes back the way the hand install's does — on Linux.** A
+//! loaded server holds ~13.6 GB until something unloads it, so the install
+//! also writes `scripts/comfyui/comfyui-idle-reset` — byte for byte, a test holds
 //! the copies equal — and a one-minute timer that runs it against this unit
 //! and port (`docs/ARCHITECTURE.md` §Image generation). The timer starts
 //! before the server, so a failure stops the install before anything runs;
 //! a failed check stops both. It is named `<unit>-idle` so a
-//! hand install's `mecha-comfyui-idle-reset` can sit beside it.
+//! hand install's `mecha-comfyui-idle-reset` can sit beside it. Not on a Mac:
+//! the script reads `/proc` and restarts through `systemctl`, and
+//! `comfy-aimdo`, what releases memory after a restart there, does not run
+//! on Darwin. mecha's own `[image] unload_after_secs` (`/free`) still runs.
 //!
 //! The commit is one constant, [`COMMIT`], so a bump is that line and the
 //! locks regenerated against it (their header says how).
-//! Linux only, rendered like `stt_unit`'s, so a test installs one beside the
-//! live server on a free port and removes it.
+//! Rendered like `stt_unit`'s, through `user_service` (a launchd agent read
+//! from the same unit on a Mac), so a test installs one beside the live
+//! server on a free port and removes it.
 
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
@@ -64,6 +78,27 @@ pub const TURBO_FILE: crate::recommend::HubFile = crate::recommend::HubFile {
     sha256: "8144a0182964aa8403ad6dbc011db837304167d235161b9aabaa8532e967314c",
     bytes: 7_256_787_829,
 };
+/// The turbo model on a Mac: bf16, at the same revision (the owner,
+/// 2026-10-13). ~16 s a picture warm on an M5 Max against the int8's ~24 s.
+pub const TURBO_FILE_MAC: crate::recommend::HubFile = crate::recommend::HubFile {
+    path: "diffusion_models/qwen_image_2.1_turbo_bf16.safetensors",
+    sha256: "8b74237a7f505773e2c66726fa696444b4c704585c93a347cff9044937f7914a",
+    bytes: 14_230_280_616,
+};
+
+/// The turbo file this system fetches on demand.
+pub fn turbo_file() -> &'static crate::recommend::HubFile {
+    turbo_file_on(std::env::consts::OS)
+}
+
+/// [`turbo_file`] on `os`.
+pub fn turbo_file_on(os: &str) -> &'static crate::recommend::HubFile {
+    if os == "macos" {
+        &TURBO_FILE_MAC
+    } else {
+        &TURBO_FILE
+    }
+}
 /// ComfyUI's commit: v0.37.0-31, what the hand-built server ran on
 /// 2026-10-10 (`TextEncodeQwenImage21` is in it).
 pub const COMMIT: &str = "88ab4a06566454ad89db8f0bedb970d6c08cd1b7";
@@ -75,6 +110,7 @@ const IDLE_SERVICE: &str = include_str!("../units/mecha-comfyui-idle.service");
 const IDLE_TIMER: &str = include_str!("../units/mecha-comfyui-idle.timer");
 const LOCK_AARCH64: &str = include_str!("../locks/comfyui-cu130-aarch64.txt");
 const LOCK_X86_64: &str = include_str!("../locks/comfyui-cu130-x86_64.txt");
+const LOCK_MACOS_ARM64: &str = include_str!("../locks/comfyui-macos-arm64.txt");
 /// The Python the locks were compiled for.
 const PYTHON: &str = "3.12";
 /// Written into the source tree once it is checked: the commit it is.
@@ -132,22 +168,27 @@ pub fn server_temp_dir(mecha_home: &Path) -> PathBuf {
     dir(mecha_home).join("tmp").join("temp")
 }
 
-/// The lock for an architecture, or `None` where none is pinned.
-fn lock_for(arch: &str) -> Option<&'static str> {
-    match arch {
-        "aarch64" => Some(LOCK_AARCH64),
-        "x86_64" => Some(LOCK_X86_64),
+/// The lock for a system and architecture, or `None` where none is pinned.
+fn lock_for(os: &str, arch: &str) -> Option<&'static str> {
+    match (os, arch) {
+        ("macos", "aarch64") => Some(LOCK_MACOS_ARM64),
+        ("macos", _) => None,
+        (_, "aarch64") => Some(LOCK_AARCH64),
+        (_, "x86_64") => Some(LOCK_X86_64),
         _ => None,
     }
 }
 
-/// What the environment downloads on an architecture, in bytes: the lock's
-/// files as PyPI and download.pytorch.org size them, summed 2026-10-11.
-/// It lands as ~6.3 GiB in `venv/` (measured on the GB10 the same day).
-pub fn env_bytes(arch: &str) -> Option<u64> {
-    match arch {
-        "aarch64" => Some(3_848_000_000),
-        "x86_64" => Some(3_724_000_000),
+/// What the environment downloads on a system and architecture, in bytes:
+/// the lock's files as PyPI and download.pytorch.org size them, summed
+/// 2026-10-11 (the Mac's 2026-10-13: no CUDA libraries, a fifth of Linux's).
+/// Linux's lands as ~6.3 GiB in `venv/` (measured on the GB10).
+pub fn env_bytes(os: &str, arch: &str) -> Option<u64> {
+    match (os, arch) {
+        ("macos", "aarch64") => Some(762_000_000),
+        ("macos", _) => None,
+        (_, "aarch64") => Some(3_848_000_000),
+        (_, "x86_64") => Some(3_724_000_000),
         _ => None,
     }
 }
@@ -159,15 +200,76 @@ pub fn fits(
     arch: &str,
     nvidia: crate::engine::Nvidia,
 ) -> std::result::Result<(), String> {
+    // The macOS version, read only on a Mac: off one there is nothing to ask.
+    let macos = if os == "macos" && cfg!(target_os = "macos") {
+        macos_major()
+    } else {
+        None
+    };
+    fits_with(os, arch, nvidia, macos)
+}
+
+/// The oldest macOS the Mac lock's torch runs on: its wheels are tagged
+/// `macosx_14_0_arm64`, and on an older system `uv` finds no wheel and fails
+/// mid-install with its own words (review of #681).
+pub const MACOS_FLOOR: u32 = 14;
+
+/// The running macOS's major version, from `sw_vers -productVersion`.
+fn macos_major() -> Option<u32> {
+    let out = std::process::Command::new("sw_vers")
+        .arg("-productVersion")
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .split('.')
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// [`fits`] over what was read, so every row is a test. `macos` is the
+/// running macOS's major version, `None` where it was not read — refused on
+/// a Mac, since unknown is never new enough.
+fn fits_with(
+    os: &str,
+    arch: &str,
+    nvidia: crate::engine::Nvidia,
+    macos: Option<u32>,
+) -> std::result::Result<(), String> {
     use crate::engine::Nvidia;
-    if os != "linux" {
-        return Err(
-            "the image server is a systemd user unit, which this system does not have — start \
-             ComfyUI by hand until launchd is designed (FEATURES-DESIGN §10.5)"
-                .into(),
-        );
+    match os {
+        "linux" => {}
+        // MPS, from PyPI's torch: no driver to ask (§12.3), but a floor.
+        "macos" if arch == "aarch64" => {
+            return match macos {
+                Some(v) if v >= MACOS_FLOOR => Ok(()),
+                Some(v) => Err(format!(
+                    "this Mac runs macOS {v}; the pinned torch needs macOS {MACOS_FLOOR} or \
+                     newer — update macOS to install image generation"
+                )),
+                None => Err(format!(
+                    "this Mac's macOS version could not be read (`sw_vers -productVersion`), and \
+                     the pinned torch needs macOS {MACOS_FLOOR} or newer"
+                )),
+            }
+        }
+        "macos" => {
+            return Err(
+                "image generation on a Mac needs Apple silicon: the pinned torch draws on MPS, \
+                 and an Intel Mac's GPU has none"
+                    .into(),
+            )
+        }
+        _ => {
+            return Err(
+                "the image server installs as a systemd user unit or a launchd agent, and this \
+                 system has neither — start ComfyUI by hand"
+                    .into(),
+            )
+        }
     }
-    if lock_for(arch).is_none() {
+    if lock_for(os, arch).is_none() {
         return Err(format!(
             "mecha pins ComfyUI's environment for aarch64 and x86_64, not {arch}"
         ));
@@ -202,6 +304,32 @@ fn render(dir: &Path, naming: &Naming) -> String {
         .replace("@PORT@", &naming.port.to_string())
 }
 
+/// The unit as a Mac's agent reads it: its `PATH` is the system's own (the
+/// Linux line names `/usr/local/cuda/bin` for Triton's compiler, which a Mac
+/// has neither of — review of #681), and the two lines an agent has no
+/// counterpart for are dropped: `ExecStartPre`'s temp directory, which the
+/// install makes on both systems, and `TimeoutStartSec`, whose job the
+/// install's own check does. `launchd::agent_from_unit` refuses any line it
+/// cannot carry, so these are taken out here, by name, rather than ignored
+/// there (#679).
+fn for_mac(unit: &str) -> String {
+    unit.lines()
+        .filter(|l| {
+            let l = l.trim_start();
+            !l.starts_with("ExecStartPre=") && !l.starts_with("TimeoutStartSec=")
+        })
+        .map(|l| {
+            if l.trim_start().starts_with("Environment=PATH=") {
+                format!("Environment=PATH={}", crate::launchd::SYSTEM_PATH)
+            } else {
+                l.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
+}
+
 /// The idle reset's script under the install's tree.
 fn idle_reset_path(dir: &Path) -> PathBuf {
     dir.join("idle-reset")
@@ -233,7 +361,7 @@ pub fn turbo_here(mecha_home: &Path) -> TurboHere {
     match dir(mecha_home)
         .join("ComfyUI")
         .join("models")
-        .join(TURBO_FILE.path)
+        .join(turbo_file().path)
         .symlink_metadata()
     {
         Err(_) => TurboHere::Absent,
@@ -261,7 +389,7 @@ pub fn turbo_wanted(mecha_home: &Path, asked: bool, configured: Option<&str>) ->
     if turbo_linked(mecha_home) {
         return Some("this install linked it before".into());
     }
-    if configured.is_some_and(|c| c != crate::sampling::TURBO_MODEL) {
+    if configured.is_some_and(|c| c != crate::sampling::turbo_model()) {
         return None;
     }
     // The chat's settings are every persona's that leaves the model unset.
@@ -337,7 +465,7 @@ fn models(
     Ok(out)
 }
 
-/// `turbo` also fetches and links [`TURBO_FILE`], and checks ComfyUI
+/// `turbo` also fetches and links [`turbo_file`], and checks ComfyUI
 /// lists it.
 pub async fn install(
     m: &Machinery,
@@ -347,13 +475,13 @@ pub async fn install(
     turbo: bool,
     say: Say<'_>,
 ) -> Result<()> {
-    let arch = std::env::consts::ARCH;
-    fits(std::env::consts::OS, arch, crate::engine::read_nvidia()).map_err(anyhow::Error::msg)?;
-    let lock = lock_for(arch).context("no lock for this architecture")?;
+    let (os, arch) = (std::env::consts::OS, std::env::consts::ARCH);
+    fits(os, arch, crate::engine::read_nvidia()).map_err(anyhow::Error::msg)?;
+    let lock = lock_for(os, arch).context("no lock for this architecture")?;
+    let macos = os == "macos";
     let home = &m.mecha_home;
     let dir = dir(home);
     let units = crate::engine_gate::unit_dir(m)?.to_path_buf();
-    let unit = units.join(format!("{}.service", naming.unit));
     // A server on the port whose unit mecha did not write is someone's — a
     // ComfyUI started from a terminal or under another unit name. Nothing is
     // installed beside it (`stt_unit`'s refusal, #638).
@@ -367,8 +495,11 @@ pub async fn install(
     }
     let mut models = models(machine)?;
     if turbo {
-        models.push((TURBO_REPO, TURBO_REVISION, &TURBO_FILE));
+        models.push((TURBO_REPO, TURBO_REVISION, turbo_file()));
     }
+    // Before anything is fetched — the source, the environment and ~21 GB of
+    // models — as the voice installs ask it (review of #681).
+    crate::user_service::preflight(m)?;
     Manifest::begin(home, ID)?;
     Manifest::record(home, ID, &dir)?;
     std::fs::create_dir_all(&dir)?;
@@ -394,11 +525,18 @@ pub async fn install(
         &dir,
         PYTHON,
         lock,
-        &format!(
-            "torch for CUDA 13 and ComfyUI's requirements (about {:.1} GiB to fetch, about 6.3 \
-             GiB on disk)",
-            env_bytes(arch).unwrap_or(0) as f64 / (1u64 << 30) as f64
-        ),
+        &if macos {
+            format!(
+                "torch for MPS and ComfyUI's requirements (about {:.1} GiB to fetch)",
+                env_bytes(os, arch).unwrap_or(0) as f64 / (1u64 << 30) as f64
+            )
+        } else {
+            format!(
+                "torch for CUDA 13 and ComfyUI's requirements (about {:.1} GiB to fetch, about \
+                 6.3 GiB on disk)",
+                env_bytes(os, arch).unwrap_or(0) as f64 / (1u64 << 30) as f64
+            )
+        },
         say,
     )
     .await?;
@@ -428,8 +566,51 @@ pub async fn install(
             .with_context(|| format!("linking {}", link.display()))?;
     }
 
-    // --- the unit, and the idle reset beside it
-    write_owned(home, ID, &unit, &render(&dir, naming), 0o644)?;
+    // --- the unit, and (on Linux) the idle reset beside it
+    // The unit's `ExecStartPre` makes the temp directory on every start; a
+    // launchd agent has no such step, so the install makes it on both.
+    std::fs::create_dir_all(dir.join("tmp"))?;
+    let unit = render(&dir, naming);
+    let unit = if macos { for_mac(&unit) } else { unit };
+    crate::user_service::write(m, ID, &naming.unit, &unit)?;
+    let names: Vec<&str> = models
+        .iter()
+        .filter_map(|(_, _, f)| f.path.rsplit('/').next())
+        .collect();
+    if macos {
+        // No idle reset on a Mac (module doc): the agent alone, loaded —
+        // which starts it — and checked, and stopped if the check fails.
+        let service = naming.unit.as_str();
+        let checked = match crate::user_service::restart(m, &[service], &mut *say) {
+            Ok(()) => {
+                say(&format!(
+                    "starting it on :{} and asking it for every node and model mecha's pictures \
+                     use",
+                    naming.port
+                ));
+                check(naming.port, &names).await
+            }
+            Err(e) => Err(e),
+        };
+        if let Err(e) = checked {
+            let stopped = match crate::user_service::stop(&[service]) {
+                Ok(()) => format!("{service} was stopped"),
+                Err(stop) => format!(
+                    "{service} could NOT be stopped ({stop:#}) — it may still be listening on \
+                     :{}; run `{}`",
+                    naming.port,
+                    crate::user_service::stop_by_hand(&[service])
+                ),
+            };
+            return Err(e.context(stopped));
+        }
+        say(&format!(
+            "a loaded model stays in memory between pictures (~14 GB) until `[image] \
+             unload_after_secs` ({} s by default) unloads it — a Mac has no idle reset",
+            crate::imagegen::ImageConfig::default().unload_after_secs
+        ));
+        return Manifest::finish(home, ID);
+    }
     let (idle_service, idle_timer) = render_idle(&dir, naming);
     write_owned(home, ID, &idle_reset_path(&dir), IDLE_RESET, 0o755)?;
     let idle = naming.idle();
@@ -486,10 +667,6 @@ pub async fn install(
                 "starting it on :{} and asking it for every node and model mecha's pictures use",
                 naming.port
             ));
-            let names: Vec<&str> = models
-                .iter()
-                .filter_map(|(_, _, f)| f.path.rsplit('/').next())
-                .collect();
             check(naming.port, &names).await
         }
         Err(e) => Err(e),
@@ -588,8 +765,8 @@ async fn check(port: u16, model_files: &[&str]) -> Result<()> {
             Err(e) if std::time::Instant::now() > deadline => {
                 return Err(e).with_context(|| {
                     format!(
-                        "ComfyUI on :{port} did not answer within five minutes — \
-                         `journalctl --user -u <its unit>` says why"
+                        "ComfyUI on :{port} did not answer within five minutes — {}",
+                        crate::user_service::logs_anywhere()
                     )
                 })
             }
@@ -678,7 +855,7 @@ pub fn write_image_table(path: &Path, temp: Option<&Path>) -> Result<bool> {
             toml_edit::value(temp.display().to_string()),
         );
     }
-    doc.insert("image", toml_edit::Item::Table(table));
+    crate::config::append_table(&mut doc, "image", table);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
@@ -694,7 +871,7 @@ pub fn write_image_table(path: &Path, temp: Option<&Path>) -> Result<bool> {
 /// Whether a server answers on the port whose unit mecha did not write —
 /// someone's own ComfyUI, used as it is (`stt_unit::someone_elses`'s twin).
 pub fn someone_elses(m: &Machinery, naming: &Naming) -> Result<bool> {
-    let unit = crate::engine_gate::unit_dir(m)?.join(format!("{}.service", naming.unit));
+    let unit = crate::user_service::file(m, &naming.unit)?;
     let wrote = Manifest::read(&m.mecha_home)?
         .entries
         .iter()
@@ -707,14 +884,18 @@ pub fn someone_elses(m: &Machinery, naming: &Naming) -> Result<bool> {
 /// every other reader of them finds them.
 pub fn remove(m: &Machinery, naming: &Naming) -> Result<()> {
     let home = &m.mecha_home;
-    let unit = format!("{}.service", naming.unit);
     // The timer first, so no reset restarts the server being removed.
     let timer = format!("{}.timer", naming.idle());
-    let _ = crate::engine_gate::systemctl("disable", &["--now", &timer]);
-    let _ = crate::engine_gate::systemctl("disable", &["--now", &unit]);
+    if !cfg!(target_os = "macos") {
+        let _ = crate::engine_gate::systemctl("disable", &["--now", &timer]);
+    }
+    let _ = crate::user_service::stop(&[&naming.unit]);
     let units = crate::engine_gate::unit_dir(m)?.to_path_buf();
-    for name in [timer, format!("{}.service", naming.idle()), unit] {
-        let path = units.join(name);
+    for path in [
+        units.join(timer),
+        units.join(format!("{}.service", naming.idle())),
+        crate::user_service::file(m, &naming.unit)?,
+    ] {
         match std::fs::remove_file(&path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -722,7 +903,7 @@ pub fn remove(m: &Machinery, naming: &Naming) -> Result<()> {
         }
         Manifest::unrecord(home, ID, &path)?;
     }
-    crate::engine_gate::systemctl("daemon-reload", &[])?;
+    crate::user_service::after_remove()?;
     let dir = dir(home);
     // Recorded paths first, deepest first, then the tree: a record is
     // forgotten only after its file is gone.
@@ -758,14 +939,52 @@ mod tests {
     /// name, and lands in the directory the unet loader reads.
     #[test]
     fn the_turbo_pin_is_the_file_a_turbo_picture_loads() {
-        assert_eq!(
-            TURBO_FILE.path,
-            format!("diffusion_models/{}", crate::sampling::TURBO_MODEL)
-        );
+        // On either system: the int8 file on Linux, the bf16 on a Mac.
+        for os in ["linux", "macos"] {
+            assert_eq!(
+                turbo_file_on(os).path,
+                format!("diffusion_models/{}", crate::sampling::turbo_model_on(os)),
+                "{os}"
+            );
+        }
+        assert_eq!(TURBO_FILE.path, turbo_file_on("linux").path);
         assert_eq!(
             crate::imagegen::ImageConfig::default().turbo_model,
-            crate::sampling::TURBO_MODEL
+            crate::sampling::turbo_model()
         );
+    }
+
+    /// The standard model the image slot fetches is the one `[image]`'s
+    /// default loads, on either system — the slot's Mac row names the bf16
+    /// file `sampling::standard_model_on("macos")` does (§12.3).
+    #[test]
+    fn each_system_fetches_the_standard_model_it_loads() {
+        let slot = crate::recommend::SLOTS
+            .iter()
+            .find(|s| s.id == "image")
+            .unwrap();
+        let machine = crate::recommend::Machine::Unified {
+            total_mb: 131_072,
+            gpu_unread: false,
+        };
+        for os in ["linux", "macos"] {
+            let (row, _) = crate::recommend::row_for_os(slot, &machine, os).unwrap();
+            let paths: Vec<&str> = row
+                .sources
+                .iter()
+                .flat_map(|s| match s {
+                    crate::recommend::Source::HuggingFace { files, .. } => {
+                        files.iter().map(|f| f.path).collect()
+                    }
+                    _ => Vec::new(),
+                })
+                .collect();
+            let want = format!(
+                "diffusion_models/{}",
+                crate::sampling::standard_model_on(os)
+            );
+            assert!(paths.contains(&want.as_str()), "{os}: {paths:?}");
+        }
     }
 
     /// Turbo is fetched when asked for, when already linked, or when a
@@ -779,7 +998,7 @@ mod tests {
             std::fs::create_dir_all(&d).unwrap();
             std::fs::write(d.join("state.toml"), format!("[image]\n{image}\n")).unwrap();
         };
-        let pinned = Some(crate::sampling::TURBO_MODEL);
+        let pinned = Some(crate::sampling::turbo_model());
         let none = turbo_wanted(&home, false, pinned);
         let asked = turbo_wanted(&home, true, pinned);
         persona("ada", "cfg = 3.0");
@@ -806,7 +1025,7 @@ mod tests {
         let link = dir(&home)
             .join("ComfyUI")
             .join("models")
-            .join(TURBO_FILE.path);
+            .join(turbo_file().path);
         std::fs::create_dir_all(link.parent().unwrap()).unwrap();
         std::os::unix::fs::symlink("/nonexistent/blob", &link).unwrap();
         let linked = turbo_wanted(&home, false, pinned);
@@ -908,7 +1127,7 @@ mod tests {
     }
 
     #[test]
-    fn only_a_cuda_13_linux_machine_fits() {
+    fn a_cuda_13_linux_machine_or_apple_silicon_fits() {
         use crate::engine::Nvidia::*;
         assert!(fits("linux", "aarch64", Driver(580, 95)).is_ok());
         assert!(fits("linux", "x86_64", Driver(590, 0)).is_ok());
@@ -922,9 +1141,22 @@ mod tests {
             .unwrap_err()
             .contains("nvidia-smi"));
         assert!(fits("linux", "riscv64", Driver(580, 0)).is_err());
-        assert!(fits("macos", "aarch64", None)
+        // MPS: no driver asked (§12.3), a macOS floor instead; an Intel
+        // Mac has no MPS.
+        assert!(fits_with("macos", "aarch64", None, Some(MACOS_FLOOR)).is_ok());
+        assert!(fits_with("macos", "aarch64", None, Some(27)).is_ok());
+        assert!(fits_with("macos", "aarch64", None, Some(13))
             .unwrap_err()
-            .contains("launchd"));
+            .contains("macOS 13"));
+        assert!(fits_with("macos", "aarch64", None, Option::None)
+            .unwrap_err()
+            .contains("could not be read"));
+        assert!(fits("macos", "x86_64", None)
+            .unwrap_err()
+            .contains("Apple silicon"));
+        assert!(fits("freebsd", "x86_64", Driver(580, 0))
+            .unwrap_err()
+            .contains("neither"));
     }
 
     /// Each lock pins every file by hash, names no index, and takes torch
@@ -967,8 +1199,40 @@ mod tests {
             }
             assert!(pins > 80, "{arch}: {pins}");
             assert!(lock.contains("torch @ ") && lock.contains("torchvision @ "));
-            assert!(env_bytes(arch).is_some());
+            assert!(env_bytes("linux", arch).is_some());
         }
+    }
+
+    /// The Mac's lock pins every file by hash, names no index, takes torch
+    /// from PyPI (whose macOS wheels carry MPS), and carries nothing of
+    /// CUDA's.
+    #[test]
+    fn the_mac_lock_is_pypi_torch_and_nothing_of_cuda() {
+        let lock = LOCK_MACOS_ARM64;
+        assert!(!lock.contains("--index-url") && !lock.contains("--extra-index-url"));
+        let lines: Vec<&str> = lock.lines().collect();
+        let mut pins = 0;
+        for (i, l) in lines.iter().enumerate() {
+            if l.starts_with('#') || l.starts_with(' ') || l.is_empty() {
+                continue;
+            }
+            pins += 1;
+            assert!(
+                lines
+                    .get(i + 1)
+                    .is_some_and(|n| n.trim_start().starts_with("--hash=sha256:")),
+                "{l} has no hash"
+            );
+            assert!(!l.contains(" @ "), "{l}: a direct URL, not PyPI");
+            for cuda in ["nvidia-", "triton", "cuda-"] {
+                assert!(!l.starts_with(cuda), "{l}");
+            }
+        }
+        assert!(pins > 60, "{pins}");
+        assert!(lock.contains("\ntorch==2.14.1 ") && lock.contains("\ntorchvision==0.29.1 "));
+        assert_eq!(lock_for("macos", "aarch64"), Some(lock));
+        assert_eq!(lock_for("macos", "x86_64"), None);
+        assert!(env_bytes("macos", "aarch64").is_some());
     }
 
     /// Each lock names the commit it was compiled for, and it is `COMMIT`:
@@ -976,7 +1240,7 @@ mod tests {
     /// an owner's machine (review of #645).
     #[test]
     fn the_locks_were_compiled_for_this_commit() {
-        for lock in [LOCK_AARCH64, LOCK_X86_64] {
+        for lock in [LOCK_AARCH64, LOCK_X86_64, LOCK_MACOS_ARM64] {
             let header: String = lock
                 .lines()
                 .take_while(|l| l.starts_with('#'))
@@ -997,6 +1261,45 @@ mod tests {
             },
         );
         assert!(!text.contains('@'), "{text}");
+        // A Mac reads the same unit as its agent (`user_service`): the same
+        // command, in the same directory, and never `--gpu-only`, which
+        // would put the text encoder's float8 scales on MPS (§12.3).
+        // The Linux unit as written is refused (its `ExecStartPre` has no
+        // agent counterpart); `for_mac` is what a Mac reads.
+        assert!(crate::launchd::agent_from_unit(
+            "mecha-comfyui",
+            &text,
+            Path::new("/Users/owner"),
+            "/l".into(),
+        )
+        .is_err());
+        let agent = crate::launchd::agent_from_unit(
+            "mecha-comfyui",
+            &for_mac(&text),
+            Path::new("/Users/owner"),
+            "/l".into(),
+        )
+        .unwrap();
+        assert_eq!(
+            agent.program[0],
+            "/srv/owner/.mecha/sidecars/comfyui/venv/bin/python"
+        );
+        assert_eq!(
+            agent.workdir.as_deref(),
+            Some(dir.join("ComfyUI").as_path())
+        );
+        assert!(!agent.program.iter().any(|a| a == "--gpu-only"));
+        // And its PATH is the system's, not the unit's CUDA one.
+        let mac = crate::launchd::agent_from_unit(
+            "mecha-comfyui",
+            &for_mac(&text),
+            Path::new("/Users/owner"),
+            "/l".into(),
+        )
+        .unwrap();
+        let path = mac.env.iter().find(|(k, _)| k == "PATH").unwrap();
+        assert_eq!(path.1, crate::launchd::SYSTEM_PATH);
+        assert_eq!(mac.program, agent.program);
         assert!(text.contains("WorkingDirectory=/srv/owner/.mecha/sidecars/comfyui/ComfyUI"));
         assert!(text.contains(
             "ExecStart=/srv/owner/.mecha/sidecars/comfyui/venv/bin/python -B main.py --listen \
@@ -1173,7 +1476,7 @@ mod tests {
         let live = dirs::home_dir().unwrap().join("ComfyUI/models");
         // With turbo, so the on-demand file's fetch, link and check run too.
         let mut seeded = models(&machine).unwrap();
-        seeded.push((TURBO_REPO, TURBO_REVISION, &TURBO_FILE));
+        seeded.push((TURBO_REPO, TURBO_REVISION, turbo_file()));
         for (repo, _, f) in seeded {
             let blob = hub
                 .join(format!("models--{}", repo.replace('/', "--")))
@@ -1194,17 +1497,28 @@ mod tests {
             std::fs::read_to_string(dir(&m.mecha_home).join("ComfyUI").join(COMMIT_STAMP));
         let turbo = turbo_linked(&m.mecha_home);
         let timer = format!("{}.timer", naming.idle());
-        let ticking = std::process::Command::new("systemctl")
-            .args(["--user", "is-active", "--quiet", &timer])
-            .status()
-            .is_ok_and(|s| s.success());
+        // The idle reset is Linux's (module doc): a Mac installs no timer.
+        let macos = cfg!(target_os = "macos");
+        let ticking = macos
+            || std::process::Command::new("systemctl")
+                .args(["--user", "is-active", "--quiet", &timer])
+                .status()
+                .is_ok_and(|s| s.success());
+        // The service's own file, written on either system: its removal is
+        // measured on a Mac too, where the timer's never existed (review of
+        // #681).
+        let service = crate::user_service::file(&m, &naming.unit).unwrap();
+        let written = service.exists();
         let cleaned = remove(&m, &naming);
         let units = crate::engine_gate::unit_dir(&m).unwrap().to_path_buf();
-        let left: Vec<PathBuf> = [timer.clone(), format!("{}.service", naming.idle())]
-            .into_iter()
-            .map(|n| units.join(n))
-            .filter(|p| p.exists())
-            .collect();
+        let left: Vec<PathBuf> = [
+            units.join(&timer),
+            units.join(format!("{}.service", naming.idle())),
+            service,
+        ]
+        .into_iter()
+        .filter(|p| p.exists())
+        .collect();
         eprintln!("{said:#?}");
         let man = Manifest::read(&m.mecha_home);
         let _ = std::fs::remove_dir_all(&root);
@@ -1212,6 +1526,7 @@ mod tests {
         cleaned.unwrap();
         assert_eq!(stamped.unwrap(), COMMIT);
         assert!(turbo, "the turbo model was linked");
+        assert!(written, "the service's definition was written");
         assert!(ticking, "{timer} was started");
         assert!(left.is_empty(), "removal left {left:?}");
         let man = man.unwrap();

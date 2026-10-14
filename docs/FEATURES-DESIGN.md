@@ -1993,12 +1993,74 @@ refused rather than split wrongly; none of the shipped ones does.
   (and would have overwritten its curated transcript with the result). A copy
   is this install's, clip first.
 
-**Not yet:** ComfyUI on a Mac. Measured 2026-10-13: the pinned commit runs
-on MPS with PyPI torch, and the int8 ConvRot model draws a correct picture,
-but every quantized op is emulated (comfy-kitchen's `eager` backend; no
-native int8 on MPS), so a 40-step picture takes ~128 s against ~28 s on the
-GB10, and the text encoder runs on the CPU. Which model a Mac should default
-to (the 8-step turbo, a bf16 file) is being measured; the install needs its
-own lock (MPS torch from PyPI), and `comfy-aimdo` — the idle reset's memory
-release — does not run on Darwin.
+ComfyUI on a Mac is §12.3's.
 
+### 12.3 Image generation on a Mac
+
+**2026-10-13, the owner:** on a Mac the standard model is the **bf16** file
+and the turbo the owner may choose is the **turbo bf16** — *"we could go with
+bf16 and also have turbo as a backup like the Linux version"* — the GB10's
+shape (a full-quality default, the 8-step turbo on demand) in the format MPS
+runs natively.
+
+**Why bf16, measured on the owner's M5 Max (128 GB) with the chat model
+resident**, ComfyUI at `comfyui_unit::COMMIT` on PyPI torch 2.14.1, 1024², one
+prompt and seed:
+
+| Model | Steps | Warm picture | Per step | Loaded |
+|---|---|---|---|---|
+| standard int8 ConvRot (the GB10's) | 40 | ~128 s | 3.05–3.13 s | ~6.9 GB |
+| standard bf16 | 40 | ~79 s | 1.72–2.04 s | ~13.6 GB |
+| turbo int8 ConvRot | 8 | ~24 s | 2.38–2.80 s | ~6.9 GB |
+| turbo bf16 | 8 | ~16 s | 1.65–1.95 s | ~13.6 GB |
+
+MPS has no int8 kernels: comfy-kitchen's `eager` backend emulates every
+quantized op (`Native ops: , emulated ops: int8_tensorwise, …`), so the int8
+file's steps are the slow ones. A new prompt adds ~13 s: the text encoder
+(`qwen3vl_8b_w4a8`) runs on the CPU, because its per-group scales are float8
+and MPS has no float8 type — `--gpu-only` moves it to MPS and every picture
+then fails at the encode (`Undefined type Float8_e4m3fn`), so the unit never
+passes it. Turbo int8 and turbo bf16 drew near-identical pictures seed for
+seed. A bf16 load from cold peaked at 29.7–32.7 GiB of process RSS (the
+14 GB file read and cast), ~6 GiB warm; MPS allocations are not all counted
+in RSS, so the row's figure is a floor.
+
+**What it changes.** The image slot has a Mac row (`recommend::Slot::
+mac_rows`, chosen on macOS by `rows_on`): the bf16 standard file, and the
+GB10's encoder and VAE — byte-identical blobs at the turbo's revision, so a
+hub holds them once. `sampling::standard_model` and `turbo_model` name the
+files `[image]`'s defaults load on each system, `comfyui_unit::turbo_file`
+the turbo it fetches; Linux keeps its constants, untouched. The environment
+is its own lock, `locks/comfyui-macos-arm64.txt`: ComfyUI's requirements at
+the commit with stock PyPI torch, held to the cu130 locks' versions where a
+package is in both (~0.76 GB of wheels, a fifth of Linux's, none of CUDA's).
+Its torch wheels are `macosx_14_0_arm64`, so `comfyui_unit::fits` refuses a
+Mac below macOS 14 (`MACOS_FLOOR`) before anything is fetched.
+The unit goes through `user_service`, the agent read from the same rendered
+unit; the install makes the temp directory itself, the unit's
+`ExecStartPre` having no launchd equivalent.
+
+**No idle reset on a Mac.** The reset script reads `/proc` and restarts
+through `systemctl`, and `comfy-aimdo` — what lets a restarted ComfyUI come
+back at ~1.1 GB — does not run on Darwin. mecha's own `[image]
+unload_after_secs` (`/free` after fifteen idle minutes) still runs; how much
+of the ~13.6 GB it gives back on MPS is not measured yet.
+
+
+**What "available" means on a Mac** (owner's ruling, 2026-10-13). Measured on
+the owner's Mac with the chat model (45 GiB, wired on Metal) and voice
+resident, every picture was refused: the gate read 24.0 GB available —
+`vm_stat`'s free, inactive, speculative and purgeable pages — against the
+bf16 file's 34 + 8 GB, while `memory_pressure` reported 37 % free (~47 GB),
+with 20.8 GiB compressed. `vm_stat`'s free and inactive pages leave out what
+macOS reclaims without pressure. So `memory.available` on macOS is
+`kern.memorystatus_level` (the percentage `memory_pressure` prints) × the
+total (`system::source::parse_memorystatus_level`); an unreadable level is
+unread, never a number. Owed: one bf16 picture on that Mac with chat and
+voice resident, watching swap and pressure, before the figure is trusted.
+
+**The refusal is said to the owner, not offered to the model.** Told the off
+switch, the model retried the picture six times in twenty seconds and then
+recommended `[image] min_available_mb = 0` to the owner. The tool's text now
+says the refusal will not change within the turn; the switch is named in the
+operator's log only.

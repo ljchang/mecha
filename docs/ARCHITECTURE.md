@@ -597,16 +597,21 @@ workspace**. Six decisions, each a bug if undone:
   box is GPU-used **plus** RSS, which do not overlap (2026-10-02; the earlier
   16 GB rested on a "15 GB peak" that counted the GPU side alone), and ~0.7 GB
   more with the int8 file, which is why the default rose from 19 to 20 GB
-  when that became the default (2026-10-04). **What a job asks for follows
+  when that became the default (2026-10-04). A Mac's default is 34 GB, the
+  bf16 file's measured cold peak (`min_available_mb_on`, FEATURES-DESIGN
+  §12.3). **What a job asks for follows
   what the server already holds** (`memory_need_mb`), because memory it holds
   is already gone from the available pool: a server that has loaded nothing
   since it started, or whose `/system_stats` cannot be read, is asked for the
   whole `min_available_mb`; one that has loaded the model is asked for that
-  figure less `LOAD_COST_MB` (~8 GB, what loading cost; 12 GB at the default),
-  so an operator's added margin is kept. ComfyUI's `torch_vram_total` is 0 in a fresh
+  figure less `load_cost_mb_on` (~8 GB on Linux, what loading cost; 12 GB at
+  the default), so an operator's added margin is kept. On CUDA, ComfyUI's
+  `torch_vram_total` is 0 in a fresh
   process and stays above 0 through a `/free`, so it cannot tell a server
   still holding the model (~2 GB more) from a freed one (~9-12 GB more to
-  reload), and the larger is asked.
+  reload), and the larger is asked. On MPS the field is the machine's RAM
+  from the first request, so `loaded_from_stats` reads it as unknown and a
+  Mac asks the cold figure on every picture.
 - **Idle memory is released beside the server, not by mecha.** A loaded
   ComfyUI holds ~13.6 GB. `scripts/comfyui/comfyui-idle-reset` (a one-minute
   user timer: `mecha-comfyui-idle-reset` from `scripts/comfyui/install.sh`
@@ -615,7 +620,8 @@ workspace**. Six decisions, each a bug if undone:
   binary a test holds byte-equal) restarts the server
   once it has held a model for 15 idle minutes with an
   empty queue and no open connection, leaving a 1.1 GB process with its port
-  up; below 4 GB of `MemFree` it sends `/free` instead, because a new CUDA
+  up (Linux only: on a Mac there is no reset, FEATURES-DESIGN §12.3); below
+  4 GB of `MemFree` it sends `/free` instead, because a new CUDA
   context failed to come up there. A restart also empties the server's temp
   directory, whoever left files in it. mecha's own `unload_after_secs` timer
   (900 s) stays as a best-effort `/free`, but it lives in the mecha process
@@ -1071,7 +1077,8 @@ against 64 s, and ~37 s an edit against ~80 s, at ~0.7 GB more peak; the
 same text encoder gives near-identical pictures seed for seed, and signs
 spelled right 8 of 8 on both. A GGUF re-quantises its weights on every step,
 a cost that buys nothing on a 128 GB box; the ConvRot file runs on native int8
-kernels. The loader follows the file name (`unet_loader`): `.gguf` keeps
+kernels. On a Mac, which has none (MPS emulates them), the default is the bf16
+file instead (FEATURES-DESIGN §12.3). The loader follows the file name (`unet_loader`): `.gguf` keeps
 the ComfyUI-GGUF node, so an operator's `diffusion_model` alone switches back.
 Measured and not adopted, for the next session not to re-run: ComfyUI 0.38.2
 (identical pixels, same speed), SageAttention 2.2 built for sm_120 and
