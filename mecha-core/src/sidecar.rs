@@ -693,20 +693,23 @@ fn stale_definitions(entry: Option<&Entry>, id: &str, rev: u32) -> Result<bool, 
 
 /// The sidecars mecha installed, finished, whose services an older build
 /// wrote — what `mecha setup` offers to refresh (`user_service::REVS`). A
-/// definition that cannot be read is left to `features plan`, which says it
-/// is unknown; only what is positively out of date is listed.
+/// definition that cannot be read is an error naming it: unknown, never
+/// current.
 pub fn stale_services(mecha_home: &Path) -> Result<Vec<&'static Sidecar>> {
     let manifest = Manifest::read(mecha_home)?;
-    Ok(SIDECARS
-        .iter()
-        .filter(|s| {
-            let Some(rev) = crate::user_service::rev(s.id) else {
-                return false;
-            };
-            let entry = manifest.entry(s.id).filter(|e| !e.incomplete);
-            entry.is_some() && stale_definitions(entry, s.id, rev) == Ok(true)
-        })
-        .collect())
+    let mut stale = Vec::new();
+    for s in SIDECARS {
+        let Some(rev) = crate::user_service::rev(s.id) else {
+            continue;
+        };
+        let Some(entry) = manifest.entry(s.id).filter(|e| !e.incomplete) else {
+            continue;
+        };
+        if stale_definitions(Some(entry), s.id, rev).map_err(anyhow::Error::msg)? {
+            stale.push(s);
+        }
+    }
+    Ok(stale)
 }
 
 /// The plan for a feature (a part resolves to its parent, as `mecha setup
@@ -1026,6 +1029,11 @@ mod tests {
         std::fs::write(&script, "print()\n").unwrap();
         Manifest::record(&home, "stt", &script).unwrap();
         assert!(ids(&home).is_empty(), "a program file carries no stamp");
+        // A definition that cannot be read is unknown, never current: a
+        // directory where the unit should be cannot be read as text.
+        std::fs::remove_file(&unit).unwrap();
+        std::fs::create_dir(&unit).unwrap();
+        assert!(stale_services(&home).is_err());
         let _ = std::fs::remove_dir_all(&home);
     }
 
