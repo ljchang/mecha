@@ -949,6 +949,31 @@ async fn documents_table() -> Result<()> {
     let ocr_port = mecha_core::llama_units::Which::Ocr.shipped().public;
     let ocr = here("ocr-server") || mecha_core::router_unit::port_answers(ocr_port);
     let layout_here = here("layout");
+    // Written only once every piece is here. A piece still missing at this
+    // point was not installed — `--no-install`, the path `enable` itself
+    // names off a terminal — and the table, written once and never edited,
+    // would keep `ocr = false` after a later `enable documents` installed the
+    // server (review of #683). So nothing is written yet, and the owner is
+    // told what is missing.
+    let missing: Vec<&str> = [
+        ("the OCR server", ocr),
+        ("the layout environment", layout_here),
+    ]
+    .into_iter()
+    .filter(|(_, here)| !here)
+    .map(|(what, _)| what)
+    .collect();
+    if !missing.is_empty() {
+        println!(
+            "No [documents] table written yet: {} {} not installed. `mecha features enable \
+             documents` installs {} and writes the table; a [documents] table you write \
+             yourself is used as it is.",
+            missing.join(" and "),
+            if missing.len() == 1 { "is" } else { "are" },
+            if missing.len() == 1 { "it" } else { "them" }
+        );
+        return Ok(());
+    }
     // The confinement this machine runs, asked of each of its own backends:
     // Seatbelt on a Mac (written as no `confine`, its default there),
     // bubblewrap then Landlock on Linux (written as the one that worked).
@@ -988,9 +1013,6 @@ async fn documents_table() -> Result<()> {
         );
         if let Some(line) = pdfs {
             println!("  {line}");
-        }
-        if !ocr {
-            println!("  ocr is off: no OCR server is installed or running here");
         }
     }
     Ok(())
