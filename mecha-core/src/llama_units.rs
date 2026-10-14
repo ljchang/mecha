@@ -421,23 +421,32 @@ fn start_agent(
     }
     let agent = crate::launchd::Agent {
         label: crate::launchd::label(&naming.stem),
-        program: vec![
-            mecha.display().to_string(),
-            "features".into(),
-            "on-demand".into(),
-            "--listen".into(),
-            format!("127.0.0.1:{}", naming.public),
-            "--backend".into(),
-            naming.backend.to_string(),
-            "--idle-secs".into(),
-            IDLE_SECS.to_string(),
-            "--launcher".into(),
-            launcher.display().to_string(),
-        ],
+        program: crate::log_cap::wrap(
+            &mecha,
+            &log,
+            vec![
+                mecha.display().to_string(),
+                "features".into(),
+                "on-demand".into(),
+                "--listen".into(),
+                format!("127.0.0.1:{}", naming.public),
+                "--backend".into(),
+                naming.backend.to_string(),
+                "--idle-secs".into(),
+                IDLE_SECS.to_string(),
+                "--launcher".into(),
+                launcher.display().to_string(),
+            ],
+        ),
         env: vec![
             ("PATH".into(), crate::launchd::SYSTEM_PATH.into()),
             ("LLAMA_SERVER".into(), engine.path().display().to_string()),
             ("HF_HUB".into(), hub.display().to_string()),
+            // `log-cap` (and `on-demand`) resolve the mecha home from the
+            // environment to check they run only mecha's own programs: an
+            // agent under a MECHA_HOME other than ~/.mecha must carry it
+            // (review of #679).
+            ("MECHA_HOME".into(), m.mecha_home.display().to_string()),
         ],
         workdir: None,
         throttle_secs: crate::launchd::THROTTLE_SECS,
@@ -684,6 +693,60 @@ pub fn remove(m: &Machinery, which: Which, naming: &Naming) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The router's engine is mecha's own or none: a `llama-server` on the
+    /// PATH is `Beside`, never run by the router — and once mecha's is
+    /// installed, it is `Ours` whatever else is on the PATH (review of #678:
+    /// nothing failed if this folded back into "any engine will do").
+    #[test]
+    fn the_router_runs_mecha_s_engine_never_a_provided_one() {
+        let root = std::env::temp_dir().join(format!("mecha-re-{}", uuid::Uuid::new_v4()));
+        let provided = root.join("bin");
+        std::fs::create_dir_all(&provided).unwrap();
+        let m = |path: Vec<PathBuf>| Machinery {
+            home: root.clone(),
+            mecha_home: root.join(".mecha"),
+            unit_dirs: vec![root.join("units")],
+            path,
+            docker: Box::new(|_| crate::sidecar::Lookup::Absent),
+        };
+        assert_eq!(
+            router_engine(&m(vec![provided.clone()])),
+            RouterEngine::Absent
+        );
+        std::fs::write(provided.join("llama-server"), b"#!/bin/sh\n").unwrap();
+        assert_eq!(
+            router_engine(&m(vec![provided.clone()])),
+            RouterEngine::Beside(provided.join("llama-server"))
+        );
+        let managed = crate::engine_gate::managed_binary(&root.join(".mecha"));
+        std::fs::create_dir_all(managed.parent().unwrap()).unwrap();
+        std::fs::write(&managed, b"#!/bin/sh\n").unwrap();
+        assert_eq!(router_engine(&m(vec![provided])), RouterEngine::Ours);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The plist each on-demand install writes is the one the plan looks
+    /// for: a renamed stem would otherwise read every Mac's server as absent
+    /// (review of #678).
+    #[test]
+    fn the_shipped_agents_are_the_servers_evidence() {
+        for which in [Which::Embeddings, Which::Ocr] {
+            let name = crate::launchd::plist_name(&which.shipped().stem);
+            let sidecar = crate::sidecar::SIDECARS
+                .iter()
+                .find(|s| s.id == which.sidecar())
+                .unwrap();
+            assert!(
+                sidecar
+                    .evidence
+                    .iter()
+                    .any(|e| matches!(e, crate::sidecar::Evidence::UserUnit(n) if *n == name)),
+                "{name} is not in {:?}",
+                sidecar.evidence
+            );
+        }
+    }
 
     /// The units and launchers in the binary are the ones in `scripts/llama/`:
     /// one set of files, two copies, held equal so they cannot drift.

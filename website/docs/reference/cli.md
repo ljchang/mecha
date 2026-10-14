@@ -1906,9 +1906,10 @@ switch only after every install has passed its check. What it can install:
   `~/.mecha/sidecars/voice-worker/`, reachable only through `mecha serve`'s
   relay.
 
-Every systemd unit is Linux only: on macOS the engine and the models install,
-and the servers start by hand, for now — except the chat router, which
-`mecha setup chat` installs as a launchd agent. **The chat model is never
+On macOS the servers install as launchd agents in `~/Library/LaunchAgents/`
+instead of systemd units — the chat router (`mecha setup chat`) and the
+embeddings and OCR servers, started on their first request — each logging to
+`~/Library/Logs/mecha/`, capped at 20 MiB and one older file. **The chat model is never
 `enable`'s**: its engine, model and router are `mecha setup chat`'s, where the
 model is chosen, so switching on the web app does not stand behind a chat
 model's download. A file mecha did not write is never replaced.

@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   router now runs mecha's own pinned llama.cpp, installed under `~/.mecha`
   beside any `llama-server` already on the PATH (Homebrew's, say), which is
   left alone; only a machine no pinned build fits runs its own.
+- **A Mac's service logs are capped.** Each launchd agent mecha installs
+  writes to `~/Library/Logs/mecha/<name>.log` through a small wrapper that
+  rotates it at 20 MiB, keeping one older file — launchd itself never rotates
+  a log.
 - **The embeddings and OCR servers install on a Mac**, on demand as on
   Linux: `mecha features enable graph` (or `documents`, `personas`) installs
   a launchd agent that holds the port and starts the server at the first

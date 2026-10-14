@@ -560,7 +560,13 @@ fn start_agent(
     }
     let agent = crate::launchd::Agent {
         label: crate::launchd::label(&naming.stem),
-        program: vec![bin.join("mecha-router").display().to_string()],
+        // Under the log cap: launchd's log file is never rotated, and the
+        // router logs every request (review of #678).
+        program: crate::log_cap::wrap(
+            &std::env::current_exe().context("finding the mecha binary for the agent")?,
+            &log,
+            vec![bin.join("mecha-router").display().to_string()],
+        ),
         env: vec![
             // An agent's PATH is launchd's, not the shell's; the launcher
             // needs only `sh`, `mkdir` and `dirname`, and names the engine.
@@ -568,6 +574,11 @@ fn start_agent(
             ("MECHA_ROUTER_PORT".into(), naming.port.to_string()),
             ("MECHA_ROUTER_PRESETS".into(), presets.display().to_string()),
             ("LLAMA_SERVER".into(), engine.path().display().to_string()),
+            // `log-cap` (and `on-demand`) resolve the mecha home from the
+            // environment to check they run only mecha's own programs: an
+            // agent under a MECHA_HOME other than ~/.mecha must carry it
+            // (review of #679).
+            ("MECHA_HOME".into(), m.mecha_home.display().to_string()),
         ],
         workdir: None,
         throttle_secs: crate::launchd::THROTTLE_SECS,

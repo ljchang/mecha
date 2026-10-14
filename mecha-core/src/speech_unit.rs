@@ -6,10 +6,12 @@
 //! **The engine is built here, from a pinned commit.** The Breeze port lives
 //! on the `breeze` branch of `github.com/ljchang/qwentts.cpp` (published
 //! 2026-10-11, the owner's ruling); there is no release to fetch. The source
-//! is fetched by its hash and checked against it, built for CUDA with
-//! `$ORIGIN` RUNPATH, and copied flat with the toolkit's runtime beside it —
-//! `engine::build_from_source`'s recipe, through its helpers — and the
-//! build must report the pinned commit and pass `engine::self_contained`.
+//! is fetched by its hash and checked against it, and built — for CUDA with
+//! `$ORIGIN` RUNPATH on Linux, copied flat with the toolkit's runtime beside
+//! it, or for Metal with `@loader_path` on Apple silicon (§12.2) —
+//! `engine::build_from_source`'s recipe, through its helpers. The build must
+//! report the pinned commit once its source tree is gone, and on Linux pass
+//! `engine::self_contained`.
 //!
 //! **The weights are published, so they are pins.** The converted GGUF and
 //! the codec are the `tts` slot's sources (`recommend::SLOTS`), on
@@ -26,8 +28,8 @@
 //! **The check is a spoken sentence.** The install asks the adapter, which
 //! asks the engine, to say a sentence in the default voice and reads back a
 //! WAV of plausible length — the whole path a call takes, not a process
-//! that started. Linux with an NVIDIA GPU only: on the CPU the engine runs
-//! slower than real time.
+//! that started. Linux with an NVIDIA GPU, or Apple silicon: on a CPU the
+//! engine runs slower than real time.
 
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
@@ -257,6 +259,13 @@ fn model_and_codec(
     Ok((model, codec))
 }
 
+/// Copy `from` to `to` as a new file stamped now — never with `from`'s times,
+/// which `std::fs::copy` keeps on macOS.
+fn copy_fresh(from: &Path, to: &Path) -> Result<()> {
+    let bytes = std::fs::read(from).with_context(|| format!("reading {}", from.display()))?;
+    std::fs::write(to, bytes).with_context(|| format!("writing {}", to.display()))
+}
+
 /// The units as installed.
 fn render(text: &str, dir: &Path, naming: &Naming, model: &str, codec: &str) -> String {
     text.replace("@DIR@", &dir.display().to_string())
@@ -363,6 +372,8 @@ pub async fn install(
     }
     let weights = weights(machine)?;
     let (model, codec) = model_and_codec(&weights)?;
+    // Before anything is fetched or recorded (review of #679).
+    crate::user_service::preflight(m)?;
     Manifest::begin(home, ID)?;
     Manifest::record(home, ID, &dir)?;
     std::fs::create_dir_all(&dir)?;
@@ -415,9 +426,11 @@ pub async fn install(
             // whenever the hub was filled: a hub `hf download` filled wrote
             // the transcript first, and the adapter sent the shipped voice
             // to speech to text, and (with STT up) overwrote its curated
-            // transcript (found on the owner's Mac, 2026-10-13). A copy's
-            // time is this install's. The clip is 391 KB.
-            std::fs::copy(&snap, &link).with_context(|| format!("copying {}", link.display()))?;
+            // transcript (found on the owner's Mac, 2026-10-13). Written
+            // fresh, so its time is this install's: `fs::copy` on macOS
+            // clones or `copyfile`s with the source's times, which would
+            // carry the blob's over (review of #679). The clip is 391 KB.
+            copy_fresh(&snap, &link)?;
         } else {
             #[cfg(unix)]
             std::os::unix::fs::symlink(&snap, &link)
@@ -450,7 +463,7 @@ pub async fn install(
     let names = [naming.engine_unit.as_str(), naming.adapter_unit.as_str()];
     // A restart, so a reinstall reaches running servers; a failed restart or
     // check stops both before the install says so (#639's pattern).
-    let checked = match crate::user_service::restart(m, &names) {
+    let checked = match crate::user_service::restart(m, &names, &mut *say) {
         Ok(()) => {
             say(&format!(
                 "starting the engine on :{} and the adapter on :{}, and speaking a sentence \
@@ -490,6 +503,15 @@ async fn build_engine(dir: &Path, engine: &Path, tc: &Toolchain, say: Say<'_>) -
     std::fs::create_dir_all(&part)?;
     let built = build_into(&src, &part, tc, say).await;
     let _ = std::fs::remove_dir_all(&src);
+    // Checked once the source tree is gone: with `build/` still there, a
+    // library named by an absolute path into it would load and pass (review
+    // of #679), so the check would prove nothing about `@loader_path` or
+    // `$ORIGIN`.
+    let built = built.and_then(|()| {
+        engine_health(&part)?;
+        std::fs::write(part.join(COMMIT_STAMP), COMMIT)?;
+        Ok(())
+    });
     if let Err(e) = built {
         let _ = std::fs::remove_dir_all(&part);
         return Err(e);
@@ -646,8 +668,6 @@ async fn build_into(src: &Path, part: &Path, tc: &Toolchain, say: Say<'_>) -> Re
             copied.join(", ")
         ));
     }
-    engine_health(part)?;
-    std::fs::write(part.join(COMMIT_STAMP), COMMIT)?;
     Ok(())
 }
 
@@ -1163,5 +1183,43 @@ mod tests {
             "{:?}",
             man.entries
         );
+    }
+
+    /// The voice pair is stamped in install order, whatever times the hub's
+    /// blobs carry: a transcript blob older than its clip — as `hf download`
+    /// wrote them — still lands newer (review of #679: `fs::copy` kept the
+    /// blobs' times on macOS).
+    #[test]
+    fn the_voice_pair_is_stamped_as_installed() {
+        // The install copies `VOICE` in order, so the clip must come first
+        // for its transcript to land newer (review of #679).
+        assert!(VOICE[0].path.ends_with(".wav") && VOICE[1].path.ends_with(".txt"));
+        let d = std::env::temp_dir().join(format!("mecha-voice-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&d).unwrap();
+        let (wav, txt) = (d.join("blob-wav"), d.join("blob-txt"));
+        std::fs::write(&wav, b"RIFF").unwrap();
+        std::fs::write(&txt, b"words").unwrap();
+        let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        let older = old - std::time::Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(&wav)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&txt)
+            .unwrap()
+            .set_modified(older)
+            .unwrap();
+        let (to_wav, to_txt) = (d.join("default.wav"), d.join("default.txt"));
+        copy_fresh(&wav, &to_wav).unwrap();
+        copy_fresh(&txt, &to_txt).unwrap();
+        let t = |p: &Path| std::fs::metadata(p).unwrap().modified().unwrap();
+        assert!(t(&to_txt) >= t(&to_wav));
+        assert!(t(&to_wav) > old, "the clip took the blob's time");
+        assert_eq!(std::fs::read(&to_txt).unwrap(), b"words");
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
