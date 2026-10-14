@@ -304,11 +304,20 @@ fn render(dir: &Path, naming: &Naming) -> String {
         .replace("@PORT@", &naming.port.to_string())
 }
 
-/// The unit as a Mac's agent reads it: its `PATH` is the system's own. The
+/// The unit as a Mac's agent reads it: its `PATH` is the system's own (the
 /// Linux line names `/usr/local/cuda/bin` for Triton's compiler, which a Mac
-/// has neither of (review of #681).
+/// has neither of — review of #681), and the two lines an agent has no
+/// counterpart for are dropped: `ExecStartPre`'s temp directory, which the
+/// install makes on both systems, and `TimeoutStartSec`, whose job the
+/// install's own check does. `launchd::agent_from_unit` refuses any line it
+/// cannot carry, so these are taken out here, by name, rather than ignored
+/// there (#679).
 fn for_mac(unit: &str) -> String {
     unit.lines()
+        .filter(|l| {
+            let l = l.trim_start();
+            !l.starts_with("ExecStartPre=") && !l.starts_with("TimeoutStartSec=")
+        })
         .map(|l| {
             if l.trim_start().starts_with("Environment=PATH=") {
                 format!("Environment=PATH={}", crate::launchd::SYSTEM_PATH)
@@ -488,6 +497,9 @@ pub async fn install(
     if turbo {
         models.push((TURBO_REPO, TURBO_REVISION, turbo_file()));
     }
+    // Before anything is fetched — the source, the environment and ~21 GB of
+    // models — as the voice installs ask it (review of #681).
+    crate::user_service::preflight(m)?;
     Manifest::begin(home, ID)?;
     Manifest::record(home, ID, &dir)?;
     std::fs::create_dir_all(&dir)?;
@@ -569,7 +581,7 @@ pub async fn install(
         // No idle reset on a Mac (module doc): the agent alone, loaded —
         // which starts it — and checked, and stopped if the check fails.
         let service = naming.unit.as_str();
-        let checked = match crate::user_service::restart(m, &[service]) {
+        let checked = match crate::user_service::restart(m, &[service], &mut *say) {
             Ok(()) => {
                 say(&format!(
                     "starting it on :{} and asking it for every node and model mecha's pictures \
@@ -843,7 +855,7 @@ pub fn write_image_table(path: &Path, temp: Option<&Path>) -> Result<bool> {
             toml_edit::value(temp.display().to_string()),
         );
     }
-    doc.insert("image", toml_edit::Item::Table(table));
+    crate::config::append_table(&mut doc, "image", table);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
@@ -1252,9 +1264,18 @@ mod tests {
         // A Mac reads the same unit as its agent (`user_service`): the same
         // command, in the same directory, and never `--gpu-only`, which
         // would put the text encoder's float8 scales on MPS (§12.3).
-        let agent = crate::launchd::agent_from_unit(
+        // The Linux unit as written is refused (its `ExecStartPre` has no
+        // agent counterpart); `for_mac` is what a Mac reads.
+        assert!(crate::launchd::agent_from_unit(
             "mecha-comfyui",
             &text,
+            Path::new("/Users/owner"),
+            "/l".into(),
+        )
+        .is_err());
+        let agent = crate::launchd::agent_from_unit(
+            "mecha-comfyui",
+            &for_mac(&text),
             Path::new("/Users/owner"),
             "/l".into(),
         )

@@ -707,7 +707,17 @@ fn cuda_arch(text: &str) -> Option<String> {
 fn find_program(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH").unwrap_or_default();
     std::env::split_paths(&path)
-        .chain(["/usr/local/bin", "/usr/bin", "/usr/local/cuda/bin"].map(PathBuf::from))
+        .chain(
+            [
+                "/usr/local/bin",
+                "/usr/bin",
+                "/usr/local/cuda/bin",
+                // Homebrew on Apple silicon: cmake for the speech engine
+                // when the caller's PATH is not a login shell's.
+                "/opt/homebrew/bin",
+            ]
+            .map(PathBuf::from),
+        )
         .map(|d| d.join(name))
         .find(|p| p.is_file())
 }

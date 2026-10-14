@@ -12,7 +12,7 @@
 //! inspected and edited with the model and the image server both down.
 
 use anyhow::{bail, Context, Result};
-use mecha_core::imagelib::{self, Entry, Kind, Library, NewEntry, Origin, Status};
+use mecha_core::imagelib::{self, Entry, Kind, Library, NewEntry, Origin, RefKind, Status};
 use std::path::PathBuf;
 
 use crate::GlobalOpts;
@@ -27,6 +27,25 @@ pub struct Args {
 pub enum KindArg {
     Character,
     Style,
+}
+
+/// A reference's kind, as `--as` spells it (`--kind` is the entry's kind).
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+pub enum RefArg {
+    Face,
+    #[value(name = "full_body")]
+    FullBody,
+    Detail,
+}
+
+impl From<RefArg> for RefKind {
+    fn from(r: RefArg) -> RefKind {
+        match r {
+            RefArg::Face => RefKind::Face,
+            RefArg::FullBody => RefKind::FullBody,
+            RefArg::Detail => RefKind::Detail,
+        }
+    }
 }
 
 impl From<KindArg> for Kind {
@@ -139,6 +158,29 @@ pub enum Cmd {
     /// (py-feat's RetinaFace-R34, 89 MB, checked against its pin). Without
     /// it those edits draw as before and their manifests say why.
     InstallFaceDetector,
+    /// Attach a typed picture to an approved character: a `face`, a
+    /// `full_body` in a neutral, square-on stance (its pose carries into
+    /// pictures), or a labelled `detail` such as a tattoo. A new version.
+    AddReference {
+        name: String,
+        /// What the picture is of.
+        #[arg(long = "as", value_enum)]
+        as_kind: RefArg,
+        /// The picture.
+        file: PathBuf,
+        /// What it shows; required for a detail ("left-forearm tattoo").
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Take a typed picture off a character; `--label` says which detail.
+    /// A new version; the picture stays in the store for the history.
+    RemoveReference {
+        name: String,
+        #[arg(long = "as", value_enum)]
+        as_kind: RefArg,
+        #[arg(long)]
+        label: Option<String>,
+    },
 }
 
 /// One y/N question, where EOF is "no" — the outbox's rule: a review surface
@@ -245,6 +287,28 @@ fn describe(lib: &Library, e: &Entry) {
     }
     if let Some(seed) = e.source_seed {
         println!("  seed:    {seed}");
+    }
+    let sendable = e.sendable_references();
+    for r in &e.references {
+        // A kind this build does not know, or one this entry kind does not
+        // take, is shown as such: kept, never sent (§9.3). By identity, as
+        // `read_reference` asks, so a hand-edited copy past the limit reads
+        // as not sent (review of #685).
+        let note = if sendable.iter().any(|s| std::ptr::eq(*s, r)) {
+            ""
+        } else {
+            " (not sent)"
+        };
+        let label = r
+            .label
+            .as_deref()
+            .map(|l| format!(" — {l}"))
+            .unwrap_or_default();
+        println!(
+            "  reference: {}{label}: {}{note}",
+            r.kind.label(),
+            lib.blob_path(&r.blob).display()
+        );
     }
 }
 
@@ -473,6 +537,45 @@ fn run(dir: &std::path::Path, cmd: Cmd) -> Result<()> {
             let e = resolve(&lib, &name, kind)?;
             imagelib::set_locked(dir, e.kind, &e.name, false)?;
             println!("Unlocked `{}`.", e.name);
+        }
+        Cmd::AddReference {
+            name,
+            as_kind,
+            file,
+            label,
+        } => {
+            let e = resolve(&lib, &name, Some(KindArg::Character))?;
+            let bytes = read_picture(&file)?;
+            let kind: RefKind = as_kind.into();
+            let updated = imagelib::add_reference(dir, &e.name, kind, &bytes, label)?;
+            println!(
+                "`{}` is now v{} with a {} reference.",
+                updated.name,
+                updated.version,
+                kind.label()
+            );
+            if kind == RefKind::FullBody {
+                println!(
+                    "A full-body picture's stance carries into pictures: neutral and square-on \
+                     works best. It goes with a new picture of one or two people when everyone \
+                     in it has one; edits and layered pictures use portraits."
+                );
+            }
+        }
+        Cmd::RemoveReference {
+            name,
+            as_kind,
+            label,
+        } => {
+            let e = resolve(&lib, &name, Some(KindArg::Character))?;
+            let kind: RefKind = as_kind.into();
+            let updated = imagelib::remove_reference(dir, &e.name, kind, label.as_deref())?;
+            println!(
+                "`{}` is now v{}, without that {} reference.",
+                updated.name,
+                updated.version,
+                kind.label()
+            );
         }
         Cmd::Update {
             name,

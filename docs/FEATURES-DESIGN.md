@@ -1601,9 +1601,9 @@ from the row.
 
 ### 10.5 Out of scope, still
 
-Windows service managers, and on macOS every server but the chat router
-(§12: the router is a launchd agent there; the embeddings, OCR, image and
-voice servers still start by hand); system packages (`apt`, CUDA drivers, Docker) — setup
+Windows service managers, and on macOS the servers §12 has not yet taken
+(the router, the embeddings and OCR servers and voice are launchd agents
+there; §12.3 brings image); system packages (`apt`, CUDA drivers, Docker) — setup
 names them and stops; installing anything from the web app; and installing
 inside a trial. An environment may switch a feature on (§5.1), but a trial
 home never runs an installer: a switch that is on over an absent sidecar is
@@ -1913,6 +1913,15 @@ on a clean `~/.mecha`. A 32 GB Mac is the one to watch: Metal's default
 working-set limit (`sysctl iogpu.wired_limit_mb`, 0 for the default) is a
 fraction of the memory, and the 32 GB row's files alone are 22.0 GiB.
 
+**Every agent's log is capped.** launchd writes `StandardOutPath` for good
+and nothing rotates it — `newsyslog` reads only its own configuration, which
+a user cannot add to — and the router logs every request. So an agent's
+program runs under `mecha features log-cap` (`log_cap.rs`), which writes the
+program's output to `~/Library/Logs/mecha/<stem>.log`, moves it to
+`<stem>.log.1` before it would pass 20 MiB, and passes a stop signal on and
+the program's exit status back, so `KeepAlive` still means the program's
+failure (review of #678).
+
 ### 12.1 The embeddings and OCR servers on demand
 
 On Linux each is a socket that holds the public port from boot, a
@@ -1960,6 +1969,13 @@ and `WorkingDirectory=`), so a Mac runs exactly what Linux runs and a change
 to a unit reaches both. A unit whose command would need a shell's quoting is
 refused rather than split wrongly; none of the shipped ones does.
 
+- **A loaded agent is not a started program.** The units' `Type=exec` makes
+  a missing interpreter fail `systemctl restart` itself; launchd's
+  `bootstrap` succeeds once the job is loaded, so on a Mac a program that
+  cannot start restarts on its throttle until the install's own check times
+  out, and the install then stops it — the same outcome, later and with a
+  vaguer message. The reader carries a closed set of directives (anything
+  else is refused, not dropped), and refuses a home with a space in it.
 - **The environments are the Linux locks**, unchanged: all four install with
   `--require-hashes` on macOS arm64 (measured 2026-10-13).
 - **The speech engine is built for Metal** on Apple silicon:
@@ -2030,6 +2046,25 @@ back at ~1.1 GB — does not run on Darwin. mecha's own `[image]
 unload_after_secs` (`/free` after fifteen idle minutes) still runs; how much
 of the ~13.6 GB it gives back on MPS is not measured yet.
 
+
+**What "available" means on a Mac** (owner's ruling, 2026-10-13). Measured on
+the owner's Mac with the chat model (45 GiB, wired on Metal) and voice
+resident, every picture was refused: the gate read 24.0 GB available —
+`vm_stat`'s free, inactive, speculative and purgeable pages — against the
+bf16 file's 34 + 8 GB, while `memory_pressure` reported 37 % free (~47 GB),
+with 20.8 GiB compressed. `vm_stat`'s free and inactive pages leave out what
+macOS reclaims without pressure. So `memory.available` on macOS is
+`kern.memorystatus_level` (the percentage `memory_pressure` prints) × the
+total (`system::source::parse_memorystatus_level`); an unreadable level is
+unread, never a number. Owed: one bf16 picture on that Mac with chat and
+voice resident, watching swap and pressure, before the figure is trusted.
+
+**The refusal is said to the owner, not offered to the model.** Told the off
+switch, the model retried the picture six times in twenty seconds and then
+recommended `[image] min_available_mb = 0` to the owner. The tool's text now
+says the refusal will not change within the turn; the switch is named in the
+operator's log only.
+
 ## 13. `enable` finishes what it starts
 
 **2026-10-13.** Two gaps, found installing on the owner's Mac, and two
@@ -2069,10 +2104,10 @@ each backend's own preflight asked in turn (bubblewrap, then Landlock),
 `confine` written as the one that started poppler. None working: the table is
 written, and PDFs are said to be refused until one does, with the fix.
 
-**On a Mac, PDFs wait for the macOS sandbox** (the owner, 2026-10-13: build a
-Seatbelt confinement; until it lands, a Mac reads pictures and refuses PDFs).
-The table gets no `confine`, the extractor refuses a PDF by name before
-anything runs (`document::pdf_refused_on`) rather than as a confused wrapper
-failure, and `layout` is written off — the layout model is confined as the
-parser is.
+**On a Mac the table names no `confine`**, so PDFs run under the macOS
+sandbox, Seatbelt, the default there since #682 — and `layout` is written as
+installed, since the layout worker runs under the same profile (measured on
+the owner's Mac, 2026-10-13: every child checked confined, no denial logged).
+The interim refusal this section first carried, for PDFs on a Mac until the
+sandbox landed, went with it.
 

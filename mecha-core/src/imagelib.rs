@@ -28,13 +28,13 @@ pub const MAX_DESCRIPTION: usize = 400;
 /// A style's text, pasted verbatim at the end of every prompt that names it.
 pub const MAX_STYLE_TEXT: usize = 1000;
 /// People per new picture. E3 held four in one pass; five is the owner's
-/// provisional ceiling (IMAGE-DESIGN.md §6, C5).
+/// provisional ceiling (IMAGE-DESIGN.md §5.2 and §11, C5).
 pub const MAX_CAST: usize = 5;
 /// `wearing` and `doing`, each.
 pub const MAX_CAST_FIELD: usize = 300;
 /// People in a scene who are no library character — a waiter, a crowd's
-/// front row. They carry no reference, so the four-reference ceiling (E3)
-/// does not bound them; four is what has been asked of the model alongside
+/// front row. They carry no reference, so the reference ceilings
+/// ([`MAX_CAST`], [`MAX_BOUND_IMAGES`]) do not bound them; four is what has been asked of the model alongside
 /// a cast, not a measured limit.
 pub const MAX_EXTRAS: usize = 4;
 /// Candidates waiting on the owner. A model that proposes in a loop fills a
@@ -52,6 +52,15 @@ pub const MAX_PROPOSED_PORTRAIT_BYTES: u64 = 4 * 1024 * 1024;
 /// 1024² took 190 s and four at 512² 79 s; E10: a whole portrait at 512² held
 /// identity within a few hundredths of a tight face crop.
 pub const REFERENCE_SIZE: u32 = 512;
+/// A reference's label: "left-forearm tattoo", not a paragraph. Only a
+/// `detail`'s is ever sent, appended to the description it rides beside
+/// (`IMAGE-COMPILER-DESIGN.md` §9.3).
+pub const MAX_LABEL: usize = 100;
+/// Images a new picture carries when each person is bound to two
+/// (`IMAGE-COMPILER-DESIGN.md` §9.4): E9b passed with a cast of two and a
+/// full body each, and E12's duplicate-free evidence stops at four. So
+/// full-figure references go to a cast of one or two, never more.
+pub const MAX_BOUND_IMAGES: usize = 4;
 
 /// What an entry is. The directory it lives under.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -148,9 +157,93 @@ pub struct Entry {
     pub created: String,
     #[serde(default)]
     pub updated: String,
+    /// Typed pictures beside the portrait (`IMAGE-COMPILER-DESIGN.md` §9.3),
+    /// written by the owner only. Last, so the TOML's `[[reference]]` tables
+    /// follow every plain field.
+    #[serde(default, rename = "reference", skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<Reference>,
     /// Set on load from the directory, never stored.
     #[serde(skip, default = "default_kind")]
     pub kind: Kind,
+}
+
+/// What a reference picture is of (`IMAGE-COMPILER-DESIGN.md` §9.3). A closed
+/// enum in an on-disk store, so a wire format: a value this build does not
+/// know loads as `Unknown`, is shown, and is never sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefKind {
+    /// A better face than the portrait shows; the source of video's crop.
+    Face,
+    /// Build and proportions, in a neutral, square-on stance.
+    FullBody,
+    /// A labelled mark: "left-forearm tattoo".
+    Detail,
+    /// A place's or an outfit's picture, for the kinds still to come.
+    View,
+    #[serde(other)]
+    Unknown,
+}
+
+impl RefKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            RefKind::Face => "face",
+            RefKind::FullBody => "full_body",
+            RefKind::Detail => "detail",
+            RefKind::View => "view",
+            RefKind::Unknown => "unknown",
+        }
+    }
+
+    /// Whether an entry of `kind` may carry this reference. A known kind on
+    /// the wrong entry kind reads as unknown: never sent (§9.3).
+    pub fn allowed_on(self, kind: Kind) -> bool {
+        matches!(
+            (kind, self),
+            (
+                Kind::Character,
+                RefKind::Face | RefKind::FullBody | RefKind::Detail
+            )
+        )
+    }
+
+    /// How many of this kind one entry may hold (§9.3's store limits).
+    pub fn limit(self) -> usize {
+        match self {
+            RefKind::Face | RefKind::FullBody => 1,
+            RefKind::Detail => 4,
+            RefKind::View => 3,
+            RefKind::Unknown => 0,
+        }
+    }
+}
+
+/// One typed reference: a blob under `blobs/`, checked like the portrait.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Reference {
+    pub kind: RefKind,
+    pub blob: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+impl Entry {
+    /// The references a generator may be sent, by the entry's own rules: a
+    /// kind this build knows and this entry kind allows, within its limit,
+    /// in stored order. Anything else is kept and shown, never sent.
+    pub fn sendable_references(&self) -> Vec<&Reference> {
+        let mut seen: std::collections::HashMap<RefKind, usize> = Default::default();
+        self.references
+            .iter()
+            .filter(|r| r.kind.allowed_on(self.kind))
+            .filter(|r| {
+                let n = seen.entry(r.kind).or_default();
+                *n += 1;
+                *n <= r.kind.limit()
+            })
+            .collect()
+    }
 }
 
 fn default_kind() -> Kind {
@@ -364,12 +457,45 @@ impl Library {
             .portrait
             .as_deref()
             .ok_or_else(|| anyhow!("`{}` has no portrait", entry.name))?;
-        let bytes = std::fs::read(self.blob_path(blob))
-            .with_context(|| format!("reading `{}`'s portrait", entry.name))?;
-        if blob_name(&bytes, picture_type(&bytes)?) != blob {
-            bail!("`{}`'s portrait does not match its hash", entry.name);
+        self.read_checked(blob, &format!("`{}`'s portrait", entry.name))
+    }
+
+    /// A reference's picture, under the portrait's hash check: bytes swapped
+    /// under an approved hash are refused, not sent (§9.3).
+    pub fn read_reference(
+        &self,
+        entry: &Entry,
+        reference: &Reference,
+    ) -> Result<(Vec<u8>, &'static str)> {
+        // "Never sent" is a property of the read, not a filter a caller must
+        // remember (review of #684): an unknown kind, a kind this entry kind
+        // doesn't take, or one past its limit is refused here.
+        // By identity, not value: a hand-edited second copy of a kind past
+        // its limit equals the first and would pass a value check.
+        if !entry
+            .sendable_references()
+            .iter()
+            .any(|r| std::ptr::eq(*r, reference))
+        {
+            bail!(
+                "`{}`'s {} reference is not one it may send",
+                entry.name,
+                reference.kind.label()
+            );
         }
+        self.read_checked(
+            &reference.blob,
+            &format!("`{}`'s {} reference", entry.name, reference.kind.label()),
+        )
+    }
+
+    fn read_checked(&self, blob: &str, what: &str) -> Result<(Vec<u8>, &'static str)> {
+        let bytes =
+            std::fs::read(self.blob_path(blob)).with_context(|| format!("reading {what}"))?;
         let ext = picture_type(&bytes)?;
+        if blob_name(&bytes, ext) != blob {
+            bail!("{what} does not match its hash");
+        }
         Ok((bytes, ext))
     }
 }
@@ -392,11 +518,31 @@ fn load_entry(kind: Kind, dir: &Path) -> Result<Entry> {
     if kind == Kind::Character && entry.portrait.is_none() {
         bail!("a character without a portrait");
     }
+    // A plain file name, so a hand-edited entry cannot point a reference at
+    // anything outside `blobs/`. Every blob the entry names, not only the
+    // portrait (§9.3).
+    let plain = |blob: &str| !(blob.contains('/') || blob.contains('\\') || blob.starts_with('.'));
     if let Some(blob) = &entry.portrait {
-        // A plain file name, so a hand-edited entry cannot point a reference
-        // at anything outside `blobs/`.
-        if blob.contains('/') || blob.contains('\\') || blob.starts_with('.') {
+        if !plain(blob) {
             bail!("portrait `{blob}` is not a blob name");
+        }
+    }
+    for r in &entry.references {
+        if !plain(&r.blob) {
+            bail!(
+                "{} reference `{}` is not a blob name",
+                r.kind.label(),
+                r.blob
+            );
+        }
+        if r.label
+            .as_deref()
+            .is_some_and(|l| l.chars().count() > MAX_LABEL)
+        {
+            bail!(
+                "a {} reference's label is over {MAX_LABEL} characters",
+                r.kind.label()
+            );
         }
     }
     Ok(entry)
@@ -412,7 +558,7 @@ fn blob_name(bytes: &[u8], ext: &str) -> String {
 fn store_blob(dir: &Path, bytes: &[u8]) -> Result<String> {
     if bytes.len() as u64 > MAX_PORTRAIT_BYTES {
         bail!(
-            "the portrait is {} MB; portraits are capped at {} MB",
+            "the picture is {} MB; library pictures are capped at {} MB",
             bytes.len() / (1024 * 1024),
             MAX_PORTRAIT_BYTES / (1024 * 1024)
         );
@@ -511,6 +657,9 @@ pub fn create(dir: &Path, new: NewEntry) -> Result<Entry> {
         version: 1,
         created: stamp.clone(),
         updated: stamp,
+        // A new entry carries none: the owner adds references to an approved
+        // entry (`add_reference`), so a proposal can never bring any.
+        references: Vec::new(),
         kind: new.kind,
     };
     if let Err(e) = write_entry(dir, &entry) {
@@ -611,13 +760,6 @@ pub fn update(
     {
         bail!("nothing to change");
     }
-    let history = entry_dir(dir, kind, name).join("history");
-    std::fs::create_dir_all(&history)?;
-    write_atomic(
-        &history.join(format!("v{}.toml", old.version)),
-        toml::to_string_pretty(&old)?.as_bytes(),
-    )?;
-    entry.version = old.version + 1;
     // Only a rewritten text is the owner's. A new portrait or seed is not a
     // reading of the text, so it must not approve a candidate or relabel its
     // provenance — that would launder a model's text past `approve`'s
@@ -626,9 +768,8 @@ pub fn update(
         entry.origin = Origin::Owner;
         entry.status = Status::Approved;
     }
-    entry.updated = now();
-    write_entry(dir, &entry)?;
-    Ok(entry)
+    // One place cuts a version (review of #684).
+    new_version(dir, old, entry)
 }
 
 /// Reject a candidate: deleted outright, and its portrait with it unless
@@ -671,11 +812,151 @@ fn blob_referenced(dir: &Path, blob: &str) -> bool {
         }
         Ok(false)
     }
-    ["characters", "styles", "removed"]
+    // The whole store, not a list of the directories this build knows: a
+    // delete must be fail-closed for a kind a later build adds (§9.3). The
+    // blobs themselves are skipped, being no entry.
+    let Ok(items) = std::fs::read_dir(dir) else {
+        return dir.exists();
+    };
+    for item in items {
+        let Ok(item) = item else { return true };
+        let path = item.path();
+        if path.file_name().is_some_and(|n| n == "blobs") {
+            continue;
+        }
+        let named = if path.is_dir() {
+            walk(&path, blob).unwrap_or(true)
+        } else {
+            path.extension().is_some_and(|e| e == "toml")
+                && std::fs::read_to_string(&path).map_or(true, |t| t.contains(blob))
+        };
+        if named {
+            return true;
+        }
+    }
+    false
+}
+
+/// Attach a typed reference to an approved character: the owner's write, a
+/// new version with the old one kept in its history (§9.3). A candidate is
+/// refused, so a rejected one can never strand reference blobs.
+pub fn add_reference(
+    dir: &Path,
+    name: &str,
+    kind: RefKind,
+    bytes: &[u8],
+    label: Option<String>,
+) -> Result<Entry> {
+    let old = current(dir, Kind::Character, name)?;
+    if old.status != Status::Approved {
+        bail!("`{name}` is a candidate; approve it before adding references");
+    }
+    if !kind.allowed_on(Kind::Character) {
+        bail!(
+            "a character takes face, full_body or detail references, not {}",
+            kind.label()
+        );
+    }
+    let label = label
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty());
+    if kind == RefKind::Detail && label.is_none() {
+        bail!("a detail needs a label saying what it shows, e.g. \"left-forearm tattoo\"");
+    }
+    if label
+        .as_deref()
+        .is_some_and(|l| l.chars().count() > MAX_LABEL)
+    {
+        bail!("a label is capped at {MAX_LABEL} characters");
+    }
+    let held = old.references.iter().filter(|r| r.kind == kind).count();
+    if held >= kind.limit() {
+        bail!(
+            "`{name}` already has {} {} reference{}; remove one first",
+            held,
+            kind.label(),
+            if held == 1 { "" } else { "s" }
+        );
+    }
+    // Two of one kind under one label could never be told apart again:
+    // `remove_reference` names a reference by its kind and label (review of
+    // #684). Checked before the picture is stored, so a refusal leaves none.
+    if old
+        .references
         .iter()
-        .map(|d| dir.join(d))
-        .filter(|d| d.exists())
-        .any(|d| walk(&d, blob).unwrap_or(true))
+        .any(|r| r.kind == kind && r.label == label)
+    {
+        bail!(
+            "`{name}` already has a {} reference{}; use another label",
+            kind.label(),
+            label
+                .as_deref()
+                .map(|l| format!(" labelled \"{l}\""))
+                .unwrap_or_default()
+        );
+    }
+    let blob = store_blob(dir, bytes)?;
+    if old.portrait.as_deref() == Some(blob.as_str())
+        || old.references.iter().any(|r| r.blob == blob)
+    {
+        bail!("`{name}` already holds that picture");
+    }
+    let mut entry = old.clone();
+    entry.references.push(Reference { kind, blob, label });
+    new_version(dir, old, entry)
+}
+
+/// Take a reference off a character: a new version, the picture kept in
+/// `blobs/` for the history and any manifest that names it. With more than
+/// one of the kind, `label` says which.
+pub fn remove_reference(
+    dir: &Path,
+    name: &str,
+    kind: RefKind,
+    label: Option<&str>,
+) -> Result<Entry> {
+    let old = current(dir, Kind::Character, name)?;
+    // Stored labels are trimmed on the way in, so the lookup is too.
+    let label = label.map(str::trim).filter(|l| !l.is_empty());
+    let matching: Vec<usize> = old
+        .references
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.kind == kind && label.is_none_or(|l| r.label.as_deref() == Some(l)))
+        .map(|(i, _)| i)
+        .collect();
+    let index = match matching.as_slice() {
+        [one] => *one,
+        [] => bail!(
+            "`{name}` has no {} reference{}",
+            kind.label(),
+            label
+                .map(|l| format!(" labelled \"{l}\""))
+                .unwrap_or_default()
+        ),
+        _ => bail!(
+            "`{name}` has several {} references; pass --label to say which",
+            kind.label()
+        ),
+    };
+    let mut entry = old.clone();
+    entry.references.remove(index);
+    new_version(dir, old, entry)
+}
+
+/// Write `entry` as the version after `old`, keeping `old` in the history.
+/// The entry's text is untouched, so its origin and status stand.
+fn new_version(dir: &Path, old: Entry, mut entry: Entry) -> Result<Entry> {
+    let history = entry_dir(dir, old.kind, &old.name).join("history");
+    std::fs::create_dir_all(&history)?;
+    write_atomic(
+        &history.join(format!("v{}.toml", old.version)),
+        toml::to_string_pretty(&old)?.as_bytes(),
+    )?;
+    entry.version = old.version + 1;
+    entry.updated = now();
+    write_entry(dir, &entry)?;
+    Ok(entry)
 }
 
 /// Remove an entry — moved aside under `removed/`, not deleted, because a
@@ -859,17 +1140,25 @@ pub struct Used {
     pub version: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub portrait: Option<String>,
+    /// The full-figure reference sent beside the portrait, when one was
+    /// (§9.4): the entry's version says it was attached, not that it went.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub full_body: Option<String>,
 }
 
 /// A scene, compiled.
 #[derive(Debug)]
 pub struct Compiled {
     pub prompt: String,
-    /// `(name, bytes, ext)` in `<imageN>` order.
+    /// `(name, bytes, ext)` in `<imageN>` order; a full figure's name is
+    /// `full_body:<name>`, after its person's portrait.
     pub references: Vec<(String, Vec<u8>, &'static str)>,
     pub used: Vec<Used>,
     /// Seeds that drew the cast's portraits, when known.
     pub source_seeds: Vec<u64>,
+    /// Full-figure references attached and not sent, said in counts: the
+    /// labels stay in the library (§9.4).
+    pub notes: Vec<String>,
 }
 
 /// The whole compiled prompt, a cap on the sum of its parts.
@@ -985,6 +1274,27 @@ pub fn compile(
     extras: &[String],
     style: Option<&str>,
 ) -> std::result::Result<Compiled, String> {
+    compile_with(lib, scene, cast, extras, style, true)
+}
+
+/// [`compile`], with `bodies` false when the picture must be drawn from
+/// portraits alone: one planned in layers, whose cutouts were measured with
+/// a portrait each and whose fallback must draw what they would have.
+///
+/// With `bodies`, every person is bound to two images, portrait then full
+/// figure, when everyone in the cast has a full body attached and the
+/// whole fits [`MAX_BOUND_IMAGES`]; otherwise no one is, and the notes say
+/// why (§9.4: a person bound to two images beside others bound to one is a
+/// shape no wording covers and nothing has measured). The binding is E9b's
+/// measured wording, with the name for its pronoun.
+pub fn compile_with(
+    lib: &Library,
+    scene: &str,
+    cast: &[CastMember],
+    extras: &[String],
+    style: Option<&str>,
+    bodies: bool,
+) -> std::result::Result<Compiled, String> {
     if extras.len() > MAX_EXTRAS {
         return Err(format!(
             "At most {MAX_EXTRAS} people who are not library characters fit one new picture, \
@@ -992,6 +1302,8 @@ pub fn compile(
             extras.len()
         ));
     }
+    // Kept whole for the faces-only retry past the prompt cap.
+    let given_extras = extras;
     let extras: Vec<&str> = extras
         .iter()
         .map(|e| e.trim().trim_end_matches('.'))
@@ -1025,10 +1337,18 @@ pub fn compile(
             ));
         }
     }
-    let mut refs = Vec::with_capacity(cast.len());
-    let mut used = Vec::new();
-    let mut source_seeds = Vec::new();
-    let mut people = Vec::with_capacity(cast.len());
+    // Everyone is checked and read before anyone is numbered: whether the
+    // bodies go decides every person's `<imageN>`.
+    struct Member<'a> {
+        name: String,
+        entry: &'a Entry,
+        wearing: &'a str,
+        doing: &'a str,
+        clothes_in_act: bool,
+        portrait: (Vec<u8>, &'static str),
+        body: Option<&'a Reference>,
+    }
+    let mut members = Vec::with_capacity(cast.len());
     for (i, member) in cast.iter().enumerate() {
         let name = member.name.trim().to_lowercase();
         if cast[..i]
@@ -1059,31 +1379,130 @@ pub fn compile(
                 "`wearing` and `doing` are capped at {MAX_CAST_FIELD} characters each."
             ));
         }
-        let (bytes, ext) = lib
+        let portrait = lib
             .read_portrait(entry)
             .map_err(|e| format!("`{name}`'s portrait cannot be read: {e:#}."))?;
-        refs.push((name.clone(), bytes, ext));
-        source_seeds.extend(entry.source_seed);
+        members.push(Member {
+            name,
+            entry,
+            wearing,
+            doing,
+            clothes_in_act: member.clothes_in_act,
+            portrait,
+            body: entry
+                .sendable_references()
+                .into_iter()
+                .find(|r| r.kind == RefKind::FullBody),
+        });
+    }
+
+    // All or nothing (§9.4), and said in counts, never labels:
+    // `image_generate` declares no private data, so its result names nothing
+    // the library holds beyond what the call already named.
+    let mut notes = Vec::new();
+    let n = members.len();
+    let attached = members.iter().filter(|m| m.body.is_some()).count();
+    let mut bound: Vec<Option<(Vec<u8>, &'static str)>> = vec![None; n];
+    if attached > 0 {
+        let not_sent = "Full-figure references were not sent";
+        if !bodies {
+            notes.push(format!(
+                "{not_sent}: a picture planned in layers is drawn from portraits."
+            ));
+        // The cap first: past it, attaching more cannot help, so the note
+        // must not suggest it (review of #685).
+        } else if 2 * n > MAX_BOUND_IMAGES {
+            notes.push(format!(
+                "{not_sent}: they go only to a picture of one or two people, and this one \
+                 has {}.",
+                number(n)
+            ));
+        } else if attached < n {
+            notes.push(format!(
+                "{not_sent}: {} of the {} people {} one attached, and they go to everyone or \
+                 no one.",
+                number(attached),
+                number(n),
+                if attached == 1 { "has" } else { "have" }
+            ));
+        } else {
+            let read: Vec<_> = members
+                .iter()
+                .map(|m| {
+                    let body = m.body.expect("everyone has one");
+                    lib.read_reference(m.entry, body).map_err(|e| {
+                        tracing::warn!("imagelib: {e:#}");
+                    })
+                })
+                .collect();
+            if read.iter().all(Result::is_ok) {
+                bound = read.into_iter().map(Result::ok).collect();
+            } else {
+                let bad = read.iter().filter(|r| r.is_err()).count();
+                notes.push(format!(
+                    "{not_sent}: {} could not be read.",
+                    if bad == 1 { "one" } else { "some" }
+                ));
+            }
+        }
+    }
+    let both = bound.iter().all(Option::is_some) && n > 0;
+
+    let mut refs = Vec::with_capacity(n * if both { 2 } else { 1 });
+    let mut used = Vec::new();
+    let mut source_seeds = Vec::new();
+    let mut people = Vec::with_capacity(n);
+    let mut bindings = Vec::new();
+    let mut figures = Vec::new();
+    for (i, (m, body)) in members.into_iter().zip(bound).enumerate() {
+        let shown = crate::imagegen::capitalized(&m.name);
+        let who = match &body {
+            Some(_) => {
+                let (face, figure) = (refs.len() + 1, refs.len() + 2);
+                bindings.push(format!(
+                    "<image{face}> and <image{figure}> show one person, {shown}: \
+                     <image{face}> is {shown}'s portrait, <image{figure}> {shown}'s full figure."
+                ));
+                figures.push(format!("<image{figure}>"));
+                format!("the person shown in <image{face}> and <image{figure}>")
+            }
+            None if n == 1 => "the person in the image".to_string(),
+            None => format!("the person from <image{}>", i + 1),
+        };
+        source_seeds.extend(m.entry.source_seed);
         used.push(Used {
             kind: Kind::Character,
-            name: name.clone(),
-            version: entry.version,
-            portrait: entry.portrait.clone(),
+            name: m.name.clone(),
+            version: m.entry.version,
+            portrait: m.entry.portrait.clone(),
+            full_body: body.as_ref().and(m.body.map(|r| r.blob.clone())),
         });
-        let who = if cast.len() == 1 {
-            "the person in the image".to_string()
-        } else {
-            format!("the person from <image{}>", i + 1)
-        };
-        let mut line = format!("{who} ({})", entry.text.trim().trim_end_matches('.'));
-        if !member.clothes_in_act {
-            line.push_str(&format!(", wearing {wearing}"));
+        let (bytes, ext) = m.portrait;
+        refs.push((m.name.clone(), bytes, ext));
+        if let Some((bytes, ext)) = body {
+            refs.push((format!("full_body:{}", m.name), bytes, ext));
         }
-        if !doing.is_empty() {
-            line.push_str(&format!(", {doing}"));
+        let mut line = format!("{who} ({})", m.entry.text.trim().trim_end_matches('.'));
+        if !m.clothes_in_act {
+            line.push_str(&format!(", wearing {}", m.wearing));
+        }
+        if !m.doing.is_empty() {
+            line.push_str(&format!(", {}", m.doing));
         }
         people.push(line);
     }
+    // E9b's binding, then its clothing clause with the colour taken out: the
+    // scene states what each person wears, and a figure's own outfit is
+    // only its stance's.
+    let bound_words = if both {
+        format!(
+            " {} The clothing in {} is not worn here.",
+            bindings.join(" "),
+            join_and(&figures)
+        )
+    } else {
+        String::new()
+    };
     let style_text = match style.map(|s| s.trim().to_lowercase()) {
         None => None,
         Some(name) if name.is_empty() => None,
@@ -1097,6 +1516,7 @@ pub fn compile(
                 name,
                 version: entry.version,
                 portrait: None,
+                full_body: None,
             });
             Some(entry.text.trim().to_string())
         }
@@ -1126,6 +1546,22 @@ pub fn compile(
     match (people.len(), m) {
         (0, 0) => {}
         (0, _) => prompt.push_str(&format!(" Also in the scene: {others}.")),
+        // One person bound to two images: E9b's two-person shape for one,
+        // its pronoun-free singular.
+        (1, 0) if both => prompt.push_str(&format!(
+            " {}.{bound_words} The person from the images appears exactly once; anyone else \
+             the scene describes is a new person, not from the images. The images are identity \
+             references only; this is a new image with its own composition, pose and lighting.",
+            capitalize(&people[0])
+        )),
+        (1, _) if both => prompt.push_str(&format!(
+            " {}.{bound_words} Also in the scene, not from the images: {others}. Exactly {} \
+             people in the image: the one from the images, exactly once, and {new_people} not \
+             from any image. The images are identity references only; this is a new image with \
+             its own composition, pose and lighting.",
+            capitalize(&people[0]),
+            number(1 + m)
+        )),
         (1, 0) => prompt.push_str(&format!(
             " {}. The person from the image appears exactly once; anyone else the scene \
              describes is a new person, not from the image. The image is an identity reference \
@@ -1141,16 +1577,17 @@ pub fn compile(
             number(1 + m)
         )),
         (n, 0) => prompt.push_str(&format!(
-            " From left to right: {}. Each of the {} people from the images appears exactly \
-             once; anyone else the scene describes is a new person, not from any image. All \
-             images serve as identity sources only.",
+            " From left to right: {}.{bound_words} Each of the {} people from the images \
+             appears exactly once; anyone else the scene describes is a new person, not from \
+             any image. All images serve as identity sources only.",
             people.join("; "),
             number(n)
         )),
         (n, _) => prompt.push_str(&format!(
-            " From left to right: {}. Also in the scene, not from any image: {others}. Exactly \
-             {} people in the image: the {} from the images, each exactly once, and \
-             {new_people} not from any image. All images serve as identity sources only.",
+            " From left to right: {}.{bound_words} Also in the scene, not from any image: \
+             {others}. Exactly {} people in the image: the {} from the images, each exactly \
+             once, and {new_people} not from any image. All images serve as identity sources \
+             only.",
             people.join("; "),
             number(n + m),
             number(n)
@@ -1160,6 +1597,19 @@ pub fn compile(
         prompt.push_str(&format!(" Style: {text}"));
     }
     if prompt.chars().count() > MAX_COMPILED_PROMPT {
+        // The binding is prompt-only, so it must never turn a picture that
+        // draws from faces into a refusal: past the cap, the faces-only
+        // compile stands, said (review of #685). Its notes are replaced,
+        // since the only one it could carry is the layers note.
+        if both {
+            let mut faces = compile_with(lib, scene, cast, given_extras, style, false)?;
+            faces.notes = vec![
+                "Full-figure references were not sent: the prompt would run over its limit \
+                 with them."
+                    .into(),
+            ];
+            return Ok(faces);
+        }
         return Err(format!(
             "The compiled prompt is over {MAX_COMPILED_PROMPT} characters; shorten the scene."
         ));
@@ -1169,6 +1619,7 @@ pub fn compile(
         references: refs,
         used,
         source_seeds,
+        notes,
     })
 }
 
@@ -1228,6 +1679,15 @@ pub fn broken_named_in(lib: &Library, prompt: &str) -> Vec<String> {
     out.sort();
     out.dedup();
     out
+}
+
+/// "a", "a and b", "a, b and c".
+fn join_and(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
 }
 
 fn capitalize(s: &str) -> String {
@@ -1981,5 +2441,495 @@ mod tests {
             ..Taint::default()
         };
         assert_eq!(Origin::of_proposal(Some(&dirty)), Origin::ModelUntrusted);
+    }
+
+    /// A different real PNG per colour, so two references are two blobs.
+    fn png_of(rgb: [u8; 3]) -> Vec<u8> {
+        let img = image::RgbImage::from_pixel(2, 2, image::Rgb(rgb));
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    }
+
+    /// A reference is the owner's write on an approved character: a new
+    /// version, the old one kept, the picture read back under its hash
+    /// (IMAGE-COMPILER-DESIGN.md §9.3).
+    #[test]
+    fn a_reference_is_a_new_version_read_under_its_hash() {
+        let dir = scratch();
+        create(dir.path(), character("wren", Origin::Owner)).unwrap();
+        let e = add_reference(
+            dir.path(),
+            "wren",
+            RefKind::FullBody,
+            &png_of([1, 2, 3]),
+            None,
+        )
+        .unwrap();
+        assert_eq!(e.version, 2);
+        assert!(entry_dir(dir.path(), Kind::Character, "wren")
+            .join("history/v1.toml")
+            .is_file());
+        let lib = Library::load(dir.path()).0;
+        let wren = lib.get(Kind::Character, "wren").unwrap();
+        assert_eq!(wren.references.len(), 1);
+        assert_eq!(wren.sendable_references().len(), 1);
+        let (bytes, ext) = lib.read_reference(wren, &wren.references[0]).unwrap();
+        assert_eq!((bytes, ext), (png_of([1, 2, 3]), "png"));
+        // Its text is untouched, so the owner's write changes no provenance.
+        assert_eq!(wren.origin, Origin::Owner);
+        assert_eq!(wren.status, Status::Approved);
+    }
+
+    /// A candidate carries no references, so rejecting one can never strand
+    /// reference blobs (§9.3, review of #680).
+    #[test]
+    fn a_candidate_takes_no_reference() {
+        let dir = scratch();
+        create(dir.path(), character("moss", Origin::ModelClean)).unwrap();
+        let err = add_reference(
+            dir.path(),
+            "moss",
+            RefKind::FullBody,
+            &png_of([9, 9, 9]),
+            None,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("candidate"), "{err}");
+    }
+
+    /// The store limits, a detail's label and the label's cap.
+    #[test]
+    fn references_keep_their_limits_and_labels() {
+        let dir = scratch();
+        create(dir.path(), character("wren", Origin::Owner)).unwrap();
+        add_reference(
+            dir.path(),
+            "wren",
+            RefKind::FullBody,
+            &png_of([1, 0, 0]),
+            None,
+        )
+        .unwrap();
+        let second = add_reference(
+            dir.path(),
+            "wren",
+            RefKind::FullBody,
+            &png_of([2, 0, 0]),
+            None,
+        )
+        .unwrap_err();
+        assert!(second.to_string().contains("remove one first"), "{second}");
+        let unlabelled = add_reference(
+            dir.path(),
+            "wren",
+            RefKind::Detail,
+            &png_of([3, 0, 0]),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            unlabelled.to_string().contains("needs a label"),
+            "{unlabelled}"
+        );
+        let long = add_reference(
+            dir.path(),
+            "wren",
+            RefKind::Detail,
+            &png_of([3, 0, 0]),
+            Some("x".repeat(MAX_LABEL + 1)),
+        )
+        .unwrap_err();
+        assert!(long.to_string().contains("capped"), "{long}");
+        for (i, l) in ["tattoo", "scar", "freckles", "ring"].iter().enumerate() {
+            add_reference(
+                dir.path(),
+                "wren",
+                RefKind::Detail,
+                &png_of([4, i as u8, 0]),
+                Some(l.to_string()),
+            )
+            .unwrap();
+        }
+        let fifth = add_reference(
+            dir.path(),
+            "wren",
+            RefKind::Detail,
+            &png_of([5, 0, 0]),
+            Some("mole".into()),
+        )
+        .unwrap_err();
+        assert!(fifth.to_string().contains("remove one first"), "{fifth}");
+        let view =
+            add_reference(dir.path(), "wren", RefKind::View, &png_of([6, 0, 0]), None).unwrap_err();
+        assert!(view.to_string().contains("not view"), "{view}");
+    }
+
+    /// An unknown kind, or a known kind this entry kind doesn't take, loads
+    /// and is shown but is never sent (§9.3's fail-closed reading).
+    #[test]
+    fn an_unknown_or_misplaced_reference_loads_but_is_never_sent() {
+        let dir = scratch();
+        create(dir.path(), character("wren", Origin::Owner)).unwrap();
+        let path = entry_dir(dir.path(), Kind::Character, "wren").join("entry.toml");
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str("\n[[reference]]\nkind = \"hat\"\nblob = \"sha256-aa.png\"\n\n[[reference]]\nkind = \"view\"\nblob = \"sha256-bb.png\"\n");
+        std::fs::write(&path, text).unwrap();
+        let (lib, errors) = Library::load(dir.path());
+        assert!(errors.is_empty(), "{errors:?}");
+        let wren = lib.get(Kind::Character, "wren").unwrap();
+        assert_eq!(wren.references.len(), 2);
+        assert_eq!(wren.references[0].kind, RefKind::Unknown);
+        assert!(wren.sendable_references().is_empty());
+    }
+
+    /// A hand-edited reference can't point outside `blobs/`, and bytes
+    /// swapped under an approved hash are refused, as for the portrait.
+    #[test]
+    fn a_reference_gets_the_portraits_name_and_hash_checks() {
+        let dir = scratch();
+        create(dir.path(), character("wren", Origin::Owner)).unwrap();
+        let e = add_reference(dir.path(), "wren", RefKind::Face, &png_of([7, 7, 7]), None).unwrap();
+        std::fs::write(
+            dir.path().join("blobs").join(&e.references[0].blob),
+            png_of([8, 8, 8]),
+        )
+        .unwrap();
+        let lib = Library::load(dir.path()).0;
+        let wren = lib.get(Kind::Character, "wren").unwrap();
+        let swapped = lib.read_reference(wren, &wren.references[0]).unwrap_err();
+        assert!(
+            swapped.to_string().contains("does not match its hash"),
+            "{swapped}"
+        );
+
+        let path = entry_dir(dir.path(), Kind::Character, "wren").join("entry.toml");
+        let text = std::fs::read_to_string(&path)
+            .unwrap()
+            .replace(&e.references[0].blob, "../../escape.png");
+        std::fs::write(&path, text).unwrap();
+        let (lib, errors) = Library::load(dir.path());
+        assert!(lib.get(Kind::Character, "wren").is_none());
+        assert!(
+            errors.iter().any(|e| e.why.contains("not a blob name")),
+            "{errors:?}"
+        );
+    }
+
+    /// Several details need a label to say which goes; the picture stays for
+    /// the history.
+    #[test]
+    fn removing_a_reference_is_a_new_version_and_keeps_the_picture() {
+        let dir = scratch();
+        create(dir.path(), character("wren", Origin::Owner)).unwrap();
+        add_reference(
+            dir.path(),
+            "wren",
+            RefKind::Detail,
+            &png_of([1, 1, 0]),
+            Some("tattoo".into()),
+        )
+        .unwrap();
+        let e = add_reference(
+            dir.path(),
+            "wren",
+            RefKind::Detail,
+            &png_of([1, 2, 0]),
+            Some("scar".into()),
+        )
+        .unwrap();
+        let ambiguous = remove_reference(dir.path(), "wren", RefKind::Detail, None).unwrap_err();
+        assert!(ambiguous.to_string().contains("--label"), "{ambiguous}");
+        let gone = e.references[0].blob.clone();
+        let after = remove_reference(dir.path(), "wren", RefKind::Detail, Some("tattoo")).unwrap();
+        assert_eq!(after.version, 4);
+        assert_eq!(after.references.len(), 1);
+        assert!(dir.path().join("blobs").join(gone).is_file());
+    }
+
+    /// Two details under one label could never be told apart for removal,
+    /// so the second is refused before its picture is stored (review of #684).
+    #[test]
+    fn a_label_is_unique_within_its_kind() {
+        let dir = scratch();
+        create(dir.path(), character("wren", Origin::Owner)).unwrap();
+        add_reference(
+            dir.path(),
+            "wren",
+            RefKind::Detail,
+            &png_of([1, 3, 0]),
+            Some("tattoo".into()),
+        )
+        .unwrap();
+        let dup = add_reference(
+            dir.path(),
+            "wren",
+            RefKind::Detail,
+            &png_of([1, 4, 0]),
+            Some(" tattoo ".into()),
+        )
+        .unwrap_err();
+        assert!(dup.to_string().contains("use another label"), "{dup}");
+        let blobs = std::fs::read_dir(dir.path().join("blobs")).unwrap().count();
+        assert_eq!(blobs, 2, "the refused picture was stored");
+    }
+
+    /// The read itself refuses a reference the entry may not send, so no
+    /// caller can ship one by iterating `references` (review of #684).
+    #[test]
+    fn a_reference_that_may_not_be_sent_cannot_be_read() {
+        let dir = scratch();
+        create(dir.path(), character("wren", Origin::Owner)).unwrap();
+        let path = entry_dir(dir.path(), Kind::Character, "wren").join("entry.toml");
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str("\n[[reference]]\nkind = \"view\"\nblob = \"sha256-bb.png\"\n");
+        std::fs::write(&path, text).unwrap();
+        let lib = Library::load(dir.path()).0;
+        let wren = lib.get(Kind::Character, "wren").unwrap();
+        let err = lib.read_reference(wren, &wren.references[0]).unwrap_err();
+        assert!(err.to_string().contains("not one it may send"), "{err}");
+    }
+
+    /// A second copy of a kind past its limit equals the first by value; the
+    /// gate goes by which reference it is, so the copy is refused (review of
+    /// #684).
+    #[test]
+    fn a_copy_past_the_limit_is_refused_by_identity() {
+        let dir = scratch();
+        create(dir.path(), character("wren", Origin::Owner)).unwrap();
+        add_reference(
+            dir.path(),
+            "wren",
+            RefKind::FullBody,
+            &png_of([5, 5, 5]),
+            None,
+        )
+        .unwrap();
+        let path = entry_dir(dir.path(), Kind::Character, "wren").join("entry.toml");
+        let mut entry: Entry = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        entry.references.push(entry.references[0].clone());
+        std::fs::write(&path, toml::to_string_pretty(&entry).unwrap()).unwrap();
+        let lib = Library::load(dir.path()).0;
+        let wren = lib.get(Kind::Character, "wren").unwrap();
+        assert_eq!(wren.references.len(), 2);
+        assert!(lib.read_reference(wren, &wren.references[0]).is_ok());
+        let err = lib.read_reference(wren, &wren.references[1]).unwrap_err();
+        assert!(err.to_string().contains("not one it may send"), "{err}");
+    }
+
+    /// Labels are trimmed when stored, so removal trims what it is given.
+    #[test]
+    fn removing_by_label_trims_it() {
+        let dir = scratch();
+        create(dir.path(), character("wren", Origin::Owner)).unwrap();
+        for (rgb, label) in [([2, 1, 0], "tattoo"), ([2, 2, 0], "scar")] {
+            add_reference(
+                dir.path(),
+                "wren",
+                RefKind::Detail,
+                &png_of(rgb),
+                Some(label.into()),
+            )
+            .unwrap();
+        }
+        let after =
+            remove_reference(dir.path(), "wren", RefKind::Detail, Some("  tattoo ")).unwrap();
+        assert_eq!(after.references.len(), 1);
+        assert_eq!(after.references[0].label.as_deref(), Some("scar"));
+    }
+
+    fn with_body(dir: &Path, name: &str, rgb: [u8; 3]) {
+        create(dir, character(name, Origin::Owner)).unwrap();
+        add_reference(dir, name, RefKind::FullBody, &png_of(rgb), None).unwrap();
+    }
+
+    /// E9b's shape (§9.4): two people, each bound to a portrait then a full
+    /// figure, named in the binding and never given a pronoun; the figures'
+    /// clothing is not worn; the head count is E12's, never a total.
+    #[test]
+    fn a_cast_of_two_with_bodies_binds_each_to_two_images() {
+        let dir = scratch();
+        with_body(dir.path(), "maya", [9, 1, 1]);
+        with_body(dir.path(), "jo", [9, 2, 2]);
+        let lib = Library::load(dir.path()).0;
+        let c = compile(&lib, "a studio", &[member("maya"), member("jo")], &[], None).unwrap();
+        let names: Vec<&str> = c.references.iter().map(|r| r.0.as_str()).collect();
+        assert_eq!(names, ["maya", "full_body:maya", "jo", "full_body:jo"]);
+        assert_eq!(c.references[1].1, png_of([9, 1, 1]));
+        assert_eq!(c.references[3].1, png_of([9, 2, 2]));
+        assert_eq!(
+            c.prompt,
+            "a studio. From left to right: the person shown in <image1> and <image2> (maya, a \
+             person with a memorable face), wearing a yellow raincoat, laughing; the person \
+             shown in <image3> and <image4> (jo, a person with a memorable face), wearing a \
+             yellow raincoat, laughing. <image1> and <image2> show one person, Maya: <image1> \
+             is Maya's portrait, <image2> Maya's full figure. <image3> and <image4> show one \
+             person, Jo: <image3> is Jo's portrait, <image4> Jo's full figure. The clothing in \
+             <image2> and <image4> is not worn here. Each of the two people from the images \
+             appears exactly once; anyone else the scene describes is a new person, not from \
+             any image. All images serve as identity sources only."
+        );
+        assert!(c.notes.is_empty(), "{:?}", c.notes);
+        assert!(c.used.iter().all(|u| u.full_body.is_some()));
+    }
+
+    /// One person: the same binding, in the singular.
+    #[test]
+    fn a_cast_of_one_with_a_body_is_bound_too() {
+        let dir = scratch();
+        with_body(dir.path(), "maya", [9, 3, 3]);
+        let lib = Library::load(dir.path()).0;
+        let c = compile(&lib, "a studio", &[member("maya")], &[], None).unwrap();
+        assert_eq!(c.references.len(), 2);
+        assert!(
+            c.prompt.contains(
+                "The person shown in <image1> and <image2> (maya, a person with a memorable \
+                 face), wearing a yellow raincoat, laughing. <image1> and <image2> show one \
+                 person, Maya: <image1> is Maya's portrait, <image2> Maya's full figure. The \
+                 clothing in <image2> is not worn here. The person from the images appears \
+                 exactly once"
+            ),
+            "{}",
+            c.prompt
+        );
+    }
+
+    /// All or nothing (§9.4), each refusal said in counts and never a label:
+    /// one person without a body, a cast too big to bind, a layered plan.
+    #[test]
+    fn bodies_go_to_everyone_or_no_one_and_say_why_in_counts() {
+        let dir = scratch();
+        with_body(dir.path(), "maya", [9, 4, 4]);
+        create(dir.path(), character("jo", Origin::Owner)).unwrap();
+        with_body(dir.path(), "theo", [9, 5, 5]);
+        with_body(dir.path(), "ada", [9, 6, 6]);
+        let lib = Library::load(dir.path()).0;
+        let faces_only = |c: &Compiled| {
+            assert!(c.references.iter().all(|r| !r.0.starts_with("full_body:")));
+            assert!(!c.prompt.contains("full figure"), "{}", c.prompt);
+            assert!(c.used.iter().all(|u| u.full_body.is_none()));
+        };
+
+        let c = compile(&lib, "a studio", &[member("maya"), member("jo")], &[], None).unwrap();
+        faces_only(&c);
+        assert!(
+            c.prompt.contains("the person from <image2>"),
+            "{}",
+            c.prompt
+        );
+        assert_eq!(
+            c.notes,
+            [
+                "Full-figure references were not sent: one of the two people has one attached, \
+                 and they go to everyone or no one."
+            ]
+        );
+
+        // Past the cap the cap is the reason, attached or not: attaching
+        // a body to the one without could not help.
+        let partial = [member("maya"), member("jo"), member("theo")];
+        let c = compile(&lib, "a studio", &partial, &[], None).unwrap();
+        faces_only(&c);
+        assert!(
+            c.notes[0].ends_with("and this one has three."),
+            "{:?}",
+            c.notes
+        );
+        let three = [member("maya"), member("theo"), member("ada")];
+        let c = compile(&lib, "a studio", &three, &[], None).unwrap();
+        faces_only(&c);
+        assert_eq!(
+            c.notes,
+            [
+                "Full-figure references were not sent: they go only to a picture of one or \
+                 two people, and this one has three."
+            ]
+        );
+
+        let two = [member("maya"), member("theo")];
+        let c = compile_with(&lib, "a studio", &two, &[], None, false).unwrap();
+        faces_only(&c);
+        assert_eq!(
+            c.notes,
+            [
+                "Full-figure references were not sent: a picture planned in layers is drawn from \
+              portraits."
+            ]
+        );
+
+        // Nobody has one: nothing was left out, so nothing is said.
+        let c = compile(&lib, "a studio", &[member("jo")], &[], None).unwrap();
+        assert!(c.notes.is_empty(), "{:?}", c.notes);
+    }
+
+    /// The binding is prompt-only: a scene that draws from faces just under
+    /// the cap still draws, faces only and said, never refused (review of
+    /// #685).
+    #[test]
+    fn bodies_past_the_prompt_cap_fall_back_to_faces() {
+        let dir = scratch();
+        with_body(dir.path(), "maya", [9, 9, 1]);
+        with_body(dir.path(), "jo", [9, 9, 2]);
+        let lib = Library::load(dir.path()).0;
+        let two = [member("maya"), member("jo")];
+        let base = compile_with(&lib, "x", &two, &[], None, false)
+            .unwrap()
+            .prompt
+            .chars()
+            .count();
+        // "x" becomes a scene ten characters under the cap, faces only.
+        let scene = "a".repeat(MAX_COMPILED_PROMPT - 10 - (base - 1));
+        let faces = compile_with(&lib, &scene, &two, &[], None, false).unwrap();
+        assert_eq!(faces.prompt.chars().count(), MAX_COMPILED_PROMPT - 10);
+        let c = compile(&lib, &scene, &two, &[], None).unwrap();
+        assert_eq!(c.prompt, faces.prompt);
+        assert_eq!(c.references.len(), 2);
+        assert!(c.used.iter().all(|u| u.full_body.is_none()));
+        assert_eq!(
+            c.notes,
+            [
+                "Full-figure references were not sent: the prompt would run over its limit with \
+              them."
+            ]
+        );
+        // Over the cap from faces alone is still the scene's to shorten.
+        let long = "a".repeat(MAX_COMPILED_PROMPT);
+        assert!(compile(&lib, &long, &two, &[], None)
+            .unwrap_err()
+            .contains("shorten the scene"));
+    }
+
+    /// A body whose bytes no longer match their hash is not sent, and with it
+    /// no one's is; the picture still draws, from faces.
+    #[test]
+    fn a_body_that_fails_its_hash_sends_no_bodies() {
+        let dir = scratch();
+        with_body(dir.path(), "maya", [9, 7, 7]);
+        with_body(dir.path(), "jo", [9, 8, 8]);
+        let lib = Library::load(dir.path()).0;
+        let jo = lib.get(Kind::Character, "jo").unwrap();
+        std::fs::write(lib.blob_path(&jo.references[0].blob), png_of([0, 0, 1])).unwrap();
+        let c = compile(&lib, "a studio", &[member("maya"), member("jo")], &[], None).unwrap();
+        assert_eq!(c.references.len(), 2);
+        assert_eq!(
+            c.notes,
+            ["Full-figure references were not sent: one could not be read."]
+        );
+    }
+
+    /// The delete gate walks the whole store: a blob named only under a
+    /// directory this build doesn't know is still referenced (§9.3).
+    #[test]
+    fn a_blob_named_only_in_an_unknown_directory_is_still_referenced() {
+        let dir = scratch();
+        let later = dir.path().join("locations/harbour");
+        std::fs::create_dir_all(&later).unwrap();
+        std::fs::write(
+            later.join("entry.toml"),
+            "name = \"harbour\"\n[[reference]]\nkind = \"view\"\nblob = \"sha256-cc.png\"\n",
+        )
+        .unwrap();
+        assert!(blob_referenced(dir.path(), "sha256-cc.png"));
+        assert!(!blob_referenced(dir.path(), "sha256-dd.png"));
     }
 }
