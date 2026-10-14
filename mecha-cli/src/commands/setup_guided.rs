@@ -1171,8 +1171,9 @@ mod tests {
     }
 
     /// A yes enables the feature with what it needs, parsed from the same
-    /// command the step loop runs — so `dictate` brings `web` and `voice`
-    /// (review of #631).
+    /// command the step loop runs (review of #631). Since F15 no feature the
+    /// step loop offers needs another, so this pins `enable_ids` and
+    /// `also_enables` on a part, `dictate`, for the next one that does.
     #[test]
     fn a_yes_brings_what_the_feature_needs() {
         let cfg = mecha_core::config::Config::default();
