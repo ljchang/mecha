@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   PANES, paneOf, entriesFor, counts, originLabel, listUrl, validName, tameName, voicesUrl, voiceLine,
   TEXT_MAX, fitWithin, formProblem, formBody,
+  REF_KINDS, REF_LIMIT, refNote, refAddable, refProblem, refBody, refRemoveBody, LABEL_MAX,
 } from '../src/lib/library.js';
 
 const entries = [
@@ -107,5 +108,30 @@ assert.deepEqual(formBody({ ...edit, portrait: 'BBBB' }, entry), { kind: 'charac
 assert.deepEqual(formBody({ ...edit, text: 'a woman of 40' }, entry, 'tok'), {
   kind: 'character', name: 'maya', text: 'a woman of 40', unlock: 'tok',
 });
+
+// References: the store's limits, approved characters only.
+assert.deepEqual(REF_LIMIT, { face: 1, full_body: 1, detail: 4 });
+for (const k of REF_KINDS) assert.ok(refNote(k), k);
+const wren = { kind: 'character', name: 'wren', status: 'approved', references: [{ kind: 'full_body', label: null }] };
+assert.equal(refAddable(wren, 'full_body'), false, 'one full body only');
+assert.equal(refAddable(wren, 'face'), true);
+assert.equal(refAddable({ ...wren, status: 'candidate' }, 'face'), false, 'a candidate takes none');
+assert.equal(refAddable({ kind: 'style', name: 'noir', status: 'approved' }, 'detail'), false);
+const four = { ...wren, references: ['a', 'b', 'c', 'd'].map((label) => ({ kind: 'detail', label })) };
+assert.equal(refAddable(four, 'detail'), false, 'four details at most');
+// A detail needs a label, and a label is unique within its kind.
+assert.equal(refProblem({ kind: 'full_body', label: '', picture: null }), 'a picture');
+assert.equal(refProblem({ kind: 'full_body', label: '', picture: 'AA' }), null);
+assert.match(refProblem({ kind: 'detail', label: ' ', picture: 'AA' }), /label/);
+assert.match(refProblem({ kind: 'detail', label: 'x'.repeat(LABEL_MAX + 1), picture: 'AA' }), /at most/);
+assert.match(refProblem({ kind: 'detail', label: 'a', picture: 'AA' }, four), /does not already have/);
+assert.equal(refProblem({ kind: 'detail', label: 'scar', picture: 'AA' }, four), null);
+// Bodies: trimmed label only when given, the token only when held.
+assert.deepEqual(refBody({ kind: 'full_body', label: ' ', picture: 'AA' }, wren), { name: 'wren', as: 'full_body', picture: 'AA' });
+assert.deepEqual(refBody({ kind: 'detail', label: ' tattoo ', picture: 'AA' }, wren, 't'), {
+  name: 'wren', as: 'detail', picture: 'AA', label: 'tattoo', unlock: 't',
+});
+assert.deepEqual(refRemoveBody(wren, { kind: 'full_body', label: null }), { name: 'wren', as: 'full_body' });
+assert.deepEqual(refRemoveBody(wren, { kind: 'detail', label: 'scar' }, 't'), { name: 'wren', as: 'detail', label: 'scar', unlock: 't' });
 
 console.log('library.mjs: ok');
