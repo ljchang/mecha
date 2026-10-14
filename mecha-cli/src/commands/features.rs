@@ -504,16 +504,26 @@ pub(super) async fn enable_unwired(
                     ids.join(" ")
                 );
             }
-            println!(
-                "Enabling {} installs, from pinned sources — into ~/.mecha/sidecars/, and, for a \
-                 server, its {}, started once to check them:",
-                ids.join(" "),
-                if cfg!(target_os = "macos") {
-                    "launchd agents"
-                } else {
-                    "systemd user units"
-                }
-            );
+            let services = if cfg!(target_os = "macos") {
+                "launchd agents"
+            } else {
+                "systemd user units"
+            };
+            // Every row a refresh: nothing is installed, so the header does
+            // not say so (review of #691, pass 5).
+            if refreshing.len() == todo.len() {
+                println!(
+                    "Enabling {} refreshes what an older mecha installed — its {services}, \
+                     rewritten and restarted, and started once to check them:",
+                    ids.join(" ")
+                );
+            } else {
+                println!(
+                    "Enabling {} installs, from pinned sources — into ~/.mecha/sidecars/, and, \
+                     for a server, its {services}, started once to check them:",
+                    ids.join(" ")
+                );
+            }
             let turbo_line = match &fetch_turbo {
                 Some((why, download, reinstall)) => format!(
                     ", {} the turbo model ({}; {why})",
@@ -623,6 +633,14 @@ pub(super) async fn enable_unwired(
                     })?;
             }
         }
+    }
+    // Nothing here could be installed at all: `--reinstall` still says it
+    // found nothing (review of #691, pass 5).
+    if reinstall && !can_install {
+        println!(
+            "Nothing mecha installed for {} runs a service to reinstall.",
+            ids.join(" ")
+        );
     }
     set(ids, true)?;
     if features.contains(&Feature::Image) {

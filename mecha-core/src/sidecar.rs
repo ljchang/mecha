@@ -969,9 +969,12 @@ pub fn plan(
             _ => 0,
         })
         .sum();
-    // A stale install is something to do: its refresh.
+    // A stale install is something to do: its refresh — except the
+    // router's, which is `mecha setup chat`'s and never a feature's plan's,
+    // or a machine chatting elsewhere would never read "nothing to do"
+    // (review of #691, pass 5).
     let nothing_to_do = sidecars.iter().all(|s| {
-        !s.stale
+        !(s.stale && s.id != crate::router_unit::ID)
             && matches!(
                 s.state,
                 SidecarState::Provided { .. } | SidecarState::Installed
