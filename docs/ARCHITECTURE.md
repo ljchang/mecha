@@ -10339,7 +10339,9 @@ exhaustive `match`, so the build asks; the ones that are not say so.
       proxy reached no Mac that had ComfyUI already (2026-10-14). A
       definition an install stops writing (a renamed or retired unit) must
       leave the record through `Manifest::unrecord` in the same change, or
-      it reads stale after every refresh.
+      it reads stale after every refresh. The pins see only the text they are
+      handed: a file an install starts writing goes into its module's pin in
+      the same change, or a change to it never raises the number.
 11. **It asks the way `enable` asks.** Without a terminal, `features enable`
     installs nothing and says how to proceed (`--no-install` writes the
     switch alone). The guided `mecha setup` lists every download and install

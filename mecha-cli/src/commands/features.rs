@@ -487,6 +487,12 @@ pub(super) async fn enable_unwired(
                 fetch_turbo = None;
             }
         }
+        if reinstall && todo.is_empty() {
+            println!(
+                "Nothing mecha installed for {} runs a service to reinstall.",
+                ids.join(" ")
+            );
+        }
         let turbo_only = matches!(fetch_turbo, Some((.., true))) && todo.len() == 1;
         if !todo.is_empty() {
             let names: Vec<&str> = todo.iter().map(|(_, label, ..)| *label).collect();
@@ -602,7 +608,11 @@ pub(super) async fn enable_unwired(
                 return Ok(Vec::new());
             }
             for (id, label, ..) in todo.iter().filter(|_| go) {
-                println!("Installing {label}…");
+                if refreshing.contains(id) {
+                    println!("Refreshing {label}…");
+                } else {
+                    println!("Installing {label}…");
+                }
                 let turbo = *id == comfy::ID && fetch_turbo.is_some();
                 install::install(id, &m, &machine, &hub, turbo, &mut |s| println!("  {s}"))
                     .await
@@ -1346,7 +1356,12 @@ fn render_plan(p: &sidecar::Plan, chat_here: bool) -> String {
             SidecarState::Provided { by } => format!("provided — {by}; left alone"),
             // Services an older build wrote: the router's are `mecha setup
             // chat`'s to rewrite (F13), every other's `enable`'s.
-            SidecarState::Installed if s.stale && s.id == mecha_core::router_unit::ID => {
+            // Only where chat runs here, as `mecha setup` asks it: a machine
+            // chatting through a hosted provider needs no router refreshed
+            // (review of #691, pass 4).
+            SidecarState::Installed
+                if s.stale && s.id == mecha_core::router_unit::ID && chat_here =>
+            {
                 "installed by mecha; its service is out of date — `mecha setup chat` refreshes \
                  it (choosing the model it serves now downloads nothing)"
                     .to_string()
@@ -2054,6 +2069,10 @@ mod tests {
         let text = render_plan(&p, true);
         assert!(text.contains("`mecha setup chat` refreshes it"), "{text}");
         assert!(!text.contains("features enable"), "{text}");
+        // Chatting elsewhere, the router is not this machine's to refresh.
+        let text = render_plan(&p, false);
+        assert!(!text.contains("setup chat"), "{text}");
+        assert!(!text.contains("out of date"), "{text}");
     }
 
     #[test]
