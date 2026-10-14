@@ -725,6 +725,7 @@ A `(parent)` in the Requires column is `part_of`, not a `requires` edge:
 | id | Feature | Settings it needs (Unready without them) | Requires | Hidden when off |
 |---|---|---|---|---|
 | `web` | The web app (`mecha serve`) | `[web] owner_login` (serve refuses without it) | — | everything web; `mecha serve` refuses with the fix |
+| ↳ `incognito` | A chat that leaves no trace | a local provider without fallbacks (`provider_is_local`) | `web` (parent, since F15) | Chat's incognito toggle |
 | `slack` | Slack remote control | tokens in `~/.mecha/slack` (`mecha slack auth`) | — | `mecha slack …` verbs except `auth` |
 | `mail` | Mail and calendar | a global `[[mcp]]` entry running `mecha-mail`, and an authorised account | — | Mail tab, Home mail card, Outbox event editor, `mecha mail` |
 | `docs` | Google Docs, Sheets, Slides | a global `[[mcp]]` entry running `mecha-docs`, and an account | — | its tools |
@@ -741,7 +742,6 @@ A `(parent)` in the Requires column is `part_of`, not a `requires` edge:
 | ↳ `dictate` | Speech to text in the browser | `[voice] stt_url` | `voice` (parent), `web` | Dictate |
 | ↳ `calls` | Spoken conversation in the browser | `[voice] offer_target` | `voice` (parent), `web` | voice-call button |
 | ↳ `cloning` | New voices | `[voice] voices_dir` | `voice` (parent), `web` | Settings → Voice → clone |
-| ↳ `incognito` | A chat that leaves no trace | a local provider without fallbacks (`provider_is_local`) | `web` (parent, since F15) | Chat's incognito toggle |
 | `frontdoor` | Inbound requests and polls | `factory-publish` on PATH — its drain fills `~/.mecha/requests` | — | Review → Front door, Home card, `frontdoor`, `polls` |
 | ↳ `publishing` | The model's publishing tools | a global `[[mcp]]` entry running `factory-publish` | `frontdoor` (parent) | the `factory__*` tools |
 | `messages` | Messages between sessions | — (`[messages]` keeps its tunables) | — | `message_send`, `mecha msg` |
