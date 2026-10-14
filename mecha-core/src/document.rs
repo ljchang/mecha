@@ -1786,6 +1786,136 @@ enum Stage {
 /// The layout model's hash, remembered while the file is unchanged.
 type HashMemo = std::sync::Mutex<Option<(PathBuf, u64, std::time::SystemTime, String)>>;
 
+#[cfg(test)]
+mod enable_tests {
+    use super::*;
+
+    /// The table is written where there is none, with what was chosen, the
+    /// file's comments kept — and an owner's table is never touched.
+    #[test]
+    fn the_documents_table_is_written_once_and_never_over_the_owner_s() {
+        let dir = std::env::temp_dir().join(format!("mecha-doctable-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "# my notes\n[features]\ndocuments = true\n").unwrap();
+        let choice = TableChoice {
+            ocr: true,
+            layout: false,
+            confine: Some(Backend::Landlock),
+        };
+        assert!(write_documents_table(&path, &choice).unwrap());
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# my notes"), "{text}");
+        let v: toml::Value = toml::from_str(&text).unwrap();
+        assert_eq!(v["documents"]["ocr"].as_bool(), Some(true));
+        assert_eq!(v["documents"]["layout"].as_bool(), Some(false));
+        assert_eq!(v["documents"]["confine"].as_str(), Some("landlock"));
+        // It parses as the config reads it.
+        let d: DocumentsConfig = v["documents"].clone().try_into().unwrap();
+        assert_eq!(d.confine, Backend::Landlock);
+
+        std::fs::write(&path, "[documents]\nocr = false\n").unwrap();
+        assert!(!write_documents_table(&path, &choice).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[documents]\nocr = false\n"
+        );
+        // After a file's closing comments, never above them: a commented
+        // switch under `[documents]` would, uncommented, fail every load
+        // (review of #683).
+        std::fs::write(&path, "[features]\ndocuments = true\n# web = false\n").unwrap();
+        assert!(write_documents_table(&path, &choice).unwrap());
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.find("# web = false").unwrap() < text.find("[documents]").unwrap(),
+            "{text}"
+        );
+        // No confinement chosen: the key is left out, so the default holds.
+        std::fs::write(&path, "").unwrap();
+        let none = TableChoice {
+            confine: None,
+            ..choice
+        };
+        assert!(write_documents_table(&path, &none).unwrap());
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("confine"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// What `mecha features enable documents` writes when the config has no
+/// `[documents]` table: the settings that match what is installed here.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TableChoice {
+    pub ocr: bool,
+    pub layout: bool,
+    /// The confinement proved to run here; `None` leaves the default.
+    pub confine: Option<Backend>,
+}
+
+/// Give the config a `[documents]` table when it has none (§13) — the switch
+/// alone leaves documents unready. A table the owner wrote is never edited:
+/// `Ok(false)`. In place through `toml_edit`, so the file's comments stay
+/// (`comfyui_unit::write_image_table`'s shape).
+pub fn write_documents_table(path: &Path, choice: &TableChoice) -> Result<bool> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    let mut doc: toml_edit::DocumentMut = text
+        .parse()
+        .with_context(|| format!("{} is not valid TOML; nothing was changed", path.display()))?;
+    if doc.contains_key("documents") {
+        return Ok(false);
+    }
+    let mut table = toml_edit::Table::new();
+    table.insert("ocr", toml_edit::value(choice.ocr));
+    table.insert("layout", toml_edit::value(choice.layout));
+    if let Some(c) = choice.confine {
+        table.insert("confine", toml_edit::value(c.as_str()));
+    }
+    // After the file's closing comments, as every new table: inserted above
+    // them, a fresh starter's commented `[features]` switches would sit under
+    // `[documents]`, which refuses unknown keys — uncommenting one, a parse
+    // error on every command (review of #683; `config::append_table`).
+    crate::config::append_table(&mut doc, "documents", table);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    let tmp = path.with_extension("toml.documents-tmp");
+    std::fs::write(&tmp, doc.to_string()).with_context(|| format!("writing {}", tmp.display()))?;
+    if let Ok(meta) = std::fs::metadata(path) {
+        let _ = std::fs::set_permissions(&tmp, meta.permissions());
+    }
+    std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
+    Ok(true)
+}
+
+/// The confinement the PDF parser actually runs under here, asked of each
+/// candidate's own preflight (poppler started inside it): bubblewrap, else
+/// Landlock. `Err` carries every reason, for a system where neither runs.
+pub async fn working_confinement() -> std::result::Result<Backend, String> {
+    let mut why = Vec::new();
+    // Each system's own: Seatbelt on a Mac (#682), bubblewrap then Landlock
+    // on Linux.
+    let candidates: &[Backend] = if cfg!(target_os = "macos") {
+        &[Backend::Seatbelt]
+    } else {
+        &[Backend::Bwrap, Backend::Landlock]
+    };
+    for &backend in candidates {
+        let cfg = DocumentsConfig {
+            confine: backend,
+            ..DocumentsConfig::default()
+        };
+        match Renderer::new(&cfg).preflight().await {
+            Ok(()) => return Ok(backend),
+            Err(e) => why.push(format!("{}: {e:#}", backend.as_str())),
+        }
+    }
+    Err(why.join("; "))
+}
+
 /// The extractor: config, the confined renderer, the OCR client if any, the
 /// cache if any. Cheap to build; holds no connection until used.
 pub struct Extractor {

@@ -103,6 +103,8 @@ pub fn installable(id: &str) -> bool {
         "embed-server" | "ocr-server" | "stt" | "voice-worker" | "speech" | "comfyui" => {
             crate::router_unit::installs_here()
         }
+        // A cargo build into mecha's tree, wherever cargo runs (§13).
+        crate::graph_mcp::ID => true,
         _ => false,
     }
 }
@@ -226,6 +228,13 @@ pub fn price(plan: &mut Plan, chat_here: bool, nvidia: impl FnOnce() -> crate::e
     // nothing it fetches goes uncounted (review of #649). A machine
     // `speech_unit::fits` refuses is not offered the server, so neither the
     // clip nor the slot's model is its plan's (review of #649).
+    // The graph's MCP server is a build: nothing to price but the wait, and
+    // a machine without cargo is not offered it, with why (§13).
+    if wanted(plan, crate::graph_mcp::ID) {
+        if let Err(why) = crate::graph_mcp::fits() {
+            not_offered(plan, crate::graph_mcp::ID, &why);
+        }
+    }
     if wanted(plan, crate::speech_unit::ID) {
         match crate::speech_unit::fits(std::env::consts::OS, nvidia()) {
             Ok(_) => {
@@ -686,6 +695,7 @@ pub async fn install(
 ) -> Result<()> {
     match id {
         "layout" => install_layout(m, machine, hub, say).await,
+        crate::graph_mcp::ID => crate::graph_mcp::install(m, say).await,
         "embed-server" | "ocr-server" => {
             let which = if id == "embed-server" {
                 crate::llama_units::Which::Embeddings
@@ -1142,13 +1152,16 @@ mod tests {
     #[test]
     fn installable_and_the_registry_agree() {
         // The on-demand servers' installer is built, for systemd machines.
+        // The graph's MCP server (§13) is a cargo build, on every system.
         let built: &[&str] = if cfg!(target_os = "linux") {
-            &["7a-3", "7b", "7c-1", "7c-2", "7d-1", "7d-2", "7e", "7f"]
+            &[
+                "7a-3", "7b", "7c-1", "7c-2", "7d-1", "7d-2", "7e", "7f", "13",
+            ]
         } else if cfg!(target_os = "macos") {
             // launchd agents for the on-demand servers, voice and images (§12).
-            &["7a-3", "7b", "7c-1", "7d-1", "7d-2", "7e", "7f"]
+            &["7a-3", "7b", "7c-1", "7d-1", "7d-2", "7e", "7f", "13"]
         } else {
-            &["7a-3", "7b"]
+            &["7a-3", "7b", "13"]
         };
         assert!(installable("layout"));
         assert!(installable("llama"));
