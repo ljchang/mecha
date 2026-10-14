@@ -736,19 +736,20 @@ pub fn remove(m: &Machinery, naming: &Naming) -> Result<()> {
 #[cfg(test)]
 mod tests {
     /// The router's revision is held to what its install writes: the presets
-    /// file, the unit, the launcher, their drop-in and wait script, and the
-    /// Mac agent.
+    /// file, the unit, the launcher, their drop-ins (the engine's included)
+    /// and wait script, and the Mac agent.
     #[test]
     fn the_router_s_revision_is_held_to_what_it_writes() {
         let n = Naming::shipped();
         let bin = Path::new("/h/.mecha/sidecars/bin");
         let presets = Path::new("/h/.mecha/sidecars/router/presets.ini");
         let r = |t: &str| render(t, &n, bin, presets);
+        let engine = Path::new("/h/.mecha/sidecars/llama/current/llama-server");
         let plist = crate::launchd::plist_text(&agent(
             &n,
             bin,
             presets,
-            Path::new("/h/.mecha/sidecars/llama/current/llama-server"),
+            engine,
             Path::new("/u/.cargo/bin/mecha"),
             Path::new("/h/.mecha"),
             "/u/Library/Logs/mecha/llama-local.log".into(),
@@ -770,7 +771,7 @@ mod tests {
             ID,
             (
                 1,
-                "1946cb344dc248fbfc5032cd738f2ca33e8719ceaef7a2ceaef94ad10a67f966",
+                "6b0950c01907bbe62aecdffe29243b6f493d69d0ccd824969fa3a4e08acfc909",
             ),
             &[
                 &preset(true),
@@ -779,6 +780,9 @@ mod tests {
                 &r(ROUTER_LAUNCHER),
                 PATH_CONF,
                 WAIT_HEALTHY,
+                // The engine the unit runs, by drop-in: mecha's or one on PATH.
+                &crate::engine_gate::drop_in_text(engine),
+                &crate::llama_units::provided_engine_text(engine),
                 &plist,
             ],
         );

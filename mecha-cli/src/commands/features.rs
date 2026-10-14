@@ -530,15 +530,17 @@ pub(super) async fn enable_unwired(
                 let built = if refreshing.contains(id) {
                     // Its build and models are current: only the services
                     // are written again.
+                    let why = if reinstall {
+                        "reinstalled, as asked"
+                    } else {
+                        "its service is from an older mecha"
+                    };
                     if *id == comfy::ID && !turbo_line.is_empty() {
-                        println!(
-                            "  {label} — its service is from an older mecha: rewritten and \
-                             restarted{turbo_line}"
-                        );
+                        println!("  {label} — {why}: rewritten and restarted{turbo_line}");
                     } else {
                         println!(
-                            "  {label} — its service is from an older mecha: rewritten and \
-                             restarted; nothing current is downloaded again"
+                            "  {label} — {why}: rewritten and restarted; nothing current is \
+                             downloaded again"
                         );
                     }
                     continue;
