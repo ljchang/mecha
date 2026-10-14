@@ -488,10 +488,7 @@ pub(super) async fn enable_unwired(
             }
         }
         if reinstall && todo.is_empty() {
-            println!(
-                "Nothing mecha installed for {} runs a service to reinstall.",
-                ids.join(" ")
-            );
+            println!("Nothing to reinstall here for {}.", ids.join(" "));
         }
         let turbo_only = matches!(fetch_turbo, Some((.., true))) && todo.len() == 1;
         if !todo.is_empty() {
@@ -511,7 +508,10 @@ pub(super) async fn enable_unwired(
             };
             // Every row a refresh: nothing is installed, so the header does
             // not say so (review of #691, pass 5).
-            if refreshing.len() == todo.len() {
+            // Asked of what is left to do: a row dropped above (not offered
+            // here, someone else's) is no longer counted (review of #691,
+            // pass 6).
+            if todo.iter().all(|(id, ..)| refreshing.contains(id)) {
                 println!(
                     "Enabling {} refreshes what an older mecha installed — its {services}, \
                      rewritten and restarted, and started once to check them:",
@@ -637,10 +637,7 @@ pub(super) async fn enable_unwired(
     // Nothing here could be installed at all: `--reinstall` still says it
     // found nothing (review of #691, pass 5).
     if reinstall && !can_install {
-        println!(
-            "Nothing mecha installed for {} runs a service to reinstall.",
-            ids.join(" ")
-        );
+        println!("Nothing to reinstall here for {}.", ids.join(" "));
     }
     set(ids, true)?;
     if features.contains(&Feature::Image) {

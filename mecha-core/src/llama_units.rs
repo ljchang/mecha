@@ -396,7 +396,16 @@ fn start_units(
     engine.write(home, id, &dropins)?;
 
     crate::engine_gate::systemctl("daemon-reload", &[])?;
-    crate::engine_gate::systemctl("enable", &["--now", &format!("{stem}.socket")])
+    // A refresh must reach a socket already listening: `enable --now` is a
+    // no-op on an active one, so the old `[Socket]` would keep serving under
+    // a stamp that reads current, and the refresh would never be offered
+    // again (review of #691, pass 6). The proxy and server it started are
+    // stopped — the next request cold-starts them from the new units — and
+    // the socket restarted, which on a fresh install starts it.
+    let (proxy, server) = (format!("{stem}-proxy.service"), format!("{stem}.service"));
+    crate::engine_gate::systemctl("stop", &[&proxy, &server])?;
+    crate::engine_gate::systemctl("enable", &[&format!("{stem}.socket")])?;
+    crate::engine_gate::systemctl("restart", &[&format!("{stem}.socket")])
 }
 
 /// The launchd half: one agent running mecha's own on-demand proxy over the
