@@ -44,11 +44,14 @@ else needs them, so leave the crate off if you will never want mail or Google
 Docs. `--locked` builds against the dependency versions the release was tested
 with rather than resolving fresh ones.
 
-The knowledge graph is a separate project with its own crates, and is not part
-of that command:
+The knowledge graph is a separate project with its own crates. You do not
+install its server by hand: `mecha features enable graph` builds
+`mecha-graph-mcp` from a pinned commit into `~/.mecha/sidecars/graph-mcp/` when
+none is on your `PATH` (a few minutes; it needs cargo and a C compiler). The
+graph's own command-line tool is optional:
 
 ```bash
-cargo install mecha-graph mecha-graph-mcp --locked   # the CLI, and the MCP server mecha talks to
+cargo install mecha-graph --locked   # optional: the graph's CLI
 ```
 
 See [Mail and calendar](/docs/features/tools/mail),

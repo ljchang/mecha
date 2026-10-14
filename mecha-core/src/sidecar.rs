@@ -191,6 +191,25 @@ pub const SIDECARS: &[Sidecar] = &[
         // from the hub, read there as ComfyUI's are (review of #649).
         models_in_hub: false,
     },
+    // The knowledge graph's MCP server: one on the PATH is the owner's, used
+    // as it is; otherwise `enable graph` builds the pinned commit into
+    // mecha's tree (`graph_mcp.rs`, the owner's ruling of 2026-10-13).
+    Sidecar {
+        id: "graph-mcp",
+        label: "the knowledge graph's MCP server (mecha-graph-mcp)",
+        needed_by: &[Feature::Graph],
+        serves: &[],
+        // `~/.cargo/bin` as well as PATH, as `onboarding::find_program`
+        // looks: a `cargo install`ed server not on this shell's PATH is still
+        // the owner's, never rebuilt beside (review of #683).
+        evidence: &[
+            Evidence::OnPath("mecha-graph-mcp"),
+            Evidence::Home(".cargo/bin/mecha-graph-mcp"),
+        ],
+        installer: "13",
+        // No models: nothing of the hub's is its to hold.
+        models_in_hub: false,
+    },
 ];
 
 /// The record of what mecha itself wrote under `~/.mecha/sidecars/` (§10.2
@@ -711,6 +730,19 @@ pub fn plan(
                 }
             }
         };
+        // The graph's server records only its tree, so "the tree is there"
+        // is not "the pinned build is": a build of an older commit, or a tree
+        // whose binary is gone, reads unfinished — offered, and rebuilt by
+        // `enable` — or a bump of `graph_mcp::REV` would never reach a
+        // machine that built the last one (review of #683).
+        let state = match state {
+            SidecarState::Installed
+                if s.id == crate::graph_mcp::ID && !crate::graph_mcp::installed(&m.mecha_home) =>
+            {
+                SidecarState::Incomplete
+            }
+            other => other,
+        };
         sidecars.push(PlannedSidecar {
             id: s.id,
             label: s.label,
@@ -992,7 +1024,8 @@ mod tests {
                 );
             }
             assert!(
-                ["7a-3", "7b", "7c-1", "7c-2", "7d-1", "7d-2", "7e", "7f"].contains(&s.installer),
+                ["7a-3", "7b", "7c-1", "7c-2", "7d-1", "7d-2", "7e", "7f", "13"]
+                    .contains(&s.installer),
                 "{}: installer step {}",
                 s.id,
                 s.installer
@@ -1357,6 +1390,66 @@ mod tests {
         Manifest::finish(&home, "layout").unwrap();
         assert!(!Manifest::read(&home).unwrap().entries[0].incomplete);
         assert!(Manifest::record(&home, "never-begun", &home).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The graph's MCP server: missing with nothing here; the owner's on the
+    /// PATH is provided and left alone; mecha's own build, recorded, is
+    /// installed — never read as the owner's for being on no PATH (§13).
+    #[test]
+    fn the_graph_server_is_missing_provided_or_mecha_s_own() {
+        let root = scratch();
+        let m = machinery(&root);
+        let state = |m: &Machinery| {
+            plan(Feature::Graph, m, &GB10, &root.join("hub"), false)
+                .unwrap()
+                .sidecars
+                .into_iter()
+                .find(|s| s.id == crate::graph_mcp::ID)
+                .expect("graph's plan names its MCP server")
+                .state
+        };
+        assert!(matches!(state(&m), SidecarState::Missing { .. }));
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        std::fs::write(root.join("bin/mecha-graph-mcp"), b"#!/bin/sh\n").unwrap();
+        assert!(matches!(state(&m), SidecarState::Provided { .. }));
+        std::fs::remove_file(root.join("bin/mecha-graph-mcp")).unwrap();
+        // A finished record over a tree with no pinned build in it is not
+        // installed: it is offered again, so `enable` rebuilds it.
+        use crate::graph_mcp::{binary, root as tree_of, PROGRAM, REPO, REV};
+        let tree = tree_of(&m.mecha_home);
+        std::fs::create_dir_all(tree.join("bin")).unwrap();
+        Manifest::begin(&m.mecha_home, crate::graph_mcp::ID).unwrap();
+        Manifest::record(&m.mecha_home, crate::graph_mcp::ID, &tree).unwrap();
+        Manifest::finish(&m.mecha_home, crate::graph_mcp::ID).unwrap();
+        assert_eq!(state(&m), SidecarState::Incomplete, "no binary");
+        std::fs::write(binary(&m.mecha_home), b"#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                binary(&m.mecha_home),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
+        let record = |rev: &str| {
+            std::fs::write(
+                tree.join(".crates2.json"),
+                format!(
+                    r#"{{"installs":{{"{PROGRAM} 0.1.5 (git+{REPO}?rev={rev}#{rev})":{{}}}}}}"#
+                ),
+            )
+            .unwrap()
+        };
+        record("0000000000000000000000000000000000000000");
+        assert_eq!(
+            state(&m),
+            SidecarState::Incomplete,
+            "an older commit's build is not the pin"
+        );
+        record(REV);
+        assert_eq!(state(&m), SidecarState::Installed);
         let _ = std::fs::remove_dir_all(&root);
     }
 
