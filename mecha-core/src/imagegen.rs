@@ -157,8 +157,9 @@ impl Default for ImageConfig {
             // window: a picture inside a quarter hour of the last is drawn
             // warm. A cold one took 145–180 s against 36–63 s warm,
             // 2026-10-08, the restart wait included (the owner's ruling, that
-            // day). Off on a Mac (`unload_after_secs_on`).
-            unload_after_secs: unload_after_secs_on(std::env::consts::OS),
+            // day). Not armed behind a Mac's on-demand proxy
+            // (`behind_mecha_s_proxy`).
+            unload_after_secs: 900,
             server_temp_dir: None,
         }
     }
@@ -720,18 +721,23 @@ pub fn memory_need_mb(loaded: Option<bool>, min_mb: u64) -> u64 {
     }
 }
 
-/// `[image] unload_after_secs`' default on `os`. Off on a Mac: its ComfyUI
-/// runs behind mecha's on-demand proxy, which stops the whole process after
-/// the same fifteen idle minutes (`comfyui_unit::for_mac`). A `/free` from
-/// here would reach that proxy at the same moment and either reset its idle
-/// clock — stopping ComfyUI half an hour after the last picture, not fifteen
+/// Whether this Mac's ComfyUI is mecha's own, run behind its on-demand
+/// proxy, which stops the whole process after fifteen idle minutes
+/// (`comfyui_unit::for_mac`). There `[image] unload_after_secs` is not
+/// armed: a `/free` would reach the proxy and either reset its idle clock —
+/// ComfyUI stopped half an hour after the last picture, not fifteen
 /// minutes — or cold-start ComfyUI only to tell it to free (review of #689).
-pub fn unload_after_secs_on(os: &str) -> u64 {
-    if os == "macos" {
-        0
-    } else {
-        900
-    }
+/// Keyed on that agent, not on the OS: a ComfyUI a Mac's owner runs by hand
+/// has no proxy, and keeps the timer (review of #689, pass 2).
+fn behind_mecha_s_proxy() -> bool {
+    cfg!(target_os = "macos")
+        && dirs::home_dir().is_some_and(|h| {
+            crate::launchd::agents_dir(&h)
+                .join(crate::launchd::plist_name(
+                    &crate::comfyui_unit::Naming::shipped().unit,
+                ))
+                .is_file()
+        })
 }
 
 /// The default `[image] min_available_mb` on `os`: what a picture from cold
@@ -2265,7 +2271,13 @@ impl ImageGenerate {
             return Ok(());
         }
         // A switch of model unloads the one held and loads the other: cold.
-        let loaded = if self
+        // Not asked on a Mac: `loaded_from_stats` reads any device but CUDA
+        // as unknown, so the answer is always cold there, and asking it
+        // through the on-demand proxy started ComfyUI even for a picture the
+        // gate then refused (review of #689).
+        let loaded = if cfg!(target_os = "macos") {
+            None
+        } else if self
             .backend
             .switching(self.cfg.model_file(model), &self.cfg.diffusion_model)
         {
@@ -2704,7 +2716,7 @@ impl ImageGenerate {
 
     fn arm_unload(&self) {
         let after = self.cfg.unload_after_secs;
-        if after == 0 {
+        if after == 0 || behind_mecha_s_proxy() {
             return;
         }
         let armed = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
@@ -5969,9 +5981,12 @@ mod tests {
     /// A Mac's available memory is macOS's own level (the owner's ruling,
     /// 2026-10-13): a percentage, and anything else unread.
     #[test]
-    fn a_mac_leaves_unloading_to_its_proxy() {
-        assert_eq!(unload_after_secs_on("macos"), 0);
-        assert_eq!(unload_after_secs_on("linux"), 900);
+    fn the_unload_timer_is_left_to_mecha_s_proxy_only() {
+        // Never on Linux; on a Mac only where mecha's agent is installed.
+        if !cfg!(target_os = "macos") {
+            assert!(!behind_mecha_s_proxy());
+        }
+        assert_eq!(ImageConfig::default().unload_after_secs, 900);
     }
 
     #[test]
