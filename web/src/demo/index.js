@@ -148,6 +148,7 @@ export const ROUTES = [
   ['POST', /^\/api\/library\/unlock$/, () => ({ token: 'demo', idle_secs: 900 })],
   ['POST', /^\/api\/library\/(relock|save|add|edit)$/, () => ({ ok: true, output: '' })],
   ['POST', /^\/api\/library\/reference(\/remove)?$/, () => new Response('the demo keeps no new references', { status: 501 })],
+  ['POST', /^\/api\/library\/pending\/[^/]+\/(approve|reject)$/, () => new Response('the demo has no staged reference changes', { status: 501 })],
   // `{kind}/{name}/{action}`: approve, reject, lock, unlock, remove.
   ['POST', /^\/api\/library\/[^/]+\/[^/]+\/[^/]+$/, () => ({ ok: true, output: '' })],
   ['GET', /^\/api\/proposals$/, () => fx.proposalStores],
