@@ -1193,7 +1193,7 @@ pub fn write_mcp_entries(
                 None => {
                     let mut servers = toml_edit::ArrayOfTables::new();
                     servers.push(entry);
-                    doc.insert("mcp", toml_edit::Item::ArrayOfTables(servers));
+                    crate::config::append_tables(&mut doc, "mcp", servers);
                 }
             }
             changed = true;
