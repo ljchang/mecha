@@ -147,7 +147,13 @@ pub async fn execute(args: Args) -> Result<()> {
                 // `mecha-wait-healthy`'s budget for these servers' start.
                 start_timeout: std::time::Duration::from_secs(180),
                 launcher,
-                ready_path,
+                // A path, always: `system_stats` alone would build
+                // `http://127.0.0.1:18188system_stats`.
+                ready_path: if ready_path.starts_with('/') {
+                    ready_path
+                } else {
+                    format!("/{ready_path}")
+                },
             })
             .await;
         }

@@ -729,15 +729,24 @@ pub fn memory_need_mb(loaded: Option<bool>, min_mb: u64) -> u64 {
 /// minutes — or cold-start ComfyUI only to tell it to free (review of #689).
 /// Keyed on that agent, not on the OS: a ComfyUI a Mac's owner runs by hand
 /// has no proxy, and keeps the timer (review of #689, pass 2).
-fn behind_mecha_s_proxy() -> bool {
-    cfg!(target_os = "macos")
-        && dirs::home_dir().is_some_and(|h| {
-            crate::launchd::agents_dir(&h)
-                .join(crate::launchd::plist_name(
-                    &crate::comfyui_unit::Naming::shipped().unit,
-                ))
-                .is_file()
-        })
+fn behind_mecha_s_proxy(url: &str) -> bool {
+    cfg!(target_os = "macos") && dirs::home_dir().is_some_and(|h| behind_proxy_at(&h, url))
+}
+
+/// [`behind_mecha_s_proxy`] under `home`: the configured URL names the
+/// shipped port, and the agent there runs the on-demand proxy — asked of the
+/// plist, not taken from its existing. An agent installed before the proxy
+/// ran ComfyUI on that port itself, and the timer is all that ever freed it;
+/// a URL elsewhere is a ComfyUI the owner runs (review of #689).
+fn behind_proxy_at(home: &std::path::Path, url: &str) -> bool {
+    let shipped = crate::comfyui_unit::Naming::shipped();
+    let names_port = reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.port_or_known_default())
+        == Some(shipped.port);
+    let plist = crate::launchd::agents_dir(home).join(crate::launchd::plist_name(&shipped.unit));
+    names_port
+        && std::fs::read_to_string(plist).is_ok_and(|t| t.contains("<string>on-demand</string>"))
 }
 
 /// The default `[image] min_available_mb` on `os`: what a picture from cold
@@ -867,8 +876,13 @@ const SERVER_WAIT_STEP: Duration = Duration::from_millis(500);
 /// run`, the first picture after a `serve` restart - so it covers the slowest
 /// start measured (40 s once; 4-10 s usually), while a stopped service is
 /// still reported in half of [`SERVER_WAIT`] (review of #515).
+///
+/// **A Mac waits as long as its proxy does.** Its ComfyUI starts on demand
+/// (`comfyui_unit::for_mac`) and nothing is forwarded until it is ready, so
+/// an unseen server there is one being started, which the proxy gives 180 s
+/// — 45 s gave up on a cold start that would have answered (review of #689).
 #[cfg(not(test))]
-const UNSEEN_WAIT: Duration = Duration::from_secs(45);
+const UNSEEN_WAIT: Duration = Duration::from_secs(if cfg!(target_os = "macos") { 200 } else { 45 });
 #[cfg(test)]
 const UNSEEN_WAIT: Duration = Duration::from_secs(1);
 
@@ -2716,7 +2730,7 @@ impl ImageGenerate {
 
     fn arm_unload(&self) {
         let after = self.cfg.unload_after_secs;
-        if after == 0 || behind_mecha_s_proxy() {
+        if after == 0 || behind_mecha_s_proxy(&self.cfg.url) {
             return;
         }
         let armed = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
@@ -5978,17 +5992,42 @@ mod tests {
         assert_eq!(tool.persona_form(None).floor, floor);
     }
 
-    /// A Mac's available memory is macOS's own level (the owner's ruling,
-    /// 2026-10-13): a percentage, and anything else unread.
+    /// The unload timer stands down only for mecha's proxy-fronted agent on
+    /// the shipped port: never for an older agent that runs ComfyUI itself,
+    /// a URL naming another port, or no agent (review of #689).
     #[test]
     fn the_unload_timer_is_left_to_mecha_s_proxy_only() {
-        // Never on Linux; on a Mac only where mecha's agent is installed.
-        if !cfg!(target_os = "macos") {
-            assert!(!behind_mecha_s_proxy());
-        }
         assert_eq!(ImageConfig::default().unload_after_secs, 900);
+        if !cfg!(target_os = "macos") {
+            assert!(!behind_mecha_s_proxy("http://127.0.0.1:8188"));
+        }
+        let home = std::env::temp_dir().join(format!("mecha-proxy-{}", uuid::Uuid::new_v4()));
+        let plist = crate::launchd::agents_dir(&home).join(crate::launchd::plist_name(
+            &crate::comfyui_unit::Naming::shipped().unit,
+        ));
+        let url = "http://127.0.0.1:8188";
+        assert!(!behind_proxy_at(&home, url), "no agent");
+        std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
+        std::fs::write(&plist, "<string>/v/python</string><string>main.py</string>").unwrap();
+        assert!(
+            !behind_proxy_at(&home, url),
+            "an agent from before the proxy"
+        );
+        std::fs::write(
+            &plist,
+            "<string>/m/mecha</string><string>features</string><string>on-demand</string>",
+        )
+        .unwrap();
+        assert!(behind_proxy_at(&home, url));
+        assert!(
+            !behind_proxy_at(&home, "http://127.0.0.1:9188"),
+            "another port"
+        );
+        let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// A Mac's available memory is macOS's own level (the owner's ruling,
+    /// 2026-10-13): a percentage, and anything else unread.
     #[test]
     fn macos_available_memory_is_its_memorystatus_level() {
         let parse = crate::system::source::parse_memorystatus_level;
@@ -6100,7 +6139,13 @@ mod tests {
         // submitted generation (a test runner may have under 8 GiB free,
         // which R5's reserve would refuse).
         let (asked, submitted) = ask(1).await;
-        assert!(asked, "the check never asked the server");
+        // A Mac does not ask: the answer is always unknown there, and asking
+        // started ComfyUI behind its proxy (review of #689).
+        assert_eq!(
+            asked,
+            !cfg!(target_os = "macos"),
+            "the check asked the server: {asked}"
+        );
         assert!(submitted, "an admitted generation was never submitted");
         assert!(!ask(0).await.0, "a switched-off check still asked");
     }
