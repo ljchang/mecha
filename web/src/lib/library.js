@@ -226,3 +226,11 @@ export function refRemoveBody(entry, ref, token = null) {
     ...(token ? { unlock: token } : {}),
   };
 }
+
+// What a picked picture shows before it is saved: the very bytes the form
+// will send, as a data: URL. Not a blob: URL — serve's Content-Security-Policy
+// allows `img-src 'self' data:` only, so a blob: preview rendered as a broken
+// image until the save (2026-10-14).
+export function previewOf(b64) {
+  return `data:image/jpeg;base64,${b64}`;
+}
