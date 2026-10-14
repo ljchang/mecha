@@ -202,7 +202,11 @@ The rules, each a measurement:
   the cap bounds bytes, not only entries. It creates only
   a candidate, which changes nothing the owner uses until approved — so it is
   `read_only` on the footing `image_generate` has: a web chat starts
-  read-only and proposing a character should be one request in it.
+  read-only and proposing a character should be one request in it. For a
+  character already in the library it points at the next door.
+- **`image_library_reference`** — attach or remove a character's
+  `full_body`, `face` or `detail`, directly from a clean conversation and
+  staged for the owner otherwise (§9.3, the owner's ruling of 2026-10-14).
 
 No tool description changes per turn; no character is ever listed in the
 system prompt (the cached prefix). Approved, unlocked style names are, in
@@ -453,14 +457,16 @@ characters/<name>/entry.toml
     refused, not sent.
 
   Today both read `entry.portrait` only, so neither carries over by itself.
-- **Only the owner writes references** (review of #680): the CLI and the web
-  page. `image_library_propose` can't add one, and **`add-reference` refuses
-  a candidate**: the owner approves the entry first. So a candidate never
-  holds a reference, and:
-  - the entry's one `origin` and `status` (§2) still describe everything in
-    it;
-  - a reference added to an approved entry is an owner write and a new
-    version, as an owner `update` is (§6). `update`'s "nothing to change"
+- **A candidate never holds a reference** (review of #680). Who may write
+  one is the provenance bullet below (amended 2026-10-14): the owner, or a
+  model from a clean conversation directly and otherwise staged.
+  `image_library_propose` can't add one, and **`add-reference` refuses a
+  candidate**: the owner approves the entry first. So:
+  - the entry's `status` (§2) still describes everything in it, and its
+    `origin` describes its text; each reference carries its own `origin`
+    when a model attached it (absent is the owner's own);
+  - a reference added to an approved entry is a new version, as an owner
+    `update` is (§6). `update`'s "nothing to change"
     comparison includes the references, and the version bump is what changes
     `shown_digest`, so a reference write can't slip past a displayed
     approval;
@@ -539,8 +545,12 @@ kind is derived from its directory (`Entry.kind`).
   with no human in the loop — in a read-only web chat too, so a default chat
   can do what the owner asked in it. `image_library_propose`'s `read_only`
   rests on a candidate reaching no prompt; this one does not, and provenance
-  is what bounds it instead. Its brakes are the `[tools]` off switch,
-  `MAX_PENDING`, and the character page's remove. A tool cannot see the
+  is what bounds it instead. Its brakes: the store's per-kind limits (one
+  face, one full body, four details), so a clean conversation can make at
+  most six changes before one must be removed; every write is a new version
+  with the old one kept in `history/`; the character page's remove; and the
+  `[tools]` off switch. A direct picture is held to the owner's own cap
+  (`MAX_PORTRAIT_BYTES`), a staged one to the proposal cap. A tool cannot see the
   chat's permission mode, so "a read-only chat stages instead" would need
   that plumbed first.
 - **Not stored yet:** a location's own clip or soundscape. Nothing would
