@@ -620,7 +620,9 @@ workspace**. Six decisions, each a bug if undone:
   binary a test holds byte-equal) restarts the server
   once it has held a model for 15 idle minutes with an
   empty queue and no open connection, leaving a 1.1 GB process with its port
-  up (Linux only: on a Mac there is no reset, FEATURES-DESIGN §12.3); below
+  up (Linux only: on a Mac ComfyUI runs on demand behind mecha's proxy,
+  which stops the whole process after the same fifteen idle minutes, and
+  `unload_after_secs` is not armed there — FEATURES-DESIGN §12.3); below
   4 GB of `MemFree` it sends `/free` instead, because a new CUDA
   context failed to come up there. A restart also empties the server's temp
   directory, whoever left files in it. mecha's own `unload_after_secs` timer
@@ -638,6 +640,8 @@ workspace**. Six decisions, each a bug if undone:
   instead of reporting the server down: up to 90 s for a server this process
   has had an answer from (it is restarting), 45 s for one it never has (the
   slowest start measured was 40 s; a stopped service is reported after that).
+  On a Mac both are 200 s: behind the proxy an unseen server is one being
+  started, which the proxy gives 180 s.
 - **Read-only, by the owner's ruling (2026-09-25).** Web chats start
   read-only, and a picture should be one request in any of them. The tool
   changes nothing of the owner's: it creates new files under `images/` in the
