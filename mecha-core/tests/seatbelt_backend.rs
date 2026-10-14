@@ -134,6 +134,69 @@ async fn the_home_is_denied_unless_the_call_names_a_path_in_it() {
     assert_eq!(String::from_utf8_lossy(&allowed.stdout), "HOME-SECRET");
 }
 
+/// The data volume is a second path to the home: the same file, spelled
+/// `/System/Volumes/Data/Users/…`, under a profile that allows `/System`.
+/// It reads unconfined and is refused under the profile (review of #682).
+#[tokio::test]
+async fn the_home_is_denied_through_the_data_volume_too() {
+    let home = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+        .canonicalize()
+        .unwrap();
+    let file = home.join(format!(".mecha-sb-data-{}", std::process::id()));
+    std::fs::write(&file, "DATA-SECRET").unwrap();
+    let via_data =
+        std::path::Path::new("/System/Volumes/Data").join(file.strip_prefix("/").unwrap());
+    let plain = std::process::Command::new("/bin/cat")
+        .arg(&via_data)
+        .output()
+        .unwrap();
+    let ws = support::tmpdir("sb-data");
+    let confined = run(
+        &seatbelt(false),
+        "/bin/cat",
+        &[via_data.to_str().unwrap()],
+        &ws,
+    )
+    .await;
+    std::fs::remove_file(&file).ok();
+    std::fs::remove_dir_all(&ws).ok();
+    assert_eq!(
+        String::from_utf8_lossy(&plain.stdout),
+        "DATA-SECRET",
+        "the negative below is not vacuous: the data volume does reach the home"
+    );
+    assert!(
+        !confined.status.success() && !String::from_utf8_lossy(&confined.stdout).contains("SECRET"),
+        "a home file was read through /System/Volumes/Data under the profile"
+    );
+}
+
+/// A path the call may only read cannot be written: the write denial is
+/// carved out only for the trees the call may write (review of #682).
+#[tokio::test]
+async fn a_path_the_call_may_read_is_not_writable() {
+    let home = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+        .canonicalize()
+        .unwrap();
+    let dir = home.join(format!(".mecha-sb-ro-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let target = dir.join("written");
+    let sb = Sandbox::new(SandboxConfig {
+        kind: Backend::Seatbelt,
+        readable: vec![dir.clone()],
+        ..SandboxConfig::default()
+    });
+    let ws = support::tmpdir("sb-ro");
+    let wrote = run(&sb, "/usr/bin/touch", &[target.to_str().unwrap()], &ws).await;
+    let exists = target.exists();
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::remove_dir_all(&ws).ok();
+    assert!(
+        !wrote.status.success() && !exists,
+        "a tree the call may only read was written under the profile"
+    );
+}
+
 /// No network unless asked: the same connection opens unconfined and with
 /// `network = true`, and fails under the default profile. An address, not a
 /// name, so the denial measured is the connection's, not the resolver's;
