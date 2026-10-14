@@ -47,6 +47,9 @@ pub struct Spec {
     pub start_timeout: Duration,
     /// The launcher, which starts the server on `backend`.
     pub launcher: PathBuf,
+    /// The path that answers 2xx once the server is ready: llama-server's
+    /// `/health`, ComfyUI's `/system_stats` (it has no `/health`).
+    pub ready_path: String,
 }
 
 struct State {
@@ -186,7 +189,7 @@ async fn forward(
     Ok(())
 }
 
-/// Start the launcher and wait for `/health` to say ok. A start that fails or
+/// Start the launcher and wait for its ready path to say ok. A start that fails or
 /// times out is stopped, never left half up.
 async fn start(spec: &Spec) -> Result<Child> {
     eprintln!("starting {}", spec.launcher.display());
@@ -199,7 +202,7 @@ async fn start(spec: &Spec) -> Result<Child> {
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
-    let url = format!("http://127.0.0.1:{}/health", spec.backend);
+    let url = format!("http://127.0.0.1:{}{}", spec.backend, spec.ready_path);
     let began = Instant::now();
     loop {
         if let Some(status) = child.try_wait()? {
@@ -347,6 +350,7 @@ socketserver.TCPServer(("127.0.0.1", {backend}), H).serve_forever()
             idle: Duration::from_secs(2),
             start_timeout: Duration::from_secs(30),
             launcher: fake_server(&dir, backend),
+            ready_path: "/health".into(),
         };
         let proxy = tokio::spawn(serve(listener, spec));
         tokio::time::sleep(Duration::from_millis(300)).await;
