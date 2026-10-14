@@ -52,11 +52,27 @@
   // The add/edit form: { mode, kind, name, text, locked, portrait, preview }.
   let form = $state(null);
   let preparing = $state(false);
-  // A typed picture being attached to the open character: { kind, label,
-  // picture, preview } (docs/IMAGE-COMPILER-DESIGN.md §9.5); and the one a
-  // remove sheet asks about.
+  // A typed picture being attached to the open character: { for, kind,
+  // label, picture, preview } (docs/IMAGE-COMPILER-DESIGN.md §9.5), `for`
+  // naming the character it was opened on; and the one a remove sheet asks
+  // about.
   let refForm = $state(null);
   let refPending = $state(null);
+  const entryKey = (e) => (e ? `${e.kind}/${e.name}` : null);
+  // The form belongs to the character it was opened on: whatever path
+  // changes or clears `open` (a lock, a relock, a reload, a new form), a
+  // picked picture never waits to be attached to someone else (review of
+  // #688).
+  $effect(() => {
+    const now = entryKey(open);
+    untrack(() => {
+      if (refForm && refForm.for !== now) closeRef();
+      if (refPending && sheet === 'remref' && !now) {
+        refPending = null;
+        sheet = null;
+      }
+    });
+  });
 
   const shown = $derived(entriesFor(pane, data?.entries));
 
@@ -212,7 +228,7 @@
 
   function startRef(kind) {
     closeRef();
-    refForm = { kind, label: '', picture: null, preview: null };
+    refForm = { for: entryKey(open), kind, label: '', picture: null, preview: null };
   }
 
   function closeRef() {
@@ -242,6 +258,7 @@
   async function submitRef() {
     const entry = open;
     if (!entry || !refForm || refProblem(refForm, entry)) return;
+    if (refForm.for !== entryKey(entry)) return closeRef();
     busy = true;
     try {
       const res = await fetch('/api/library/reference', {
