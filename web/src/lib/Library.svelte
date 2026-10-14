@@ -4,7 +4,7 @@
   import { features } from './features.svelte.js';
   import { opens, isShown } from './features.js';
   import {
-    PANES, paneOf, entriesFor, counts, pendingLine, originLabel, listUrl, tameName,
+    PANES, paneOf, entriesFor, counts, pendingLine, refApprovable, originLabel, listUrl, tameName,
     TEXT_MAX, PORTRAIT_EDGE, fitWithin, formProblem, formBody, previewOf,
     REF_KINDS, REF_TITLE, LABEL_MAX, refNote, refAddable, refProblem, refBody, refRemoveBody,
   } from './library.js';
@@ -614,7 +614,7 @@
               <button class="abtn" disabled={busy} onclick={() => actPending(p, 'reject')}>Reject</button>
               <!-- A change this build cannot apply is offered Reject only:
                    Approve would refuse every time (review of #692). -->
-              {#if p.action === 'add' || p.action === 'remove'}
+              {#if refApprovable(p)}
                 <button class="abtn primary" disabled={busy} onclick={() => actPending(p, 'approve')}>Approve</button>
               {/if}
             </div>

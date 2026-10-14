@@ -440,6 +440,15 @@ impl Tool for ImageLibraryReference {
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
+        // Planning is read-only exploration, and the phase gate admits this
+        // tool on its `read_only` flag, as it admits `message_send`: so the
+        // refusal is here, nothing written or staged (review of #696).
+        if ctx.phase == crate::agent::Phase::Plan {
+            return Ok(ToolOutput::err(
+                "image_library_reference is not available while planning: it changes a \
+                 library character. Nothing was attached or staged.",
+            ));
+        }
         let kind = match input.get("as").and_then(Value::as_str) {
             Some("full_body") => imagelib::RefKind::FullBody,
             Some("face") => imagelib::RefKind::Face,
@@ -990,6 +999,35 @@ mod tests {
             // The same picture twice is the store's to refuse at approval.
             imagelib::reject_reference(&lib, &p.id).unwrap();
         }
+        assert!(imagelib::pending_references(&lib).0.is_empty());
+        std::fs::remove_dir_all(lib).ok();
+        std::fs::remove_dir_all(ws).ok();
+    }
+
+    /// Planning changes nothing: not attached, not staged, even from a clean
+    /// conversation (review of #696).
+    #[tokio::test]
+    async fn planning_never_writes_a_reference() {
+        let (lib, ws) = library_with_wren();
+        let planning = ToolCtx {
+            phase: crate::agent::Phase::Plan,
+            ..ctx(&ws, Some(Taint::default()))
+        };
+        let out = ImageLibraryReference::new(lib.clone())
+            .call(
+                json!({"name": "wren", "as": "full_body", "picture": "images/tattoo.png"}),
+                &planning,
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(out.content.contains("planning"), "{}", out.content);
+        let wren = Library::load(&lib)
+            .0
+            .get(Kind::Character, "wren")
+            .unwrap()
+            .clone();
+        assert!(wren.references.is_empty());
         assert!(imagelib::pending_references(&lib).0.is_empty());
         std::fs::remove_dir_all(lib).ok();
         std::fs::remove_dir_all(ws).ok();
