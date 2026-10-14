@@ -962,7 +962,8 @@ pub fn blurb(f: crate::feature::Feature) -> &'static str {
     use crate::feature::Feature;
     match f {
         Feature::Web => {
-            "The web app on your tailnet: chat, mail, the graph and the review queues from a phone."
+            "The web app on your tailnet: chat, mail, the graph and the review queues from a \
+             phone — and incognito chats, which leave no trace, wherever the chat model is local."
         }
         Feature::Slack => {
             "Watch a run from Slack, approve what it wants to send, and hand files in and out."
@@ -981,16 +982,18 @@ pub fn blurb(f: crate::feature::Feature) -> &'static str {
         }
         Feature::Personas => "Characters you write and talk to, apart from the assistant.",
         Feature::Voice => "Talking to mecha: dictation, voice calls and voice cloning.",
-        Feature::Incognito => "A web chat that leaves no trace, on a local model.",
         Feature::Frontdoor => {
-            "Inbound requests from strangers, polls and publishing, behind a quarantine."
+            "Your outward-facing surface, through mecha-factory: what other people need from \
+             you arrives as a typed request, behind a quarantine, and what mecha publishes \
+             gets a lasting link — polls included."
         }
         Feature::Messages => "Messages between this machine's own sessions.",
         Feature::System => {
             "Letting the assistant read this machine's state: memory, disk, GPU, models."
         }
         // Parts are summarised under their parent and never stepped alone.
-        Feature::Tasks
+        Feature::Incognito
+        | Feature::Tasks
         | Feature::Ocr
         | Feature::Layout
         | Feature::Library
@@ -1668,16 +1671,16 @@ mod tests {
     }
 
     /// `false` is an answer written down: declined, not outstanding, and the
-    /// way back is the enable command rather than `--undecline`. A feature
-    /// switched on but blocked on an unanswered dependency is a yes that does
-    /// not work, offered the chained command, dependency first.
+    /// way back is the enable command rather than `--undecline`. (The other
+    /// half this test held — a feature blocked on a dependency, offered the
+    /// chained command — went with incognito's switch: no top-level feature
+    /// requires another since F15.)
     #[test]
-    fn an_explicit_false_is_an_answer_and_a_dependency_comes_first() {
+    fn an_explicit_false_is_an_answer() {
         let cfg = cfg_with_local(262144, Some(true));
         let mut f = facts(Some(props(262144, 4, true)));
         f.features = rows(|ff| {
             ff.config.features.0.insert("slack".into(), false);
-            switch_on(ff, &["incognito"]);
         });
         let steps = plan(&cfg, "local", &f);
         let slack = step(&steps, "slack");
@@ -1692,25 +1695,10 @@ mod tests {
             "{}",
             slack.detail
         );
-        // Switched on and blocked is a yes that does not work: wrong, not
-        // declinable, its remedy the chained command (review of #460).
-        let incognito = step(&steps, "incognito");
-        assert_eq!(incognito.status, Status::Wrong);
-        assert!(!incognito.optional);
         assert!(
-            incognito
-                .detail
-                .contains("mecha features disable incognito"),
-            "{}",
-            incognito.detail
+            steps.iter().all(|s| s.id != "incognito"),
+            "incognito is web's"
         );
-        assert_eq!(
-            incognito.remedy.as_ref().unwrap().argv,
-            ["mecha", "features", "enable", "web", "incognito"]
-        );
-        // The dependency's own step comes before it.
-        let at = |id: &str| steps.iter().position(|s| s.id == id).unwrap();
-        assert!(at("web") < at("incognito"));
     }
 
     /// A fresh install is *offered* a charter, and the offer never composes
@@ -2146,7 +2134,6 @@ mod tests {
                 "image",
                 "personas",
                 "voice",
-                "incognito",
                 "frontdoor",
                 "messages",
                 "system",

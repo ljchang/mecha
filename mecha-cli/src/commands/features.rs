@@ -1786,20 +1786,20 @@ mod tests {
                 fix: "mecha features enable mail".into(),
             },
             Announcement {
-                id: Feature::Incognito,
+                id: Feature::Search,
                 caveat: None,
-                fix: "mecha features enable web incognito".into(),
+                fix: "mecha features enable search".into(),
             },
         ])
         .unwrap();
         // Every feature is guarded since step 3b, so both are called off.
         assert!(
-            line.contains("off until switched on: mail (no account is authorised), incognito"),
+            line.contains("off until switched on: mail (no account is authorised), search"),
             "{line}"
         );
         assert!(!line.contains("still working"), "{line}");
         assert!(
-            line.contains("`mecha features enable mail web incognito`"),
+            line.contains("`mecha features enable mail search`"),
             "{line}"
         );
     }
