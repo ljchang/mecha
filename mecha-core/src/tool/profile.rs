@@ -31,7 +31,13 @@ impl ToolProfile {
                 let bare = n.rsplit("__").next().unwrap_or(n);
                 let c = t.capabilities();
                 let common = matches!(bare, "todo" | "compact" | "ask_user");
-                let public_read = t.read_only() && !c.private_data;
+                // A tool may declare `read_only` (so a default chat can call
+                // it) and still change owner state, as
+                // `image_library_reference` does: its `destructive` says so,
+                // and a destructive tool is never a public read. Structural,
+                // so the next such tool is excluded without a name here
+                // (review of #692).
+                let public_read = t.read_only() && !c.private_data && !c.destructive;
                 let keep = match self {
                     Self::Research => common || public_read,
                     Self::Coding => {
@@ -128,5 +134,22 @@ mod tests {
         let mut sorted = names.clone();
         sorted.sort();
         assert_eq!(names, sorted);
+    }
+
+    /// The reference tool declares `read_only` and returns nothing private,
+    /// yet writes a character from a clean conversation: a research child
+    /// must not keep it (review of #692).
+    #[test]
+    fn a_research_child_never_keeps_the_reference_writer() {
+        let mut registry = Registry::new();
+        registry.insert(std::sync::Arc::new(
+            crate::tool::image_library::ImageLibraryReference::new(std::path::PathBuf::new()),
+        ));
+        registry.insert(std::sync::Arc::new(
+            crate::tool::image_library::ImageLibraryPropose::new(std::path::PathBuf::new()),
+        ));
+        ToolProfile::Research.narrow(&mut registry, &[]);
+        assert!(registry.get("image_library_reference").is_none());
+        assert!(registry.get("image_library_propose").is_some());
     }
 }

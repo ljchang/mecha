@@ -1470,9 +1470,10 @@ async fn prepare_tools_carrying(
     // otherwise indistinguishable from one never configured.
     if cfg.image.is_some() && !feature_on(Feature::Image) {
         switched_off(Feature::Image, "image_generate");
-        // The library's two doors ride with `[image]` and the same switch.
+        // The library's doors ride with `[image]` and the same switch.
         switched_off(Feature::Library, "image_library");
         switched_off(Feature::Library, "image_library_propose");
+        switched_off(Feature::Library, "image_library_reference");
     }
     if let Some(image) = cfg.image.clone().filter(|_| feature_on(Feature::Image)) {
         let wants = opts.tools.is_empty() || opts.tools.iter().any(|t| t == "image_generate");
@@ -1517,13 +1518,15 @@ async fn prepare_tools_carrying(
                 Err(e) => eprintln!("mecha: image_generate not registered — {e:#}"),
             }
         }
-        // The image library's two doors ride with `[image]`: without a server
+        // The image library's doors ride with `[image]`: without a server
         // there is nothing to compile a cast into. The store is global only
         // (`~/.mecha/imagelib`), with no config key — a cloned repository must
         // not choose where characters come from.
         match mecha_core::imagelib::Library::default_dir() {
             Ok(dir) => {
-                use mecha_core::tool::image_library::{ImageLibrary, ImageLibraryPropose};
+                use mecha_core::tool::image_library::{
+                    ImageLibrary, ImageLibraryPropose, ImageLibraryReference,
+                };
                 // `[tools]` narrows these like any builtin, as `image_view`'s
                 // registration below does — the proposing door writes into
                 // the mecha home with no approver, so its off switch must work
@@ -1536,7 +1539,10 @@ async fn prepare_tools_carrying(
                     registry.insert(Arc::new(ImageLibrary::new(dir.clone())));
                 }
                 if asked("image_library_propose") {
-                    registry.insert(Arc::new(ImageLibraryPropose::new(dir)));
+                    registry.insert(Arc::new(ImageLibraryPropose::new(dir.clone())));
+                }
+                if asked("image_library_reference") {
+                    registry.insert(Arc::new(ImageLibraryReference::new(dir)));
                 }
             }
             Err(e) => eprintln!("mecha: image library tools not registered — {e:#}"),
