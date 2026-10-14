@@ -617,6 +617,15 @@ pub async fn install_layout(
     Ok(())
 }
 
+/// The `[image] server_temp_dir` a config file names, if it names one.
+fn named_temp(config: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(config).ok()?;
+    let v: toml::Value = toml::from_str(&text).ok()?;
+    Some(PathBuf::from(
+        v.get("image")?.get("server_temp_dir")?.as_str()?,
+    ))
+}
+
 /// A Python environment at `dir/venv` from a lock with every file pinned by
 /// hash, for the sidecar `id` — the venv, its managed Python and the lock
 /// each recorded before they are written (§10.2 item 2), and the install run
@@ -650,10 +659,19 @@ pub(crate) async fn locked_env(
         run(&mut c, "uv venv")?;
     }
     let lock_file = dir.join("requirements.txt");
+    // An environment built from this very lock is checked, not installed:
+    // its figure to fetch would be a false one on a refresh (#691, on the
+    // owner's Mac — the venv was untouched).
+    let current =
+        python.exists() && std::fs::read_to_string(&lock_file).is_ok_and(|on_disk| on_disk == lock);
     crate::llama_units::write_owned(home, id, &lock_file, lock, 0o644)?;
-    say(&format!(
-        "installing {what}, every file checked against the lock"
-    ));
+    if current {
+        say("checking its Python environment against the lock — installed, nothing to fetch");
+    } else {
+        say(&format!(
+            "installing {what}, every file checked against the lock"
+        ));
+    }
     let mut c = std::process::Command::new(&uv);
     c.args(["pip", "install", "--quiet", "--require-hashes", "--python"])
         .arg(&python)
@@ -766,6 +784,9 @@ pub async fn install(
                     temp.display(),
                     path.display()
                 )),
+                // An owner's table already naming it needs no word (#691,
+                // on the owner's Mac: it was told the line it had).
+                Ok(false) if named_temp(&path).as_deref() == Some(temp.as_path()) => {}
                 Ok(false) => say(&format!(
                     "your [image] table is left as it is — for each job's uploads to be deleted, \
                      it needs server_temp_dir = \"{}\"",
@@ -1013,6 +1034,20 @@ mod tests {
             }
             _ => assert_eq!(fits.download_bytes, 5, "not offered here, not priced"),
         }
+    }
+
+    /// The temp dir an owner's `[image]` table names is read, so a table
+    /// already naming it is not told the line it has.
+    #[test]
+    fn the_named_temp_dir_is_read_from_the_table() {
+        let dir = std::env::temp_dir().join(format!("mecha-temp-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("config.toml");
+        std::fs::write(&cfg, "[image]\nserver_temp_dir = \"/h/tmp/temp\"\n").unwrap();
+        assert_eq!(named_temp(&cfg), Some(PathBuf::from("/h/tmp/temp")));
+        std::fs::write(&cfg, "[image]\nurl = \"x\"\n").unwrap();
+        assert_eq!(named_temp(&cfg), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// An installed server is offered again only when its services are an
