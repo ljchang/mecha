@@ -978,26 +978,35 @@ async fn documents_table() -> Result<()> {
     // Seatbelt on a Mac (written as no `confine`, its default there),
     // bubblewrap then Landlock on Linux (written as the one that worked).
     let macos = cfg!(target_os = "macos");
-    let (confine, pdfs) = match mecha_core::document::working_confinement().await {
-        Ok(b) => (if macos { None } else { Some(b) }, None),
-        Err(why) => (
-            None,
-            Some(if macos {
-                format!(
-                    "PDFs will be refused until poppler runs under the macOS sandbox here \
-                     ({why}) — `brew install poppler`"
-                )
+    // A probe that found no working confinement writes nothing: written,
+    // the table would pin the default that just failed, and `enable` never
+    // revisits a table that is there (review of #683). The owner is told the
+    // fix, and `enable documents` again writes the table once it works.
+    let confine = match mecha_core::document::working_confinement().await {
+        Ok(b) => {
+            if macos {
+                None
             } else {
-                format!(
-                    "PDFs will be refused until the parser can be confined here ({why}) — \
-                     install poppler-utils, and bubblewrap or a kernel with Landlock"
-                )
-            }),
-        ),
+                Some(b)
+            }
+        }
+        Err(why) => {
+            println!(
+                "No [documents] table written yet: the PDF parser cannot be confined here \
+                 ({why}). {} Then `mecha features enable documents` again writes the table.",
+                if macos {
+                    "`brew install poppler`."
+                } else {
+                    "Install poppler-utils, and bubblewrap or a kernel with Landlock."
+                }
+            );
+            return Ok(());
+        }
     };
+    // Both are here by now (the gate above); the table says so.
     let choice = mecha_core::document::TableChoice {
         ocr,
-        layout: ocr && layout_here,
+        layout: true,
         confine,
     };
     if mecha_core::document::write_documents_table(&path, &choice)? {
@@ -1011,9 +1020,6 @@ async fn documents_table() -> Result<()> {
                 .map(|c| format!(", confine = \"{}\"", c.as_str()))
                 .unwrap_or_default()
         );
-        if let Some(line) = pdfs {
-            println!("  {line}");
-        }
     }
     Ok(())
 }
