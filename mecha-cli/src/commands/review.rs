@@ -1027,24 +1027,39 @@ fn collect_queues() -> Vec<Queue> {
         Ok(dir) => {
             let (lib, errors) = mecha_core::imagelib::Library::load(&dir);
             let pending: Vec<_> = lib.candidates().collect();
-            let oldest = oldest_age(pending.iter().map(|e| e.created.as_str()));
-            if errors.is_empty() {
+            // A model's staged reference changes wait on the owner too
+            // (2026-10-14), and an unreadable one is a finding as a broken
+            // entry is (review of #692).
+            let (changes, bad_changes) = mecha_core::imagelib::pending_references(&dir);
+            let oldest = oldest_age(
+                pending
+                    .iter()
+                    .map(|e| e.created.as_str())
+                    .chain(changes.iter().map(|p| p.created.as_str())),
+            );
+            if errors.is_empty() && bad_changes.is_empty() {
                 let characters = pending
                     .iter()
                     .filter(|e| e.kind == mecha_core::imagelib::Kind::Character)
                     .count();
                 (
-                    Some(pending.len()),
+                    Some(pending.len() + changes.len()),
                     format!(
-                        "{characters} character(s), {} style(s) proposed by a model",
-                        pending.len() - characters
+                        "{characters} character(s), {} style(s) proposed by a model; {} \
+                         reference change(s) staged",
+                        pending.len() - characters,
+                        changes.len()
                     ),
                     oldest,
                 )
             } else {
                 (
                     None,
-                    format!("{} entr(ies) could not be read", errors.len()),
+                    format!(
+                        "{} entr(ies) and {} staged change(s) could not be read",
+                        errors.len(),
+                        bad_changes.len()
+                    ),
                     oldest,
                 )
             }
@@ -1055,7 +1070,8 @@ fn collect_queues() -> Vec<Queue> {
         name: "image candidates",
         depth,
         detail,
-        opens: "mecha imagelib list --all",
+        // Candidates and staged reference changes each have their own list.
+        opens: "mecha imagelib list --all; mecha imagelib pending",
         oldest,
     });
 

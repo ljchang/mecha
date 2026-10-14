@@ -1,8 +1,8 @@
 // The image library page's pure logic, imported from the shipped module.
 import assert from 'node:assert/strict';
 import {
-  PANES, paneOf, entriesFor, counts, originLabel, listUrl, validName, tameName, voicesUrl, voiceLine,
-  TEXT_MAX, fitWithin, formProblem, formBody,
+  PANES, paneOf, entriesFor, counts, pendingLine, refApprovable, originLabel, listUrl, validName, tameName, voicesUrl, voiceLine,
+  TEXT_MAX, fitWithin, formProblem, formBody, previewOf,
   REF_KINDS, REF_LIMIT, refNote, refAddable, refProblem, refBody, refRemoveBody, LABEL_MAX,
 } from '../src/lib/library.js';
 
@@ -133,5 +133,19 @@ assert.deepEqual(refBody({ kind: 'detail', label: ' tattoo ', picture: 'AA' }, w
 });
 assert.deepEqual(refRemoveBody(wren, { kind: 'full_body', label: null }), { name: 'wren', as: 'full_body' });
 assert.deepEqual(refRemoveBody(wren, { kind: 'detail', label: 'scar' }, 't'), { name: 'wren', as: 'detail', label: 'scar', unlock: 't' });
+
+// Staged reference changes count as waiting, and read as what they do.
+assert.equal(counts(entries, [{ id: 'a' }, { id: 'b' }]).candidates, 4);
+assert.equal(counts(entries).candidates, 2);
+assert.equal(pendingLine({ action: 'add', name: 'wren', kind: 'full_body' }), "Add wren's full body");
+assert.equal(pendingLine({ action: 'remove', name: 'wren', kind: 'detail', label: 'scar' }), "Remove wren's detail · scar");
+// Approve only what this build can apply.
+assert.equal(refApprovable({ action: 'add' }), true);
+assert.equal(refApprovable({ action: 'remove' }), true);
+assert.equal(refApprovable({ action: 'unknown' }), false);
+assert.equal(refApprovable({}), false);
+// A picked picture's preview is a data: URL, which serve's CSP allows
+// (img-src 'self' data:); a blob: URL rendered broken until saved.
+assert.equal(previewOf('AAAA'), 'data:image/jpeg;base64,AAAA');
 
 console.log('library.mjs: ok');
