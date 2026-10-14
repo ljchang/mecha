@@ -107,6 +107,7 @@ pub mod layout;
 pub mod learning;
 pub mod lesson_source;
 pub mod llama_units;
+pub mod log_cap;
 pub mod mail_triage;
 pub mod mailbox;
 pub mod mcp;

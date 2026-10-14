@@ -81,7 +81,10 @@ pub fn agent_from_unit(label: &str, unit: &str, home: &Path, log: PathBuf) -> Re
     let mut throttle = THROTTLE_SECS;
     for line in unit.lines().map(str::trim) {
         if let Some(cmd) = line.strip_prefix("ExecStart=") {
-            if cmd.contains(['"', '\\', '\'', '$']) {
+            // systemd's prefixes (`-` ignore failure, `@`, `+`, `!`, `:`)
+            // mean something an agent cannot say: refused, never taken as
+            // part of the program's name (review of #679).
+            if cmd.starts_with(['-', '@', '+', '!', ':']) || cmd.contains(['"', '\\', '\'', '$']) {
                 bail!("{label}'s command needs a shell's quoting, which an agent does not have: {cmd}");
             }
             program = Some(cmd.split_whitespace().map(expand).collect::<Vec<_>>());
@@ -98,9 +101,37 @@ pub fn agent_from_unit(label: &str, unit: &str, home: &Path, log: PathBuf) -> Re
             throttle = secs.trim().parse().with_context(|| {
                 format!("{label}: `RestartSec={secs}` is not a whole number of seconds")
             })?;
+        } else if let Some(v) = line.strip_prefix("Type=") {
+            // The agent is a long-running program, as `exec` and `simple` are;
+            // `oneshot` would become an agent relaunched forever (review of
+            // #679).
+            if !matches!(v.trim(), "exec" | "simple") {
+                bail!("{label}'s unit says `{line}`, which a launchd agent does not mean");
+            }
+        } else if let Some(v) = line.strip_prefix("Restart=") {
+            // Every agent is `KeepAlive` on a failed exit: `on-failure` only.
+            if v.trim() != "on-failure" {
+                bail!("{label}'s unit says `{line}`; an agent restarts on failure only");
+            }
+        } else if let Some((key, _)) = line.split_once('=') {
+            // A closed set: every other directive is one an agent has an
+            // answer for already, or it is refused. A new `ExecStartPre=` or
+            // `EnvironmentFile=` would otherwise reach Linux and silently
+            // not a Mac (review of #679).
+            if !line.starts_with('#') && !AGENT_HAS_NO_USE_FOR.contains(&key.trim()) {
+                bail!(
+                    "{label}'s unit says `{line}`, which this reader does not carry into a \
+                     launchd agent — teach `launchd::agent_from_unit` what it means first"
+                );
+            }
         }
     }
     let program = program.with_context(|| format!("{label}'s unit has no ExecStart="))?;
+    // Every agent restarts on a failed exit, so a unit that does not would
+    // mean one thing on Linux and another here (review of #679).
+    if !unit.lines().any(|l| l.trim() == "Restart=on-failure") {
+        bail!("{label}'s unit has no `Restart=on-failure`, which every agent is");
+    }
     if !env.iter().any(|(k, _)| k == "PATH") {
         env.insert(0, ("PATH".into(), SYSTEM_PATH.into()));
     }
@@ -144,6 +175,20 @@ fn environment_words(label: &str, line: &str) -> Result<Vec<String>> {
     }
     Ok(words)
 }
+
+/// The unit directives an agent has an answer for without reading them:
+/// `Type=exec` and `Restart=on-failure` are what every agent is (`KeepAlive`
+/// on a failed exit), the ordering and install lines are systemd's own, and
+/// `OOMScoreAdjust=` has no launchd counterpart worth a guess.
+const AGENT_HAS_NO_USE_FOR: &[&str] = &[
+    "Description",
+    "Documentation",
+    "After",
+    "Wants",
+    "Requires",
+    "WantedBy",
+    "OOMScoreAdjust",
+];
 
 /// An agent's `PATH` when its unit names none: the system's own directories.
 pub const SYSTEM_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
@@ -319,7 +364,10 @@ pub fn load(plist: &Path, label: &str) -> Result<Domain> {
 /// #679); `disable` is launchd's persistent override, cleared by [`load`].
 /// Disabled in both domains; it is enough that one accepted it.
 pub fn disable(label: &str) -> Result<()> {
-    unload(label)?;
+    // The override is set whatever the unload answered: a bootout that timed
+    // out is exactly when the agent must not come back at login (review of
+    // #679). Its error is still returned after.
+    let unloaded = unload(label);
     let mut first_err = None;
     let mut any = false;
     for d in [Domain::Gui, Domain::User] {
@@ -330,6 +378,7 @@ pub fn disable(label: &str) -> Result<()> {
             }
         }
     }
+    unloaded?;
     match (any, first_err) {
         (true, _) | (false, None) => Ok(()),
         (false, Some(e)) => Err(e),
