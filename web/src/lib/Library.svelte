@@ -5,7 +5,7 @@
   import { opens, isShown } from './features.js';
   import {
     PANES, paneOf, entriesFor, counts, pendingLine, originLabel, listUrl, tameName,
-    TEXT_MAX, PORTRAIT_EDGE, fitWithin, formProblem, formBody,
+    TEXT_MAX, PORTRAIT_EDGE, fitWithin, formProblem, formBody, previewOf,
     REF_KINDS, REF_TITLE, LABEL_MAX, refNote, refAddable, refProblem, refBody, refRemoveBody,
   } from './library.js';
   import { watchIdle, idleSpan } from './autolock.js';
@@ -188,8 +188,8 @@
     form = { mode: 'edit', kind: entry.kind, name: entry.name, text: entry.text, portrait: null, preview: null };
   }
 
-  // A picked file, scaled to fit PORTRAIT_EDGE and re-encoded as JPEG:
-  // base64 for the JSON body, and the blob for a preview. createImageBitmap
+  // A picked file, scaled to fit PORTRAIT_EDGE and re-encoded as JPEG, as
+  // base64 for the JSON body; the preview shows the same bytes (previewOf). createImageBitmap
   // applies the photo's orientation, so a phone portrait stays upright.
   async function encodePicture(file) {
     const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
@@ -204,7 +204,7 @@
     const bytes = new Uint8Array(await blob.arrayBuffer());
     let binary = '';
     for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-    return { b64: btoa(binary), blob };
+    return { b64: btoa(binary) };
   }
 
   async function pick(file) {
@@ -214,12 +214,11 @@
     const target = form;
     preparing = true;
     try {
-      const { b64, blob } = await encodePicture(file);
+      const { b64 } = await encodePicture(file);
       // Cancelled, the pane changed, or another form opened while this decoded.
       if (form !== target) return;
-      if (form.preview) URL.revokeObjectURL(form.preview);
       form.portrait = b64;
-      form.preview = URL.createObjectURL(blob);
+      form.preview = previewOf(b64);
     } catch (e) {
       say(String(e?.message ?? e));
     } finally {
@@ -233,7 +232,6 @@
   }
 
   function closeRef() {
-    if (refForm?.preview) URL.revokeObjectURL(refForm.preview);
     refForm = null;
   }
 
@@ -242,11 +240,10 @@
     const target = refForm;
     preparing = true;
     try {
-      const { b64, blob } = await encodePicture(file);
+      const { b64 } = await encodePicture(file);
       if (refForm !== target) return;
-      if (refForm.preview) URL.revokeObjectURL(refForm.preview);
       refForm.picture = b64;
-      refForm.preview = URL.createObjectURL(blob);
+      refForm.preview = previewOf(b64);
     } catch (e) {
       say(String(e?.message ?? e));
     } finally {
@@ -320,7 +317,6 @@
   }
 
   function closeForm() {
-    if (form?.preview) URL.revokeObjectURL(form.preview);
     form = null;
   }
 
