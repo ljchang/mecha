@@ -225,7 +225,14 @@ sandbox = false
     let base = format!("http://127.0.0.1:{port}");
     tokio::time::timeout(Duration::from_secs(15), async {
         loop {
-            if client.get(format!("{base}/api/ping")).send().await.is_ok() {
+            // Both listeners: serve binds the voice facade after the web
+            // port, and a test that reached for it on `/api/ping` alone was
+            // refused (CI's 1.89 arm on #683).
+            if client.get(format!("{base}/api/ping")).send().await.is_ok()
+                && tokio::net::TcpStream::connect(("127.0.0.1", voice_port))
+                    .await
+                    .is_ok()
+            {
                 break;
             }
             assert!(
