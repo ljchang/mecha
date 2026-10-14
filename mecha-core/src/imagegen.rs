@@ -738,7 +738,7 @@ fn behind_mecha_s_proxy(url: &str) -> bool {
 /// plist, not taken from its existing. An agent installed before the proxy
 /// ran ComfyUI on that port itself, and the timer is all that ever freed it;
 /// a URL elsewhere is a ComfyUI the owner runs (review of #689).
-fn behind_proxy_at(home: &std::path::Path, url: &str) -> bool {
+pub(crate) fn behind_proxy_at(home: &std::path::Path, url: &str) -> bool {
     let shipped = crate::comfyui_unit::Naming::shipped();
     let names_port = reqwest::Url::parse(url)
         .ok()
@@ -866,8 +866,13 @@ enum Failure {
 /// How long a job waits for an image server that is not answering yet
 /// (`ComfyUi::await_server`), and how often it asks meanwhile. Tests wait
 /// two seconds, so the ones aimed at a closed port stay fast.
+///
+/// **A Mac waits as long as its proxy gives ComfyUI to start** (180 s, with
+/// margin): this is the ceiling `UNSEEN_WAIT` is clamped under, so the two
+/// move together — 90 s here made a 200 s unseen wait unreachable (review of
+/// #689, pass 4).
 #[cfg(not(test))]
-const SERVER_WAIT: Duration = Duration::from_secs(90);
+const SERVER_WAIT: Duration = Duration::from_secs(if cfg!(target_os = "macos") { 200 } else { 90 });
 #[cfg(test)]
 const SERVER_WAIT: Duration = Duration::from_secs(2);
 const SERVER_WAIT_STEP: Duration = Duration::from_millis(500);
@@ -2730,7 +2735,23 @@ impl ImageGenerate {
 
     fn arm_unload(&self) {
         let after = self.cfg.unload_after_secs;
-        if after == 0 || behind_mecha_s_proxy(&self.cfg.url) {
+        if after == 0 {
+            return;
+        }
+        if behind_mecha_s_proxy(&self.cfg.url) {
+            // No `/free`: the proxy stops the whole process after the same
+            // window. The record is still told, once that window has passed,
+            // so the next picture with the other model does not ask a server
+            // that holds nothing to free (review of #689, pass 4).
+            let armed = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+            let generation = Arc::clone(&self.generation);
+            let backend = Arc::clone(&self.backend);
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(after)).await;
+                if generation.load(Ordering::SeqCst) == armed {
+                    backend.released();
+                }
+            });
             return;
         }
         let armed = self.generation.fetch_add(1, Ordering::SeqCst) + 1;

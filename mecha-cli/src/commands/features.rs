@@ -87,8 +87,8 @@ pub enum Cmd {
         program: Vec<String>,
     },
     /// Internal: hold a port and start the server behind it on its first
-    /// request, stopping it when idle — the program of the on-demand
-    /// embeddings and OCR servers' launchd agents on macOS
+    /// request, stopping it when idle — the program of the embeddings, OCR
+    /// and image (ComfyUI) servers' launchd agents on macOS
     /// (`mecha_core::on_demand`). Run by launchd, not by hand.
     #[command(hide = true)]
     OnDemand {
