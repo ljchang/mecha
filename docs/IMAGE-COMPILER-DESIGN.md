@@ -512,6 +512,28 @@ kind is derived from its directory (`Entry.kind`).
   always sits inside `wearing`'s own 300 characters.
 - **Who writes:** both new kinds follow §1. The owner creates approved
   entries; a model's proposal is a candidate, with no images, as above.
+- **A character's references, by provenance** (the owner's ruling of
+  2026-10-14, amending L1's "written by the owner only"; asked in a chat to
+  save a tattoo picture to a character, the model had no door and retried a
+  refused proposal four times). `image_library_reference` attaches or removes
+  a `full_body`, `face` or `detail`:
+  - from a **clean** conversation, directly: a new version recording the
+    model's origin, shown "from a chat" on the character's page, where the
+    owner can remove it;
+  - from one that has read outside content, or whose taint is unknown, as a
+    **staged change** under `pending/` at the store root, applied only when
+    the owner approves it in the Waiting pane (`mecha imagelib
+    approve-reference`). A reference rides into every later picture of that
+    character, so this is learning's provenance split (`docs/ARCHITECTURE.md`,
+    learning), not a new rule;
+  - from an **incognito** chat, staged locked, on `image_library_propose`'s
+    footing.
+
+  A staged picture is held to the proposal cap (`MAX_PROPOSED_PORTRAIT_BYTES`)
+  and the pending queue to `MAX_PENDING`; its file protects its blob, and a
+  rejection deletes the blob once nothing names it. The tool declares
+  `read_only`, as `image_generate` does, so a default web chat can do what
+  the owner asked in it: provenance, not the permission mode, bounds it.
 - **Not stored yet:** a location's own clip or soundscape. Nothing would
   read them yet; they arrive with whatever does.
 
@@ -835,7 +857,8 @@ repository, never their names or images.
 
 - **L1, the store shape:**
   - `[[reference]]` with `kind`, `blob` and `label` (≤ 100 characters),
-    written by the owner only: `face | full_body | detail` on characters,
+    written by the owner, or by a model as §9.3's provenance split allows
+    (amended 2026-10-14): `face | full_body | detail` on characters,
     `view` on locations and outfits;
   - the `Location` and `Outfit` kinds as their own directories, with deletes
     decided by a walk of the whole store root;

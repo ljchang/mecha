@@ -717,6 +717,9 @@ mod tests {
         pool.insert(Arc::new(
             crate::tool::image_library::ImageLibraryPropose::new(dir.clone()),
         ));
+        pool.insert(Arc::new(
+            crate::tool::image_library::ImageLibraryReference::new(dir.clone()),
+        ));
         // The assistant's door into the persona store: a persona chat must
         // never be able to stage personas (review of #493).
         pool.insert(Arc::new(crate::tool::persona_propose::PersonaPropose::new(

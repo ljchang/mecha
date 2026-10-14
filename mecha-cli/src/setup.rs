@@ -1523,7 +1523,9 @@ async fn prepare_tools_carrying(
         // not choose where characters come from.
         match mecha_core::imagelib::Library::default_dir() {
             Ok(dir) => {
-                use mecha_core::tool::image_library::{ImageLibrary, ImageLibraryPropose};
+                use mecha_core::tool::image_library::{
+                    ImageLibrary, ImageLibraryPropose, ImageLibraryReference,
+                };
                 // `[tools]` narrows these like any builtin, as `image_view`'s
                 // registration below does — the proposing door writes into
                 // the mecha home with no approver, so its off switch must work
@@ -1536,7 +1538,10 @@ async fn prepare_tools_carrying(
                     registry.insert(Arc::new(ImageLibrary::new(dir.clone())));
                 }
                 if asked("image_library_propose") {
-                    registry.insert(Arc::new(ImageLibraryPropose::new(dir)));
+                    registry.insert(Arc::new(ImageLibraryPropose::new(dir.clone())));
+                }
+                if asked("image_library_reference") {
+                    registry.insert(Arc::new(ImageLibraryReference::new(dir)));
                 }
             }
             Err(e) => eprintln!("mecha: image library tools not registered — {e:#}"),
