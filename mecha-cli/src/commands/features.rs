@@ -324,6 +324,18 @@ pub(super) async fn enable_unwired(
                 todo.retain(|(id, ..)| *id != mecha_core::comfyui_unit::ID);
             }
         }
+        // The graph's MCP server is built with cargo: a machine without it is
+        // told so, and graph stays switched on for a server installed later
+        // — the footnote below says it is not working until then (§13).
+        if todo.iter().any(|(id, ..)| *id == mecha_core::graph_mcp::ID) {
+            if let Err(why) = mecha_core::graph_mcp::fits() {
+                println!(
+                    "{} is not installed: {why}.",
+                    mecha_core::graph_mcp::PROGRAM
+                );
+                todo.retain(|(id, ..)| *id != mecha_core::graph_mcp::ID);
+            }
+        }
         // Likewise the speech server: voice may be spoken by a server the
         // owner runs — Chatterbox, or Breeze by hand — so a machine that
         // cannot build the engine is not offered it, and keeps the switch.
@@ -486,6 +498,8 @@ pub(super) async fn enable_unwired(
                     }
                 } else if *id == comfy::ID {
                     &turbo_line
+                } else if *id == mecha_core::graph_mcp::ID {
+                    ", built here with cargo from its pinned commit — a few minutes"
                 } else {
                     ""
                 };
@@ -541,6 +555,18 @@ pub(super) async fn enable_unwired(
     if features.contains(&Feature::Image) {
         image_table()?;
     }
+    if features.contains(&Feature::Documents) {
+        // Said, never fatal: the switch is already written, and a failure
+        // here must not stop the steps after it (graph's `[[mcp]]` entry
+        // among them) and leave a half-on install — the state §13 exists to
+        // end (review of #683).
+        if let Err(e) = documents_table().await {
+            println!(
+                "No [documents] table written: {e:#}. `mecha features enable documents` again \
+                 writes it once that is fixed."
+            );
+        }
+    }
     if features.contains(&Feature::Voice) {
         voices_dir()?;
     }
@@ -588,8 +614,22 @@ pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
             continue;
         }
         seen.push(*f);
-        match mecha_core::onboarding::find_program(wiring.program) {
+        let found = mcp_command(
+            wiring.program,
+            mecha_core::onboarding::find_program(wiring.program),
+            path.parent(),
+        );
+        match found {
             Some(command) => items.push((*f, wiring, command)),
+            // Where `enable` is the installer, the feature is said to be not
+            // working rather than left as a footnote under "enabled" (§13).
+            None if wiring.install.starts_with("mecha features enable") => println!(
+                "{} is switched on, but not working: `{}` is not installed, so no [[mcp]] entry \
+                 was written — `{}` installs it",
+                f.id(),
+                wiring.program,
+                wiring.install
+            ),
             None => println!(
                 "`{}` is not installed, so no [[mcp]] entry was written — `{}`, then `mecha \
                  features enable {}` again writes it",
@@ -725,6 +765,23 @@ pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
     Ok(())
 }
 
+/// The program an `[[mcp]]` entry runs: the owner's own on the PATH first;
+/// else, for the graph, the build mecha installed into its own tree
+/// (`graph_mcp`), which no PATH names — by its absolute path either way.
+fn mcp_command(
+    program: &str,
+    on_path: Option<std::path::PathBuf>,
+    mecha_home: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
+    on_path.or_else(|| {
+        mecha_home
+            .filter(|home| {
+                program == mecha_core::graph_mcp::PROGRAM && mecha_core::graph_mcp::installed(home)
+            })
+            .map(mecha_core::graph_mcp::binary)
+    })
+}
+
 /// What `enable` knows when it decides about the turbo model.
 struct TurboFacts<'a> {
     /// [`mecha_core::comfyui_unit::turbo_wanted`]'s reason.
@@ -857,6 +914,135 @@ fn turbo_step(f: TurboFacts, unfit: impl FnOnce() -> Option<String>) -> TurboSte
              here."
         ),
     })
+}
+
+/// `documents` reads unready with no `[documents]` table, whatever the
+/// switch says, so `enable` writes one where there is none (§13): the
+/// settings that match what is here — OCR where its server is installed or
+/// provided, layout where its environment is — and the parser's confinement
+/// as this machine runs it, asked of each backend's own preflight — Seatbelt
+/// on a Mac (left as its default, unnamed), bubblewrap then Landlock on
+/// Linux. A check that could not run writes nothing (unknown is never a
+/// no). A table the owner wrote is never edited.
+async fn documents_table() -> Result<()> {
+    use mecha_core::sidecar::SidecarState;
+    // The file's own answer, as `image_table`'s: `write_documents_table`
+    // leaves a table the file has, and the layered config (an override, the
+    // environment) is not what this writes into (review of #683).
+    let path = Config::global_path().context("no mecha home to find config.toml in")?;
+    // Asked of the file before the machine is: a table already there means
+    // no plan and no confinement probe.
+    let has_table = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| toml::from_str::<toml::Table>(&t).ok())
+        .is_some_and(|d| d.contains_key("documents"));
+    if has_table {
+        return Ok(());
+    }
+    let m = sidecar::Machinery::real()?;
+    let machine = recommend::Machine::read()?;
+    let hub = mecha_core::fetch::hub_dir()?;
+    let p = sidecar::plan(Feature::Documents, &m, &machine, &hub, false)?;
+    let state = |id: &str| p.sidecars.iter().find(|s| s.id == id).map(|s| &s.state);
+    // A check that could not run is not a no: written down, `ocr = false`
+    // would outlive the reason it was read (review of #683). So nothing is
+    // written while one is unknown, and the owner is told what to look at.
+    for id in [mecha_core::llama_units::Which::Ocr.sidecar(), "layout"] {
+        if let Some(SidecarState::Unknown { why }) = state(id) {
+            println!(
+                "No [documents] table written: {id} could not be checked ({why}). `mecha \
+                 features plan documents` shows it; `mecha features enable documents` again \
+                 writes the table once it can be read."
+            );
+            return Ok(());
+        }
+    }
+    let here = |id: &str| {
+        matches!(
+            state(id),
+            Some(SidecarState::Installed | SidecarState::Provided { .. })
+        )
+    };
+    // An OCR server run by hand on its port is one too: the sidecar's
+    // evidence is unit files and agents, and a server started from a
+    // terminal has neither (review of #683).
+    let ocr_port = mecha_core::llama_units::Which::Ocr.shipped().public;
+    let ocr = here(mecha_core::llama_units::Which::Ocr.sidecar())
+        || mecha_core::router_unit::port_answers(ocr_port);
+    let layout_here = here("layout");
+    // Written only once every piece is here. A piece still missing at this
+    // point was not installed — `--no-install`, the path `enable` itself
+    // names off a terminal — and the table, written once and never edited,
+    // would keep `ocr = false` after a later `enable documents` installed the
+    // server (review of #683). So nothing is written yet, and the owner is
+    // told what is missing.
+    let missing: Vec<&str> = [
+        ("the OCR server", ocr),
+        ("the layout environment", layout_here),
+    ]
+    .into_iter()
+    .filter(|(_, here)| !here)
+    .map(|(what, _)| what)
+    .collect();
+    if !missing.is_empty() {
+        println!(
+            "No [documents] table written yet: {} {} not installed. `mecha features enable \
+             documents` installs {} and writes the table; a [documents] table you write \
+             yourself is used as it is.",
+            missing.join(" and "),
+            if missing.len() == 1 { "is" } else { "are" },
+            if missing.len() == 1 { "it" } else { "them" }
+        );
+        return Ok(());
+    }
+    // The confinement this machine runs, asked of each of its own backends:
+    // Seatbelt on a Mac (written as no `confine`, its default there),
+    // bubblewrap then Landlock on Linux (written as the one that worked).
+    let macos = cfg!(target_os = "macos");
+    // A probe that found no working confinement writes nothing: written,
+    // the table would pin the default that just failed, and `enable` never
+    // revisits a table that is there (review of #683). The owner is told the
+    // fix, and `enable documents` again writes the table once it works.
+    let confine = match mecha_core::document::working_confinement().await {
+        Ok(b) => {
+            if macos {
+                None
+            } else {
+                Some(b)
+            }
+        }
+        Err(why) => {
+            println!(
+                "No [documents] table written yet: the PDF parser cannot be confined here \
+                 ({why}). {} Then `mecha features enable documents` again writes the table.",
+                if macos {
+                    "`brew install poppler`."
+                } else {
+                    "Install poppler-utils, and bubblewrap or a kernel with Landlock."
+                }
+            );
+            return Ok(());
+        }
+    };
+    // Both are here by now (the gate above); the table says so.
+    let choice = mecha_core::document::TableChoice {
+        ocr,
+        layout: true,
+        confine,
+    };
+    if mecha_core::document::write_documents_table(&path, &choice)? {
+        println!(
+            "Wrote a [documents] table into {}: ocr = {}, layout = {}{}",
+            path.display(),
+            choice.ocr,
+            choice.layout,
+            choice
+                .confine
+                .map(|c| format!(", confine = \"{}\"", c.as_str()))
+                .unwrap_or_default()
+        );
+    }
+    Ok(())
 }
 
 /// `image` reads off with no `[image]` table, whatever the switch says, and
@@ -1111,6 +1297,12 @@ fn render_plan(p: &sidecar::Plan, chat_here: bool) -> String {
             SidecarState::Missing { .. } if s.not_offered.is_some() => format!(
                 "not offered here — {}",
                 s.not_offered.as_deref().unwrap_or_default()
+            ),
+            // A build is said as one: its wait is a compile, not a download.
+            SidecarState::Missing { .. } if s.id == mecha_core::graph_mcp::ID => format!(
+                "not here — `mecha features enable {}` builds it from its pinned commit (a few \
+                 minutes; needs cargo and a C compiler)",
+                p.feature.id()
             ),
             SidecarState::Missing { .. } if mecha_core::install::installable(s.id) => format!(
                 "not here — `mecha features enable {}` installs it",
@@ -1847,5 +2039,41 @@ mod tests {
             assert!(text.contains(want), "missing {want:?} in:\n{text}");
         }
         assert!(!text.contains("Nothing to install"), "{text}");
+    }
+
+    /// The owner's server on the PATH is the entry's; else mecha's own build,
+    /// by absolute path; a half-built tree is neither, and no other program
+    /// is ever pointed at the graph's build.
+    #[test]
+    fn the_graph_entry_runs_the_owner_s_server_or_mecha_s_build() {
+        use mecha_core::graph_mcp::{binary, root, PROGRAM, REPO, REV};
+        let home = std::env::temp_dir().join(format!("mecha-mcpcmd-{}", uuid::Uuid::new_v4()));
+        let theirs = std::path::PathBuf::from("/opt/bin/mecha-graph-mcp");
+        assert_eq!(
+            mcp_command(PROGRAM, Some(theirs.clone()), Some(&home)),
+            Some(theirs)
+        );
+        assert_eq!(mcp_command(PROGRAM, None, Some(&home)), None);
+        std::fs::create_dir_all(root(&home).join("bin")).unwrap();
+        std::fs::write(binary(&home), b"#!/bin/sh\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(binary(&home), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        assert_eq!(
+            mcp_command(PROGRAM, None, Some(&home)),
+            None,
+            "no record of the pinned build"
+        );
+        std::fs::write(
+            root(&home).join(".crates2.json"),
+            format!(r#"{{"installs":{{"{PROGRAM} 0.1.5 (git+{REPO}?rev={REV}#{REV})":{{}}}}}}"#),
+        )
+        .unwrap();
+        let ours = mcp_command(PROGRAM, None, Some(&home)).unwrap();
+        assert!(ours.is_absolute() && ours == binary(&home));
+        assert_eq!(mcp_command("mecha-mail", None, Some(&home)), None);
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

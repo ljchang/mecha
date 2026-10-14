@@ -41,7 +41,7 @@ at every build; this page covers the mecha side of the seam.
 ```toml
 [[mcp]]
 name = "graph"
-command = "mecha-graph-mcp"      # cargo install mecha-graph-mcp
+command = "mecha-graph-mcp"      # `mecha features enable graph` builds it and writes this
 # The kg_* tools carry their own namespace, so skip the graph__ prefix.
 prefix_tools = false
 

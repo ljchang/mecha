@@ -27,28 +27,35 @@ beliefs, the context pack is the product.* The full mental model is in
 ## Install
 
 ```bash
-cargo install mecha-graph          # the CLI
-cargo install mecha-graph-mcp      # the MCP server
+mecha features enable graph        # builds the MCP server, sets up embeddings, wires both
+cargo install mecha-graph --locked # optional: the graph's own CLI
 ```
+
+`enable graph` builds `mecha-graph-mcp` from a pinned commit of
+`ljchang/mecha-graph` into `~/.mecha/sidecars/graph-mcp/` — never the
+registry's latest — when no `mecha-graph-mcp` is on your `PATH`; one that is
+there is yours and is used as it is. The build takes a few minutes and needs
+cargo and a C compiler. If it fails, `graph` is not switched on and enable
+says why. The `[[mcp]]` entry names the binary by its absolute path, so a
+service with a short `PATH` still finds it.
 
 Embeddings come from a second llama-server on `127.0.0.1:8081`, serving
 `harrier-oss-v1-0.6b` — its own port, because one llama-server holds one
 model and the chat model's port must not answer embedding requests.
 
-**On Linux, `mecha features enable graph` sets that server up from nothing**
+**`mecha features enable graph` sets that server up from nothing**
 and writes the `graph` switch in [`[features]`](/docs/reference/configuration#features)
 — an absent switch is off, and with it off mecha starts no graph server and
 the graph verbs refuse. It shows the plan and, on one yes, installs what this
 machine lacks: the llama.cpp engine if none is here, the pinned model, a
-launcher under `~/.mecha/sidecars/bin/`, and three systemd user units that hold
-the port from boot, load the model on the first request and stop it after ten
-idle minutes; the install starts it once to check it answers. An embeddings
-server this machine already runs is left alone and used. `mecha setup` offers the same
-step. It does not install `mecha-graph`, which stays yours; once
-`mecha-graph-mcp` is installed, it writes the `[[mcp]]` entry below where none
-runs it or is called `graph`.
+launcher under `~/.mecha/sidecars/bin/`, and the service that holds the port
+from boot, loads the model on the first request and stops it after ten idle
+minutes (systemd user units on Linux, a launchd agent on a Mac); the install
+starts it once to check it answers. An embeddings server this machine already
+runs is left alone and used. `mecha setup` offers the same step. It writes the
+`[[mcp]]` entry below where none runs `mecha-graph-mcp` or is called `graph`.
 
-By hand — on macOS, or a server you would rather run yourself — the
+By hand — a server you would rather run yourself — the
 launcher's source is `scripts/llama/mecha-embed-server` in a mecha checkout.
 First fetch the model — `hf download mradermacher/harrier-oss-v1-0.6b-GGUF
 harrier-oss-v1-0.6b.f16.gguf` — since the script looks for it in the
