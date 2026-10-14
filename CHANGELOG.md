@@ -66,6 +66,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The model no longer redraws pictures it has not seen.** It cannot see
+  what it draws, yet it judged pictures wrong and drew them again on its own
+  — once over a picture that was right. The image tool now tells it the
+  owner sees the picture and says what to change.
 - **A `forbid` rule sees through macOS's command wrappers.** `sandbox-exec`
   runs the command given after it, as do `arch` and `caffeinate` when one
   follows them, so an approval rule now judges that command, as it already

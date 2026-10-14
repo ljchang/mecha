@@ -2789,7 +2789,8 @@ pub const DESCRIPTION: &str = "Draw a picture with the local image model, or cha
      is done, and you are told then; it is not a failure, so do not draw it again, and change \
      it only after you are told it is done. A line under it beginning `Queued:` means it waits \
      behind other pictures and starts when they are done. Results are not shown to you, so never say what a \
-     picture shows. A change always makes a new file and leaves the original as it was: never \
+     picture shows, and never judge whether one came out right or draw it again on your own: \
+     the owner sees it and says what to change. A change always makes a new file and leaves the original as it was: never \
      write or copy a result over the picture it was edited from. If image_view is among your \
      tools, look at a picture only when the task needs you to see it (the user asked you to \
      check, compare or describe it), not to confirm that it worked.";
@@ -6053,18 +6054,25 @@ mod tests {
         assert_eq!(parse(""), None);
     }
 
-    /// §5.2 moved the result's guidance into the description; these two
+    /// §5.2 moved the result's guidance into the description; these
     /// prohibitions answer measured failures and must not be dropped on the
     /// way: a model copied the result over the original in 3 of 4 live chats
-    /// (#429), and described pictures it had not seen (review of #581).
+    /// (#429), described pictures it had not seen (review of #581), and
+    /// judged two pictures it had not seen as wrong and redrew them, one of
+    /// them right after all (owner's Mac, 2026-10-14; the owner's ruling: the
+    /// owner says what to change).
     #[test]
-    fn the_description_keeps_the_two_prohibitions() {
+    fn the_description_keeps_the_prohibitions() {
         let d = tool("http://127.0.0.1:1").description().to_string();
         assert!(
             d.contains("never write or copy a result over the picture it was edited from"),
             "{d}"
         );
         assert!(d.contains("never say what a picture shows"), "{d}");
+        assert!(
+            d.contains("never judge whether one came out right or draw it again on your own"),
+            "{d}"
+        );
     }
 
     #[test]
@@ -6189,7 +6197,7 @@ mod tests {
         assert!(!out.external, "our own output is not third-party content");
         // For a run with no `image_view` — a blind provider, `--tool`, or
         // `[tools] disabled` — this fact and the description's rule (pinned in
-        // `the_description_keeps_the_two_prohibitions`) are the guard against
+        // `the_description_keeps_the_prohibitions`) are the guard against
         // it describing a picture it never saw.
         assert!(
             out.content.contains("you have not seen it."),
