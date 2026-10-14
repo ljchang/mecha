@@ -138,6 +138,7 @@ pub const SIDECARS: &[Sidecar] = &[
         evidence: &[
             Evidence::UserUnit("mecha-comfyui.service"),
             Evidence::UserUnit("comfyui.service"),
+            Evidence::UserUnit("ai.mecha-factory.mecha-comfyui.plist"),
             Evidence::Home("ComfyUI"),
         ],
         installer: "7e",

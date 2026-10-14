@@ -103,7 +103,8 @@ pub struct ImageConfig {
     /// idle footprint with the Q4 GGUF (GPU + RSS, measured 2026-10-02; the
     /// earlier "15 GB peak" counted the GPU side only), and ~0.7 GB more with
     /// the int8 file (2026-10-04); an idle-reset server holds no model, so
-    /// the default covers that with a little room.
+    /// the default covers that with a little room. A Mac's default is the
+    /// bf16 file's (`min_available_mb_on`).
     pub min_available_mb: u64,
     /// Ask the server to unload its models this long after the last
     /// generation. `0` keeps them. Best effort only: the timer lives in this
@@ -142,17 +143,16 @@ impl Default for ImageConfig {
             // about 0.7 GB more at peak and the same pictures seed for seed
             // (measured 2026-10-04; ARCHITECTURE §Image generation). A GGUF
             // re-quantises every weight on every step; the ConvRot file
-            // runs on native int8 kernels.
-            diffusion_model: "qwen_image_2.1_int8_convrot.safetensors".into(),
-            turbo_model: crate::sampling::TURBO_MODEL.into(),
+            // runs on native int8 kernels. bf16 on a Mac, which has none
+            // (`sampling::standard_model`).
+            diffusion_model: crate::sampling::standard_model().into(),
+            turbo_model: crate::sampling::turbo_model().into(),
             text_encoder: "qwen3vl_8b_w4a8.safetensors".into(),
             vae: "qwen_image_2.1_vae_bf16.safetensors".into(),
             steps: 40,
             timeout_secs: 600,
-            // `LOAD_COST_MB` is derived from this figure; change both.
-            // 20 GiB since the int8 default: its ~19.2 GiB load no longer
-            // fit under the Q4's 19 (2026-10-04).
-            min_available_mb: 20_480,
+            // The load cost is derived from this figure (`load_cost_mb_on`).
+            min_available_mb: min_available_mb_on(std::env::consts::OS),
             // Fifteen minutes, matching `comfyui-idle-reset`'s window: a
             // picture inside a quarter hour of the last is drawn warm. A cold
             // one took 145–180 s against 36–63 s warm, 2026-10-08, the
@@ -714,27 +714,74 @@ pub fn memory_need_mb(loaded: Option<bool>, min_mb: u64) -> u64 {
         // alone", not "check off": `memory_guard` reads the operator's 0 off
         // the config, and the floor refuses an unreadable gauge whatever the
         // need.
-        Some(true) => min_mb.saturating_sub(LOAD_COST_MB),
+        Some(true) => min_mb.saturating_sub(load_cost_mb()),
         Some(false) | None => min_mb,
     }
 }
 
-/// What loading the model costs, which a server that has loaded it has
-/// already paid: the default cold figure (20 GiB) less what a reload from a
-/// `/free`d state still needs (~12 GiB, the worse of the two states
-/// `/system_stats` cannot tell apart; measured with the Q4 GGUF on
-/// 2026-10-02, not re-measured for the int8 file). **The 20_480 is
-/// `ImageConfig`'s default `min_available_mb`**, written out because a
-/// `Default` impl is not const: change one, change both
-/// (`the_load_cost_is_the_default_less_a_reload` holds them together).
-pub const LOAD_COST_MB: u64 = 20_480 - 12_288;
+/// The default `[image] min_available_mb` on `os`: what a picture from cold
+/// needs free.
+///
+/// - **Linux**: 20 GiB since the int8 default — its ~19.2 GiB load no longer
+///   fit under the Q4's 19 (2026-10-04).
+/// - **macOS**: 34 GiB, the bf16 file's (FEATURES-DESIGN §12.3): a load from
+///   cold peaked at 32.7 GiB of process RSS on an M5 Max (2026-10-13; the
+///   image slot's Mac row records it as 33,485 MB), rounded up to a whole
+///   GiB as Linux's figure is. A 36-48 GB Mac holding its chat model does
+///   not have it, and the gate says so rather than letting the load swap.
+pub fn min_available_mb_on(os: &str) -> u64 {
+    if os == "macos" {
+        34_816
+    } else {
+        20_480
+    }
+}
+
+/// What a reload from a `/free`d state still needs on `os` — the worse of
+/// the two states `/system_stats` cannot tell apart. Linux: ~12 GiB,
+/// measured with the Q4 GGUF on 2026-10-02, not re-measured for the int8
+/// file. macOS: 14 GiB, the 13,571 MB ComfyUI's log says the bf16 model
+/// loads to on MPS (2026-10-13) rounded up — a reload's own cost is not
+/// measured there, and what `/free` gives back on MPS is not either. A Mac's
+/// server never reads as loaded (`loaded_from_stats` is `None` on MPS), so
+/// its figure is kept only so the arithmetic stays whole, not one a Mac asks.
+fn reload_mb_on(os: &str) -> u64 {
+    if os == "macos" {
+        14_336
+    } else {
+        12_288
+    }
+}
+
+/// What loading the model costs on `os`, which a server that has loaded it
+/// has already paid: the default cold figure less a reload's need.
+pub fn load_cost_mb_on(os: &str) -> u64 {
+    min_available_mb_on(os).saturating_sub(reload_mb_on(os))
+}
+
+/// [`load_cost_mb_on`] on this system.
+pub fn load_cost_mb() -> u64 {
+    load_cost_mb_on(std::env::consts::OS)
+}
 
 /// Whether ComfyUI's `/system_stats` says it has loaded a model since it
-/// started. Its `torch_vram_total` is 0 in a fresh process and stays above 0
-/// once anything has loaded - through a `/free`, too, so it answers "has
-/// loaded", never "holds now". `None` for a reply this cannot read.
+/// started. On CUDA its `torch_vram_total` is 0 in a fresh process and stays
+/// above 0 once anything has loaded - through a `/free`, too, so it answers
+/// "has loaded", never "holds now". `None` for a reply this cannot read.
+///
+/// **Read on CUDA only; any other device is `None`, whatever the figure.**
+/// ComfyUI's `get_total_memory` answers the machine's whole RAM for MPS and
+/// the CPU, so the field is above 0 from the first request and says nothing
+/// about a load — read as warm, a Mac's cold 34 GiB would never be asked
+/// (review of #681). An allowlist, not a denylist: a device type this has
+/// not seen, or a reply naming none, is unknown, and unknown is never warm
+/// (review of #681, pass 2).
 pub fn loaded_from_stats(stats: &Value) -> Option<bool> {
-    let total = stats.pointer("/devices/0/torch_vram_total")?.as_f64()?;
+    let device = stats.pointer("/devices/0")?;
+    if device.get("type").and_then(Value::as_str) != Some("cuda") {
+        return None;
+    }
+    let total = device.get("torch_vram_total")?.as_f64()?;
     Some(total > 0.0)
 }
 
@@ -1124,7 +1171,7 @@ impl ComfyUi {
                 // Only the pinned file: `--turbo` fetches nothing else, and a
                 // configured `turbo_model` it cannot supply keeps the
                 // settings' own refusal (review of #650).
-                if turbo && input == "unet_name" && want == crate::sampling::TURBO_MODEL {
+                if turbo && input == "unet_name" && want == crate::sampling::turbo_model() {
                     bail!(
                         "the image server has no `{want}`, the turbo model this persona's \
                          picture settings choose — `mecha features enable image --turbo` \
@@ -2220,10 +2267,21 @@ impl ImageGenerate {
         );
         match verdict.sentence("a generation") {
             None => Ok(()),
-            Some(why) => Err(format!(
-                "{why} Try again once something large (a build, another model) is done. The \
-                 operator can set `[image] min_available_mb = 0` to skip this check."
-            )),
+            Some(why) => {
+                // The off switch is the operator's, said in the operator's
+                // log and never to the model: told it, a model retried six
+                // times in twenty seconds and then recommended the owner
+                // switch the guard off (owner's Mac, 2026-10-13).
+                tracing::warn!(
+                    "image generation refused for memory: {why} — `[image] min_available_mb` \
+                     sets the need, and 0 switches the check off"
+                );
+                Err(format!(
+                    "{why} This will not change by retrying within this turn: say so to the \
+                     owner and stop — it can be tried again later, once something large (a \
+                     build, another model) has finished."
+                ))
+            }
         }
     }
 
@@ -5185,28 +5243,46 @@ mod tests {
     /// What a job asks for follows what the server holds: cold after a
     /// restart or when unknown, and less by the load's cost once it has loaded
     /// the model, keeping whatever margin the operator added.
-    /// `LOAD_COST_MB` is written out from the default because a `Default`
-    /// impl is not const; this is what makes "change both" a failure rather
-    /// than a comment when only one moves.
+    /// The default asks for this system's cold figure, and on each system
+    /// the load cost is that figure less a reload's need.
     #[test]
     fn the_load_cost_is_the_default_less_a_reload() {
         assert_eq!(
-            LOAD_COST_MB + 12_288,
-            ImageConfig::default().min_available_mb
+            ImageConfig::default().min_available_mb,
+            min_available_mb_on(std::env::consts::OS)
         );
+        for os in ["linux", "macos"] {
+            assert_eq!(
+                load_cost_mb_on(os) + reload_mb_on(os),
+                min_available_mb_on(os),
+                "{os}"
+            );
+        }
+        assert_eq!(min_available_mb_on("linux"), 20_480);
+        assert_eq!(load_cost_mb_on("linux"), 8_192);
+        // A Mac's covers the bf16 file's measured cold peak (§12.3).
+        let mac_row = crate::recommend::SLOTS
+            .iter()
+            .find(|s| s.id == "image")
+            .and_then(|s| s.mac_rows.first())
+            .unwrap();
+        let crate::recommend::Memory::Unified { peak } = mac_row.memory else {
+            panic!("the Mac image row is unified");
+        };
+        assert!(min_available_mb_on("macos") >= peak.mb().unwrap() as u64);
     }
 
     #[test]
     fn the_memory_asked_for_follows_what_the_server_holds() {
-        assert_eq!(memory_need_mb(Some(false), 20_480), 20_480);
+        let cold = min_available_mb_on(std::env::consts::OS);
+        assert_eq!(memory_need_mb(Some(false), cold), cold);
+        assert_eq!(memory_need_mb(None, cold), cold, "unknown is never warm");
         assert_eq!(
-            memory_need_mb(None, 20_480),
-            20_480,
-            "unknown is never warm"
+            memory_need_mb(Some(true), cold),
+            reload_mb_on(std::env::consts::OS)
         );
-        assert_eq!(memory_need_mb(Some(true), 20_480), 12_288);
         // An operator's raised margin is kept, not capped at the default's.
-        assert_eq!(memory_need_mb(Some(true), 30_000), 30_000 - LOAD_COST_MB);
+        assert_eq!(memory_need_mb(Some(true), 50_000), 50_000 - load_cost_mb());
         // A small figure is not computed into the "check off" sentinel: the
         // unreadable-gauge refusal must survive it.
         assert_eq!(memory_need_mb(Some(true), 4_000), 0);
@@ -5227,8 +5303,7 @@ mod tests {
     /// and after `/free`; anything else reads as unknown.
     #[test]
     fn loaded_is_read_from_the_servers_stats() {
-        let stats =
-            |total: Value| json!({"devices": [{"name": "cuda:0", "torch_vram_total": total}]});
+        let stats = |total: Value| json!({"devices": [{"name": "cuda:0", "type": "cuda", "torch_vram_total": total}]});
         assert_eq!(loaded_from_stats(&stats(json!(0))), Some(false));
         assert_eq!(
             loaded_from_stats(&stats(json!(6_000_000_000u64))),
@@ -5237,6 +5312,25 @@ mod tests {
         assert_eq!(loaded_from_stats(&stats(json!("5 GB"))), None);
         assert_eq!(loaded_from_stats(&json!({"devices": []})), None);
         assert_eq!(loaded_from_stats(&json!({"system": {}})), None);
+        // MPS and the CPU report the machine's RAM there from the start
+        // (`get_total_memory` at `comfyui_unit::COMMIT`): never a load's
+        // sign, so never warm.
+        for kind in ["mps", "cpu"] {
+            let fresh = json!({"devices": [{"name": kind, "type": kind,
+                "torch_vram_total": 137_438_953_472u64}]});
+            assert_eq!(loaded_from_stats(&fresh), None, "{kind}");
+        }
+        let cuda = json!({"devices": [{"name": "cuda:0", "type": "cuda",
+            "torch_vram_total": 0}]});
+        assert_eq!(loaded_from_stats(&cuda), Some(false));
+        // A device that names no type, or one this has not seen, is unknown
+        // — never warm (review of #681, pass 2).
+        for device in [
+            json!({"name": "cuda:0", "torch_vram_total": 6_000_000_000u64}),
+            json!({"name": "xpu:0", "type": "xpu", "torch_vram_total": 6_000_000_000u64}),
+        ] {
+            assert_eq!(loaded_from_stats(&json!({"devices": [device]})), None);
+        }
     }
 
     /// A loopback address nothing listens on yet.
@@ -5520,9 +5614,9 @@ mod tests {
                         let files = |input: &str, name: &str| json!({node: {"input": {"required": {input: [[name], {}]}}}});
                         json_reply(match node {
                             "UNETLoader" => {
-                                let mut unets = vec!["qwen_image_2.1_int8_convrot.safetensors"];
+                                let mut unets = vec![crate::sampling::standard_model()];
                                 if !no_turbo {
-                                    unets.push(crate::sampling::TURBO_MODEL);
+                                    unets.push(crate::sampling::turbo_model());
                                 }
                                 json!({node: {"input": {"required": {"unet_name": [unets, {}]}}}})
                             }
@@ -5795,7 +5889,7 @@ mod tests {
         let g = comfy_graph(&cfg, &req(turbo.resolve(cfg.steps)), &[], None);
         assert_eq!(
             g["unet"]["inputs"]["unet_name"],
-            crate::sampling::TURBO_MODEL
+            crate::sampling::turbo_model()
         );
         assert_eq!(g["unet"]["class_type"], "UNETLoader");
         assert_eq!(g["sample"]["inputs"]["steps"], crate::sampling::TURBO_STEPS);
@@ -5857,20 +5951,18 @@ mod tests {
         assert_eq!(tool.persona_form(None).floor, floor);
     }
 
+    /// A Mac's available memory is macOS's own level (the owner's ruling,
+    /// 2026-10-13): a percentage, and anything else unread.
     #[test]
-    fn macos_available_memory_is_read_from_vm_stat() {
-        let sample = "Mach Virtual Memory Statistics: (page size of 16384 bytes)\n\
-            Pages free:                               65536.\n\
-            Pages active:                            900000.\n\
-            Pages inactive:                          131072.\n\
-            Pages speculative:                        32768.\n\
-            Pages throttled:                              0.\n\
-            Pages wired down:                        200000.\n\
-            Pages purgeable:                          16384.\n";
-        // (65536 + 131072 + 32768 + 16384) pages × 16 KiB = 3840 MB.
-        let parse = crate::system::source::parse_vm_stat;
-        assert_eq!(parse(sample), Some(3_840 * 1024 * 1024));
-        assert_eq!(parse("not vm_stat output"), None);
+    fn macos_available_memory_is_its_memorystatus_level() {
+        let parse = crate::system::source::parse_memorystatus_level;
+        assert_eq!(parse("37\n"), Some(37));
+        assert_eq!(parse("0"), Some(0));
+        assert_eq!(parse("100"), Some(100));
+        assert_eq!(parse("101"), None);
+        assert_eq!(parse("-3"), None);
+        assert_eq!(parse("sysctl: unknown oid"), None);
+        assert_eq!(parse(""), None);
     }
 
     /// §5.2 moved the result's guidance into the description; these two
@@ -9946,9 +10038,12 @@ mod tests {
         let out = t.call(call.clone(), &cx).await.unwrap();
         assert!(!out.is_error, "{}", out.content);
         assert_eq!(sent(&seen), ["free", "prompt"]);
-        assert!(last_prompt(&seen).contains(crate::sampling::TURBO_MODEL));
+        assert!(last_prompt(&seen).contains(crate::sampling::turbo_model()));
         let m = manifest_of(&dir, &out.content);
-        assert_eq!(m["model"]["diffusion_model"], crate::sampling::TURBO_MODEL);
+        assert_eq!(
+            m["model"]["diffusion_model"],
+            crate::sampling::turbo_model()
+        );
         assert_eq!(m["steps"], crate::sampling::TURBO_STEPS);
         assert_eq!(m["sampling"]["negative"], false);
         // Back to standard: turbo out first.
@@ -10128,7 +10223,7 @@ mod tests {
     fn a_released_server_has_nothing_to_unload() {
         let addr: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
         let server = server_at(addr);
-        let (standard, turbo) = ("standard.safetensors", crate::sampling::TURBO_MODEL);
+        let (standard, turbo) = ("standard.safetensors", crate::sampling::turbo_model());
         assert!(!server.switching(standard, standard));
         assert!(
             server.switching(turbo, standard),
@@ -10148,7 +10243,7 @@ mod tests {
     fn a_fresh_process_reads_the_held_model_from_the_record() {
         let record = tempdir().join("held-model.json");
         let addr: std::net::SocketAddr = "127.0.0.1:11".parse().unwrap();
-        let (standard, turbo) = ("standard.safetensors", crate::sampling::TURBO_MODEL);
+        let (standard, turbo) = ("standard.safetensors", crate::sampling::turbo_model());
         let earlier = server_at(addr);
         earlier.model_record.set(record.clone()).unwrap();
         earlier.drew_with(turbo);
@@ -10175,7 +10270,7 @@ mod tests {
     #[test]
     fn an_unwritten_record_falls_back_to_what_this_process_drew() {
         let addr: std::net::SocketAddr = "127.0.0.1:13".parse().unwrap();
-        let (standard, turbo) = ("standard.safetensors", crate::sampling::TURBO_MODEL);
+        let (standard, turbo) = ("standard.safetensors", crate::sampling::turbo_model());
         let server = server_at(addr);
         server
             .model_record
@@ -10198,7 +10293,7 @@ mod tests {
         let record = tempdir().join("held-model.json");
         // Nothing listens on port 1: the /free fails.
         let addr: std::net::SocketAddr = "127.0.0.1:1".parse().unwrap();
-        let (standard, turbo) = ("standard.safetensors", crate::sampling::TURBO_MODEL);
+        let (standard, turbo) = ("standard.safetensors", crate::sampling::turbo_model());
         let server = server_at(addr);
         server.model_record.set(record.clone()).unwrap();
         server.drew_with(turbo);

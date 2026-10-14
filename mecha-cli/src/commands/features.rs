@@ -223,7 +223,7 @@ pub(super) async fn enable_unwired(
         anyhow::bail!(
             "`--turbo` fetches into the image server mecha installs, and mecha installs none on \
              this platform; put {} in your ComfyUI's models/diffusion_models/",
-            mecha_core::sampling::TURBO_MODEL
+            mecha_core::sampling::turbo_model()
         );
     }
     // The machine is read only when some sidecar these features need is one
@@ -342,12 +342,12 @@ pub(super) async fn enable_unwired(
                 .image
                 .as_ref()
                 .map(|i| i.turbo_model.as_str())
-                .filter(|t| turbo && *t != mecha_core::sampling::TURBO_MODEL)
+                .filter(|t| turbo && *t != mecha_core::sampling::turbo_model())
             {
                 println!(
                     "[image] turbo_model is {own}, so a turbo picture loads that, not the {} \
                      this fetches.",
-                    mecha_core::sampling::TURBO_MODEL
+                    mecha_core::sampling::turbo_model()
                 );
             }
             let installing = todo.iter().any(|(id, ..)| *id == comfy::ID);
@@ -364,7 +364,7 @@ pub(super) async fn enable_unwired(
                     &hub,
                     comfy::TURBO_REPO,
                     comfy::TURBO_REVISION,
-                    &comfy::TURBO_FILE,
+                    comfy::turbo_file(),
                     false,
                 )
                 .is_ok_and(|c| c == mecha_core::fetch::Cached::Verified);
@@ -758,7 +758,7 @@ fn turbo_step(f: TurboFacts, unfit: impl FnOnce() -> Option<String>) -> TurboSte
     let Some(why) = f.wanted else {
         return TurboStep::Nothing;
     };
-    let file = mecha_core::sampling::TURBO_MODEL;
+    let file = mecha_core::sampling::turbo_model();
     // Someone else's server is told the file, never installed over.
     if let Some(SidecarState::Provided { by }) = f.found {
         return TurboStep::Say(format!(
@@ -811,7 +811,7 @@ fn turbo_step(f: TurboFacts, unfit: impl FnOnce() -> Option<String>) -> TurboSte
         let download = if f.cached {
             0
         } else {
-            mecha_core::comfyui_unit::TURBO_FILE.bytes
+            mecha_core::comfyui_unit::turbo_file().bytes
         };
         // The guided setup listed its downloads and installs before its one
         // yes (ruling F14): nothing it did not list is fetched, and no
@@ -1387,7 +1387,7 @@ mod tests {
     #[test]
     fn the_turbo_decision_holds_its_table() {
         use mecha_core::sidecar::SidecarState as S;
-        let bytes = mecha_core::comfyui_unit::TURBO_FILE.bytes;
+        let bytes = mecha_core::comfyui_unit::turbo_file().bytes;
         let installed = S::Installed;
         let missing = S::Missing { step: "7e" };
         let provided = S::Provided {
