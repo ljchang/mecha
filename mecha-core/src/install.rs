@@ -98,10 +98,12 @@ fn uv_asset(target: &str) -> Option<(&'static str, &'static str, u64)> {
 pub fn installable(id: &str) -> bool {
     match id {
         "layout" | "llama" => true,
-        // systemd user units: on macOS they stay manual (§10.5).
-        "embed-server" | "ocr-server" | "stt" | "voice-worker" | "comfyui" | "speech" => {
-            cfg!(target_os = "linux")
+        // systemd user units or launchd agents (§12).
+        "embed-server" | "ocr-server" | "stt" | "voice-worker" | "speech" => {
+            crate::router_unit::installs_here()
         }
+        // CUDA torch: on macOS ComfyUI stays manual (§10.5).
+        "comfyui" => cfg!(target_os = "linux"),
         _ => false,
     }
 }
@@ -987,8 +989,24 @@ mod tests {
             download_bytes: 105,
             nothing_to_do: false,
         };
-        // `fits` refuses on either platform — no NVIDIA device on Linux, no
-        // systemd on macOS — so the row is unpriced either way, with why.
+        // On Linux `fits` refuses a machine with no NVIDIA device. Apple
+        // silicon with a toolchain fits (Metal, §12.2), and the priced case
+        // is the test above's; any other Mac is refused for its own reason.
+        if crate::speech_unit::fits(std::env::consts::OS, crate::engine::Nvidia::None).is_ok() {
+            assert_eq!(
+                std::env::consts::OS,
+                "macos",
+                "only a Mac fits without NVIDIA"
+            );
+            // Offered, and its clip priced with it (review of #679 — this
+            // branch asserted nothing else).
+            price(&mut p, true, || crate::engine::Nvidia::None);
+            let clip: u64 = crate::speech_unit::VOICE.iter().map(|f| f.bytes).sum();
+            assert_eq!(p.sidecars[0].bytes, Some(clip));
+            assert_eq!(p.download_bytes, 105 + clip);
+            assert!(p.sidecars[0].not_offered.is_none());
+            return;
+        }
         price(&mut p, true, || crate::engine::Nvidia::None);
         assert_eq!(p.sidecars[0].bytes, None);
         assert_eq!(p.download_bytes, 5);
@@ -997,7 +1015,7 @@ mod tests {
         let why_says = if cfg!(target_os = "linux") {
             "NVIDIA"
         } else {
-            "launchd"
+            "speech"
         };
         assert!(
             matches!(&p.files[0].state, FileState::NotOffered { why } if why.contains(why_says)),
@@ -1099,13 +1117,19 @@ mod tests {
         // The on-demand servers' installer is built, for systemd machines.
         let built: &[&str] = if cfg!(target_os = "linux") {
             &["7a-3", "7b", "7c-1", "7c-2", "7d-1", "7d-2", "7e", "7f"]
+        } else if cfg!(target_os = "macos") {
+            // launchd agents for the on-demand servers and voice (§12).
+            &["7a-3", "7b", "7c-1", "7d-1", "7d-2", "7f"]
         } else {
             &["7a-3", "7b"]
         };
         assert!(installable("layout"));
         assert!(installable("llama"));
         assert_eq!(installable("comfyui"), cfg!(target_os = "linux"));
-        assert_eq!(installable("speech"), cfg!(target_os = "linux"));
+        assert_eq!(
+            installable("speech"),
+            cfg!(any(target_os = "linux", target_os = "macos"))
+        );
         assert!(!installable("router"), "the router is `setup chat`'s (F13)");
         for s in crate::sidecar::SIDECARS {
             // The router's installer is built, and `setup chat` runs it —

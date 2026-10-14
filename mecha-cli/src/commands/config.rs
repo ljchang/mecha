@@ -123,9 +123,10 @@ default_provider = "local"
 # The chat model, served on this machine by llama-server — the default, so a
 # prompt is answered here unless you choose a provider that sends it elsewhere.
 # `mecha setup chat` installs llama.cpp, a model recommended for this
-# machine's memory and the router on :8080 (Linux), then fills in the three
-# commented settings below; for a server you run yourself (llama-server,
-# vLLM, Ollama), `mecha setup --write` does the same.
+# machine's memory and the router on :8080 (a systemd user service on Linux,
+# a launchd agent on a Mac), then fills in the three commented settings
+# below; for a server you run yourself (llama-server, vLLM, Ollama),
+# `mecha setup --write` does the same.
 #
 # Do not type those three by hand — each is read off the server's own /props,
 # and each degrades quietly rather than failing when it is wrong.

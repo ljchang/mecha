@@ -1,5 +1,11 @@
 # Features — design
 
+> **Status (2026-10-13):** §12 — the chat router on macOS as a launchd
+> agent — is built on `mac/launchd-router` and measured on the owner's Mac
+> (M5 Max, 128 GB: 169 tok/s, MTP acceptance 85%). §12.1, the embeddings and
+> OCR servers on demand under launchd, is built on the same branch; its
+> real-Mac install is owed.
+>
 > **Status (2026-10-12):** step 7 is built through 7e-2: the installed
 > ComfyUI gets the hand install's idle reset. **Step 8 is written:**
 > `ARCHITECTURE.md` §Features → *Adding a feature* holds the checklist, and
@@ -1595,9 +1601,9 @@ from the row.
 
 ### 10.5 Out of scope, still
 
-macOS and Windows service managers (§8: the units are Linux user units; on
-macOS the engine and models install, and starting them stays manual until
-launchd is designed); system packages (`apt`, CUDA drivers, Docker) — setup
+Windows service managers, and on macOS the servers §12 has not yet taken
+(the router, the embeddings and OCR servers and voice are launchd agents
+there; §12.3 brings image); system packages (`apt`, CUDA drivers, Docker) — setup
 names them and stops; installing anything from the web app; and installing
 inside a trial. An environment may switch a feature on (§5.1), but a trial
 home never runs an installer: a switch that is on over an absent sidecar is
@@ -1833,3 +1839,166 @@ Out of scope here, still: the web app's toggles and *Set up* button (§8),
 which this is the terminal half of; and the voice and image installers (7d–7f)
 — until they exist, those questions switch the feature on and name what is
 still to install.
+
+## 12. macOS: the chat router as a launchd agent
+
+**2026-10-13.** The owner, testing the installer on a Mac: a Mac that cannot
+install a local chat model cannot install mecha at all, since the model is
+the point. And on sizing: *"mac arms also use unified memory, so i'm okay
+following the same linux recs as the spark."* Ruled: a Mac reads its tier
+off `sysctl hw.memsize` as one pool (`Machine::Unified`, as the GB10 does),
+and takes the same chat rows. There is no Mac-only row.
+
+**What a Mac lacked was the service manager, and nothing else.** Before the
+start, `router_unit::install` is portable: the engine (`engine.rs` pins
+`macos-arm64` and `macos-x64` builds, Metal on Apple silicon, and the health
+check accepts an `MTL` device), the model fetch, the presets, the `sh`
+launcher, and the holds and switch around the restart. Only the last step
+was systemd. So the split is there and nowhere earlier: `start_unit` writes
+the unit and its drop-ins and restarts it; `start_agent` writes
+`~/Library/LaunchAgents/ai.mecha-factory.<stem>.plist` and loads it.
+
+- **The plist carries what the drop-ins carry**: `MECHA_ROUTER_PORT`,
+  `MECHA_ROUTER_PRESETS`, `LLAMA_SERVER` (the engine resolved as on Linux,
+  so mecha's `current/llama-server` follows an upgrade as the drop-in
+  does), and a `PATH` of the system directories, since an agent gets
+  launchd's environment, not the shell's. `RunAtLoad`, and `KeepAlive` on
+  an unsuccessful exit with a ten-second throttle (the unit's
+  `Restart=on-failure`, `RestartSec=10`).
+- **Loaded by `bootout` then `bootstrap`**, waiting out the `bootout`:
+  launchd reads a plist only when it is bootstrapped, so a rewritten one
+  (another model, another engine) needs the old one unloaded, and a
+  `bootstrap` racing an exiting job fails with an I/O error.
+- **`gui/<uid>` when there is a login session, else `user/<uid>`.** Over SSH
+  with nobody at the screen there is no `gui` domain; the agent runs now
+  and loads from the directory at the next graphical login. An agent starts
+  at login, not at boot, which is the Mac's version of the linger note.
+- **No `mecha-wait-healthy`.** `bootstrap` returns at once, and the install's
+  own `check` already waits for `/health` and asks the router to load the
+  model, so the systemd `ExecStartPost` has nothing to add on a Mac.
+- **The log is a file**, `~/Library/Logs/mecha/<stem>.log`, made by the
+  install (launchd does not make it, and an agent whose log cannot open
+  never starts). An error names it where Linux names `journalctl`.
+- **Found as installed by its plist**: `Machinery::unit_dirs` is the agents
+  directories on a Mac, and the router's evidence names both file names, so
+  a hand-written agent of the same name is the owner's and nothing is
+  written over it.
+- **The router runs mecha's own engine, always** (owner, 2026-10-13: *"perhaps
+  it is cleaner to just install our own to avoid conflicts"*). Found on the
+  owner's Mac: Homebrew's `llama-server` (build 9960, 1,431 behind the pin)
+  sat on the PATH, and `setup chat` read any engine there as provided and
+  would have run it. Its `--help` listed every flag the presets use, so a
+  flag check would have passed it; and a package manager's binary changes
+  under a running router on its next upgrade, past the measurement gate. So
+  `llama_units::router_engine` installs the pinned build under `~/.mecha`
+  beside any other, which is left alone — never upgraded, never removed. The
+  one exception: a machine no pinned build fits, with an engine of its own,
+  runs that one and is told so. The embeddings and OCR servers keep
+  `Engine::resolve`'s order (mecha's, else a provided one).
+- **One predicate**, `router_unit::installs_here`, answers "can `setup chat`
+  run here" for every door that offers it: `setup chat`'s own refusal, the
+  guided setup's chat question, and the `local-server` step's remedy.
+
+**Not in this step** (§12.1 takes the first of these): the embeddings and
+OCR servers. `mecha setup engine --adopt/--upgrade` reads and restarts systemd units
+(`engine_gate.rs`) and has not been taught agents. Triggers, `mecha serve`,
+the Slack connector, and the image and voice servers stay manual on a Mac.
+
+**How to know it works**, on a Mac: the ignored real-machine test
+(`router_unit::a_router_installs_and_serves_beside_the_live_one`, with
+`MECHA_TEST_ROUTER_GGUF` naming a small model) installs an agent on a free
+port under a test name, loads the model, reads the router's list, and
+removes it, record and all. Then `mecha setup chat` with the recommended row
+on a clean `~/.mecha`. A 32 GB Mac is the one to watch: Metal's default
+working-set limit (`sysctl iogpu.wired_limit_mb`, 0 for the default) is a
+fraction of the memory, and the 32 GB row's files alone are 22.0 GiB.
+
+**Every agent's log is capped.** launchd writes `StandardOutPath` for good
+and nothing rotates it — `newsyslog` reads only its own configuration, which
+a user cannot add to — and the router logs every request. So an agent's
+program runs under `mecha features log-cap` (`log_cap.rs`), which writes the
+program's output to `~/Library/Logs/mecha/<stem>.log`, moves it to
+`<stem>.log.1` before it would pass 20 MiB, and passes a stop signal on and
+the program's exit status back, so `KeepAlive` still means the program's
+failure (review of #678).
+
+### 12.1 The embeddings and OCR servers on demand
+
+On Linux each is a socket that holds the public port from boot, a
+`systemd-socket-proxyd` that forwards it and exits after ten idle minutes,
+and a `StopWhenUnneeded=` server that stops with it — so nothing is resident
+until asked for, and a request after an idle stop waits through a cold start
+rather than being refused. launchd can hold a socket too (`Sockets` in a
+plist), but only for a program that takes the descriptor it is handed, and
+llama-server binds its own port.
+
+**So mecha is the proxy.** `on_demand.rs` is all three units in one process:
+it binds the public port at once, starts the same launcher on the backend
+port at the first connection (one start however many connections arrive
+during it), forwards once `/health` says ok — `mecha-wait-healthy`'s rule —
+and stops the server with SIGINT after the same ten minutes with no open
+connection. A server that died is started again by the next request. The
+agent's program is the installed `mecha` binary by absolute path, `mecha
+features on-demand` (hidden), as `mecha trigger daemon --unit` names its own
+binary. Its plist carries `LLAMA_SERVER` and `HF_HUB`, the two drop-ins'
+contents on Linux.
+
+**A resident server was the other way**, and is not taken: the two models
+are ~8 GiB together on the GB10's figures, and on a laptop memory the owner
+is not using should be free.
+
+**Measured on the owner's Mac (2026-10-13), for the next steps:** the four
+Python locks (layout, speech to text, the voice worker, the speech adapter)
+install with `--require-hashes` on macOS arm64 unchanged; Parakeet decodes at
+RTF 0.018 on eight threads (peak RSS 2.0 GiB, against 685 MB on the GB10 —
+the Mac row needs its own figure); qwentts.cpp at the pinned commit builds
+with `-DGGML_METAL=ON` (17 s) and speaks at RTF 0.36 on Metal, its first
+start paying ~14 s to compile shaders. Voice is a service-manager change and
+a Metal build away; image generation waits on whether ComfyUI's int8 weights
+run on MPS.
+
+### 12.2 Voice on a Mac
+
+The three voice servers — speech to text (Parakeet), the voice worker
+(Pipecat) and the speech server (Breeze on qwentts.cpp, and its adapter) — are
+plain resident services: one program each, its environment, a working
+directory. So one helper, `user_service.rs`, installs them on either system,
+and **the systemd unit is the source**: on a Mac the agent is read out of the
+rendered unit (`launchd::agent_from_unit` — its `ExecStart=`, `Environment=`
+and `WorkingDirectory=`), so a Mac runs exactly what Linux runs and a change
+to a unit reaches both. A unit whose command would need a shell's quoting is
+refused rather than split wrongly; none of the shipped ones does.
+
+- **A loaded agent is not a started program.** The units' `Type=exec` makes
+  a missing interpreter fail `systemctl restart` itself; launchd's
+  `bootstrap` succeeds once the job is loaded, so on a Mac a program that
+  cannot start restarts on its throttle until the install's own check times
+  out, and the install then stops it — the same outcome, later and with a
+  vaguer message. The reader carries a closed set of directives (anything
+  else is refused, not dropped), and refuses a home with a space in it.
+- **The environments are the Linux locks**, unchanged: all four install with
+  `--require-hashes` on macOS arm64 (measured 2026-10-13).
+- **The speech engine is built for Metal** on Apple silicon:
+  `-DGGML_METAL=ON`, `@loader_path` for `$ORIGIN`, the `.dylib`s copied flat,
+  no toolkit runtime. The toolchain asked for is the CPU build's (git,
+  cmake, a C++ compiler, make or ninja) — `cmake` is not part of the Xcode
+  command-line tools, so a Mac without Homebrew's is told so before anything
+  is fetched. An Intel Mac is refused: its GPU is not measured fast enough to
+  speak in real time. Measured on the owner's M5 Max: built in 17 s, RTF
+  0.36 warm, the first start compiling Metal shaders for ~14 s.
+- **The voice clip and its transcript are copied, not linked** — on both
+  systems. The adapter trusts a transcript no older than its clip, and a link
+  reads the hub blob's time: a hub filled by `hf download` had the transcript
+  written first, and the adapter sent the shipped voice to speech to text
+  (and would have overwritten its curated transcript with the result). A copy
+  is this install's, clip first.
+
+**Not yet:** ComfyUI on a Mac. Measured 2026-10-13: the pinned commit runs
+on MPS with PyPI torch, and the int8 ConvRot model draws a correct picture,
+but every quantized op is emulated (comfy-kitchen's `eager` backend; no
+native int8 on MPS), so a 40-step picture takes ~128 s against ~28 s on the
+GB10, and the text encoder runs on the CPU. Which model a Mac should default
+to (the 8-step turbo, a bf16 file) is being measured; the install needs its
+own lock (MPS torch from PyPI), and `comfy-aimdo` — the idle reset's memory
+release — does not run on Darwin.
+
