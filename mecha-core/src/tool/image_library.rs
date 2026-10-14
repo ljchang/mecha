@@ -1,5 +1,6 @@
-//! `image_library` and `image_library_propose`: the model's two doors into the
-//! image library (`docs/IMAGE-COMPILER-DESIGN.md` §4).
+//! `image_library`, `image_library_propose` and `image_library_reference`: the
+//! model's doors into the image library (`docs/IMAGE-COMPILER-DESIGN.md` §4,
+//! §9.3).
 //!
 //! ## What the lookup returns decides what it declares
 //!
@@ -41,6 +42,20 @@
 //! until the owner unlocks it, so it is a write the owner keeps on purpose,
 //! not a trace of the room. The schema has no `locked` field, so the model
 //! cannot ask its way out of the lock — nor into one elsewhere.
+//!
+//! ## A reference lands directly only from a clean conversation
+//!
+//! `image_library_reference` attaches or removes a character's typed picture
+//! (the owner's ruling of 2026-10-14, amending §9's owner-only rule). A
+//! reference rides into every later picture of that character, so how the
+//! conversation stands decides how it lands, as provenance gates learning:
+//! a conversation that has read nothing from outside writes it directly, as
+//! a new version the owner can revert from the character's page; one that
+//! has, or whose taint is unknown, stages it for the owner's approval in the
+//! Waiting pane; an incognito chat stages it locked. It is `read_only` on
+//! `image_generate`'s footing — a web chat starts read-only, and attaching a
+//! picture the owner just asked for should be one request in it — with the
+//! provenance split, not the permission mode, as what bounds it.
 
 use super::{Capabilities, Tool, ToolCtx, ToolOutput};
 use crate::imagelib::{self, Kind, Library, NewEntry, Origin, Status};
@@ -298,6 +313,23 @@ impl Tool for ImageLibraryPropose {
         // Lowercased, as `compile` lowercases a cast name: "Maya" in a cast
         // works, so "Maya" in a proposal should too.
         let (name, text) = (field("name").to_lowercase(), field("text"));
+        // A character already in the library takes new pictures as
+        // references, never as a second proposal: said, so a model asked to
+        // save a picture "to Wren" has somewhere to go (2026-10-14: four
+        // identical refusals in a row, with nothing to try next).
+        if kind == Kind::Character {
+            let lib = Library::load(&self.dir).0;
+            if lib
+                .get(Kind::Character, &name)
+                .is_some_and(|e| e.status == Status::Approved)
+            {
+                return Ok(ToolOutput::err(format!(
+                    "Not proposed: `{name}` is already in the library. A new picture of them \
+                     goes on with `image_library_reference` — as a face, a full_body, or a \
+                     labelled detail — never as a new character."
+                )));
+            }
+        }
         let portrait = match (kind, input.get("portrait").and_then(Value::as_str)) {
             (Kind::Character, Some(path)) => {
                 match crate::imagegen::read_references(ctx, &[path.trim().to_string()]).await {
@@ -349,6 +381,174 @@ impl Tool for ImageLibraryPropose {
                 )))
             }
             Err(e) => Ok(ToolOutput::err(format!("Not proposed: {e:#}."))),
+        }
+    }
+}
+
+/// Attaches or removes a character's typed picture (`full_body`, `face`,
+/// `detail`): directly from a clean conversation, staged for the owner
+/// otherwise — see the module doc.
+pub struct ImageLibraryReference {
+    dir: PathBuf,
+}
+
+impl ImageLibraryReference {
+    pub fn new(dir: PathBuf) -> Self {
+        ImageLibraryReference { dir }
+    }
+}
+
+#[async_trait]
+impl Tool for ImageLibraryReference {
+    fn name(&self) -> &str {
+        "image_library_reference"
+    }
+
+    fn description(&self) -> &str {
+        "Attach a picture to an existing library character, or remove one: a full_body (head to \
+         toe, standing square-on: its stance carries into pictures), a face, or a detail such as \
+         a tattoo, with a label saying what and where. The picture is a workspace path, usually \
+         one you just generated or the owner attached. From a conversation that has read outside \
+         content, it waits for the owner's approval instead of landing at once."
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "The character's library name."},
+                "as": {"type": "string", "enum": ["full_body", "face", "detail"]},
+                "picture": {"type": "string", "description": "A workspace path (images/...); not needed to remove."},
+                "label": {"type": "string", "description": "What it shows and where; required for a detail."},
+                "remove": {"type": "boolean", "description": "Remove the character's reference of this kind (and label) instead."}
+            },
+            "required": ["name", "as"]
+        })
+    }
+
+    /// Bounded by provenance, not by the permission mode — see the module doc.
+    fn read_only(&self) -> bool {
+        true
+    }
+
+    /// Nothing private comes back, only what the call named; but it writes an
+    /// approved version of a character with no approver from a clean
+    /// conversation, so it says so as every other writing builtin does — and
+    /// that is what keeps it from a `research` child (review of #692).
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::default().destructive()
+    }
+
+    async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
+        // Planning is read-only exploration, and the phase gate admits this
+        // tool on its `read_only` flag, as it admits `message_send`: so the
+        // refusal is here, nothing written or staged (review of #696).
+        if ctx.phase == crate::agent::Phase::Plan {
+            return Ok(ToolOutput::err(
+                "image_library_reference is not available while planning: it changes a \
+                 library character. Nothing was attached or staged.",
+            ));
+        }
+        let kind = match input.get("as").and_then(Value::as_str) {
+            Some("full_body") => imagelib::RefKind::FullBody,
+            Some("face") => imagelib::RefKind::Face,
+            Some("detail") => imagelib::RefKind::Detail,
+            _ => return Ok(ToolOutput::err("`as` must be full_body, face or detail.")),
+        };
+        let name = input
+            .get("name")
+            .and_then(Value::as_str)
+            .map(|n| n.trim().to_lowercase())
+            .unwrap_or_default();
+        let label = input
+            .get("label")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let remove = input
+            .get("remove")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        // Answered as `image_library` would: only what the call named, never
+        // what else the library holds.
+        let lib = Library::load(&self.dir).0;
+        if lib
+            .get(Kind::Character, &name)
+            .is_none_or(|e| e.status != Status::Approved)
+        {
+            return Ok(ToolOutput::err(imagelib::missing(
+                &lib,
+                Kind::Character,
+                &name,
+            )));
+        }
+        let bytes = if remove {
+            None
+        } else {
+            let Some(path) = input.get("picture").and_then(Value::as_str) else {
+                return Ok(ToolOutput::err(
+                    "Attaching a reference needs its `picture`: a workspace path (images/...).",
+                ));
+            };
+            match crate::imagegen::read_references(ctx, &[path.trim().to_string()]).await {
+                Ok(mut refs) => Some(refs.remove(0).bytes),
+                Err(why) => return Ok(ToolOutput::err(why)),
+            }
+        };
+        // What the conversation had read before this turn's batch, as a
+        // proposal's origin is recorded (`ImageLibraryPropose`).
+        let origin = Origin::of_proposal(ctx.recorded_taint.as_ref());
+        let direct = origin == Origin::ModelClean && !ctx.stage_locked;
+        if direct {
+            let done = match &bytes {
+                Some(bytes) => {
+                    imagelib::add_reference_as(&self.dir, &name, kind, bytes, label, Some(origin))
+                }
+                None => imagelib::remove_reference(&self.dir, &name, kind, label.as_deref()),
+            };
+            return Ok(match done {
+                Ok(entry) => ToolOutput::ok(format!(
+                    "{} `{}`'s {} reference (now v{}). The owner can see and undo it on the \
+                     character's page in the library.",
+                    if remove { "Removed" } else { "Attached" },
+                    entry.name,
+                    kind.label(),
+                    entry.version
+                )),
+                Err(e) => ToolOutput::err(format!("Not changed: {e:#}.")),
+            });
+        }
+        let action = if remove {
+            imagelib::PendingAction::Remove
+        } else {
+            imagelib::PendingAction::Add
+        };
+        match imagelib::propose_reference(
+            &self.dir,
+            &name,
+            kind,
+            action,
+            bytes.as_deref(),
+            label,
+            origin,
+            ctx.stage_locked,
+        ) {
+            Ok(p) => {
+                let why = if ctx.stage_locked {
+                    "an incognito chat stages it behind the library lock"
+                } else {
+                    "this conversation has read outside content"
+                };
+                let change = if remove { "removing" } else { "adding" };
+                Ok(ToolOutput::ok(format!(
+                    "Staged {change} `{}`'s {} reference for the owner's approval, since {why}: \
+                     the library's Waiting pane, or `mecha imagelib approve-reference {}`. It \
+                     is not used until then.",
+                    p.name,
+                    kind.label(),
+                    p.id
+                )))
+            }
+            Err(e) => Ok(ToolOutput::err(format!("Not staged: {e:#}."))),
         }
     }
 }
@@ -679,6 +879,212 @@ mod tests {
         std::fs::remove_dir_all(ws).ok();
     }
 
+    fn library_with_wren() -> (PathBuf, PathBuf) {
+        let lib = scratch();
+        let ws = scratch();
+        imagelib::create(
+            &lib,
+            NewEntry {
+                kind: Kind::Character,
+                name: "wren".into(),
+                text: "wren, a fictional test character".into(),
+                portrait: Some(png()),
+                source_seed: None,
+                origin: Origin::Owner,
+                locked: false,
+            },
+        )
+        .unwrap();
+        std::fs::create_dir_all(ws.join("images")).unwrap();
+        let tattoo = {
+            let img = image::RgbImage::from_pixel(3, 3, image::Rgb([20, 60, 20]));
+            let mut out = std::io::Cursor::new(Vec::new());
+            img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+            out.into_inner()
+        };
+        std::fs::write(ws.join("images/tattoo.png"), tattoo).unwrap();
+        (lib, ws)
+    }
+
+    fn dirty() -> Option<Taint> {
+        Some(Taint {
+            untrusted: true,
+            ..Taint::default()
+        })
+    }
+
+    /// The owner's ruling of 2026-10-14: a clean conversation attaches a
+    /// reference directly, recorded as the model's; one that has read
+    /// outside content, has unknown taint, or is incognito stages it, and
+    /// nothing reaches the character until the owner approves.
+    #[tokio::test]
+    async fn a_reference_lands_directly_only_from_a_clean_conversation() {
+        let (lib, ws) = library_with_wren();
+        let tool = ImageLibraryReference::new(lib.clone());
+        let ask = json!({"name": "Wren", "as": "detail", "picture": "images/tattoo.png",
+                         "label": "floral tattoo, left forearm"});
+        let out = tool
+            .call(ask.clone(), &ctx(&ws, Some(Taint::default())))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("now v2"), "{}", out.content);
+        let wren = Library::load(&lib)
+            .0
+            .get(Kind::Character, "wren")
+            .unwrap()
+            .clone();
+        assert_eq!(wren.references.len(), 1);
+        assert_eq!(wren.references[0].origin, Some(Origin::ModelClean));
+        assert!(imagelib::pending_references(&lib).0.is_empty());
+
+        // Removed again, directly, from the same clean conversation.
+        let out = tool
+            .call(
+                json!({"name": "wren", "as": "detail", "label": "floral tattoo, left forearm", "remove": true}),
+                &ctx(&ws, Some(Taint::default())),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(Library::load(&lib)
+            .0
+            .get(Kind::Character, "wren")
+            .unwrap()
+            .references
+            .is_empty());
+
+        // Tainted, unknown, incognito: staged, and the character untouched.
+        let incognito = ToolCtx {
+            stage_locked: true,
+            ..ctx(&ws, Some(Taint::default()))
+        };
+        for (why, c) in [
+            ("dirty", ctx(&ws, dirty())),
+            ("unknown", ctx(&ws, None)),
+            ("incognito", incognito),
+        ] {
+            let out = tool.call(ask.clone(), &c).await.unwrap();
+            assert!(!out.is_error, "{why}: {}", out.content);
+            assert!(out.content.contains("Staged"), "{why}: {}", out.content);
+        }
+        let wren = Library::load(&lib)
+            .0
+            .get(Kind::Character, "wren")
+            .unwrap()
+            .clone();
+        assert!(
+            wren.references.is_empty(),
+            "a staged reference reached the character"
+        );
+        let (pending, _) = imagelib::pending_references(&lib);
+        assert_eq!(pending.len(), 3);
+        assert_eq!(
+            pending.iter().filter(|p| p.locked).count(),
+            1,
+            "incognito stages locked"
+        );
+        assert!(pending
+            .iter()
+            .all(|p| p.origin == Origin::ModelUntrusted
+                || (p.locked && p.origin == Origin::ModelClean)));
+
+        // The owner approves one: applied, with the model's origin, and gone
+        // from the queue; rejecting the rest leaves nothing behind.
+        let first = pending[0].id.clone();
+        let e = imagelib::approve_reference(&lib, &first).unwrap();
+        assert_eq!(e.references.len(), 1);
+        assert_eq!(e.references[0].origin, Some(pending[0].origin));
+        for p in &pending[1..] {
+            // The same picture twice is the store's to refuse at approval.
+            imagelib::reject_reference(&lib, &p.id).unwrap();
+        }
+        assert!(imagelib::pending_references(&lib).0.is_empty());
+        std::fs::remove_dir_all(lib).ok();
+        std::fs::remove_dir_all(ws).ok();
+    }
+
+    /// Planning changes nothing: not attached, not staged, even from a clean
+    /// conversation (review of #696).
+    #[tokio::test]
+    async fn planning_never_writes_a_reference() {
+        let (lib, ws) = library_with_wren();
+        let planning = ToolCtx {
+            phase: crate::agent::Phase::Plan,
+            ..ctx(&ws, Some(Taint::default()))
+        };
+        let out = ImageLibraryReference::new(lib.clone())
+            .call(
+                json!({"name": "wren", "as": "full_body", "picture": "images/tattoo.png"}),
+                &planning,
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(out.content.contains("planning"), "{}", out.content);
+        let wren = Library::load(&lib)
+            .0
+            .get(Kind::Character, "wren")
+            .unwrap()
+            .clone();
+        assert!(wren.references.is_empty());
+        assert!(imagelib::pending_references(&lib).0.is_empty());
+        std::fs::remove_dir_all(lib).ok();
+        std::fs::remove_dir_all(ws).ok();
+    }
+
+    /// A name the library does not hold is answered as `image_library`
+    /// answers it — only what the call named — and nothing is staged.
+    #[tokio::test]
+    async fn an_unknown_character_is_answered_without_the_roster() {
+        let (lib, ws) = library_with_wren();
+        let out = ImageLibraryReference::new(lib.clone())
+            .call(
+                json!({"name": "nobody", "as": "full_body", "picture": "images/tattoo.png"}),
+                &ctx(&ws, Some(Taint::default())),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(!out.content.contains("wren"), "{}", out.content);
+        assert!(imagelib::pending_references(&lib).0.is_empty());
+        // A detail without a label is refused before anything is written.
+        let out = ImageLibraryReference::new(lib.clone())
+            .call(
+                json!({"name": "wren", "as": "detail", "picture": "images/tattoo.png"}),
+                &ctx(&ws, dirty()),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(imagelib::pending_references(&lib).0.is_empty());
+        std::fs::remove_dir_all(lib).ok();
+        std::fs::remove_dir_all(ws).ok();
+    }
+
+    /// Proposing a character that is already in the library points at the
+    /// reference tool, so a model asked to save a picture "to" someone has
+    /// a next step rather than the same refusal again (2026-10-14).
+    #[tokio::test]
+    async fn proposing_an_existing_character_points_at_references() {
+        let (lib, ws) = library_with_wren();
+        let out = ImageLibraryPropose::new(lib.clone())
+            .call(
+                json!({"kind": "character", "name": "wren", "text": "x", "portrait": "images/tattoo.png"}),
+                &ctx(&ws, Some(Taint::default())),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("image_library_reference"),
+            "{}",
+            out.content
+        );
+        std::fs::remove_dir_all(lib).ok();
+        std::fs::remove_dir_all(ws).ok();
+    }
+
     #[test]
     fn the_lookup_is_private_and_never_untrusted() {
         // Private on purpose: the library may hold a real person's
@@ -690,6 +1096,10 @@ mod tests {
         // A proposal returns a sentence about itself, nothing from the store.
         let propose = ImageLibraryPropose::new(PathBuf::new()).capabilities();
         assert!(!propose.private_data && !propose.untrusted_input && !propose.destructive);
+        // The reference writer changes an approved entry: declared, so a
+        // profile can tell it from a public read.
+        let reference = ImageLibraryReference::new(PathBuf::new()).capabilities();
+        assert!(reference.destructive && !reference.private_data);
         assert_eq!(propose.egress, crate::tool::Egress::None);
     }
 }

@@ -20,14 +20,28 @@ export function entriesFor(pane, entries) {
   return list.filter((e) => e.status === 'approved' && e.kind === kind);
 }
 
-export function counts(entries) {
-  const out = { characters: 0, styles: 0, candidates: 0 };
+// A model's staged reference changes wait in the candidates pane too, so the
+// chip counts them (docs/IMAGE-COMPILER-DESIGN.md §9.3, 2026-10-14).
+export function counts(entries, pending = []) {
+  const out = { characters: 0, styles: 0, candidates: (pending ?? []).length };
   for (const e of entries ?? []) {
     if (e.status === 'candidate') out.candidates += 1;
     else if (e.kind === 'style') out.styles += 1;
     else out.characters += 1;
   }
   return out;
+}
+
+// Only an action this build can apply is offered Approve; anything else (a
+// later build's, a hand-edited file) is Reject-only, since the server would
+// refuse it every time (review of #692, measured on #696).
+export const refApprovable = (p) => p.action === 'add' || p.action === 'remove';
+
+// One staged reference change, said as the owner decides it.
+export function pendingLine(p) {
+  const kind = { full_body: 'full body', face: 'face', detail: 'detail' }[p.kind] ?? p.kind;
+  const verb = p.action === 'remove' ? 'Remove' : p.action === 'add' ? 'Add' : 'Change';
+  return `${verb} ${p.name}'s ${kind}${p.label ? ` · ${p.label}` : ''}`;
 }
 
 // Who wrote an entry's text, in the owner's words. The untrusted case is the
@@ -216,4 +230,12 @@ export function refRemoveBody(entry, ref, token = null) {
     ...(ref.label ? { label: ref.label } : {}),
     ...(token ? { unlock: token } : {}),
   };
+}
+
+// What a picked picture shows before it is saved: the very bytes the form
+// will send, as a data: URL. Not a blob: URL — serve's Content-Security-Policy
+// allows `img-src 'self' data:` only, so a blob: preview rendered as a broken
+// image until the save (2026-10-14).
+export function previewOf(b64) {
+  return `data:image/jpeg;base64,${b64}`;
 }

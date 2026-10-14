@@ -181,6 +181,16 @@ pub enum Cmd {
         #[arg(long)]
         label: Option<String>,
     },
+    /// Reference changes a model staged for you: from a conversation that
+    /// had read outside content, or an incognito chat.
+    Pending {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Apply a staged reference change, by the id `pending` shows.
+    ApproveReference { id: String },
+    /// Drop a staged reference change; its picture goes once nothing names it.
+    RejectReference { id: String },
 }
 
 /// One y/N question, where EOF is "no" — the outbox's rule: a review surface
@@ -304,12 +314,59 @@ fn describe(lib: &Library, e: &Entry) {
             .as_deref()
             .map(|l| format!(" — {l}"))
             .unwrap_or_default();
+        // Attached by a model from a clean conversation (2026-10-14): said,
+        // so the owner can tell a chat's write from their own.
+        let by = if r.origin.is_some() {
+            " (from a chat)"
+        } else {
+            ""
+        };
         println!(
-            "  reference: {}{label}: {}{note}",
+            "  reference: {}{label}: {}{note}{by}",
             r.kind.label(),
             lib.blob_path(&r.blob).display()
         );
     }
+    let (pending, unreadable) = imagelib::pending_references(lib.dir());
+    if e.kind == Kind::Character && !unreadable.is_empty() {
+        println!(
+            "  waiting: {} staged change{} could not be read — `mecha imagelib pending`",
+            unreadable.len(),
+            if unreadable.len() == 1 { "" } else { "s" }
+        );
+    }
+    // Only a character's: a style sharing the name has no references.
+    for p in pending
+        .iter()
+        .filter(|p| e.kind == Kind::Character && p.name == e.name)
+    {
+        println!(
+            "  waiting: {} (`mecha imagelib approve-reference {}`)",
+            pending_line(p),
+            p.id
+        );
+    }
+}
+
+/// One staged change, as `pending` and `show` say it.
+fn pending_line(p: &imagelib::PendingReference) -> String {
+    let what = match p.action {
+        imagelib::PendingAction::Add => "add",
+        imagelib::PendingAction::Remove => "remove",
+        imagelib::PendingAction::Unknown => "an unknown change to",
+    };
+    let label = p
+        .label
+        .as_deref()
+        .map(|l| format!(" — {l}"))
+        .unwrap_or_default();
+    format!(
+        "{what} {}'s {}{label}, {}{}",
+        p.name,
+        p.kind.label(),
+        origin_label(p.origin),
+        if p.locked { ", locked" } else { "" }
+    )
 }
 
 fn read_picture(path: &PathBuf) -> Result<Vec<u8>> {
@@ -334,7 +391,11 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
     // same reason). What adds to, changes or removes an entry is refused.
     if !matches!(
         args.cmd,
-        Cmd::List { .. } | Cmd::Show { .. } | Cmd::SetLockPassword | Cmd::SetAutolock { .. }
+        Cmd::List { .. }
+            | Cmd::Show { .. }
+            | Cmd::Pending { .. }
+            | Cmd::SetLockPassword
+            | Cmd::SetAutolock { .. }
     ) {
         super::features::require(mecha_core::feature::Feature::Library)?;
     }
@@ -432,6 +493,35 @@ fn run(dir: &std::path::Path, cmd: Cmd) -> Result<()> {
             }
         }
         Cmd::Show { name, kind } => describe(&lib, resolve(&lib, &name, kind)?),
+        Cmd::Pending { json } => {
+            let (pending, errors) = imagelib::pending_references(dir);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&pending)?);
+            } else if pending.is_empty() {
+                println!("No reference changes are waiting.");
+            } else {
+                for p in &pending {
+                    println!("{}  {}", p.id, pending_line(p));
+                    if let Some(blob) = &p.blob {
+                        println!("    picture: {}", lib.blob_path(blob).display());
+                    }
+                }
+            }
+            for e in &errors {
+                eprintln!("mecha: {} would not load: {}", e.path.display(), e.why);
+            }
+        }
+        Cmd::ApproveReference { id } => {
+            let e = imagelib::approve_reference(dir, &id)?;
+            println!(
+                "`{}` is now v{} with the change applied.",
+                e.name, e.version
+            );
+        }
+        Cmd::RejectReference { id } => {
+            imagelib::reject_reference(dir, &id)?;
+            println!("Dropped the staged change.");
+        }
         Cmd::AddCharacter {
             name,
             portrait,

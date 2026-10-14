@@ -282,6 +282,28 @@ you approve it: in the **Library** tab under **Waiting**, or with
 `mecha imagelib list --all` and `mecha imagelib approve sam`. You approve
 exactly the text you were shown.
 
+**Reference pictures.** A character can carry up to three kinds of extra
+picture beside its portrait: a **full body** (head to toe, standing
+square-on — its stance carries into pictures, and a new picture of one or two
+people sends it when everyone in the picture has one), a **face** (for the
+video tool), and up to four **details** such as a tattoo, each with a label
+saying what and where. Add or remove them on the character's page in the
+**Library** tab, or with `mecha imagelib add-reference`. You can also ask in
+a chat — "save this tattoo picture to Wren as a detail" — and how that lands
+depends on what the chat has read:
+
+- a chat that has read nothing from outside (no web pages, mail or other
+  third-party content) attaches it at once, shown as *from a chat* on the
+  character's page, where you can remove it;
+- a chat that has read outside content stages it in **Waiting**, with the
+  picture, for you to approve (or `mecha imagelib pending` and
+  `approve-reference`), because a reference rides into every later picture of
+  that character;
+- an incognito chat always stages it, locked.
+
+`[tools] disabled = ["image_library_reference"]` turns the chat door off;
+your own page and the CLI are unaffected.
+
 **Locking.** Locking a character hides the whole entry — card, portrait and
 description — while you browse the Library tab; it still works in any chat,
 and pictures already in your chats are untouched. The lock button at the top

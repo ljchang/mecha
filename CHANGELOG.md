@@ -17,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on request. Before this, an existing install kept its old services through
   every upgrade — on a Mac, ComfyUI never moved behind the on-demand proxy.
   The chat router's refresh is `mecha setup chat`'s.
+- **Models can attach pictures to a library character.** Ask a chat to save a
+  picture to a character as a full body, a face, or a labelled detail such as
+  a tattoo. A chat that has read nothing from outside attaches it at once,
+  shown as *from a chat* on the character's page; one that has, or an
+  incognito chat, stages it in the Library's **Waiting** pane for your
+  approval (`mecha imagelib pending`, `approve-reference`,
+  `reject-reference`). `[tools] disabled = ["image_library_reference"]` turns
+  it off.
+
 - **PDFs on a Mac, confined by macOS's own sandbox.** `[documents] confine =
   "seatbelt"`, the default on macOS, runs poppler under `sandbox-exec` with a
   profile built for each call: deny by default, the program and the
