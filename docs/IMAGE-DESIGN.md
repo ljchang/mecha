@@ -227,7 +227,7 @@ Two rules (review B1).
 - **Masks:** `prepare_mask`, compositing, and the Edit modal.
 - **Faces:** face crops (`face.rs`, RetinaFace, the crop cache) and the library's compile templates (E1–E12), driven by typed people instead of `cast`.
 - **Jobs:** the deferred job, one per chat, late landing, Stop semantics, orphan repair, and the picture clock.
-- **Library:** the library, its approval and lock, `image_library`, `image_library_propose`, `persona_propose`'s character link, and the library page and save-to-library.
+- **Library:** the library, its approval and lock, `image_library`, `image_library_propose`, `image_library_reference` (2026-10-14), `persona_propose`'s character link, and the library page and save-to-library.
 - **Other tools and pages:** `image_view`, incognito image handling, the card, Download, and the call screen's picture slot.
 
 ## 8. What is retired
