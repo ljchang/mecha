@@ -1070,7 +1070,8 @@ fn collect_queues() -> Vec<Queue> {
         name: "image candidates",
         depth,
         detail,
-        opens: "mecha imagelib list --all",
+        // Candidates and staged reference changes each have their own list.
+        opens: "mecha imagelib list --all; mecha imagelib pending",
         oldest,
     });
 

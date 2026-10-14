@@ -431,8 +431,12 @@ impl Tool for ImageLibraryReference {
         true
     }
 
+    /// Nothing private comes back, only what the call named; but it writes an
+    /// approved version of a character with no approver from a clean
+    /// conversation, so it says so as every other writing builtin does — and
+    /// that is what keeps it from a `research` child (review of #692).
     fn capabilities(&self) -> Capabilities {
-        Capabilities::default()
+        Capabilities::default().destructive()
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
@@ -1054,6 +1058,10 @@ mod tests {
         // A proposal returns a sentence about itself, nothing from the store.
         let propose = ImageLibraryPropose::new(PathBuf::new()).capabilities();
         assert!(!propose.private_data && !propose.untrusted_input && !propose.destructive);
+        // The reference writer changes an approved entry: declared, so a
+        // profile can tell it from a public read.
+        let reference = ImageLibraryReference::new(PathBuf::new()).capabilities();
+        assert!(reference.destructive && !reference.private_data);
         assert_eq!(propose.egress, crate::tool::Egress::None);
     }
 }
