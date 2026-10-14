@@ -4134,14 +4134,14 @@ impl Tool for ImageGenerate {
                             used = c.used;
                             body_notes = c.notes;
                         }
-                        // The faces-only compile stands; its layers note
-                        // would no longer be true.
-                        Err(_) => {
-                            body_notes = vec![
-                                "Full-figure references were not sent: the prompt would run \
-                                 over its limit with them."
-                                    .into(),
-                            ]
+                        // The faces-only compile stands. `compile_with`
+                        // keeps the prompt cap to itself, so a failure here
+                        // is one the bodies did not cause: said as it is,
+                        // since the layers note would no longer be true.
+                        Err(why) => {
+                            tracing::warn!("image_generate: recompile with bodies: {why}");
+                            body_notes =
+                                vec![format!("Full-figure references were not sent: {why}")]
                         }
                     }
                 }
