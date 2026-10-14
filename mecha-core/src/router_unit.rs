@@ -735,8 +735,9 @@ pub fn remove(m: &Machinery, naming: &Naming) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    /// The router's revision is held to what its install writes: the unit,
-    /// the launcher, their drop-in and wait script, and the Mac agent.
+    /// The router's revision is held to what its install writes: the presets
+    /// file, the unit, the launcher, their drop-in and wait script, and the
+    /// Mac agent.
     #[test]
     fn the_router_s_revision_is_held_to_what_it_writes() {
         let n = Naming::shipped();
@@ -752,13 +753,28 @@ mod tests {
             Path::new("/h/.mecha"),
             "/u/Library/Logs/mecha/llama-local.log".into(),
         ));
+        // Every branch of the presets file: the pinned row's lines, and an
+        // owner's model with none of the optional ones.
+        let preset = |pinned: bool| {
+            presets_text(&Preset {
+                alias: "a-model".into(),
+                model: "/h/m.gguf".into(),
+                mmproj: pinned.then(|| "/h/mm.gguf".into()),
+                ctx: 65536,
+                slots: 2,
+                cache_ram_mb: pinned.then_some(8192),
+                pinned,
+            })
+        };
         crate::user_service::assert_rev(
             ID,
             (
                 1,
-                "1251b991c44ef693eff44e9b77b18ed4f4ae05f3f15e1a11529b6a961b936f64",
+                "1946cb344dc248fbfc5032cd738f2ca33e8719ceaef7a2ceaef94ad10a67f966",
             ),
             &[
+                &preset(true),
+                &preset(false),
                 &r(ROUTER_SERVICE),
                 &r(ROUTER_LAUNCHER),
                 PATH_CONF,

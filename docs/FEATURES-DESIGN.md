@@ -2151,13 +2151,20 @@ only when its model was gone.
   `Unknown`, never current.
 - **The number follows the bytes, by test.** Each installer's test hashes
   everything it renders with fixed inputs and pins the hash beside the
-  number, so a changed unit, launcher, drop-in, program file or Mac agent
-  fails the build until the number is raised. A forgotten bump cannot ship.
+  number, so a changed unit, launcher, drop-in, presets file, program file or
+  Mac agent fails the build until the number is raised. The dependency locks
+  and pinned commits are not hashed: a change there is an upgrade that
+  downloads, not a refresh, and a program file that needs it changes with it.
+- **`mecha setup <feature>` shows only that feature's step;** the services
+  step is the bare `mecha setup`'s, and `enable <feature>` makes the offer.
+- **A definition path an install stops writing stays recorded** (the
+  manifest only grows on a reinstall), so it would read stale for good: a
+  renamed or retired unit must be removed from the record when it changes.
 - **A refresh is the install run again.** Installs are idempotent: the
   pinned build is kept when its commit stamp matches, cached models are not
   fetched, and the services are rewritten and restarted. `enable` lists a
-  stale row as "its service is from an older mecha: rewritten and restarted,
-  nothing downloaded" and asks the usual yes; `features plan` says which
+  stale row as "its service is from an older mecha: rewritten and restarted;
+  nothing current is downloaded again" and asks the usual yes; `features plan` says which
   command refreshes it.
 - **`--reinstall`** marks every installed sidecar with services stale for
   that command — the way to rewrite a service by hand, without editing a

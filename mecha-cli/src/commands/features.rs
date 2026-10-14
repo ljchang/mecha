@@ -272,6 +272,7 @@ pub(super) async fn enable_unwired(
         // The rows offered only because their services are an older build's:
         // said as a refresh, not an install.
         let mut refreshing: Vec<&'static str> = Vec::new();
+        let mut router_said = false;
         // The driver, read once for the whole command and only if some plan
         // would install the engine.
         let nvidia = std::cell::OnceCell::new();
@@ -291,6 +292,14 @@ pub(super) async fn enable_unwired(
                         && mecha_core::user_service::rev(s.id).is_some()
                 }) {
                     s.stale = true;
+                    // Never `enable`'s to rewrite (F13): said, not dropped.
+                    if s.id == mecha_core::router_unit::ID && chat_here && !router_said {
+                        println!(
+                            "The chat router is not reinstalled here: `mecha setup chat` \
+                             refreshes it."
+                        );
+                        router_said = true;
+                    }
                 }
             }
             if let Some(s) = p.sidecars.iter().find(|s| s.id == comfy::ID) {
@@ -529,7 +538,7 @@ pub(super) async fn enable_unwired(
                     } else {
                         println!(
                             "  {label} — its service is from an older mecha: rewritten and \
-                             restarted, nothing downloaded"
+                             restarted; nothing current is downloaded again"
                         );
                     }
                     continue;

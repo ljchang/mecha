@@ -616,8 +616,6 @@ fn record_never(home: &std::path::Path, s: &Step) {
     }
 }
 
-/// The registry's rows against the global configuration — empty when it does
-/// not load, which the plan's own config step already reports.
 /// The services an older mecha wrote, each with the switched-on feature whose
 /// `enable` would refresh it — or none, for the chat router (`mecha setup
 /// chat`'s). One no switched-on feature offers is not listed: nothing here
@@ -660,6 +658,8 @@ fn stale_services(
         .collect()
 }
 
+/// The registry's rows against the global configuration — empty when it does
+/// not load, which the plan's own config step already reports.
 fn feature_rows(home: &std::path::Path) -> Vec<mecha_core::feature::Row> {
     mecha_core::config::Config::load_global()
         .map(|global| feature::all(&feature::Facts::read(home, &global)))

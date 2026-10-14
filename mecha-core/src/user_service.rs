@@ -263,9 +263,12 @@ pub fn logs_anywhere() -> &'static str {
 }
 
 /// Holds a sidecar's revision to what its install writes: the hash of every
-/// rendered definition and program file, pinned beside the number. A change
-/// to any of them fails here until the number in [`REVS`] is raised — so an
-/// installed service is never quietly older than the build that reads it.
+/// rendered definition, launcher, drop-in and program file, pinned beside the
+/// number. A change to any of them fails here until the number in [`REVS`] is
+/// raised — so an installed service is never quietly older than the build
+/// that reads it. Not the dependency locks or the pinned commits: a change
+/// there is an upgrade that downloads, not a refresh, and a program file that
+/// needs it changes with it.
 #[cfg(test)]
 pub(crate) fn assert_rev(id: &str, pinned: (u32, &str), rendered: &[&str]) {
     use sha2::{Digest, Sha256};
