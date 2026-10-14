@@ -56,6 +56,11 @@ apply a limit and refuses one at startup rather than ignoring it.
 `mecha tools` prints the active sandbox, including whether the network is on
 and whether reads can leave the workspace.
 
+On a Mac, `shell`'s only backend is `docker`. macOS's own sandbox, Seatbelt,
+confines the PDF parser (`[documents] confine = "seatbelt"`, the default
+there) and is refused for `[sandbox]`: it has been measured against a
+parser's reach — one input, one directory, no network — not a shell's.
+
 ### What landlock deliberately does not claim
 
 Landlock confines **files**: workspace writable, system read-only, your home

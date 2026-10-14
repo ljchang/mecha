@@ -315,6 +315,35 @@ jobs:
           MECHA_TEST_REQUIRE_BACKENDS: "1"
         run: cargo test --workspace --locked --test sandbox_backends --test mcp_server --test run_lifecycle --test serve_lifecycle
 
+  # macOS's Seatbelt confinement of the PDF parser, measured on a real Mac:
+  # the profile denies a read beside the scratch, a write outside it and the
+  # network, and poppler still renders under it. `test (macos-latest, pinned)`
+  # runs the same file, but without poppler its render test skips, so this
+  # one installs it and makes every skip a failure, as `sandbox backends`
+  # does for bwrap.
+  seatbelt:
+    name: seatbelt (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      # The toolchain `rust-toolchain.toml` pins, the one a local cargo uses.
+      - name: Install the pinned Rust
+        run: rustup toolchain install && rustc --version
+      - uses: Swatinem/rust-cache@v2
+      - name: Install poppler
+        run: brew install poppler
+      - name: Report backend availability
+        run: |
+          echo "sw_vers: $(sw_vers -productVersion)"
+          echo "pdftoppm: $(command -v pdftoppm || echo MISSING)"
+          echo "system.sb: $(ls /System/Library/Sandbox/Profiles/system.sb 2>&1)"
+          sandbox-exec -p '(version 1)(allow default)' /usr/bin/true \
+            && echo "sandbox-exec: WORKS" || echo "sandbox-exec: NON-FUNCTIONAL"
+      - name: Seatbelt tests, with skips promoted to failures
+        env:
+          MECHA_TEST_REQUIRE_BACKENDS: "1"
+        run: cargo test --locked -p mecha-core --test seatbelt_backend
+
   # `mecha tools` runs with no provider configured, which makes it the cheapest
   # end-to-end check that the binary starts and the tool registry builds.
   smoke:

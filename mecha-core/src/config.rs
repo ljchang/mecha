@@ -1375,6 +1375,17 @@ impl Config {
     /// name that does not parse is now a load error naming the fix.
     pub fn validate(&self) -> Result<()> {
         self.voice.validate()?;
+        // Seatbelt confines document extraction only; `[sandbox]` is shell's
+        // and the MCP servers', whose confinement narrows what they declare
+        // (`sandbox::Backend::Seatbelt`).
+        if self.sandbox.kind == crate::sandbox::Backend::Seatbelt {
+            anyhow::bail!("{}", crate::sandbox::SEATBELT_IS_DOCUMENTS_ONLY);
+        }
+        // The rest of `[documents]` is judged when the extractor is built;
+        // a confinement this system does not have is refused here, at load.
+        if let Some(docs) = &self.documents {
+            docs.confine_here()?;
+        }
         // A rule that does not do what its author believes fails on every
         // start, not on the run that needed it. See `policy::ExecPolicy`.
         crate::policy::ExecPolicy::from_config(&self.rules, self.approval.strict_inline_eval)
@@ -3267,6 +3278,42 @@ mod tests {
             Some(Path::new("/srv/new"))
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Seatbelt is document extraction's confinement; `[sandbox]` naming it
+    /// is a load error, never a shell confined by an unmeasured profile.
+    #[test]
+    fn sandbox_refuses_seatbelt() {
+        let mut cfg = Config::default();
+        cfg.sandbox.kind = crate::sandbox::Backend::Seatbelt;
+        let err = format!("{:#}", cfg.validate().unwrap_err());
+        assert!(err.contains("document extraction only"), "{err}");
+        let parsed: Config = toml::from_str("[sandbox]\nkind = \"seatbelt\"\n").unwrap();
+        assert_eq!(parsed.sandbox.kind, crate::sandbox::Backend::Seatbelt);
+    }
+
+    /// A `[documents] confine` this system does not have refuses the start,
+    /// not only the tool's registration.
+    #[test]
+    fn documents_confine_from_the_other_system_refuses_at_load() {
+        let foreign = if cfg!(target_os = "macos") {
+            crate::sandbox::Backend::Bwrap
+        } else {
+            crate::sandbox::Backend::Seatbelt
+        };
+        let cfg = Config {
+            documents: Some(crate::document::DocumentsConfig {
+                confine: foreign,
+                ..Default::default()
+            }),
+            ..Config::default()
+        };
+        assert!(cfg.validate().is_err());
+        let own = Config {
+            documents: Some(crate::document::DocumentsConfig::default()),
+            ..Config::default()
+        };
+        own.validate().unwrap();
     }
 
     /// `[voice]`'s addresses are refused off this machine at load, as
