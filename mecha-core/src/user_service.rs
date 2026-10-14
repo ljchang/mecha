@@ -484,6 +484,30 @@ mod tests {
         assert_eq!(a.program, ["/Users/a/bin/run", "--x"]);
     }
 
+    /// Every sidecar whose evidence is a service definition has a revision,
+    /// and every revision names a sidecar: one missing from [`REVS`] is
+    /// stamped with nothing and read as current forever (review of #691,
+    /// pass 5).
+    #[test]
+    fn every_sidecar_with_services_has_a_revision() {
+        use crate::sidecar::{Evidence, SIDECARS};
+        for s in SIDECARS {
+            let services = s
+                .evidence
+                .iter()
+                .any(|e| matches!(e, Evidence::UserUnit(_)));
+            assert_eq!(
+                super::rev(s.id).is_some(),
+                services,
+                "{}: a sidecar with services needs a row in REVS, and only one",
+                s.id
+            );
+        }
+        for (id, _) in super::REVS {
+            assert!(SIDECARS.iter().any(|s| s.id == *id), "{id} is no sidecar");
+        }
+    }
+
     /// A stamp goes where each format keeps a comment and reads back; a
     /// definition with none, or another sidecar's, reads as none.
     #[test]
