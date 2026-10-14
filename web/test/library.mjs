@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import {
   PANES, paneOf, entriesFor, counts, originLabel, listUrl, validName, tameName, voicesUrl, voiceLine,
-  TEXT_MAX, fitWithin, formProblem, formBody,
+  TEXT_MAX, fitWithin, formProblem, formBody, previewOf,
   REF_KINDS, REF_LIMIT, refNote, refAddable, refProblem, refBody, refRemoveBody, LABEL_MAX,
 } from '../src/lib/library.js';
 
@@ -133,5 +133,9 @@ assert.deepEqual(refBody({ kind: 'detail', label: ' tattoo ', picture: 'AA' }, w
 });
 assert.deepEqual(refRemoveBody(wren, { kind: 'full_body', label: null }), { name: 'wren', as: 'full_body' });
 assert.deepEqual(refRemoveBody(wren, { kind: 'detail', label: 'scar' }, 't'), { name: 'wren', as: 'detail', label: 'scar', unlock: 't' });
+
+// A picked picture's preview is a data: URL, which serve's CSP allows
+// (img-src 'self' data:); a blob: URL rendered broken until saved.
+assert.equal(previewOf('AAAA'), 'data:image/jpeg;base64,AAAA');
 
 console.log('library.mjs: ok');
