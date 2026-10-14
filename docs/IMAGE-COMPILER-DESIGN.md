@@ -352,14 +352,18 @@ The decisions that are this design's rather than the owner's:
 ## 9. Library v2: typed references, locations and wardrobe (ruled 2026-10-13)
 
 **Status:** ruled 2026-10-13 (L1–L7, §9.7); the owner approved the direction
-the same day (the video design's R6). Nothing in this section is built.
+the same day (the video design's R6). Built: the reference store and CLI
+(step 2a, #684), pictures sending `full_body` (step 2b, #685), the web
+strip (#688) and models' reference writes (#692). Video's bodies are ruled,
+to be built in the video tool.
 **Step 1 is measured and ruled (owner, 2026-10-13):**
   - E9b passed, so pictures send `full_body`, in a neutral, square-on
     stance;
   - V-B failed, with an extra person in one seed of two, so video stayed
     on face crops. Its retest passed (owner, 2026-10-14): four pictures
     without the face/figure binding drew no extra person in 4 of 4 seeds,
-    so video sends bodies too, unbound (§9.4).
+    so video sends bodies too, unbound: both pictures named as one
+    subject, with no face-from/build-from split (§9.4).
 
   Step 2, the store and CLI, is next. It reopens two of §1's settled rulings
   with new evidence, and says which, rather than re-arguing them silently.
@@ -565,7 +569,7 @@ kind is derived from its directory (`Entry.kind`).
 | Reference | `image_generate` (Qwen-Image) | `video_generate` (H3) |
 |---|---|---|
 | face | the whole portrait at 512² for a new picture (E10), its crop for an edit, as now | the face crop, as now; from an attached `face` reference when there is one, else from the portrait |
-| full_body | **sent** to a new picture of one or two people when everyone has one, bound to the portrait (E9b passed; owner, 2026-10-13); faces only otherwise, and on edits | **sent** beside the face crop when everyone has one and all fit, **unbound**: "the person in `<Picture 1>` and `<Picture 2>`", not the face-from/build-from wording, the likely cause of V-B's extra person (V-B's retest passed for a cast of two; owner, 2026-10-14) |
+| full_body | **sent** to a new picture of one or two people when everyone has one, bound to the portrait (E9b passed; owner, 2026-10-13); faces only otherwise, and on edits | **sent** beside the face crop to a cast of **one or two** when everyone has one, **unbound** (both pictures named as one subject, with no face-from/build-from split): "the person in `<Picture 1>` and `<Picture 2>`", not the face-from/build-from wording, the likely cause of V-B's extra person (V-B's retest passed for a cast of two; owner, 2026-10-14) |
 | detail | not sent; its `label` is appended to the description | sent with its label ("`<Picture k>` shows her left-forearm tattoo"), if V-D passes |
 | location | its text in the scene | its images as an environment `<Subject>`, if V-L passes |
 | outfit | its text as `wearing` | its text as `wearing` |
@@ -636,11 +640,10 @@ kind is derived from its directory (`Entry.kind`).
     owner, 2026-10-14; the table above), as pictures do: the retest
     measured two people, so three with a body each needs its own
     measurement first (review of #693). To be built in the video tool,
-    outside this repository until the port. The slot arithmetic below is
-    what a measured three would inherit, not a rule in force. Video has
-    nine slots, less any
-    pinned or other reference images. Two people would fit with a body each
-    and up to five details; three with a body each and three details.
+    outside this repository until the port. Video has nine slots, less any
+    pinned or other reference images: two people with a body each leave up
+    to five for details (details wait on V-D). Three with a body each would
+    leave three, once measured; that is not a rule in force.
   - **Bodies are all or nothing in both generators**: in video from V-B's
     retest (owner, 2026-10-14); in pictures from L7's step 2b (review of
     #680, pass
