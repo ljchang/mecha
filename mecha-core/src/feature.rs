@@ -602,7 +602,9 @@ impl Facts {
         Facts {
             has_mail_binary: find_program("mecha-mail").is_some(),
             has_docs_binary: find_program("mecha-docs").is_some(),
-            has_graph_binary: find_program("mecha-graph-mcp").is_some(),
+            // On the PATH, or mecha's own build in its tree (`graph_mcp`).
+            has_graph_binary: find_program("mecha-graph-mcp").is_some()
+                || crate::graph_mcp::installed(home),
             has_factory_binary: find_program("factory-publish").is_some(),
             mail_accounts: mail_store_dir().and_then(|d| count_accounts(&d)),
             docs_accounts: docs_store_dir().and_then(|d| count_accounts(&d)),
@@ -999,10 +1001,12 @@ pub fn mcp_wiring(f: Feature) -> Option<McpWiring> {
                 "docs__sheets_write",
             ],
         },
+        // `enable graph` builds the pinned server when none is on the PATH
+        // (§13, the owner's ruling of 2026-10-13).
         Feature::Graph => McpWiring {
             name: "graph",
             program: "mecha-graph-mcp",
-            install: "cargo install mecha-graph-mcp --locked",
+            install: "mecha features enable graph",
             prefix_tools: false,
             outbox: &[],
         },
