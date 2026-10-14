@@ -5146,7 +5146,9 @@ refusal. The specification and the survey behind it are
   prompt — which under a headless `Allow` mode is a yes. The wrapper set is
   necessarily incomplete — it now names `setsid`, `stdbuf`, `flock`,
   `unshare`, `nsenter`, `parallel`, `ssh` and the container executors after
-  the PR review listed them, but `git -c core.pager=…`, `git rebase -x`,
+  the PR review listed them, and macOS's `sandbox-exec` (always) and `arch` /
+  `caffeinate` (when a program follows them; #686) — `open -a` and `xcrun`
+  run things too and are not in it — but `git -c core.pager=…`, `git rebase -x`,
   `git bisect run` and `git submodule foreach` execute their arguments and
   `git` is rightly not a wrapper (the recommended narrow pattern `["git",
   ["status", "diff", "log"]]` does not reach them; a bare `allow` on `git`
