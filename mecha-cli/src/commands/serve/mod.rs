@@ -1129,6 +1129,11 @@ fn api() -> gate::Owned {
             axum::routing::post(library::remove_reference),
         )
         .at(
+            "/api/library/pending/{id}/{blob_or_action}",
+            Owner::Of(Feature::Library),
+            get(library::pending_picture).post(library::act_pending),
+        )
+        .at(
             "/api/library/{kind}/{name}/{action}",
             Owner::Of(Feature::Library),
             axum::routing::post(library::act),

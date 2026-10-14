@@ -20,14 +20,23 @@ export function entriesFor(pane, entries) {
   return list.filter((e) => e.status === 'approved' && e.kind === kind);
 }
 
-export function counts(entries) {
-  const out = { characters: 0, styles: 0, candidates: 0 };
+// A model's staged reference changes wait in the candidates pane too, so the
+// chip counts them (docs/IMAGE-COMPILER-DESIGN.md §9.3, 2026-10-14).
+export function counts(entries, pending = []) {
+  const out = { characters: 0, styles: 0, candidates: (pending ?? []).length };
   for (const e of entries ?? []) {
     if (e.status === 'candidate') out.candidates += 1;
     else if (e.kind === 'style') out.styles += 1;
     else out.characters += 1;
   }
   return out;
+}
+
+// One staged reference change, said as the owner decides it.
+export function pendingLine(p) {
+  const kind = { full_body: 'full body', face: 'face', detail: 'detail' }[p.kind] ?? p.kind;
+  const verb = p.action === 'remove' ? 'Remove' : p.action === 'add' ? 'Add' : 'Change';
+  return `${verb} ${p.name}'s ${kind}${p.label ? ` · ${p.label}` : ''}`;
 }
 
 // Who wrote an entry's text, in the owner's words. The untrusted case is the

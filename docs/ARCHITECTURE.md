@@ -1224,7 +1224,11 @@ mecha-a3, 2026-10-09). An answer that gives nobody a part still fails. It feeds 
   Names resolve against what the listing can return, or a candidate's name
   would blank a search and betray the candidate (review of #384).
 - **The owner approves; the model proposes — bounded in entries and in
-  bytes, and a rejection leaves nothing.** At most `MAX_PENDING` candidates,
+  bytes, and a rejection leaves nothing.** Entries only: a character's
+  *references* a model writes by provenance, directly from a clean
+  conversation and staged for the owner otherwise (`image_library_reference`,
+  the owner's ruling of 2026-10-14; `IMAGE-COMPILER-DESIGN.md` §9.3, which
+  holds the rule and its brakes). At most `MAX_PENDING` candidates,
   each portrait at most `MAX_PROPOSED_PORTRAIT_BYTES` (4 MB; the owner's own
   stay at 25), because the proposing tool reaches no approver. `mecha imagelib reject` deletes the candidate and its portrait
   unless another entry names that blob; moving it aside had freed the name
@@ -1262,10 +1266,11 @@ mecha-a3, 2026-10-09). An answer that gives nobody a part still fails. It feeds 
   a trusted session.
 - **The lock is a browse filter** (the owner's ruling, 2026-09-28): generation
   ignores it. Incognito chats may call `image_library` and generate with a
-  cast. Two writers reach outside the room on purpose, both staged locked
+  cast. Three writers reach outside the room on purpose, all staged locked
   (`ToolCtx::stage_locked`) so nothing they write reaches a prompt before the
-  owner approves it: `persona_propose` (the owner's ruling, 2026-10-01) and
-  `image_library_propose` (2026-10-12). The chat card's Save to library is
+  owner approves it: `persona_propose` (the owner's ruling, 2026-10-01),
+  `image_library_propose` (2026-10-12) and `image_library_reference`
+  (2026-10-14). The chat card's Save to library is
   allowed there too, always locked (`serve/library.rs::save_locked`).
 - **The same-seed rule, narrowed.** An edit still always samples fresh; a
   cast generation keeps the model's seed — that is how a scene is revised with
