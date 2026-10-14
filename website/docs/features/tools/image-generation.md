@@ -41,9 +41,10 @@ hash-pinned lock (about 0.76 GB), and the **bf16** model files (about 21 GB) —
 Apple's GPU has no int8 kernels, so the int8 file is emulated there and
 slower (about 128 s a picture against 79 s for bf16 on an M5 Max). The server
 is a launchd agent, `ai.mecha-factory.mecha-comfyui`, logging to
-`~/Library/Logs/mecha/mecha-comfyui.log`. There is no idle timer on a Mac: a
-loaded model stays in memory (about 14 GB) until `[image] unload_after_secs`
-unloads it. The text encoder runs on the CPU there, which adds about 13 s to a
+`~/Library/Logs/mecha/mecha-comfyui.log`. On a Mac ComfyUI runs on demand:
+the agent holds port 8188, starts ComfyUI at the first picture (a cold start
+adds about 20 s) and stops it after fifteen idle minutes, giving all of its
+memory back. The text encoder runs on the CPU there, which adds about 13 s to a
 new prompt. It needs macOS 14 or newer; an Intel Mac is not offered the
 install.
 

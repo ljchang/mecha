@@ -2738,20 +2738,12 @@ impl ImageGenerate {
         if after == 0 {
             return;
         }
+        // No `/free` behind a Mac's proxy, and no claim that the server was
+        // released either: the proxy stops it on its own window, which an open
+        // ComfyUI tab can hold off, so "holds nothing" would be asserted
+        // unconfirmed (`release_idle`'s rule, #648). The cost is one needless
+        // `/free` before a picture with the other model (review of #689).
         if behind_mecha_s_proxy(&self.cfg.url) {
-            // No `/free`: the proxy stops the whole process after the same
-            // window. The record is still told, once that window has passed,
-            // so the next picture with the other model does not ask a server
-            // that holds nothing to free (review of #689, pass 4).
-            let armed = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
-            let generation = Arc::clone(&self.generation);
-            let backend = Arc::clone(&self.backend);
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_secs(after)).await;
-                if generation.load(Ordering::SeqCst) == armed {
-                    backend.released();
-                }
-            });
             return;
         }
         let armed = self.generation.fetch_add(1, Ordering::SeqCst) + 1;

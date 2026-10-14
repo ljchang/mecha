@@ -343,10 +343,17 @@ fn mac_launcher_text(backend_unit: &str) -> Result<String> {
     };
     let exec = line("ExecStart=")?;
     let dir = line("WorkingDirectory=")?;
+    // The unit's `ExecStartPre` makes the temp directory on every start; on a
+    // Mac ComfyUI starts at every first picture after an idle stop, so the
+    // launcher makes it (review of #689).
+    let temp = line("ExecStartPre=")?
+        .strip_prefix("/bin/mkdir -p ")
+        .context("the ComfyUI unit's ExecStartPre is not its temp directory's mkdir")?;
     Ok(format!(
         "#!/bin/sh\n\
          # Written by mecha: ComfyUI on its backend port, started by mecha's\n\
          # on-demand proxy at the first picture and stopped when idle.\n\
+         mkdir -p '{temp}' || exit 1\n\
          cd '{dir}' || exit 1\n\
          exec {exec}\n"
     ))
@@ -1391,6 +1398,13 @@ mod tests {
         );
         let script = mac_launcher_text(&backend).unwrap();
         assert!(script.contains("cd '/srv/owner/.mecha/sidecars/comfyui/ComfyUI' || exit 1"));
+        assert!(script.contains("mkdir -p '/srv/owner/.mecha/sidecars/comfyui/tmp' || exit 1"));
+        // The proxy's window and the Linux timer's default are one figure:
+        // held equal here, not by a comment in each module.
+        assert_eq!(
+            MAC_IDLE_SECS,
+            crate::imagegen::ImageConfig::default().unload_after_secs
+        );
         assert!(script.contains(
             "exec /srv/owner/.mecha/sidecars/comfyui/venv/bin/python -B main.py --listen \
              127.0.0.1 --port 19188 --temp-directory /srv/owner/.mecha/sidecars/comfyui/tmp"
