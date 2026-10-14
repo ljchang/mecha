@@ -29,9 +29,9 @@ Settled; the build follows them and does not re-ask.
 - **A character is a portrait plus a description** that carries build and
   height — no body reference (E9), no required crop (E10: the whole portrait
   at 512² held identity within a few hundredths of a tight crop).
-  *(Ruled 2026-10-13 by §9.2, to be built in step 2b: pictures will send a
-  `full_body` reference, since E9b passed; video stays without one, since V-B
-  failed.)*
+  *(Ruled 2026-10-13 by §9.2: pictures send a `full_body` reference, since
+  E9b passed, built in step 2b. Video sends one too, unbound, since V-B's
+  retest passed; owner, 2026-10-14.)*
 - **The web surface ships second**, minimal: save to library, browse, lock.
 - **The lock is a browsing filter, not an access control.** Generation
   always has access to locked entries. Things made from a locked entry start
@@ -352,12 +352,18 @@ The decisions that are this design's rather than the owner's:
 ## 9. Library v2: typed references, locations and wardrobe (ruled 2026-10-13)
 
 **Status:** ruled 2026-10-13 (L1–L7, §9.7); the owner approved the direction
-the same day (the video design's R6). Nothing in this section is built.
+the same day (the video design's R6). Built: the reference store and CLI
+(step 2a, #684), pictures sending `full_body` (step 2b, #685), the web
+strip (#688) and models' reference writes (#692). Video's bodies are ruled,
+to be built in the video tool.
 **Step 1 is measured and ruled (owner, 2026-10-13):**
   - E9b passed, so pictures send `full_body`, in a neutral, square-on
     stance;
-  - V-B failed, with an extra person in one seed of two, so video stays on
-    face crops.
+  - V-B failed, with an extra person in one seed of two, so video stayed
+    on face crops. Its retest passed (owner, 2026-10-14): four pictures
+    without the face/figure binding drew no extra person in 4 of 4 seeds,
+    so video sends bodies too, unbound: both pictures named as one
+    subject, with no face-from/build-from split (§9.4).
 
   Step 2, the store and CLI, is next. It reopens two of §1's settled rulings
   with new evidence, and says which, rather than re-arguing them silently.
@@ -386,8 +392,9 @@ the same day (the video design's R6). Nothing in this section is built.
   (E9), no required crop (E10)."**
   - **Changed for pictures by E9b** (passed; owner, 2026-10-13): a
     `full_body` reference is sent, bound to its portrait (§9.4).
-  - **Kept for video:** face crops only. V-B failed with an extra person, so
-    a body reference waits on a retest.
+  - **Changed for video by V-B's retest** (passed; owner, 2026-10-14): a
+    `full_body` is sent beside the face crop, unbound, all or nothing
+    (§9.4).
 - **§1, "locations stay free text in the scene until a location reference is
   measured."** Kept as the rule for **references**, the images. §9.6 is that
   measurement, for each generator. A text-only `Location` kind is still text
@@ -562,7 +569,7 @@ kind is derived from its directory (`Entry.kind`).
 | Reference | `image_generate` (Qwen-Image) | `video_generate` (H3) |
 |---|---|---|
 | face | the whole portrait at 512² for a new picture (E10), its crop for an edit, as now | the face crop, as now; from an attached `face` reference when there is one, else from the portrait |
-| full_body | **sent** to a new picture of one or two people when everyone has one, bound to the portrait (E9b passed; owner, 2026-10-13); faces only otherwise, and on edits | **not sent**: V-B failed (an extra person in one seed); face crops only until a retest passes |
+| full_body | **sent** to a new picture of one or two people when everyone has one, bound to the portrait (E9b passed; owner, 2026-10-13); faces only otherwise, and on edits | **sent** beside the face crop to a cast of **one or two** when everyone has one, **unbound** (both pictures named as one subject, with no face-from/build-from split): "the person in `<Picture 1>` and `<Picture 2>`", not the face-from/build-from wording, the likely cause of V-B's extra person (V-B's retest passed for a cast of two; owner, 2026-10-14) |
 | detail | not sent; its `label` is appended to the description | sent with its label ("`<Picture k>` shows her left-forearm tattoo"), if V-D passes |
 | location | its text in the scene | its images as an environment `<Subject>`, if V-L passes |
 | outfit | its text as `wearing` | its text as `wearing` |
@@ -629,13 +636,17 @@ kind is derived from its directory (`Entry.kind`).
      only: pictures never send a detail image (the table above), only its
      label. That's greedy, so it's the mixed shape the next bullets call
      unmeasured; it waits on V-D, whose arms include that shape.
-  - **Video sends no bodies today: V-B failed** (the table above). What
-    follows is the arithmetic a retest would inherit if one passes, not a
-    rule in force (review of #680, pass 22). Video has nine slots, less any
-    pinned or other reference images. Two people would fit with a body each
-    and up to five details; three with a body each and three details.
-  - **Bodies are all or nothing in both generators**, once video's retest
-    passes; in pictures from L7's step 2b (review of #680, pass
+  - **Video sends bodies, unbound, to a cast of one or two** (V-B's retest;
+    owner, 2026-10-14; the table above), as pictures do: the retest
+    measured two people, so three with a body each needs its own
+    measurement first (review of #693). To be built in the video tool,
+    outside this repository until the port. Video has nine slots, less any
+    pinned or other reference images: two people with a body each leave up
+    to five for details (details wait on V-D). Three with a body each would
+    leave three, once measured; that is not a rule in force.
+  - **Bodies are all or nothing in both generators**: in video from V-B's
+    retest (owner, 2026-10-14); in pictures from L7's step 2b (review of
+    #680, pass
     10). Bodies are sent only when **every person in the cast has one
     attached and they all fit** beside every face; otherwise none is (review
     of #680, pass 13). So a cast where one character has a body and another
@@ -860,7 +871,7 @@ only says what each one gates:
 | Id | Gates |
 |---|---|
 | **E9b** | `full_body` for pictures (§9.4), and the two-images-one-person wording |
-| **V-B's retest** | `full_body` for video (V-B itself failed, 2026-10-13) |
+| **V-B's retest** | `full_body` for video: **passed** 2026-10-14, unbound (V-B itself failed, 2026-10-13) |
 | **V-D** | `detail` images for video |
 | **E13** | a location reference for pictures |
 | **V-L** | a location reference for video |
