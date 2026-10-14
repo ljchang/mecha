@@ -441,7 +441,6 @@ setup` asks about it. `mecha features enable <id>` writes `true` in place; a
 # image = false      # image generation and the character library
 # personas = false   # characters you write and talk to
 # voice = false      # dictation and voice calls
-# incognito = false  # a web chat that leaves no trace
 # frontdoor = false  # inbound requests, polls and publishing
 # messages = false   # messages between sessions on this machine
 ```

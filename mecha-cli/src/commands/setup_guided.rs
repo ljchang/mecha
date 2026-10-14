@@ -1171,23 +1171,26 @@ mod tests {
     }
 
     /// A yes enables the feature with what it needs, parsed from the same
-    /// command the step loop runs — so `incognito` brings `web` (review of
-    /// #631).
+    /// command the step loop runs — so `dictate` brings `web` and `voice`
+    /// (review of #631).
     #[test]
     fn a_yes_brings_what_the_feature_needs() {
         let cfg = mecha_core::config::Config::default();
-        let ids = enable_ids(&feature::enable_command(&cfg, Feature::Incognito));
-        assert_eq!(ids, ["web", "incognito"]);
+        let ids = enable_ids(&feature::enable_command(&cfg, Feature::Dictate));
+        assert_eq!(ids, ["web", "voice"]);
         assert_eq!(
             enable_ids(&feature::enable_command(&cfg, Feature::Search)),
             ["search"]
         );
         assert!(enable_ids("nothing to run").is_empty());
         // What the question names is what is not on yet.
-        assert_eq!(also_enables(&cfg, Feature::Incognito), ["web"]);
+        assert_eq!(also_enables(&cfg, Feature::Dictate), ["web", "voice"]);
         let mut on = cfg.clone();
         on.features.0.insert("web".into(), true);
-        assert!(also_enables(&on, Feature::Incognito).is_empty());
+        assert_eq!(also_enables(&on, Feature::Dictate), ["voice"]);
+        // Incognito is the web app's, never a question of its own (the
+        // owner, 2026-10-14): a yes to web is a yes to it.
+        assert!(!Feature::Incognito.has_switch());
     }
 
     /// A yes that did not install stays open; a no, a never, or a yes that
