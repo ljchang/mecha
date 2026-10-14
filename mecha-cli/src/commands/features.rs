@@ -927,7 +927,7 @@ async fn documents_table() -> Result<()> {
     // A check that could not run is not a no: written down, `ocr = false`
     // would outlive the reason it was read (review of #683). So nothing is
     // written while one is unknown, and the owner is told what to look at.
-    for id in ["ocr-server", "layout"] {
+    for id in [mecha_core::llama_units::Which::Ocr.sidecar(), "layout"] {
         if let Some(SidecarState::Unknown { why }) = state(id) {
             println!(
                 "No [documents] table written: {id} could not be checked ({why}). `mecha \
@@ -947,7 +947,8 @@ async fn documents_table() -> Result<()> {
     // evidence is unit files and agents, and a server started from a
     // terminal has neither (review of #683).
     let ocr_port = mecha_core::llama_units::Which::Ocr.shipped().public;
-    let ocr = here("ocr-server") || mecha_core::router_unit::port_answers(ocr_port);
+    let ocr = here(mecha_core::llama_units::Which::Ocr.sidecar())
+        || mecha_core::router_unit::port_answers(ocr_port);
     let layout_here = here("layout");
     // Written only once every piece is here. A piece still missing at this
     // point was not installed — `--no-install`, the path `enable` itself
