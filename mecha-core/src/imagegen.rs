@@ -769,17 +769,16 @@ pub fn load_cost_mb() -> u64 {
 /// above 0 once anything has loaded - through a `/free`, too, so it answers
 /// "has loaded", never "holds now". `None` for a reply this cannot read.
 ///
-/// **`None` on MPS and the CPU, whatever the figure.** ComfyUI's
-/// `get_total_memory` answers the machine's whole RAM for those devices, so
-/// the field is above 0 from the first request and says nothing about a
-/// load — read as warm, a Mac's cold 34 GiB would never be asked (review of
-/// #681). Unknown is never warm: a Mac pays cold on every picture.
+/// **Read on CUDA only; any other device is `None`, whatever the figure.**
+/// ComfyUI's `get_total_memory` answers the machine's whole RAM for MPS and
+/// the CPU, so the field is above 0 from the first request and says nothing
+/// about a load — read as warm, a Mac's cold 34 GiB would never be asked
+/// (review of #681). An allowlist, not a denylist: a device type this has
+/// not seen, or a reply naming none, is unknown, and unknown is never warm
+/// (review of #681, pass 2).
 pub fn loaded_from_stats(stats: &Value) -> Option<bool> {
     let device = stats.pointer("/devices/0")?;
-    if matches!(
-        device.get("type").and_then(Value::as_str),
-        Some("mps" | "cpu")
-    ) {
+    if device.get("type").and_then(Value::as_str) != Some("cuda") {
         return None;
     }
     let total = device.get("torch_vram_total")?.as_f64()?;
@@ -5304,8 +5303,7 @@ mod tests {
     /// and after `/free`; anything else reads as unknown.
     #[test]
     fn loaded_is_read_from_the_servers_stats() {
-        let stats =
-            |total: Value| json!({"devices": [{"name": "cuda:0", "torch_vram_total": total}]});
+        let stats = |total: Value| json!({"devices": [{"name": "cuda:0", "type": "cuda", "torch_vram_total": total}]});
         assert_eq!(loaded_from_stats(&stats(json!(0))), Some(false));
         assert_eq!(
             loaded_from_stats(&stats(json!(6_000_000_000u64))),
@@ -5325,6 +5323,14 @@ mod tests {
         let cuda = json!({"devices": [{"name": "cuda:0", "type": "cuda",
             "torch_vram_total": 0}]});
         assert_eq!(loaded_from_stats(&cuda), Some(false));
+        // A device that names no type, or one this has not seen, is unknown
+        // — never warm (review of #681, pass 2).
+        for device in [
+            json!({"name": "cuda:0", "torch_vram_total": 6_000_000_000u64}),
+            json!({"name": "xpu:0", "type": "xpu", "torch_vram_total": 6_000_000_000u64}),
+        ] {
+            assert_eq!(loaded_from_stats(&json!({"devices": [device]})), None);
+        }
     }
 
     /// A loopback address nothing listens on yet.
