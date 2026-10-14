@@ -365,8 +365,9 @@ to be built in the video tool.
     so video sends bodies too, unbound: both pictures named as one
     subject, with no face-from/build-from split (§9.4).
 
-  Step 2, the store and CLI, is next. It reopens two of §1's settled rulings
-  with new evidence, and says which, rather than re-arguing them silently.
+  Step 2 (the store and CLI, then pictures sending bodies) reopened two of
+  §1's settled rulings with new evidence, and §9.2 says which, rather than
+  re-arguing them silently.
 
 ### 9.1 Why now
 
