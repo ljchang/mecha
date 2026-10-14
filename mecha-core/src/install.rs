@@ -354,28 +354,38 @@ fn not_offered(plan: &mut Plan, id: &str, why: &str) {
     }
 }
 
+/// Whether a sidecar's own install fetches a model the plan finds gone from
+/// the hub — a reason to run it again, and a download when it runs.
+pub fn model_gone(plan: &Plan, id: &str) -> bool {
+    let serves = crate::sidecar::SIDECARS
+        .iter()
+        .find(|sc| sc.id == id)
+        .map(|sc| sc.serves)
+        .unwrap_or(&[]);
+    fetches_models(id)
+        && plan
+            .files
+            .iter()
+            .any(|f| serves.contains(&f.slot) && matches!(f.state, FileState::Download { .. }))
+}
+
 /// What `mecha features enable` offers to install for one plan: each
 /// installable sidecar that is missing or unfinished — or installed, with a
 /// model its own install fetches now gone from the hub (a cleared cache
 /// leaves its link dangling; the install is idempotent, so running it again
-/// fetches only what is missing) — and needed here.
+/// fetches only what is missing), or installed with services an older build
+/// wrote (`PlannedSidecar::stale`: running it again rewrites and restarts
+/// them) — and needed here.
 pub fn offered(plan: &Plan, chat_here: bool) -> Vec<&PlannedSidecar> {
     plan.sidecars
         .iter()
         .filter(|s| {
-            let serves = crate::sidecar::SIDECARS
-                .iter()
-                .find(|sc| sc.id == s.id)
-                .map(|sc| sc.serves)
-                .unwrap_or(&[]);
-            let model_gone = fetches_models(s.id)
-                && plan.files.iter().any(|f| {
-                    serves.contains(&f.slot) && matches!(f.state, FileState::Download { .. })
-                });
+            let model_gone = model_gone(plan, s.id);
             let wanted = matches!(
                 s.state,
                 SidecarState::Missing { .. } | SidecarState::Incomplete
-            ) || (matches!(s.state, SidecarState::Installed) && model_gone);
+            ) || (matches!(s.state, SidecarState::Installed)
+                && (model_gone || s.stale));
             wanted && installable(s.id) && not_needed(s.id, plan.feature, chat_here).is_none()
         })
         .collect()
@@ -821,6 +831,7 @@ mod tests {
                 state: llama,
                 bytes: None,
                 not_offered: None,
+                stale: false,
             }],
             files: vec![],
             download_bytes: 0,
@@ -918,6 +929,7 @@ mod tests {
                 state,
                 bytes: None,
                 not_offered: None,
+                stale: false,
             }],
             files: vec![],
             download_bytes: 5,
@@ -951,6 +963,7 @@ mod tests {
                 state: SidecarState::Missing { step: "7e" },
                 bytes: None,
                 not_offered: None,
+                stale: false,
             }],
             files: vec![],
             download_bytes: 5,
@@ -1002,6 +1015,37 @@ mod tests {
         }
     }
 
+    /// An installed server is offered again only when its services are an
+    /// older build's — and never the router, whose refresh is `setup chat`'s.
+    #[test]
+    fn a_stale_install_is_offered_and_a_current_one_is_not() {
+        let plan = |id: &'static str, stale: bool| Plan {
+            feature: Feature::Image,
+            sidecars: vec![PlannedSidecar {
+                id,
+                label: "a server",
+                state: SidecarState::Installed,
+                bytes: None,
+                not_offered: None,
+                stale,
+            }],
+            files: vec![],
+            download_bytes: 0,
+            nothing_to_do: false,
+        };
+        let comfy = crate::comfyui_unit::ID;
+        assert!(install_ids(&plan(comfy, false), true).is_empty());
+        assert_eq!(
+            install_ids(&plan(comfy, true), true),
+            if installable(comfy) {
+                vec![comfy]
+            } else {
+                vec![]
+            }
+        );
+        assert!(install_ids(&plan(crate::router_unit::ID, true), true).is_empty());
+    }
+
     /// A machine the speech server is not offered on prices none of what it
     /// would fetch — the voice clip, nor the slot's model, which reads as
     /// not fetched here, with why (review of #649).
@@ -1015,6 +1059,7 @@ mod tests {
                 state: SidecarState::Missing { step: "7f" },
                 bytes: None,
                 not_offered: None,
+                stale: false,
             }],
             files: vec![crate::sidecar::PlannedFile {
                 slot: "tts",

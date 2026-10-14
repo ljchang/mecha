@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Services an older mecha installed are refreshed.** Every unit and launchd
+  agent mecha writes now carries a revision; `mecha features enable` and
+  `mecha setup` find one an older build wrote and offer to rewrite and
+  restart it, downloading nothing current, and `mecha features plan` says
+  which command does. `mecha features enable <id> --reinstall` does the same
+  on request. Before this, an existing install kept its old services through
+  every upgrade — on a Mac, ComfyUI never moved behind the on-demand proxy.
+  The chat router's refresh is `mecha setup chat`'s.
 - **PDFs on a Mac, confined by macOS's own sandbox.** `[documents] confine =
   "seatbelt"`, the default on macOS, runs poppler under `sandbox-exec` with a
   profile built for each call: deny by default, the program and the
