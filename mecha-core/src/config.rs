@@ -1281,11 +1281,6 @@ impl ConfigLayer {
     }
 }
 
-/// Whether this process's chat provider may serve an incognito chat: a
-/// local server on this machine, with no fallbacks. A cloud provider keeps
-/// the text on someone else's servers; a fallback would re-send the whole
-/// conversation there on a transient local error, silently (INCOGNITO-DESIGN.md
-/// §6.1).
 /// Add a new table at the end of a config file being edited — after the
 /// comments the file ends with, never above them.
 ///
@@ -1296,19 +1291,50 @@ impl ConfigLayer {
 /// (found on the owner's Mac, 2026-10-13). The trailing text becomes the new
 /// table's prefix, so it stays with the table it was written under.
 pub fn append_table(doc: &mut toml_edit::DocumentMut, key: &str, mut table: toml_edit::Table) {
-    let trailing = doc.trailing().as_str().unwrap_or("").to_string();
-    if !trailing.trim().is_empty() {
-        let mut prefix = trailing;
-        if !prefix.ends_with('\n') {
-            prefix.push('\n');
-        }
-        prefix.push('\n');
+    if let Some(prefix) = take_trailing(doc) {
         table.decor_mut().set_prefix(prefix);
-        doc.set_trailing("");
     }
     doc.insert(key, toml_edit::Item::Table(table));
 }
 
+/// [`append_table`] for a new array of tables (`[[mcp]]`): the closing
+/// comments go before its first table. An `[[mcp]]` written above them would
+/// take `# web = false`, uncommented, into `[mcp.capabilities]` — a startup
+/// parse error on every command, since that table refuses unknown keys
+/// (review of #681).
+pub fn append_tables(
+    doc: &mut toml_edit::DocumentMut,
+    key: &str,
+    mut tables: toml_edit::ArrayOfTables,
+) {
+    if let Some(prefix) = take_trailing(doc) {
+        if let Some(first) = tables.iter_mut().next() {
+            first.decor_mut().set_prefix(prefix);
+        }
+    }
+    doc.insert(key, toml_edit::Item::ArrayOfTables(tables));
+}
+
+/// The document's closing comments, taken off it, as a table's prefix.
+fn take_trailing(doc: &mut toml_edit::DocumentMut) -> Option<String> {
+    let trailing = doc.trailing().as_str().unwrap_or("").to_string();
+    if trailing.trim().is_empty() {
+        return None;
+    }
+    let mut prefix = trailing;
+    if !prefix.ends_with('\n') {
+        prefix.push('\n');
+    }
+    prefix.push('\n');
+    doc.set_trailing("");
+    Some(prefix)
+}
+
+/// Whether this process's chat provider may serve an incognito chat: a
+/// local server on this machine, with no fallbacks. A cloud provider keeps
+/// the text on someone else's servers; a fallback would re-send the whole
+/// conversation there on a transient local error, silently (INCOGNITO-DESIGN.md
+/// §6.1).
 pub fn provider_is_local(config: &Config, provider_name: &str) -> std::result::Result<(), String> {
     let Some(provider) = config.providers.get(provider_name) else {
         return Err(format!("the provider `{provider_name}` is not configured"));

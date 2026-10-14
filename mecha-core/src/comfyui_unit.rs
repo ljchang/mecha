@@ -497,6 +497,9 @@ pub async fn install(
     if turbo {
         models.push((TURBO_REPO, TURBO_REVISION, turbo_file()));
     }
+    // Before anything is fetched — the source, the environment and ~21 GB of
+    // models — as the voice installs ask it (review of #681).
+    crate::user_service::preflight(m)?;
     Manifest::begin(home, ID)?;
     Manifest::record(home, ID, &dir)?;
     std::fs::create_dir_all(&dir)?;

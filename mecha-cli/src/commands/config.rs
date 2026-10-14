@@ -356,4 +356,32 @@ mod tests {
         assert_eq!(on["features"]["web"].as_bool(), Some(true), "{text}");
         assert!(on["image"].get("web").is_none());
     }
+
+    /// The same for the first `[[mcp]]` server `features enable graph`
+    /// writes: uncommenting a switch must not land it in
+    /// `[mcp.capabilities]`, which refuses unknown keys (review of #681).
+    #[test]
+    fn a_first_mcp_server_goes_after_the_starters_commented_switches() {
+        let mut doc: toml_edit::DocumentMut = global_starter().parse().unwrap();
+        let mut entry = toml_edit::Table::new();
+        entry.insert("name", toml_edit::value("graph"));
+        let mut caps = toml_edit::Table::new();
+        caps.insert("untrusted_input", toml_edit::value(true));
+        entry.insert("capabilities", toml_edit::Item::Table(caps));
+        let mut servers = toml_edit::ArrayOfTables::new();
+        servers.push(entry);
+        mecha_core::config::append_tables(&mut doc, "mcp", servers);
+        let text = doc.to_string();
+        // The written header, on its own line — the starter has a commented
+        // `# [[mcp]]` example of its own.
+        let header = text
+            .find("\n[[mcp]]\n")
+            .expect("the written [[mcp]] header");
+        assert!(text.find("# web = false").unwrap() < header, "{text}");
+        let on: toml_edit::DocumentMut = text
+            .replacen("# web = false", "web = true", 1)
+            .parse()
+            .unwrap();
+        assert_eq!(on["features"]["web"].as_bool(), Some(true), "{text}");
+    }
 }
