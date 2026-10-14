@@ -56,6 +56,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A `forbid` rule sees through macOS's command wrappers.** `sandbox-exec`
+  runs the command given after it, as do `arch` and `caffeinate` when one
+  follows them, so an approval rule now judges that command, as it already
+  did for `timeout`, `env`, `bwrap` and the rest. Bare `arch` and
+  `caffeinate -t <secs>` run nothing and are judged as themselves.
 - **The speech server's default voice keeps its transcript.** The clip and
   its transcript are copied into the speech server's voices directory rather
   than linked to the model cache, so the transcript is never older than its
