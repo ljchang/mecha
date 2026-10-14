@@ -2059,6 +2059,23 @@ total (`system::source::parse_memorystatus_level`); an unreadable level is
 unread, never a number. Owed: one bf16 picture on that Mac with chat and
 voice resident, watching swap and pressure, before the figure is trusted.
 
+**ComfyUI runs on demand on a Mac** (owner's ruling, 2026-10-14). The
+measurement the ruling above owed: on the owner's Mac with chat and voice
+resident, the gate admitted bf16 pictures (113 s cold, 91 s warm with a new
+prompt, 155 s for an edit), the memory level dipping to 21 % and swap
+growing once by 285 MB — and then nothing gave the memory back. Fifteen
+minutes after the last picture ComfyUI still held the model and the level
+sat at 41 % (from 84 %): `[image] unload_after_secs` is a timer in the
+drawing process, which `mecha run` ends at once, and Linux's idle reset is
+`/proc` and `systemctl`. So a Mac's ComfyUI agent runs mecha's on-demand
+proxy — the embeddings and OCR servers' (§12.1) — which holds `:8188`,
+starts ComfyUI on `:18188` at the first picture (ready when
+`/system_stats` answers), and stops it after fifteen idle minutes. A cold
+picture pays ComfyUI's start (~20 s) on top of the model's load. An open
+ComfyUI browser tab holds a websocket, which counts as a connection and
+keeps it up, as on Linux. Also measured: the first chat after pictures took
+22.6 s while its weights paged back in, then 0.7 s.
+
 **The refusal is said to the owner, not offered to the model.** Told the off
 switch, the model retried the picture six times in twenty seconds and then
 recommended `[image] min_available_mb = 0` to the owner. The tool's text now

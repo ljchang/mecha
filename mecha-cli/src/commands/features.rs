@@ -100,6 +100,9 @@ pub enum Cmd {
         idle_secs: u64,
         #[arg(long)]
         launcher: std::path::PathBuf,
+        /// What answers 2xx once the server is ready.
+        #[arg(long, default_value = "/health")]
+        ready_path: String,
     },
 }
 
@@ -135,6 +138,7 @@ pub async fn execute(args: Args) -> Result<()> {
             backend,
             idle_secs,
             launcher,
+            ready_path,
         }) => {
             return mecha_core::on_demand::run(mecha_core::on_demand::Spec {
                 listen,
@@ -143,6 +147,7 @@ pub async fn execute(args: Args) -> Result<()> {
                 // `mecha-wait-healthy`'s budget for these servers' start.
                 start_timeout: std::time::Duration::from_secs(180),
                 launcher,
+                ready_path,
             })
             .await;
         }

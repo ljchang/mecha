@@ -45,10 +45,16 @@
 //! and port (`docs/ARCHITECTURE.md` §Image generation). The timer starts
 //! before the server, so a failure stops the install before anything runs;
 //! a failed check stops both. It is named `<unit>-idle` so a
-//! hand install's `mecha-comfyui-idle-reset` can sit beside it. Not on a Mac:
-//! the script reads `/proc` and restarts through `systemctl`, and
-//! `comfy-aimdo`, what releases memory after a restart there, does not run
-//! on Darwin. mecha's own `[image] unload_after_secs` (`/free`) still runs.
+//! hand install's `mecha-comfyui-idle-reset` can sit beside it.
+//!
+//! **On a Mac, ComfyUI runs on demand** (the owner's ruling, 2026-10-14):
+//! the script reads `/proc` and restarts through `systemctl`, and mecha's
+//! own `unload_after_secs` dies with a `mecha run`, so a loaded server held
+//! ~35 GiB until something else gave way. Instead the agent runs mecha's
+//! on-demand proxy (`on_demand.rs`, the embeddings and OCR servers'), which
+//! holds the public port, starts ComfyUI on [`mac_backend_port`] at the
+//! first picture and stops it after fifteen idle minutes, returning all of
+//! its memory ([`for_mac`], [`mac_launcher_text`]).
 //!
 //! The commit is one constant, [`COMMIT`], so a bump is that line and the
 //! locks regenerated against it (their header says how).
@@ -304,23 +310,71 @@ fn render(dir: &Path, naming: &Naming) -> String {
         .replace("@PORT@", &naming.port.to_string())
 }
 
-/// The unit as a Mac's agent reads it: its `PATH` is the system's own (the
-/// Linux line names `/usr/local/cuda/bin` for Triton's compiler, which a Mac
-/// has neither of — review of #681), and the two lines an agent has no
-/// counterpart for are dropped: `ExecStartPre`'s temp directory, which the
-/// install makes on both systems, and `TimeoutStartSec`, whose job the
-/// install's own check does. `launchd::agent_from_unit` refuses any line it
-/// cannot carry, so these are taken out here, by name, rather than ignored
-/// there (#679).
-fn for_mac(unit: &str) -> String {
+/// On a Mac ComfyUI is started on demand and stopped when idle (the owner's
+/// ruling, 2026-10-14): mecha's proxy (`on_demand.rs`) holds the public port
+/// and runs [`mac_launcher_text`] on this backend port at the first picture.
+/// Nothing else frees a Mac's ComfyUI — `[image] unload_after_secs` lives in
+/// the drawing process, which a `mecha run` ends at once, and Linux's idle
+/// reset reads `/proc` and calls `systemctl` — and a loaded server held
+/// ~35 GiB of the owner's Mac until something else gave way (measured
+/// 2026-10-14: the memory level stayed at 41 % from 84 % for 15 minutes).
+pub fn mac_backend_port(public: u16) -> u16 {
+    public.saturating_add(10_000)
+}
+
+/// How long a Mac's ComfyUI may sit with no open connection before the
+/// proxy stops it: `[image] unload_after_secs`' default, and Linux's idle
+/// reset's fifteen minutes.
+const MAC_IDLE_SECS: u64 = 900;
+
+/// The launcher the proxy runs on a Mac: the unit's own command, rendered on
+/// the backend port, from the unit's own directory — one command for both
+/// systems, as `user_service` keeps them.
+fn mac_launcher_text(backend_unit: &str) -> Result<String> {
+    let line = |key: &str| {
+        backend_unit
+            .lines()
+            .map(str::trim)
+            .find_map(|l| l.strip_prefix(key))
+            .with_context(|| format!("the ComfyUI unit has no {key}"))
+    };
+    let exec = line("ExecStart=")?;
+    let dir = line("WorkingDirectory=")?;
+    Ok(format!(
+        "#!/bin/sh\n\
+         # Written by mecha: ComfyUI on its backend port, started by mecha's\n\
+         # on-demand proxy at the first picture and stopped when idle.\n\
+         cd '{dir}' || exit 1\n\
+         exec {exec}\n"
+    ))
+}
+
+/// The unit as a Mac's agent reads it: mecha's on-demand proxy in front of
+/// [`mac_launcher_text`], its `PATH` the system's own (the Linux line names
+/// `/usr/local/cuda/bin` for Triton's compiler, which a Mac has neither of —
+/// review of #681), and the two lines an agent has no counterpart for
+/// dropped: `ExecStartPre`'s temp directory, which the install makes on both
+/// systems, and `TimeoutStartSec`, whose job the install's own check does.
+/// `launchd::agent_from_unit` refuses any line it cannot carry, so these are
+/// taken out here, by name, rather than ignored there (#679).
+fn for_mac(unit: &str, mecha: &Path, launcher: &Path, port: u16) -> String {
     unit.lines()
         .filter(|l| {
             let l = l.trim_start();
             !l.starts_with("ExecStartPre=") && !l.starts_with("TimeoutStartSec=")
         })
         .map(|l| {
-            if l.trim_start().starts_with("Environment=PATH=") {
+            let t = l.trim_start();
+            if t.starts_with("Environment=PATH=") {
                 format!("Environment=PATH={}", crate::launchd::SYSTEM_PATH)
+            } else if t.starts_with("ExecStart=") {
+                format!(
+                    "ExecStart={} features on-demand --listen 127.0.0.1:{port} --backend {} \
+                     --idle-secs {MAC_IDLE_SECS} --ready-path /system_stats --launcher {}",
+                    mecha.display(),
+                    mac_backend_port(port),
+                    launcher.display()
+                )
             } else {
                 l.to_string()
             }
@@ -571,15 +625,32 @@ pub async fn install(
     // launchd agent has no such step, so the install makes it on both.
     std::fs::create_dir_all(dir.join("tmp"))?;
     let unit = render(&dir, naming);
-    let unit = if macos { for_mac(&unit) } else { unit };
+    let unit = if macos {
+        // The proxy in front, ComfyUI behind it on the backend port (module
+        // doc, `mac_backend_port`).
+        let backend = render(
+            &dir,
+            &Naming {
+                unit: naming.unit.clone(),
+                port: mac_backend_port(naming.port),
+            },
+        );
+        let launcher = dir.join("bin").join("comfyui-on-demand");
+        write_owned(home, ID, &launcher, &mac_launcher_text(&backend)?, 0o755)?;
+        let mecha = std::env::current_exe().context("finding the mecha binary for the agent")?;
+        for_mac(&unit, &mecha, &launcher, naming.port)
+    } else {
+        unit
+    };
     crate::user_service::write(m, ID, &naming.unit, &unit)?;
     let names: Vec<&str> = models
         .iter()
         .filter_map(|(_, _, f)| f.path.rsplit('/').next())
         .collect();
     if macos {
-        // No idle reset on a Mac (module doc): the agent alone, loaded —
-        // which starts it — and checked, and stopped if the check fails.
+        // No idle reset on a Mac — its proxy stops ComfyUI when idle (module
+        // doc): the agent alone, loaded, checked through the proxy (a cold
+        // start), and stopped if the check fails.
         let service = naming.unit.as_str();
         let checked = match crate::user_service::restart(m, &[service], &mut *say) {
             Ok(()) => {
@@ -605,9 +676,9 @@ pub async fn install(
             return Err(e.context(stopped));
         }
         say(&format!(
-            "a loaded model stays in memory between pictures (~14 GB) until `[image] \
-             unload_after_secs` ({} s by default) unloads it — a Mac has no idle reset",
-            crate::imagegen::ImageConfig::default().unload_after_secs
+            "ComfyUI starts at the first picture (a cold start adds ~20 s) and is stopped after \
+             {} idle minutes, giving its memory back",
+            MAC_IDLE_SECS / 60
         ));
         return Manifest::finish(home, ID);
     }
@@ -1273,33 +1344,55 @@ mod tests {
             "/l".into(),
         )
         .is_err());
+        // On a Mac the agent runs mecha's on-demand proxy, and the proxy runs
+        // the unit's own command on the backend port (owner's ruling,
+        // 2026-10-14).
+        let mecha = Path::new("/Users/owner/.cargo/bin/mecha");
+        let launcher = dir.join("bin/comfyui-on-demand");
         let agent = crate::launchd::agent_from_unit(
             "mecha-comfyui",
-            &for_mac(&text),
+            &for_mac(&text, mecha, &launcher, 9188),
             Path::new("/Users/owner"),
             "/l".into(),
         )
         .unwrap();
         assert_eq!(
-            agent.program[0],
-            "/srv/owner/.mecha/sidecars/comfyui/venv/bin/python"
+            agent.program,
+            [
+                "/Users/owner/.cargo/bin/mecha",
+                "features",
+                "on-demand",
+                "--listen",
+                "127.0.0.1:9188",
+                "--backend",
+                "19188",
+                "--idle-secs",
+                "900",
+                "--ready-path",
+                "/system_stats",
+                "--launcher",
+                "/srv/owner/.mecha/sidecars/comfyui/bin/comfyui-on-demand",
+            ]
         );
-        assert_eq!(
-            agent.workdir.as_deref(),
-            Some(dir.join("ComfyUI").as_path())
-        );
-        assert!(!agent.program.iter().any(|a| a == "--gpu-only"));
-        // And its PATH is the system's, not the unit's CUDA one.
-        let mac = crate::launchd::agent_from_unit(
-            "mecha-comfyui",
-            &for_mac(&text),
-            Path::new("/Users/owner"),
-            "/l".into(),
-        )
-        .unwrap();
-        let path = mac.env.iter().find(|(k, _)| k == "PATH").unwrap();
+        let path = agent.env.iter().find(|(k, _)| k == "PATH").unwrap();
         assert_eq!(path.1, crate::launchd::SYSTEM_PATH);
-        assert_eq!(mac.program, agent.program);
+        // The launcher is the unit's command on the backend port, from its
+        // directory, and never `--gpu-only`, which would put the text
+        // encoder's float8 scales on MPS (§12.3).
+        let backend = render(
+            dir,
+            &Naming {
+                unit: "mecha-comfyui".into(),
+                port: mac_backend_port(9188),
+            },
+        );
+        let script = mac_launcher_text(&backend).unwrap();
+        assert!(script.contains("cd '/srv/owner/.mecha/sidecars/comfyui/ComfyUI' || exit 1"));
+        assert!(script.contains(
+            "exec /srv/owner/.mecha/sidecars/comfyui/venv/bin/python -B main.py --listen \
+             127.0.0.1 --port 19188 --temp-directory /srv/owner/.mecha/sidecars/comfyui/tmp"
+        ));
+        assert!(!script.contains("--gpu-only"));
         assert!(text.contains("WorkingDirectory=/srv/owner/.mecha/sidecars/comfyui/ComfyUI"));
         assert!(text.contains(
             "ExecStart=/srv/owner/.mecha/sidecars/comfyui/venv/bin/python -B main.py --listen \
