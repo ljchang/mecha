@@ -1820,6 +1820,16 @@ mod enable_tests {
             std::fs::read_to_string(&path).unwrap(),
             "[documents]\nocr = false\n"
         );
+        // After a file's closing comments, never above them: a commented
+        // switch under `[documents]` would, uncommented, fail every load
+        // (review of #683).
+        std::fs::write(&path, "[features]\ndocuments = true\n# web = false\n").unwrap();
+        assert!(write_documents_table(&path, &choice).unwrap());
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.find("# web = false").unwrap() < text.find("[documents]").unwrap(),
+            "{text}"
+        );
         // No confinement chosen: the key is left out, so the default holds.
         std::fs::write(&path, "").unwrap();
         let none = TableChoice {
@@ -1864,7 +1874,11 @@ pub fn write_documents_table(path: &Path, choice: &TableChoice) -> Result<bool> 
     if let Some(c) = choice.confine {
         table.insert("confine", toml_edit::value(c.as_str()));
     }
-    doc.insert("documents", toml_edit::Item::Table(table));
+    // After the file's closing comments, as every new table: inserted above
+    // them, a fresh starter's commented `[features]` switches would sit under
+    // `[documents]`, which refuses unknown keys — uncommenting one, a parse
+    // error on every command (review of #683; `config::append_table`).
+    crate::config::append_table(&mut doc, "documents", table);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }

@@ -29,7 +29,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   needs, where there is none: OCR and layout as installed, and on Linux the
   confinement this machine runs. On a Mac the table names no `confine`, so
   PDFs run under the macOS sandbox, the default there.
-
 - **The local chat model installs on a Mac.** `mecha setup chat`, and the
   chat question of the guided `mecha setup`, now run on macOS: llama.cpp's
   pinned Metal build, the model recommended for the Mac's memory (the same
