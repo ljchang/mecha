@@ -1632,4 +1632,42 @@ mod tests {
             man.entries
         );
     }
+
+    /// The plist mecha writes for a Mac's ComfyUI is one the image tool reads
+    /// as proxy-fronted — built through the real chain (`for_mac`, the
+    /// agent reader, the log cap, the plist), so renaming the proxy command
+    /// or changing `for_mac` cannot silently re-arm the unload timer, which
+    /// would leave ~35 GiB held (review of #689, pass 4).
+    #[test]
+    fn the_plist_mecha_writes_reads_as_behind_the_proxy() {
+        let home = std::env::temp_dir().join(format!("mecha-comfy-p-{}", uuid::Uuid::new_v4()));
+        let dir = home.join(".mecha/sidecars/comfyui");
+        let naming = Naming::shipped();
+        let unit = for_mac(
+            &render(&dir, &naming),
+            Path::new("/Users/owner/.cargo/bin/mecha"),
+            &dir.join("bin/comfyui-on-demand"),
+            naming.port,
+        );
+        let log = crate::launchd::log_path(&home, &naming.unit);
+        let mut agent = crate::launchd::agent_from_unit(
+            &crate::launchd::label(&naming.unit),
+            &unit,
+            &home,
+            log,
+        )
+        .unwrap();
+        agent.program = crate::log_cap::wrap(
+            Path::new("/Users/owner/.cargo/bin/mecha"),
+            &agent.log,
+            agent.program,
+        );
+        let plist =
+            crate::launchd::agents_dir(&home).join(crate::launchd::plist_name(&naming.unit));
+        std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
+        std::fs::write(&plist, crate::launchd::plist_text(&agent)).unwrap();
+        let url = format!("http://127.0.0.1:{}", naming.port);
+        assert!(crate::imagegen::behind_proxy_at(&home, &url));
+        let _ = std::fs::remove_dir_all(&home);
+    }
 }
