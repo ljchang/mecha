@@ -226,6 +226,10 @@ pub struct Reference {
     pub blob: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// Who attached it, when a model did (the owner's ruling of 2026-10-14:
+    /// a clean conversation writes directly). Absent is the owner's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<Origin>,
 }
 
 impl Entry {
@@ -359,7 +363,7 @@ pub(crate) fn write_atomic_mode(path: &Path, bytes: &[u8], mode: Option<u32>) ->
 }
 
 /// A picture's type from its bytes, and a check that its header decodes.
-fn picture_type(bytes: &[u8]) -> Result<&'static str> {
+pub fn picture_type(bytes: &[u8]) -> Result<&'static str> {
     let ext = crate::imagegen::sniff_image(bytes)
         .ok_or_else(|| anyhow!("not a PNG, JPEG or WebP image"))?;
     image::ImageReader::new(std::io::Cursor::new(bytes))
@@ -535,7 +539,6 @@ fn load_entry(kind: Kind, dir: &Path) -> Result<Entry> {
     // A plain file name, so a hand-edited entry cannot point a reference at
     // anything outside `blobs/`. Every blob the entry names, not only the
     // portrait (§9.3).
-    let plain = |blob: &str| !(blob.contains('/') || blob.contains('\\') || blob.starts_with('.'));
     if let Some(blob) = &entry.portrait {
         if !plain(blob) {
             bail!("portrait `{blob}` is not a blob name");
@@ -560,6 +563,18 @@ fn load_entry(kind: Kind, dir: &Path) -> Result<Entry> {
         }
     }
     Ok(entry)
+}
+
+/// A plain file name under `blobs/`: no separator, no leading dot, so a
+/// hand-edited record cannot point a picture anywhere else.
+fn plain(blob: &str) -> bool {
+    !(blob.contains('/') || blob.contains('\\') || blob.starts_with('.'))
+}
+
+/// The blob name a picture's bytes would be stored under, for a reader that
+/// checks bytes against a name outside this module.
+pub fn blob_name_of(bytes: &[u8], ext: &str) -> String {
+    blob_name(bytes, ext)
 }
 
 fn blob_name(bytes: &[u8], ext: &str) -> String {
@@ -861,6 +876,20 @@ pub fn add_reference(
     bytes: &[u8],
     label: Option<String>,
 ) -> Result<Entry> {
+    add_reference_as(dir, name, kind, bytes, label, None)
+}
+
+/// [`add_reference`], recording who attached it: `None` for the owner, a
+/// model's `Origin` when a clean conversation wrote it (§9.3 as amended
+/// 2026-10-14). The store's rules are the same for both.
+pub fn add_reference_as(
+    dir: &Path,
+    name: &str,
+    kind: RefKind,
+    bytes: &[u8],
+    label: Option<String>,
+    origin: Option<Origin>,
+) -> Result<Entry> {
     let old = current(dir, Kind::Character, name)?;
     if old.status != Status::Approved {
         bail!("`{name}` is a candidate; approve it before adding references");
@@ -916,8 +945,241 @@ pub fn add_reference(
         bail!("`{name}` already holds that picture");
     }
     let mut entry = old.clone();
-    entry.references.push(Reference { kind, blob, label });
+    entry.references.push(Reference {
+        kind,
+        blob,
+        label,
+        origin,
+    });
     new_version(dir, old, entry)
+}
+
+/// A model's reference write waiting on the owner (§9.3, the owner's ruling
+/// of 2026-10-14): what a conversation that has read outside content asks,
+/// and what an incognito chat stages, locked. Kept under `pending/` at the
+/// store root, so its picture is protected by [`blob_referenced`]'s walk, and
+/// never loaded as an entry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PendingReference {
+    pub id: String,
+    pub name: String,
+    pub kind: RefKind,
+    #[serde(default)]
+    pub action: PendingAction,
+    /// The picture to attach; absent for a removal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    pub origin: Origin,
+    /// Staged from an incognito chat: hidden behind the library lock.
+    #[serde(default)]
+    pub locked: bool,
+    #[serde(default)]
+    pub created: String,
+}
+
+/// What a pending reference asks. A closed enum in a store, so an unknown
+/// one loads as `Unknown` and is never applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PendingAction {
+    #[default]
+    Add,
+    Remove,
+    #[serde(other)]
+    Unknown,
+}
+
+fn pending_dir(dir: &Path) -> PathBuf {
+    dir.join("pending")
+}
+
+/// Every pending reference, oldest first, with the files that would not load.
+pub fn pending_references(dir: &Path) -> (Vec<PendingReference>, Vec<LoadError>) {
+    let mut found = Vec::new();
+    let mut errors = Vec::new();
+    let Ok(items) = std::fs::read_dir(pending_dir(dir)) else {
+        return (found, errors);
+    };
+    for item in items.flatten() {
+        let path = item.path();
+        if path.extension().is_none_or(|e| e != "toml") {
+            continue;
+        }
+        let read = std::fs::read_to_string(&path)
+            .map_err(anyhow::Error::from)
+            .and_then(|raw| toml::from_str::<PendingReference>(&raw).map_err(Into::into))
+            .and_then(|p| {
+                // The file is named by its id, and a blob by its hash: a
+                // hand-edited one cannot point anywhere else.
+                if path.file_stem().and_then(|s| s.to_str()) != Some(p.id.as_str()) {
+                    bail!("its id does not match its file name");
+                }
+                if p.blob.as_deref().is_some_and(|b| !plain(b)) {
+                    bail!("its picture is not a blob name");
+                }
+                Ok(p)
+            });
+        match read {
+            Ok(p) => found.push(p),
+            Err(e) => errors.push(LoadError {
+                path,
+                why: format!("{e:#}"),
+            }),
+        }
+    }
+    found.sort_by(|a, b| a.created.cmp(&b.created).then(a.id.cmp(&b.id)));
+    (found, errors)
+}
+
+/// Stage a model's reference write for the owner. Checked as the write would
+/// be — an approved character, a kind it takes, a label where one is needed —
+/// so the owner is never asked to approve what the store would refuse; the
+/// limit is checked again at approval, since the character may change first.
+#[allow(clippy::too_many_arguments)]
+pub fn propose_reference(
+    dir: &Path,
+    name: &str,
+    kind: RefKind,
+    action: PendingAction,
+    bytes: Option<&[u8]>,
+    label: Option<String>,
+    origin: Origin,
+    locked: bool,
+) -> Result<PendingReference> {
+    let entry = current(dir, Kind::Character, name)?;
+    if entry.status != Status::Approved {
+        bail!("`{name}` is a candidate; it takes references once the owner approves it");
+    }
+    if !kind.allowed_on(Kind::Character) {
+        bail!("a character takes face, full_body or detail references");
+    }
+    let label = label
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty());
+    if label
+        .as_deref()
+        .is_some_and(|l| l.chars().count() > MAX_LABEL)
+    {
+        bail!("a label is capped at {MAX_LABEL} characters");
+    }
+    let (pending, _) = pending_references(dir);
+    if pending.len() >= MAX_PENDING {
+        bail!("{MAX_PENDING} reference changes are already waiting on the owner");
+    }
+    let blob = match (action, bytes) {
+        (PendingAction::Add, Some(bytes)) => {
+            if kind == RefKind::Detail && label.is_none() {
+                bail!("a detail needs a label saying what it shows, e.g. \"left-forearm tattoo\"");
+            }
+            // A proposal's bytes stay on disk until the owner rules, from a
+            // conversation the owner has not seen: the proposal cap, as for
+            // a proposed portrait.
+            if bytes.len() as u64 > MAX_PROPOSED_PORTRAIT_BYTES {
+                bail!(
+                    "a proposed picture is capped at {} MB",
+                    MAX_PROPOSED_PORTRAIT_BYTES / (1024 * 1024)
+                );
+            }
+            Some(store_blob(dir, bytes)?)
+        }
+        (PendingAction::Add, None) => bail!("adding a reference needs its picture"),
+        (PendingAction::Remove, _) => {
+            let matching = entry
+                .references
+                .iter()
+                .filter(|r| {
+                    r.kind == kind && label.as_ref().is_none_or(|l| r.label.as_ref() == Some(l))
+                })
+                .count();
+            if matching != 1 {
+                bail!(
+                    "`{name}` has {} {} reference{} matching that; a removal names exactly one",
+                    matching,
+                    kind.label(),
+                    if matching == 1 { "" } else { "s" }
+                );
+            }
+            None
+        }
+        (PendingAction::Unknown, _) => bail!("unknown reference action"),
+    };
+    let proposal = PendingReference {
+        id: uuid::Uuid::new_v4().simple().to_string(),
+        name: entry.name.clone(),
+        kind,
+        action,
+        blob,
+        label,
+        origin,
+        locked,
+        created: now(),
+    };
+    let dir_p = pending_dir(dir);
+    std::fs::create_dir_all(&dir_p)?;
+    write_atomic(
+        &dir_p.join(format!("{}.toml", proposal.id)),
+        toml::to_string_pretty(&proposal)?.as_bytes(),
+    )?;
+    Ok(proposal)
+}
+
+fn take_pending(dir: &Path, id: &str) -> Result<PendingReference> {
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_hexdigit()) {
+        bail!("not a pending reference id");
+    }
+    let (pending, _) = pending_references(dir);
+    pending
+        .into_iter()
+        .find(|p| p.id == id)
+        .ok_or_else(|| anyhow!("no pending reference `{id}`"))
+}
+
+/// The owner approves a pending reference: applied as the write would have
+/// been, recording the model's origin, and the pending file removed. A
+/// refusal (a limit reached meanwhile, say) leaves it pending, said.
+pub fn approve_reference(dir: &Path, id: &str) -> Result<Entry> {
+    let p = take_pending(dir, id)?;
+    let entry = match p.action {
+        PendingAction::Add => {
+            let blob = p
+                .blob
+                .as_deref()
+                .ok_or_else(|| anyhow!("the pending reference has no picture"))?;
+            let bytes = std::fs::read(dir.join("blobs").join(blob))
+                .with_context(|| format!("reading the pending picture {blob}"))?;
+            let ext = picture_type(&bytes)?;
+            if blob_name(&bytes, ext) != blob {
+                bail!("the pending picture does not match its hash");
+            }
+            add_reference_as(
+                dir,
+                &p.name,
+                p.kind,
+                &bytes,
+                p.label.clone(),
+                Some(p.origin),
+            )?
+        }
+        PendingAction::Remove => remove_reference(dir, &p.name, p.kind, p.label.as_deref())?,
+        PendingAction::Unknown => bail!("this build cannot apply that pending change"),
+    };
+    std::fs::remove_file(pending_dir(dir).join(format!("{id}.toml")))?;
+    Ok(entry)
+}
+
+/// The owner rejects a pending reference: the file and, once nothing names
+/// it, its picture are deleted, as a rejected candidate's portrait is.
+pub fn reject_reference(dir: &Path, id: &str) -> Result<()> {
+    let p = take_pending(dir, id)?;
+    std::fs::remove_file(pending_dir(dir).join(format!("{id}.toml")))?;
+    if let Some(blob) = &p.blob {
+        if !blob_referenced(dir, blob) {
+            let _ = std::fs::remove_file(dir.join("blobs").join(blob));
+        }
+    }
+    Ok(())
 }
 
 /// Take a reference off a character: a new version, the picture kept in
@@ -2929,6 +3191,92 @@ mod tests {
             c.notes,
             ["Full-figure references were not sent: one could not be read."]
         );
+    }
+
+    /// A pending reference keeps its picture until the owner rules: the
+    /// picture survives while it waits, and a rejection deletes it once
+    /// nothing else names it.
+    #[test]
+    fn a_rejected_pending_reference_takes_its_picture_with_it() {
+        let dir = scratch();
+        create(dir.path(), character("wren", Origin::Owner)).unwrap();
+        let p = propose_reference(
+            dir.path(),
+            "wren",
+            RefKind::FullBody,
+            PendingAction::Add,
+            Some(&png_of([3, 4, 5])),
+            None,
+            Origin::ModelUntrusted,
+            false,
+        )
+        .unwrap();
+        let blob = dir.path().join("blobs").join(p.blob.as_ref().unwrap());
+        assert!(blob.is_file());
+        assert!(
+            blob_referenced(dir.path(), p.blob.as_ref().unwrap()),
+            "the pending file protects it"
+        );
+        // Not an entry: loading the library sees no new kind or character.
+        assert_eq!(Library::load(dir.path()).0.all().len(), 1);
+        reject_reference(dir.path(), &p.id).unwrap();
+        assert!(!blob.exists());
+        assert!(pending_references(dir.path()).0.is_empty());
+    }
+
+    /// A pending removal names exactly one reference, and approving it
+    /// removes that one; a hand-edited file naming a path is not loaded.
+    #[test]
+    fn a_pending_removal_names_one_and_a_bad_file_is_a_finding() {
+        let dir = scratch();
+        create(dir.path(), character("wren", Origin::Owner)).unwrap();
+        add_reference(
+            dir.path(),
+            "wren",
+            RefKind::FullBody,
+            &png_of([6, 6, 6]),
+            None,
+        )
+        .unwrap();
+        let none = propose_reference(
+            dir.path(),
+            "wren",
+            RefKind::Face,
+            PendingAction::Remove,
+            None,
+            None,
+            Origin::ModelUntrusted,
+            false,
+        )
+        .unwrap_err();
+        assert!(none.to_string().contains("exactly one"), "{none}");
+        let p = propose_reference(
+            dir.path(),
+            "wren",
+            RefKind::FullBody,
+            PendingAction::Remove,
+            None,
+            None,
+            Origin::ModelUntrusted,
+            false,
+        )
+        .unwrap();
+        let e = approve_reference(dir.path(), &p.id).unwrap();
+        assert!(e.references.is_empty());
+        // A hand-edited file pointing outside blobs/ is reported, not loaded.
+        let pending = dir.path().join("pending");
+        std::fs::write(
+            pending.join("abc.toml"),
+            "id = \"abc\"\nname = \"wren\"\nkind = \"full_body\"\nblob = \"../escape.png\"\norigin = \"model_untrusted\"\n",
+        )
+        .unwrap();
+        let (found, errors) = pending_references(dir.path());
+        assert!(found.is_empty());
+        assert!(
+            errors.iter().any(|e| e.why.contains("not a blob name")),
+            "{errors:?}"
+        );
+        assert!(approve_reference(dir.path(), "../x").is_err());
     }
 
     /// The delete gate walks the whole store: a blob named only under a
