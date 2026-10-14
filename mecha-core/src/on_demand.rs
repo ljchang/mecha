@@ -14,7 +14,8 @@
 //! the server is starting wait on the same start; a server that died is
 //! started again by the next connection.
 //!
-//! **Ready means `/health` says so**, as `mecha-wait-healthy` decides it for
+//! **Ready means its ready path says so** — llama-server's `/health`, as
+//! `mecha-wait-healthy` decides it for
 //! the systemd unit: llama-server answers 503 while its model loads, and a
 //! connection forwarded before then would get that 503.
 //!
@@ -223,8 +224,9 @@ async fn start(spec: &Spec) -> Result<Child> {
         if began.elapsed() > spec.start_timeout {
             stop(child).await;
             bail!(
-                "{} did not answer /health within {} s",
+                "{} did not answer {} within {} s",
                 spec.launcher.display(),
+                spec.ready_path,
                 spec.start_timeout.as_secs()
             );
         }
@@ -266,6 +268,12 @@ mod tests {
                 r#"import http.server, socketserver
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
+        # Ready only on the path the test names, never `/health`: a proxy
+        # that asked `/health` whatever it was told would never see ready.
+        if self.path == "/health":
+            self.send_response(404)
+            self.end_headers()
+            return
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"ok")
@@ -350,14 +358,17 @@ socketserver.TCPServer(("127.0.0.1", {backend}), H).serve_forever()
             idle: Duration::from_secs(2),
             start_timeout: Duration::from_secs(30),
             launcher: fake_server(&dir, backend),
-            ready_path: "/health".into(),
+            // Not the default: the stand-in refuses `/health`, so this
+            // measures that the configured path is the one asked (review of
+            // #689).
+            ready_path: "/system_stats".into(),
         };
         let proxy = tokio::spawn(serve(listener, spec));
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(starts(&dir), 0, "nothing starts before a request");
 
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        let url = format!("http://{public}/health");
+        let url = format!("http://{public}/system_stats");
         let (a, b, c) = tokio::join!(
             client.get(&url).send(),
             client.get(&url).send(),

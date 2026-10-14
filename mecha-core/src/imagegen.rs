@@ -153,11 +153,12 @@ impl Default for ImageConfig {
             timeout_secs: 600,
             // The load cost is derived from this figure (`load_cost_mb_on`).
             min_available_mb: min_available_mb_on(std::env::consts::OS),
-            // Fifteen minutes, matching `comfyui-idle-reset`'s window: a
-            // picture inside a quarter hour of the last is drawn warm. A cold
-            // one took 145–180 s against 36–63 s warm, 2026-10-08, the
-            // restart wait included (the owner's ruling, that day).
-            unload_after_secs: 900,
+            // Fifteen minutes on Linux, matching `comfyui-idle-reset`'s
+            // window: a picture inside a quarter hour of the last is drawn
+            // warm. A cold one took 145–180 s against 36–63 s warm,
+            // 2026-10-08, the restart wait included (the owner's ruling, that
+            // day). Off on a Mac (`unload_after_secs_on`).
+            unload_after_secs: unload_after_secs_on(std::env::consts::OS),
             server_temp_dir: None,
         }
     }
@@ -716,6 +717,20 @@ pub fn memory_need_mb(loaded: Option<bool>, min_mb: u64) -> u64 {
         // need.
         Some(true) => min_mb.saturating_sub(load_cost_mb()),
         Some(false) | None => min_mb,
+    }
+}
+
+/// `[image] unload_after_secs`' default on `os`. Off on a Mac: its ComfyUI
+/// runs behind mecha's on-demand proxy, which stops the whole process after
+/// the same fifteen idle minutes (`comfyui_unit::for_mac`). A `/free` from
+/// here would reach that proxy at the same moment and either reset its idle
+/// clock — stopping ComfyUI half an hour after the last picture, not fifteen
+/// minutes — or cold-start ComfyUI only to tell it to free (review of #689).
+pub fn unload_after_secs_on(os: &str) -> u64 {
+    if os == "macos" {
+        0
+    } else {
+        900
     }
 }
 
@@ -5953,6 +5968,12 @@ mod tests {
 
     /// A Mac's available memory is macOS's own level (the owner's ruling,
     /// 2026-10-13): a percentage, and anything else unread.
+    #[test]
+    fn a_mac_leaves_unloading_to_its_proxy() {
+        assert_eq!(unload_after_secs_on("macos"), 0);
+        assert_eq!(unload_after_secs_on("linux"), 900);
+    }
+
     #[test]
     fn macos_available_memory_is_its_memorystatus_level() {
         let parse = crate::system::source::parse_memorystatus_level;
