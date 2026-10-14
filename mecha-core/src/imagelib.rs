@@ -158,8 +158,9 @@ pub struct Entry {
     #[serde(default)]
     pub updated: String,
     /// Typed pictures beside the portrait (`IMAGE-COMPILER-DESIGN.md` §9.3),
-    /// written by the owner only. Last, so the TOML's `[[reference]]` tables
-    /// follow every plain field.
+    /// written by the owner, or by a model as §9.3's provenance split allows
+    /// (each then carries its `origin`). Last, so the TOML's `[[reference]]`
+    /// tables follow every plain field.
     #[serde(default, rename = "reference", skip_serializing_if = "Vec::is_empty")]
     pub references: Vec<Reference>,
     /// Set on load from the directory, never stored.
@@ -1101,6 +1102,15 @@ pub fn propose_reference(
                         .map(|l| format!(" labelled \"{l}\""))
                         .unwrap_or_default()
                 );
+            }
+            // A picture the character already holds can never be added:
+            // refused here, by its would-be name, before anything is stored
+            // (review of #692).
+            let would_be = blob_name(bytes, picture_type(bytes)?);
+            if entry.portrait.as_deref() == Some(would_be.as_str())
+                || entry.references.iter().any(|r| r.blob == would_be)
+            {
+                bail!("`{name}` already holds that picture");
             }
             // A proposal's bytes stay on disk until the owner rules, from a
             // conversation the owner has not seen: the proposal cap, as for
@@ -3302,6 +3312,23 @@ mod tests {
         .unwrap_err();
         assert!(full.to_string().contains("remove one first"), "{full}");
         assert_eq!(blobs(), before, "a refused proposal stored its picture");
+        // Nor a picture the character already holds, its portrait included.
+        let same = propose_reference(
+            dir.path(),
+            "wren",
+            RefKind::Face,
+            PendingAction::Add,
+            Some(&png()),
+            None,
+            Origin::ModelUntrusted,
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            same.to_string().contains("already holds that picture"),
+            "{same}"
+        );
+        assert_eq!(blobs(), before);
 
         let pending = dir.path().join("pending");
         std::fs::create_dir_all(&pending).unwrap();

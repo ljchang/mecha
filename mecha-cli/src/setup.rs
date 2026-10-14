@@ -1518,7 +1518,7 @@ async fn prepare_tools_carrying(
                 Err(e) => eprintln!("mecha: image_generate not registered — {e:#}"),
             }
         }
-        // The image library's two doors ride with `[image]`: without a server
+        // The image library's doors ride with `[image]`: without a server
         // there is nothing to compile a cast into. The store is global only
         // (`~/.mecha/imagelib`), with no config key — a cloned repository must
         // not choose where characters come from.
