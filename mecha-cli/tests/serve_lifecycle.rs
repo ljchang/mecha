@@ -16,6 +16,29 @@ impl Drop for FixtureCleanup {
     }
 }
 
+/// Two free ports below every system's ephemeral range (Linux's starts at
+/// 32768, macOS's at 49152). A port the kernel handed out and took back is
+/// one it hands out again — on macOS, in sequence — so a port read from
+/// `bind(":0")` and dropped before serve binds it could go to the next
+/// outgoing connection first: `Address already in use` on 49532, on macOS
+/// CI (#683), after holding both ports until both were read had fixed only
+/// the two being equal.
+fn two_free_ports() -> (u16, u16) {
+    let seed = (std::process::id() as u16)
+        ^ (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos() as u16)
+            .unwrap_or(0));
+    let mut free = (0..4000u16)
+        .map(|i| 20_000 + (seed.wrapping_add(i.wrapping_mul(7)) % 10_000))
+        .filter(|p| std::net::TcpListener::bind(("127.0.0.1", *p)).is_ok());
+    let a = free.next().expect("a free port in 20000..30000");
+    let b = free
+        .find(|p| *p != a)
+        .expect("a second free port in 20000..30000");
+    (a, b)
+}
+
 #[tokio::test]
 async fn sigterm_closes_sse_and_records_the_partial_turn() {
     check_shutdown(Case::Partial).await;
@@ -163,18 +186,7 @@ sandbox = false
         ),
     )
     .unwrap();
-    // Both held until both are read: a port dropped before the second is
-    // asked for can be handed straight back (macOS does), and serve then
-    // binds one address twice — `Address already in use` on 49287, twice.
-    let (a, b) = (
-        std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
-        std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
-    );
-    let (port, voice_port) = (
-        a.local_addr().unwrap().port(),
-        b.local_addr().unwrap().port(),
-    );
-    drop((a, b));
+    let (port, voice_port) = two_free_ports();
     let log = std::fs::File::create(root.join("serve.log")).unwrap();
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_mecha"))
         .args([
@@ -213,7 +225,14 @@ sandbox = false
     let base = format!("http://127.0.0.1:{port}");
     tokio::time::timeout(Duration::from_secs(15), async {
         loop {
-            if client.get(format!("{base}/api/ping")).send().await.is_ok() {
+            // Both listeners: serve binds the voice facade after the web
+            // port, and a test that reached for it on `/api/ping` alone was
+            // refused (CI's 1.89 arm on #683).
+            if client.get(format!("{base}/api/ping")).send().await.is_ok()
+                && tokio::net::TcpStream::connect(("127.0.0.1", voice_port))
+                    .await
+                    .is_ok()
+            {
                 break;
             }
             assert!(
@@ -465,18 +484,7 @@ async fn serve_does_not_mount_the_voice_facade_with_calls_off() {
         ),
     )
     .unwrap();
-    // Both held until both are read: a port dropped before the second is
-    // asked for can be handed straight back (macOS does), and serve then
-    // binds one address twice — `Address already in use` on 49287, twice.
-    let (a, b) = (
-        std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
-        std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
-    );
-    let (port, voice_port) = (
-        a.local_addr().unwrap().port(),
-        b.local_addr().unwrap().port(),
-    );
-    drop((a, b));
+    let (port, voice_port) = two_free_ports();
     let log_path = root.join("serve.log");
     let log = std::fs::File::create(&log_path).unwrap();
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_mecha"))
