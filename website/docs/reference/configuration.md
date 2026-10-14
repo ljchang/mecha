@@ -337,7 +337,7 @@ How `shell`, and MCP servers marked `sandbox = true`, are confined.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `kind` | string | `"none"` | `none`, `bwrap`, `docker`, or `landlock`. |
+| `kind` | string | `"none"` | `none`, `bwrap`, `docker`, or `landlock`. (`seatbelt` is `[documents] confine`'s on a Mac and refused here: it is not measured against a shell's reach.) |
 | `network` | bool | `false` | Let confined commands reach the network. |
 | `writable` | array of paths | `[]` | Extra paths mounted writable, on top of the workspace. |
 | `readable` | array of paths | `[]` | Extra paths mounted read-only. |
@@ -840,8 +840,8 @@ ignored with a warning. The design, and what was measured, is
 | `max_file_mb` | integer | `100` | Larger files are refused before anything parses them. |
 | `max_pages` | integer | `2000` | Documents with more pages are refused. |
 | `max_ocr_pages` | integer | `30` | Pages sent to OCR in one call; the answer names the pages left for the next. |
-| `confine` | string | `bwrap` | How the PDF parser (poppler) is confined: `bwrap`, `landlock`, or `none`. `docker` is refused. A confinement that cannot run fails the extraction — there is no fallback. |
-| `memory_mb` | integer | `2048` | Address-space ceiling for each parser process. |
+| `confine` | string | `bwrap` (Linux), `seatbelt` (macOS) | How the PDF parser (poppler) is confined: `bwrap`, `landlock` or `none` on Linux; `seatbelt` (macOS's own sandbox, a per-call profile with no network and one writable directory) or `none` on a Mac. `docker` is refused, and each system's confinement is refused on the other. A confinement that cannot run fails the extraction — there is no fallback. |
+| `memory_mb` | integer | `2048` | Address-space ceiling for each parser process. Not applied on macOS, where the CPU and file-size ceilings and the per-page timeout still are. |
 | `cache` | bool | `true` | Keep extractions under `~/.mecha/documents/`, by the file's sha256. |
 | `cache_days` | integer | `30` | Extractions not read for this long are removed when a new one is written. `0` keeps them until `mecha document prune`. |
 | `layout` | bool | `true` | Read OCR pages region by region: a layout model (PP-DocLayoutV3) finds the tables, formulas, headings and paragraphs, and each is read with its own prompt — tables come back as Markdown tables, headings marked. Off, or not installed, pages are read whole and the transcript says so. `mecha features enable documents` installs it (`scripts/layout/install.sh` is the hand install). |
