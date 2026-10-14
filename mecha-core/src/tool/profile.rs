@@ -31,13 +31,13 @@ impl ToolProfile {
                 let bare = n.rsplit("__").next().unwrap_or(n);
                 let c = t.capabilities();
                 let common = matches!(bare, "todo" | "compact" | "ask_user");
-                // `image_library_reference` declares `read_only` so a default
-                // chat can do what the owner asks, yet from a clean
-                // conversation it writes an approved version of a character
-                // (IMAGE-COMPILER-DESIGN §9.3): never a public read, so a
-                // research child never keeps it (review of #692).
-                let public_read =
-                    t.read_only() && !c.private_data && bare != "image_library_reference";
+                // A tool may declare `read_only` (so a default chat can call
+                // it) and still change owner state, as
+                // `image_library_reference` does: its `destructive` says so,
+                // and a destructive tool is never a public read. Structural,
+                // so the next such tool is excluded without a name here
+                // (review of #692).
+                let public_read = t.read_only() && !c.private_data && !c.destructive;
                 let keep = match self {
                     Self::Research => common || public_read,
                     Self::Coding => {

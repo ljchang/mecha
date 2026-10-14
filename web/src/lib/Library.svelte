@@ -612,7 +612,11 @@
             <span class="readingline">{originLabel(p.origin)}{p.locked ? ' · locked' : ''}</span>
             <div class="btnrow">
               <button class="abtn" disabled={busy} onclick={() => actPending(p, 'reject')}>Reject</button>
-              <button class="abtn primary" disabled={busy} onclick={() => actPending(p, 'approve')}>Approve</button>
+              <!-- A change this build cannot apply is offered Reject only:
+                   Approve would refuse every time (review of #692). -->
+              {#if p.action === 'add' || p.action === 'remove'}
+                <button class="abtn primary" disabled={busy} onclick={() => actPending(p, 'approve')}>Approve</button>
+              {/if}
             </div>
           </div>
         </div>
