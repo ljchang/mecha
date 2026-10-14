@@ -6,6 +6,7 @@
   import {
     PANES, paneOf, entriesFor, counts, originLabel, listUrl, tameName,
     TEXT_MAX, PORTRAIT_EDGE, fitWithin, formProblem, formBody,
+    REF_KINDS, REF_TITLE, LABEL_MAX, refNote, refAddable, refProblem, refBody, refRemoveBody,
   } from './library.js';
   import { watchIdle, idleSpan } from './autolock.js';
   import VoicesPane from './VoicesPane.svelte';
@@ -44,13 +45,34 @@
   let error = $state(null);
   let token = $state(null);
   let open = $state(null); // the entry in the detail view
-  let sheet = $state(null); // 'unlock' | 'remove' | 'reject' | null
+  let sheet = $state(null); // 'unlock' | 'remove' | 'reject' | 'remref' | null
   let password = $state('');
   let busy = $state(false);
   let toast = $state(null);
   // The add/edit form: { mode, kind, name, text, locked, portrait, preview }.
   let form = $state(null);
   let preparing = $state(false);
+  // A typed picture being attached to the open character: { for, kind,
+  // label, picture, preview } (docs/IMAGE-COMPILER-DESIGN.md §9.5), `for`
+  // naming the character it was opened on; and the one a remove sheet asks
+  // about.
+  let refForm = $state(null);
+  let refPending = $state(null);
+  const entryKey = (e) => (e ? `${e.kind}/${e.name}` : null);
+  // The form belongs to the character it was opened on: whatever path
+  // changes or clears `open` (a lock, a relock, a reload, a new form), a
+  // picked picture never waits to be attached to someone else (review of
+  // #688).
+  $effect(() => {
+    const now = entryKey(open);
+    untrack(() => {
+      if (refForm && refForm.for !== now) closeRef();
+      if (refPending && sheet === 'remref' && !now) {
+        refPending = null;
+        sheet = null;
+      }
+    });
+  });
 
   const shown = $derived(entriesFor(pane, data?.entries));
 
@@ -65,6 +87,7 @@
       lastPane = now;
       open = null;
       closeForm();
+      closeRef();
     });
   });
   const tally = $derived(counts(data?.entries));
@@ -164,9 +187,25 @@
     form = { mode: 'edit', kind: entry.kind, name: entry.name, text: entry.text, portrait: null, preview: null };
   }
 
-  // A picked file, scaled to fit PORTRAIT_EDGE and re-encoded as JPEG, as
-  // base64 for the JSON body. createImageBitmap applies the photo's
-  // orientation, so a phone portrait stays upright.
+  // A picked file, scaled to fit PORTRAIT_EDGE and re-encoded as JPEG:
+  // base64 for the JSON body, and the blob for a preview. createImageBitmap
+  // applies the photo's orientation, so a phone portrait stays upright.
+  async function encodePicture(file) {
+    const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+    const { w, h } = fitWithin(bitmap.width, bitmap.height, PORTRAIT_EDGE);
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    canvas.getContext('2d').drawImage(bitmap, 0, 0, w, h);
+    bitmap.close?.();
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.92));
+    if (!blob) throw new Error('this picture could not be read');
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    return { b64: btoa(binary), blob };
+  }
+
   async function pick(file) {
     if (!file || !form) return;
     // The form this picture is for: a cancel, or a new form, while it
@@ -174,27 +213,90 @@
     const target = form;
     preparing = true;
     try {
-      const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
-      const { w, h } = fitWithin(bitmap.width, bitmap.height, PORTRAIT_EDGE);
-      const canvas = document.createElement('canvas');
-      canvas.width = w;
-      canvas.height = h;
-      canvas.getContext('2d').drawImage(bitmap, 0, 0, w, h);
-      bitmap.close?.();
-      const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.92));
-      if (!blob) throw new Error('this picture could not be read');
-      const bytes = new Uint8Array(await blob.arrayBuffer());
-      let binary = '';
-      for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      const { b64, blob } = await encodePicture(file);
       // Cancelled, the pane changed, or another form opened while this decoded.
       if (form !== target) return;
       if (form.preview) URL.revokeObjectURL(form.preview);
-      form.portrait = btoa(binary);
+      form.portrait = b64;
       form.preview = URL.createObjectURL(blob);
     } catch (e) {
       say(String(e?.message ?? e));
     } finally {
       preparing = false;
+    }
+  }
+
+  function startRef(kind) {
+    closeRef();
+    refForm = { for: entryKey(open), kind, label: '', picture: null, preview: null };
+  }
+
+  function closeRef() {
+    if (refForm?.preview) URL.revokeObjectURL(refForm.preview);
+    refForm = null;
+  }
+
+  async function pickRef(file) {
+    if (!file || !refForm) return;
+    const target = refForm;
+    preparing = true;
+    try {
+      const { b64, blob } = await encodePicture(file);
+      if (refForm !== target) return;
+      if (refForm.preview) URL.revokeObjectURL(refForm.preview);
+      refForm.picture = b64;
+      refForm.preview = URL.createObjectURL(blob);
+    } catch (e) {
+      say(String(e?.message ?? e));
+    } finally {
+      preparing = false;
+    }
+  }
+
+  // Each a `mecha imagelib` command, as the terminal runs it: a new version
+  // of the character, the store's limits and label rules kept there.
+  async function submitRef() {
+    const entry = open;
+    if (!entry || !refForm || refProblem(refForm, entry)) return;
+    if (refForm.for !== entryKey(entry)) return closeRef();
+    busy = true;
+    try {
+      const res = await fetch('/api/library/reference', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(refBody(refForm, entry, token)),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      say(`Added ${REF_TITLE[refForm.kind].toLowerCase()} to ${entry.name}`);
+      closeRef();
+      await load();
+    } catch (e) {
+      say(String(e?.message ?? e));
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function removeRef() {
+    const entry = open;
+    const ref = refPending;
+    if (!entry || !ref) return;
+    busy = true;
+    try {
+      const res = await fetch('/api/library/reference/remove', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(refRemoveBody(entry, ref, token)),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      say(`Removed it from ${entry.name}`);
+      sheet = null;
+      refPending = null;
+      await load();
+    } catch (e) {
+      say(String(e?.message ?? e));
+    } finally {
+      busy = false;
     }
   }
 
@@ -369,7 +471,7 @@
       </form>
     {:else if open}
       <div class="deckhead">
-        <button class="backbtn" aria-label="back" onclick={() => (open = null)}>
+        <button class="backbtn" aria-label="back" onclick={() => { open = null; closeRef(); }}>
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M15 5l-7 7 7 7" /></svg>
         </button>
         <span class="dtitle">{open.kind} · {open.name} · v{open.version}</span>
@@ -401,6 +503,57 @@
           Lock hides it while browsing; chats can still use it. In a chat, name
           <code>{open.name}</code> and say what they are wearing and doing.
         </div>
+        {#if open.kind === 'character'}
+          <div class="refhead">References</div>
+          {#if (open.references ?? []).length}
+            <div class="refstrip">
+              {#each open.references as r, i (i)}
+                <div class="ref">
+                  <img src={r.picture} alt="{open.name}, {REF_TITLE[r.kind] ?? r.kind}" loading="lazy" />
+                  <span class="refkind">
+                    {(REF_TITLE[r.kind] ?? r.kind) + (r.label ? ` · ${r.label}` : '')}{#if !r.sendable}<span class="lockmark">{' · not sent'}</span>{/if}
+                  </span>
+                  <!-- Only the kinds the page can name: a kind a later build
+                       wrote is shown and kept, never offered a remove that
+                       would be refused. -->
+                  {#if REF_KINDS.includes(r.kind)}
+                    <button class="refx" disabled={busy} onclick={() => { refPending = r; sheet = 'remref'; }}>Remove</button>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
+          {#if refForm}
+            <form class="libform" onsubmit={(e) => { e.preventDefault(); submitRef(); }}>
+              <div class="barnote">{refNote(refForm.kind)}</div>
+              <label class="drop tall" class:filled={!!refForm.preview}>
+                {#if refForm.preview}
+                  <img src={refForm.preview} alt="new {REF_TITLE[refForm.kind].toLowerCase()}" />
+                {:else}
+                  <span class="dropnote">{preparing ? 'reading…' : `choose a ${REF_TITLE[refForm.kind].toLowerCase()} picture`}</span>
+                {/if}
+                <input type="file" accept="image/png,image/jpeg,image/webp" onchange={(e) => pickRef(e.currentTarget.files?.[0])} />
+              </label>
+              <input
+                class="editbox"
+                maxlength={LABEL_MAX}
+                placeholder={refForm.kind === 'detail' ? 'what and where, e.g. left-forearm tattoo' : 'label (optional)'}
+                bind:value={refForm.label}
+              />
+              <div class="btnrow">
+                <button type="button" class="abtn" onclick={closeRef}>Cancel</button>
+                <button class="abtn primary" disabled={busy || preparing || !!refProblem(refForm, open)}>Attach</button>
+              </div>
+              {#if refForm.picture && refProblem(refForm, open)}<div class="barnote">Still needs {refProblem(refForm, open)}.</div>{/if}
+            </form>
+          {:else}
+            <div class="refadd">
+              {#each REF_KINDS.filter((k) => refAddable(open, k)) as k}
+                <button class="abtn" disabled={busy} onclick={() => startRef(k)}>+ {REF_TITLE[k]}</button>
+              {/each}
+            </div>
+          {/if}
+        {/if}
       {/if}
     {:else if data && shown.length === 0 && pane === 'candidates'}
       <div class="empty">Nothing is waiting.</div>
@@ -463,6 +616,13 @@
         <div class="btnrow">
           <button class="abtn" onclick={() => (sheet = null)}>Keep</button>
           <button class="abtn primary" disabled={busy} onclick={() => act(open, 'remove')}>Remove</button>
+        </div>
+      {:else if sheet === 'remref'}
+        <div class="sheet-text">Remove this {REF_TITLE[refPending?.kind]?.toLowerCase() ?? 'reference'}{refPending?.label ? ` (${refPending.label})` : ''}?</div>
+        <div class="barnote">A new version of {open?.name}; the picture stays in its history, so pictures already made keep their record.</div>
+        <div class="btnrow">
+          <button class="abtn" onclick={() => { sheet = null; refPending = null; }}>Keep</button>
+          <button class="abtn primary" disabled={busy} onclick={removeRef}>Remove</button>
         </div>
       {:else if sheet === 'reject'}
         <div class="sheet-text">Reject {open?.name}?</div>
@@ -538,4 +698,13 @@
   .dropnote { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
   .counter { font-family: var(--mono); font-size: 10px; color: var(--text-muted); text-align: right; margin-top: -6px; }
   .lockline { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); }
+  .refhead { font-family: var(--mono); font-size: 12px; color: var(--accent-400); margin-top: 8px; }
+  .refstrip { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 4px; }
+  .ref { flex-shrink: 0; width: 120px; display: flex; flex-direction: column; gap: 6px; }
+  .ref img { width: 120px; aspect-ratio: 3 / 4; object-fit: contain; background: var(--surface); border: 1px solid var(--accent-900); border-radius: var(--radius); display: block; }
+  .refkind { font-family: var(--mono); font-size: 11px; color: var(--text-muted); overflow-wrap: anywhere; }
+  .refx { min-height: 36px; background: none; border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text-muted); font-size: 12px; cursor: pointer; }
+  .refadd { display: flex; flex-wrap: wrap; gap: 10px; }
+  .drop.tall { aspect-ratio: 3 / 4; max-width: 240px; }
+  .drop.tall img { object-fit: contain; }
 </style>

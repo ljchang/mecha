@@ -1117,6 +1117,18 @@ fn api() -> gate::Owned {
             )),
         )
         .at(
+            "/api/library/reference",
+            Owner::Of(Feature::Library),
+            axum::routing::post(library::add_reference).layer(
+                axum::extract::DefaultBodyLimit::max(library::MAX_WRITE_BODY),
+            ),
+        )
+        .at(
+            "/api/library/reference/remove",
+            Owner::Of(Feature::Library),
+            axum::routing::post(library::remove_reference),
+        )
+        .at(
             "/api/library/{kind}/{name}/{action}",
             Owner::Of(Feature::Library),
             axum::routing::post(library::act),

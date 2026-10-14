@@ -340,5 +340,75 @@ image = true
     .await;
     assert!(r.status().is_success(), "{}", r.text().await.unwrap());
 
+    // References (IMAGE-COMPILER-DESIGN.md §9.5): attached and removed from
+    // the page, each landing in the store the CLI reads, and listed back
+    // with a picture the image route serves.
+    let r = post(
+        "/api/library/reference",
+        serde_json::json!({"name": "maya", "as": "full_body", "picture": b64(png(60))}),
+    )
+    .await;
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    let r = post(
+        "/api/library/reference",
+        serde_json::json!({"name": "maya", "as": "detail", "picture": b64(png(61)),
+                           "label": "-left forearm tattoo"}),
+    )
+    .await;
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    let shown = mecha(&home, &["imagelib", "show", "maya"]);
+    let shown = String::from_utf8_lossy(&shown.stdout);
+    assert!(shown.contains("character maya (v5)"), "{shown}");
+    assert!(shown.contains("reference: full_body"), "{shown}");
+    assert!(shown.contains("detail — -left forearm tattoo"), "{shown}");
+    let listed = list(None).await;
+    let maya = listed["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["name"] == "maya")
+        .unwrap()
+        .clone();
+    let refs = maya["references"].as_array().unwrap();
+    assert_eq!(refs.len(), 2, "{maya}");
+    assert_eq!(refs[0]["kind"], "full_body");
+    assert_eq!(refs[0]["sendable"], true);
+    let picture = client
+        .get(format!("{base}{}", refs[0]["picture"].as_str().unwrap()))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(picture.status(), 200);
+    // A second full body is the store's to refuse, and it does.
+    let r = post(
+        "/api/library/reference",
+        serde_json::json!({"name": "maya", "as": "full_body", "picture": b64(png(62))}),
+    )
+    .await;
+    assert!(!r.status().is_success());
+    let r = post(
+        "/api/library/reference/remove",
+        serde_json::json!({"name": "maya", "as": "detail", "label": "-left forearm tattoo"}),
+    )
+    .await;
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    let shown = mecha(&home, &["imagelib", "show", "maya"]);
+    let shown = String::from_utf8_lossy(&shown.stdout);
+    assert!(shown.contains("character maya (v6)"), "{shown}");
+    assert!(!shown.contains("tattoo"), "{shown}");
+    // A locked character takes one only while unlocked.
+    let r = post(
+        "/api/library/reference",
+        serde_json::json!({"name": "ada", "as": "face", "picture": b64(png(63))}),
+    )
+    .await;
+    assert_eq!(r.status(), 404);
+    let r = post(
+        "/api/library/reference",
+        serde_json::json!({"name": "ada", "as": "face", "picture": b64(png(63)), "unlock": token}),
+    )
+    .await;
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+
     let _ = child.kill().await;
 }
