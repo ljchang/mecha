@@ -601,6 +601,9 @@ pub async fn voice(State(state): St) -> Json<serde_json::Value> {
         // Set only when the configured directory could not be listed; the
         // page shows it instead of an empty store.
         "cloned_error": cloned_error,
+        // Set when the voice locks could not be read: `cloned` then names
+        // nothing, and that is "could not tell", not "nothing cloned".
+        "locks_error": locks.error(),
         "voices_dir": state.voices_dir.as_ref().map(|d| d.display().to_string()),
     }))
 }

@@ -12733,6 +12733,10 @@ mod tests {
         let damaged = voice_list(&state, None).await;
         assert_eq!(voice_names(&damaged), Vec::<String>::new());
         assert!(damaged["locks_error"].is_string(), "{damaged}");
+        // Settings → Voice's listing says so too, rather than "none cloned".
+        let Json(settings) = super::super::settings::voice(State(state.clone())).await;
+        assert_eq!(settings["cloned"], serde_json::json!([]));
+        assert!(settings["locks_error"].is_string(), "{settings}");
         assert!(form_voices(&state, None, None).await.unread.is_some());
         // (`solo`'s clip is gone, and the worker still lists it.)
         let unlocked = voice_list(&state, Some(token)).await;
