@@ -718,7 +718,8 @@ on 2026-09-28: **the lock hides, it never withholds.**
   (`IMAGE-COMPILER-DESIGN.md` §7, *Nothing says how much is hidden*). A
   visible persona whose portrait is a locked character must not name that
   character to a locked page either; the link is hidden, never cut (the list
-  and problems in #425, the Edit screen's settings file in #430).
+  and problems in #425, the Edit screen's settings file in #430). The same
+  holds for a persona whose library voice is locked (§11, 2026-10-15).
 - **It is not encryption.** Transcripts are plaintext on disk; the nightly
   memory writer still reads locked chats. The page and the CLI say so, because
   a lock that implies more than it does is the silently-degrading guard.
@@ -1518,6 +1519,17 @@ transcript, and `GET /v1/voices` lists the voices it can speak.
   names the personas that speak in it. Recording, uploading and deleting
   clones moved there from Settings → Voice, which keeps the assistant's own
   voice and rate and the worker's health.
+- **One voice library for the chat and the personas** (owner, 2026-10-15:
+  "lock voices just like images and personas … unlocked voices show up in
+  the main chat as well"). A voice locks under the library's lock (§8.3): a
+  locked voice is off Library → Voices, off the persona form's Voice choices
+  and off Settings → Voice until an unlock, and a visible persona speaking in
+  one shows its Voice blank to a locked page — hidden, never cut. The lock
+  never withholds: a persona or the assistant set to a locked voice still
+  speaks in it. Settings → Voice now offers the library's unlocked voices,
+  read live, instead of the worker's list as the last call left it cached on
+  the device. The assistant's choice stays per device (voice-core's
+  preference), as it was.
 - **Voices come from anywhere** (R13, ruled): a clip the owner **records
   live** on the page — the voice page already captures the microphone — or a
   **prerecorded sample** uploaded in any common audio format, converted to

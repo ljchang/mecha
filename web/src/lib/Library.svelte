@@ -416,7 +416,7 @@
       {#if !isShown(features.rows, 'library')}
         <!-- Reached with image generation off (it opens anyway): say why the
              other panes are not here. -->
-        <div class="barnote">The image library is off — characters and styles are hidden, and locked personas stay unnamed here.</div>
+        <div class="barnote">The image library is off — characters and styles are hidden, and locked voices and personas stay hidden here.</div>
       {/if}
       <VoicesPane {token} oncount={(n) => (voiceCount = n)} />
     {:else}

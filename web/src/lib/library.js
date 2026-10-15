@@ -69,6 +69,27 @@ export function voicesUrl(token) {
   return token ? `/api/library/voices?unlock=${encodeURIComponent(token)}` : '/api/library/voices';
 }
 
+// A voice's spoken sample, with the unlock when there is one: a locked
+// voice plays only for the unlock that lists it.
+export function sampleUrl(name, token) {
+  const q = `name=${encodeURIComponent(name)}`;
+  return `/api/library/voices/sample?${q}${token ? `&unlock=${encodeURIComponent(token)}` : ''}`;
+}
+
+// Where a recorded or uploaded clip is saved, locked from the start when
+// the box was ticked.
+export function cloneUrl(name, locked = false) {
+  return `/api/settings/voice/clone?name=${encodeURIComponent(name)}${locked ? '&locked=true' : ''}`;
+}
+
+// The voices the assistant's own calls can pick from (Settings → Voice):
+// the library's list as served to a page with no unlock — so never a
+// locked voice — less any the voice server is known not to have. `listed`
+// null is a server that could not be asked, not a missing voice.
+export function chatVoices(data) {
+  return (data?.voices ?? []).filter((v) => v.listed !== false).map((v) => v.name);
+}
+
 // A voice's line under its name: a clone or the server's own, how long its
 // reference is, who speaks in it, and whether the server can speak it yet.
 // `listed` is null when the server's list could not be read — unknown, not

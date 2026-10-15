@@ -1059,6 +1059,11 @@ fn api() -> gate::Owned {
             get(settings::library_voice_sample),
         )
         .at(
+            "/api/library/voices/lock",
+            Owner::Of(Feature::Voice),
+            axum::routing::post(settings::library_voice_lock),
+        )
+        .at(
             "/api/speak",
             Owner::Of(Feature::Calls),
             axum::routing::post(settings::speak),
@@ -2543,6 +2548,7 @@ mod tests {
             ("POST", "/api/settings/voice/clone/delete"),
             ("GET", "/api/library/voices"),
             ("GET", "/api/library/voices/sample?name=x"),
+            ("POST", "/api/library/voices/lock"),
             ("POST", "/api/speak"),
             // Every feature, its state and the command that turns it on:
             // an inventory of the install, which a probe without the
@@ -2776,6 +2782,15 @@ mod tests {
     /// (correctly, and revealing nothing), which also means it cannot pin
     /// anything behind it.
     fn test_router_with_voices(dir: &std::path::Path) -> Router {
+        test_router_with_voices_in(
+            dir,
+            std::env::temp_dir().join(format!("mecha-serve-test-lib-{}", uuid::Uuid::new_v4())),
+        )
+    }
+
+    /// As [`test_router_with_voices`], with the library — where the voice
+    /// locks live — at a directory the test can read.
+    fn test_router_with_voices_in(dir: &std::path::Path, lib: std::path::PathBuf) -> Router {
         router(
             WebState {
                 owner_login: Arc::new("owner@example.com".into()),
@@ -2783,10 +2798,7 @@ mod tests {
                 offer_target: None,
                 voices_dir: Some(Arc::new(dir.to_path_buf())),
                 stt_url: Arc::new(mecha_core::config::VoiceConfig::DEFAULT_STT_URL.to_string()),
-                library: library::state_for_tests(
-                    std::env::temp_dir()
-                        .join(format!("mecha-serve-test-lib-{}", uuid::Uuid::new_v4())),
-                ),
+                library: library::state_for_tests(lib),
                 features_at_start: Arc::default(),
                 gate: Arc::default(),
                 review: Arc::new(review::ReviewState {
@@ -3319,6 +3331,83 @@ mod tests {
             tiny_wav(16_000, 6.0)
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A clip saved with the lock box ticked is locked before it lands, so
+    /// no listing without an unlock ever names it; deleting it needs the
+    /// unlock too, and takes the flag with it.
+    #[tokio::test]
+    async fn a_clone_saved_locked_is_never_listed_in_the_open() {
+        let id = uuid::Uuid::new_v4();
+        let dir = std::env::temp_dir().join(format!("mecha-clone-locked-{id}"));
+        let lib = std::env::temp_dir().join(format!("mecha-clone-locked-lib-{id}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let send = |method: &str, uri: &str, ct: &str, body: Body| {
+            test_router_with_voices_in(&dir, lib.clone()).oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header("Tailscale-User-Login", "owner@example.com")
+                    .header("x-mecha-request", "1")
+                    .header("content-type", ct)
+                    .body(body)
+                    .unwrap(),
+            )
+        };
+        for (name, uri) in [
+            (
+                "hidden",
+                "/api/settings/voice/clone?name=hidden&locked=true",
+            ),
+            ("open", "/api/settings/voice/clone?name=open"),
+        ] {
+            let saved = send("POST", uri, "audio/wav", Body::from(tiny_wav(16_000, 6.0)))
+                .await
+                .unwrap();
+            assert_eq!(saved.status(), StatusCode::OK, "{name}");
+            let answer = axum::body::to_bytes(saved.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            // The answer a save returns is a listing too.
+            assert!(!String::from_utf8_lossy(&answer).contains("hidden"));
+        }
+        assert_eq!(
+            mecha_core::imagelib::locked_voices(&lib)
+                .unwrap()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            ["hidden"]
+        );
+        let listed = send(
+            "GET",
+            "/api/library/voices",
+            "application/json",
+            Body::empty(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(listed.headers()["cache-control"], "no-store");
+        let listed = axum::body::to_bytes(listed.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let listed = String::from_utf8_lossy(&listed);
+        assert!(
+            listed.contains("\"open\"") && !listed.contains("hidden"),
+            "{listed}"
+        );
+        // Missing to a locked page, word for word, and still on disk.
+        let gone = send(
+            "POST",
+            "/api/settings/voice/clone/delete",
+            "application/json",
+            Body::from(r#"{"name":"hidden"}"#),
+        )
+        .await
+        .unwrap();
+        assert_eq!(gone.status(), StatusCode::NOT_FOUND);
+        assert!(dir.join("hidden.wav").is_file());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&lib);
     }
 
     #[tokio::test]
