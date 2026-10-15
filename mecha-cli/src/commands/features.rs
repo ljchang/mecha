@@ -336,6 +336,13 @@ pub(super) async fn enable_unwired(
                 todo.retain(|(id, ..)| *id != mecha_core::graph_mcp::ID);
             }
         }
+        // The mail servers likewise (§15).
+        if todo.iter().any(|(id, ..)| *id == mecha_core::mail_mcp::ID) {
+            if let Err(why) = mecha_core::mail_mcp::fits() {
+                println!("The mail and documents servers are not installed: {why}.");
+                todo.retain(|(id, ..)| *id != mecha_core::mail_mcp::ID);
+            }
+        }
         // Likewise the speech server: voice may be spoken by a server the
         // owner runs — Chatterbox, or Breeze by hand — so a machine that
         // cannot build the engine is not offered it, and keeps the switch.
@@ -500,6 +507,8 @@ pub(super) async fn enable_unwired(
                     &turbo_line
                 } else if *id == mecha_core::graph_mcp::ID {
                     ", built here with cargo from its pinned commit — a few minutes"
+                } else if *id == mecha_core::mail_mcp::ID {
+                    ", built here with cargo from this mecha's own source — a few minutes"
                 } else {
                     ""
                 };
@@ -707,6 +716,14 @@ pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
                 unstaged.join(", ")
             );
         }
+        if let Some(old) = &done.repointed {
+            println!(
+                "  the [[mcp]] entry for {} ran {old}, another build's — it now runs {}, which \
+                 matches this mecha",
+                wiring.name,
+                command.display()
+            );
+        }
         if let Some(other) = &done.runs_other {
             println!(
                 "  the [[mcp]] entry called `{}` runs `{other}`, not {}, so it is left as it is \
@@ -765,21 +782,26 @@ pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
     Ok(())
 }
 
-/// The program an `[[mcp]]` entry runs: the owner's own on the PATH first;
-/// else, for the graph, the build mecha installed into its own tree
-/// (`graph_mcp`), which no PATH names — by its absolute path either way.
+/// The program an `[[mcp]]` entry runs, by its absolute path: one on the
+/// PATH, unless it is one of mecha's own servers from another build (§15);
+/// else the build mecha installed into its own tree, which no PATH names.
 fn mcp_command(
     program: &str,
     on_path: Option<std::path::PathBuf>,
     mecha_home: Option<&std::path::Path>,
 ) -> Option<std::path::PathBuf> {
-    on_path.or_else(|| {
-        mecha_home
-            .filter(|home| {
-                program == mecha_core::graph_mcp::PROGRAM && mecha_core::graph_mcp::installed(home)
-            })
-            .map(mecha_core::graph_mcp::binary)
-    })
+    let own = |home: &std::path::Path| -> Option<std::path::PathBuf> {
+        if program == mecha_core::graph_mcp::PROGRAM {
+            return mecha_core::graph_mcp::installed(home)
+                .then(|| mecha_core::graph_mcp::binary(home));
+        }
+        (mecha_core::mail_mcp::PROGRAMS.contains(&program) && mecha_core::mail_mcp::installed(home))
+            .then(|| mecha_core::mail_mcp::binary(home, program))
+    };
+    match on_path {
+        Some(p) if !mecha_core::sidecar::stale_copy(program, &p) => Some(p),
+        stale => mecha_home.and_then(own).or(stale),
+    }
 }
 
 /// What `enable` knows when it decides about the turbo model.
@@ -1304,6 +1326,11 @@ fn render_plan(p: &sidecar::Plan, chat_here: bool) -> String {
                  minutes; needs cargo and a C compiler)",
                 p.feature.id()
             ),
+            SidecarState::Missing { .. } if s.id == mecha_core::mail_mcp::ID => format!(
+                "not here — `mecha features enable {}` builds it from this mecha's own source \
+                 (a few minutes; needs cargo)",
+                p.feature.id()
+            ),
             SidecarState::Missing { .. } if mecha_core::install::installable(s.id) => format!(
                 "not here — `mecha features enable {}` installs it",
                 p.feature.id()
@@ -1315,6 +1342,12 @@ fn render_plan(p: &sidecar::Plan, chat_here: bool) -> String {
         };
         let state = match s.bytes {
             Some(b) => format!("{state} ({} to download)", bytes_text(b)),
+            None => state,
+        };
+        // A copy from another build, passed over: said, so the owner knows
+        // why one on their PATH is not used (§15).
+        let state = match &s.stale_copy {
+            Some(copy) => format!("{state}; {copy}, another build's, so it is not used"),
             None => state,
         };
         out.push_str(&format!("  {:<32} {state}\n", s.label));
@@ -1918,6 +1951,7 @@ mod tests {
                 state: SidecarState::Missing { step: "7c" },
                 bytes: None,
                 not_offered: None,
+                stale_copy: None,
             }],
             // The chat model's files are named but not counted: the plan's
             // total is what `enable` fetches (review of #627).
@@ -1959,6 +1993,7 @@ mod tests {
                     },
                     bytes: None,
                     not_offered: None,
+                    stale_copy: None,
                 },
                 PlannedSidecar {
                     // Every real sidecar has an installer since 7f: one
@@ -1968,6 +2003,7 @@ mod tests {
                     state: SidecarState::Missing { step: "7z" },
                     bytes: None,
                     not_offered: None,
+                    stale_copy: None,
                 },
                 PlannedSidecar {
                     id: "layout",
@@ -1977,6 +2013,7 @@ mod tests {
                     },
                     bytes: None,
                     not_offered: None,
+                    stale_copy: None,
                 },
             ],
             files: vec![

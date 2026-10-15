@@ -191,9 +191,10 @@ pub const SIDECARS: &[Sidecar] = &[
         // from the hub, read there as ComfyUI's are (review of #649).
         models_in_hub: false,
     },
-    // The knowledge graph's MCP server: one on the PATH is the owner's, used
-    // as it is; otherwise `enable graph` builds the pinned commit into
-    // mecha's tree (`graph_mcp.rs`, the owner's ruling of 2026-10-13).
+    // The knowledge graph's MCP server: one on the PATH is used when it is
+    // the pinned build or the owner's own checkout build; otherwise `enable
+    // graph` builds the pinned commit into mecha's tree (`graph_mcp.rs`, the
+    // owner's rulings of 2026-10-13 and 2026-10-15, §15).
     Sidecar {
         id: "graph-mcp",
         label: "the knowledge graph's MCP server (mecha-graph-mcp)",
@@ -210,7 +211,55 @@ pub const SIDECARS: &[Sidecar] = &[
         // No models: nothing of the hub's is its to hold.
         models_in_hub: false,
     },
+    // The mail and documents servers, one crate (`mail_mcp.rs`): built from
+    // this mecha's own source, as a copy from another build speaks another
+    // protocol (§15, the owner's ruling of 2026-10-15).
+    Sidecar {
+        id: "mail-mcp",
+        label: "the mail and documents servers (mecha-mail, mecha-docs)",
+        needed_by: &[Feature::Mail, Feature::Docs],
+        serves: &[],
+        evidence: &[
+            Evidence::OnPath("mecha-mail"),
+            Evidence::Home(".cargo/bin/mecha-mail"),
+        ],
+        installer: "15",
+        models_in_hub: false,
+    },
 ];
+
+/// The package and the build a copy of one of mecha's own servers must be,
+/// for a sidecar that is one (§15): the graph's server at its pin, the mail
+/// servers at this mecha's own source. `None` for every other sidecar, and
+/// for the mail servers when this build cannot tell its source.
+pub fn own_build(id: &str) -> Option<(&'static str, crate::own_build::Source)> {
+    match id {
+        crate::graph_mcp::ID => Some((
+            crate::graph_mcp::PROGRAM,
+            crate::own_build::Source::Git(crate::graph_mcp::REV.to_string()),
+        )),
+        crate::mail_mcp::ID => Some((crate::mail_mcp::PACKAGE, crate::own_build::this()?)),
+        _ => None,
+    }
+}
+
+/// Whether `bin` is a copy of one of mecha's own servers, by `program`,
+/// from another build than the one wanted (§15).
+pub fn stale_copy(program: &str, bin: &Path) -> bool {
+    let id = if program == crate::graph_mcp::PROGRAM {
+        crate::graph_mcp::ID
+    } else if crate::mail_mcp::PROGRAMS.contains(&program) {
+        crate::mail_mcp::ID
+    } else {
+        return false;
+    };
+    own_build(id).is_some_and(|(package, want)| {
+        matches!(
+            crate::own_build::copy_of(bin, package, &want),
+            crate::own_build::Copy::Stale(_)
+        )
+    })
+}
 
 /// The record of what mecha itself wrote under `~/.mecha/sidecars/` (§10.2
 /// item 2): read here, written by the installers from 7a-3 on.
@@ -582,6 +631,11 @@ pub struct PlannedSidecar {
     pub id: &'static str,
     pub label: &'static str,
     pub state: SidecarState,
+    /// A copy of one of mecha's own servers found on this machine from
+    /// another build, and how (§15): passed over, so the row reads missing
+    /// and `enable` installs mecha's — said, so the owner knows why.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stale_copy: Option<String>,
     /// What installing it downloads, where that is known before the install
     /// (`install::price`): the engine's pinned archives for this machine.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -680,6 +734,9 @@ pub fn plan(
     for s in needed(named) {
         // What the machine shows, read only when mecha's record does not
         // settle it.
+        // A copy of one of mecha's own servers from another build: not
+        // provided, but in the way — said on the row (§15).
+        let stale_copy = std::cell::RefCell::new(None::<String>);
         let from_evidence = || {
             let mut state = SidecarState::Missing { step: s.installer };
             for ev in s.evidence {
@@ -691,6 +748,15 @@ pub fn plan(
                             .as_deref()
                             .is_some_and(|p| p.starts_with(&sidecars_dir) || manifest.wrote(p));
                         if !ours {
+                            if let (Some((package, want)), Some(p)) = (own_build(s.id), &path) {
+                                if let crate::own_build::Copy::Stale(why) =
+                                    crate::own_build::copy_of(p, package, &want)
+                                {
+                                    *stale_copy.borrow_mut() =
+                                        Some(format!("{} is {why}", p.display()));
+                                    continue;
+                                }
+                            }
                             return SidecarState::Provided { by };
                         }
                     }
@@ -749,6 +815,7 @@ pub fn plan(
             state,
             bytes: None,
             not_offered: None,
+            stale_copy: stale_copy.into_inner(),
         });
     }
 
@@ -1024,7 +1091,7 @@ mod tests {
                 );
             }
             assert!(
-                ["7a-3", "7b", "7c-1", "7c-2", "7d-1", "7d-2", "7e", "7f", "13"]
+                ["7a-3", "7b", "7c-1", "7c-2", "7d-1", "7d-2", "7e", "7f", "13", "15"]
                     .contains(&s.installer),
                 "{}: installer step {}",
                 s.id,
@@ -1413,6 +1480,38 @@ mod tests {
         std::fs::create_dir_all(root.join("bin")).unwrap();
         std::fs::write(root.join("bin/mecha-graph-mcp"), b"#!/bin/sh\n").unwrap();
         assert!(matches!(state(&m), SidecarState::Provided { .. }));
+        // A copy cargo recorded from another build than the pin is passed
+        // over: missing, and said (§15). Its own checkout build stays the
+        // owner's.
+        let row = |m: &Machinery| {
+            plan(Feature::Graph, m, &GB10, &root.join("hub"), false)
+                .unwrap()
+                .sidecars
+                .into_iter()
+                .find(|s| s.id == crate::graph_mcp::ID)
+                .unwrap()
+        };
+        let cargo_record = |source: &str| {
+            std::fs::write(
+                root.join(".crates2.json"),
+                format!(
+                    r#"{{"installs":{{"mecha-graph-mcp 0.1.5 ({source})":{{"bins":["mecha-graph-mcp"]}}}}}}"#
+                ),
+            )
+            .unwrap()
+        };
+        cargo_record("registry+https://github.com/rust-lang/crates.io-index");
+        let r = row(&m);
+        assert!(matches!(r.state, SidecarState::Missing { .. }), "{r:?}");
+        assert!(
+            r.stale_copy
+                .as_deref()
+                .is_some_and(|c| c.contains("the published 0.1.5")),
+            "{r:?}"
+        );
+        cargo_record("path+file:///home/u/mecha-graph/mecha-graph-mcp");
+        assert!(matches!(state(&m), SidecarState::Provided { .. }));
+        std::fs::remove_file(root.join(".crates2.json")).unwrap();
         std::fs::remove_file(root.join("bin/mecha-graph-mcp")).unwrap();
         // A finished record over a tree with no pinned build in it is not
         // installed: it is offered again, so `enable` rebuilds it.

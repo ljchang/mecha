@@ -105,6 +105,8 @@ pub fn installable(id: &str) -> bool {
         }
         // A cargo build into mecha's tree, wherever cargo runs (§13).
         crate::graph_mcp::ID => true,
+        // mecha's own mail and documents servers, likewise (§15).
+        crate::mail_mcp::ID => true,
         _ => false,
     }
 }
@@ -233,6 +235,13 @@ pub fn price(plan: &mut Plan, chat_here: bool, nvidia: impl FnOnce() -> crate::e
     if wanted(plan, crate::graph_mcp::ID) {
         if let Err(why) = crate::graph_mcp::fits() {
             not_offered(plan, crate::graph_mcp::ID, &why);
+        }
+    }
+    // The mail servers too, and a mecha that cannot tell its own source
+    // cannot choose them (§15).
+    if wanted(plan, crate::mail_mcp::ID) {
+        if let Err(why) = crate::mail_mcp::fits() {
+            not_offered(plan, crate::mail_mcp::ID, &why);
         }
     }
     if wanted(plan, crate::speech_unit::ID) {
@@ -696,6 +705,7 @@ pub async fn install(
     match id {
         "layout" => install_layout(m, machine, hub, say).await,
         crate::graph_mcp::ID => crate::graph_mcp::install(m, say).await,
+        crate::mail_mcp::ID => crate::mail_mcp::install(m, say).await,
         "embed-server" | "ocr-server" => {
             let which = if id == "embed-server" {
                 crate::llama_units::Which::Embeddings
@@ -821,6 +831,7 @@ mod tests {
                 state: llama,
                 bytes: None,
                 not_offered: None,
+                stale_copy: None,
             }],
             files: vec![],
             download_bytes: 0,
@@ -918,6 +929,7 @@ mod tests {
                 state,
                 bytes: None,
                 not_offered: None,
+                stale_copy: None,
             }],
             files: vec![],
             download_bytes: 5,
@@ -951,6 +963,7 @@ mod tests {
                 state: SidecarState::Missing { step: "7e" },
                 bytes: None,
                 not_offered: None,
+                stale_copy: None,
             }],
             files: vec![],
             download_bytes: 5,
@@ -1015,6 +1028,7 @@ mod tests {
                 state: SidecarState::Missing { step: "7f" },
                 bytes: None,
                 not_offered: None,
+                stale_copy: None,
             }],
             files: vec![crate::sidecar::PlannedFile {
                 slot: "tts",
@@ -1152,16 +1166,17 @@ mod tests {
     #[test]
     fn installable_and_the_registry_agree() {
         // The on-demand servers' installer is built, for systemd machines.
-        // The graph's MCP server (§13) is a cargo build, on every system.
+        // The graph's MCP server (§13) and the mail servers (§15) are cargo
+        // builds, on every system.
         let built: &[&str] = if cfg!(target_os = "linux") {
             &[
-                "7a-3", "7b", "7c-1", "7c-2", "7d-1", "7d-2", "7e", "7f", "13",
+                "7a-3", "7b", "7c-1", "7c-2", "7d-1", "7d-2", "7e", "7f", "13", "15",
             ]
         } else if cfg!(target_os = "macos") {
             // launchd agents for the on-demand servers, voice and images (§12).
-            &["7a-3", "7b", "7c-1", "7d-1", "7d-2", "7e", "7f", "13"]
+            &["7a-3", "7b", "7c-1", "7d-1", "7d-2", "7e", "7f", "13", "15"]
         } else {
-            &["7a-3", "7b", "13"]
+            &["7a-3", "7b", "13", "15"]
         };
         assert!(installable("layout"));
         assert!(installable("llama"));
