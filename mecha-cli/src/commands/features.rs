@@ -52,6 +52,11 @@ pub enum Cmd {
         /// model is fetched only once a persona chooses it.
         #[arg(long)]
         turbo: bool,
+        /// Rewrite and restart the services mecha installed for these
+        /// features, as an install would — what `enable` already offers for
+        /// a service an older mecha wrote. Nothing current is downloaded.
+        #[arg(long)]
+        reinstall: bool,
     },
     /// Switch features off in the global `config.toml`'s `[features]` table.
     /// Their settings stay, for when they are switched back on.
@@ -117,7 +122,8 @@ pub async fn execute(args: Args) -> Result<()> {
             ids,
             no_install,
             turbo,
-        }) => return enable(&ids, no_install, turbo, false).await,
+            reinstall,
+        }) => return enable(&ids, no_install, turbo, reinstall, false).await,
         Some(Cmd::Disable { ids }) => return set(&ids, false),
         Some(Cmd::Plan { id, json, verify }) => return plan(&id, json, verify),
         Some(Cmd::LogCap {
@@ -213,8 +219,16 @@ pub async fn execute(args: Args) -> Result<()> {
 /// again nor refuses for want of a terminal to ask at.
 /// `turbo` is `--turbo`: the image server's install fetches the turbo model
 /// too, as it does unasked once a persona's picture settings choose it.
-pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: bool) -> Result<()> {
-    let on = enable_unwired(ids, no_install, turbo, yes).await?;
+/// `reinstall` is `--reinstall`: every installed sidecar with services is
+/// offered as one an older mecha wrote would be (`PlannedSidecar::stale`).
+pub(super) async fn enable(
+    ids: &[String],
+    no_install: bool,
+    turbo: bool,
+    reinstall: bool,
+    yes: bool,
+) -> Result<()> {
+    let on = enable_unwired(ids, no_install, turbo, reinstall, yes).await?;
     mcp_entries(&on)
 }
 
@@ -227,6 +241,7 @@ pub(super) async fn enable_unwired(
     ids: &[String],
     no_install: bool,
     turbo: bool,
+    reinstall: bool,
     yes: bool,
 ) -> Result<Vec<Feature>> {
     use mecha_core::comfyui_unit as comfy;
@@ -241,6 +256,11 @@ pub(super) async fn enable_unwired(
     }
     if turbo && no_install {
         anyhow::bail!("`--turbo` fetches a model and `--no-install` installs nothing; drop one");
+    }
+    if reinstall && no_install {
+        anyhow::bail!(
+            "`--reinstall` rewrites services and `--no-install` installs nothing; drop one"
+        );
     }
     // Refused rather than ignored: past here, a platform with no installer
     // never reaches the block that would say so (review of #650).
@@ -263,6 +283,10 @@ pub(super) async fn enable_unwired(
         // (sidecar id, its label, the feature whose plan names it, its
         // download where known before installing)
         let mut todo: Vec<(&'static str, &'static str, Feature, Option<u64>)> = Vec::new();
+        // The rows offered only because their services are an older build's:
+        // said as a refresh, not an install.
+        let mut refreshing: Vec<&'static str> = Vec::new();
+        let mut router_said = false;
         // The driver, read once for the whole command and only if some plan
         // would install the engine.
         let nvidia = std::cell::OnceCell::new();
@@ -276,6 +300,22 @@ pub(super) async fn enable_unwired(
         for f in &features {
             let mut p = sidecar::plan(*f, &m, &machine, &hub, false)?;
             install::price(&mut p, chat_here, read_nvidia);
+            if reinstall {
+                for s in p.sidecars.iter_mut().filter(|s| {
+                    matches!(s.state, SidecarState::Installed)
+                        && mecha_core::user_service::rev(s.id).is_some()
+                }) {
+                    s.stale = true;
+                    // Never `enable`'s to rewrite (F13): said, not dropped.
+                    if s.id == mecha_core::router_unit::ID && chat_here && !router_said {
+                        println!(
+                            "The chat router is not reinstalled here: `mecha setup chat` \
+                             refreshes it."
+                        );
+                        router_said = true;
+                    }
+                }
+            }
             if let Some(s) = p.sidecars.iter().find(|s| s.id == comfy::ID) {
                 comfy_found = Some((s.label, s.state.clone()));
             }
@@ -300,6 +340,12 @@ pub(super) async fn enable_unwired(
                 }
                 if !todo.iter().any(|(id, ..)| *id == s.id) {
                     todo.push((s.id, s.label, p.feature, s.bytes));
+                    if s.stale
+                        && matches!(s.state, SidecarState::Installed)
+                        && !install::model_gone(&p, s.id)
+                    {
+                        refreshing.push(s.id);
+                    }
                 }
             }
         }
@@ -455,6 +501,9 @@ pub(super) async fn enable_unwired(
                 fetch_turbo = None;
             }
         }
+        if reinstall && todo.is_empty() {
+            println!("Nothing to reinstall here for {}.", ids.join(" "));
+        }
         let turbo_only = matches!(fetch_turbo, Some((.., true))) && todo.len() == 1;
         if !todo.is_empty() {
             let names: Vec<&str> = todo.iter().map(|(_, label, ..)| *label).collect();
@@ -466,16 +515,29 @@ pub(super) async fn enable_unwired(
                     ids.join(" ")
                 );
             }
-            println!(
-                "Enabling {} installs, from pinned sources — into ~/.mecha/sidecars/, and, for a \
-                 server, its {}, started once to check them:",
-                ids.join(" "),
-                if cfg!(target_os = "macos") {
-                    "launchd agents"
-                } else {
-                    "systemd user units"
-                }
-            );
+            let services = if cfg!(target_os = "macos") {
+                "launchd agents"
+            } else {
+                "systemd user units"
+            };
+            // Every row a refresh: nothing is installed, so the header does
+            // not say so (review of #691, pass 5).
+            // Asked of what is left to do: a row dropped above (not offered
+            // here, someone else's) is no longer counted (review of #691,
+            // pass 6).
+            if todo.iter().all(|(id, ..)| refreshing.contains(id)) {
+                println!(
+                    "Enabling {} refreshes what an older mecha installed — its {services}, \
+                     rewritten and restarted, and started once to check them:",
+                    ids.join(" ")
+                );
+            } else {
+                println!(
+                    "Enabling {} installs, from pinned sources — into ~/.mecha/sidecars/, and, \
+                     for a server, its {services}, started once to check them:",
+                    ids.join(" ")
+                );
+            }
             let turbo_line = match &fetch_turbo {
                 Some((why, download, reinstall)) => format!(
                     ", {} the turbo model ({}; {why})",
@@ -495,7 +557,24 @@ pub(super) async fn enable_unwired(
             for (id, label, _, bytes) in &todo {
                 // A build here is said as one: its download is the source,
                 // and the compile is the wait (review of #643).
-                let built = if *id == "llama" && built_here {
+                let built = if refreshing.contains(id) {
+                    // Its build and models are current: only the services
+                    // are written again.
+                    let why = if reinstall {
+                        "reinstalled, as asked"
+                    } else {
+                        "its service is from an older mecha"
+                    };
+                    if *id == comfy::ID && !turbo_line.is_empty() {
+                        println!("  {label} — {why}: rewritten and restarted{turbo_line}");
+                    } else {
+                        println!(
+                            "  {label} — {why}: rewritten and restarted; nothing current is \
+                             downloaded again"
+                        );
+                    }
+                    continue;
+                } else if *id == "llama" && built_here {
                     ", then built here — no release fits this machine; minutes for the CPU, \
                      longer for CUDA"
                 } else if *id == mecha_core::speech_unit::ID {
@@ -553,7 +632,11 @@ pub(super) async fn enable_unwired(
                 return Ok(Vec::new());
             }
             for (id, label, ..) in todo.iter().filter(|_| go) {
-                println!("Installing {label}…");
+                if refreshing.contains(id) {
+                    println!("Refreshing {label}…");
+                } else {
+                    println!("Installing {label}…");
+                }
                 let turbo = *id == comfy::ID && fetch_turbo.is_some();
                 install::install(id, &m, &machine, &hub, turbo, &mut |s| println!("  {s}"))
                     .await
@@ -564,6 +647,11 @@ pub(super) async fn enable_unwired(
                     })?;
             }
         }
+    }
+    // Nothing here could be installed at all: `--reinstall` still says it
+    // found nothing (review of #691, pass 5).
+    if reinstall && !can_install {
+        println!("Nothing to reinstall here for {}.", ids.join(" "));
     }
     set(ids, true)?;
     if features.contains(&Feature::Image) {
@@ -1317,6 +1405,23 @@ fn render_plan(p: &sidecar::Plan, chat_here: bool) -> String {
         let not_needed = mecha_core::install::not_needed(s.id, p.feature, chat_here);
         let state = match &s.state {
             SidecarState::Provided { by } => format!("provided — {by}; left alone"),
+            // Services an older build wrote: the router's are `mecha setup
+            // chat`'s to rewrite (F13), every other's `enable`'s.
+            // Only where chat runs here, as `mecha setup` asks it: a machine
+            // chatting through a hosted provider needs no router refreshed
+            // (review of #691, pass 4).
+            SidecarState::Installed
+                if s.stale && s.id == mecha_core::router_unit::ID && chat_here =>
+            {
+                "installed by mecha; its service is out of date — `mecha setup chat` refreshes \
+                 it (choosing the model it serves now downloads nothing)"
+                    .to_string()
+            }
+            SidecarState::Installed if s.stale && not_needed.is_none() => format!(
+                "installed by mecha; its service is out of date — `mecha features enable {}` \
+                 refreshes it (no download)",
+                p.feature.id()
+            ),
             SidecarState::Installed => "installed by mecha".to_string(),
             // An unfinished install the machine no longer needs is not
             // resumed by `enable`, so the plan does not say it is.
@@ -1802,11 +1907,11 @@ mod tests {
         // await.
         let rt = tokio::runtime::Runtime::new().unwrap();
         let err = rt
-            .block_on(enable(&["graph".into()], false, true, false))
+            .block_on(enable(&["graph".into()], false, true, false, false))
             .unwrap_err();
         assert!(format!("{err:#}").contains("image model's"), "{err:#}");
         let err = rt
-            .block_on(enable(&["image".into()], true, true, false))
+            .block_on(enable(&["image".into()], true, true, false, false))
             .unwrap_err();
         assert!(format!("{err:#}").contains("--no-install"), "{err:#}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "# mine\n");
@@ -1972,6 +2077,7 @@ mod tests {
                 state: SidecarState::Missing { step: "7c" },
                 bytes: None,
                 not_offered: None,
+                stale: false,
             }],
             // The chat model's files are named but not counted: the plan's
             // total is what `enable` fetches (review of #627).
@@ -1999,6 +2105,45 @@ mod tests {
         assert!(!elsewhere.contains("setup chat"), "{elsewhere}");
     }
 
+    /// A stale install says what refreshes it — `enable` for a feature's
+    /// server, `setup chat` for the router — and is never nothing to do.
+    #[test]
+    fn the_plan_says_what_refreshes_a_stale_service() {
+        use mecha_core::sidecar::{Plan, PlannedSidecar, SidecarState};
+        let row = |id: &'static str| PlannedSidecar {
+            id,
+            label: "a server",
+            state: SidecarState::Installed,
+            bytes: None,
+            not_offered: None,
+            stale: true,
+        };
+        let p = Plan {
+            feature: Feature::Image,
+            sidecars: vec![row(mecha_core::comfyui_unit::ID)],
+            files: vec![],
+            download_bytes: 0,
+            nothing_to_do: false,
+        };
+        let text = render_plan(&p, true);
+        assert!(
+            text.contains("out of date — `mecha features enable image` refreshes it"),
+            "{text}"
+        );
+        let p = Plan {
+            feature: Feature::Messages,
+            sidecars: vec![row("router")],
+            ..p
+        };
+        let text = render_plan(&p, true);
+        assert!(text.contains("`mecha setup chat` refreshes it"), "{text}");
+        assert!(!text.contains("features enable"), "{text}");
+        // Chatting elsewhere, the router is not this machine's to refresh.
+        let text = render_plan(&p, false);
+        assert!(!text.contains("setup chat"), "{text}");
+        assert!(!text.contains("out of date"), "{text}");
+    }
+
     #[test]
     fn the_plan_says_each_state_and_what_to_do() {
         use mecha_core::sidecar::{FileState, Plan, PlannedFile, PlannedSidecar, SidecarState};
@@ -2013,6 +2158,7 @@ mod tests {
                     },
                     bytes: None,
                     not_offered: None,
+                    stale: false,
                 },
                 PlannedSidecar {
                     // Every real sidecar has an installer since 7f: one
@@ -2022,6 +2168,7 @@ mod tests {
                     state: SidecarState::Missing { step: "7z" },
                     bytes: None,
                     not_offered: None,
+                    stale: false,
                 },
                 PlannedSidecar {
                     id: "layout",
@@ -2031,6 +2178,7 @@ mod tests {
                     },
                     bytes: None,
                     not_offered: None,
+                    stale: false,
                 },
             ],
             files: vec![

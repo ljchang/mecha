@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Services an older mecha installed are refreshed.** Every unit and launchd
+  agent mecha writes now carries a revision; `mecha features enable` and
+  `mecha setup` find one an older build wrote and offer to rewrite and
+  restart it, downloading nothing current, and `mecha features plan` says
+  which command does. `mecha features enable <id> --reinstall` does the same
+  on request. Before this, an existing install kept its old services through
+  every upgrade — on a Mac, ComfyUI never moved behind the on-demand proxy.
+  The chat router's refresh is `mecha setup chat`'s.
 - **Models can attach pictures to a library character.** Ask a chat to save a
   picture to a character as a full body, a face, or a labelled detail such as
   a tattoo. A chat that has read nothing from outside attaches it at once,
@@ -88,6 +96,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The model no longer redraws pictures it has not seen.** It cannot see
+  what it draws, yet it judged pictures wrong and drew them again on its own
+  — once over a picture that was right. The image tool now tells it the
+  owner sees the picture and says what to change.
 - **A `forbid` rule sees through macOS's command wrappers.** `sandbox-exec`
   runs the command given after it, as do `arch` and `caffeinate` when one
   follows them, so an approval rule now judges that command, as it already
