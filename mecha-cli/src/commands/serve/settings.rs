@@ -899,7 +899,13 @@ pub async fn library_voice_sample(
         return (StatusCode::BAD_GATEWAY, "reading the sample\n").into_response();
     };
     if status.is_success() {
-        return ([("content-type", "audio/wav")], bytes.to_vec()).into_response();
+        // A locked voice's audio, for an unlock, must not linger in a cache
+        // any more than its name on the list does (`speak`, #385's portrait).
+        return (
+            [("content-type", "audio/wav"), ("cache-control", "no-store")],
+            bytes.to_vec(),
+        )
+            .into_response();
     }
     // The worker's own refusal carries its reason in `error`; a 404 without
     // one is the route missing — a worker older than previews (review of

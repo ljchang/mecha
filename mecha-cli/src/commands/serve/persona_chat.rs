@@ -5095,17 +5095,17 @@ pub async fn list(State(state): Web, Query(q): Query<UnlockQuery>) -> axum::resp
     }
 }
 
-/// The name of a persona's linked character when the lock hides it from
-/// this viewer. Fails closed: on a locked page the name is shown only for an
-/// entry that loads *and* is unlocked — `Library::load` drops a damaged
-/// entry, and "could not read it" must not read as "not locked" (#430's
-/// review found the same shape there).
 /// The persona's voice when it is a locked one this viewer may not see —
 /// or any voice at all to a locked page when the locks could not be read.
 fn hidden_voice<'a>(p: &'a Persona, locks: &super::settings::VoiceLocks) -> Option<&'a str> {
     p.settings.voice.as_deref().filter(|v| !locks.shows(v))
 }
 
+/// The name of a persona's linked character when the lock hides it from
+/// this viewer. Fails closed: on a locked page the name is shown only for an
+/// entry that loads *and* is unlocked — `Library::load` drops a damaged
+/// entry, and "could not read it" must not read as "not locked" (#430's
+/// review found the same shape there).
 fn hidden_character<'a>(
     p: &'a Persona,
     lib: &mecha_core::imagelib::Library,
@@ -12696,7 +12696,9 @@ mod tests {
         let unlocked = voice_list(&state, Some(token.clone())).await;
         assert_eq!(voice_names(&unlocked), ["ada", "solo"]);
         assert_eq!(unlocked["voices"][1]["locked"], true);
-        assert_eq!(sample(Some(token.clone())).await.status(), StatusCode::OK);
+        let played = sample(Some(token.clone())).await;
+        assert_eq!(played.status(), StatusCode::OK);
+        assert_eq!(played.headers()["cache-control"], "no-store");
         assert_eq!(
             form_voices(&state, None, Some(&token)).await.names,
             ["ada", "solo"]

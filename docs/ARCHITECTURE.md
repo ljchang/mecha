@@ -2006,8 +2006,11 @@ module.
   names no voice to a locked page when the flags cannot be read. A visible
   persona's locked `voice` line is hidden, never cut (`persona::hide_keys` /
   `restore_keys`, the same pair as a locked portrait). The lock never
-  withholds: the worker, `call_voice` and Listen are untouched. A clip saved
-  locked is flagged before it lands; a deleted one takes its flag with it.
+  withholds: the worker, `call_voice` and Listen are untouched — so
+  `/api/speak` still speaks a locked voice the device names, where the
+  library's sample 404s; that is the lock's stated limit, not a gap. A clip
+  saved locked is flagged before it lands; a deleted one takes its flag with
+  it.
 - **The assistant's voice picker reads the voice library** (Settings → Voice,
   2026-10-15): `/api/library/voices` with no unlock, so it offers exactly the
   unlocked voices, read live. It once read the worker's list cached in the

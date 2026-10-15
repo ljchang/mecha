@@ -1529,7 +1529,10 @@ transcript, and `GET /v1/voices` lists the voices it can speak.
   speaks in it. Settings → Voice now offers the library's unlocked voices,
   read live, instead of the worker's list as the last call left it cached on
   the device. The assistant's choice stays per device (voice-core's
-  preference), as it was.
+  preference), as it was. The library's sample answers 404 for a locked
+  voice; `/api/speak` (Listen) does not, by design — it speaks in whatever
+  voice the device's preference names, which is how a choice made before a
+  lock keeps speaking (review of #701).
 - **Voices come from anywhere** (R13, ruled): a clip the owner **records
   live** on the page — the voice page already captures the microphone — or a
   **prerecorded sample** uploaded in any common audio format, converted to
