@@ -632,6 +632,22 @@ pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
             Some(command) => items.push((*f, wiring, command)),
             // Where `enable` is the installer, the feature is said to be not
             // working rather than left as a footnote under "enabled" (§13).
+            // A copy from another build was passed over: said as that, not
+            // as "not installed" — it is installed, and an existing entry may
+            // still run it (review of #699).
+            None if wiring.install.starts_with("mecha features enable")
+                && mecha_core::onboarding::find_program(wiring.program)
+                    .is_some_and(|p| mecha_core::sidecar::stale_copy(wiring.program, &p)) =>
+            {
+                println!(
+                    "{} is switched on, but the `{}` on your PATH is another build's and the \
+                     matching one is not installed, so no [[mcp]] entry was written and none \
+                     was changed — `{}` builds it",
+                    f.id(),
+                    wiring.program,
+                    wiring.install
+                )
+            }
             None if wiring.install.starts_with("mecha features enable") => println!(
                 "{} is switched on, but not working: `{}` is not installed, so no [[mcp]] entry \
                  was written — `{}` installs it",
@@ -785,6 +801,26 @@ pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
 /// The program an `[[mcp]]` entry runs, by its absolute path: one on the
 /// PATH, unless it is one of mecha's own servers from another build (§15);
 /// else the build mecha installed into its own tree, which no PATH names.
+/// The program a remedy names, as setup runs it: for one of mecha's own
+/// servers, the build its `[[mcp]]` entry would run — so a sign-in after
+/// `enable` is the matching server's, never a stale copy on the PATH whose
+/// `auth` takes other arguments (review of #699). Anything else as named.
+pub(super) fn remedy_program(program: &str) -> std::ffi::OsString {
+    let own = mecha_core::mail_mcp::PROGRAMS.contains(&program)
+        || program == mecha_core::graph_mcp::PROGRAM;
+    if !own {
+        return program.into();
+    }
+    let home = mecha_core::work::mecha_home().ok();
+    mcp_command(
+        program,
+        mecha_core::onboarding::find_program(program),
+        home.as_deref(),
+    )
+    .map(Into::into)
+    .unwrap_or_else(|| program.into())
+}
+
 fn mcp_command(
     program: &str,
     on_path: Option<std::path::PathBuf>,

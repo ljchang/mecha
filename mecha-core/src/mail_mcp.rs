@@ -92,6 +92,8 @@ fn fits_with(
 /// or its published version.
 fn cargo_args(source: &Source, root: &Path) -> Vec<String> {
     let mut args: Vec<String> = match source {
+        // `Local` never gets here — `fits` refuses it — and builds as git
+        // would if it did.
         Source::Git(sha) | Source::Local(sha) => vec![
             "install".into(),
             "--git".into(),

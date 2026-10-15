@@ -599,14 +599,16 @@ impl Facts {
         use crate::onboarding::{
             count_accounts, docs_store_dir, find_program, mail_store_dir, slack_linked,
         };
+        let current_on_path = |program: &str| {
+            find_program(program).is_some_and(|p| !crate::sidecar::stale_copy(program, &p))
+        };
         Facts {
-            // mecha's own build, off the PATH, counts too (§15).
-            has_mail_binary: find_program("mecha-mail").is_some()
-                || crate::mail_mcp::installed(home),
-            has_docs_binary: find_program("mecha-docs").is_some()
-                || crate::mail_mcp::installed(home),
-            // On the PATH, or mecha's own build in its tree (`graph_mcp`).
-            has_graph_binary: find_program("mecha-graph-mcp").is_some()
+            // On the PATH — unless a copy from another build, which is not
+            // the feature's server (§15; review of #699) — or mecha's own
+            // build in its tree.
+            has_mail_binary: current_on_path("mecha-mail") || crate::mail_mcp::installed(home),
+            has_docs_binary: current_on_path("mecha-docs") || crate::mail_mcp::installed(home),
+            has_graph_binary: current_on_path("mecha-graph-mcp")
                 || crate::graph_mcp::installed(home),
             has_factory_binary: find_program("factory-publish").is_some(),
             mail_accounts: mail_store_dir().and_then(|d| count_accounts(&d)),

@@ -45,8 +45,12 @@ fn main() {
         // pushed, and a `cargo install --git --rev` of it would fail minutes
         // in. So a clone's commit is `git:` only when a remote branch holds
         // it, else `local:` (review of #699).
-        let fetched = dir.components().any(|c| c.as_os_str() == "checkouts")
-            && dir.components().any(|c| c.as_os_str() == "git");
+        // Cargo's own checkout: `<CARGO_HOME>/git/checkouts/…`, the two
+        // components adjacent.
+        let parts: Vec<_> = dir.components().map(|c| c.as_os_str()).collect();
+        let fetched = parts
+            .windows(2)
+            .any(|w| w[0] == "git" && w[1] == "checkouts");
         let repo = std::env::var("CARGO_PKG_REPOSITORY").unwrap_or_default();
         // A branch of mecha's own repository holds it: a remote-tracking
         // branch (not a pull request's ref) whose remote is that repository.
