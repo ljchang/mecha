@@ -8481,7 +8481,9 @@ mod tests {
             vec![Arc::new(Later(Arc::clone(&go)))],
             PermissionMode::Allow,
         );
-        let mut cx = agent.context().as_ref().clone();
+        // A run with its own budget, as a spoken persona turn has: the
+        // working request keeps it and the closing one is given none.
+        let mut cx = agent.context().as_ref().clone().with_think_budget(1024);
         cx.jobs = Some(queue.sink("chat", 0));
         cx.end_after_deferral = true;
         let mut convo = Conversation::user("draw the harbour");
@@ -8493,7 +8495,7 @@ mod tests {
         assert!(!seen[1].tools.is_empty(), "the tools stay listed");
         // The working request keeps the run's budget; the closing one
         // is given none (2026-10-15).
-        assert_eq!(seen[0].think_budget, cx.think_budget);
+        assert_eq!(seen[0].think_budget, Some(1024));
         assert_eq!(seen[1].think_budget, Some(0));
         assert!(tail_text(&seen[1]).ends_with(PICTURE_ON_ITS_WAY));
         assert_eq!(outcome.text, PICTURE_ON_ITS_WAY_REPLY);
