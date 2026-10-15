@@ -31,9 +31,10 @@ called `mail`, writes the one below: the program by its absolute path, its
 results untrusted, and its sends in an `[outbox]` when you have none. It
 never edits an entry or an `[outbox]` you wrote — it names what yours lacks —
 and it writes no `[outbox]` where a `[[rule]]` of yours names one of those
-sends, saying which. Installing the binary (`cargo install mecha-mail
---locked`) and [signing in](#signing-in) stay yours; `mecha setup` runs the
-sign-in on its yes.
+sends, saying which. It builds the servers too, from the same source as
+your `mecha` (a copy on your `PATH` from another build is passed over, and an
+entry running one is pointed at the matching build); [signing
+in](#signing-in) stays yours, and `mecha setup` runs the sign-in on its yes.
 
 ```toml
 [[mcp]]
