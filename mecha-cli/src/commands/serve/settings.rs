@@ -697,8 +697,15 @@ impl VoiceLocks {
         self.unlocked
     }
 
-    pub(super) fn error(&self) -> Option<&str> {
-        self.locked.as_ref().err().map(String::as_str)
+    /// Why the flags could not be read, as a page may be told it: a fixed
+    /// sentence. The parser's own error quotes the offending line, and in
+    /// `voices.toml` that line is the locked names (review of #701, pass 5);
+    /// the detail goes to the log.
+    pub(super) fn error(&self) -> Option<&'static str> {
+        self.locked.as_ref().err().map(|why| {
+            tracing::warn!("the voice locks could not be read: {why}");
+            "the voice locks file could not be read"
+        })
     }
 }
 
@@ -1429,6 +1436,28 @@ pub async fn voice_clone(
     // Whether this request added the flag, decided inside the store's own
     // lock: two saves of one name must not both think they did, or the
     // loser's rollback would unhide the winner's (review of #701).
+    // A flag that outlived its voice (a delete whose clear failed, a server
+    // voice that left the worker's list) must not hide a clip saved with the
+    // box unticked. Cleared only when no voice of that name exists, and only
+    // when the worker's list could be read: an outage must never unhide a
+    // locked server voice (review of #701, pass 5).
+    if !q.locked {
+        let listed = match &state.offer_target {
+            None => Some(Vec::new()),
+            Some(target) => super::runner_voices(target).await.ok(),
+        };
+        if listed.is_some_and(|l| !l.contains(&q.name)) {
+            if let Err(e) =
+                mecha_core::imagelib::set_voice_locked(&state.library.dir, &q.name, false)
+            {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("the voice locks could not be checked, so it was not saved: {e:#}\n"),
+                )
+                    .into_response();
+            }
+        }
+    }
     let lock_added = if q.locked {
         match mecha_core::imagelib::set_voice_locked(&state.library.dir, &q.name, true) {
             Ok(added) => added,
