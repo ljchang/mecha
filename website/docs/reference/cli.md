@@ -1667,7 +1667,7 @@ set a variable it does not name.
 
 It also has **a step for every optional feature** — the web app, Slack, mail,
 docs, the knowledge graph, web search, PDF extraction, image generation,
-personas, voice, incognito chat, the front door and messages — read from the
+personas, voice, the front door and messages — read from the
 same registry as [`features`](#features), in that order, so a feature's
 dependency is offered before it:
 
@@ -1939,9 +1939,11 @@ alone still switches images on.
 **`enable`** writes `true` for each id, **`disable`** writes `false`, in place:
 comments, the order of the file and any key a newer build added are kept, and
 the table is created when it is missing. `enable` refuses a part (`ocr`: switch
-on `documents` and set `[documents] ocr`), and a feature whose dependency is
-not on, printing the command that switches both (`mecha features enable web
-incognito`). `disable` says what it leaves blocked. A service that is already
+on `documents` and set `[documents] ocr`; `incognito`: part of the web app,
+offered wherever the chat model runs on this machine), and a feature whose
+dependency is not on, printing the command that switches both. `disable` says
+what it leaves blocked — `disable web` names voice's dictation, calls and
+cloning, which live in the web app. A service that is already
 running reads the change when it restarts. Beyond `[image]`, `enable` writes no
 settings: the `[[mcp]]` entry mail, docs and the graph need, a `[[search]]`
 backend and a `[documents]` table stay yours, and until they are there the

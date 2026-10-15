@@ -81,6 +81,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a Mac; `[image] unload_after_secs` still unloads. `mecha setup engine
   --adopt` is still Linux-only.
 
+### Changed
+
+- **Incognito chat is part of the web app, not a feature of its own.**
+  `mecha setup` no longer asks about it separately: it is on wherever the
+  web app is on and the chat model runs on this machine. An `incognito`
+  line already in `[features]` is no longer read, and `mecha features` says
+  so. With a hosted
+  chat model the incognito toggle is now hidden rather than shown with why it
+  cannot be used.
+- **The front door is described as what it is:** your outward-facing
+  surface through mecha-factory — requests arriving typed and quarantined,
+  and what mecha publishes getting a lasting link.
+
 ### Fixed
 
 - **The model no longer redraws pictures it has not seen.** It cannot see
