@@ -705,9 +705,11 @@ impl VoiceLocks {
 /// Whether `name` is a voice this serve can vouch for: a clip in the voices
 /// directory (the default's included) or one the worker lists. A worker that
 /// cannot be asked vouches for nothing, so in an outage a server voice reads
-/// as missing — the same answer a locked one gets, which is the point: no
-/// route that acts on a voice by name may answer a locked one differently
-/// from one that does not exist (review of #701).
+/// as missing — the same answer a locked one gets, which is the point: the
+/// lock and sample routes answer a locked voice exactly as one that does not
+/// exist (review of #701). Two routes knowingly do not, and say why where
+/// they are: a clone's 409 on a taken name (as an entry's is) and
+/// `/api/speak`, which the lock never withholds.
 async fn voice_exists(state: &super::WebState, name: &str) -> bool {
     let stem = !name.is_empty()
         && name.len() <= 64
