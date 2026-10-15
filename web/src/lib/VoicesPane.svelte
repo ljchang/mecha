@@ -15,7 +15,10 @@
   import VoiceRecorder from './VoiceRecorder.svelte';
   import { voicesUrl, sampleUrl, voiceLine } from './library.js';
 
-  let { token = null, oncount = () => {} } = $props();
+  // `canLock`: this page can unlock again. With the image library off its
+  // unlock toggle is not shown, and a Lock tapped there could never be
+  // taken back from the page (review of #701, pass 4).
+  let { token = null, canLock = false, oncount = () => {} } = $props();
 
   let data = $state(null);
   let error = $state(null);
@@ -148,7 +151,8 @@
         <span class="vname">{v.name}{#if v.locked}<span class="lockmark"> · locked</span>{/if}</span>
         <span class="readingline">{voiceLine(v, data.used_by_partial, !!data.cloned_error)}</span>
       </div>
-      {#if v.locked !== null && v.locked !== undefined}
+      <!-- Not on a name only a persona gives: it is no voice to lock. -->
+      {#if canLock && v.locked !== null && v.locked !== undefined && (v.listed !== false || v.cloned)}
         <button
           class="abtn tiny"
           title={v.locked ? 'show it while browsing' : 'hide it while browsing; calls and personas still speak in it'}
