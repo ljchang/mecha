@@ -33,7 +33,7 @@ use std::path::PathBuf;
     name = "mecha",
     // The source beside the number: a git build and the release share one
     // (the owner's fresh Mac, 2026-10-15: two builds both read 0.1.24).
-    version = mecha_core::own_build::version_line(),
+    version = mecha_core::own_build::version_line(env!("CARGO_PKG_VERSION")),
     about = "An agent harness for local models: one loop, any model, native and MCP tools.",
     disable_help_subcommand = true
 )]

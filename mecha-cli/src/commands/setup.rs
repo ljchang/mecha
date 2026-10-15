@@ -695,7 +695,9 @@ fn run(remedy: &Remedy) -> Result<bool> {
         .argv
         .split_first()
         .context("a remedy with an empty argv")?;
-    let status = std::process::Command::new(program).args(rest).status();
+    let status = std::process::Command::new(super::features::remedy_program(program))
+        .args(rest)
+        .status();
     Ok(match status {
         Ok(s) if s.success() => {
             println!("done");

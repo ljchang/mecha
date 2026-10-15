@@ -69,11 +69,13 @@ pub fn this() -> Option<Source> {
 /// `mecha --version`'s line: the version, and the source when known —
 /// `0.1.24 (git 7d7f0fa05)` — since a git build and the release it precedes
 /// carry one number.
-pub fn version_line() -> &'static str {
+/// `version` is the binary's own (`mecha-cli`'s), never this crate's: the two
+/// agree only while the workspace keeps one version (review of #699).
+pub fn version_line(version: &'static str) -> &'static str {
     static LINE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     LINE.get_or_init(|| match this() {
-        Some(source) => format!("{} ({})", env!("CARGO_PKG_VERSION"), source.short()),
-        None => env!("CARGO_PKG_VERSION").to_string(),
+        Some(source) => format!("{version} ({})", source.short()),
+        None => version.to_string(),
     })
 }
 
