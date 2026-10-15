@@ -70,6 +70,16 @@ fn fits_with(
          cannot be chosen — `cargo install mecha-mail --locked` installs one by hand"
             .to_string()
     })?;
+    // A commit no remote holds cannot be fetched: the matching servers are
+    // this checkout's to build, and a build of one's own is the owner's
+    // (review of #699).
+    if let Source::Local(sha) = &source {
+        return Err(format!(
+            "this mecha was built from commit {}, which no remote branch holds yet — build the \
+             matching servers from the same checkout: `cargo install --path mecha-mail --locked`",
+            &sha[..9]
+        ));
+    }
     let cargo = find("cargo").ok_or_else(|| {
         "it is built from mecha's own source with cargo, which is not installed (rustup.rs \
          installs it)"
@@ -82,7 +92,7 @@ fn fits_with(
 /// or its published version.
 fn cargo_args(source: &Source, root: &Path) -> Vec<String> {
     let mut args: Vec<String> = match source {
-        Source::Git(sha) => vec![
+        Source::Git(sha) | Source::Local(sha) => vec![
             "install".into(),
             "--git".into(),
             REPO.into(),
@@ -218,6 +228,9 @@ mod tests {
         assert!(fits_with(cargo, None)
             .unwrap_err()
             .contains("cannot tell which source"));
+        assert!(fits_with(cargo, Some(Source::Local(SHA.into())))
+            .unwrap_err()
+            .contains("cargo install --path mecha-mail"));
     }
 
     /// The tree counts as built only when cargo recorded both servers from

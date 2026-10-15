@@ -27,8 +27,11 @@ use std::path::Path;
 /// Where a build came from (`build.rs`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
-    /// A git checkout at this commit.
+    /// A git checkout at this commit, which its remote has.
     Git(String),
+    /// A clone's commit no remote branch holds: matching servers come only
+    /// from this checkout (`build.rs`).
+    Local(String),
     /// The published crates at this version.
     Registry(String),
 }
@@ -37,9 +40,8 @@ impl Source {
     /// Read from `build.rs`'s `MECHA_BUILD_SOURCE`.
     pub fn parse(text: &str) -> Option<Source> {
         match text.split_once(':')? {
-            ("git", sha) if sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit()) => {
-                Some(Source::Git(sha.to_string()))
-            }
+            ("git", sha) if is_sha(sha) => Some(Source::Git(sha.to_string())),
+            ("local", sha) if is_sha(sha) => Some(Source::Local(sha.to_string())),
             ("registry", v) if !v.is_empty() => Some(Source::Registry(v.to_string())),
             _ => None,
         }
@@ -49,9 +51,14 @@ impl Source {
     pub fn short(&self) -> String {
         match self {
             Source::Git(sha) => format!("git {}", &sha[..9]),
+            Source::Local(sha) => format!("git {}, unpushed", &sha[..9]),
             Source::Registry(v) => format!("crates.io {v}"),
         }
     }
+}
+
+fn is_sha(s: &str) -> bool {
+    s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// This build's source, when `build.rs` could tell.
@@ -124,7 +131,9 @@ fn judge(crates2: &str, package: &str, program: &str, want: &Source) -> Copy {
         return Copy::Owners;
     }
     match (source.split_once('#'), want) {
-        (Some((_, sha)), Source::Git(wanted)) if source.starts_with("git+") => {
+        (Some((_, sha)), Source::Git(wanted) | Source::Local(wanted))
+            if source.starts_with("git+") =>
+        {
             if sha == wanted {
                 Copy::Current
             } else {
@@ -159,7 +168,7 @@ fn short(sha: &str) -> &str {
 
 fn describe(want: &Source) -> String {
     match want {
-        Source::Git(sha) => format!("commit {}", short(sha)),
+        Source::Git(sha) | Source::Local(sha) => format!("commit {}", short(sha)),
         Source::Registry(v) => format!("the published {v}"),
     }
 }
@@ -186,6 +195,10 @@ mod tests {
             Some(Source::Registry("0.1.24".into()))
         );
         assert_eq!(Source::parse("git:7d7f0fa05"), None, "not a full commit");
+        assert_eq!(
+            Source::parse(&format!("local:{SHA}")),
+            Some(Source::Local(SHA.into()))
+        );
         assert_eq!(Source::parse("registry:"), None);
         assert_eq!(Source::parse("path:/x"), None);
         assert_eq!(Source::Git(SHA.into()).short(), "git 7d7f0fa05");

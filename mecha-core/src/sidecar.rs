@@ -232,7 +232,7 @@ pub const SIDECARS: &[Sidecar] = &[
 /// for a sidecar that is one (§15): the graph's server at its pin, the mail
 /// servers at this mecha's own source. `None` for every other sidecar, and
 /// for the mail servers when this build cannot tell its source.
-pub fn own_build(id: &str) -> Option<(&'static str, crate::own_build::Source)> {
+pub fn own_server(id: &str) -> Option<(&'static str, crate::own_build::Source)> {
     match id {
         crate::graph_mcp::ID => Some((
             crate::graph_mcp::PROGRAM,
@@ -253,7 +253,7 @@ pub fn stale_copy(program: &str, bin: &Path) -> bool {
     } else {
         return false;
     };
-    own_build(id).is_some_and(|(package, want)| {
+    own_server(id).is_some_and(|(package, want)| {
         matches!(
             crate::own_build::copy_of(bin, package, &want),
             crate::own_build::Copy::Stale(_)
@@ -748,7 +748,7 @@ pub fn plan(
                             .as_deref()
                             .is_some_and(|p| p.starts_with(&sidecars_dir) || manifest.wrote(p));
                         if !ours {
-                            if let (Some((package, want)), Some(p)) = (own_build(s.id), &path) {
+                            if let (Some((package, want)), Some(p)) = (own_server(s.id), &path) {
                                 if let crate::own_build::Copy::Stale(why) =
                                     crate::own_build::copy_of(p, package, &want)
                                 {
@@ -804,6 +804,15 @@ pub fn plan(
         let state = match state {
             SidecarState::Installed
                 if s.id == crate::graph_mcp::ID && !crate::graph_mcp::installed(&m.mecha_home) =>
+            {
+                SidecarState::Incomplete
+            }
+            // The mail servers likewise, against this mecha's source: every
+            // upgrade of mecha moves it, so a tree built for the last one
+            // reads unfinished and `enable` builds the matching one (review
+            // of #699).
+            SidecarState::Installed
+                if s.id == crate::mail_mcp::ID && !crate::mail_mcp::installed(&m.mecha_home) =>
             {
                 SidecarState::Incomplete
             }
@@ -1549,6 +1558,30 @@ mod tests {
         );
         record(REV);
         assert_eq!(state(&m), SidecarState::Installed);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// mecha's mail servers, recorded as finished, read unfinished while the
+    /// tree is not this mecha's build — so an upgrade of mecha is offered the
+    /// matching servers rather than reading installed over the last ones
+    /// (review of #699).
+    #[test]
+    fn a_mail_tree_from_another_build_reads_unfinished() {
+        let root = scratch();
+        let m = machinery(&root);
+        let tree = crate::mail_mcp::root(&m.mecha_home);
+        std::fs::create_dir_all(tree.join("bin")).unwrap();
+        Manifest::begin(&m.mecha_home, crate::mail_mcp::ID).unwrap();
+        Manifest::record(&m.mecha_home, crate::mail_mcp::ID, &tree).unwrap();
+        Manifest::finish(&m.mecha_home, crate::mail_mcp::ID).unwrap();
+        let state = plan(Feature::Mail, &m, &GB10, &root.join("hub"), false)
+            .unwrap()
+            .sidecars
+            .into_iter()
+            .find(|s| s.id == crate::mail_mcp::ID)
+            .expect("mail's plan names its servers")
+            .state;
+        assert_eq!(state, SidecarState::Incomplete);
         let _ = std::fs::remove_dir_all(&root);
     }
 

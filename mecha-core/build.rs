@@ -2,8 +2,10 @@
 //! install its own servers from the same source (`own_build.rs`) and say
 //! which build it is (`mecha --version`):
 //!
-//! - `git:<sha>` — built from a git checkout: a `cargo install --git`, or a
-//!   build in a clone. The commit is `git rev-parse HEAD`.
+//! - `git:<sha>` — built from a git checkout whose commit its remote has: a
+//!   `cargo install --git`, or a clone whose HEAD a remote branch contains.
+//! - `local:<sha>` — a clone's commit no remote branch holds yet: the
+//!   matching servers can only come from this checkout.
 //! - `registry:<version>` — built from the published crate, which carries no
 //!   `.git` but `.cargo_vcs_info.json` beside its manifest; the version is
 //!   this package's.
@@ -36,17 +38,28 @@ fn main() {
             .filter(|s| !s.is_empty())
     };
     if let Some(sha) = git(&["rev-parse", "HEAD"]).filter(|s| s.len() == 40) {
-        println!("cargo:rustc-env=MECHA_BUILD_SOURCE=git:{sha}");
+        // A commit cargo fetched (`cargo install --git`, under its own
+        // checkouts) is one its remote has; a local clone's HEAD may not be
+        // pushed, and a `cargo install --git --rev` of it would fail minutes
+        // in. So a clone's commit is `git:` only when a remote branch holds
+        // it, else `local:` (review of #699).
+        let fetched = dir.components().any(|c| c.as_os_str() == "checkouts")
+            && dir.components().any(|c| c.as_os_str() == "git");
+        let pushed =
+            fetched || git(&["branch", "-r", "--contains", "HEAD"]).is_some_and(|b| !b.is_empty());
+        let kind = if pushed { "git" } else { "local" };
+        println!("cargo:rustc-env=MECHA_BUILD_SOURCE={kind}:{sha}");
         // Rebuilt when the checkout moves, not only when a file of this
-        // crate changes: a commit elsewhere in the workspace is a new source.
-        for path in ["HEAD", "packed-refs"] {
-            if let Some(p) = git(&["rev-parse", "--git-path", path]) {
-                println!("cargo:rerun-if-changed={}", dir.join(p).display());
-            }
-        }
+        // crate changes. Only paths that exist: cargo reads a missing one
+        // as changed, and would rebuild every time (review of #699).
+        let mut watch = vec![git(&["rev-parse", "--git-path", "HEAD"])];
+        watch.push(git(&["rev-parse", "--git-path", "packed-refs"]));
         if let Some(head) = git(&["symbolic-ref", "-q", "HEAD"]) {
-            if let Some(p) = git(&["rev-parse", "--git-path", &head]) {
-                println!("cargo:rerun-if-changed={}", dir.join(p).display());
+            watch.push(git(&["rev-parse", "--git-path", &head]));
+        }
+        for p in watch.into_iter().flatten().map(|p| dir.join(p)) {
+            if p.exists() {
+                println!("cargo:rerun-if-changed={}", p.display());
             }
         }
     }
