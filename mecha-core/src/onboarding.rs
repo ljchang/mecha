@@ -163,6 +163,14 @@ pub struct Facts {
     /// before the `--json` return**, so the scriptable surface carries it
     /// too and stdout stays a parseable array.
     pub declined: std::collections::BTreeSet<String>,
+    /// Services mecha installed that an older build wrote
+    /// (`sidecar::stale_services`), each by its label and the switched-on
+    /// feature whose `enable` refreshes it — `None` for the chat router,
+    /// which `mecha setup chat` refreshes (F13).
+    pub stale_services: Vec<(&'static str, Option<crate::feature::Feature>)>,
+    /// Why what mecha installed could not be read, when it could not: whether
+    /// its services are current is then unknown, never "current".
+    pub services_unknown: Option<String>,
 }
 
 /// A local server nobody has configured yet: where it is, and what it says
@@ -424,6 +432,10 @@ pub fn plan(cfg: &Config, provider_name: &str, facts: &Facts) -> Vec<Step> {
     }
 
     steps.extend(feature_steps(facts));
+    steps.extend(services_step(
+        &facts.stale_services,
+        facts.services_unknown.as_deref(),
+    ));
     steps.extend(timezone_step(cfg));
     steps.push(charter_step(&facts.charter));
 
@@ -887,6 +899,68 @@ fn feature_steps(facts: &Facts) -> Vec<Step> {
             }
         })
         .collect()
+}
+
+/// Services an older mecha wrote, refreshed by running their installs again
+/// (the owner's ruling, 2026-10-14; FEATURES-DESIGN §14): the features'
+/// `enable`, which offers them, or `mecha setup chat` for the router alone.
+/// Wrong rather than missing: a service that predates a fix is the machine
+/// disagreeing with this build, never a feature going unused.
+fn services_step(
+    stale: &[(&str, Option<crate::feature::Feature>)],
+    unknown: Option<&str>,
+) -> Option<Step> {
+    if let Some(why) = unknown {
+        return Some(Step::new(
+            "services",
+            "The services mecha installed are this build's",
+            Status::Unknown,
+            format!(
+                "What mecha installed could not be read ({why}), so whether they are is unknown."
+            ),
+        ));
+    }
+    if stale.is_empty() {
+        return None;
+    }
+    let labels: Vec<&str> = stale.iter().map(|(l, _)| *l).collect();
+    let mut features: Vec<&str> = Vec::new();
+    for f in stale.iter().filter_map(|(_, f)| *f) {
+        if !features.contains(&f.id()) {
+            features.push(f.id());
+        }
+    }
+    let router = stale.iter().any(|(_, f)| f.is_none());
+    let mut detail = format!(
+        "Written by an older mecha: {}. Refreshing rewrites and restarts them, fetching only \
+         what is missing.",
+        labels.join(", ")
+    );
+    let step = Step::new(
+        "services",
+        "The services mecha installed are this build's",
+        Status::Wrong,
+        String::new(),
+    );
+    let step = if features.is_empty() {
+        detail.push_str(" Choosing the model the router serves now downloads nothing.");
+        step.with(
+            "Refresh the chat router's service.",
+            &["mecha", "setup", "chat"],
+            true,
+        )
+    } else {
+        if router {
+            detail.push_str(
+                " The chat router's is `mecha setup chat`'s to refresh: choosing the model it \
+                 serves now downloads nothing.",
+            );
+        }
+        let mut argv = vec!["mecha", "features", "enable"];
+        argv.extend(features.iter().copied());
+        step.with("Refresh them.", &argv, true)
+    };
+    Some(Step { detail, ..step })
 }
 
 /// A step's remedy from the row's next command — when it is one. Setup only
@@ -1434,6 +1508,40 @@ mod tests {
         }
     }
 
+    /// Stale services are one step, wrong rather than missing, whose remedy
+    /// enables each feature once — and the router alone is `setup chat`'s.
+    #[test]
+    fn stale_services_are_one_step_with_their_refresh() {
+        use crate::feature::Feature;
+        assert!(services_step(&[], None).is_none());
+        let s = services_step(&[], Some("bad json")).unwrap();
+        assert_eq!(s.status, Status::Unknown);
+        assert!(s.detail.contains("bad json"), "{}", s.detail);
+        let s = services_step(
+            &[
+                ("ComfyUI", Some(Feature::Image)),
+                ("speech", Some(Feature::Voice)),
+                ("stt", Some(Feature::Voice)),
+                ("router", None),
+            ],
+            None,
+        )
+        .unwrap();
+        assert_eq!(s.status, Status::Wrong);
+        assert_eq!(
+            s.remedy.unwrap().argv,
+            ["mecha", "features", "enable", "image", "voice"]
+        );
+        assert!(
+            s.detail.contains("ComfyUI, speech, stt, router"),
+            "{}",
+            s.detail
+        );
+        assert!(s.detail.contains("mecha setup chat"), "{}", s.detail);
+        let s = services_step(&[("router", None)], None).unwrap();
+        assert_eq!(s.remedy.unwrap().argv, ["mecha", "setup", "chat"]);
+    }
+
     fn facts(props: Option<Props>) -> Facts {
         Facts {
             provider_credential: true,
@@ -1449,6 +1557,8 @@ mod tests {
             config_file: true,
             local_probe: LocalProbe::NotAttempted,
             declined: Default::default(),
+            stale_services: Vec::new(),
+            services_unknown: None,
         }
     }
 
