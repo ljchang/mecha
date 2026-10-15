@@ -718,7 +718,7 @@ pub(super) async fn run(
             continue;
         }
         println!("\nEnabling {}…", ids.join(", "));
-        match super::features::enable_unwired(&ids, false, false, true).await {
+        match super::features::enable_unwired(&ids, false, false, false, true).await {
             Ok(on) => {
                 enabled.push(*f);
                 switched.extend(on);

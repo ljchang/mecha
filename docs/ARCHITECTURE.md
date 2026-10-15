@@ -348,8 +348,10 @@ those first; the OpenAI dialect lifts them into `role: "tool"` messages ahead
 of the parts array anyway), behind a caption naming the call and the file.
 
 **`image_view` is the one producer, and a look is on request.**
-`image_generate` returns a path and a seed and says to call `image_view` to
-check; the owner's ruling (2026-09-27) is that the pixels are not returned by
+`image_generate` returns a path and a seed, and its description says to look
+only when the owner asks — never to confirm a picture worked, and never to
+judge or redraw one unseen (the owner's ruling, 2026-10-14); the ruling of
+2026-09-27 is that the pixels are not returned by
 default, because a picture costs context by its *pixels* — about 1000 tokens
 for a square generation on the Qwen-VL presets — for the rest of the
 conversation, and most pictures are not ones the model was asked to check.
@@ -4925,7 +4927,7 @@ which the page's still-out state and its clip player read.
   a job run later would send against that snapshot.
 - **One picture per run, structurally** (`IMAGE-DESIGN.md` §5.5). `RunPictures` records the deferred tools a run has started.
   - **The repeat is not run.** A later call to one of them in the same run is answered "Not run: … already started in this run" and never reaches the tool. In all sessions, the queue's busy refusal and the old repeat guard never stopped a model that kept calling.
-  - **Then the run closes.** Its next request is the closing one, which keeps the tools listed (so the cached prefix holds on llama-server; the cache lens counts the `tool_choice` change as a surface change), asks for words with `ToolChoice::None`, ends with `PICTURE_ON_ITS_WAY` as its last note, and its deltas are not forwarded (the request still streams to the provider when the run is cancellable). A steer that arrives for it stays queued and is said to have come too late, and a peer's message stays unclaimed in the mailbox, since a closing turn could not act on either. A refusal on it is left as the provider said it.
+  - **Then the run closes.** Its next request is the closing one, which keeps the tools listed (so the cached prefix holds on llama-server; the cache lens counts the `tool_choice` change as a surface change), asks for words with `ToolChoice::None`, is given no reasoning budget (`think_budget: Some(0)`, which only a llama-server reads; 2026-10-15: the acknowledgement fell from 8.2 s to 0.5 s on the persona model with the same text, and the cached prefix still holds, since a zero budget changes only the generation prompt), ends with `PICTURE_ON_ITS_WAY` as its last note, and its deltas are not forwarded (the request still streams to the provider when the run is cancellable). A steer that arrives for it stays queued and is said to have come too late, and a peer's message stays unclaimed in the mailbox, since a closing turn could not act on either. A refusal on it is left as the provider said it.
   - **What the owner sees.** The closing reply's call markup (Qwen's `<tool_call>` blocks, written as text) is stripped, from a reply cut off by Stop too, whose cleaned words are then sent once. Only the wrapped form is: a bare `<function=…>` was not measured. Nothing left, or an empty reply, becomes `PICTURE_ON_ITS_WAY_REPLY` (`PICTURE_NOT_STARTED_REPLY` after a busy refusal, where nothing was started), so a `<tool_call>` block written out as text never reaches the screen.
   - **When the close fires.**
     - A persona chat sets `RunContext::end_after_deferral`, so its run closes right after the picture is queued.
@@ -10331,6 +10333,22 @@ exhaustive `match`, so the build asks; the ones that are not say so.
       installed server held ~13.6 GB after a picture for good until 7e-2
       added `mecha-comfyui-idle.timer`. A companion unit needs its own name
       where the hand install's could share the machine.
+    - **A changed service raises its revision.** Every unit and plist an
+      install writes carries `user_service::stamp`'s
+      `mecha-service-rev: <id> <n>` line, `n` from `user_service::REVS`, and
+      each module's `*_revision_is_held_to_what_it_writes` test pins `n`
+      beside a hash of everything the install renders — units, launchers,
+      drop-ins, program files, the Mac agent. Change any of it and the test
+      fails until `n` is raised; an install carrying an older `n` (or none,
+      as everything before the stamp does) then reads *stale*, and `enable`
+      and `mecha setup` offer to run it again (FEATURES-DESIGN §14). An
+      existing install never got a fixed service otherwise: #689's ComfyUI
+      proxy reached no Mac that had ComfyUI already (2026-10-14). A
+      definition an install stops writing (a renamed or retired unit) must
+      leave the record through `Manifest::unrecord` in the same change, or
+      it reads stale after every refresh. The pins see only the text they are
+      handed: a file an install starts writing goes into its module's pin in
+      the same change, or a change to it never raises the number.
 11. **It asks the way `enable` asks.** Without a terminal, `features enable`
     installs nothing and says how to proceed (`--no-install` writes the
     switch alone). The guided `mecha setup` lists every download and install
