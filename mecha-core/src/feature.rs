@@ -1159,6 +1159,8 @@ pub fn write_mcp_entries(
                     && crate::sidecar::stale_copy(wiring.program, Path::new(old))
             })
             .map(str::to_string);
+        // Every entry running that copy, a disabled duplicate included: the
+        // copy is the stale thing, whichever entry names it.
         if let Some(old) = &repointed {
             if let Some(servers) = doc.get_mut("mcp").and_then(|m| m.as_array_of_tables_mut()) {
                 for t in servers.iter_mut() {

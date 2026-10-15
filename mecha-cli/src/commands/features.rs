@@ -800,7 +800,9 @@ fn mcp_command(
     };
     match on_path {
         Some(p) if !mecha_core::sidecar::stale_copy(program, &p) => Some(p),
-        stale => mecha_home.and_then(own).or(stale),
+        // A stale copy is never wired, even with nothing better here: the
+        // plan has said it is not used (review of #699).
+        _ => mecha_home.and_then(own),
     }
 }
 
@@ -2111,6 +2113,25 @@ mod tests {
         let ours = mcp_command(PROGRAM, None, Some(&home)).unwrap();
         assert!(ours.is_absolute() && ours == binary(&home));
         assert_eq!(mcp_command("mecha-mail", None, Some(&home)), None);
+        // A copy on the PATH from another build is passed over for mecha's
+        // own; with none of mecha's here it is not wired either (review of
+        // #699).
+        let cargo = home.join("cargo");
+        std::fs::create_dir_all(cargo.join("bin")).unwrap();
+        std::fs::write(
+            cargo.join(".crates2.json"),
+            format!(
+                r#"{{"installs":{{"{PROGRAM} 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)":{{"bins":["{PROGRAM}"]}}}}}}"#
+            ),
+        )
+        .unwrap();
+        let stale = cargo.join("bin").join(PROGRAM);
+        assert_eq!(
+            mcp_command(PROGRAM, Some(stale.clone()), Some(&home)),
+            Some(binary(&home))
+        );
+        std::fs::remove_file(root(&home).join(".crates2.json")).unwrap();
+        assert_eq!(mcp_command(PROGRAM, Some(stale), Some(&home)), None);
         let _ = std::fs::remove_dir_all(&home);
     }
 }
