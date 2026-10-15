@@ -918,6 +918,37 @@ pub fn remove(m: &Machinery, naming: &Naming) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// The speech server's revision is held to what its install writes: the
+    /// adapter's files, both units, and the Mac agents made from them.
+    #[test]
+    fn the_speech_revision_is_held_to_what_it_writes() {
+        let n = Naming::shipped();
+        let r = |t: &str| {
+            render(
+                t,
+                Path::new("/h/.mecha/sidecars/speech"),
+                &n,
+                "model.gguf",
+                "codec.gguf",
+            )
+        };
+        let (engine, adapter) = (r(ENGINE_UNIT), r(ADAPTER_UNIT));
+        let agents = [
+            crate::user_service::test_agent_text(&n.engine_unit, &engine),
+            crate::user_service::test_agent_text(&n.adapter_unit, &adapter),
+        ];
+        let mut rendered: Vec<&str> = FILES.iter().flat_map(|(n, t)| [*n, *t]).collect();
+        rendered.extend([engine.as_str(), adapter.as_str(), &agents[0], &agents[1]]);
+        crate::user_service::assert_rev(
+            ID,
+            (
+                1,
+                "7b3bca200cae45b5ef5a53680ce48ab2df9255590b2f6750dd7b032661fbbb57",
+            ),
+            &rendered,
+        );
+    }
+
     use super::*;
 
     /// The installed adapter's voices directory is named where nothing names

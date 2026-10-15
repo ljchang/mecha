@@ -364,21 +364,21 @@ fn start_units(
         home,
         id,
         &units.join(format!("{stem}.socket")),
-        &r(socket),
+        &crate::user_service::stamp(id, &r(socket)),
         0o644,
     )?;
     write_owned(
         home,
         id,
         &units.join(format!("{stem}-proxy.service")),
-        &r(proxy),
+        &crate::user_service::stamp(id, &r(proxy)),
         0o644,
     )?;
     write_owned(
         home,
         id,
         &units.join(format!("{stem}.service")),
-        &r(service),
+        &crate::user_service::stamp(id, &r(service)),
         0o644,
     )?;
     let dropins = units.join(format!("{stem}.service.d"));
@@ -396,7 +396,16 @@ fn start_units(
     engine.write(home, id, &dropins)?;
 
     crate::engine_gate::systemctl("daemon-reload", &[])?;
-    crate::engine_gate::systemctl("enable", &["--now", &format!("{stem}.socket")])
+    // A refresh must reach a socket already listening: `enable --now` is a
+    // no-op on an active one, so the old `[Socket]` would keep serving under
+    // a stamp that reads current, and the refresh would never be offered
+    // again (review of #691, pass 6). The proxy and server it started are
+    // stopped — the next request cold-starts them from the new units — and
+    // the socket restarted, which on a fresh install starts it.
+    let (proxy, server) = (format!("{stem}-proxy.service"), format!("{stem}.service"));
+    crate::engine_gate::systemctl("stop", &[&proxy, &server])?;
+    crate::engine_gate::systemctl("enable", &[&format!("{stem}.socket")])?;
+    crate::engine_gate::systemctl("restart", &[&format!("{stem}.socket")])
 }
 
 /// The launchd half: one agent running mecha's own on-demand proxy over the
@@ -419,10 +428,32 @@ fn start_agent(
     if let Some(dir) = log.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
-    let agent = crate::launchd::Agent {
+    let agent = agent(naming, launcher, engine.path(), hub, &mecha, home, log);
+    write_owned(
+        home,
+        id,
+        &plist,
+        &crate::user_service::stamp(id, &crate::launchd::plist_text(&agent)),
+        0o644,
+    )?;
+    crate::launchd::load(&plist, &agent.label)
+}
+
+/// An on-demand server's launchd agent: mecha's proxy on the public port,
+/// under the log cap, starting the launcher at the first connection.
+fn agent(
+    naming: &Naming,
+    launcher: &Path,
+    engine: &Path,
+    hub: &Path,
+    mecha: &Path,
+    mecha_home: &Path,
+    log: PathBuf,
+) -> crate::launchd::Agent {
+    crate::launchd::Agent {
         label: crate::launchd::label(&naming.stem),
         program: crate::log_cap::wrap(
-            &mecha,
+            mecha,
             &log,
             vec![
                 mecha.display().to_string(),
@@ -440,20 +471,18 @@ fn start_agent(
         ),
         env: vec![
             ("PATH".into(), crate::launchd::SYSTEM_PATH.into()),
-            ("LLAMA_SERVER".into(), engine.path().display().to_string()),
+            ("LLAMA_SERVER".into(), engine.display().to_string()),
             ("HF_HUB".into(), hub.display().to_string()),
             // `log-cap` (and `on-demand`) resolve the mecha home from the
             // environment to check they run only mecha's own programs: an
             // agent under a MECHA_HOME other than ~/.mecha must carry it
             // (review of #679).
-            ("MECHA_HOME".into(), m.mecha_home.display().to_string()),
+            ("MECHA_HOME".into(), mecha_home.display().to_string()),
         ],
         workdir: None,
         throttle_secs: crate::launchd::THROTTLE_SECS,
         log,
-    };
-    write_owned(home, id, &plist, &crate::launchd::plist_text(&agent), 0o644)?;
-    crate::launchd::load(&plist, &agent.label)
+    }
 }
 
 /// Ten minutes, as the proxy unit's `MECHA_LLAMA_IDLE`.
@@ -553,7 +582,7 @@ fn hub_text(hub: &Path) -> String {
 
 /// The drop-in naming a provided `llama-server`: the one found on the PATH
 /// mecha ran with, left where it is.
-fn provided_engine_text(engine: &Path) -> String {
+pub(crate) fn provided_engine_text(engine: &Path) -> String {
     format!(
         "# Written by `mecha features enable`: the llama-server this server runs, found\n\
          # on the PATH mecha ran with, which can be wider than the unit's own. The\n\
@@ -692,6 +721,61 @@ pub fn remove(m: &Machinery, which: Which, naming: &Naming) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// Each on-demand server's revision is held to what its install writes:
+    /// the socket, proxy and server units, the launcher, the drop-ins, the
+    /// wait script, and the Mac agent.
+    #[test]
+    fn each_server_s_revision_is_held_to_what_it_writes() {
+        for (which, pinned) in [
+            (
+                Which::Embeddings,
+                (
+                    1,
+                    "f188554d852240691f55c876fe25d1c75c3deb76378d1077c9a1852a6aac1f2b",
+                ),
+            ),
+            (
+                Which::Ocr,
+                (
+                    1,
+                    "e88655ea5516a7f46a6cba0b7a0e666e574d626dbbef5059504c81cba312f862",
+                ),
+            ),
+        ] {
+            let n = which.shipped();
+            let bin = Path::new("/h/.mecha/sidecars/bin");
+            let r = |t: &str| render(t, which, &n, bin, "/usr/lib/systemd/systemd-socket-proxyd");
+            let (socket, proxy, service, launcher, name) = which.files();
+            let hub = Path::new("/h/.cache/huggingface/hub");
+            let engine = Path::new("/h/.mecha/sidecars/llama/current/llama-server");
+            let plist = crate::launchd::plist_text(&agent(
+                &n,
+                &bin.join(name),
+                engine,
+                hub,
+                Path::new("/u/.cargo/bin/mecha"),
+                Path::new("/h/.mecha"),
+                "/u/Library/Logs/mecha/x.log".into(),
+            ));
+            crate::user_service::assert_rev(
+                which.sidecar(),
+                pinned,
+                &[
+                    &r(socket),
+                    &r(proxy),
+                    &r(service),
+                    &r(launcher),
+                    PATH_CONF,
+                    WAIT_HEALTHY,
+                    &hub_text(hub),
+                    &provided_engine_text(engine),
+                    &crate::engine_gate::drop_in_text(engine),
+                    &plist,
+                ],
+            );
+        }
+    }
+
     /// The graph server is told mecha's own embedder: the shipped port, the
     /// alias the launcher serves, and that model's width (the owner's fresh
     /// Mac, 2026-10-15: unset, the graph assumed 768 and refused 1024).

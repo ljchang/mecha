@@ -163,6 +163,14 @@ pub struct Facts {
     /// before the `--json` return**, so the scriptable surface carries it
     /// too and stdout stays a parseable array.
     pub declined: std::collections::BTreeSet<String>,
+    /// Services mecha installed that an older build wrote
+    /// (`sidecar::stale_services`), each by its label and the switched-on
+    /// feature whose `enable` refreshes it — `None` for the chat router,
+    /// which `mecha setup chat` refreshes (F13).
+    pub stale_services: Vec<(&'static str, Option<crate::feature::Feature>)>,
+    /// Why what mecha installed could not be read, when it could not: whether
+    /// its services are current is then unknown, never "current".
+    pub services_unknown: Option<String>,
 }
 
 /// A local server nobody has configured yet: where it is, and what it says
@@ -424,6 +432,10 @@ pub fn plan(cfg: &Config, provider_name: &str, facts: &Facts) -> Vec<Step> {
     }
 
     steps.extend(feature_steps(facts));
+    steps.extend(services_step(
+        &facts.stale_services,
+        facts.services_unknown.as_deref(),
+    ));
     steps.extend(timezone_step(cfg));
     steps.push(charter_step(&facts.charter));
 
@@ -889,6 +901,68 @@ fn feature_steps(facts: &Facts) -> Vec<Step> {
         .collect()
 }
 
+/// Services an older mecha wrote, refreshed by running their installs again
+/// (the owner's ruling, 2026-10-14; FEATURES-DESIGN §14): the features'
+/// `enable`, which offers them, or `mecha setup chat` for the router alone.
+/// Wrong rather than missing: a service that predates a fix is the machine
+/// disagreeing with this build, never a feature going unused.
+fn services_step(
+    stale: &[(&str, Option<crate::feature::Feature>)],
+    unknown: Option<&str>,
+) -> Option<Step> {
+    if let Some(why) = unknown {
+        return Some(Step::new(
+            "services",
+            "The services mecha installed are this build's",
+            Status::Unknown,
+            format!(
+                "What mecha installed could not be read ({why}), so whether they are is unknown."
+            ),
+        ));
+    }
+    if stale.is_empty() {
+        return None;
+    }
+    let labels: Vec<&str> = stale.iter().map(|(l, _)| *l).collect();
+    let mut features: Vec<&str> = Vec::new();
+    for f in stale.iter().filter_map(|(_, f)| *f) {
+        if !features.contains(&f.id()) {
+            features.push(f.id());
+        }
+    }
+    let router = stale.iter().any(|(_, f)| f.is_none());
+    let mut detail = format!(
+        "Written by an older mecha: {}. Refreshing rewrites and restarts them, fetching only \
+         what is missing.",
+        labels.join(", ")
+    );
+    let step = Step::new(
+        "services",
+        "The services mecha installed are this build's",
+        Status::Wrong,
+        String::new(),
+    );
+    let step = if features.is_empty() {
+        detail.push_str(" Choosing the model the router serves now downloads nothing.");
+        step.with(
+            "Refresh the chat router's service.",
+            &["mecha", "setup", "chat"],
+            true,
+        )
+    } else {
+        if router {
+            detail.push_str(
+                " The chat router's is `mecha setup chat`'s to refresh: choosing the model it \
+                 serves now downloads nothing.",
+            );
+        }
+        let mut argv = vec!["mecha", "features", "enable"];
+        argv.extend(features.iter().copied());
+        step.with("Refresh them.", &argv, true)
+    };
+    Some(Step { detail, ..step })
+}
+
 /// A step's remedy from the row's next command — when it is one. Setup only
 /// ever *runs* a command; a config edit (`add an [image] table`, `set
 /// [documents] ocr = true`) or an instruction (`set [web] owner_login to your
@@ -962,7 +1036,8 @@ pub fn blurb(f: crate::feature::Feature) -> &'static str {
     use crate::feature::Feature;
     match f {
         Feature::Web => {
-            "The web app on your tailnet: chat, mail, the graph and the review queues from a phone."
+            "The web app on your tailnet: chat, mail, the graph and the review queues from a \
+             phone — and incognito chats, which leave no trace, wherever the chat model is local."
         }
         Feature::Slack => {
             "Watch a run from Slack, approve what it wants to send, and hand files in and out."
@@ -981,16 +1056,18 @@ pub fn blurb(f: crate::feature::Feature) -> &'static str {
         }
         Feature::Personas => "Characters you write and talk to, apart from the assistant.",
         Feature::Voice => "Talking to mecha: dictation, voice calls and voice cloning.",
-        Feature::Incognito => "A web chat that leaves no trace, on a local model.",
         Feature::Frontdoor => {
-            "Inbound requests from strangers, polls and publishing, behind a quarantine."
+            "Your outward-facing surface, through mecha-factory: what other people need from \
+             you arrives as a typed request, behind a quarantine, and what mecha publishes \
+             gets a lasting link — polls included."
         }
         Feature::Messages => "Messages between this machine's own sessions.",
         Feature::System => {
             "Letting the assistant read this machine's state: memory, disk, GPU, models."
         }
         // Parts are summarised under their parent and never stepped alone.
-        Feature::Tasks
+        Feature::Incognito
+        | Feature::Tasks
         | Feature::Ocr
         | Feature::Layout
         | Feature::Library
@@ -1434,6 +1511,40 @@ mod tests {
         }
     }
 
+    /// Stale services are one step, wrong rather than missing, whose remedy
+    /// enables each feature once — and the router alone is `setup chat`'s.
+    #[test]
+    fn stale_services_are_one_step_with_their_refresh() {
+        use crate::feature::Feature;
+        assert!(services_step(&[], None).is_none());
+        let s = services_step(&[], Some("bad json")).unwrap();
+        assert_eq!(s.status, Status::Unknown);
+        assert!(s.detail.contains("bad json"), "{}", s.detail);
+        let s = services_step(
+            &[
+                ("ComfyUI", Some(Feature::Image)),
+                ("speech", Some(Feature::Voice)),
+                ("stt", Some(Feature::Voice)),
+                ("router", None),
+            ],
+            None,
+        )
+        .unwrap();
+        assert_eq!(s.status, Status::Wrong);
+        assert_eq!(
+            s.remedy.unwrap().argv,
+            ["mecha", "features", "enable", "image", "voice"]
+        );
+        assert!(
+            s.detail.contains("ComfyUI, speech, stt, router"),
+            "{}",
+            s.detail
+        );
+        assert!(s.detail.contains("mecha setup chat"), "{}", s.detail);
+        let s = services_step(&[("router", None)], None).unwrap();
+        assert_eq!(s.remedy.unwrap().argv, ["mecha", "setup", "chat"]);
+    }
+
     fn facts(props: Option<Props>) -> Facts {
         Facts {
             provider_credential: true,
@@ -1449,6 +1560,8 @@ mod tests {
             config_file: true,
             local_probe: LocalProbe::NotAttempted,
             declined: Default::default(),
+            stale_services: Vec::new(),
+            services_unknown: None,
         }
     }
 
@@ -1668,16 +1781,16 @@ mod tests {
     }
 
     /// `false` is an answer written down: declined, not outstanding, and the
-    /// way back is the enable command rather than `--undecline`. A feature
-    /// switched on but blocked on an unanswered dependency is a yes that does
-    /// not work, offered the chained command, dependency first.
+    /// way back is the enable command rather than `--undecline`. (The other
+    /// half this test held — a feature blocked on a dependency, offered the
+    /// chained command — went with incognito's switch: no top-level feature
+    /// requires another since F15.)
     #[test]
-    fn an_explicit_false_is_an_answer_and_a_dependency_comes_first() {
+    fn an_explicit_false_is_an_answer() {
         let cfg = cfg_with_local(262144, Some(true));
         let mut f = facts(Some(props(262144, 4, true)));
         f.features = rows(|ff| {
             ff.config.features.0.insert("slack".into(), false);
-            switch_on(ff, &["incognito"]);
         });
         let steps = plan(&cfg, "local", &f);
         let slack = step(&steps, "slack");
@@ -1692,25 +1805,10 @@ mod tests {
             "{}",
             slack.detail
         );
-        // Switched on and blocked is a yes that does not work: wrong, not
-        // declinable, its remedy the chained command (review of #460).
-        let incognito = step(&steps, "incognito");
-        assert_eq!(incognito.status, Status::Wrong);
-        assert!(!incognito.optional);
         assert!(
-            incognito
-                .detail
-                .contains("mecha features disable incognito"),
-            "{}",
-            incognito.detail
+            steps.iter().all(|s| s.id != "incognito"),
+            "incognito is web's"
         );
-        assert_eq!(
-            incognito.remedy.as_ref().unwrap().argv,
-            ["mecha", "features", "enable", "web", "incognito"]
-        );
-        // The dependency's own step comes before it.
-        let at = |id: &str| steps.iter().position(|s| s.id == id).unwrap();
-        assert!(at("web") < at("incognito"));
     }
 
     /// A fresh install is *offered* a charter, and the offer never composes
@@ -2146,7 +2244,6 @@ mod tests {
                 "image",
                 "personas",
                 "voice",
-                "incognito",
                 "frontdoor",
                 "messages",
                 "system",
