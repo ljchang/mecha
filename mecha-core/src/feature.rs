@@ -898,8 +898,9 @@ pub fn announcements(facts: &Facts) -> Vec<Announcement> {
 /// A part id is refused by name, pointing at its parent and the setting that
 /// turns it on. A feature whose `requires` is not already on and not in the
 /// same request is refused with the chained command, as Claude Code refuses a
-/// disable that would break another plugin — `enable incognito` alone would
-/// land in `Blocked`.
+/// disable that would break another plugin, rather than land in `Blocked`.
+/// (No feature with a switch has a `requires` edge since F15; the branch
+/// waits for the next one.)
 pub fn plan_enable(cfg: &Config, ids: &[String]) -> Result<Vec<Feature>, String> {
     let mut wanted = Vec::new();
     for id in ids {
