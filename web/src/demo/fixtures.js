@@ -1861,6 +1861,7 @@ const on = (id, label, detail, extra = {}) => ({
 export const features = {
   features: [
     on('web', 'The web app', 'serving the page you are looking at'),
+    on('incognito', 'Incognito chat', 'provider `local`', { part_of: 'web' }),
     on('slack', 'Slack remote control', 'tokens stored'),
     on('mail', 'Mail and calendar', '[[mcp]] `mail`, 2 account(s)'),
     on('docs', 'Google Docs, Sheets and Slides', '[[mcp]] `docs`, 1 account(s)'),
@@ -1877,7 +1878,6 @@ export const features = {
     on('dictate', 'Dictation', 'speech to text at http://127.0.0.1:8992/v1', { part_of: 'voice', requires: ['web'] }),
     on('calls', 'Voice calls', "offers to http://127.0.0.1:7860/api/offer", { part_of: 'voice', requires: ['web'] }),
     on('cloning', 'Voice cloning', '~/voices', { part_of: 'voice', requires: ['web'] }),
-    on('incognito', 'Incognito chat', 'provider `local`', { requires: ['web'] }),
     on('frontdoor', 'Front door (inbound requests)', '`factory-publish` on PATH'),
     on('publishing', 'Publishing tools', '[[mcp]] `factory`', { part_of: 'frontdoor' }),
     {
