@@ -12752,15 +12752,23 @@ mod tests {
             .is_empty());
 
         // Locks that cannot be read hide every voice from a locked page, and
-        // say why; an unlock shows them all, the flag unknown.
-        std::fs::write(library.dir.join("voices.toml"), "locked = 3").unwrap();
+        // say why — in words that never quote the file, whose damaged line is
+        // the locked names (review of #701, pass 5); an unlock shows them all,
+        // the flag unknown.
+        std::fs::write(
+            library.dir.join("voices.toml"),
+            "locked = [\"secretvoice\", 3]",
+        )
+        .unwrap();
         let damaged = voice_list(&state, None).await;
         assert_eq!(voice_names(&damaged), Vec::<String>::new());
         assert!(damaged["locks_error"].is_string(), "{damaged}");
+        assert!(!damaged.to_string().contains("secretvoice"), "{damaged}");
         // Settings → Voice's listing says so too, rather than "none cloned".
         let Json(settings) = super::super::settings::voice(State(state.clone())).await;
         assert_eq!(settings["cloned"], serde_json::json!([]));
         assert!(settings["locks_error"].is_string(), "{settings}");
+        assert!(!settings.to_string().contains("secretvoice"), "{settings}");
         assert!(form_voices(&state, None, None).await.unread.is_some());
         // (`solo`'s clip is gone, and the worker still lists it.)
         let unlocked = voice_list(&state, Some(token)).await;

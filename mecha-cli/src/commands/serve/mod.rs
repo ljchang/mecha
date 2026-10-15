@@ -3395,6 +3395,25 @@ mod tests {
             listed.contains("\"open\"") && !listed.contains("hidden"),
             "{listed}"
         );
+        // A flag that outlived its voice does not hide a clip saved unticked
+        // under that name (review of #701, pass 5).
+        mecha_core::imagelib::set_voice_locked(&lib, "stale", true).unwrap();
+        let fresh = send(
+            "POST",
+            "/api/settings/voice/clone?name=stale",
+            "audio/wav",
+            Body::from(tiny_wav(16_000, 6.0)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(fresh.status(), StatusCode::OK);
+        let fresh = axum::body::to_bytes(fresh.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&fresh).contains("\"stale\""));
+        assert!(!mecha_core::imagelib::locked_voices(&lib)
+            .unwrap()
+            .contains("stale"));
         // Missing to a locked page, word for word, and still on disk.
         let gone = send(
             "POST",
