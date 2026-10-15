@@ -1634,7 +1634,7 @@ fn own_state(facts: &Facts, f: Feature) -> State {
             true => on("`factory-publish` on PATH — its drain fills ~/.mecha/requests"),
             false => off(
                 "`factory-publish` is not installed",
-                "install factory-publish from the mecha-factory repository",
+                "cargo install mecha-factory-publish --locked",
             ),
         },
         // The model's half: publishing tools, from an `[[mcp]]` entry.
@@ -1643,7 +1643,7 @@ fn own_state(facts: &Facts, f: Feature) -> State {
             facts,
             "factory-publish",
             facts.has_factory_binary,
-            "install factory-publish from the mecha-factory repository",
+            "cargo install mecha-factory-publish --locked",
             None,
             "",
         ),

@@ -118,7 +118,11 @@ pub async fn execute(args: Args) -> Result<()> {
             no_install,
             turbo,
         }) => return enable(&ids, no_install, turbo, false).await,
-        Some(Cmd::Disable { ids }) => return set(&ids, false),
+        Some(Cmd::Disable { ids }) => {
+            set(&ids, false)?;
+            println!("{RESTART_NOTE}");
+            return Ok(());
+        }
         Some(Cmd::Plan { id, json, verify }) => return plan(&id, json, verify),
         Some(Cmd::LogCap {
             log,
@@ -201,7 +205,11 @@ pub async fn execute(args: Args) -> Result<()> {
 /// too, as it does unasked once a persona's picture settings choose it.
 pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: bool) -> Result<()> {
     let on = enable_unwired(ids, no_install, turbo, yes).await?;
-    mcp_entries(&on)
+    mcp_entries(&on)?;
+    if !on.is_empty() {
+        println!("{RESTART_NOTE}");
+    }
+    Ok(())
 }
 
 /// [`enable`] up to the `[[mcp]]` wiring, returning the features it switched
@@ -1101,9 +1109,14 @@ fn set(ids: &[String], on: bool) -> Result<()> {
             println!("  `{}` needs it, and now reads blocked", dependent.id());
         }
     }
-    println!("Services that are already running pick this up when they restart.");
     Ok(())
 }
+
+/// Said once per command, after every switch it wrote: the guided setup
+/// enables one feature at a time, and printed per feature it read fourteen
+/// times (the owner's fresh Mac, 2026-10-14).
+pub(super) const RESTART_NOTE: &str =
+    "Services that are already running pick this up when they restart.";
 
 /// What the global configuration says about `f` right now, if it refuses:
 /// the same [`feature::refusal`] the web routes answer with. `None` when
