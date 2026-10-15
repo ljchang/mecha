@@ -502,8 +502,10 @@ Three rules carry the design:
    it reads only config and the disk. **`mecha features enable|disable
    <id>`** writes the bool into the global `[features]` table (`codex
    features enable`); an enable whose dependency is off is refused with the
-   chained command (`mecha features enable web incognito`), as Claude Code
-   refuses a disable that would break another plugin. A **part** id (`ocr`,
+   chained command, as Claude Code refuses a disable that would break another
+   plugin. (Since F15 no feature with a switch has a dependency — incognito,
+   the one that did, became a part of `web` — so that branch waits for the
+   next one.) A **part** id (`ocr`,
    `dictate`, `library`) has no bool, so `enable ocr` is refused by name and
    points at the parent's switch and the setting that turns the part on
    (`[documents] ocr = true`).
@@ -618,7 +620,8 @@ it. So, in step 1, the `tool_availability_notices` shape Hermes uses:
   `web` is still absent, and `enable incognito` alone would land in
   `Blocked` — *"`incognito`: needs `web` — `mecha features
   enable web incognito`"* — never offered alone into a `Blocked` it cannot
-  leave;
+  leave (the incognito case is history since F15, which made it a part of
+  `web`; the rule stands for the next feature with a dependency);
 - `mecha features` shows that case as its own row (switch absent, would
   otherwise be usable), not a bare `off`, as it does an off front door with requests
   waiting;
@@ -681,7 +684,6 @@ documents = false  # PDF extraction (OCR and layout are [documents] settings)
 image = false      # image generation and the character library
 personas = false   # characters you write and talk to
 voice = false      # dictation and voice calls
-incognito = false  # a web chat that leaves no trace
 frontdoor = false  # inbound requests, publishing, polls
 messages = false   # messages between sessions
 ```
@@ -723,6 +725,7 @@ A `(parent)` in the Requires column is `part_of`, not a `requires` edge:
 | id | Feature | Settings it needs (Unready without them) | Requires | Hidden when off |
 |---|---|---|---|---|
 | `web` | The web app (`mecha serve`) | `[web] owner_login` (serve refuses without it) | — | everything web; `mecha serve` refuses with the fix |
+| ↳ `incognito` | A chat that leaves no trace | a local provider without fallbacks (`provider_is_local`) | `web` (parent, since F15) | Chat's incognito toggle |
 | `slack` | Slack remote control | tokens in `~/.mecha/slack` (`mecha slack auth`) | — | `mecha slack …` verbs except `auth` |
 | `mail` | Mail and calendar | a global `[[mcp]]` entry running `mecha-mail`, and an authorised account | — | Mail tab, Home mail card, Outbox event editor, `mecha mail` |
 | `docs` | Google Docs, Sheets, Slides | a global `[[mcp]]` entry running `mecha-docs`, and an account | — | its tools |
@@ -739,7 +742,6 @@ A `(parent)` in the Requires column is `part_of`, not a `requires` edge:
 | ↳ `dictate` | Speech to text in the browser | `[voice] stt_url` | `voice` (parent), `web` | Dictate |
 | ↳ `calls` | Spoken conversation in the browser | `[voice] offer_target` | `voice` (parent), `web` | voice-call button |
 | ↳ `cloning` | New voices | `[voice] voices_dir` | `voice` (parent), `web` | Settings → Voice → clone |
-| `incognito` | A chat that leaves no trace | a local provider without fallbacks (`provider_is_local`) | `web` | Chat's incognito toggle |
 | `frontdoor` | Inbound requests and polls | `factory-publish` on PATH — its drain fills `~/.mecha/requests` | — | Review → Front door, Home card, `frontdoor`, `polls` |
 | ↳ `publishing` | The model's publishing tools | a global `[[mcp]]` entry running `factory-publish` | `frontdoor` (parent) | the `factory__*` tools |
 | `messages` | Messages between sessions | — (`[messages]` keeps its tunables) | — | `message_send`, `mecha msg` |
@@ -884,7 +886,8 @@ Three things make it deliberate rather than accidental:
   `false`. The permitted set, said out loud, is **`frontdoor`** alone — a
   binary on PATH and the trial's own `requests` store; every other
   top-level feature is `false` (found on review of #427, pass 14). Not
-  `incognito`: its evidence is `provider_is_local` over `default_provider`
+  `incognito` (a top-level feature until F15 made it a part of `web`; an
+  environment's leftover `incognito = false` is allowed, `true` refused): its evidence is `provider_is_local` over `default_provider`
   and `providers`, both `MACHINE_TABLES` copied from the operator, so it
   fails the test on its own terms, not only by needing `web` (#435). **Not `graph`**, though an
   environment may declare its own graph server: a manifest's `live_servers =
@@ -1065,6 +1068,7 @@ genuinely not known yet, and the output must say so rather than guess.
 | **F12** | The provider a fresh install defaults to | **A local one, never Anthropic** — the owner: *"we definitely don't want to default to anthropic."* The starter config and `Config::default()` move in their own change after 7c-2. Ruled by the owner 2026-10-05 |
 | **F13** | Whether `features enable` installs the chat model | **Never.** The chat model's engine, model and router are `mecha setup chat`'s, where the model is chosen (the tier's row, another row, or a GGUF the owner brings); `enable` installs a feature's own sidecars only, and the engine only for a feature's embeddings or OCR server. Found writing F12: with a local default, `enable web` on a fresh machine offered the ~22 GiB recommended model and wrote nothing on a no. Ruled by the owner 2026-10-10 |
 | **F14** | What `mecha setup` is on a fresh machine | **One guided pass, never a detour.** The owner: *"I don't want to have to stop setup to run setup chat explicitly."* Chat first — the recommended model for this machine, another from a numbered list, a GGUF the owner has, a hosted provider, or skip — then each feature as a plain yes/no with what it does and what it downloads, sign-ins inline; every answer first, then one total and one yes, then the installs. `mecha setup chat` stays as the way to change the model later. §11. Ruled by the owner 2026-10-10 |
+| **F15** | Whether incognito is asked about on its own | **No — it is part of `web`.** The owner, setting up a fresh Mac: *"don't think we need a separate approval for incognito. this should just be folded into web."* `incognito` has no switch: it is on wherever the web app is and the chat model runs on this machine (`provider_is_local`). An older `enable`'s `incognito` key is read by nothing and never reported as unknown (`feature::RETIRED_SWITCHES`). Ruled by the owner 2026-10-14 |
 
 ---
 

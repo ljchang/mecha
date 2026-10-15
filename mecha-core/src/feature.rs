@@ -36,6 +36,7 @@ use std::path::Path;
 #[serde(rename_all = "snake_case")]
 pub enum Feature {
     Web,
+    Incognito,
     Slack,
     Mail,
     Docs,
@@ -52,7 +53,6 @@ pub enum Feature {
     Dictate,
     Calls,
     Cloning,
-    Incognito,
     Frontdoor,
     Publishing,
     Messages,
@@ -64,6 +64,7 @@ pub enum Feature {
 impl Feature {
     pub const ALL: &'static [Feature] = &[
         Feature::Web,
+        Feature::Incognito,
         Feature::Slack,
         Feature::Mail,
         Feature::Docs,
@@ -80,7 +81,6 @@ impl Feature {
         Feature::Dictate,
         Feature::Calls,
         Feature::Cloning,
-        Feature::Incognito,
         Feature::Frontdoor,
         Feature::Publishing,
         Feature::Messages,
@@ -157,6 +157,9 @@ impl Feature {
             Feature::Library => Some(Feature::Image),
             Feature::Dictate | Feature::Calls | Feature::Cloning => Some(Feature::Voice),
             Feature::Publishing => Some(Feature::Frontdoor),
+            // The owner, 2026-10-14: no separate approval — a part of the web
+            // app, on wherever the chat model is local.
+            Feature::Incognito => Some(Feature::Web),
             _ => None,
         }
     }
@@ -172,9 +175,7 @@ impl Feature {
             // standalone loopback surface that reads nothing from `[web]`.
             // Its parts that live in `mecha serve` — the browser's dictation,
             // voice calls, cloning — are (found on review of #428).
-            Feature::Incognito | Feature::Dictate | Feature::Calls | Feature::Cloning => {
-                &[Feature::Web]
-            }
+            Feature::Dictate | Feature::Calls | Feature::Cloning => &[Feature::Web],
             _ => &[],
         }
     }
@@ -214,11 +215,11 @@ impl Feature {
             | Feature::Slack
             | Feature::Personas
             | Feature::Voice
-            | Feature::Incognito
             | Feature::Frontdoor
             | Feature::Messages
             | Feature::System => true,
-            Feature::Tasks
+            Feature::Incognito
+            | Feature::Tasks
             | Feature::Ocr
             | Feature::Layout
             | Feature::Library
@@ -260,14 +261,13 @@ impl Feature {
             | Feature::Search
             // The operator's machine, read through its own series.
             | Feature::System
-            // `default_provider` and `providers` are machine tables.
-            | Feature::Incognito
             // A manifest's `live_servers` can carry the operator's graph in,
             // and the row cannot tell that entry from a declared one;
             // `config_at` defaults this bool instead (FEATURES-DESIGN §5.1).
             | Feature::Graph => false,
             // Parts have no switch to set.
-            Feature::Tasks
+            Feature::Incognito
+            | Feature::Tasks
             | Feature::Ocr
             | Feature::Layout
             | Feature::Library
@@ -548,6 +548,12 @@ pub fn server_feature(server: &McpServerConfig) -> Option<Feature> {
     }
 }
 
+/// Switches this binary once had and folded into another: written by an
+/// older `enable`, read by nothing, and never reported as unknown — the
+/// owner did nothing wrong. `incognito` became part of `web` (the owner,
+/// 2026-10-14).
+pub const RETIRED_SWITCHES: &[&str] = &["incognito"];
+
 /// Keys in `[features]` this build does not know — a newer build's feature,
 /// or a typo. Ignored, never a load failure (see `config::FeaturesConfig`),
 /// and reported so a typo still shows as the feature it meant being off.
@@ -555,6 +561,7 @@ pub fn unknown_switches(cfg: &Config) -> Vec<String> {
     cfg.features
         .0
         .keys()
+        .filter(|k| !RETIRED_SWITCHES.contains(&k.as_str()))
         .filter(|k| Feature::parse(k).is_none_or(|f| !f.has_switch()))
         .cloned()
         .collect()
@@ -825,8 +832,9 @@ fn evidence(facts: &Facts, f: Feature) -> bool {
         Feature::Personas => facts.personas_stored == Some(true),
         Feature::Voice => facts.voice_unit_installed,
         Feature::Frontdoor => facts.has_factory_binary,
-        Feature::Incognito | Feature::Messages | Feature::System => false,
-        Feature::Tasks
+        Feature::Messages | Feature::System => false,
+        Feature::Incognito
+        | Feature::Tasks
         | Feature::Ocr
         | Feature::Layout
         | Feature::Library
@@ -890,13 +898,23 @@ pub fn announcements(facts: &Facts) -> Vec<Announcement> {
 /// A part id is refused by name, pointing at its parent and the setting that
 /// turns it on. A feature whose `requires` is not already on and not in the
 /// same request is refused with the chained command, as Claude Code refuses a
-/// disable that would break another plugin — `enable incognito` alone would
-/// land in `Blocked`.
+/// disable that would break another plugin, rather than land in `Blocked`.
+/// (No feature with a switch has a `requires` edge since F15; the branch
+/// waits for the next one.)
 pub fn plan_enable(cfg: &Config, ids: &[String]) -> Result<Vec<Feature>, String> {
     let mut wanted = Vec::new();
     for id in ids {
         let f = Feature::parse(id)
             .ok_or_else(|| format!("`{id}` is not a feature — `mecha features` lists them"))?;
+        // Incognito had a switch until the owner folded it into the web app
+        // (2026-10-14); it has no setting to turn on, only the local model.
+        if f == Feature::Incognito {
+            return Err(
+                "`incognito` is part of `web` and has no switch of its own — enable `web`; an \
+                 incognito chat is offered wherever the chat model runs on this machine"
+                    .into(),
+            );
+        }
         if let Some(parent) = f.part_of() {
             return Err(format!(
                 "`{id}` is part of `{}` and has no switch of its own — enable `{}`, and \
@@ -2048,7 +2066,6 @@ mod tests {
             Feature::Image,
             Feature::Personas,
             Feature::Voice,
-            Feature::Incognito,
             Feature::Frontdoor,
             Feature::Messages,
             Feature::System,
@@ -2572,18 +2589,14 @@ mod tests {
         assert!(plan_enable(&cfg, &ids(&["nonsense"]))
             .unwrap_err()
             .contains("not a feature"));
+        // Incognito is part of the web app, with nothing of its own to enable.
         let err = plan_enable(&cfg, &ids(&["incognito"])).unwrap_err();
-        assert!(err.contains("mecha features enable web incognito"), "{err}");
-        assert_eq!(
-            plan_enable(&cfg, &ids(&["web", "incognito"])).unwrap(),
-            vec![Feature::Web, Feature::Incognito]
+        assert!(
+            err.contains("part of `web`") && err.contains("enable `web`"),
+            "{err}"
         );
-        let mut web_on = cfg.clone();
-        web_on.features.0.insert("web".into(), true);
-        assert_eq!(
-            plan_enable(&web_on, &ids(&["incognito"])).unwrap(),
-            vec![Feature::Incognito]
-        );
+        let err = plan_enable(&cfg, &ids(&["calls"])).unwrap_err();
+        assert!(err.contains("part of `voice`"), "{err}");
         // And every off row's own fix is a command `enable` accepts — the row
         // must not print one this binary refuses (review of #443).
         let facts = Facts {
@@ -2606,10 +2619,16 @@ mod tests {
     #[test]
     fn switched_on_and_its_command_follow_every_need() {
         let mut cfg = Config::default();
-        cfg.features.0.insert("incognito".into(), true);
+        // An older `enable`'s `incognito = false` is read by nothing: the
+        // web app's switch decides (the owner, 2026-10-14).
+        cfg.features.0.insert("incognito".into(), false);
         assert!(!switched_on(&cfg, Feature::Incognito), "web is not on");
         cfg.features.0.insert("web".into(), true);
         assert!(switched_on(&cfg, Feature::Incognito));
+        assert!(
+            unknown_switches(&cfg).is_empty(),
+            "a retired switch is not unknown"
+        );
         // A part: its parent's switch and its requirement's.
         assert!(!switched_on(&cfg, Feature::Dictate), "voice is not on");
         assert_eq!(
