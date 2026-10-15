@@ -268,6 +268,21 @@ impl Environment {
                 format!("{}: `features` must be a table of bools", path.display())
             })?;
             for (key, value) in features {
+                // A switch this binary retired (`incognito`, now part of
+                // `web`) is no typo: `false` — an environment written for
+                // the previous build, made light — turns nothing on and is
+                // allowed; `true` could turn nothing on either, and is
+                // refused rather than read as a request this build ignores
+                // (review of #695).
+                if crate::feature::RETIRED_SWITCHES.contains(&key.as_str()) {
+                    anyhow::ensure!(
+                        value.as_bool() == Some(false),
+                        "{}: `[features] {key}` is no longer a switch — it is part of another \
+                         feature now; remove the line",
+                        path.display()
+                    );
+                    continue;
+                }
                 let f = crate::feature::Feature::parse(key)
                     .filter(|f| f.has_switch())
                     .with_context(|| {
@@ -1191,6 +1206,8 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
             "[features]\nnot_a_feature = false",
             "[features]\nocr = false",
             "[features]\nweb = \"yes\"",
+            // A retired switch can turn nothing on (review of #695).
+            "[features]\nincognito = true",
         ] {
             let tmp = Scratch::new();
             let env = env_at(tmp.path(), body);
@@ -1199,6 +1216,9 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
         for body in [
             "[features]\nfrontdoor = true",
             "[features]\ngraph = false\nmail = false\nweb = false",
+            // Written for the build before incognito became web's: still
+            // a light trial, never a refused one (review of #695).
+            "[features]\nincognito = false",
         ] {
             let tmp = Scratch::new();
             let env = env_at(tmp.path(), body);

@@ -341,7 +341,6 @@ mod tests {
             documents = true
             image = true
             voice = true
-            incognito = true
 
             [[search]]
             kind = "searxng"
