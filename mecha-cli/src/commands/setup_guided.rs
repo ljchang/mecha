@@ -735,6 +735,9 @@ pub(super) async fn run(
             ids.join(" ")
         );
     }
+    if !switched.is_empty() {
+        println!("{}", super::features::RESTART_NOTE);
+    }
     if !enabled.is_empty() {
         // Caught like the writes above: a sign-in that cannot be read must
         // not cost the checklist after it.

@@ -317,6 +317,26 @@ fn run_clock() -> Result<Arc<dyn mecha_core::clock::Clock>> {
     })
 }
 
+/// Whether a routed tool name belongs to a configured MCP server none of
+/// whose tools registered: the server is down — said once already — and the
+/// name is no typo.
+fn routed_server_is_down<'a>(
+    name: &str,
+    servers: impl IntoIterator<Item = &'a str>,
+    registered: &[&str],
+) -> bool {
+    servers
+        .into_iter()
+        .find(|s| {
+            name.strip_prefix(*s)
+                .is_some_and(|rest| rest.starts_with("__"))
+        })
+        .is_some_and(|s| {
+            let prefix = format!("{s}__");
+            !registered.iter().any(|t| t.starts_with(&prefix))
+        })
+}
+
 fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     let denials = tools.denials.clone();
     let cfg = tools.config;
@@ -788,6 +808,15 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
                 !excluded_by_allowlist(std::slice::from_ref(&name.to_string()), &opts.tools)
                     .is_empty();
             if agent.registry().get(name).is_none() && !narrowed_out {
+                // A name under a configured server whose tools are all
+                // missing is that server down, said above — not a typo to
+                // hunt for (the owner's fresh Mac, 2026-10-14: eight lines
+                // blamed spelling for two servers that did not start).
+                let registered: Vec<&str> = agent.registry().iter().map(|t| t.name()).collect();
+                let servers = cfg.mcp.iter().map(|m| m.name.as_str());
+                if routed_server_is_down(name, servers, &registered) {
+                    continue;
+                }
                 eprintln!(
                     "mecha: [outbox] routes `{name}`, which is not a registered tool — \
                      check the spelling, or this routing protects nothing"
@@ -2811,6 +2840,31 @@ mod surface_only_tests {
 
 #[cfg(test)]
 mod tests {
+    /// A routed name under a server that did not start is that server
+    /// down, not a typo; a typo under a live server, or a name under no
+    /// server, still warns (the owner's fresh Mac, 2026-10-14).
+    #[test]
+    fn a_down_server_is_not_blamed_on_spelling() {
+        let servers = ["mail", "docs"];
+        let live = ["docs__docs_append", "fs_read"];
+        assert!(super::routed_server_is_down(
+            "mail__mail_send",
+            servers,
+            &live
+        ));
+        assert!(!super::routed_server_is_down(
+            "docs__docs_apend",
+            servers,
+            &live
+        ));
+        assert!(!super::routed_server_is_down(
+            "mial__mail_send",
+            servers,
+            &live
+        ));
+        assert!(!super::routed_server_is_down("mailx__send", servers, &live));
+    }
+
     use super::{
         build_subagent, excluded_by_allowlist, fold_agent_switches, front_end_interactive,
         levers_off, pin_named_model, posture_for, step_escalation_enabled, step_escalation_slot,
