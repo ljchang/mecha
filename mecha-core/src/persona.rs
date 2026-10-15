@@ -2462,14 +2462,17 @@ pub fn hide_keys(keys: &[&str], text: &str) -> String {
 /// table (review of #430: a fresh bare `character = …` lost the owner's
 /// comment). Unless the owner wrote that key of their own, which stands.
 pub fn restore_keys(keys: &[&str], text: &str, disk: &str) -> String {
+    // In the order they stand on disk, so each goes back at its own line
+    // number with the ones above it already in place — whatever order
+    // `keys` names them in (review of #701).
+    let mut spans: Vec<(usize, usize)> = keys
+        .iter()
+        .filter(|key| key_lines(text, key).is_none())
+        .filter_map(|key| key_lines(disk, key))
+        .collect();
+    spans.sort_unstable();
     let mut text = text.to_string();
-    for key in keys {
-        if key_lines(&text, key).is_some() {
-            continue;
-        }
-        let Some((first, last)) = key_lines(disk, key) else {
-            continue;
-        };
+    for (first, last) in spans {
         let hidden: Vec<&str> = disk.lines().skip(first).take(last - first + 1).collect();
         let mut lines: Vec<&str> = text.lines().collect();
         let at = root_boundary(&text, first).min(lines.len());
@@ -3996,6 +3999,10 @@ mod tests {
         let shown = hide_keys(&both, text);
         assert_eq!(shown, "display = \"Mara\"\nvoice_speed = 1.1\n");
         assert_eq!(restore_keys(&both, &shown, text), text);
+        // Above the portrait on disk, the voice still goes back where it was.
+        let flipped = "display = \"Mara\"\nvoice = \"ada\"\ncharacter = \"theo\"\nmodel = \"x\"\n";
+        let flipped_shown = hide_keys(&both, flipped);
+        assert_eq!(restore_keys(&both, &flipped_shown, flipped), flipped);
         // Only the voice hidden: the portrait stays on the page.
         let voice_only = hide_keys(&["voice"], text);
         assert!(voice_only.contains("theo") && !voice_only.contains("ada"));
