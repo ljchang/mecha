@@ -736,6 +736,22 @@ pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
                 f.id()
             );
         }
+        // Never edited — a store built at another width would break — and
+        // said with the lines to add (review of #698).
+        if !done.env_missing.is_empty() {
+            let lines: Vec<String> = done
+                .env_missing
+                .iter()
+                .map(|(k, v)| format!("{k} = \"{v}\""))
+                .collect();
+            println!(
+                "  the [[mcp]] entry for {} is left as it is — it does not tell the server mecha's \
+                 embeddings server, so it assumes another width; unless its store was built with \
+                 another embedder, add under [mcp.env]: {}",
+                wiring.name,
+                lines.join(", ")
+            );
+        }
         if done.untrusted_missing && done.runs_other.is_none() {
             println!(
                 "  the [[mcp]] entry for {} is left as it is — it needs \

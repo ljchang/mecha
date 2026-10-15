@@ -1130,10 +1130,14 @@ mod tests {
             e.contains("`xcode-select --install` for the compiler and `brew install cmake ninja`"),
             "{e}"
         );
-        // Linux keeps its own words: no Homebrew there.
-        assert!(!fits_with("linux", "aarch64", N::Driver(580, 0), lacks)
-            .unwrap_err()
-            .contains("brew"));
+        // Linux keeps its own words: no Homebrew there — asked with a tool
+        // the Mac's line would name, so the guard is what is measured
+        // (review of #698).
+        let e = fits_with("linux", "aarch64", N::Driver(580, 0), |_| {
+            Err(vec!["cmake".into()])
+        })
+        .unwrap_err();
+        assert!(e.contains("cmake") && !e.contains("brew"), "{e}");
         assert!(fits_with("macos", "x86_64", N::None, tc)
             .unwrap_err()
             .contains("Intel"));
