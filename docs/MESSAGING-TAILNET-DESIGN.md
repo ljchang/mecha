@@ -1,6 +1,6 @@
 # Messages between machines on the owner's tailnet
 
-**Status (2026-10-15): designed, not built.** The owner's ruling that starts
+**Status (2026-10-15): designed, not built; Q1 and Q2 ruled (§6).** The owner's ruling that starts
 it: *"tailnet machines count"* — the owner's own machines on their tailnet are
 inside the trust boundary. This document is what follows from that sentence,
 and what deliberately does not.
@@ -94,6 +94,17 @@ at once, to the sender, as a tool error the model can route around ("`spark`
 did not answer: its `mecha serve` is not reachable"). Queuing for a peer that
 comes back later is phase 3, if the cases above need it.
 
+**D7. Finding the agents: one listing, here and on each peer (proposed).**
+Today the model knows producers only by name — `chat`, and the triggers it
+has been told — and `mecha msg agents` (live sessions, from their markers) is
+the owner's alone. So that discovery works alike on one machine and many: an
+owner-gated `GET /api/messages/agents` on each `mecha serve`, answering this
+machine's producers (its triggers and `chat`) and which have a live session;
+and a read-only `message_agents` tool listing them for this machine and each
+configured peer. A peer that does not answer is listed as unreachable, never
+as empty. Like `message_send`, it carries no egress class: it reads from the
+owner's own machines.
+
 ## 3. What a message still cannot do
 
 Everything `mailbox.rs` says a message cannot do, across machines too: it is
@@ -129,13 +140,20 @@ everything it provokes.
    store-and-forward for an unreachable peer; a reply addressed back to
    `producer@peer` from the receiving run.
 
-## 6. Open questions for the owner
+## 6. Rulings (the owner, 2026-10-15)
 
-- **Q1. Does a remote message wake an idle session?** Locally, attended
-  front-ends hold inbound messages and unattended runs accept them
-  (`InboundPolicy`). The same default across machines, or hold every remote
-  message until the owner looks?
-- **Q2. One mailbox per machine, or one for the owner?** As designed, a
-  message lands on the machine it is addressed to. The alternative — one
-  owner-wide mailbox any machine's `chat` can claim — is simpler to address
-  and harder to reason about (two machines' runs claiming one message).
+- **Q1. A remote message can wake an idle session.** It follows the
+  receiver's own `[messages] inbound` policy exactly as a local message
+  does: where a live session starts a turn for a local message, it starts
+  one for a remote message too, and nothing remote-only holds it back. A
+  machine with no session of that producer running keeps the message until
+  one runs, as locally; `mecha serve` starting a run for it is not designed
+  here, and is the next question if that case matters.
+- **Q2. One mailbox per machine.** A message lands on the machine it is
+  addressed to (`chat@laptop`), and only there.
+
+## 7. Open
+
+- **D7 is proposed, not ruled**: whether the model gets `message_agents`, or
+  discovery stays the owner's (`mecha msg agents`, extended to peers).
+- **Waking a machine with no session running** (Q1's last sentence).
