@@ -1068,6 +1068,11 @@ pub struct McpWrite {
     /// An existing entry that does not force `untrusted_input = true`: never
     /// edited, named by the caller (review of #669).
     pub untrusted_missing: bool,
+    /// The variables of `McpWiring::env` an existing entry running the
+    /// program does not set: never edited — a graph store built at another
+    /// width would break under new ones — and said by the caller with the
+    /// lines to add (review of #698).
+    pub env_missing: Vec<(&'static str, &'static str)>,
     /// The command of an entry carrying the feature's name that runs some
     /// other program: left as it is, and no entry added beside it, so the
     /// caller names it (review of #669, pass 5).
@@ -1175,6 +1180,15 @@ pub fn write_mcp_entries(
         // never edited. It is the stronger gap — a mail read declares only
         // `readOnlyHint`, so without it a mail body never arms the untrusted
         // leg of the interlock (review of #669).
+        let env_missing: Vec<(&'static str, &'static str)> = match &existing {
+            Some(t) if runs(t) => wiring
+                .env
+                .iter()
+                .copied()
+                .filter(|(k, _)| t.get("env").and_then(|e| e.get(k)).is_none())
+                .collect(),
+            _ => Vec::new(),
+        };
         let untrusted_missing = existing.as_ref().is_some_and(|t| {
             t.get("capabilities")
                 .and_then(|c| c.get("untrusted_input"))
@@ -1238,6 +1252,7 @@ pub fn write_mcp_entries(
             wrote_outbox: false,
             outbox_missing: Vec::new(),
             untrusted_missing,
+            env_missing,
             runs_other,
             disabled,
         });
@@ -1712,6 +1727,23 @@ mod tests {
         assert_eq!(env["MECHA_GRAPH_EMBED_DIMS"], crate::recommend::EMBED_DIMS);
         assert_eq!(env.len(), GRAPH_EMBED_ENV.len());
         assert!(entry("mail").env.is_empty());
+        // An entry written before this, with no embedder, is never edited
+        // and is reported with what it lacks (review of #698).
+        let old = root.join("old.toml");
+        std::fs::write(
+            &old,
+            "[[mcp]]\nname = \"graph\"\ncommand = \"/b/mecha-graph-mcp\"\nprefix_tools = false\n\
+             [mcp.capabilities]\nuntrusted_input = true\n",
+        )
+        .unwrap();
+        let before = std::fs::read_to_string(&old).unwrap();
+        let done = write_mcp_entries(&old, &[(&graph, Path::new("/b/mecha-graph-mcp"))], &|_| {
+            false
+        })
+        .unwrap();
+        assert!(!done[0].wrote_entry);
+        assert_eq!(done[0].env_missing, GRAPH_EMBED_ENV);
+        assert_eq!(std::fs::read_to_string(&old).unwrap(), before);
         let _ = std::fs::remove_dir_all(&root);
     }
 

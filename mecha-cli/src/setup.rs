@@ -317,16 +317,23 @@ fn run_clock() -> Result<Arc<dyn mecha_core::clock::Clock>> {
     })
 }
 
-/// Whether a routed tool name belongs to a configured MCP server none of
-/// whose tools registered: the server is down — said once already — and the
-/// name is no typo.
-fn routed_server_is_down<'a>(
+/// Whether a routed tool name belongs to a configured, prefixed MCP server
+/// none of whose tools registered: nothing of that server can run, so nothing
+/// it would route can run unstaged — the warning's whole concern — and a
+/// server that failed has said so already.
+fn routed_server_is_down(
     name: &str,
-    servers: impl IntoIterator<Item = &'a str>,
+    servers: &[mecha_core::config::McpServerConfig],
     registered: &[&str],
 ) -> bool {
     servers
-        .into_iter()
+        .iter()
+        // Only a prefixed server: one with `prefix_tools = false` registers
+        // its tools bare, so a route spelled `<name>__…` never matches them
+        // and the real tool runs unstaged — exactly what the warning is for
+        // (review of #698).
+        .filter(|m| m.prefix_tools != Some(false))
+        .map(|m| m.name.as_str())
         .find(|s| {
             name.strip_prefix(*s)
                 .is_some_and(|rest| rest.starts_with("__"))
@@ -813,8 +820,7 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
                 // hunt for (the owner's fresh Mac, 2026-10-14: eight lines
                 // blamed spelling for two servers that did not start).
                 let registered: Vec<&str> = agent.registry().iter().map(|t| t.name()).collect();
-                let servers = cfg.mcp.iter().map(|m| m.name.as_str());
-                if routed_server_is_down(name, servers, &registered) {
+                if routed_server_is_down(name, &cfg.mcp, &registered) {
                     continue;
                 }
                 eprintln!(
@@ -2845,24 +2851,26 @@ mod tests {
     /// server, still warns (the owner's fresh Mac, 2026-10-14).
     #[test]
     fn a_down_server_is_not_blamed_on_spelling() {
-        let servers = ["mail", "docs"];
+        let server = |name: &str, prefix: Option<bool>| mecha_core::config::McpServerConfig {
+            name: name.into(),
+            prefix_tools: prefix,
+            ..Default::default()
+        };
+        let servers = [server("mail", None), server("docs", None)];
         let live = ["docs__docs_append", "fs_read"];
-        assert!(super::routed_server_is_down(
-            "mail__mail_send",
-            servers,
-            &live
-        ));
+        let down = |name: &str| super::routed_server_is_down(name, &servers, &live);
+        assert!(down("mail__mail_send"));
+        assert!(!down("docs__docs_apend"));
+        assert!(!down("mial__mail_send"));
+        assert!(!down("mailx__send"));
+        // An unprefixed server registers bare names: a route spelled with
+        // its prefix is a real miss, and still warns (review of #698).
+        let bare = [server("graph", Some(false))];
         assert!(!super::routed_server_is_down(
-            "docs__docs_apend",
-            servers,
-            &live
+            "graph__kg_search",
+            &bare,
+            &["kg_search"]
         ));
-        assert!(!super::routed_server_is_down(
-            "mial__mail_send",
-            servers,
-            &live
-        ));
-        assert!(!super::routed_server_is_down("mailx__send", servers, &live));
     }
 
     use super::{
