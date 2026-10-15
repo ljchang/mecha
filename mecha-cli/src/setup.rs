@@ -790,10 +790,17 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     // shape as the `[outbox]` warnings below, and it fires on every start
     // for the same reason; `--tool` narrowing is the caller saying so, and is
     // silent.
+    // What registered, read once for both checks below.
+    let registered: Vec<&str> = agent.registry().iter().map(|t| t.name()).collect();
     for name in policy.tools() {
         let narrowed_out =
             !excluded_by_allowlist(std::slice::from_ref(&name.to_string()), &opts.tools).is_empty();
-        if agent.registry().get(name).is_none() && !narrowed_out {
+        // A server that did not start, said already: nothing of it can run
+        // for the rule to judge (review of #698).
+        if agent.registry().get(name).is_none()
+            && !narrowed_out
+            && !routed_server_is_down(name, &cfg.mcp, &registered)
+        {
             eprintln!(
                 "mecha: [[rule]] names `{name}`, which is not a registered tool — check the \
                  spelling, or this rule judges nothing"
@@ -819,7 +826,6 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
                 // missing is that server down, said above — not a typo to
                 // hunt for (the owner's fresh Mac, 2026-10-14: eight lines
                 // blamed spelling for two servers that did not start).
-                let registered: Vec<&str> = agent.registry().iter().map(|t| t.name()).collect();
                 if routed_server_is_down(name, &cfg.mcp, &registered) {
                     continue;
                 }

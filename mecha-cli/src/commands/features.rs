@@ -205,11 +205,13 @@ pub async fn execute(args: Args) -> Result<()> {
 /// too, as it does unasked once a persona's picture settings choose it.
 pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: bool) -> Result<()> {
     let on = enable_unwired(ids, no_install, turbo, yes).await?;
-    mcp_entries(&on)?;
+    // The switches are written whatever the wiring does: the note is said
+    // either way (review of #698).
+    let wired = mcp_entries(&on);
     if !on.is_empty() {
         println!("{RESTART_NOTE}");
     }
-    Ok(())
+    wired
 }
 
 /// [`enable`] up to the `[[mcp]]` wiring, returning the features it switched
