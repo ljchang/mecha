@@ -692,6 +692,29 @@ pub fn remove(m: &Machinery, which: Which, naming: &Naming) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// The graph server is told mecha's own embedder: the shipped port, the
+    /// alias the launcher serves, and that model's width (the owner's fresh
+    /// Mac, 2026-10-15: unset, the graph assumed 768 and refused 1024).
+    #[test]
+    fn graph_embedder_is_mecha_s() {
+        let env: std::collections::BTreeMap<_, _> =
+            crate::feature::GRAPH_EMBED_ENV.iter().copied().collect();
+        let port = Which::Embeddings.shipped().public;
+        assert_eq!(
+            env["MECHA_GRAPH_EMBED_URL"],
+            format!("http://127.0.0.1:{port}")
+        );
+        assert!(
+            EMBED_LAUNCHER.contains(&format!("--alias {}", crate::recommend::EMBED_ALIAS)),
+            "the launcher serves another name"
+        );
+        assert_eq!(
+            env["MECHA_GRAPH_EMBED_MODEL"],
+            crate::recommend::EMBED_ALIAS
+        );
+        assert_eq!(env["MECHA_GRAPH_EMBED_DIMS"], crate::recommend::EMBED_DIMS);
+    }
+
     use super::*;
 
     /// The router's engine is mecha's own or none: a `llama-server` on the
