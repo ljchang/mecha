@@ -51,22 +51,34 @@ nothing is new: the receiver's runs claim it at a turn boundary exactly as a
 local message. A machine that does not run `mecha serve` cannot receive; one
 that runs it with `web` off refuses, as every route does.
 
-**D3. Addressing: `producer@peer`, peers named by the owner.** `[messages]
-peers` in the global config — never a project layer, as `[messages]` already
-is — maps a short name to a peer's `mecha serve` URL:
+**D3. Finding the machines: the tailnet is the directory, automatically.**
+The owner's ruling (2026-10-15): *"Let's go automatic. No agent means no need
+to register."* A machine finds its peers from `tailscale status --json`, which
+lists every node with its owner, whether it is online, whether it is tagged,
+and its MagicDNS name:
+
+1. keep the nodes the owner's login owns, online and untagged;
+2. ask each for its agents (D7) at its MagicDNS name, through `tailscale
+   serve` — the door the web app already uses;
+3. a node that answers, as the owner (D1), is a peer under its MagicDNS
+   short name (`spark` for `spark.tail1234.ts.net`). A node not running
+   `mecha serve` has no agents to offer and is no peer: nothing registers a
+   machine, and nothing needs to.
+
+The list is read when a send or a listing needs it, never cached past a
+short window, so a machine that sleeps drops out and one that wakes comes
+back without anyone doing anything. `[messages.peers]` in the global config
+(never a project layer, as `[messages]` already is) stays optional, for what
+the tailnet cannot say:
 
 ```toml
 [messages.peers]
-spark = "https://spark.tail1234.ts.net"
-mbp   = "https://mbp.tail1234.ts.net"
+gpu = "spark"          # a nickname for a node
+exclude = ["old-mbp"]  # a node of the owner's never treated as a peer
 ```
 
-`message_send`'s `to` accepts `chat` (this machine) or `chat@spark`. The model
-names a peer only from this closed set; an unknown peer is an error that lists
-the configured names. Discovery is a helper, never trust: `mecha msg peers
---discover` lists the owner's tailnet nodes answering `mecha serve`, from
-`tailscale status --json`, for the owner to copy into the table — a node
-appearing on the tailnet is not a peer until the owner writes it down.
+`message_send`'s `to` accepts `chat` (this machine) or `chat@spark`; an
+unknown or unreachable machine is an error that lists the peers found.
 
 **D4. Egress: none, because the boundary moved — and the taint moves with
 it.** A send to a configured peer is classified as a local send is: no
@@ -94,15 +106,23 @@ at once, to the sender, as a tool error the model can route around ("`spark`
 did not answer: its `mecha serve` is not reachable"). Queuing for a peer that
 comes back later is phase 3, if the cases above need it.
 
-**D7. Finding the agents: one listing, here and on each peer (proposed).**
-Today the model knows producers only by name — `chat`, and the triggers it
-has been told — and `mecha msg agents` (live sessions, from their markers) is
-the owner's alone. So that discovery works alike on one machine and many: an
-owner-gated `GET /api/messages/agents` on each `mecha serve`, answering this
-machine's producers (its triggers and `chat`) and which have a live session;
-and a read-only `message_agents` tool listing them for this machine and each
-configured peer. A peer that does not answer is listed as unreachable, never
-as empty. Like `message_send`, it carries no egress class: it reads from the
+**D7. Finding the agents: each machine lists its own.** Every live session
+already registers itself — a marker naming its producer, session and pid,
+which `mecha msg agents` reads and liveness-checks. The listing becomes
+reachable from outside as an owner-gated `GET /api/messages/agents` on each
+`mecha serve`: this machine's producers (its triggers and `chat`) and which
+have a live session. With D3 that is the whole of discovery — the tailnet
+lists the machines, each machine lists its agents — and a read-only
+`message_agents` tool, and `mecha msg agents --all`, show it as one table:
+
+```
+laptop (this machine)   chat ● live        morning-brief
+spark                   chat ○             nightly-graph ● live    hud-refresh
+mbp                     unreachable
+```
+
+A peer that does not answer is listed as unreachable, never as empty. Like
+`message_send`, the listing carries no egress class: it reads from the
 owner's own machines.
 
 ## 3. What a message still cannot do
@@ -128,17 +148,22 @@ everything it provokes.
 
 1. **Receive.** `POST /api/messages` on `mecha serve`: the owner guard, the
    peer's machine from `tailscale whois`, `MailboxStore::send` with
-   `from = <producer>@<machine>`. Tested with a forged header (refused),
+   `from = <producer>@<machine>`, and `GET /api/messages/agents` (D7).
+   Tested with a forged header (refused),
    another login (refused), a missing taint (stored untrusted).
-2. **Send.** `[messages.peers]`; `message_send` and `mecha msg send` accept
-   `producer@peer`; the send stamps taint exactly as a local one and posts to
-   the peer, failing at once when it does not answer. The `Egress` class of
-   `message_send` is unchanged (none) — the test is that a tainted
-   conversation can still send to a peer, and the receiving conversation
-   comes out tainted.
-3. **Later, if the cases need them:** `mecha msg peers --discover`;
-   store-and-forward for an unreachable peer; a reply addressed back to
-   `producer@peer` from the receiving run.
+2. **Find and send.** Peers from `tailscale status --json` (D3), with
+   `[messages.peers]` for nicknames and exclusions; `message_agents` and
+   `mecha msg agents --all` list every machine's agents (D7);
+   `message_send` and `mecha msg send` accept `producer@peer`; the send
+   stamps taint exactly as a local one and posts to the peer, failing at
+   once when it does not answer. The `Egress` class of `message_send` is
+   unchanged (none) — the test is that a tainted conversation can still send
+   to a peer, and the receiving conversation comes out tainted. Discovery is
+   tested over a recorded `tailscale status --json`: another login's node, a
+   tagged node, an offline one and one with no `mecha serve` are none of
+   them peers.
+3. **Later, if the cases need them:** store-and-forward for an unreachable
+   peer; a reply addressed back to `producer@peer` from the receiving run.
 
 ## 6. Rulings (the owner, 2026-10-15)
 
@@ -152,8 +177,12 @@ everything it provokes.
 - **Q2. One mailbox per machine.** A message lands on the machine it is
   addressed to (`chat@laptop`), and only there.
 
-## 7. Open
+- **Q3. Finding peers is automatic** (D3): the owner's own online, untagged
+  nodes running `mecha serve` are peers, found from the tailnet; a machine
+  with no agent needs no registration.
 
-- **D7 is proposed, not ruled**: whether the model gets `message_agents`, or
-  discovery stays the owner's (`mecha msg agents`, extended to peers).
+## 7. Open, and deferred
+
 - **Waking a machine with no session running** (Q1's last sentence).
+- **Deferred by the owner:** the web app switching between the agents of
+  the machines that serve one — the same discovery, offered as a picker.

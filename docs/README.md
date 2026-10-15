@@ -63,7 +63,7 @@ something shipped.
 | [`MAIL-UX-RESEARCH.md`](MAIL-UX-RESEARCH.md) | What the field has converged on for agent-driven email |
 | [`MEMORY-RESEARCH.md`](MEMORY-RESEARCH.md) | Whether agent memory should accumulate or be curated, and what the evidence says |
 | [`MESSAGING-RESEARCH.md`](MESSAGING-RESEARCH.md) | How separate mecha sessions should message each other, and what travels with a message |
-| [`MESSAGING-TAILNET-DESIGN.md`](MESSAGING-TAILNET-DESIGN.md) | Messages between mecha on the owner's own machines over their tailnet: who counts as a peer, the one route, why a send to one is not egress. Not built; §6 holds the owner's rulings, §7 what is open |
+| [`MESSAGING-TAILNET-DESIGN.md`](MESSAGING-TAILNET-DESIGN.md) | Messages between mecha on the owner's own machines over their tailnet: peers found automatically from the tailnet, each machine listing its agents, the one route, why a send to one is not egress. Not built; §6 holds the owner's rulings, §7 what is open |
 | [`PERSONA-MEMORY-TIMESCALES-RESEARCH.md`](PERSONA-MEMORY-TIMESCALES-RESEARCH.md) | What a persona's "fact" should be: lasting facts vs states vs episodes, whether memory should decay, and what the evidence says about each (2026-10-02) |
 | [`POLL-RESEARCH.md`](POLL-RESEARCH.md) | What polling products ship, and which parts are worth copying |
 | [`PRIOR-ART-RESEARCH.md`](PRIOR-ART-RESEARCH.md) | What openclaw, codex and the other harnesses do that this one does not |
