@@ -427,7 +427,8 @@ mod tests {
     }
 
     /// When `plutil` is here (every Mac), the plist is one it accepts — the
-    /// check launchd's own parser would make at `bootstrap`.
+    /// check launchd's own parser would make at `bootstrap` — in the form
+    /// written, with its revision stamp (`user_service::stamp`).
     #[test]
     fn plutil_accepts_the_plist() {
         let dir = std::env::temp_dir().join(format!("mecha-launchd-{}", uuid::Uuid::new_v4()));
@@ -435,14 +436,17 @@ mod tests {
         let path = dir.join(plist_name("mecha-test"));
         std::fs::write(
             &path,
-            plist_text(&Agent {
-                label: label("mecha-test"),
-                program: vec!["/bin/echo".into(), "<&>".into()],
-                env: vec![("A".into(), "\"quoted\"".into())],
-                workdir: Some(dir.clone()),
-                throttle_secs: 5,
-                log: dir.join("t.log"),
-            }),
+            crate::user_service::stamp(
+                "comfyui",
+                &plist_text(&Agent {
+                    label: label("mecha-test"),
+                    program: vec!["/bin/echo".into(), "<&>".into()],
+                    env: vec![("A".into(), "\"quoted\"".into())],
+                    workdir: Some(dir.clone()),
+                    throttle_secs: 5,
+                    log: dir.join("t.log"),
+                }),
+            ),
         )
         .unwrap();
         match std::process::Command::new("plutil")
