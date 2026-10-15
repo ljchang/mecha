@@ -55,6 +55,7 @@ pub mod backlog;
 pub mod batch;
 pub mod boredom;
 pub mod brief;
+pub mod build_source;
 pub mod cache_lens;
 pub mod candidate;
 pub mod capture;

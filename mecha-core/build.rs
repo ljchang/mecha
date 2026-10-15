@@ -15,6 +15,8 @@
 use std::path::Path;
 use std::process::Command;
 
+include!("src/build_source.rs");
+
 fn main() {
     let dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
     let dir = Path::new(&dir);
@@ -45,8 +47,22 @@ fn main() {
         // it, else `local:` (review of #699).
         let fetched = dir.components().any(|c| c.as_os_str() == "checkouts")
             && dir.components().any(|c| c.as_os_str() == "git");
-        let pushed =
-            fetched || git(&["branch", "-r", "--contains", "HEAD"]).is_some_and(|b| !b.is_empty());
+        let repo = std::env::var("CARGO_PKG_REPOSITORY").unwrap_or_default();
+        // A branch of mecha's own repository holds it: a remote-tracking
+        // branch (not a pull request's ref) whose remote is that repository.
+        let pushed = fetched
+            || git(&[
+                "for-each-ref",
+                "--contains",
+                "HEAD",
+                "--format=%(refname)",
+                "refs/remotes",
+            ])
+            .is_some_and(|refs| {
+                refs.lines().filter_map(remote_of).any(|(remote, _)| {
+                    git(&["remote", "get-url", remote]).is_some_and(|url| same_repo(&url, &repo))
+                })
+            });
         let kind = if pushed { "git" } else { "local" };
         println!("cargo:rustc-env=MECHA_BUILD_SOURCE={kind}:{sha}");
         // Rebuilt when the checkout moves, not only when a file of this
@@ -54,6 +70,8 @@ fn main() {
         // as changed, and would rebuild every time (review of #699).
         let mut watch = vec![git(&["rev-parse", "--git-path", "HEAD"])];
         watch.push(git(&["rev-parse", "--git-path", "packed-refs"]));
+        // And when a push lands: a commit built before it read `local:`.
+        watch.push(git(&["rev-parse", "--git-path", "refs/remotes"]));
         if let Some(head) = git(&["symbolic-ref", "-q", "HEAD"]) {
             watch.push(git(&["rev-parse", "--git-path", &head]));
         }

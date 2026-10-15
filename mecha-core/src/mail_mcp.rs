@@ -23,7 +23,7 @@ use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 
 use crate::install::Say;
-use crate::own_build::{Copy, Source};
+use crate::own_build::{CopyState, Source};
 use crate::sidecar::{Machinery, Manifest};
 
 /// The sidecar this installs (`sidecar::SIDECARS`).
@@ -52,7 +52,7 @@ pub fn installed(mecha_home: &Path) -> bool {
     };
     PROGRAMS.iter().all(|p| {
         let bin = binary(mecha_home, p);
-        is_executable(&bin) && crate::own_build::copy_of(&bin, PACKAGE, &want) == Copy::Current
+        is_executable(&bin) && crate::own_build::copy_of(&bin, PACKAGE, &want) == CopyState::Current
     })
 }
 
@@ -77,7 +77,7 @@ fn fits_with(
         return Err(format!(
             "this mecha was built from commit {}, which no remote branch holds yet — build the \
              matching servers from the same checkout: `cargo install --path mecha-mail --locked`",
-            &sha[..9]
+            &sha[..sha.len().min(9)]
         ));
     }
     let cargo = find("cargo").ok_or_else(|| {
@@ -161,7 +161,8 @@ async fn install_with(m: &Machinery, cargo: &Path, source: &Source, say: Say<'_>
 fn built_from(root: &Path, source: &Source) -> bool {
     PROGRAMS.iter().all(|p| {
         let bin = root.join("bin").join(p);
-        is_executable(&bin) && crate::own_build::copy_of(&bin, PACKAGE, source) == Copy::Current
+        is_executable(&bin)
+            && crate::own_build::copy_of(&bin, PACKAGE, source) == CopyState::Current
     })
 }
 
@@ -231,6 +232,100 @@ mod tests {
         assert!(fits_with(cargo, Some(Source::Local(SHA.into())))
             .unwrap_err()
             .contains("cargo install --path mecha-mail"));
+    }
+
+    fn fake_cargo(dir: &Path, body: &str) -> PathBuf {
+        let p = dir.join("cargo");
+        std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        p
+    }
+
+    /// A failed build is an error and leaves the install unfinished; a build
+    /// that wrote one server but not the other is a failure too; one that
+    /// wrote both, recorded from this source, is installed (review of #699).
+    #[tokio::test]
+    async fn a_failed_or_partial_build_installs_nothing_and_a_good_one_is_checked() {
+        let root = std::env::temp_dir().join(format!("mecha-mmcp-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let m = Machinery {
+            home: root.join("home"),
+            mecha_home: root.join("home/.mecha"),
+            unit_dirs: vec![],
+            path: vec![],
+            docker: Box::new(|_| crate::sidecar::Lookup::Absent),
+        };
+        let home = m.mecha_home.clone();
+        let src = Source::Git(SHA.into());
+
+        let failing = fake_cargo(&root, "exit 101");
+        let e = install_with(&m, &failing, &src, &mut |_| {})
+            .await
+            .unwrap_err();
+        assert!(format!("{e:#}").contains("failed"), "{e:#}");
+        let man = Manifest::read(&home).unwrap();
+        assert!(man.entries.iter().any(|e| e.sidecar == ID && e.incomplete));
+
+        // What `cargo install --root <r> --git … --rev … mecha-mail` writes,
+        // `bins` and all; `$1` names which servers it leaves.
+        let build = |bins: &str| {
+            fake_cargo(
+                &root,
+                &format!(
+                    "while [ \"$1\" != --root ]; do shift; done; r=\"$2\"\n\
+                     mkdir -p \"$r/bin\"\n\
+                     for b in {bins}; do printf '#!/bin/sh\\n' > \"$r/bin/$b\"; chmod 755 \"$r/bin/$b\"; done\n\
+                     printf '%s' '{{\"installs\":{{\"mecha-mail 0.1.24 (git+{REPO}?rev={SHA}#{SHA})\":{{\"bins\":[{list}]}}}}}}' \
+                     > \"$r/.crates2.json\"",
+                    list = bins
+                        .split(' ')
+                        .map(|b| format!("\"{b}\""))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ),
+            )
+        };
+        let partial = build("mecha-mail");
+        let e = install_with(&m, &partial, &src, &mut |_| {})
+            .await
+            .unwrap_err();
+        assert!(format!("{e:#}").contains("both servers"), "{e:#}");
+        let good = build("mecha-mail mecha-docs");
+        install_with(&m, &good, &src, &mut |_| {}).await.unwrap();
+        assert!(built_from(&super::root(&home), &src));
+        let man = Manifest::read(&home).unwrap();
+        assert!(man.entries.iter().any(|e| e.sidecar == ID && !e.incomplete));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The real build, with real cargo, from this mecha's own source: what the
+    /// stand-in cannot say — that cargo takes these arguments and records
+    /// both servers with their `bins`. Minutes, and the network; skipped for
+    /// a build whose source cannot be fetched (review of #699).
+    #[tokio::test]
+    #[ignore]
+    async fn the_matching_servers_build_with_real_cargo() {
+        let Ok((cargo, source)) = fits() else {
+            eprintln!("no cargo, or this build's source cannot be fetched: skipped");
+            return;
+        };
+        let root = std::env::temp_dir().join(format!("mecha-mmcp-real-{}", uuid::Uuid::new_v4()));
+        let m = Machinery {
+            home: root.join("home"),
+            mecha_home: root.join("home/.mecha"),
+            unit_dirs: vec![],
+            path: vec![],
+            docker: Box::new(|_| crate::sidecar::Lookup::Absent),
+        };
+        install_with(&m, &cargo, &source, &mut |s| eprintln!("{s}"))
+            .await
+            .unwrap();
+        assert!(built_from(&super::root(&m.mecha_home), &source));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The tree counts as built only when cargo recorded both servers from

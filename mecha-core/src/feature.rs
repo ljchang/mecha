@@ -600,8 +600,11 @@ impl Facts {
             count_accounts, docs_store_dir, find_program, mail_store_dir, slack_linked,
         };
         Facts {
-            has_mail_binary: find_program("mecha-mail").is_some(),
-            has_docs_binary: find_program("mecha-docs").is_some(),
+            // mecha's own build, off the PATH, counts too (§15).
+            has_mail_binary: find_program("mecha-mail").is_some()
+                || crate::mail_mcp::installed(home),
+            has_docs_binary: find_program("mecha-docs").is_some()
+                || crate::mail_mcp::installed(home),
             // On the PATH, or mecha's own build in its tree (`graph_mcp`).
             has_graph_binary: find_program("mecha-graph-mcp").is_some()
                 || crate::graph_mcp::installed(home),

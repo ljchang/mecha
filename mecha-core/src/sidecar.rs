@@ -256,7 +256,7 @@ pub fn stale_copy(program: &str, bin: &Path) -> bool {
     own_server(id).is_some_and(|(package, want)| {
         matches!(
             crate::own_build::copy_of(bin, package, &want),
-            crate::own_build::Copy::Stale(_)
+            crate::own_build::CopyState::Stale(_)
         )
     })
 }
@@ -749,7 +749,7 @@ pub fn plan(
                             .is_some_and(|p| p.starts_with(&sidecars_dir) || manifest.wrote(p));
                         if !ours {
                             if let (Some((package, want)), Some(p)) = (own_server(s.id), &path) {
-                                if let crate::own_build::Copy::Stale(why) =
+                                if let crate::own_build::CopyState::Stale(why) =
                                     crate::own_build::copy_of(p, package, &want)
                                 {
                                     *stale_copy.borrow_mut() =

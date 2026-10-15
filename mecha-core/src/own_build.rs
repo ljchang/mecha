@@ -50,8 +50,8 @@ impl Source {
     /// As `mecha --version` says it: the short commit, or the release.
     pub fn short(&self) -> String {
         match self {
-            Source::Git(sha) => format!("git {}", &sha[..9]),
-            Source::Local(sha) => format!("git {}, unpushed", &sha[..9]),
+            Source::Git(sha) => format!("git {}", short(sha)),
+            Source::Local(sha) => format!("git {}, unpushed", short(sha)),
             Source::Registry(v) => format!("crates.io {v}"),
         }
     }
@@ -79,7 +79,7 @@ pub fn version_line() -> &'static str {
 
 /// What a copy of a server is, against the build wanted.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Copy {
+pub enum CopyState {
     /// The wanted build.
     Current,
     /// Built by the owner from a checkout, or by something other than cargo:
@@ -91,24 +91,24 @@ pub enum Copy {
 
 /// What cargo recorded for the package that installed `bin` (a program under
 /// a cargo root's `bin/`), against `want`.
-pub fn copy_of(bin: &Path, package: &str, want: &Source) -> Copy {
+pub fn copy_of(bin: &Path, package: &str, want: &Source) -> CopyState {
     let Some(root) = bin.parent().and_then(Path::parent) else {
-        return Copy::Owners;
+        return CopyState::Owners;
     };
     let Ok(text) = std::fs::read_to_string(root.join(".crates2.json")) else {
-        return Copy::Owners;
+        return CopyState::Owners;
     };
     let program = bin.file_name().and_then(|n| n.to_str()).unwrap_or("");
     judge(&text, package, program, want)
 }
 
 /// [`copy_of`] over the record's text, so every case is a test.
-fn judge(crates2: &str, package: &str, program: &str, want: &Source) -> Copy {
+fn judge(crates2: &str, package: &str, program: &str, want: &Source) -> CopyState {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(crates2) else {
-        return Copy::Owners;
+        return CopyState::Owners;
     };
     let Some(installs) = v.get("installs").and_then(|i| i.as_object()) else {
-        return Copy::Owners;
+        return CopyState::Owners;
     };
     // The record that owns this program: the package's key whose bins name
     // it (cargo keeps one per package and source).
@@ -118,26 +118,26 @@ fn judge(crates2: &str, package: &str, program: &str, want: &Source) -> Copy {
             .then_some(key.as_str())
     });
     let Some(key) = key else {
-        return Copy::Owners;
+        return CopyState::Owners;
     };
     let (version, source) = match key
         .split_once(' ')
         .and_then(|(_, rest)| rest.split_once(' '))
     {
         Some((version, source)) => (version, source.trim_matches(['(', ')'])),
-        None => return Copy::Owners,
+        None => return CopyState::Owners,
     };
     if source.starts_with("path+") {
-        return Copy::Owners;
+        return CopyState::Owners;
     }
     match (source.split_once('#'), want) {
         (Some((_, sha)), Source::Git(wanted) | Source::Local(wanted))
             if source.starts_with("git+") =>
         {
             if sha == wanted {
-                Copy::Current
+                CopyState::Current
             } else {
-                Copy::Stale(format!(
+                CopyState::Stale(format!(
                     "built from commit {}, not {}",
                     short(sha),
                     short(wanted)
@@ -146,19 +146,19 @@ fn judge(crates2: &str, package: &str, program: &str, want: &Source) -> Copy {
         }
         (None, Source::Registry(wanted)) if source.starts_with("registry+") => {
             if version == wanted {
-                Copy::Current
+                CopyState::Current
             } else {
-                Copy::Stale(format!("version {version}, not {wanted}"))
+                CopyState::Stale(format!("version {version}, not {wanted}"))
             }
         }
         _ if source.starts_with("registry+") => {
-            Copy::Stale(format!("the published {version}, not {}", describe(want)))
+            CopyState::Stale(format!("the published {version}, not {}", describe(want)))
         }
         _ if source.starts_with("git+") => {
-            Copy::Stale(format!("built from a git commit, not {}", describe(want)))
+            CopyState::Stale(format!("built from a git commit, not {}", describe(want)))
         }
         // A source this build does not know: not ours to judge.
-        _ => Copy::Owners,
+        _ => CopyState::Owners,
     }
 }
 
@@ -215,7 +215,7 @@ mod tests {
         let bins = ["mecha-mail", "mecha-docs"];
         assert!(matches!(
             judge(&record(crates_io, &bins), "mecha-mail", "mecha-docs", &git),
-            Copy::Stale(_)
+            CopyState::Stale(_)
         ));
         assert_eq!(
             judge(
@@ -224,7 +224,7 @@ mod tests {
                 "mecha-mail",
                 &registry("0.1.24")
             ),
-            Copy::Current
+            CopyState::Current
         );
         assert!(matches!(
             judge(
@@ -233,16 +233,17 @@ mod tests {
                 "mecha-mail",
                 &registry("0.1.25")
             ),
-            Copy::Stale(_)
+            CopyState::Stale(_)
         ));
         let at = |sha: &str| {
             format!("mecha-mail 0.1.24 (git+https://github.com/ljchang/mecha?rev={sha}#{sha})")
         };
         assert_eq!(
             judge(&record(&at(SHA), &bins), "mecha-mail", "mecha-mail", &git),
-            Copy::Current
+            CopyState::Current
         );
-        let Copy::Stale(why) = judge(&record(&at(OTHER), &bins), "mecha-mail", "mecha-mail", &git)
+        let CopyState::Stale(why) =
+            judge(&record(&at(OTHER), &bins), "mecha-mail", "mecha-mail", &git)
         else {
             panic!("another commit is stale")
         };
@@ -254,7 +255,7 @@ mod tests {
         let path = "mecha-mail 0.1.23 (path+file:///home/u/mecha/mecha-mail)";
         assert_eq!(
             judge(&record(path, &bins), "mecha-mail", "mecha-mail", &git),
-            Copy::Owners
+            CopyState::Owners
         );
         // Nothing recorded for this program, or no readable record.
         assert_eq!(
@@ -264,11 +265,11 @@ mod tests {
                 "mecha-mail",
                 &git
             ),
-            Copy::Owners
+            CopyState::Owners
         );
         assert_eq!(
             judge("not json", "mecha-mail", "mecha-mail", &git),
-            Copy::Owners
+            CopyState::Owners
         );
     }
 
@@ -287,11 +288,11 @@ mod tests {
         let bin = root.join("bin/mecha-graph-mcp");
         assert!(matches!(
             copy_of(&bin, "mecha-graph-mcp", &Source::Git(SHA.into())),
-            Copy::Stale(_)
+            CopyState::Stale(_)
         ));
         assert_eq!(
             copy_of(&root.join("nowhere/bin/x"), "x", &Source::Git(SHA.into())),
-            Copy::Owners
+            CopyState::Owners
         );
         let _ = std::fs::remove_dir_all(&root);
     }

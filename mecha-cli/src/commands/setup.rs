@@ -491,9 +491,10 @@ enum Answer {
 /// and there is nothing coherent to decline about being told.
 ///
 /// **The de-duplication is on what has been *run*, not on what has been
-/// asked**, and the difference is a bug that shipped. `mail` and `docs` carry
-/// the identical remedy argv when neither binary is on PATH — one
-/// `cargo install mecha-mail` satisfies both — so skipping the second
+/// asked**, and the difference is a bug that shipped. `mail` and `docs` once
+/// carried the identical remedy argv when neither binary was on PATH — one
+/// `cargo install mecha-mail` satisfied both; since §15 each says its own
+/// `mecha features enable` — so skipping the second
 /// *command* is right and skipping the second *question* was not: a `never`
 /// at the mail prompt recorded only `mail`, left `docs` outstanding, and
 /// `mecha setup` still exited 1 after somebody had answered every question
