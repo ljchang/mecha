@@ -103,11 +103,24 @@ command = "mecha-graph-mcp"
 # The kg_* tools carry their own namespace; skip the graph__ prefix.
 prefix_tools = false
 
+# Which embedder the store is built for: mecha's on-demand embeddings
+# server and the model it serves. Without them the server assumes a
+# 768-wide store and refuses harrier's 1024-wide vectors.
+[mcp.env]
+MECHA_GRAPH_EMBED_URL = "http://127.0.0.1:8081"
+MECHA_GRAPH_EMBED_MODEL = "harrier-oss-v1-0.6b"
+MECHA_GRAPH_EMBED_DIMS = "1024"
+
 # The graph holds other people's words, so reading it must arm the
 # trifecta interlock. No MCP annotation can declare that; config forces it.
 [mcp.capabilities]
 untrusted_input = true
 ```
+
+`mecha features enable graph` writes this entry for you, including the
+embedder. Point it at another embedding server by changing the three
+`MECHA_GRAPH_EMBED_*` lines together: the width must be what that model
+returns.
 
 Why the override matters — and how episodes, corrections, and review move
 between the two projects — is the [Memory](/docs/features/memory) page's
