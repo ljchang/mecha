@@ -1143,6 +1143,26 @@ pub fn budget(machine: Machine, shown: &[Feature]) -> Budget {
 mod tests {
     use super::*;
 
+    /// The width the graph is told is the pinned embedder's: the alias names
+    /// the file pinned, so a change of embedder fails here until the alias —
+    /// and the width measured for it — are changed with it (review of #698).
+    #[test]
+    fn the_embedder_s_width_follows_its_pin() {
+        let Source::HuggingFace { files, .. } = &EMBED_SOURCES[0] else {
+            panic!("the embedder is a hub file")
+        };
+        assert!(
+            files[0].path.starts_with(EMBED_ALIAS),
+            "{} is not {EMBED_ALIAS}: measure its width and change EMBED_ALIAS and EMBED_DIMS",
+            files[0].path
+        );
+        assert_eq!(EMBED_SOURCES.len(), 1);
+        assert_eq!(
+            EMBED_DIMS, "1024",
+            "harrier-oss-v1-0.6b, measured 2026-10-15"
+        );
+    }
+
     fn is_hex(s: &str, len: usize) -> bool {
         s.len() == len
             && s.bytes()

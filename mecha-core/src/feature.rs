@@ -1176,10 +1176,6 @@ pub fn write_mcp_entries(
                 .unwrap_or("")
                 .to_string()
         });
-        // An entry the owner wrote that does not force the capability: named,
-        // never edited. It is the stronger gap — a mail read declares only
-        // `readOnlyHint`, so without it a mail body never arms the untrusted
-        // leg of the interlock (review of #669).
         let env_missing: Vec<(&'static str, &'static str)> = match &existing {
             Some(t) if runs(t) => wiring
                 .env
@@ -1189,6 +1185,10 @@ pub fn write_mcp_entries(
                 .collect(),
             _ => Vec::new(),
         };
+        // An entry the owner wrote that does not force the capability: named,
+        // never edited. It is the stronger gap — a mail read declares only
+        // `readOnlyHint`, so without it a mail body never arms the untrusted
+        // leg of the interlock (review of #669).
         let untrusted_missing = existing.as_ref().is_some_and(|t| {
             t.get("capabilities")
                 .and_then(|c| c.get("untrusted_input"))

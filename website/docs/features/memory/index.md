@@ -45,6 +45,14 @@ command = "mecha-graph-mcp"      # `mecha features enable graph` builds it and w
 # The kg_* tools carry their own namespace, so skip the graph__ prefix.
 prefix_tools = false
 
+# The embedder the store is built for: mecha's on-demand embeddings server.
+# Without these the server assumes a 768-wide store and refuses harrier's
+# 1024-wide vectors. The three move together.
+[mcp.env]
+MECHA_GRAPH_EMBED_URL = "http://127.0.0.1:8081"
+MECHA_GRAPH_EMBED_MODEL = "harrier-oss-v1-0.6b"
+MECHA_GRAPH_EMBED_DIMS = "1024"
+
 # The graph holds other people's words — mail bodies, invite titles,
 # extracted claims — so reading it must count as untrusted input. No MCP
 # annotation can declare that, so config forces it, and the override can
