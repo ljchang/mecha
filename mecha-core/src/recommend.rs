@@ -339,6 +339,13 @@ const fn geometry_mb(g: ChatGeometry) -> u32 {
     qwen36_with_cache_mb(g.ctx, g.slots)
 }
 
+/// The name mecha's embeddings server serves its model under (the launcher's
+/// `--alias`), and the width of the vectors it returns — measured: 1024 for
+/// harrier-oss-v1-0.6b (the owner's fresh Mac, 2026-10-15). What a reader
+/// of those vectors, the graph server, must be told (`feature::GRAPH_EMBED_ENV`).
+pub const EMBED_ALIAS: &str = "harrier-oss-v1-0.6b";
+pub const EMBED_DIMS: &str = "1024";
+
 const EMBED_SOURCES: &[Source] = &[Source::HuggingFace {
     repo: "mradermacher/harrier-oss-v1-0.6b-GGUF",
     revision: "d79decec1ab9442e969e79804515b9c31683d30e",
