@@ -1086,6 +1086,14 @@ fn set(ids: &[String], on: bool) -> Result<()> {
             let f = Feature::parse(id).with_context(|| {
                 format!("`{id}` is not a feature — `mecha features` lists them")
             })?;
+            // The owner who wants incognito off is the one who types this:
+            // told there is no longer a separate way (review of #695).
+            anyhow::ensure!(
+                f != Feature::Incognito,
+                "`incognito` is part of `web` and has no switch of its own since F15 — it is \
+                 offered wherever the web app is on and the chat model runs on this machine; \
+                 `mecha features disable web` turns it off with the web app"
+            );
             anyhow::ensure!(
                 f.has_switch(),
                 "`{id}` is part of `{}` and has no switch of its own",
