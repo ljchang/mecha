@@ -348,8 +348,10 @@ those first; the OpenAI dialect lifts them into `role: "tool"` messages ahead
 of the parts array anyway), behind a caption naming the call and the file.
 
 **`image_view` is the one producer, and a look is on request.**
-`image_generate` returns a path and a seed and says to call `image_view` to
-check; the owner's ruling (2026-09-27) is that the pixels are not returned by
+`image_generate` returns a path and a seed, and its description says to look
+only when the owner asks — never to confirm a picture worked, and never to
+judge or redraw one unseen (the owner's ruling, 2026-10-14); the ruling of
+2026-09-27 is that the pixels are not returned by
 default, because a picture costs context by its *pixels* — about 1000 tokens
 for a square generation on the Qwen-VL presets — for the rest of the
 conversation, and most pictures are not ones the model was asked to check.
