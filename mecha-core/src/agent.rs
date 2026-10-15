@@ -3269,7 +3269,17 @@ impl Agent {
                 thinking: self.cfg.thinking,
                 cache_prompt: self.cfg.cache_prompt,
                 think: None,
-                think_budget: cx.think_budget,
+                // A closing request only acknowledges work already handed
+                // off, so it is given no reasoning budget (2026-10-15: a zero
+                // budget cut that acknowledgement from 8.2 s to 0.5 s on the
+                // persona model, same text). The budget rather than
+                // `think: Some(false)`: only a llama-server reads it, while a
+                // strict endpoint would reject `enable_thinking`.
+                think_budget: if closing.is_some() {
+                    Some(0)
+                } else {
+                    cx.think_budget
+                },
                 trailing_notes: notes.tail.len(),
                 // The closing request keeps the tools listed (the cached
                 // prefix holds) and asks for words (§5.5).
@@ -6722,6 +6732,8 @@ mod tests {
         assert_eq!(seen.len(), 4);
         assert_ne!(seen[2].tool_choice, crate::message::ToolChoice::None);
         assert_eq!(seen[3].tool_choice, crate::message::ToolChoice::None);
+        assert_ne!(seen[2].think_budget, Some(0));
+        assert_eq!(seen[3].think_budget, Some(0));
         assert!(tail_text(&seen[3]).ends_with(CALLS_UNREADABLE));
         assert_eq!(outcome.text, "The sketch never arrived.");
     }
@@ -8469,7 +8481,9 @@ mod tests {
             vec![Arc::new(Later(Arc::clone(&go)))],
             PermissionMode::Allow,
         );
-        let mut cx = agent.context().as_ref().clone();
+        // A run with its own budget, as a spoken persona turn has: the
+        // working request keeps it and the closing one is given none.
+        let mut cx = agent.context().as_ref().clone().with_think_budget(1024);
         cx.jobs = Some(queue.sink("chat", 0));
         cx.end_after_deferral = true;
         let mut convo = Conversation::user("draw the harbour");
@@ -8479,6 +8493,10 @@ mod tests {
         assert_eq!(seen[0].tool_choice, crate::message::ToolChoice::Auto);
         assert_eq!(seen[1].tool_choice, crate::message::ToolChoice::None);
         assert!(!seen[1].tools.is_empty(), "the tools stay listed");
+        // The working request keeps the run's budget; the closing one
+        // is given none (2026-10-15).
+        assert_eq!(seen[0].think_budget, Some(1024));
+        assert_eq!(seen[1].think_budget, Some(0));
         assert!(tail_text(&seen[1]).ends_with(PICTURE_ON_ITS_WAY));
         assert_eq!(outcome.text, PICTURE_ON_ITS_WAY_REPLY);
         let last = convo.messages.last().unwrap().text();
