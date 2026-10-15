@@ -25,7 +25,8 @@
       const res = await fetch(voicesUrl(null));
       if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
       const data = await res.json();
-      library = { names: chatVoices(data), error: data.list_error ?? data.locks_error ?? null };
+      // The lock first: it is why nothing would be offered.
+      library = { names: chatVoices(data), error: data.locks_error ?? data.list_error ?? null };
     } catch (e) {
       library = { names: [], error: String(e?.message ?? e) };
     }
@@ -41,6 +42,9 @@
   }
   load();
   loadVoices();
+  // Rewritten once, so a list an older page cached on this device goes:
+  // voice-core no longer keeps one (review of #701).
+  writeVoicePrefs({});
 
   // The remembered voice when the list does not offer it — locked, or gone
   // since — is kept and not named: the select shows a dash rather than
@@ -79,8 +83,10 @@
 
 <section>
   <div class="kicker">Playback</div>
-  {#if library?.names.length}
-    <div class="card fields">
+  <!-- The rate needs no voice list, so an unreadable one never takes it
+       away (review of #701). -->
+  <div class="card fields">
+    {#if library?.names.length}
       <label class="vfield">
         <span class="flabel">voice</span>
         <select
@@ -95,6 +101,13 @@
           {/each}
         </select>
       </label>
+    {:else if library}
+      <div class="sub">
+        {library.error
+          ? `The voice list could not be read — ${library.error}.`
+          : 'No voices to pick from yet — add one in Library → Voices.'}
+      </div>
+    {/if}
       <label class="vfield">
         <span class="flabel">rate</span>
         <!-- The bounds are the worker's own last answer, never a literal
@@ -110,16 +123,7 @@
         <span class="vval">{Number(vprefs.speed ?? 1).toFixed(2)}×</span>
       </label>
       {#if vSavedNote}<div class="sub ok">{vSavedNote}</div>{/if}
-    </div>
-  {:else if library}
-    <div class="card">
-      <div class="sub">
-        {library.error
-          ? `The voice list could not be read — ${library.error}.`
-          : 'No voices to pick from yet — add one in Library → Voices.'}
-      </div>
-    </div>
-  {/if}
+  </div>
 </section>
 
 <section>

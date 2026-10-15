@@ -12669,7 +12669,6 @@ mod tests {
         assert!(!open.to_string().contains("solo"), "{open}");
         assert_eq!(open["unlocked"], false);
         assert_eq!(open["voices"][0]["locked"], false);
-        assert_eq!(sample(None).await.status(), StatusCode::NOT_FOUND);
         let delete = super::super::settings::voice_clone_delete(
             State(state.clone()),
             Json(super::super::settings::CloneQuery {
@@ -12681,11 +12680,34 @@ mod tests {
         .await;
         assert_eq!(delete.status(), StatusCode::NOT_FOUND);
         assert!(clones.join("solo.wav").is_file());
-        // Unlocking it needs the unlock that shows it.
-        assert_eq!(
-            lock("solo", false, None).await.status(),
-            StatusCode::NOT_FOUND
-        );
+        // Unlocking it needs the unlock that shows it — and a locked voice
+        // and a name nobody has get the same answer, byte for byte, on every
+        // route that acts on a voice by name (review of #701).
+        async fn answer(r: axum::response::Response) -> (StatusCode, Vec<u8>) {
+            let status = r.status();
+            let body = axum::body::to_bytes(r.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            (status, body.to_vec())
+        }
+        let hidden = answer(lock("solo", false, None).await).await;
+        assert_eq!(hidden.0, StatusCode::NOT_FOUND);
+        assert_eq!(answer(lock("nobody", false, None).await).await, hidden);
+        assert_eq!(answer(lock("nobody", true, None).await).await, hidden);
+        assert_eq!(answer(sample(None).await).await, hidden);
+        let nobody = super::super::settings::library_voice_sample(
+            State(state.clone()),
+            Query(super::super::settings::SampleQuery {
+                name: "nobody".into(),
+                unlock: None,
+            }),
+        )
+        .await;
+        assert_eq!(answer(nobody).await, hidden);
+        assert!(mecha_core::imagelib::locked_voices(&library.dir)
+            .unwrap()
+            .iter()
+            .all(|n| n == "solo"));
         // Settings → Voice's own listing names no locked clone.
         let Json(settings) = super::super::settings::voice(State(state.clone())).await;
         assert!(!settings.to_string().contains("solo"), "{settings}");

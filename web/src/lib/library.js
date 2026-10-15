@@ -84,10 +84,12 @@ export function cloneUrl(name, locked = false) {
 
 // The voices the assistant's own calls can pick from (Settings → Voice):
 // the library's list as served to a page with no unlock — so never a
-// locked voice — less any the voice server is known not to have. `listed`
-// null is a server that could not be asked, not a missing voice.
+// locked voice — less a name only a persona gives (on neither the server
+// nor this box). A clone just recorded is offered before the server has
+// read it, since the worker re-reads its list on a miss (review of #701);
+// `listed` null is a server that could not be asked, not a missing voice.
 export function chatVoices(data) {
-  return (data?.voices ?? []).filter((v) => v.listed !== false).map((v) => v.name);
+  return (data?.voices ?? []).filter((v) => v.listed !== false || v.cloned).map((v) => v.name);
 }
 
 // A voice's line under its name: a clone or the server's own, how long its
