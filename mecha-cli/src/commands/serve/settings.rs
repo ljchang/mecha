@@ -702,6 +702,40 @@ impl VoiceLocks {
     }
 }
 
+/// Whether `name` is a voice this serve can vouch for: a clip in the voices
+/// directory (the default's included) or one the worker lists. A worker that
+/// cannot be asked vouches for nothing, so in an outage a server voice reads
+/// as missing — the same answer a locked one gets, which is the point: no
+/// route that acts on a voice by name may answer a locked one differently
+/// from one that does not exist (review of #701).
+async fn voice_exists(state: &super::WebState, name: &str) -> bool {
+    let stem = !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
+    if stem
+        && state
+            .voices_dir
+            .as_ref()
+            .is_some_and(|d| d.join(format!("{name}.wav")).is_file())
+    {
+        return true;
+    }
+    match &state.offer_target {
+        Some(target) => super::runner_voices(target)
+            .await
+            .is_ok_and(|listed| listed.iter().any(|v| v == name)),
+        None => false,
+    }
+}
+
+/// The one answer for a voice this request may not act on, whether it is
+/// locked or does not exist: word for word the same.
+fn no_such_voice() -> Response {
+    (StatusCode::NOT_FOUND, "no such voice\n").into_response()
+}
+
 #[derive(Deserialize)]
 pub struct VoicesQuery {
     #[serde(default)]
@@ -820,13 +854,14 @@ pub struct VoiceLockBody {
 }
 
 /// POST /api/library/voices/lock — lock or unlock one voice. As for an
-/// entry, a voice this request cannot see answers exactly as a missing one,
-/// so unlocking one needs the unlock that shows it; locking a visible one
-/// needs nothing, and it is gone from the page until the next unlock.
+/// entry, a voice this request cannot see answers exactly as a missing one
+/// ([`voice_exists`]), so unlocking one needs the unlock that shows it;
+/// locking a visible one needs nothing, and it is gone from the page until
+/// the next unlock.
 pub async fn library_voice_lock(State(state): St, Json(body): Json<VoiceLockBody>) -> Response {
     let locks = VoiceLocks::read(&state.library, body.unlock.as_deref());
-    if !locks.shows(&body.name) {
-        return (StatusCode::NOT_FOUND, "no such voice\n").into_response();
+    if !voice_exists(&state, &body.name).await || !locks.shows(&body.name) {
+        return no_such_voice();
     }
     let dir = state.library.dir.clone();
     let name = body.name.clone();
@@ -836,7 +871,7 @@ pub async fn library_voice_lock(State(state): St, Json(body): Json<VoiceLockBody
     })
     .await
     {
-        Ok(Ok(())) => {
+        Ok(Ok(_)) => {
             Json(serde_json::json!({ "name": body.name, "locked": locked })).into_response()
         }
         Ok(Err(e)) => (StatusCode::BAD_REQUEST, format!("{e:#}\n")).into_response(),
@@ -874,9 +909,12 @@ pub async fn library_voice_sample(
         return (StatusCode::BAD_REQUEST, "not a voice name\n").into_response();
     }
     // A locked voice plays only for the unlock that lists it, and is
-    // otherwise missing, as a locked portrait is (#385).
-    if !VoiceLocks::read(&state.library, q.unlock.as_deref()).shows(&q.name) {
-        return (StatusCode::NOT_FOUND, "no such voice\n").into_response();
+    // otherwise missing, as a locked portrait is (#385) — the same answer,
+    // word for word, as a name nobody has (review of #701).
+    if !voice_exists(&state, &q.name).await
+        || !VoiceLocks::read(&state.library, q.unlock.as_deref()).shows(&q.name)
+    {
+        return no_such_voice();
     }
     let Ok(mut url) = reqwest::Url::parse(target).and_then(|t| t.join("/mecha/sample")) else {
         return (StatusCode::BAD_GATEWAY, "no voice worker address\n").into_response();
@@ -915,6 +953,9 @@ pub async fn library_voice_sample(
         .ok()
         .and_then(|v| v["error"].as_str().map(str::to_string));
     match why {
+        // The worker's own "not one I have" is said as the lock says it, so
+        // its wording cannot tell a missing voice from a hidden one.
+        Some(_) if status == StatusCode::NOT_FOUND => no_such_voice(),
         Some(why) => (status, format!("{why}\n")).into_response(),
         None if status == StatusCode::NOT_FOUND => (
             StatusCode::CONFLICT,
@@ -1383,20 +1424,23 @@ pub async fn voice_clone(
     // Locked before the clip lands, so no listing ever shows it unlocked;
     // a lock that cannot be written refuses the clip rather than placing a
     // voice in the open the owner asked to hide.
-    let lock_added = q.locked
-        && !matches!(
-            mecha_core::imagelib::locked_voices(&state.library.dir),
-            Ok(set) if set.contains(&q.name)
-        );
-    if q.locked {
-        if let Err(e) = mecha_core::imagelib::set_voice_locked(&state.library.dir, &q.name, true) {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("the voice could not be locked, so it was not saved: {e:#}\n"),
-            )
-                .into_response();
+    // Whether this request added the flag, decided inside the store's own
+    // lock: two saves of one name must not both think they did, or the
+    // loser's rollback would unhide the winner's (review of #701).
+    let lock_added = if q.locked {
+        match mecha_core::imagelib::set_voice_locked(&state.library.dir, &q.name, true) {
+            Ok(added) => added,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("the voice could not be locked, so it was not saved: {e:#}\n"),
+                )
+                    .into_response();
+            }
         }
-    }
+    } else {
+        false
+    };
     let tmp = dir.join(format!(".{}.wav.tmp.{}", q.name, request_stamp()));
     let write = std::fs::write(&tmp, &body).and_then(|()| place_new(&tmp, &path));
     let _ = std::fs::remove_file(&tmp);

@@ -30,13 +30,15 @@ assert.equal(sampleUrl('ada', null), '/api/library/voices/sample?name=ada');
 assert.equal(sampleUrl('ada', 't 1'), '/api/library/voices/sample?name=ada&unlock=t%201');
 assert.equal(cloneUrl('ada'), '/api/settings/voice/clone?name=ada');
 assert.equal(cloneUrl('ada', true), '/api/settings/voice/clone?name=ada&locked=true');
-// The chat's picker offers what the library served it, less a voice the
-// server is known not to have; one it could not be asked about stays.
+// The chat's picker offers what the library served it, less a name on
+// neither the server nor this box; one it could not be asked about stays,
+// and so does a clone the server has not read yet.
 assert.deepEqual(
   chatVoices({ voices: [
     { name: 'ada', listed: true }, { name: 'gone', listed: false }, { name: 'fresh', listed: null },
+    { name: 'justmade', listed: false, cloned: { seconds: 20 } },
   ] }),
-  ['ada', 'fresh'],
+  ['ada', 'fresh', 'justmade'],
 );
 assert.deepEqual(chatVoices(null), []);
 // A voice's line: what it is, who speaks in it, and "not yet" only when the

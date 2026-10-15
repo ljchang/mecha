@@ -122,6 +122,9 @@ function writePrefs(d) {
     if (typeof d?.speed === "number") out.speed = d.speed;
     if (typeof d?.range?.min === "number" && typeof d?.range?.max === "number") out.range = { min: d.range.min, max: d.range.max };
     localStorage.setItem(PREFS_KEY, JSON.stringify(out));
+    /* Read once above and now kept under PREFS_KEY: the old key's copy, a
+     * cached voice list with it, has nothing left to say. */
+    localStorage.removeItem(LEGACY_PREFS_KEY);
   } catch { /* private window, or storage disabled - not worth a failure */ }
 }
 

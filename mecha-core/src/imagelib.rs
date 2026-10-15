@@ -1444,10 +1444,11 @@ pub fn locked_voices(dir: &Path) -> Result<std::collections::BTreeSet<String>> {
     Ok(file.locked)
 }
 
-/// Lock or unlock one voice by name. The name is the voice's, as the TTS
-/// lists it — whether it exists is the caller's to know (the TTS's list is
-/// not this crate's), so only its shape is checked here.
-pub fn set_voice_locked(dir: &Path, name: &str, locked: bool) -> Result<()> {
+/// Lock or unlock one voice by name, answering whether anything changed. The
+/// name is the voice's, as the TTS lists it — whether it exists is the
+/// caller's to know (the TTS's list is not this crate's), so only its shape
+/// is checked here.
+pub fn set_voice_locked(dir: &Path, name: &str, locked: bool) -> Result<bool> {
     if name.is_empty()
         || name.len() > 64
         || !name
@@ -1466,12 +1467,13 @@ pub fn set_voice_locked(dir: &Path, name: &str, locked: bool) -> Result<()> {
         set.remove(name)
     };
     if !changed {
-        return Ok(());
+        return Ok(false);
     }
     std::fs::create_dir_all(dir)?;
     let text = toml::to_string_pretty(&VoiceLocksFile { locked: set })?;
     write_atomic_mode(&dir.join(VOICE_LOCKS_FILE), text.as_bytes(), Some(0o600))
-        .context("writing the voice locks")
+        .context("writing the voice locks")?;
+    Ok(true)
 }
 
 /// What an approval surface showed the owner: a digest over the entry's kind,
@@ -2513,7 +2515,10 @@ mod tests {
         assert!(locked_voices(dir.path()).unwrap().is_empty());
         set_voice_locked(dir.path(), "ada", true).unwrap();
         set_voice_locked(dir.path(), "vctk_p229", true).unwrap();
-        set_voice_locked(dir.path(), "ada", true).unwrap(); // twice is once
+        assert!(
+            !set_voice_locked(dir.path(), "ada", true).unwrap(),
+            "twice is once"
+        );
         let names: Vec<String> = locked_voices(dir.path()).unwrap().into_iter().collect();
         assert_eq!(names, ["ada", "vctk_p229"]);
         set_voice_locked(dir.path(), "ada", false).unwrap();
