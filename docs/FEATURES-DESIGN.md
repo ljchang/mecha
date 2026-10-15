@@ -2104,7 +2104,8 @@ feature's enable, so there is one installer per feature.
   engine's builds are.
 - **One on the PATH is the owner's** (`Evidence::OnPath`): used as it is,
   never installed over. Mecha's build is on no PATH; the `[[mcp]]` entry names
-  it absolutely, so a unit or an agent with a short PATH finds it.
+  it absolutely, so a unit or an agent with a short PATH finds it. **Amended by §15** for mecha's own servers: a copy cargo recorded from
+  another build reads stale; the owner's own checkout build stays theirs.
 - **Priced as a build**, said as one before the yes: a few minutes, cargo and
   a C compiler (SQLCipher is built from source). No cargo: not offered, with
   why, and graph reads *switched on, but not working* until it is installed.
