@@ -7,7 +7,7 @@
 // chat-relative `.mp4` path. And a deferred row is still out only while its
 // first line says `being made: `, keyed on the mark, never the words.
 import { readFileSync } from 'node:fs';
-import { clipOf, stillOut, makingText, slotText, repeatedClips } from '../src/lib/picture.js';
+import { clipOf, stillOut, makingText, slotText, repeatedClips, jobStarts } from '../src/lib/picture.js';
 import { applyEvent } from '../src/lib/persona.js';
 import { historyLines } from '../src/lib/call-lines.js';
 
@@ -105,6 +105,24 @@ is(makingText({ name: 'video_generate' }), 'working on it…', 'anything else is
   ]);
   is([...again].join(','), '2', 'a clip a row above already plays is not played again');
   is(repeatedClips([row('video: videos/v1.mp4', { deferred: undefined }), row('video: videos/v1.mp4')]).size, 0, 'an unmarked row is no clip, so it repeats nothing');
+}
+
+// The clock on a still-out row (owner, 2026-10-15: the assistant's chat has
+// one too): a running job's start from the server's duration, kept across
+// queue events so it never steps back, and dropped once it stops running.
+{
+  const line = [
+    { call_id: 'clip', running: true, elapsed_ms: 90_000 },
+    { call_id: 'pic', running: false },
+  ];
+  const first = jobStarts(new Map(), line, 100_000);
+  is(first.get('clip'), 10_000, 'a running job starts elapsed_ms before now');
+  is(first.has('pic'), false, 'a waiting job has no clock');
+  const later = jobStarts(first, [{ call_id: 'clip', running: true, elapsed_ms: 95_123 }], 105_000);
+  is(later.get('clip'), 10_000, 'a known start is kept, not re-read each event');
+  is(jobStarts(later, [{ call_id: 'pic', running: true, elapsed_ms: 0 }], 106_000).has('clip'), false, 'a job no longer running loses its clock');
+  is(jobStarts(new Map(), [{ call_id: 'x', running: true }], 1).has('x'), false, 'no duration, no clock');
+  is(jobStarts(null, null).size, 0, 'nothing out, nothing timed');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
