@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Voices lock like pictures and personas.** Library → Voices has Lock and
+  Unlock on each voice, and a *lock* box when saving a recording. A locked
+  voice is hidden while browsing — off the voice library, the assistant's
+  voice picker and a persona's Voice choices — until the library is
+  unlocked, with nothing saying how many are hidden. Anything already set to
+  it still speaks in it.
+
 - **Models can attach pictures to a library character.** Ask a chat to save a
   picture to a character as a full body, a face, or a labelled detail such as
   a tattoo. A chat that has read nothing from outside attaches it at once,
@@ -72,6 +79,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on the CPU there, adding ~13 s to a new prompt. There is no idle reset on
   a Mac; `[image] unload_after_secs` still unloads. `mecha setup engine
   --adopt` is still Linux-only.
+
+### Changed
+
+- **Settings → Voice picks from the voice library.** The assistant's voice
+  picker lists the library's unlocked voices as they stand, so a voice
+  recorded a moment ago is there without a call first. It used to list the
+  voices the last call reported, remembered on the device.
 
 ### Fixed
 

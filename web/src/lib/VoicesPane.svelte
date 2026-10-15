@@ -7,10 +7,13 @@
   // Three sources, each said when it cannot be read rather than shown as an
   // empty list: the worker's list, the clones on disk, the persona store
   // (behind the library's lock, as the personas are).
+  //
+  // A voice locks as an entry does (owner, 2026-10-15): the server lists a
+  // locked one only for the library's unlock, and says nothing of how many
+  // it left out. Calls and personas still speak in it.
   import { apiFetch as fetch } from './api.js';
-  import { readVoicePrefs, writeVoicePrefs } from '../../../scripts/voice/voice-core.js';
   import VoiceRecorder from './VoiceRecorder.svelte';
-  import { voicesUrl, voiceLine } from './library.js';
+  import { voicesUrl, sampleUrl, voiceLine } from './library.js';
 
   let { token = null, oncount = () => {} } = $props();
 
@@ -32,8 +35,8 @@
       oncount(null);
     }
   }
-  // Again when the unlock changes: "used by" names a locked persona only
-  // for an unlock.
+  // Again when the unlock changes: a locked voice, and "used by" naming a
+  // locked persona, come only with an unlock.
   $effect(() => {
     void token;
     load();
@@ -53,7 +56,7 @@
     error = null;
     playing = { name, state: 'loading' };
     try {
-      const res = await fetch(`/api/library/voices/sample?name=${encodeURIComponent(name)}`);
+      const res = await fetch(sampleUrl(name, token));
       if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
       const blob = await res.blob();
       if (playing?.name !== name) return;
@@ -79,13 +82,27 @@
       const res = await fetch('/api/settings/voice/clone/delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name }),
+        body: JSON.stringify({ name, unlock: token ?? undefined }),
       });
       if (!res.ok) throw new Error((await res.text()).trim());
-      const prefs = readVoicePrefs();
-      if (prefs.voices?.includes(name)) {
-        writeVoicePrefs({ voices: prefs.voices.filter((v) => v !== name) });
-      }
+      await load();
+    } catch (e) {
+      error = `${name}: ${e?.message ?? e}`;
+    }
+  }
+
+  // Locking with no unlock hides the row at once, as locking an entry does;
+  // unlocking needs the unlock that shows it.
+  async function setLocked(name, locked) {
+    error = null;
+    if (playing?.name === name) stop();
+    try {
+      const res = await fetch('/api/library/voices/lock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, locked, unlock: token ?? undefined }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
       await load();
     } catch (e) {
       error = `${name}: ${e?.message ?? e}`;
@@ -100,6 +117,9 @@
 {/if}
 {#if data?.list_error}
   <div class="warnline">The voice worker's list could not be read — {data.list_error}. Clones on disk are shown.</div>
+{/if}
+{#if data?.locks_error}
+  <div class="warnline">The voice locks could not be read{data.unlocked ? '' : ', so no voice is shown until the library is unlocked'} — {data.locks_error}</div>
 {/if}
 {#if data?.cloned_error}
   <div class="warnline">The voices directory could not be listed: {data.cloned_error}</div>
@@ -125,9 +145,18 @@
         {/if}
       </button>
       <div class="vtext">
-        <span class="vname">{v.name}</span>
+        <span class="vname">{v.name}{#if v.locked}<span class="lockmark"> · locked</span>{/if}</span>
         <span class="readingline">{voiceLine(v, data.used_by_partial, !!data.cloned_error)}</span>
       </div>
+      {#if v.locked !== null && v.locked !== undefined}
+        <button
+          class="abtn tiny"
+          title={v.locked ? 'show it while browsing' : 'hide it while browsing; calls and personas still speak in it'}
+          onclick={() => setLocked(v.name, !v.locked)}
+        >
+          {v.locked ? 'Unlock' : 'Lock'}
+        </button>
+      {/if}
       {#if v.cloned}
         <button class="abtn tiny" class:armed={deleteArmed === v.name} onclick={() => remove(v.name)}>
           {deleteArmed === v.name ? 'sure?' : 'Delete'}
@@ -150,6 +179,8 @@
   <div class="barnote">
     A persona speaks in one of these when its settings pick it (Voice, in the persona's settings),
     with <code>voice_speed</code> in its <code>persona.toml</code> if it should talk faster or slower.
+    The assistant's own calls pick one in Settings → Voice. Lock hides a voice while browsing — from
+    this list and from both pickers — and anything already set to it still speaks in it.
   </div>
 {:else if !error}
   <div class="empty">Loading…</div>
@@ -168,6 +199,7 @@
   .abtn.tiny.armed { border-color: var(--hazard); color: var(--hazard); }
   .kicker { margin-top: 10px; font-family: var(--mono); font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em; }
   .barnote { font-size: 12px; color: var(--text-muted); line-height: 1.45; }
+  .lockmark { color: var(--hazard); }
   .warnline { color: var(--hazard); font-size: 12.5px; font-family: var(--mono); white-space: pre-wrap; }
   .empty { color: var(--text-muted); font-size: 13px; padding: 12px 0; }
   code { font-family: var(--mono); font-size: 11.5px; color: var(--accent-300); }

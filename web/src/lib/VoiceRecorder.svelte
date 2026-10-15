@@ -4,19 +4,9 @@
   // through `/api/settings/voice/clone`. Moved here from the settings pane
   // with the library (owner, 2026-10-01); what it records is unchanged.
   import { apiFetch as fetch } from './api.js';
-  import { readVoicePrefs, writeVoicePrefs } from '../../../scripts/voice/voice-core.js';
+  import { cloneUrl } from './library.js';
 
   let { onsaved = () => {} } = $props();
-
-  // The playback picker's list is the last call's answer; a voice that now
-  // exists on disk belongs in it without waiting for one. The worker itself
-  // revalidates on a miss, so offering it is honest.
-  function remember(name) {
-    const prefs = readVoicePrefs();
-    if (prefs.voices && !prefs.voices.includes(name)) {
-      writeVoicePrefs({ voices: [...prefs.voices, name].sort() });
-    }
-  }
 
   // ── Voice cloning ──────────────────────────────────────────────────────
   // The TTS is a zero-shot cloner: a "voice" is a reference WAV in the
@@ -39,6 +29,9 @@
   let recSeconds = $state(0);
   let recUrl = $state(null);
   let cloneName = $state('');
+  // Locked from its first moment, as an image entry added with the box
+  // ticked is: hidden while browsing, still spoken in (2026-10-15).
+  let cloneLocked = $state(false);
   let cloneError = $state(null);
   let cloneBusy = $state(false);
   // The passage is long, and on the default view it is the biggest block on
@@ -139,17 +132,18 @@
     cloneBusy = true;
     cloneError = null;
     try {
-      const res = await fetch(
-        `/api/settings/voice/clone?name=${encodeURIComponent(cloneName)}`,
-        { method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body: recWav }
-      );
+      const res = await fetch(cloneUrl(cloneName, cloneLocked), {
+        method: 'POST',
+        headers: { 'Content-Type': 'audio/wav' },
+        body: recWav,
+      });
       if (!res.ok) {
         cloneError = (await res.text()).trim();
         return;
       }
-      remember(cloneName);
       const name = cloneName;
       cloneName = '';
+      cloneLocked = false;
       discardClone();
       onsaved(name);
     } catch (e) {
@@ -219,6 +213,10 @@
       </button>
       <button class="btn" onclick={discardClone}>Discard</button>
     </div>
+    <label class="lockline">
+      <input type="checkbox" bind:checked={cloneLocked} />
+      lock (hide while browsing)
+    </label>
   {/if}
   {#if cloneError}
     <div class="sub notice">{cloneError}</div>
@@ -226,6 +224,7 @@
 </div>
 
 <style>
+  .lockline { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); }
   .card {
     padding: 10px 12px;
     display: flex;

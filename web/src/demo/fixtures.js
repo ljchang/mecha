@@ -1052,10 +1052,12 @@ export const voice = {
 // a clone the voice server has not picked up yet.
 export const voices = {
   voices: [
-    { name: 'default', listed: true, cloned: null, used_by: [] },
-    { name: 'reading-voice', listed: true, cloned: { seconds: 42, created: 1786665600 }, used_by: ['Mara'] },
-    { name: 'field-notes', listed: false, cloned: { seconds: 28, created: 1786752000 }, used_by: [] },
+    { name: 'default', listed: true, cloned: null, used_by: [], locked: false },
+    { name: 'reading-voice', listed: true, cloned: { seconds: 42, created: 1786665600 }, used_by: ['Mara'], locked: false },
+    { name: 'field-notes', listed: false, cloned: { seconds: 28, created: 1786752000 }, used_by: [], locked: false },
   ],
+  unlocked: false,
+  locks_error: null,
   list_error: null,
   cloning: true,
   cloned_error: null,

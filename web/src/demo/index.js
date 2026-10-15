@@ -367,7 +367,7 @@ export const ROUTES = [
           'settings/reflections/(edit|drop|restore)',
           'settings/rules/(retire|restore)',
           'settings/voice/clone(/delete)?',
-          'library/voices/sample',
+          'library/voices/(sample|lock)',
           'speak',
           'settings/lock',
           'settings/images',

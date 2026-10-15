@@ -1413,6 +1413,67 @@ fn check_autolock(minutes: u32) -> Result<()> {
     Ok(())
 }
 
+/// Which library voices are locked (owner, 2026-10-15: "lock voices just
+/// like images and personas"). A voice is a clip in the TTS's own directory
+/// with no record of ours to carry a flag, so the flags live here, beside
+/// the password and autolock that show them — one lock over the three
+/// stores. As for an entry, the lock hides a voice while browsing and never
+/// withholds it: a call, a persona bound to it and Listen still speak in it.
+const VOICE_LOCKS_FILE: &str = "voices.toml";
+
+#[derive(Serialize, Deserialize, Default)]
+struct VoiceLocksFile {
+    #[serde(default)]
+    locked: std::collections::BTreeSet<String>,
+}
+
+/// Serializes [`set_voice_locked`]'s read-modify-write within a process:
+/// two taps on two voices must not each write a list missing the other.
+static VOICE_LOCKS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// The locked voices' names. Empty when nothing was ever locked; `Err` when
+/// the file cannot be read — a browsing surface then shows no voice to a
+/// locked page, never every voice (unknown is never clean).
+pub fn locked_voices(dir: &Path) -> Result<std::collections::BTreeSet<String>> {
+    let path = dir.join(VOICE_LOCKS_FILE);
+    if !path.is_file() {
+        return Ok(Default::default());
+    }
+    let text = std::fs::read_to_string(&path).context("reading the voice locks")?;
+    let file: VoiceLocksFile = toml::from_str(&text).context("reading the voice locks")?;
+    Ok(file.locked)
+}
+
+/// Lock or unlock one voice by name. The name is the voice's, as the TTS
+/// lists it — whether it exists is the caller's to know (the TTS's list is
+/// not this crate's), so only its shape is checked here.
+pub fn set_voice_locked(dir: &Path, name: &str, locked: bool) -> Result<()> {
+    if name.is_empty()
+        || name.len() > 64
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+    {
+        bail!("`{name}` is not a voice name");
+    }
+    let _held = VOICE_LOCKS.lock().unwrap_or_else(|p| p.into_inner());
+    // A damaged file is not rewritten from nothing: that would unlock every
+    // voice it held.
+    let mut set = locked_voices(dir)?;
+    let changed = if locked {
+        set.insert(name.to_string())
+    } else {
+        set.remove(name)
+    };
+    if !changed {
+        return Ok(());
+    }
+    std::fs::create_dir_all(dir)?;
+    let text = toml::to_string_pretty(&VoiceLocksFile { locked: set })?;
+    write_atomic_mode(&dir.join(VOICE_LOCKS_FILE), text.as_bytes(), Some(0o600))
+        .context("writing the voice locks")
+}
+
 /// What an approval surface showed the owner: a digest over the entry's kind,
 /// name, version and text. The web page sends back the digest of the text it
 /// displayed; approval proceeds only if it still matches, so an untrusted
@@ -2444,6 +2505,34 @@ mod tests {
         assert!(autolock_minutes(dir.path()).is_err());
         std::fs::write(dir.path().join("autolock.toml"), "nonsense").unwrap();
         assert!(autolock_minutes(dir.path()).is_err());
+    }
+
+    #[test]
+    fn voice_locks_round_trip_and_a_damaged_file_is_never_rewritten_open() {
+        let dir = scratch();
+        assert!(locked_voices(dir.path()).unwrap().is_empty());
+        set_voice_locked(dir.path(), "ada", true).unwrap();
+        set_voice_locked(dir.path(), "vctk_p229", true).unwrap();
+        set_voice_locked(dir.path(), "ada", true).unwrap(); // twice is once
+        let names: Vec<String> = locked_voices(dir.path()).unwrap().into_iter().collect();
+        assert_eq!(names, ["ada", "vctk_p229"]);
+        set_voice_locked(dir.path(), "ada", false).unwrap();
+        set_voice_locked(dir.path(), "never-locked", false).unwrap();
+        let names: Vec<String> = locked_voices(dir.path()).unwrap().into_iter().collect();
+        assert_eq!(names, ["vctk_p229"]);
+        // Not the password: locking a voice never makes one appear.
+        assert!(!has_lock_password(dir.path()));
+        for bad in ["", "../x", "Ada", "a b"] {
+            assert!(set_voice_locked(dir.path(), bad, true).is_err(), "{bad:?}");
+        }
+        // Damage is a finding, and a write over it would unlock everything.
+        std::fs::write(dir.path().join("voices.toml"), "locked = 3").unwrap();
+        assert!(locked_voices(dir.path()).is_err());
+        assert!(set_voice_locked(dir.path(), "bob", true).is_err());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("voices.toml")).unwrap(),
+            "locked = 3"
+        );
     }
 
     #[test]
