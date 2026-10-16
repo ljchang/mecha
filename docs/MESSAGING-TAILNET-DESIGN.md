@@ -59,7 +59,11 @@ promoted to one shared check rather than a second copy), `from_machine` by the s
 set as a producer; anything else refuses the message. `render_delivery`
 interpolates `from_session` raw into the `<untrusted-content source="…">`
 fence today — safe while the harness stamped it, a fence-breaker the moment a
-peer can set it (review of #700). The machine goes in a new optional
+peer can set it (review of #700). So the fence is hardened where it is
+built as well as at the route: `render_delivery` escapes whatever it
+interpolates into the `source="…"` attribute, since the store is read as
+untrustworthy anyway (`effective_taint`'s own argument), and a message
+written by any other path must not open the fence either. The machine goes in a new optional
 `MailboxMessage::from_machine`,
 `None` for a local message and a default for an older build's file, and
 surfaces show the pair as `chat@laptop`. "The same owner guard" includes
@@ -80,7 +84,9 @@ to register."* A machine finds its peers from `tailscale status --json`, which
 lists every node with its owner, whether it is online, whether it is tagged,
 and its MagicDNS name:
 
-1. keep the nodes the owner's login owns, online and untagged;
+1. keep the nodes owned by the same Tailscale user as this machine
+   (`Self.UserID` in that document — not `[web] owner_login`, which a machine
+   that only sends need not set), online and untagged;
 2. ask each for its agents (D7) at its MagicDNS name, through `tailscale
    serve` — the door the web app already uses;
 3. a node that answers is a peer under its MagicDNS short name (`spark` for
@@ -95,10 +101,18 @@ and its MagicDNS name:
    answered within the last day and does not now, is listed as
    **unreachable** rather than dropped, so a peer that sleeps reads as one
    that is asleep (review of #700). "Within the last day" needs a memory the
-   30-second cache is not: each peer's last answer is kept in `peers.json`
+   30-second cache is not: each peer's last answer is kept in `.peers.json`
    under the messages root (`$MECHA_MESSAGES_DIR`, `[messages] dir`, or
-   `~/.mecha/messages`), written when a peer answers, so it survives a
-   restart.
+   `~/.mecha/messages`) — dotted, as `.agents` is, to stay out of the producer
+   namespace — written when a peer answers through a temp file and rename,
+   since several sessions send at once, so it survives a restart. A file that
+   cannot be read is a finding, never an empty map: its peers list as
+   unreachable, not as gone (review of #700).
+
+The peer list never enters the cached prefix: `message_send`'s description
+names no machine, and the peers reach the model only in a tool *result* —
+`message_agents`, or the error for an unknown machine — so a laptop going to
+sleep never re-pays the prefix.
 
 The `tailscale status --json` fork is the one `system/source.rs` already runs,
 with its budget and timeout; D3 reads node names from it, which the system
@@ -151,8 +165,10 @@ is. That needs a change below the route: `MailboxStore::send` stamps
 `taint_recorded: true` on every message today, so a wire body with no taint
 would land recorded *clean*. The route must store a missing taint as
 `taint_recorded: false` — the flag the fail-closed rule keys on — through a
-send that takes it (review of #700). **A remote message arrives fully
-tainted**: the receiver takes the sender's taint and adds both `untrusted`
+send that takes it (review of #700). **The wire carries no taint**: with
+both legs added on arrival whatever the sender says, a `taint` field on the
+wire would have no reader, so it is not sent and a body naming one is
+refused as malformed. **A remote message arrives fully tainted**: the receiver takes the sender's taint and adds both `untrusted`
 and `private` — what `effective_taint()` already gives an unrecorded one —
 so a peer can widen a message's taint but never narrow either leg. Adding
 `untrusted` alone was not enough: the interlock arms on both legs, and a
@@ -178,7 +194,12 @@ the sender, never a delivered message.
 
 **D6. No store-and-forward in phase 1.** A send to an unreachable peer fails
 at once, to the sender, as a tool error the model can route around ("`spark`
-did not answer: its `mecha serve` is not reachable"). Queuing for a peer that
+did not answer: its `mecha serve` is not reachable"). **A send is
+idempotent**: the sender names each message with an id of its own, and the
+receiver keeps it and refuses a second message with the same id from the same
+machine, so a `POST` that timed out after the receiver stored it, and is sent
+again, is not delivered twice — the existing duplicate key cannot see that,
+since by then the first copy may already be claimed (review of #700). Queuing for a peer that
 comes back later is phase 3, if the cases above need it.
 
 **D7. Finding the agents: each machine lists its own.** Every live session
