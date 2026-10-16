@@ -7861,6 +7861,7 @@ mod tests {
             submitted.contains("Dress Maya in a mustard raincoat."),
             "{submitted}"
         );
+        assert!(!submitted.contains("narrow greenhouse"), "{submitted}");
         assert!(!submitted.contains("standing naturally"), "{submitted}");
         assert!(!submitted.contains("a memorable face"), "{submitted}");
         assert!(!submitted.contains("Add Maya"), "{submitted}");

@@ -716,6 +716,18 @@ pub fn draw_named(
     ))
 }
 
+/// `d` without the scene fields a first naming call records but does not
+/// draw: setting, light, camera and relation.
+fn undrawn_scene(d: &crate::scene::Delta) -> crate::scene::Delta {
+    let mut d = d.clone();
+    d.setting = false;
+    d.light = false;
+    d.camera = false;
+    d.together = false;
+    d.together_cleared = false;
+    d
+}
+
 /// Plan a call against its picture's record (§5.2).
 ///
 /// `base` is the record of `call.picture` (`None`: a new picture, or a
@@ -785,9 +797,8 @@ pub fn plan(
         && {
             // Naming them ends a recorded relation between unknown people
             // (`together_cleared`), which draws nothing on its own.
-            let mut rest = delta.clone();
+            let mut rest = undrawn_scene(&delta);
             rest.added.clear();
-            rest.together_cleared = false;
             rest.is_empty()
         }
         && next
@@ -801,6 +812,16 @@ pub fn plan(
                     && p.at.is_none()
             });
     let unchanged = (delta.is_empty() || only_identified) && unknown_removes.is_empty();
+    // What is drawn of the change: all of it, except on the call that first
+    // names a photo's people, whose setting, light, camera and relation are
+    // recorded but not drawn. On that call a restated-by-habit field cannot
+    // be told from an asked one, and drawn over the owner's photo it was the
+    // unasked change this rule exists to stop (review of #707, pass 6).
+    let drawn = if identified.is_empty() {
+        delta.clone()
+    } else {
+        undrawn_scene(&delta)
+    };
     // A painted area keeps everything outside it, so it cannot carry a
     // scene change: the change is drawn, and the mask left out and said.
     let mask = call.mask.clone().filter(|_| unchanged);
@@ -1081,7 +1102,7 @@ pub fn plan(
         );
         // What the call gave that this edit of the photo does not draw, said,
         // since the record now holds it for the next restage.
-        if delta.restages() || delta.style {
+        if delta.setting || delta.light || delta.camera || delta.together {
             line.push_str(
                 " The setting, light, camera or relation given here were recorded but not \
                  drawn: this was an edit of the photo.",
@@ -1278,22 +1299,22 @@ pub fn plan(
             lines.push(format!("{RENDERED}\"{}\" appear{at}{look}.", w.words));
         }
     }
-    if delta.camera {
+    if drawn.camera {
         if let Some(c) = &out.next.camera {
             lines.push(format!("{}.", c.value.trim_end_matches('.')));
         }
     }
-    if delta.setting {
+    if drawn.setting {
         if let Some(Setting::Words { text }) = out.next.setting.as_ref().map(|f| &f.value) {
             lines.push(format!("Set the scene in {}.", text.trim_end_matches('.')));
         }
     }
-    if delta.light {
+    if drawn.light {
         if let Some(l) = &out.next.light {
             lines.push(format!("Make the light {}.", l.value.trim_end_matches('.')));
         }
     }
-    if delta.together {
+    if drawn.together {
         if let Some(t) = &out.next.together {
             lines.push(format!("{}.", t.value.trim_end_matches('.')));
         }
@@ -1314,7 +1335,7 @@ pub fn plan(
     out.faces.retain(|k| touched.contains(k));
     out.render = Render::Edit {
         canvas: Canvas::Picture(picture),
-        camera_moves: delta.camera,
+        camera_moves: drawn.camera,
     };
     // An edit with no line would send the keep sentence alone, the shape
     // that returns the picture unchanged (#408): refused, saying what would
@@ -1333,7 +1354,7 @@ pub fn plan(
     let mut keep: Vec<&str> = Vec::new();
     if delta.style {
         keep.push("the people and what they are doing");
-    } else if delta.together {
+    } else if drawn.together {
         // A relation moves the people it names; only their clothes stay.
         keep.push("everyone's clothes");
     } else if touched.is_empty() && delta.removed.is_empty() && unknown_removes.is_empty() {
@@ -1341,13 +1362,13 @@ pub fn plan(
     } else {
         keep.push("everyone else as they are");
     }
-    if !delta.setting && !delta.style {
+    if !drawn.setting && !delta.style {
         keep.push("the room");
     }
-    if !delta.light && !delta.style {
+    if !drawn.light && !delta.style {
         keep.push("the light");
     }
-    if !delta.camera {
+    if !drawn.camera {
         keep.push("the camera");
     }
     out.keep = match keep.split_last() {
@@ -2250,6 +2271,23 @@ mod tests {
             p.instruction
         );
         assert!(!p.instruction.contains("Add Maya"), "{}", p.instruction);
+        // The restated setting and camera are recorded, not drawn, and the
+        // keep sentence keeps them (review of #707, pass 6).
+        assert!(
+            !p.instruction.contains("Set the scene"),
+            "{}",
+            p.instruction
+        );
+        assert!(
+            !p.instruction.contains("from the doorway"),
+            "{}",
+            p.instruction
+        );
+        assert!(
+            p.keep.contains("the room") && p.keep.contains("the camera"),
+            "{}",
+            p.keep
+        );
         assert!(
             p.faces.is_empty(),
             "drawn from the photo, never a portrait's crop"
