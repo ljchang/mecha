@@ -215,8 +215,9 @@ the sender, never a delivered message.
 at once, to the sender, as a tool error the model can route around ("`spark`
 did not answer: its `mecha serve` is not reachable"). **A send is
 idempotent**: the sender names each message with an id of its own, sent on
-the wire (D2), and the receiver keeps every id it has stored, per sending
-machine, in a ledger beside the mailbox that outlives `prune_resolved` (a
+the wire (D2), and the receiver keeps every *sender's* id it has accepted —
+never the id it stores the message under, which is its own (D2), and which no
+retry could ever match — per sending machine, in a ledger beside the mailbox that outlives `prune_resolved` (a
 week; a retry arrives within seconds), and refuses a second message with the
 same id from the same machine, so a `POST` that timed out after the receiver stored it, and is sent
 again, is not delivered twice — the existing duplicate key cannot see that,
@@ -259,7 +260,10 @@ validated to producer names (D7), but those come from the peer's own
 `.agents` markers, which a process on that machine can write, and D5 refuses
 to believe a peer — a name is still text a peer chose. The cost: listing the
 agents on other machines arms `untrusted` on the conversation that asks, as
-reading any outside content does; listing this machine's own does not. A peer's error is
+reading any outside content does (`ToolOutput::external`); listing this
+machine's own does not. The declared capability is the tool's, not the
+call's — `capabilities()` sees no input — so any call to `message_agents`,
+local or not, arms the *turn's* gate for the rest of that batch. A peer's error is
 never shown as its text: the sending tool reports a typed reason of its own
 — unreachable, refused, full, or malformed — and drops whatever the peer
 wrote, so no network text enters the conversation unmarked (review of #700).
