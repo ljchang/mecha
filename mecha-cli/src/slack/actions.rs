@@ -797,8 +797,9 @@ impl Executor {
     }
 
     /// Spawn the derived argv. `mecha` means this binary, exactly as the
-    /// doctor report already resolves it; `mecha-mail` is looked for beside
-    /// this binary first (the release layout) before falling back to `PATH`;
+    /// doctor report already resolves it; `mecha-mail` is mecha's matching
+    /// build where one is installed, else the copy beside this binary (the
+    /// release layout) unless it is another build's, else `PATH` (§15);
     /// `systemctl` comes from `PATH`. Returns the first stderr line (or the
     /// spawn error) as a note for the store-answered outcome to fall back on
     /// when the store shows nothing changed.
@@ -811,8 +812,16 @@ impl Executor {
             // mecha's own servers: the matching build, never a stale copy —
             // the sibling of this binary is exactly where one is left
             // (review of #699).
+            let sibling = std::env::current_exe()
+                .ok()
+                .and_then(|exe| Some(exe.parent()?.join(program)))
+                .filter(|p| p.is_file() && !mecha_core::sidecar::stale_copy(program, p));
             match crate::commands::features::remedy_program(program) {
-                Ok(p) => p.into(),
+                // Resolved to a path: the matching build, or a current copy.
+                Ok(p) if std::path::Path::new(&p).components().count() > 1 => p.into(),
+                // Only the bare name came back: the release layout's current
+                // sibling, as before (review of #699), else the PATH.
+                Ok(p) => sibling.unwrap_or_else(|| p.into()),
                 Err(why) => return Some(why),
             }
         } else if let Some(sibling) = std::env::current_exe()

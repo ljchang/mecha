@@ -165,7 +165,8 @@ fn judge(crates2: &str, package: &str, program: &str, want: &Source) -> CopyStat
 }
 
 fn short(sha: &str) -> &str {
-    &sha[..sha.len().min(9)]
+    // Read from `.crates2.json`, so never sliced past a char boundary.
+    sha.get(..9).unwrap_or(sha)
 }
 
 fn describe(want: &Source) -> String {
