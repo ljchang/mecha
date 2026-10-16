@@ -120,6 +120,9 @@
     if (voice.cloned === null || voice.cloned === undefined)
       return { text: `${worker} · cloning not configured`, bad: !voice.worker_reachable };
     if (voice.cloned_error) return { text: `${worker} · voices unreadable`, bad: true };
+    // Unreadable voice locks empty the list on purpose (nothing locked may
+    // be named): that is "could not tell", never "none" (review of #701).
+    if (voice.locks_error) return { text: `${worker} · voice locks unreadable`, bad: true };
     const n = voice.cloned.length;
     return {
       text: `${worker} · ${n} cloned voice${n === 1 ? '' : 's'}`,

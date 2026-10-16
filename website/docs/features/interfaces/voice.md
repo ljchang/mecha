@@ -168,7 +168,16 @@ trace of the text there.
 **Voice.** `default`, the six generated references once `make-voices.py` has
 written them, and any you have cloned. **Library → Voices** lists them all: tap one to hear a
 short sentence spoken in it, record or upload a new one, and see which
-personas speak in each. Breeze clones from a few seconds of reference audio and
+personas speak in each. The voice picker here and a persona's Voice setting
+pick from that same list.
+
+**Locking a voice** hides it while browsing, as locking a picture or a
+persona does, behind the same lock: off Library → Voices, off both pickers,
+and its sample and Delete answer as if it were not there, until the library
+is unlocked. Tick *lock* when saving a recording to hide it from the start.
+The lock hides; it never withholds — a persona set to a locked voice, or a
+call you set to one before locking it, still speaks in it, and a locked
+page shows the persona's Voice as blank rather than naming it. Breeze clones from a few seconds of reference audio and
 the exact words spoken in it, so a voice is a `.wav` on disk with its transcript
 beside it as a `.txt` — written by `make-voices.py`, or by Parakeet the first
 time the voice is spoken, and yours to correct. The server reads the voices
@@ -219,9 +228,8 @@ refused: it names the default voice and must stay unshadowable.
 **Rate.** 0.5× to 2.0×, pitch-preserving — mecha speaks faster without
 sounding like a chipmunk.
 
-The picker enumerates from the worker's last answer, cached: a picker with no
-live call cannot ask, and showing the remembered answer with a dated note beats
-a hardcoded list or no picker at all. What Library → Voices lists as *cloned*
+The picker reads Library → Voices as it stands, so a voice recorded a moment
+ago is there without a call first, and a locked one never is. What Library → Voices lists as *cloned*
 comes from the store itself, and a directory that could not be read is shown as
 such rather than as an empty list — "nothing cloned yet" and "could not look"
 are opposite findings, and folding them together would surface a

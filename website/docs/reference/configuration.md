@@ -441,7 +441,6 @@ setup` asks about it. `mecha features enable <id>` writes `true` in place; a
 # image = false      # image generation and the character library
 # personas = false   # characters you write and talk to
 # voice = false      # dictation and voice calls
-# incognito = false  # a web chat that leaves no trace
 # frontdoor = false  # inbound requests, polls and publishing
 # messages = false   # messages between sessions on this machine
 ```
@@ -464,9 +463,10 @@ image: it is on whenever image is, and `[tools]` withholding `image_library`,
 from the model. Reading the
 library, pruning or forgetting cached extractions, and the library's lock
 password stay open whatever the switches say. Slack, personas, voice (with
-dictation, voice calls and cloning), incognito, the front door (its queue,
-its polls and its publishing server) and messages follow their switches the
-same way: their web pages answer `feature_off`, and `mecha slack`, `persona`,
+dictation, voice calls and cloning), the front door (its queue, its polls and
+its publishing server) and messages follow their switches the same way, and
+incognito follows the web app's, offered wherever the chat model runs on this
+machine: their web pages answer `feature_off`, and `mecha slack`, `persona`,
 `msg`, `frontdoor`, `polls` and `voice-serve` refuse, and so do the TUI's
 `/send` and `/remote-control`. What stays open: `slack status`, `auth`,
 `threads`, `remote` (without `--sweep`) and `unlink`, and `persona list`, `show`
@@ -660,12 +660,28 @@ Repeatable. Each entry is a stdio MCP server connected at startup. Its tools app
 | `trust_result_claims` | bool | `false` | Believe this server's claims about its own results. Global config only. See below. |
 | `personas` | bool | `false` | Offer this server's tools to persona chats. Global config only. See below. |
 | `disabled` | bool | `false` | Skip this server without deleting its config. |
+| `disabled_tools` | array of strings | `[]` | Tools this server lists that the model is never offered, by the server's own (unprefixed) names. See below. |
 
 The environment is an allowlist, not an inheritance. The child's environment is
 cleared, then given a minimal base (`PATH`, `HOME`, `LANG`, `LC_ALL`, `TZ`) plus
 whatever `env_passthrough` names and `env` sets. `env_passthrough` is empty by default
 because an MCP server is third-party code, and a process that inherits your whole
 environment inherits every provider key in it.
+
+`disabled_tools` withholds single tools while keeping the rest of the server. It
+can only take tools away, so any config layer may set it. A name the server does
+not list is warned about on every start. The case it was added for is a status
+tool: a video server whose `video_status` exists for clients without a job queue.
+In a chat that runs the clip in the background, the clip lands on its own row when
+done, and the status tool only invites the model to poll it:
+
+```toml
+[[mcp]]
+name = "video"
+command = "~/.cargo/bin/mecha-video"
+prefix_tools = false
+disabled_tools = ["video_status"]
+```
 
 `sandbox = true` on a server that cannot be confined is an error, not a warning.
 Per-server `network` exists so a third-party server can reach its own API, confined,

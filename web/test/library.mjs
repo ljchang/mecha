@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import {
   PANES, paneOf, entriesFor, counts, pendingLine, refApprovable, originLabel, listUrl, validName, tameName, voicesUrl, voiceLine,
+  sampleUrl, cloneUrl, chatVoices, VOICE_ENDPOINTS,
   TEXT_MAX, fitWithin, formProblem, formBody, previewOf,
   REF_KINDS, REF_LIMIT, refNote, refAddable, refProblem, refBody, refRemoveBody, LABEL_MAX,
 } from '../src/lib/library.js';
@@ -24,6 +25,26 @@ assert.deepEqual(entriesFor('voices', entries), []);
 // The voice library's URL carries the unlock only when there is one.
 assert.equal(voicesUrl(null), '/api/library/voices');
 assert.equal(voicesUrl('a b'), '/api/library/voices?unlock=a%20b');
+// So do a sample's, and a clip saved locked says so.
+assert.equal(sampleUrl('ada', null), '/api/library/voices/sample?name=ada');
+assert.equal(sampleUrl('ada', 't 1'), '/api/library/voices/sample?name=ada&unlock=t%201');
+assert.equal(cloneUrl('ada'), '/api/settings/voice/clone?name=ada');
+assert.equal(cloneUrl('ada', true), '/api/settings/voice/clone?name=ada&locked=true');
+// The chat's picker offers what the library served it, less a name on
+// neither the server nor this box; one it could not be asked about stays,
+// and so does a clone the server has not read yet.
+assert.deepEqual(
+  chatVoices({ voices: [
+    { name: 'ada', listed: true }, { name: 'gone', listed: false }, { name: 'fresh', listed: null },
+    { name: 'justmade', listed: false, cloned: { seconds: 20 } },
+  ] }),
+  ['ada', 'fresh', 'justmade'],
+);
+assert.deepEqual(chatVoices(null), []);
+// Every URL the builders return is on the list check-demo reads.
+for (const url of [voicesUrl(null), voicesUrl('t'), sampleUrl('ada', 't'), cloneUrl('ada', true)]) {
+  assert.ok(VOICE_ENDPOINTS.includes(url.split('?')[0]), url);
+}
 // A voice's line: what it is, who speaks in it, and "not yet" only when the
 // server's list was read and lacks it.
 assert.equal(

@@ -972,6 +972,26 @@ impl PersonaChats {
         hidden_character(p, &lib, library.unlocked(token)).map(str::to_string)
     }
 
+    /// What the Edit screen must not name to this viewer, by settings key
+    /// and value: a locked portrait character (#425, #430) and a locked voice
+    /// (owner, 2026-10-15) — each hidden, never cut.
+    fn hidden_settings(
+        &self,
+        library: &LibraryState,
+        p: &Persona,
+        token: Option<&str>,
+    ) -> Vec<(&'static str, String)> {
+        let mut out = Vec::new();
+        if let Some(c) = self.hidden_character(library, p, token) {
+            out.push(("character", c));
+        }
+        let locks = super::settings::VoiceLocks::read(library, token);
+        if let Some(v) = hidden_voice(p, &locks) {
+            out.push(("voice", v.to_string()));
+        }
+        out
+    }
+
     /// What the settings form offers, from the stores as they stand — built
     /// the same way for the page's GET and for checking its save, so a save
     /// is held to the choices the page was shown.
@@ -1056,13 +1076,15 @@ impl PersonaChats {
         ] {
             let mut text =
                 mecha_core::persona::read_owner_file(&self.store, &p.name, file).map_err(failed)?;
-            // A hidden portrait is not named: the line is left out of what
-            // is served, and the digest is over the served text — a digest
-            // of the file itself would let a guessed name be checked.
-            if file == mecha_core::persona::OwnerFile::Settings
-                && self.hidden_character(library, &p, token).is_some()
-            {
-                text = mecha_core::persona::hide_character(&text);
+            // A hidden portrait or voice is not named: the line is left out
+            // of what is served, and the digest is over the served text — a
+            // digest of the file itself would let a guessed name be checked.
+            if file == mecha_core::persona::OwnerFile::Settings {
+                let hidden = self.hidden_settings(library, &p, token);
+                if !hidden.is_empty() {
+                    let keys: Vec<&str> = hidden.iter().map(|(k, _)| *k).collect();
+                    text = mecha_core::persona::hide_keys(&keys, &text);
+                }
             }
             // The settings file also comes as a form. One the form cannot
             // read (a hand edit that does not load) comes without it, and
@@ -1132,16 +1154,19 @@ impl PersonaChats {
         // and its base is a digest of that. Check the base against what it
         // was shown, then hold the write to the file as it is now; a text
         // save gets the link back, and a form save never touched it.
-        let hidden = (body.file == mecha_core::persona::OwnerFile::Settings)
-            .then(|| self.hidden_character(library, &p, body.unlock.as_deref()))
-            .flatten();
+        let hidden = if body.file == mecha_core::persona::OwnerFile::Settings {
+            self.hidden_settings(library, &p, body.unlock.as_deref())
+        } else {
+            Vec::new()
+        };
+        let keys: Vec<&str> = hidden.iter().map(|(k, _)| *k).collect();
         let mut base = body.base.clone();
         let mut disk_text = None;
-        if hidden.is_some() {
+        if !hidden.is_empty() {
             let disk = mecha_core::persona::read_owner_file(&self.store, &p.name, body.file)
                 .map_err(failed)?;
             let shown =
-                mecha_core::persona::text_digest(&mecha_core::persona::hide_character(&disk));
+                mecha_core::persona::text_digest(&mecha_core::persona::hide_keys(&keys, &disk));
             if shown != body.base {
                 return Err(Refusal::Conflict(format!(
                     "{:#}",
@@ -1162,7 +1187,7 @@ impl PersonaChats {
             }
             (Some(text), None, None) => {
                 let text = match &disk_text {
-                    Some(disk) => mecha_core::persona::restore_character(&text, disk),
+                    Some(disk) => mecha_core::persona::restore_keys(&keys, &text, disk),
                     None => text,
                 };
                 mecha_core::persona::write_owner_file(
@@ -1176,11 +1201,13 @@ impl PersonaChats {
             (None, Some(mut changes), None)
                 if body.file == mecha_core::persona::OwnerFile::Settings =>
             {
-                // Hidden, never cut: the page was shown no portrait, so a
-                // `null` for it is not a choice to remove one. A name is —
-                // the owner picked a portrait.
-                if hidden.is_some() && changes.get("character").is_some_and(|v| v.is_null()) {
-                    changes.remove("character");
+                // Hidden, never cut: the page was shown no portrait (or no
+                // voice), so a `null` for it is not a choice to remove one. A
+                // name is — the owner picked one.
+                for key in &keys {
+                    if changes.get(*key).is_some_and(|v| v.is_null()) {
+                        changes.remove(*key);
+                    }
                 }
                 if let Some(why) = voices.unread.as_deref().filter(|_| picks_voice(&changes)) {
                     return Err(Refusal::Bad(format!(
@@ -1207,11 +1234,12 @@ impl PersonaChats {
             // A parser's refusal quotes the offending source line, and the
             // restored hidden line is part of the source: never let a
             // refusal say the name the page was not shown (review of #430).
-            match &hidden {
-                Some(c) if why.contains(c.as_str()) => Refusal::Bad(
+            if hidden.iter().any(|(_, name)| why.contains(name.as_str())) {
+                Refusal::Bad(
                     "persona.toml would not load as saved; unlock the library to see why".into(),
-                ),
-                _ => Refusal::Bad(why),
+                )
+            } else {
+                Refusal::Bad(why)
             }
         })?;
         let store = Store::load(&self.store);
@@ -1309,7 +1337,11 @@ impl PersonaChats {
             "name": p.name,
             "display": p.display(),
             "relationships": p.settings.relationship.0,
-            "voice": p.settings.voice,
+            // A locked voice is not named to a locked page, as a locked
+            // portrait is not.
+            "voice": p.settings.voice.as_deref().filter(|_| {
+                hidden_voice(&p, &super::settings::VoiceLocks::read(library, token)).is_none()
+            }),
             // The tools its relationship templates grant — the owner's own
             // templates' suggestions, never the model's — shown so approval
             // is not of a list nobody saw (review of #493).
@@ -5063,6 +5095,12 @@ pub async fn list(State(state): Web, Query(q): Query<UnlockQuery>) -> axum::resp
     }
 }
 
+/// The persona's voice when it is a locked one this viewer may not see —
+/// or any voice at all to a locked page when the locks could not be read.
+fn hidden_voice<'a>(p: &'a Persona, locks: &super::settings::VoiceLocks) -> Option<&'a str> {
+    p.settings.voice.as_deref().filter(|v| !locks.shows(v))
+}
+
 /// The name of a persona's linked character when the lock hides it from
 /// this viewer. Fails closed: on a locked page the name is shown only for an
 /// entry that loads *and* is unlocked — `Library::load` drops a damaged
@@ -5152,7 +5190,7 @@ pub async fn files(
         Ok(c) => c,
         Err(resp) => return resp,
     };
-    let voices = form_voices(&state, Some(OPEN_WAIT)).await;
+    let voices = form_voices(&state, Some(OPEN_WAIT), q.unlock.as_deref()).await;
     respond(
         chat.personas
             .files_in(&state.library, &name, q.unlock.as_deref(), &voices),
@@ -5177,7 +5215,7 @@ pub async fn save(
         Some(changes)
             if body.file == mecha_core::persona::OwnerFile::Settings && picks_voice(changes) =>
         {
-            form_voices(&state, None).await
+            form_voices(&state, None, body.unlock.as_deref()).await
         }
         _ => Default::default(),
     };
@@ -5197,12 +5235,23 @@ fn picks_voice(changes: &serde_json::Map<String, serde_json::Value>) -> bool {
 const OPEN_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// The voices the settings form offers: the worker's list
-/// (`runner_voices`, as Library → Voices reads it), or why it could not be
-/// had. `wait` caps it below the worker's own wait; `None` is the worker's.
+/// (`runner_voices`, as Library → Voices reads it) less the voices the lock
+/// hides from this viewer, or why it could not be had. `wait` caps it below
+/// the worker's own wait; `None` is the worker's.
 async fn form_voices(
     state: &super::WebState,
     wait: Option<std::time::Duration>,
+    token: Option<&str>,
 ) -> mecha_core::persona::VoiceChoices {
+    let locks = super::settings::VoiceLocks::read(&state.library, token);
+    if !locks.unlocked() && locks.unreadable() {
+        // Not "the worker lists none": nothing can be offered without
+        // naming what the lock hides.
+        return mecha_core::persona::VoiceChoices {
+            names: Vec::new(),
+            unread: Some("the voice locks could not be read".into()),
+        };
+    }
     let listed = match (&state.offer_target, wait) {
         (None, _) => Err("voice calls are not wired on this serve"),
         (Some(target), None) => super::runner_voices(target).await,
@@ -5212,7 +5261,7 @@ async fn form_voices(
     };
     match listed {
         Ok(names) => mecha_core::persona::VoiceChoices {
-            names,
+            names: names.into_iter().filter(|n| locks.shows(n)).collect(),
             unread: None,
         },
         Err(why) => mecha_core::persona::VoiceChoices {
@@ -12529,21 +12578,13 @@ mod tests {
         );
     }
 
-    /// The voice library (Library → Voices): every voice the worker lists
-    /// and every clone on disk, each with who speaks in it — a locked
-    /// persona named only for an unlock — and a sample spoken through the
-    /// worker.
-    #[tokio::test]
-    async fn the_voice_library_lists_clones_listings_and_who_speaks() {
-        let w = world();
-        give_voice(&w, "ada", None);
-        let clones = w.root.join("voices");
-        std::fs::create_dir_all(&clones).unwrap();
-        std::fs::write(clones.join("ada.wav"), b"RIFF").unwrap();
-        std::fs::write(clones.join("solo.wav"), b"RIFF").unwrap();
-        // Breeze's default voice is a clip in the same directory.
-        std::fs::write(clones.join("default.wav"), b"RIFF").unwrap();
-        let (target, _) = voice_runner(&["ada", "default"]).await;
+    /// A serve with the voice stack wired: the stand-in worker at `target`,
+    /// clones in `clones`, and its own library — where the voice locks live.
+    fn voice_state(
+        w: &World,
+        target: String,
+        clones: PathBuf,
+    ) -> (super::super::WebState, Arc<LibraryState>) {
         let library = Arc::new(LibraryState::new(w.root.join("imagelib")));
         let state = super::super::WebState {
             owner_login: Arc::new("owner@example.com".into()),
@@ -12559,12 +12600,358 @@ mod tests {
                 sessions_dir: None,
             }),
         };
-        let list = |unlock: Option<String>| {
-            super::super::settings::library_voices(
+        (state, library)
+    }
+
+    /// Library → Voices as the page reads it.
+    async fn voice_list(
+        state: &super::super::WebState,
+        unlock: Option<String>,
+    ) -> serde_json::Value {
+        let got = super::super::settings::library_voices(
+            State(state.clone()),
+            Query(super::super::settings::VoicesQuery { unlock }),
+        )
+        .await;
+        let body = axum::body::to_bytes(got.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    /// Settings → Voice's own listing, as the page reads it.
+    async fn voice_settings(state: &super::super::WebState) -> serde_json::Value {
+        let got = super::super::settings::voice(State(state.clone())).await;
+        assert_eq!(got.headers()["cache-control"], "no-store");
+        let body = axum::body::to_bytes(got.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    fn voice_names(listed: &serde_json::Value) -> Vec<String> {
+        listed["voices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["name"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    /// A locked voice (owner, 2026-10-15) is hidden while browsing as an
+    /// entry is: off the list, its sample and its Delete missing to a locked
+    /// page, and offered by neither picker — with nothing counting what was
+    /// left out. Unlocked, it is all there again.
+    #[tokio::test]
+    async fn a_locked_voice_is_hidden_while_browsing() {
+        let w = world();
+        let clones = w.root.join("voices");
+        std::fs::create_dir_all(&clones).unwrap();
+        std::fs::write(clones.join("ada.wav"), b"RIFF").unwrap();
+        std::fs::write(clones.join("solo.wav"), b"RIFF").unwrap();
+        let (target, _) = voice_runner(&["ada", "solo"]).await;
+        let (state, library) = voice_state(&w, target, clones.clone());
+        let lock = |name: &str, locked: bool, unlock: Option<String>| {
+            super::super::settings::library_voice_lock(
                 State(state.clone()),
-                Query(super::super::settings::VoicesQuery { unlock }),
+                Json(
+                    serde_json::from_value(
+                        serde_json::json!({ "name": name, "locked": locked, "unlock": unlock }),
+                    )
+                    .unwrap(),
+                ),
             )
         };
+        let sample = |unlock: Option<String>| {
+            super::super::settings::library_voice_sample(
+                State(state.clone()),
+                Query(super::super::settings::SampleQuery {
+                    name: "solo".into(),
+                    unlock,
+                }),
+            )
+        };
+
+        // Locked from a locked page: done, and gone from it at once.
+        assert_eq!(lock("solo", true, None).await.status(), StatusCode::OK);
+        let open = voice_list(&state, None).await;
+        assert_eq!(voice_names(&open), ["ada"]);
+        assert!(!open.to_string().contains("solo"), "{open}");
+        assert_eq!(open["unlocked"], false);
+        assert_eq!(open["voices"][0]["locked"], false);
+        let delete = super::super::settings::voice_clone_delete(
+            State(state.clone()),
+            Json(super::super::settings::CloneQuery {
+                name: "solo".into(),
+                locked: false,
+                unlock: None,
+            }),
+        )
+        .await;
+        assert_eq!(delete.status(), StatusCode::NOT_FOUND);
+        assert!(clones.join("solo.wav").is_file());
+        // Unlocking it needs the unlock that shows it — and a locked voice
+        // and a name nobody has get the same answer, byte for byte, on every
+        // route that acts on a voice by name (review of #701).
+        async fn answer(r: axum::response::Response) -> (StatusCode, Vec<u8>) {
+            let status = r.status();
+            let body = axum::body::to_bytes(r.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            (status, body.to_vec())
+        }
+        let hidden = answer(lock("solo", false, None).await).await;
+        assert_eq!(hidden.0, StatusCode::NOT_FOUND);
+        assert_eq!(answer(lock("nobody", false, None).await).await, hidden);
+        assert_eq!(answer(lock("nobody", true, None).await).await, hidden);
+        assert_eq!(answer(sample(None).await).await, hidden);
+        let nobody = super::super::settings::library_voice_sample(
+            State(state.clone()),
+            Query(super::super::settings::SampleQuery {
+                name: "nobody".into(),
+                unlock: None,
+            }),
+        )
+        .await;
+        assert_eq!(answer(nobody).await, hidden);
+        assert!(mecha_core::imagelib::locked_voices(&library.dir)
+            .unwrap()
+            .iter()
+            .all(|n| n == "solo"));
+        // Settings → Voice's own listing names no locked clone.
+        let settings = voice_settings(&state).await;
+        assert!(!settings.to_string().contains("solo"), "{settings}");
+        // The persona form offers only what the page may see.
+        assert_eq!(form_voices(&state, None, None).await.names, ["ada"]);
+
+        let token = library.grant_for_tests();
+        let unlocked = voice_list(&state, Some(token.clone())).await;
+        assert_eq!(voice_names(&unlocked), ["ada", "solo"]);
+        assert_eq!(unlocked["voices"][1]["locked"], true);
+        let played = sample(Some(token.clone())).await;
+        assert_eq!(played.status(), StatusCode::OK);
+        assert_eq!(played.headers()["cache-control"], "no-store");
+        assert_eq!(
+            form_voices(&state, None, Some(&token)).await.names,
+            ["ada", "solo"]
+        );
+        assert_eq!(
+            lock("solo", false, Some(token.clone())).await.status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            voice_names(&voice_list(&state, None).await),
+            ["ada", "solo"]
+        );
+
+        // A deleted voice takes its flag with it: the next clip under the
+        // name is not born hidden.
+        lock("solo", true, None).await;
+        let delete = super::super::settings::voice_clone_delete(
+            State(state.clone()),
+            Json(super::super::settings::CloneQuery {
+                name: "solo".into(),
+                locked: false,
+                unlock: Some(token.clone()),
+            }),
+        )
+        .await;
+        assert_eq!(delete.status(), StatusCode::OK);
+        assert!(mecha_core::imagelib::locked_voices(&library.dir)
+            .unwrap()
+            .is_empty());
+
+        // Locks that cannot be read hide every voice from a locked page, and
+        // say why — in words that never quote the file, whose damaged line is
+        // the locked names (review of #701, pass 5); an unlock shows them all,
+        // the flag unknown.
+        std::fs::write(
+            library.dir.join("voices.toml"),
+            "locked = [\"secretvoice\", 3]",
+        )
+        .unwrap();
+        let damaged = voice_list(&state, None).await;
+        assert_eq!(voice_names(&damaged), Vec::<String>::new());
+        assert!(damaged["locks_error"].is_string(), "{damaged}");
+        assert!(!damaged.to_string().contains("secretvoice"), "{damaged}");
+        // Settings → Voice's listing says so too, rather than "none cloned".
+        let settings = voice_settings(&state).await;
+        assert_eq!(settings["cloned"], serde_json::json!([]));
+        assert!(settings["locks_error"].is_string(), "{settings}");
+        assert!(!settings.to_string().contains("secretvoice"), "{settings}");
+        assert!(form_voices(&state, None, None).await.unread.is_some());
+        // (`solo`'s clip is gone, and the worker still lists it.)
+        let unlocked = voice_list(&state, Some(token)).await;
+        assert_eq!(voice_names(&unlocked), ["ada", "solo"]);
+        assert!(unlocked["voices"][0]["locked"].is_null(), "{unlocked}");
+    }
+
+    /// A save with the lock box unticked clears a flag no voice holds — and
+    /// only then: a flag on a voice the worker lists is kept, and so is one
+    /// the worker could not be asked about, since an outage must never unhide
+    /// a locked server voice (review of #701, pass 7).
+    #[tokio::test]
+    async fn an_unticked_save_never_unhides_a_locked_server_voice() {
+        let w = world();
+        let clones = w.root.join("voices");
+        std::fs::create_dir_all(&clones).unwrap();
+        let (target, _) = voice_runner(&["ada"]).await;
+        let (state, library) = voice_state(&w, target, clones.clone());
+        let save = |state: super::super::WebState, name: &str| {
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert("content-type", "audio/wav".parse().unwrap());
+            super::super::settings::voice_clone(
+                State(state),
+                Query(super::super::settings::CloneQuery {
+                    name: name.into(),
+                    locked: false,
+                    unlock: None,
+                }),
+                headers,
+                axum::body::Bytes::from(super::super::tests::tiny_wav(16_000, 6.0)),
+            )
+        };
+        let locked = || mecha_core::imagelib::locked_voices(&library.dir).unwrap();
+
+        // A server voice the worker lists, locked, with no clip of that name.
+        mecha_core::imagelib::set_voice_locked(&library.dir, "ada", true).unwrap();
+        assert_eq!(save(state.clone(), "ada").await.status(), StatusCode::OK);
+        assert!(
+            locked().contains("ada"),
+            "a listed voice's flag was cleared"
+        );
+
+        // A worker that cannot be asked vouches for nothing either way.
+        mecha_core::imagelib::set_voice_locked(&library.dir, "ghost", true).unwrap();
+        let mut down = state.clone();
+        down.offer_target = Some(Arc::new("http://127.0.0.1:9/api/offer".into()));
+        assert_eq!(save(down, "ghost").await.status(), StatusCode::OK);
+        assert!(locked().contains("ghost"), "an outage cleared a flag");
+
+        // Asked, and holding no voice of that name: the flag was stale.
+        mecha_core::imagelib::set_voice_locked(&library.dir, "stale", true).unwrap();
+        assert_eq!(save(state.clone(), "stale").await.status(), StatusCode::OK);
+        assert!(!locked().contains("stale"));
+
+        // Damaged locks refuse the save, ticked or not, in words that never
+        // quote the file's line of locked names (review of #701, pass 8).
+        std::fs::write(
+            library.dir.join("voices.toml"),
+            "locked = [\"secretvoice\", 3]",
+        )
+        .unwrap();
+        for locked in [false, true] {
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert("content-type", "audio/wav".parse().unwrap());
+            let refused = super::super::settings::voice_clone(
+                State(state.clone()),
+                Query(super::super::settings::CloneQuery {
+                    name: format!("new{locked}"),
+                    locked,
+                    unlock: None,
+                }),
+                headers,
+                axum::body::Bytes::from(super::super::tests::tiny_wav(16_000, 6.0)),
+            )
+            .await;
+            assert_eq!(refused.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            let body = axum::body::to_bytes(refused.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body = String::from_utf8_lossy(&body);
+            assert!(!body.contains("secretvoice"), "{body}");
+            assert!(!clones.join(format!("new{locked}.wav")).exists());
+        }
+    }
+
+    /// A persona that speaks in a locked voice keeps it — calls still speak
+    /// in it — and a locked page never sees its name: not in the settings
+    /// text, the form, or the waiting card; every save keeps the line as it
+    /// was (hidden, never cut, as a locked portrait is).
+    #[tokio::test]
+    async fn a_locked_voice_is_never_named_to_a_locked_page_and_never_cut() {
+        let w = world();
+        give_voice(&w, "quill7", Some(1.1));
+        let toml = w.store().join("mara/persona.toml");
+        let on_disk = std::fs::read_to_string(&toml)
+            .unwrap()
+            .replace("voice = \"quill7\"", "voice = \"quill7\"  # the warm one");
+        std::fs::write(&toml, &on_disk).unwrap();
+        mecha_core::imagelib::set_voice_locked(&w.library.dir, "quill7", true).unwrap();
+
+        let files = w.personas().files(&w.library, "mara", None).unwrap();
+        assert!(!files.to_string().contains("quill7"), "{files}");
+        let settings = &files["settings"];
+        assert!(settings["form"]["values"]["voice"].is_null());
+        // The rate is not the voice: it stays on the page.
+        assert!(settings["text"].as_str().unwrap().contains("voice_speed"));
+
+        // A text save of what was shown, and a form save sending `null` for
+        // the Voice it was not shown: the line stays, comment and all.
+        let text = settings["text"]
+            .as_str()
+            .unwrap()
+            .replace("dose       = true", "dose       = false");
+        w.personas()
+            .save(
+                &w.library,
+                "mara",
+                body(serde_json::json!({ "file": "settings", "text": text, "base": settings["digest"] })),
+            )
+            .unwrap();
+        let now = std::fs::read_to_string(&toml).unwrap();
+        assert!(now.contains("voice = \"quill7\"  # the warm one"), "{now}");
+        assert!(now.contains("dose       = false"), "{now}");
+        let files = w.personas().files(&w.library, "mara", None).unwrap();
+        w.personas()
+            .save(
+                &w.library,
+                "mara",
+                body(serde_json::json!({
+                    "file": "settings", "changes": { "voice": null, "safety.dose": true },
+                    "base": files["settings"]["digest"],
+                })),
+            )
+            .unwrap();
+        assert!(std::fs::read_to_string(&toml)
+            .unwrap()
+            .contains("voice = \"quill7\""));
+
+        // The lock never withholds: a call still speaks in it.
+        let call = w.personas().call_voice("mara").unwrap().unwrap();
+        assert_eq!(call.voice, "quill7");
+
+        // Unlocked, it is named as ever.
+        let token = w.library.grant_for_tests();
+        let open = w
+            .personas()
+            .files(&w.library, "mara", Some(&token))
+            .unwrap();
+        assert_eq!(open["settings"]["form"]["values"]["voice"], "quill7");
+
+        // Locks that cannot be read are unknown, and unknown is hidden.
+        std::fs::write(w.library.dir.join("voices.toml"), "locked = 3").unwrap();
+        let files = w.personas().files(&w.library, "mara", None).unwrap();
+        assert!(!files.to_string().contains("quill7"), "{files}");
+    }
+
+    /// The voice library (Library → Voices): every voice the worker lists
+    /// and every clone on disk, each with who speaks in it — a locked
+    /// persona named only for an unlock — and a sample spoken through the
+    /// worker.
+    #[tokio::test]
+    async fn the_voice_library_lists_clones_listings_and_who_speaks() {
+        let w = world();
+        give_voice(&w, "ada", None);
+        let clones = w.root.join("voices");
+        std::fs::create_dir_all(&clones).unwrap();
+        std::fs::write(clones.join("ada.wav"), b"RIFF").unwrap();
+        std::fs::write(clones.join("solo.wav"), b"RIFF").unwrap();
+        // Breeze's default voice is a clip in the same directory.
+        std::fs::write(clones.join("default.wav"), b"RIFF").unwrap();
+        let (target, _) = voice_runner(&["ada", "default"]).await;
+        let (state, library) = voice_state(&w, target, clones);
+        let list = |unlock: Option<String>| voice_list(&state, unlock);
         let by_name = |v: &serde_json::Value, n: &str| {
             v["voices"]
                 .as_array()
@@ -12574,7 +12961,7 @@ mod tests {
                 .cloned()
                 .unwrap_or_else(|| panic!("no {n} in {v}"))
         };
-        let Json(got) = list(None).await;
+        let got = list(None).await;
         let ada = by_name(&got, "ada");
         assert_eq!(ada["listed"], true);
         assert!(ada["cloned"].is_object(), "{ada}");
@@ -12590,6 +12977,8 @@ mod tests {
             State(state.clone()),
             Json(super::super::settings::CloneQuery {
                 name: "solo".into(),
+                locked: false,
+                unlock: None,
             }),
         )
         .await;
@@ -12609,16 +12998,19 @@ mod tests {
         // Locked, Mara is named only for an unlock — and the answer says the
         // list may be short, so an empty one does not read as nobody.
         store::set_locked(&w.store(), "mara", true).unwrap();
-        let Json(got) = list(None).await;
+        let got = list(None).await;
         assert_eq!(by_name(&got, "ada")["used_by"], serde_json::json!([]));
         assert_eq!(got["used_by_partial"], "locked");
-        let Json(got) = list(Some(library.grant_for_tests())).await;
+        let got = list(Some(library.grant_for_tests())).await;
         assert_eq!(by_name(&got, "ada")["used_by"], serde_json::json!(["Mara"]));
         assert!(got["used_by_partial"].is_null(), "{got}");
 
         let sample = super::super::settings::library_voice_sample(
             State(state.clone()),
-            Query(super::super::settings::SampleQuery { name: "ada".into() }),
+            Query(super::super::settings::SampleQuery {
+                name: "ada".into(),
+                unlock: None,
+            }),
         )
         .await;
         assert_eq!(sample.status(), StatusCode::OK);
@@ -12631,7 +13023,7 @@ mod tests {
         // A voice only a persona names — a typo — is listed, and says so,
         // rather than surfacing first as a refused call (review of #490).
         give_voice(&w, "adaa", None);
-        let Json(got) = list(Some(library.grant_for_tests())).await;
+        let got = list(Some(library.grant_for_tests())).await;
         let ghost = by_name(&got, "adaa");
         assert_eq!(ghost["listed"], false, "{ghost}");
         assert!(ghost["cloned"].is_null(), "{ghost}");
@@ -12650,7 +13042,10 @@ mod tests {
         stale.offer_target = Some(Arc::new(format!("http://{addr}/api/offer")));
         let refused = super::super::settings::library_voice_sample(
             State(stale),
-            Query(super::super::settings::SampleQuery { name: "ada".into() }),
+            Query(super::super::settings::SampleQuery {
+                name: "ada".into(),
+                unlock: None,
+            }),
         )
         .await;
         assert_eq!(refused.status(), StatusCode::CONFLICT);

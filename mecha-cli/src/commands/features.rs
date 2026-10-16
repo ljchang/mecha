@@ -13,7 +13,7 @@
 
 use anyhow::{Context, Result};
 use mecha_core::config::Config;
-use mecha_core::feature::{self, Feature, Row, State, Switch};
+use mecha_core::feature::{self, Feature, Row, State};
 use mecha_core::recommend::{self, Budget, Floor, Machine, Peak, Sum};
 use mecha_core::sidecar;
 
@@ -52,6 +52,11 @@ pub enum Cmd {
         /// model is fetched only once a persona chooses it.
         #[arg(long)]
         turbo: bool,
+        /// Rewrite and restart the services mecha installed for these
+        /// features, as an install would — what `enable` already offers for
+        /// a service an older mecha wrote. Nothing current is downloaded.
+        #[arg(long)]
+        reinstall: bool,
     },
     /// Switch features off in the global `config.toml`'s `[features]` table.
     /// Their settings stay, for when they are switched back on.
@@ -117,8 +122,13 @@ pub async fn execute(args: Args) -> Result<()> {
             ids,
             no_install,
             turbo,
-        }) => return enable(&ids, no_install, turbo, false).await,
-        Some(Cmd::Disable { ids }) => return set(&ids, false),
+            reinstall,
+        }) => return enable(&ids, no_install, turbo, reinstall, false).await,
+        Some(Cmd::Disable { ids }) => {
+            set(&ids, false)?;
+            println!("{RESTART_NOTE}");
+            return Ok(());
+        }
         Some(Cmd::Plan { id, json, verify }) => return plan(&id, json, verify),
         Some(Cmd::LogCap {
             log,
@@ -169,6 +179,20 @@ pub async fn execute(args: Args) -> Result<()> {
     for key in feature::unknown_switches(&cfg) {
         eprintln!("mecha: `[features] {key}` is not a feature this build knows — a newer build's, or a typo; ignored");
     }
+    // Said where the owner asks what is on, never on every start: a line an
+    // older `enable` wrote that nothing reads now (review of #695 — an
+    // `incognito = false` written for a reason is otherwise overridden with
+    // no trace).
+    for key in feature::RETIRED_SWITCHES
+        .iter()
+        .filter(|k| cfg.features.get(k).is_some())
+    {
+        eprintln!(
+            "mecha: `[features] {key}` is no longer read — `{key}` is part of `{}` now; the line \
+             can go",
+            Feature::parse(key).map_or("another feature", |f| f.switch_owner().id())
+        );
+    }
     if args.probe {
         let shown: Vec<Feature> = rows.iter().filter(|r| r.shown).map(|r| r.id).collect();
         let budget = recommend::budget(recommend::Machine::read()?, &shown);
@@ -199,9 +223,23 @@ pub async fn execute(args: Args) -> Result<()> {
 /// again nor refuses for want of a terminal to ask at.
 /// `turbo` is `--turbo`: the image server's install fetches the turbo model
 /// too, as it does unasked once a persona's picture settings choose it.
-pub(super) async fn enable(ids: &[String], no_install: bool, turbo: bool, yes: bool) -> Result<()> {
-    let on = enable_unwired(ids, no_install, turbo, yes).await?;
-    mcp_entries(&on)
+/// `reinstall` is `--reinstall`: every installed sidecar with services is
+/// offered as one an older mecha wrote would be (`PlannedSidecar::stale`).
+pub(super) async fn enable(
+    ids: &[String],
+    no_install: bool,
+    turbo: bool,
+    reinstall: bool,
+    yes: bool,
+) -> Result<()> {
+    let on = enable_unwired(ids, no_install, turbo, reinstall, yes).await?;
+    // The switches are written whatever the wiring does: the note is said
+    // either way (review of #698).
+    let wired = mcp_entries(&on);
+    if !on.is_empty() {
+        println!("{RESTART_NOTE}");
+    }
+    wired
 }
 
 /// [`enable`] up to the `[[mcp]]` wiring, returning the features it switched
@@ -213,6 +251,7 @@ pub(super) async fn enable_unwired(
     ids: &[String],
     no_install: bool,
     turbo: bool,
+    reinstall: bool,
     yes: bool,
 ) -> Result<Vec<Feature>> {
     use mecha_core::comfyui_unit as comfy;
@@ -227,6 +266,11 @@ pub(super) async fn enable_unwired(
     }
     if turbo && no_install {
         anyhow::bail!("`--turbo` fetches a model and `--no-install` installs nothing; drop one");
+    }
+    if reinstall && no_install {
+        anyhow::bail!(
+            "`--reinstall` rewrites services and `--no-install` installs nothing; drop one"
+        );
     }
     // Refused rather than ignored: past here, a platform with no installer
     // never reaches the block that would say so (review of #650).
@@ -249,6 +293,10 @@ pub(super) async fn enable_unwired(
         // (sidecar id, its label, the feature whose plan names it, its
         // download where known before installing)
         let mut todo: Vec<(&'static str, &'static str, Feature, Option<u64>)> = Vec::new();
+        // The rows offered only because their services are an older build's:
+        // said as a refresh, not an install.
+        let mut refreshing: Vec<&'static str> = Vec::new();
+        let mut router_said = false;
         // The driver, read once for the whole command and only if some plan
         // would install the engine.
         let nvidia = std::cell::OnceCell::new();
@@ -262,6 +310,22 @@ pub(super) async fn enable_unwired(
         for f in &features {
             let mut p = sidecar::plan(*f, &m, &machine, &hub, false)?;
             install::price(&mut p, chat_here, read_nvidia);
+            if reinstall {
+                for s in p.sidecars.iter_mut().filter(|s| {
+                    matches!(s.state, SidecarState::Installed)
+                        && mecha_core::user_service::rev(s.id).is_some()
+                }) {
+                    s.stale = true;
+                    // Never `enable`'s to rewrite (F13): said, not dropped.
+                    if s.id == mecha_core::router_unit::ID && chat_here && !router_said {
+                        println!(
+                            "The chat router is not reinstalled here: `mecha setup chat` \
+                             refreshes it."
+                        );
+                        router_said = true;
+                    }
+                }
+            }
             if let Some(s) = p.sidecars.iter().find(|s| s.id == comfy::ID) {
                 comfy_found = Some((s.label, s.state.clone()));
             }
@@ -286,6 +350,12 @@ pub(super) async fn enable_unwired(
                 }
                 if !todo.iter().any(|(id, ..)| *id == s.id) {
                     todo.push((s.id, s.label, p.feature, s.bytes));
+                    if s.stale
+                        && matches!(s.state, SidecarState::Installed)
+                        && !install::model_gone(&p, s.id)
+                    {
+                        refreshing.push(s.id);
+                    }
                 }
             }
         }
@@ -334,6 +404,13 @@ pub(super) async fn enable_unwired(
                     mecha_core::graph_mcp::PROGRAM
                 );
                 todo.retain(|(id, ..)| *id != mecha_core::graph_mcp::ID);
+            }
+        }
+        // The mail servers likewise (§15).
+        if todo.iter().any(|(id, ..)| *id == mecha_core::mail_mcp::ID) {
+            if let Err(why) = mecha_core::mail_mcp::fits() {
+                println!("The mail and documents servers are not installed: {why}.");
+                todo.retain(|(id, ..)| *id != mecha_core::mail_mcp::ID);
             }
         }
         // Likewise the speech server: voice may be spoken by a server the
@@ -441,6 +518,9 @@ pub(super) async fn enable_unwired(
                 fetch_turbo = None;
             }
         }
+        if reinstall && todo.is_empty() {
+            println!("Nothing to reinstall here for {}.", ids.join(" "));
+        }
         let turbo_only = matches!(fetch_turbo, Some((.., true))) && todo.len() == 1;
         if !todo.is_empty() {
             let names: Vec<&str> = todo.iter().map(|(_, label, ..)| *label).collect();
@@ -452,16 +532,29 @@ pub(super) async fn enable_unwired(
                     ids.join(" ")
                 );
             }
-            println!(
-                "Enabling {} installs, from pinned sources — into ~/.mecha/sidecars/, and, for a \
-                 server, its {}, started once to check them:",
-                ids.join(" "),
-                if cfg!(target_os = "macos") {
-                    "launchd agents"
-                } else {
-                    "systemd user units"
-                }
-            );
+            let services = if cfg!(target_os = "macos") {
+                "launchd agents"
+            } else {
+                "systemd user units"
+            };
+            // Every row a refresh: nothing is installed, so the header does
+            // not say so (review of #691, pass 5).
+            // Asked of what is left to do: a row dropped above (not offered
+            // here, someone else's) is no longer counted (review of #691,
+            // pass 6).
+            if todo.iter().all(|(id, ..)| refreshing.contains(id)) {
+                println!(
+                    "Enabling {} refreshes what an older mecha installed — its {services}, \
+                     rewritten and restarted, and started once to check them:",
+                    ids.join(" ")
+                );
+            } else {
+                println!(
+                    "Enabling {} installs, from pinned sources — into ~/.mecha/sidecars/, and, \
+                     for a server, its {services}, started once to check them:",
+                    ids.join(" ")
+                );
+            }
             let turbo_line = match &fetch_turbo {
                 Some((why, download, reinstall)) => format!(
                     ", {} the turbo model ({}; {why})",
@@ -481,7 +574,24 @@ pub(super) async fn enable_unwired(
             for (id, label, _, bytes) in &todo {
                 // A build here is said as one: its download is the source,
                 // and the compile is the wait (review of #643).
-                let built = if *id == "llama" && built_here {
+                let built = if refreshing.contains(id) {
+                    // Its build and models are current: only the services
+                    // are written again.
+                    let why = if reinstall {
+                        "reinstalled, as asked"
+                    } else {
+                        "its service is from an older mecha"
+                    };
+                    if *id == comfy::ID && !turbo_line.is_empty() {
+                        println!("  {label} — {why}: rewritten and restarted{turbo_line}");
+                    } else {
+                        println!(
+                            "  {label} — {why}: rewritten and restarted; nothing current is \
+                             downloaded again"
+                        );
+                    }
+                    continue;
+                } else if *id == "llama" && built_here {
                     ", then built here — no release fits this machine; minutes for the CPU, \
                      longer for CUDA"
                 } else if *id == mecha_core::speech_unit::ID {
@@ -500,6 +610,8 @@ pub(super) async fn enable_unwired(
                     &turbo_line
                 } else if *id == mecha_core::graph_mcp::ID {
                     ", built here with cargo from its pinned commit — a few minutes"
+                } else if *id == mecha_core::mail_mcp::ID {
+                    ", built here with cargo from this mecha's own source — a few minutes"
                 } else {
                     ""
                 };
@@ -539,7 +651,11 @@ pub(super) async fn enable_unwired(
                 return Ok(Vec::new());
             }
             for (id, label, ..) in todo.iter().filter(|_| go) {
-                println!("Installing {label}…");
+                if refreshing.contains(id) {
+                    println!("Refreshing {label}…");
+                } else {
+                    println!("Installing {label}…");
+                }
                 let turbo = *id == comfy::ID && fetch_turbo.is_some();
                 install::install(id, &m, &machine, &hub, turbo, &mut |s| println!("  {s}"))
                     .await
@@ -550,6 +666,11 @@ pub(super) async fn enable_unwired(
                     })?;
             }
         }
+    }
+    // Nothing here could be installed at all: `--reinstall` still says it
+    // found nothing (review of #691, pass 5).
+    if reinstall && !can_install {
+        println!("Nothing to reinstall here for {}.", ids.join(" "));
     }
     set(ids, true)?;
     if features.contains(&Feature::Image) {
@@ -623,6 +744,22 @@ pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
             Some(command) => items.push((*f, wiring, command)),
             // Where `enable` is the installer, the feature is said to be not
             // working rather than left as a footnote under "enabled" (§13).
+            // A copy from another build was passed over: said as that, not
+            // as "not installed" — it is installed, and an existing entry may
+            // still run it (review of #699).
+            None if wiring.install.starts_with("mecha features enable")
+                && mecha_core::onboarding::find_program(wiring.program)
+                    .is_some_and(|p| mecha_core::sidecar::stale_copy(wiring.program, &p)) =>
+            {
+                println!(
+                    "{} is switched on, but the `{}` on your PATH is another build's and the \
+                     matching one is not installed, so no [[mcp]] entry was written and none \
+                     was changed — `{}` builds it",
+                    f.id(),
+                    wiring.program,
+                    wiring.install
+                )
+            }
             None if wiring.install.starts_with("mecha features enable") => println!(
                 "{} is switched on, but not working: `{}` is not installed, so no [[mcp]] entry \
                  was written — `{}` installs it",
@@ -707,6 +844,14 @@ pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
                 unstaged.join(", ")
             );
         }
+        if let Some(old) = &done.repointed {
+            println!(
+                "  the [[mcp]] entry for {} ran {old}, another build's — it now runs {}, which \
+                 matches this mecha",
+                wiring.name,
+                command.display()
+            );
+        }
         if let Some(other) = &done.runs_other {
             println!(
                 "  the [[mcp]] entry called `{}` runs `{other}`, not {}, so it is left as it is \
@@ -726,6 +871,22 @@ pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
                  runs — remove `disabled = true` from [[mcp]] `{name}`",
                 wiring.program,
                 f.id()
+            );
+        }
+        // Never edited — a store built at another width would break — and
+        // said with the lines to add (review of #698).
+        if !done.env_missing.is_empty() {
+            let lines: Vec<String> = done
+                .env_missing
+                .iter()
+                .map(|(k, v)| format!("{k} = \"{v}\""))
+                .collect();
+            println!(
+                "  the [[mcp]] entry for {} is left as it is — it does not tell the server mecha's \
+                 embeddings server, so it assumes another width; unless its store was built with \
+                 another embedder, add under [mcp.env]: {}",
+                wiring.name,
+                lines.join(", ")
             );
         }
         if done.untrusted_missing && done.runs_other.is_none() {
@@ -765,21 +926,83 @@ pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
     Ok(())
 }
 
-/// The program an `[[mcp]]` entry runs: the owner's own on the PATH first;
-/// else, for the graph, the build mecha installed into its own tree
-/// (`graph_mcp`), which no PATH names — by its absolute path either way.
+/// The program an `[[mcp]]` entry runs, by its absolute path: one on the
+/// PATH, unless it is one of mecha's own servers from another build (§15);
+/// else the build mecha installed into its own tree, which no PATH names.
+/// The program a remedy names, as setup runs it: for one of mecha's own
+/// servers, the build its `[[mcp]]` entry would run — so a sign-in after
+/// `enable` is the matching server's, never a stale copy on the PATH whose
+/// `auth` takes other arguments (review of #699). Anything else as named.
+/// A stale copy with nothing matching installed is refused, never run as a
+/// fallback (review of #699): its `auth` is the one that took other
+/// arguments.
+pub(crate) fn remedy_program(program: &str) -> Result<std::ffi::OsString, String> {
+    let own = mecha_core::mail_mcp::PROGRAMS.contains(&program)
+        || program == mecha_core::graph_mcp::PROGRAM;
+    if !own {
+        return Ok(program.into());
+    }
+    let home = mecha_core::work::mecha_home().ok();
+    let on_path = mecha_core::onboarding::find_program(program);
+    if let Some(found) = mcp_command(program, on_path.clone(), home.as_deref()) {
+        return Ok(found.into());
+    }
+    match on_path {
+        Some(p) if mecha_core::sidecar::stale_copy(program, &p) => {
+            // The way to the matching build, asked rather than assumed: a
+            // build that cannot fetch its own source is told what can
+            // (review of #699).
+            let fits = if program == mecha_core::graph_mcp::PROGRAM {
+                mecha_core::graph_mcp::fits().map(|_| ())
+            } else {
+                mecha_core::mail_mcp::fits().map(|_| ())
+            };
+            Err(stale_refusal(program, &p, fits.err()))
+        }
+        _ => Ok(program.into()),
+    }
+}
+
+/// What `remedy_program` says of a stale copy it will not run: the command
+/// that builds the matching one, or why that cannot run here.
+fn stale_refusal(program: &str, copy: &std::path::Path, unfit: Option<String>) -> String {
+    let feature = if program == mecha_core::graph_mcp::PROGRAM {
+        "graph"
+    } else if program == "mecha-docs" {
+        "docs"
+    } else {
+        "mail"
+    };
+    let way = match unfit {
+        None => format!("`mecha features enable {feature}` builds it"),
+        Some(why) => why,
+    };
+    format!(
+        "the `{program}` on your PATH ({}) is another build's, and the matching one is not \
+         installed — {way}",
+        copy.display()
+    )
+}
+
 fn mcp_command(
     program: &str,
     on_path: Option<std::path::PathBuf>,
     mecha_home: Option<&std::path::Path>,
 ) -> Option<std::path::PathBuf> {
-    on_path.or_else(|| {
-        mecha_home
-            .filter(|home| {
-                program == mecha_core::graph_mcp::PROGRAM && mecha_core::graph_mcp::installed(home)
-            })
-            .map(mecha_core::graph_mcp::binary)
-    })
+    let own = |home: &std::path::Path| -> Option<std::path::PathBuf> {
+        if program == mecha_core::graph_mcp::PROGRAM {
+            return mecha_core::graph_mcp::installed(home)
+                .then(|| mecha_core::graph_mcp::binary(home));
+        }
+        (mecha_core::mail_mcp::PROGRAMS.contains(&program) && mecha_core::mail_mcp::installed(home))
+            .then(|| mecha_core::mail_mcp::binary(home, program))
+    };
+    match on_path {
+        Some(p) if !mecha_core::sidecar::stale_copy(program, &p) => Some(p),
+        // A stale copy is never wired, even with nothing better here: the
+        // plan has said it is not used (review of #699).
+        _ => mecha_home.and_then(own),
+    }
 }
 
 /// What `enable` knows when it decides about the turbo model.
@@ -1072,6 +1295,14 @@ fn set(ids: &[String], on: bool) -> Result<()> {
             let f = Feature::parse(id).with_context(|| {
                 format!("`{id}` is not a feature — `mecha features` lists them")
             })?;
+            // The owner who wants incognito off is the one who types this:
+            // told there is no longer a separate way (review of #695).
+            anyhow::ensure!(
+                f != Feature::Incognito,
+                "`incognito` is part of `web` and has no switch of its own since F15 — it is \
+                 offered wherever the web app is on and the chat model runs on this machine; \
+                 `mecha features disable web` turns it off with the web app"
+            );
             anyhow::ensure!(
                 f.has_switch(),
                 "`{id}` is part of `{}` and has no switch of its own",
@@ -1091,18 +1322,37 @@ fn set(ids: &[String], on: bool) -> Result<()> {
         path.display()
     );
     if !on {
-        // What a disable leaves blocked, said rather than discovered.
-        for dependent in Feature::ALL.iter().filter(|g| {
-            g.has_switch()
-                && feature::switch(&cfg, **g) == Some(Switch::On)
-                && !features.contains(g)
-                && g.requires().iter().any(|d| features.contains(d))
-        }) {
+        for dependent in left_blocked(&cfg, &features) {
             println!("  `{}` needs it, and now reads blocked", dependent.id());
         }
     }
-    println!("Services that are already running pick this up when they restart.");
     Ok(())
+}
+
+/// Said once per command, after every switch it wrote: the guided setup
+/// enables one feature at a time, and printed per feature it read fourteen
+/// times (the owner's fresh Mac, 2026-10-14).
+pub(super) const RESTART_NOTE: &str =
+    "Services that are already running pick this up when they restart.";
+
+/// What disabling `features` leaves blocked, said rather than discovered: each
+/// feature or part another switch owns that is on now and would not be after.
+/// A part of a disabled feature is that feature, and not listed. Asked through
+/// `switched_on`, so a part's need counts as a switch's does — `disable web`
+/// names `dictate`, `calls` and `cloning`, voice's parts that live in the web
+/// app (review of #695: since incognito became a part, a filter on switches
+/// with a `requires` edge matched nothing).
+fn left_blocked(cfg: &Config, features: &[Feature]) -> Vec<Feature> {
+    let mut after = cfg.clone();
+    for f in features {
+        feature::set_switch(&mut after, *f, false);
+    }
+    Feature::ALL
+        .iter()
+        .copied()
+        .filter(|g| !features.contains(&g.switch_owner()))
+        .filter(|g| feature::switched_on(cfg, *g) && !feature::switched_on(&after, *g))
+        .collect()
 }
 
 /// What the global configuration says about `f` right now, if it refuses:
@@ -1281,6 +1531,23 @@ fn render_plan(p: &sidecar::Plan, chat_here: bool) -> String {
         let not_needed = mecha_core::install::not_needed(s.id, p.feature, chat_here);
         let state = match &s.state {
             SidecarState::Provided { by } => format!("provided — {by}; left alone"),
+            // Services an older build wrote: the router's are `mecha setup
+            // chat`'s to rewrite (F13), every other's `enable`'s.
+            // Only where chat runs here, as `mecha setup` asks it: a machine
+            // chatting through a hosted provider needs no router refreshed
+            // (review of #691, pass 4).
+            SidecarState::Installed
+                if s.stale && s.id == mecha_core::router_unit::ID && chat_here =>
+            {
+                "installed by mecha; its service is out of date — `mecha setup chat` refreshes \
+                 it (choosing the model it serves now downloads nothing)"
+                    .to_string()
+            }
+            SidecarState::Installed if s.stale && not_needed.is_none() => format!(
+                "installed by mecha; its service is out of date — `mecha features enable {}` \
+                 refreshes it (no download)",
+                p.feature.id()
+            ),
             SidecarState::Installed => "installed by mecha".to_string(),
             // An unfinished install the machine no longer needs is not
             // resumed by `enable`, so the plan does not say it is.
@@ -1304,6 +1571,11 @@ fn render_plan(p: &sidecar::Plan, chat_here: bool) -> String {
                  minutes; needs cargo and a C compiler)",
                 p.feature.id()
             ),
+            SidecarState::Missing { .. } if s.id == mecha_core::mail_mcp::ID => format!(
+                "not here — `mecha features enable {}` builds it from this mecha's own source \
+                 (a few minutes; needs cargo)",
+                p.feature.id()
+            ),
             SidecarState::Missing { .. } if mecha_core::install::installable(s.id) => format!(
                 "not here — `mecha features enable {}` installs it",
                 p.feature.id()
@@ -1315,6 +1587,12 @@ fn render_plan(p: &sidecar::Plan, chat_here: bool) -> String {
         };
         let state = match s.bytes {
             Some(b) => format!("{state} ({} to download)", bytes_text(b)),
+            None => state,
+        };
+        // A copy from another build, passed over: said, so the owner knows
+        // why one on their PATH is not used (§15).
+        let state = match &s.passed_over {
+            Some(copy) => format!("{state}; {copy}, another build's, so it is not used"),
             None => state,
         };
         out.push_str(&format!("  {:<32} {state}\n", s.label));
@@ -1737,6 +2015,52 @@ mod tests {
         assert_eq!(turbo_step(f, fits), TurboStep::Nothing);
     }
 
+    /// A disable names what it leaves blocked through a part's needs as well
+    /// as a switch's — the web app's voice parts — and never the disabled
+    /// feature's own parts (review of #695).
+    #[test]
+    fn a_disable_names_what_it_leaves_blocked() {
+        let mut cfg = Config::default();
+        for f in [Feature::Web, Feature::Voice] {
+            feature::set_switch(&mut cfg, f, true);
+        }
+        assert_eq!(
+            left_blocked(&cfg, &[Feature::Web]),
+            [Feature::Dictate, Feature::Calls, Feature::Cloning]
+        );
+        assert!(left_blocked(&cfg, &[Feature::Voice]).is_empty());
+        feature::set_switch(&mut cfg, Feature::Voice, false);
+        assert!(left_blocked(&cfg, &[Feature::Web]).is_empty());
+    }
+
+    /// A stale copy is refused with the way to the matching build — or, where
+    /// that cannot run, why (review of #699).
+    #[test]
+    fn a_stale_copy_is_refused_with_what_can_fix_it() {
+        let copy = std::path::Path::new("/u/.cargo/bin/mecha-mail");
+        let s = stale_refusal("mecha-mail", copy, None);
+        assert!(
+            s.contains("another build's") && s.contains("`mecha features enable mail` builds it"),
+            "{s}"
+        );
+        let s = stale_refusal("mecha-docs", copy, None);
+        assert!(s.contains("enable docs"), "{s}");
+        let s = stale_refusal(
+            "mecha-mail",
+            copy,
+            Some("build from your checkout: `cargo install --path mecha-mail --locked`".into()),
+        );
+        assert!(
+            s.contains("cargo install --path") && !s.contains("enable mail"),
+            "{s}"
+        );
+        // Not one of mecha's own servers: run as named.
+        assert_eq!(
+            remedy_program("mecha").unwrap(),
+            std::ffi::OsString::from("mecha")
+        );
+    }
+
     /// `--turbo` is the image model's, and fetches: both refusals come
     /// before the machine is read, and write nothing (review of #650).
     #[test]
@@ -1748,11 +2072,11 @@ mod tests {
         // await.
         let rt = tokio::runtime::Runtime::new().unwrap();
         let err = rt
-            .block_on(enable(&["graph".into()], false, true, false))
+            .block_on(enable(&["graph".into()], false, true, false, false))
             .unwrap_err();
         assert!(format!("{err:#}").contains("image model's"), "{err:#}");
         let err = rt
-            .block_on(enable(&["image".into()], true, true, false))
+            .block_on(enable(&["image".into()], true, true, false, false))
             .unwrap_err();
         assert!(format!("{err:#}").contains("--no-install"), "{err:#}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "# mine\n");
@@ -1786,20 +2110,20 @@ mod tests {
                 fix: "mecha features enable mail".into(),
             },
             Announcement {
-                id: Feature::Incognito,
+                id: Feature::Search,
                 caveat: None,
-                fix: "mecha features enable web incognito".into(),
+                fix: "mecha features enable search".into(),
             },
         ])
         .unwrap();
         // Every feature is guarded since step 3b, so both are called off.
         assert!(
-            line.contains("off until switched on: mail (no account is authorised), incognito"),
+            line.contains("off until switched on: mail (no account is authorised), search"),
             "{line}"
         );
         assert!(!line.contains("still working"), "{line}");
         assert!(
-            line.contains("`mecha features enable mail web incognito`"),
+            line.contains("`mecha features enable mail search`"),
             "{line}"
         );
     }
@@ -1918,6 +2242,8 @@ mod tests {
                 state: SidecarState::Missing { step: "7c" },
                 bytes: None,
                 not_offered: None,
+                passed_over: None,
+                stale: false,
             }],
             // The chat model's files are named but not counted: the plan's
             // total is what `enable` fetches (review of #627).
@@ -1945,6 +2271,46 @@ mod tests {
         assert!(!elsewhere.contains("setup chat"), "{elsewhere}");
     }
 
+    /// A stale install says what refreshes it — `enable` for a feature's
+    /// server, `setup chat` for the router — and is never nothing to do.
+    #[test]
+    fn the_plan_says_what_refreshes_a_stale_service() {
+        use mecha_core::sidecar::{Plan, PlannedSidecar, SidecarState};
+        let row = |id: &'static str| PlannedSidecar {
+            id,
+            label: "a server",
+            state: SidecarState::Installed,
+            bytes: None,
+            not_offered: None,
+            stale: true,
+            passed_over: None,
+        };
+        let p = Plan {
+            feature: Feature::Image,
+            sidecars: vec![row(mecha_core::comfyui_unit::ID)],
+            files: vec![],
+            download_bytes: 0,
+            nothing_to_do: false,
+        };
+        let text = render_plan(&p, true);
+        assert!(
+            text.contains("out of date — `mecha features enable image` refreshes it"),
+            "{text}"
+        );
+        let p = Plan {
+            feature: Feature::Messages,
+            sidecars: vec![row("router")],
+            ..p
+        };
+        let text = render_plan(&p, true);
+        assert!(text.contains("`mecha setup chat` refreshes it"), "{text}");
+        assert!(!text.contains("features enable"), "{text}");
+        // Chatting elsewhere, the router is not this machine's to refresh.
+        let text = render_plan(&p, false);
+        assert!(!text.contains("setup chat"), "{text}");
+        assert!(!text.contains("out of date"), "{text}");
+    }
+
     #[test]
     fn the_plan_says_each_state_and_what_to_do() {
         use mecha_core::sidecar::{FileState, Plan, PlannedFile, PlannedSidecar, SidecarState};
@@ -1959,6 +2325,8 @@ mod tests {
                     },
                     bytes: None,
                     not_offered: None,
+                    passed_over: None,
+                    stale: false,
                 },
                 PlannedSidecar {
                     // Every real sidecar has an installer since 7f: one
@@ -1968,6 +2336,8 @@ mod tests {
                     state: SidecarState::Missing { step: "7z" },
                     bytes: None,
                     not_offered: None,
+                    passed_over: None,
+                    stale: false,
                 },
                 PlannedSidecar {
                     id: "layout",
@@ -1977,6 +2347,8 @@ mod tests {
                     },
                     bytes: None,
                     not_offered: None,
+                    passed_over: None,
+                    stale: false,
                 },
             ],
             files: vec![
@@ -2074,6 +2446,25 @@ mod tests {
         let ours = mcp_command(PROGRAM, None, Some(&home)).unwrap();
         assert!(ours.is_absolute() && ours == binary(&home));
         assert_eq!(mcp_command("mecha-mail", None, Some(&home)), None);
+        // A copy on the PATH from another build is passed over for mecha's
+        // own; with none of mecha's here it is not wired either (review of
+        // #699).
+        let cargo = home.join("cargo");
+        std::fs::create_dir_all(cargo.join("bin")).unwrap();
+        std::fs::write(
+            cargo.join(".crates2.json"),
+            format!(
+                r#"{{"installs":{{"{PROGRAM} 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)":{{"bins":["{PROGRAM}"]}}}}}}"#
+            ),
+        )
+        .unwrap();
+        let stale = cargo.join("bin").join(PROGRAM);
+        assert_eq!(
+            mcp_command(PROGRAM, Some(stale.clone()), Some(&home)),
+            Some(binary(&home))
+        );
+        std::fs::remove_file(root(&home).join(".crates2.json")).unwrap();
+        assert_eq!(mcp_command(PROGRAM, Some(stale), Some(&home)), None);
         let _ = std::fs::remove_dir_all(&home);
     }
 }

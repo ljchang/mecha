@@ -1667,7 +1667,7 @@ set a variable it does not name.
 
 It also has **a step for every optional feature** — the web app, Slack, mail,
 docs, the knowledge graph, web search, PDF extraction, image generation,
-personas, voice, incognito chat, the front door and messages — read from the
+personas, voice, the front door and messages — read from the
 same registry as [`features`](#features), in that order, so a feature's
 dependency is offered before it:
 
@@ -1919,8 +1919,10 @@ where none runs its program or carries its name — the program by its
 absolute path, from `PATH` or `~/.cargo/bin`, results untrusted — and, where
 the config has no `[outbox]`, one staging mail's sends and documents' writes.
 Every server of one command shares that one `[outbox]`, as do the yeses of one
-`mecha setup`. An entry or `[outbox]` you wrote is never edited: `enable`
-names what it lacks. No `[outbox]` is written where a `[[rule]]` of yours
+`mecha setup`. An entry or `[outbox]` you wrote is never edited — `enable`
+names what it lacks — with one exception: an entry running a copy of mecha's
+own mail, docs or graph server from another build has its `command` pointed
+at the matching build, and nothing else in it changes. No `[outbox]` is written where a `[[rule]]` of yours
 names a call it would stage, and the rule is named. `enable voice` writes
 `[voice] voices_dir` for the installed speech server where no `[voice]` table
 exists.
@@ -1939,9 +1941,11 @@ alone still switches images on.
 **`enable`** writes `true` for each id, **`disable`** writes `false`, in place:
 comments, the order of the file and any key a newer build added are kept, and
 the table is created when it is missing. `enable` refuses a part (`ocr`: switch
-on `documents` and set `[documents] ocr`), and a feature whose dependency is
-not on, printing the command that switches both (`mecha features enable web
-incognito`). `disable` says what it leaves blocked. A service that is already
+on `documents` and set `[documents] ocr`; `incognito`: part of the web app,
+offered wherever the chat model runs on this machine), and a feature whose
+dependency is not on, printing the command that switches both. `disable` says
+what it leaves blocked — `disable web` names voice's dictation, calls and
+cloning, which live in the web app. A service that is already
 running reads the change when it restarts. Beyond `[image]`, `enable` writes no
 settings: the `[[mcp]]` entry mail, docs and the graph need, a `[[search]]`
 backend and a `[documents]` table stay yours, and until they are there the

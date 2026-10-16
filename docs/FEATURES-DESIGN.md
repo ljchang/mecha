@@ -502,8 +502,10 @@ Three rules carry the design:
    it reads only config and the disk. **`mecha features enable|disable
    <id>`** writes the bool into the global `[features]` table (`codex
    features enable`); an enable whose dependency is off is refused with the
-   chained command (`mecha features enable web incognito`), as Claude Code
-   refuses a disable that would break another plugin. A **part** id (`ocr`,
+   chained command, as Claude Code refuses a disable that would break another
+   plugin. (Since F15 no feature with a switch has a dependency — incognito,
+   the one that did, became a part of `web` — so that branch waits for the
+   next one.) A **part** id (`ocr`,
    `dictate`, `library`) has no bool, so `enable ocr` is refused by name and
    points at the parent's switch and the setting that turns the part on
    (`[documents] ocr = true`).
@@ -618,7 +620,8 @@ it. So, in step 1, the `tool_availability_notices` shape Hermes uses:
   `web` is still absent, and `enable incognito` alone would land in
   `Blocked` — *"`incognito`: needs `web` — `mecha features
   enable web incognito`"* — never offered alone into a `Blocked` it cannot
-  leave;
+  leave (the incognito case is history since F15, which made it a part of
+  `web`; the rule stands for the next feature with a dependency);
 - `mecha features` shows that case as its own row (switch absent, would
   otherwise be usable), not a bare `off`, as it does an off front door with requests
   waiting;
@@ -681,7 +684,6 @@ documents = false  # PDF extraction (OCR and layout are [documents] settings)
 image = false      # image generation and the character library
 personas = false   # characters you write and talk to
 voice = false      # dictation and voice calls
-incognito = false  # a web chat that leaves no trace
 frontdoor = false  # inbound requests, publishing, polls
 messages = false   # messages between sessions
 ```
@@ -723,6 +725,7 @@ A `(parent)` in the Requires column is `part_of`, not a `requires` edge:
 | id | Feature | Settings it needs (Unready without them) | Requires | Hidden when off |
 |---|---|---|---|---|
 | `web` | The web app (`mecha serve`) | `[web] owner_login` (serve refuses without it) | — | everything web; `mecha serve` refuses with the fix |
+| ↳ `incognito` | A chat that leaves no trace | a local provider without fallbacks (`provider_is_local`) | `web` (parent, since F15) | Chat's incognito toggle |
 | `slack` | Slack remote control | tokens in `~/.mecha/slack` (`mecha slack auth`) | — | `mecha slack …` verbs except `auth` |
 | `mail` | Mail and calendar | a global `[[mcp]]` entry running `mecha-mail`, and an authorised account | — | Mail tab, Home mail card, Outbox event editor, `mecha mail` |
 | `docs` | Google Docs, Sheets, Slides | a global `[[mcp]]` entry running `mecha-docs`, and an account | — | its tools |
@@ -739,7 +742,6 @@ A `(parent)` in the Requires column is `part_of`, not a `requires` edge:
 | ↳ `dictate` | Speech to text in the browser | `[voice] stt_url` | `voice` (parent), `web` | Dictate |
 | ↳ `calls` | Spoken conversation in the browser | `[voice] offer_target` | `voice` (parent), `web` | voice-call button |
 | ↳ `cloning` | New voices | `[voice] voices_dir` | `voice` (parent), `web` | Settings → Voice → clone |
-| `incognito` | A chat that leaves no trace | a local provider without fallbacks (`provider_is_local`) | `web` | Chat's incognito toggle |
 | `frontdoor` | Inbound requests and polls | `factory-publish` on PATH — its drain fills `~/.mecha/requests` | — | Review → Front door, Home card, `frontdoor`, `polls` |
 | ↳ `publishing` | The model's publishing tools | a global `[[mcp]]` entry running `factory-publish` | `frontdoor` (parent) | the `factory__*` tools |
 | `messages` | Messages between sessions | — (`[messages]` keeps its tunables) | — | `message_send`, `mecha msg` |
@@ -884,7 +886,8 @@ Three things make it deliberate rather than accidental:
   `false`. The permitted set, said out loud, is **`frontdoor`** alone — a
   binary on PATH and the trial's own `requests` store; every other
   top-level feature is `false` (found on review of #427, pass 14). Not
-  `incognito`: its evidence is `provider_is_local` over `default_provider`
+  `incognito` (a top-level feature until F15 made it a part of `web`; an
+  environment's leftover `incognito = false` is allowed, `true` refused): its evidence is `provider_is_local` over `default_provider`
   and `providers`, both `MACHINE_TABLES` copied from the operator, so it
   fails the test on its own terms, not only by needing `web` (#435). **Not `graph`**, though an
   environment may declare its own graph server: a manifest's `live_servers =
@@ -1065,6 +1068,7 @@ genuinely not known yet, and the output must say so rather than guess.
 | **F12** | The provider a fresh install defaults to | **A local one, never Anthropic** — the owner: *"we definitely don't want to default to anthropic."* The starter config and `Config::default()` move in their own change after 7c-2. Ruled by the owner 2026-10-05 |
 | **F13** | Whether `features enable` installs the chat model | **Never.** The chat model's engine, model and router are `mecha setup chat`'s, where the model is chosen (the tier's row, another row, or a GGUF the owner brings); `enable` installs a feature's own sidecars only, and the engine only for a feature's embeddings or OCR server. Found writing F12: with a local default, `enable web` on a fresh machine offered the ~22 GiB recommended model and wrote nothing on a no. Ruled by the owner 2026-10-10 |
 | **F14** | What `mecha setup` is on a fresh machine | **One guided pass, never a detour.** The owner: *"I don't want to have to stop setup to run setup chat explicitly."* Chat first — the recommended model for this machine, another from a numbered list, a GGUF the owner has, a hosted provider, or skip — then each feature as a plain yes/no with what it does and what it downloads, sign-ins inline; every answer first, then one total and one yes, then the installs. `mecha setup chat` stays as the way to change the model later. §11. Ruled by the owner 2026-10-10 |
+| **F15** | Whether incognito is asked about on its own | **No — it is part of `web`.** The owner, setting up a fresh Mac: *"don't think we need a separate approval for incognito. this should just be folded into web."* `incognito` has no switch: it is on wherever the web app is and the chat model runs on this machine (`provider_is_local`). An older `enable`'s `incognito` key is read by nothing and never reported as unknown (`feature::RETIRED_SWITCHES`). Ruled by the owner 2026-10-14 |
 
 ---
 
@@ -2104,7 +2108,8 @@ feature's enable, so there is one installer per feature.
   engine's builds are.
 - **One on the PATH is the owner's** (`Evidence::OnPath`): used as it is,
   never installed over. Mecha's build is on no PATH; the `[[mcp]]` entry names
-  it absolutely, so a unit or an agent with a short PATH finds it.
+  it absolutely, so a unit or an agent with a short PATH finds it. **Amended by §15** for mecha's own servers: a copy cargo recorded from
+  another build reads stale; the owner's own checkout build stays theirs.
 - **Priced as a build**, said as one before the yes: a few minutes, cargo and
   a C compiler (SQLCipher is built from source). No cargo: not offered, with
   why, and graph reads *switched on, but not working* until it is installed.
@@ -2127,4 +2132,100 @@ installed, since the layout worker runs under the same profile (measured on
 the owner's Mac, 2026-10-13: every child checked confined, no denial logged).
 The interim refusal this section first carried, for PDFs on a Mac until the
 sandbox landed, went with it.
+
+## 14. An installed service is refreshed when mecha changes it
+
+**2026-10-14.** Found on the owner's Mac: `mecha features enable image` on a
+machine that had ComfyUI from before #689 wrote the switch and nothing else.
+The old agent — ComfyUI started directly, no proxy, no log cap — stayed, so
+the on-demand start and idle stop never reached it. The same held for every
+service an older build wrote (the embeddings and OCR agents before #678,
+voice before #679), and on Linux too: `offered` re-ran an installed sidecar
+only when its model was gone.
+
+**The owner's ruling: both.** Detect a stale service in `enable` and
+`setup` and offer to refresh it, and give `enable` an explicit
+`--reinstall`.
+
+- **A revision, stamped into what the install writes.** `user_service::REVS`
+  gives each sidecar with services a number; every `.service`, `.socket`,
+  `.timer` and `.plist` mecha writes carries it as a comment (first line of a
+  unit; after the XML declaration of a plist). `sidecar::plan` reads the
+  definitions the manifest records for an installed sidecar: a missing or
+  older number is `PlannedSidecar::stale`; one that cannot be read is
+  `Unknown`, never current.
+- **The number follows the bytes, by test.** Each installer's test hashes
+  everything it renders with fixed inputs and pins the hash beside the
+  number, so a changed unit, launcher, drop-in, presets file, program file or
+  Mac agent fails the build until the number is raised. The dependency locks
+  and pinned commits are not hashed, **and nothing else detects their change
+  yet**: a lock or commit bump alone reaches no installed machine until its
+  install runs again (`enable --reinstall`). The graph's MCP server is the one
+  sidecar whose plan compares its pinned commit; the others' `.mecha-commit`
+  and `.mecha-lock-installed` records are where the same check would read.
+  A known gap, open (review of #691, pass 7).
+- **`mecha setup <feature>` shows only that feature's step;** the services
+  step is the bare `mecha setup`'s, and `enable <feature>` makes the offer.
+- **A definition path an install stops writing stays recorded** (the
+  manifest only grows on a reinstall), so it would read stale for good: a
+  renamed or retired unit must be removed from the record when it changes.
+- **A refresh is the install run again.** Installs are idempotent: the
+  pinned build is kept when its commit stamp matches, cached models are not
+  fetched, and the services are rewritten and restarted. `enable` lists a
+  stale row as "its service is from an older mecha: rewritten and restarted;
+  nothing current is downloaded again" and asks the usual yes; `features plan` says which
+  command refreshes it.
+- **`--reinstall`** marks every installed sidecar with services stale for
+  that command — the way to rewrite a service by hand, without editing a
+  file. It does not go with `--no-install`.
+- **The router is `mecha setup chat`'s** (F13): its stale row says so, and
+  `enable` never offers it.
+- **`mecha setup` lists stale services as one step,** *wrong* rather than
+  missing (a service older than the build is the machine disagreeing with
+  it), whose remedy enables each switched-on feature that needs one — the
+  same offer `enable` makes. A stale service no switched-on feature needs is
+  not listed: nothing would refresh it, and enabling the feature again does.
+
+## 15. mecha's own servers follow mecha
+
+**2026-10-15.** On the owner's fresh Mac, `enable mail`, `enable docs` and
+`enable graph` found `mecha-mail`, `mecha-docs` and `mecha-graph-mcp` left in
+`~/.cargo/bin` from an install three days older and wired them as the owner's
+(§13's rule: one on the PATH is used as it is). Each was wrong in a way no
+error named: mail and docs failed their handshake and took other `auth`
+arguments, and the graph server assumed another embedding width. On a truly
+clean machine nothing installed mail or docs at all.
+
+**The owner's ruling: match mecha's version.** `enable` installs the build of
+mecha's own servers that matches mecha, into `~/.mecha/sidecars/`, and a copy
+on the PATH from another build reads stale rather than provided: `enable`
+installs the matching one and points the entry at it. This amends §13's PATH
+rule for mecha's own servers.
+
+- **Which build mecha is** (`own_build.rs`, `mecha-core/build.rs`): a git
+  checkout records its commit (`git rev-parse HEAD`), a published crate its
+  version (it carries `.cargo_vcs_info.json`, no `.git`). `mecha --version`
+  says it: `0.1.24 (git 7d7f0fa05)`, so a git build and the release it
+  precedes can be told apart.
+- **What a copy is**, asked of cargo's own `.crates2.json` beside its `bin/`,
+  never by running it: a `git+…#<sha>` install is current at the wanted
+  commit; a `registry+…` install is current when a registry build of that
+  version is wanted; a **`path+file://…` install is the owner's own build
+  from a checkout, and never stale** — a development build is not replaced.
+  No record is a copy cargo did not install, also left alone.
+- **The mail servers** (`mail_mcp.rs`, sidecar `mail-mcp`, step 15): one
+  crate builds `mecha-mail` and `mecha-docs`, from mecha's commit
+  (`cargo install --git <repo> --rev <sha>`) or its version (`--version
+  =<v>`), into `~/.mecha/sidecars/mail-mcp/`. A mecha that cannot tell its
+  source is not offered them, with why — and nor is one built from a commit
+  no branch of mecha's repository holds (`local:`, the usual state of an
+  unpushed development checkout), which is told to build the servers from
+  that checkout (`cargo install --path mecha-mail --locked`), since `--rev`
+  could not fetch it. The graph server keeps its pin
+  (`graph_mcp::REV`), now with the same staleness rule.
+- **An existing entry running a stale copy is repointed**, `command` alone,
+  and said; nothing else in it changes. An entry running the owner's own
+  build is never touched.
+- **The plan says a passed-over copy**: the row reads missing, with "<path>
+  is <how it differs>, another build's, so it is not used".
 

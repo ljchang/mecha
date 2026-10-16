@@ -1052,10 +1052,12 @@ export const voice = {
 // a clone the voice server has not picked up yet.
 export const voices = {
   voices: [
-    { name: 'default', listed: true, cloned: null, used_by: [] },
-    { name: 'reading-voice', listed: true, cloned: { seconds: 42, created: 1786665600 }, used_by: ['Mara'] },
-    { name: 'field-notes', listed: false, cloned: { seconds: 28, created: 1786752000 }, used_by: [] },
+    { name: 'default', listed: true, cloned: null, used_by: [], locked: false },
+    { name: 'reading-voice', listed: true, cloned: { seconds: 42, created: 1786665600 }, used_by: ['Mara'], locked: false },
+    { name: 'field-notes', listed: false, cloned: { seconds: 28, created: 1786752000 }, used_by: [], locked: false },
   ],
+  unlocked: false,
+  locks_error: null,
   list_error: null,
   cloning: true,
   cloned_error: null,
@@ -1861,6 +1863,7 @@ const on = (id, label, detail, extra = {}) => ({
 export const features = {
   features: [
     on('web', 'The web app', 'serving the page you are looking at'),
+    on('incognito', 'Incognito chat', 'provider `local`', { part_of: 'web' }),
     on('slack', 'Slack remote control', 'tokens stored'),
     on('mail', 'Mail and calendar', '[[mcp]] `mail`, 2 account(s)'),
     on('docs', 'Google Docs, Sheets and Slides', '[[mcp]] `docs`, 1 account(s)'),
@@ -1877,7 +1880,6 @@ export const features = {
     on('dictate', 'Dictation', 'speech to text at http://127.0.0.1:8992/v1', { part_of: 'voice', requires: ['web'] }),
     on('calls', 'Voice calls', "offers to http://127.0.0.1:7860/api/offer", { part_of: 'voice', requires: ['web'] }),
     on('cloning', 'Voice cloning', '~/voices', { part_of: 'voice', requires: ['web'] }),
-    on('incognito', 'Incognito chat', 'provider `local`', { requires: ['web'] }),
     on('frontdoor', 'Front door (inbound requests)', '`factory-publish` on PATH'),
     on('publishing', 'Publishing tools', '[[mcp]] `factory`', { part_of: 'frontdoor' }),
     {

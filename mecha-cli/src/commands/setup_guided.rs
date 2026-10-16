@@ -718,7 +718,7 @@ pub(super) async fn run(
             continue;
         }
         println!("\nEnabling {}…", ids.join(", "));
-        match super::features::enable_unwired(&ids, false, false, true).await {
+        match super::features::enable_unwired(&ids, false, false, false, true).await {
             Ok(on) => {
                 enabled.push(*f);
                 switched.extend(on);
@@ -734,6 +734,9 @@ pub(super) async fn run(
             "the servers were not wired: {e:#} — `mecha features enable {}` writes them",
             ids.join(" ")
         );
+    }
+    if !switched.is_empty() {
+        println!("{}", super::features::RESTART_NOTE);
     }
     if !enabled.is_empty() {
         // Caught like the writes above: a sign-in that cannot be read must
@@ -881,9 +884,15 @@ fn sign_ins(chosen: &[Feature], home: &std::path::Path) -> Result<()> {
                 match onboarding::runnable(next) {
                     Some((argv, true)) => {
                         println!("Running `{}`…", argv.join(" "));
-                        let status = std::process::Command::new(&argv[0])
-                            .args(&argv[1..])
-                            .status();
+                        // A stale copy is refused by name, never run.
+                        let status = super::features::remedy_program(&argv[0])
+                            .map_err(|why| println!("not run: {why}"))
+                            .and_then(|program| {
+                                std::process::Command::new(program)
+                                    .args(&argv[1..])
+                                    .status()
+                                    .map_err(|_| ())
+                            });
                         if !matches!(status, Ok(s) if s.success()) {
                             println!("that did not finish — `mecha setup` asks again");
                         }
@@ -1171,23 +1180,27 @@ mod tests {
     }
 
     /// A yes enables the feature with what it needs, parsed from the same
-    /// command the step loop runs — so `incognito` brings `web` (review of
-    /// #631).
+    /// command the step loop runs (review of #631). Since F15 no feature the
+    /// step loop offers needs another, so this pins `enable_ids` and
+    /// `also_enables` on a part, `dictate`, for the next one that does.
     #[test]
     fn a_yes_brings_what_the_feature_needs() {
         let cfg = mecha_core::config::Config::default();
-        let ids = enable_ids(&feature::enable_command(&cfg, Feature::Incognito));
-        assert_eq!(ids, ["web", "incognito"]);
+        let ids = enable_ids(&feature::enable_command(&cfg, Feature::Dictate));
+        assert_eq!(ids, ["web", "voice"]);
         assert_eq!(
             enable_ids(&feature::enable_command(&cfg, Feature::Search)),
             ["search"]
         );
         assert!(enable_ids("nothing to run").is_empty());
         // What the question names is what is not on yet.
-        assert_eq!(also_enables(&cfg, Feature::Incognito), ["web"]);
+        assert_eq!(also_enables(&cfg, Feature::Dictate), ["web", "voice"]);
         let mut on = cfg.clone();
         on.features.0.insert("web".into(), true);
-        assert!(also_enables(&on, Feature::Incognito).is_empty());
+        assert_eq!(also_enables(&on, Feature::Dictate), ["voice"]);
+        // Incognito is the web app's, never a question of its own (the
+        // owner, 2026-10-14): a yes to web is a yes to it.
+        assert!(!Feature::Incognito.has_switch());
     }
 
     /// A yes that did not install stays open; a no, a never, or a yes that

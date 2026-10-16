@@ -518,7 +518,7 @@ fn start_unit(
         home,
         ID,
         &units.join(format!("{stem}.service")),
-        &r(ROUTER_SERVICE),
+        &crate::user_service::stamp(ID, &r(ROUTER_SERVICE)),
         0o644,
     )?;
     let dropins = units.join(format!("{stem}.service.d"));
@@ -558,12 +558,39 @@ fn start_agent(
     if let Some(dir) = log.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
-    let agent = crate::launchd::Agent {
+    let mecha = std::env::current_exe().context("finding the mecha binary for the agent")?;
+    let agent = agent(naming, bin, presets, engine.path(), &mecha, home, log);
+    write_owned(
+        home,
+        ID,
+        &plist,
+        &crate::user_service::stamp(ID, &crate::launchd::plist_text(&agent)),
+        0o644,
+    )?;
+    say(&format!(
+        "loading {alias} on the router at :{} — up to fifteen minutes for a large model",
+        naming.port
+    ));
+    crate::launchd::load(&plist, &agent.label)
+}
+
+/// The router's launchd agent: the launcher under the log cap, and the
+/// environment it reads in place of the unit's.
+fn agent(
+    naming: &Naming,
+    bin: &Path,
+    presets: &Path,
+    engine: &Path,
+    mecha: &Path,
+    mecha_home: &Path,
+    log: PathBuf,
+) -> crate::launchd::Agent {
+    crate::launchd::Agent {
         label: crate::launchd::label(&naming.stem),
         // Under the log cap: launchd's log file is never rotated, and the
         // router logs every request (review of #678).
         program: crate::log_cap::wrap(
-            &std::env::current_exe().context("finding the mecha binary for the agent")?,
+            mecha,
             &log,
             vec![bin.join("mecha-router").display().to_string()],
         ),
@@ -573,23 +600,17 @@ fn start_agent(
             ("PATH".into(), crate::launchd::SYSTEM_PATH.into()),
             ("MECHA_ROUTER_PORT".into(), naming.port.to_string()),
             ("MECHA_ROUTER_PRESETS".into(), presets.display().to_string()),
-            ("LLAMA_SERVER".into(), engine.path().display().to_string()),
+            ("LLAMA_SERVER".into(), engine.display().to_string()),
             // `log-cap` (and `on-demand`) resolve the mecha home from the
             // environment to check they run only mecha's own programs: an
             // agent under a MECHA_HOME other than ~/.mecha must carry it
             // (review of #679).
-            ("MECHA_HOME".into(), m.mecha_home.display().to_string()),
+            ("MECHA_HOME".into(), mecha_home.display().to_string()),
         ],
         workdir: None,
         throttle_secs: crate::launchd::THROTTLE_SECS,
         log,
-    };
-    write_owned(home, ID, &plist, &crate::launchd::plist_text(&agent), 0o644)?;
-    say(&format!(
-        "loading {alias} on the router at :{} — up to fifteen minutes for a large model",
-        naming.port
-    ));
-    crate::launchd::load(&plist, &agent.label)
+    }
 }
 
 /// The router answers, and the model is resident — asked of the router, never
@@ -714,6 +735,59 @@ pub fn remove(m: &Machinery, naming: &Naming) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// The router's revision is held to what its install writes: the presets
+    /// file, the unit, the launcher, their drop-ins (the engine's included)
+    /// and wait script, and the Mac agent.
+    #[test]
+    fn the_router_s_revision_is_held_to_what_it_writes() {
+        let n = Naming::shipped();
+        let bin = Path::new("/h/.mecha/sidecars/bin");
+        let presets = Path::new("/h/.mecha/sidecars/router/presets.ini");
+        let r = |t: &str| render(t, &n, bin, presets);
+        let engine = Path::new("/h/.mecha/sidecars/llama/current/llama-server");
+        let plist = crate::launchd::plist_text(&agent(
+            &n,
+            bin,
+            presets,
+            engine,
+            Path::new("/u/.cargo/bin/mecha"),
+            Path::new("/h/.mecha"),
+            "/u/Library/Logs/mecha/llama-local.log".into(),
+        ));
+        // Every branch of the presets file: the pinned row's lines, and an
+        // owner's model with none of the optional ones.
+        let preset = |pinned: bool| {
+            presets_text(&Preset {
+                alias: "a-model".into(),
+                model: "/h/m.gguf".into(),
+                mmproj: pinned.then(|| "/h/mm.gguf".into()),
+                ctx: 65536,
+                slots: 2,
+                cache_ram_mb: pinned.then_some(8192),
+                pinned,
+            })
+        };
+        crate::user_service::assert_rev(
+            ID,
+            (
+                1,
+                "6b0950c01907bbe62aecdffe29243b6f493d69d0ccd824969fa3a4e08acfc909",
+            ),
+            &[
+                &preset(true),
+                &preset(false),
+                &r(ROUTER_SERVICE),
+                &r(ROUTER_LAUNCHER),
+                PATH_CONF,
+                WAIT_HEALTHY,
+                // The engine the unit runs, by drop-in: mecha's or one on PATH.
+                &crate::engine_gate::drop_in_text(engine),
+                &crate::llama_units::provided_engine_text(engine),
+                &plist,
+            ],
+        );
+    }
+
     use super::*;
 
     /// Only a loopback table on the router's port is this router: a `local`

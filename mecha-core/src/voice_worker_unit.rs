@@ -345,6 +345,25 @@ pub fn remove(m: &Machinery, naming: &Naming) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// The voice worker's revision is held to what its install writes: its
+    /// files, the unit, and the Mac agent made from it.
+    #[test]
+    fn the_worker_s_revision_is_held_to_what_it_writes() {
+        let n = Naming::shipped();
+        let unit = render(Path::new("/h/.mecha/sidecars/voice-worker"), &n);
+        let agent = crate::user_service::test_agent_text(&n.unit, &unit);
+        let mut rendered: Vec<&str> = FILES.iter().flat_map(|(n, t)| [*n, *t]).collect();
+        rendered.extend([unit.as_str(), agent.as_str()]);
+        crate::user_service::assert_rev(
+            ID,
+            (
+                1,
+                "6b55303329091640cd9057df60258f8bbd5fecccfbd5bb94278ee1c349af157c",
+            ),
+            &rendered,
+        );
+    }
+
     use super::*;
 
     /// What runs is what the hand install runs, byte for byte — so a fix made

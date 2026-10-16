@@ -1,6 +1,7 @@
 <script>
   import { apiFetch as fetch } from './api.js';
   import { readVoicePrefs, writeVoicePrefs } from '../../../scripts/voice/voice-core.js';
+  import { voicesUrl, chatVoices } from './library.js';
 
   // The voice pane: how calls sound, and whether the worker is up — its
   // health explains why a picker is empty, so it stays beside the pickers.
@@ -8,14 +9,28 @@
   // Library → Voices since 2026-10-01.
   let voice = $state(null);
 
-  // The voice preference and the last call's voices/range, from voice-core's
-  // own store — the same bytes a connecting call reads, so a choice made
-  // here is the choice the next call opens with. The list and range are a
-  // cache of the worker's last answer: a picker with no live call cannot
-  // ask, and rendering the remembered answer with a dated note beats either
-  // a hardcoded list or no picker at all.
+  // The voice preference and the worker's last speed range, from
+  // voice-core's own store — the same bytes a connecting call reads, so a
+  // choice made here is the choice the next call opens with.
   let vprefs = $state(readVoicePrefs());
   let vSavedNote = $state(null);
+
+  // The voices to pick from are the voice library's, read now (owner,
+  // 2026-10-15: one voice system for the chat and the personas). Served
+  // with no unlock, so a locked voice is never offered here; a clone
+  // recorded a moment ago is, without waiting for a call.
+  let library = $state(null); // { names, error } once asked
+  async function loadVoices() {
+    try {
+      const res = await fetch(voicesUrl(null));
+      if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
+      const data = await res.json();
+      // The lock first: it is why nothing would be offered.
+      library = { names: chatVoices(data), error: data.locks_error ?? data.list_error ?? null };
+    } catch (e) {
+      library = { names: [], error: String(e?.message ?? e) };
+    }
+  }
 
   async function load() {
     try {
@@ -26,6 +41,17 @@
     }
   }
   load();
+  loadVoices();
+  // Rewritten once, so a list an older page cached on this device goes:
+  // voice-core no longer keeps one (review of #701).
+  writeVoicePrefs({});
+
+  // The remembered voice when the list does not offer it — locked, or gone
+  // since — is kept and not named: the select shows a dash rather than
+  // either the name or a voice the next call would not open with.
+  // Never a voice name: names have no spaces.
+  const UNLISTED = ' unlisted';
+  let unlisted = $derived(!!vprefs.voice && !!library && !library.names.includes(vprefs.voice));
 
   function saveVoicePref(patch) {
     writeVoicePrefs(patch);
@@ -57,21 +83,33 @@
 
 <section>
   <div class="kicker">Playback</div>
-  {#if vprefs.voices?.length}
-    <div class="card fields">
+  <!-- The rate needs no voice list, so an unreadable one never takes it
+       away (review of #701). -->
+  <div class="card fields">
+    {#if library?.names.length}
       <label class="vfield">
         <span class="flabel">voice</span>
         <select
           class="vpick"
-          value={vprefs.voice ?? ''}
+          value={unlisted ? UNLISTED : (vprefs.voice ?? '')}
           onchange={(e) => saveVoicePref({ voice: e.currentTarget.value })}
         >
-          {#if !vprefs.voice}<option value="">worker default</option>{/if}
-          {#each vprefs.voices as v}
+          <!-- Always a way back to the worker's own voice, a remembered one
+               hidden by the lock included (review of #701). -->
+          {#if !vprefs.voice || unlisted}<option value="">worker default</option>{/if}
+          {#if unlisted}<option value={UNLISTED} disabled>—</option>{/if}
+          {#each library.names as v}
             <option value={v}>{v}</option>
           {/each}
         </select>
       </label>
+    {:else if library}
+      <div class="sub">
+        {library.error
+          ? `The voice list could not be read — ${library.error}.`
+          : 'No voices to pick from yet — add one in Library → Voices.'}
+      </div>
+    {/if}
       <label class="vfield">
         <span class="flabel">rate</span>
         <!-- The bounds are the worker's own last answer, never a literal
@@ -87,15 +125,7 @@
         <span class="vval">{Number(vprefs.speed ?? 1).toFixed(2)}×</span>
       </label>
       {#if vSavedNote}<div class="sub ok">{vSavedNote}</div>{/if}
-    </div>
-  {:else}
-    <div class="card">
-      <div class="sub">
-        No voice list remembered yet — it arrives from the worker on the first call, and the
-        pickers appear here after that.
-      </div>
-    </div>
-  {/if}
+  </div>
 </section>
 
 <section>

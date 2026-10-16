@@ -201,6 +201,17 @@ fn run_remedy(remedy: &Remedy) -> Result<()> {
         .argv
         .split_first()
         .context("a remedy with an empty argv")?;
+    // mecha's own servers resolve to the matching build, never a stale copy
+    // (review of #699), as setup's remedies do.
+    // A refusal is said and the loop goes on, as setup's does: one stale
+    // copy must not cost the remedies after it.
+    let program = match super::features::remedy_program(program) {
+        Ok(p) => p,
+        Err(why) => {
+            println!("not run: {why}");
+            return Ok(());
+        }
+    };
     let status = std::process::Command::new(program)
         .args(rest)
         .status()

@@ -230,6 +230,7 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         && only.is_some_and(|f| {
             onboarding::decline_keys(f.id()).fold(false, |had, k| honoured.remove(&k) | had)
         });
+    let stale = stale_services(&home, &cfg);
     let facts = Facts {
         // The registry's readout against the global config, as `mecha
         // features` reads it — the feature steps are built from it.
@@ -246,6 +247,8 @@ pub async fn execute(global: &crate::GlobalOpts, args: Args) -> Result<()> {
         // below rather than swallowed — a checklist that quietly stopped
         // honouring your answers would be the worse half of this feature.
         declined: honoured,
+        stale_services: stale.0,
+        services_unknown: stale.1,
     };
 
     let mut steps = onboarding::plan(&cfg, &name, &facts);
@@ -491,9 +494,10 @@ enum Answer {
 /// and there is nothing coherent to decline about being told.
 ///
 /// **The de-duplication is on what has been *run*, not on what has been
-/// asked**, and the difference is a bug that shipped. `mail` and `docs` carry
-/// the identical remedy argv when neither binary is on PATH — one
-/// `cargo install mecha-mail` satisfies both — so skipping the second
+/// asked**, and the difference is a bug that shipped. `mail` and `docs` once
+/// carried the identical remedy argv when neither binary was on PATH — one
+/// `cargo install mecha-mail` satisfied both; since §15 each says its own
+/// `mecha features enable` — so skipping the second
 /// *command* is right and skipping the second *question* was not: a `never`
 /// at the mail prompt recorded only `mail`, left `docs` outstanding, and
 /// `mecha setup` still exited 1 after somebody had answered every question
@@ -615,6 +619,43 @@ fn record_never(home: &std::path::Path, s: &Step) {
     }
 }
 
+/// The services an older mecha wrote, each with the switched-on feature whose
+/// `enable` would refresh it — or none, for the chat router (`mecha setup
+/// chat`'s) — and why the record could not be read, when it could not. One no switched-on feature offers is not listed: nothing here
+/// would refresh it, and `features enable` does once the feature is back on.
+fn stale_services(
+    home: &std::path::Path,
+    cfg: &mecha_core::config::Config,
+) -> (Vec<(&'static str, Option<Feature>)>, Option<String>) {
+    use mecha_core::install;
+    let stale = match mecha_core::sidecar::stale_services(home) {
+        Ok(stale) => stale,
+        // A step of its own, unknown: never read as current (review of #691).
+        Err(e) => return (Vec::new(), Some(format!("{e:#}"))),
+    };
+    let chat_here = install::chat_runs_here(cfg);
+    let on: Vec<Feature> = feature_rows(home)
+        .into_iter()
+        .filter(|r| r.part_of.is_none() && r.switch == Some(feature::Switch::On))
+        .map(|r| r.id)
+        .collect();
+    let stale = stale
+        .into_iter()
+        .filter_map(|s| {
+            if s.id == mecha_core::router_unit::ID {
+                return chat_here.then_some((s.label, None));
+            }
+            let f = on.iter().copied().find(|f| {
+                install::installable(s.id)
+                    && mecha_core::sidecar::needed(*f).any(|n| n.id == s.id)
+                    && install::not_needed(s.id, *f, chat_here).is_none()
+            })?;
+            Some((s.label, Some(f)))
+        })
+        .collect();
+    (stale, None)
+}
+
 /// The registry's rows against the global configuration — empty when it does
 /// not load, which the plan's own config step already reports.
 fn feature_rows(home: &std::path::Path) -> Vec<mecha_core::feature::Row> {
@@ -694,6 +735,13 @@ fn run(remedy: &Remedy) -> Result<bool> {
         .argv
         .split_first()
         .context("a remedy with an empty argv")?;
+    let program = match super::features::remedy_program(program) {
+        Ok(p) => p,
+        Err(why) => {
+            println!("not run: {why}");
+            return Ok(false);
+        }
+    };
     let status = std::process::Command::new(program).args(rest).status();
     Ok(match status {
         Ok(s) if s.success() => {
