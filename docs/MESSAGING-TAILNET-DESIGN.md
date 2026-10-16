@@ -54,7 +54,9 @@ every other route. The body is a `MailboxMessage` without its id and status:
 recipient lock. `from` stays a producer name (`work::valid_producer` refuses
 `@`); the machine goes in a new optional `MailboxMessage::from_machine`,
 `None` for a local message and a default for an older build's file, and
-surfaces show the pair as `chat@laptop`. The duplicate check's key —
+surfaces show the pair as `chat@laptop`. "The same owner guard" includes
+the rest of a `POST`'s gate: the `x-mecha-request: 1` header every mutating
+route requires. The duplicate check's key —
 `(from, body, reply_to)` today — gains `from_machine`, or two machines' `chat`
 sending one short body to one recipient would coalesce into a single message
 (review of #700). From there nothing is new: the receiver's runs claim it at a
@@ -123,10 +125,14 @@ is. That needs a change below the route: `MailboxStore::send` stamps
 `taint_recorded: true` on every message today, so a wire body with no taint
 would land recorded *clean*. The route must store a missing taint as
 `taint_recorded: false` — the flag the fail-closed rule keys on — through a
-send that takes it (review of #700). A taint a peer *asserts* is taken as
-the receiver takes a local one — stamped by the sending harness, on a machine
-the ruling trusts as this one — and `from_machine` keeps a peer's message
-apart from the owner's own `mecha msg send` on this machine, which has none.
+send that takes it (review of #700). **A remote message is always
+untrusted on arrival**: the receiver takes the sender's taint and adds
+`untrusted`, so a peer can widen a message's taint but never narrow it. The
+route accepts a `taint` field from anything that presents the owner's header —
+including an unconfined `shell` in an injected run on the owner's own machine
+— and the research keeps "trust asserted by a sender" deliberately absent;
+this is that rule, kept across the wire (review of #700). `from_machine`
+keeps a peer's message apart from the owner's own `mecha msg send` here.
 A peer on another build may send fields this one does not know: unknown
 fields are ignored, never an error — a closed set written to an append-only
 store is a wire format. A peer's reply that cannot be parsed is an error to
@@ -152,8 +158,11 @@ spark                   chat ○             nightly-graph ● live    hud-refre
 mbp                     unreachable
 ```
 
-A peer that does not answer is listed as unreachable, never as empty. A
-listing's names are checked as the receiver checks its own
+The listing is more than the markers: `MailboxStore::agents()` returns only
+live sessions, so the producers with none — `chat` between sessions, the
+triggers — come from the trigger store and the known producer names, joined
+with the live markers. A peer that does not answer is listed as unreachable,
+never as empty. A listing's names are checked as the receiver checks its own
 (`work::valid_producer`, a bounded count) and anything else is dropped, so a
 peer's answer is only ever producer names (review of #700). Like
 `message_send`, the listing carries no egress class: it reads from the
@@ -191,13 +200,22 @@ everything it provokes.
 1. **Receive.** `POST /api/messages` on `mecha serve`: the owner guard and
    the `messages` switch (D2); `MailboxStore::send` with `from` a producer and
    the sender-claimed machine in `from_machine` (D1, D2), the duplicate key
-   widened by it; a missing taint stored unrecorded (D5); delivery labelled
-   with the machine — `render_delivery` says "on this machine" today, and a
-   remote message says which (§3); and `GET /api/messages/agents` (D7).
-   Tested with a forged header (refused), another login (refused), a missing
-   taint (stored untrusted), two machines' identical bodies (both kept).
+   widened by it; a missing taint stored unrecorded and every remote taint
+   with `untrusted` added (D5); delivery labelled with the machine —
+   `render_delivery` says "on this machine" today, and a remote message says
+   which (§3), **in the interpolated part only**: `mailbox::DELIVERY_STEM`
+   is what `agent::is_harness_voice` matches, and a delivery that falls off
+   that list is mined as an owner correction; and `GET /api/messages/agents`
+   (D7), built from the live markers and the trigger store. Tested with a
+   forged header (refused), another login (refused), a missing
+   `x-mecha-request` (refused), the owner's well-formed `POST` (stored — the
+   happy path), a missing taint (stored untrusted), a clean asserted taint
+   (stored untrusted), two machines' identical bodies (both kept), a remote
+   delivery still recognised as the harness's voice, and a listing carrying a
+   non-producer name (dropped).
 2. **Find and send.** Peers from `tailscale status --json` (D3), with
-   `[messages.peers]` for nicknames and exclusions; `message_agents` and
+   `[messages.peers]` for nicknames and exclusions — a field on both
+   `MessagesConfig` and `MessagesLayer`, which both deny unknown fields; `message_agents` and
    `mecha msg agents --all` list every machine's agents (D7);
    `message_send` and `mecha msg send` accept `producer@peer`; the send
    stamps taint exactly as a local one and posts to the peer, failing at
