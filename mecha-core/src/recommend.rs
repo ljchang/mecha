@@ -216,6 +216,20 @@ const GB10: &str = "DGX Spark (GB10)";
 /// int8 picture took ~128 s and the bf16 ~79 s warm (FEATURES-DESIGN §12.3).
 /// The text encoder and VAE are the GB10's files; the encoder runs on the CPU
 /// there, its float8 scales having no MPS type.
+/// SAM 3.1, the segmenter picture edits run beside the image model
+/// (`docs/SEGMENTATION-DESIGN.md` §3): ComfyUI's own fp16 repackaging, under
+/// `checkpoints/` as ComfyUI's layout has it. A second source on both image
+/// rows, so a Mac fetches it too. Its name is `imagegen::SEGMENT_MODEL`.
+pub const SAM_SOURCE: Source = Source::HuggingFace {
+    repo: "Comfy-Org/sam3.1",
+    revision: "7bb8374780a725b4353ed31f3a9395c9742b5621",
+    files: &[HubFile {
+        path: "checkpoints/sam3.1_multiplex_fp16.safetensors",
+        sha256: "9ba99c92703c2e8b4f47de2d34a539bb8e18923049e238b780d70dbe6368eb03",
+        bytes: 1_745_546_848,
+    }],
+};
+
 const IMAGE_MAC: &[Recommendation] = &[Recommendation {
     tier_gb: 128,
     memory: Memory::Unified {
@@ -249,8 +263,8 @@ const IMAGE_MAC: &[Recommendation] = &[Recommendation {
                 bytes: 675_509_688,
             },
         ],
-    }],
-    excludes: Some("what a loaded server holds between pictures: there is no idle reset on a Mac, so ~13.6 GB on MPS and ~6 GiB RSS stay until `[image] unload_after_secs` sends /free, and what /free gives back on MPS is not measured; and the CPU text encoder's own memory, not measured apart from the process"),
+    }, SAM_SOURCE],
+    excludes: Some("what a loaded server holds between pictures: there is no idle reset on a Mac, so ~13.6 GB on MPS and ~6 GiB RSS stay until `[image] unload_after_secs` sends /free, and what /free gives back on MPS is not measured; the CPU text encoder's own memory, not measured apart from the process; and SAM 3.1's load for an edit that segments, 2.5 GB on the GB10 and not measured on a Mac"),
 }];
 
 const MAC_M5: &str = "MacBook Pro (M5 Max)";
@@ -575,11 +589,13 @@ pub const SLOTS: &[Slot] = &[
                 // ~1.1 GiB after the idle reset + ~19.2 GiB for a load from
                 // cold: the Q4's 18.5 (2026-10-02), plus the ~0.7 the int8
                 // ConvRot file measured above the Q4, same method, same
-                // pictures (2026-10-04).
-                peak: Peak::Arithmetic { mb: 20_790 },
+                // pictures (2026-10-04); + 2,528 MB for SAM 3.1, which an
+                // edit that segments loads beside it, its cold load measured
+                // in ComfyUI's own process above a freed server (2026-10-16).
+                peak: Peak::Arithmetic { mb: 23_318 },
             },
             model: "Qwen-Image 2.1 int8 ConvRot, in ComfyUI",
-            counts: "peak, a picture from cold: ~1.1 idle after the reset and ~19.2 to load; ~15.8 warm, ~14.4 loaded and idle (the Q4's measured figures, carried up by what the int8 file measured above it on 2026-10-04: ~0.7 from cold, ~0.8 warm)",
+            counts: "peak, a picture from cold: ~1.1 idle after the reset and ~19.2 to load, + ~2.5 for SAM 3.1 when an edit segments (measured 2026-10-16; ~1.9 of it stays loaded); ~15.8 warm, ~14.4 loaded and idle (the Q4's measured figures, carried up by what the int8 file measured above it on 2026-10-04: ~0.7 from cold, ~0.8 warm)",
             sources: &[Source::HuggingFace {
                 repo: "Comfy-Org/Qwen-Image-2.1",
                 revision: "cb504a4090723e43f17ad01cec0359490e2de613",
@@ -600,7 +616,7 @@ pub const SLOTS: &[Slot] = &[
                         bytes: 675_509_688,
                     },
                 ],
-            }],
+            }, SAM_SOURCE],
             excludes: Some(
                 "from the resident sum, the ~1.1 GiB ComfyUI holds between pictures after the idle reset",
             ),
