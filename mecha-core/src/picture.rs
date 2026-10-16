@@ -1113,6 +1113,15 @@ pub fn plan(
         }
         out.delta.added.retain(|k| !identified.contains(k));
         out.faces.retain(|k| !identified.contains(k));
+        // Nor recorded: the next call restaged from a setting the owner may
+        // never have asked for, and dropped the photo one call later (review
+        // of #707, pass 7). The record keeps what it held before; a call that
+        // gives them once the people are known restages as asked.
+        out.next.setting = base.and_then(|b| b.setting.clone());
+        out.next.light = base.and_then(|b| b.light.clone());
+        out.next.camera = base.and_then(|b| b.camera.clone());
+        out.next.together = base.and_then(|b| b.together.clone());
+        out.delta = undrawn_scene(&out.delta);
         let shown_of = |keys: &[&String]| -> Vec<String> {
             out.next
                 .people
@@ -1138,8 +1147,9 @@ pub fn plan(
         // since the record now holds it for the next restage.
         if delta.setting || delta.light || delta.camera || delta.together {
             line.push_str(
-                " The setting, light, camera or relation given here were recorded but not \
-                 drawn: this was an edit of the photo.",
+                " The setting, light, camera or relation given here were left out, neither \
+                 drawn nor recorded: this was an edit of the photo. Give them again to restage \
+                 it now that its people are known.",
             );
         }
         if !undressed.is_empty() {
@@ -1246,7 +1256,7 @@ pub fn plan(
         let name = shown(&p.who);
         if identified.contains(&key) {
             // Already in the picture: only what the call says about them is
-            // drawn, and they get a crop only when something about them is.
+            // drawn, from the photo itself (they left the crops above).
             let before = lines.len();
             if identified_dressed.contains(&key) {
                 lines.push(format!(
@@ -2389,7 +2399,12 @@ mod tests {
         // What the edit did not draw is said, since the record holds it
         // (review of #707, pass 5).
         let said = p.said.as_deref().unwrap_or_default();
-        assert!(said.contains("recorded but not drawn"), "{said}");
+        assert!(said.contains("neither drawn nor recorded"), "{said}");
+        assert!(
+            p.next.setting.is_none() && p.next.camera.is_none(),
+            "{:?}",
+            p.next
+        );
         assert!(!said.contains("Until their clothes are said"), "{said}");
         // Once known, a later change restages it as any recorded picture.
         let base = landed(&p, 9);
@@ -2399,7 +2414,10 @@ mod tests {
             ),
             Some(&base),
         );
-        assert_eq!(later.route, "restaged");
+        // Nothing restaged from a setting that was never asked for: with none
+        // recorded, a camera change is an edit of the photo (review of #707,
+        // pass 7).
+        assert_eq!(later.route, "edited");
     }
 
     /// A photo whose record has a setting but whose people are still
@@ -2471,7 +2489,8 @@ mod tests {
             base.people
         );
         let later = planned(
-            &call(json!({"picture": "images/a.png", "scene": {"camera": "from the doorway"}})),
+            &call(json!({"picture": "images/a.png", "scene": {
+                "setting": "a narrow greenhouse", "camera": "from the doorway"}})),
             Some(&base),
         );
         assert_eq!(later.route, "restaged");
