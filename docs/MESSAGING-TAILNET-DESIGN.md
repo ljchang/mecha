@@ -55,7 +55,8 @@ whatever a sender says, so a body naming a taint is refused as malformed. The ro
 recipient lock. `from` stays a producer name (`work::valid_producer` refuses
 `@`). **Every sender-supplied field is validated at the route**, since on
 the wire none is harness-stamped any more: `from` by `valid_producer`,
-`from_session` by the session-id form (`serve::persona_chat::valid_session_id`,
+the message id by the same form, since the store writes it into a
+filename, `from_session` by the session-id form (`serve::persona_chat::valid_session_id`,
 promoted to one shared check rather than a second copy), `from_machine` by the same character
 set as a producer; anything else refuses the message. `render_delivery`
 interpolates `from_session` raw into the `<untrusted-content source="…">`
@@ -105,8 +106,9 @@ and its MagicDNS name:
    30-second cache is not: each peer's last answer is kept in `.peers.json`
    under the messages root (`$MECHA_MESSAGES_DIR`, `[messages] dir`, or
    `~/.mecha/messages`) — dotted, as `.agents` is, to stay out of the producer
-   namespace — written when a peer answers through a temp file named for its writer (pid
-and a counter) and a rename,
+   namespace — written when a peer answers, read and rewritten under the mailbox's own
+advisory lock so two senders cannot drop each other's timestamp, through a
+temp file named for its writer and a rename,
    since several sessions send at once, so it survives a restart. A file that
    cannot be read is a finding, never an empty map: its peers list as
    unreachable, not as gone (review of #700).
@@ -153,24 +155,28 @@ model *does* name a destination
 now — `to`'s machine half is its choice — so what holds the class at none is
 not the absence of a choice but its range: **every value `to` can take is one
 of the owner's own machines**, found from the tailnet's identity of the owner
-(D3) and resolved only against that set; the model names a peer, never a host
+(D3) and resolved only against that set — `[messages.peers] nicknames` too,
+which may only name a node in it and is never an address book; the model
+names a peer, never a host
 or a URL. That is the local precedent widened by the ruling, and it is not a
 licence for a fixed allowlist of anyone else's hosts — `http_fetch` is
 `Chosen` because its range is the internet (review of #700). `MessageSendTool`
 declares none of the four capabilities today because "the payload lands in
 `~/.mecha`, owner-only, same uid — no exfiltration channel"; the ruling
 extends the same reason to the owner's other machines. What keeps this safe is
-the research's rule, unchanged: the sender's conversation taint is stamped by
-the harness and merged into the receiving conversation before the text lands.
-A tainted run on the GB10 can still report to the laptop; the laptop's session
-then treats every external send exactly as if it had read the hostile page
-itself. Exfiltration *to* a peer moves data between two of the owner's
+the research's rule, tightened for the wire: no taint crosses it (D5) — the
+*receiver* stamps every remote message with both legs and merges that into
+the receiving conversation before the text lands. A run on the GB10 can still
+report to the laptop; the laptop's session then treats every external send
+as if it had read a hostile page and private data both, whatever the GB10's
+run had read. Exfiltration *to* a peer moves data between two of the owner's
 machines, which the ruling places inside; exfiltration *from* a peer is the
 receiving run's interlock, which now knows what the message carried.
 
-**D5. Fail closed on the wire.** A message whose `taint` is missing or
-unreadable is untrusted on arrival, as a local one written by an older build
-is. That needs a change below the route: `MailboxStore::send` stamps
+**D5. Fail closed on the wire, and no taint on it.** Locally, a message whose
+`taint` is missing or unreadable is untrusted, as one written by an older
+build is; across machines there is no taint field at all, and every message
+arrives with both legs, as below. That needs a change below the route: `MailboxStore::send` stamps
 `taint_recorded: true` on every message today, so a wire body with no taint
 would land recorded *clean*. The route must store a missing taint as
 `taint_recorded: false` — the flag the fail-closed rule keys on — through a
@@ -238,11 +244,14 @@ peer's answer is only ever producer names (review of #700). Like
 `message_send`, the listing carries no egress class: it reads from the
 owner's own machines.
 
-**D8. The inbound axis.** A delivered message's body carries its sender's
-taint, merged as for a local one (D4), so its content is governed whatever
-the transport. `message_agents`' listing from a peer is not marked
-`.from_outside()`: it is the owner's machines answering with producer names
-the owner configured, and it never carries a message body. A peer's error is
+**D8. The inbound axis.** A delivered remote message arrives fully tainted
+(D5), so its content is governed whatever the sender says. **`message_agents`'
+listing from a peer is marked `.from_outside()`** (review of #700): it is
+validated to producer names (D7), but those come from the peer's own
+`.agents` markers, which a process on that machine can write, and D5 refuses
+to believe a peer — a name is still text a peer chose. The cost: listing the
+agents on other machines arms `untrusted` on the conversation that asks, as
+reading any outside content does; listing this machine's own does not. A peer's error is
 never shown as its text: the sending tool reports a typed reason of its own
 — unreachable, refused, full, or malformed — and drops whatever the peer
 wrote, so no network text enters the conversation unmarked (review of #700).
@@ -308,10 +317,17 @@ everything it provokes.
    `MessagesConfig` and `MessagesLayer`, which both deny unknown fields; `message_agents` and
    `mecha msg agents --all` list every machine's agents (D7);
    `message_send` and `mecha msg send` accept `producer@peer`; the send
-   stamps taint exactly as a local one and posts to the peer, failing at
-   once when it does not answer. The `Egress` class of `message_send` is
-   unchanged (none) — the test is that a tainted conversation can still send
-   to a peer, and the receiving conversation comes out tainted. Discovery is
+   posts to the peer with no taint (D5) and fails at once when it does not
+   answer. The `Egress` class of `message_send` is unchanged (none), so
+   **the leak guard needs its own check on the remote path**: `leak_risk` is
+   `leak_guard_armed && caps.can_send()`, false for `Egress::None`, so
+   `block_sends_after_private` would never see a remote send. The route's
+   sender refuses explicitly when that switch is on and the conversation
+   holds private data (D4). Tested: a clean conversation's remote send
+   arrives fully tainted (proving the sender's taint is not what counts); a
+   tainted conversation can still send; with `block_sends_after_private` on
+   and private data in the conversation, a remote send is refused; a
+   listing from a peer arms `untrusted` on the asking conversation. Discovery is
    tested over a recorded `tailscale status --json`: another login's node, a
    tagged node, an offline one and one with no `mecha serve` are none of
    them peers.
