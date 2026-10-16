@@ -1919,8 +1919,10 @@ where none runs its program or carries its name — the program by its
 absolute path, from `PATH` or `~/.cargo/bin`, results untrusted — and, where
 the config has no `[outbox]`, one staging mail's sends and documents' writes.
 Every server of one command shares that one `[outbox]`, as do the yeses of one
-`mecha setup`. An entry or `[outbox]` you wrote is never edited: `enable`
-names what it lacks. No `[outbox]` is written where a `[[rule]]` of yours
+`mecha setup`. An entry or `[outbox]` you wrote is never edited — `enable`
+names what it lacks — with one exception: an entry running a copy of mecha's
+own mail, docs or graph server from another build has its `command` pointed
+at the matching build, and nothing else in it changes. No `[outbox]` is written where a `[[rule]]` of yours
 names a call it would stage, and the rule is named. `enable voice` writes
 `[voice] voices_dir` for the installed speech server where no `[voice]` table
 exists.

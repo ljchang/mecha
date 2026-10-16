@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`mecha features enable mail` and `enable docs` install their servers**,
+  built from the same source as your `mecha`, into `~/.mecha/sidecars/`. A
+  `mecha-mail`, `mecha-docs` or `mecha-graph-mcp` on your `PATH` from another
+  build is passed over and an entry running it is pointed at the matching
+  one; one you built from your own checkout is left as yours. `mecha
+  --version` now says which build it is: `0.1.24 (git 7d7f0fa05)`.
 - **Voices lock like pictures and personas.** Library → Voices has Lock and
   Unlock on each voice, and a *lock* box when saving a recording. A locked
   voice is hidden while browsing — off the voice library, the assistant's

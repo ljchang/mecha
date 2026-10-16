@@ -884,9 +884,15 @@ fn sign_ins(chosen: &[Feature], home: &std::path::Path) -> Result<()> {
                 match onboarding::runnable(next) {
                     Some((argv, true)) => {
                         println!("Running `{}`…", argv.join(" "));
-                        let status = std::process::Command::new(&argv[0])
-                            .args(&argv[1..])
-                            .status();
+                        // A stale copy is refused by name, never run.
+                        let status = super::features::remedy_program(&argv[0])
+                            .map_err(|why| println!("not run: {why}"))
+                            .and_then(|program| {
+                                std::process::Command::new(program)
+                                    .args(&argv[1..])
+                                    .status()
+                                    .map_err(|_| ())
+                            });
                         if !matches!(status, Ok(s) if s.success()) {
                             println!("that did not finish — `mecha setup` asks again");
                         }
