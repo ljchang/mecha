@@ -1044,21 +1044,56 @@ pub fn plan(
     // returns, and the result says how they were read, since naming someone
     // here no longer adds them (review of #707, pass 3).
     if !identified.is_empty() {
+        // A room photo given in the call that names them is refused by what it
+        // is, whatever else the call says about them: that restage drew them
+        // from the library onto the room and dropped the owner's photo, and an
+        // edit would record a room the picture was never drawn in (review of
+        // #707, pass 5).
+        if delta.setting && setting_photo.is_some() {
+            return Err(
+                "A picture whose people are not known yet cannot be moved into a room photo in \
+                 the same call that names them: name them first, then send the room."
+                    .into(),
+            );
+        }
         out.delta.added.retain(|k| !identified.contains(k));
         out.faces.retain(|k| !identified.contains(k));
-        let names: Vec<String> = out
-            .next
-            .people
+        let shown_of = |keys: &[&String]| -> Vec<String> {
+            out.next
+                .people
+                .iter()
+                .filter(|p| keys.contains(&&p.who.key()))
+                .map(|p| shown(&p.who))
+                .collect()
+        };
+        let all: Vec<&String> = identified.iter().collect();
+        let bare: Vec<&String> = identified
             .iter()
-            .filter(|p| identified.contains(&p.who.key()))
-            .map(|p| shown(&p.who))
+            .filter(|k| !identified_dressed.contains(k))
             .collect();
-        let line = format!(
+        let names = shown_of(&all);
+        let undressed = shown_of(&bare);
+        let mut line = format!(
             "This picture had no record of who is in it, so {} {} taken as already in it, not \
              added. Its people are known now, so later changes can redraw it or add someone.",
             crate::imagelib::join_and(&names),
             if names.len() == 1 { "is" } else { "are" }
         );
+        // What the call gave that this edit of the photo does not draw, said,
+        // since the record now holds it for the next restage.
+        if delta.restages() || delta.style {
+            line.push_str(
+                " The setting, light, camera or relation given here were recorded but not \
+                 drawn: this was an edit of the photo.",
+            );
+        }
+        if !undressed.is_empty() {
+            line.push_str(&format!(
+                " Until their clothes are said, a later redraw dresses {} in clothes that suit \
+                 the scene.",
+                crate::imagelib::join_and(&undressed)
+            ));
+        }
         out.said = Some(match out.said.take() {
             Some(said) => format!("{said} {line}"),
             None => line,
@@ -1274,14 +1309,9 @@ pub fn plan(
         }
     }
     // Crops go to the people this edit changes, who must look like themselves
-    // after it; everyone else is on the canvas already. People identified on
-    // a photo are drawn from the photo itself: no crop pulls them toward a
-    // portrait, and they leave `added`, which is who the image tool would
-    // describe, with a library description and a default pose (review of
-    // #707, pass 2). The instruction's own line carries what was asked.
-    out.faces
-        .retain(|k| touched.contains(k) && !identified.contains(k));
-    out.delta.added.retain(|k| !identified.contains(k));
+    // after it; everyone else is on the canvas already. (People identified on
+    // a photo left the crops and `added` before any route returned.)
+    out.faces.retain(|k| touched.contains(k));
     out.render = Render::Edit {
         canvas: Canvas::Picture(picture),
         camera_moves: delta.camera,
@@ -1289,13 +1319,6 @@ pub fn plan(
     // An edit with no line would send the keep sentence alone, the shape
     // that returns the picture unchanged (#408): refused, saying what would
     // draw (review of #597).
-    if lines.is_empty() && !identified.is_empty() && delta.setting && setting_photo.is_some() {
-        return Err(
-            "A picture whose people are not known yet cannot be moved into a room photo in the \
-             same call that names them: name them first, then send the room."
-                .into(),
-        );
-    }
     if lines.is_empty() {
         return Err(
             "This change gives the picture nothing to draw: say who is in it, or put the change \
@@ -1338,9 +1361,6 @@ pub fn plan(
         let line = if no_setting {
             "The scene has no setting to redraw it from, so this was drawn as an edit of the \
              picture. Giving `scene.setting` lets later changes redraw it."
-        } else if out.next.people_known {
-            "This picture had no record of who is in it, so this change was drawn as an edit \
-             of it. Its people are known now, so later changes can redraw it."
         } else {
             "The picture's people are not known yet, so this was drawn as an edit of it rather \
              than redrawn from its setting. Saying who is in it lets later changes redraw it."
@@ -2245,6 +2265,11 @@ mod tests {
             p.said
         );
         assert!(p.next.people_known);
+        // What the edit did not draw is said, since the record holds it
+        // (review of #707, pass 5).
+        let said = p.said.as_deref().unwrap_or_default();
+        assert!(said.contains("recorded but not drawn"), "{said}");
+        assert!(!said.contains("Until their clothes are said"), "{said}");
         // Once known, a later change restages it as any recorded picture.
         let base = landed(&p, 9);
         let later = planned(
@@ -2350,6 +2375,23 @@ mod tests {
         assert!(
             refused.contains("name them first, then send the room"),
             "{refused}"
+        );
+        // Whatever else the call says about them (review of #707, pass 5).
+        let dressed = plan(
+            &call(json!({"picture": "inbox/her.jpg", "scene": {
+                "setting": {"photo": "inbox/room.png"},
+                "people": [{"who": "maya", "wearing": "a mustard raincoat"}]}})),
+            None,
+            Some("h".repeat(64)),
+            Origin::Clean,
+            &lib,
+            &names,
+            &|_| None,
+        )
+        .unwrap_err();
+        assert!(
+            dressed.contains("name them first, then send the room"),
+            "{dressed}"
         );
     }
 
