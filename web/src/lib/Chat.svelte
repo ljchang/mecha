@@ -1566,13 +1566,28 @@
         edit.busy = false; // never a modal that no button can close
         return;
       }
+      if (regions.length) {
+        // Held until the server starts the turn: a run that began after the
+        // check above is refused (409), and the paint must not go with it
+        // (review of #703). The draft the first region took is consumed only
+        // then.
+        const started = await send({
+          text: message,
+          regions: { picture: edit.path, mask: maskPath, regions: regions.map(({ colour, words }) => ({ colour, words })) },
+        });
+        if (editing !== edit) return;
+        if (started) {
+          draft = '';
+          editing = null;
+        } else {
+          edit.busy = false;
+          edit.error = 'The painted regions were not sent — the chat says why. They are still here.';
+        }
+        return;
+      }
       draft = message;
       editing = null;
-      await send(
-        regions.length
-          ? { regions: { picture: edit.path, mask: maskPath, regions: regions.map(({ colour, words }) => ({ colour, words })) } }
-          : {},
-      );
+      await send();
     } catch (err) {
       if (editing === edit) {
         edit.busy = false;
