@@ -220,7 +220,12 @@
 
   function picked(e) {
     const file = e.currentTarget.files?.[0];
-    if (pickingFor != null) attach(pickingFor, file);
+    if (file && !REFERENCE_TYPES.includes(file.type)) {
+      encodeError = 'A region takes a PNG, JPEG or WebP picture.';
+    } else if (pickingFor != null) {
+      encodeError = null;
+      attach(pickingFor, file);
+    }
     pickingFor = null;
     e.currentTarget.value = '';
   }
@@ -229,6 +234,7 @@
     const file = e.dataTransfer?.files?.[0];
     if (!file) return;
     e.preventDefault();
+    e.stopPropagation();
     // Said, never swallowed: a HEIC or GIF would otherwise do nothing.
     if (!REFERENCE_TYPES.includes(file.type)) {
       encodeError = 'A region takes a PNG, JPEG or WebP picture.';
@@ -595,7 +601,15 @@
             class="rw"
             role="group"
             aria-label={`Region ${k + 1}, ${r.colour}`}
-            ondragover={(e) => e.dataTransfer?.types?.includes('Files') && e.preventDefault()}
+            ondragover={(e) => {
+              // Claimed, not only allowed: the page's own window listener
+              // runs after this one and sets the effect to none while the
+              // modal is open, which cancels the drop (review of #706).
+              if (!e.dataTransfer?.types?.includes('Files')) return;
+              e.preventDefault();
+              e.stopPropagation();
+              e.dataTransfer.dropEffect = 'copy';
+            }}
             ondrop={(e) => dropOn(k, e)}
           >
             <span class="dot" style={`--c: rgb(${r.rgb.join(',')})`}>{k + 1}</span>

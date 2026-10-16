@@ -895,7 +895,13 @@ pub fn plan(
     // purpose, to take that face (§5.3): it is not someone offstage, whom
     // the image model would read as "the viewer" (review of #706, pass 3).
     if !call.regions.is_empty() {
-        for r in call.regions.iter().filter(|r| !about_a_face(&r.words)) {
+        // Only where that face is sent: one approved name, and no dropped
+        // picture outranking it (review of #706, pass 4). A face that still
+        // cannot be had (no detector, no face found) is read as "the viewer"
+        // by the image tool, which knows it.
+        for r in call.regions.iter().filter(|r| {
+            !(about_a_face(&r.words) && r.reference.is_none() && named_in(&r.words).len() == 1)
+        }) {
             prose.push(("retouch", r.words.clone()));
         }
     } else if let Some(r) = &call.retouch {
@@ -1628,6 +1634,32 @@ mod tests {
         )
         .unwrap();
         assert!(p.offstage.is_empty(), "{:?}", p.offstage);
+        // Only where that face is sent: two names take neither, and a dropped
+        // picture outranks the name (review of #706, pass 4).
+        let p = plan(
+            &regions("Wren and Mark's faces"),
+            Some(&base),
+            None,
+            Origin::Clean,
+            &approved,
+            &named,
+            &|_| None,
+        )
+        .unwrap();
+        assert_eq!(p.offstage, vec!["mark".to_string(), "wren".to_string()]);
+        let dropped = call(json!({"picture": "images/a.png", "mask": "inbox/r.png",
+            "regions": [{"colour": "red", "words": "Wren's face", "reference": "inbox/f.png"}]}));
+        let p = plan(
+            &dropped,
+            Some(&base),
+            None,
+            Origin::Clean,
+            &approved,
+            &named,
+            &|_| None,
+        )
+        .unwrap();
+        assert_eq!(p.offstage, vec!["wren".to_string()]);
     }
 
     /// Regions beside a scene change are refused: the change drops the mask,
