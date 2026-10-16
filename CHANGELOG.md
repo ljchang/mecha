@@ -13,8 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   region now has a *Picture* button, and takes a picture dropped or pasted on
   its row: say "her face" and the region gets the face from that picture,
   with everything outside the paint left exactly as it was. A region whose
-  words name a library character takes that character's face (its `face`
-  reference when it has one). Measured on a full-body photo, the face landed
+  words name a library character and its face ("Maya's face") takes that
+  character's face (its `face` reference when it has one). Measured on a full-body photo, the face landed
   at ArcFace .79–.85 over six renders against the one wanted, up from
   .10–.25.
 
