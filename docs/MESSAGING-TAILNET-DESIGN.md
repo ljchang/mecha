@@ -61,7 +61,8 @@ recipient lock. `from` stays a producer name (`work::valid_producer` refuses
 the wire none is harness-stamped any more: `from` by `valid_producer`,
 the sender's message id and `from_session` both by the session-id form
 (`serve::persona_chat::valid_session_id` — alphanumeric and `-`, at most 64 —
-promoted to one shared check rather than a second copy; not `valid_producer`,
+promoted into core beside `work::valid_producer` as one shared check, since
+the route is in the CLI and the store and `render_delivery` are in core; not `valid_producer`,
 which refuses the uppercase `T` every `Session::new_id()` carries, and would
 reject every real send). The sender's id keys D6's ledger, so it still needs
 that bounded, path-safe form, though it never names a message file: **the
@@ -260,16 +261,20 @@ owner's own machines.
 **D8. The inbound axis.** A delivered remote message arrives fully tainted
 (D5), so its content is governed whatever the sender says. **`message_agents`'
 listing from a peer is untrusted input, both ways the loop reads it** — the
-tool declares `Capabilities::untrusted_input`, since the interlock folds a
-turn's taint from *declared* capabilities over the whole batch before
-dispatch, and its result is marked `.from_outside()`, which alone would leave
-a same-turn window (review of #700): it is
+tool declares `Capabilities::untrusted_input` *and* marks a peer's result
+`.from_outside()`, because the conversation arms on the two together:
+`jobs::settle` sets `untrusted` on `caps.untrusted_input && out.external`, and
+applies the `<untrusted-content>` fence on the same AND. The mark without the
+declaration would be inert — never arming the conversation, on any turn, and
+never fenced; the declaration also arms the turn's pre-dispatch gate, which
+folds *declared* capabilities over the whole batch (reviews of #700 and
+#704): it is
 validated to producer names (D7), but those come from the peer's own
 `.agents` markers, which a process on that machine can write, and D5 refuses
 to believe a peer — a name is still text a peer chose. The cost: listing the
 agents on other machines arms `untrusted` on the conversation that asks, as
-reading any outside content does (`ToolOutput::external`); listing this
-machine's own does not. The declared capability is the tool's, not the
+reading any outside content does (`untrusted_input && external`); listing
+this machine's own does not, since its result is not marked external. The declared capability is the tool's, not the
 call's — `capabilities()` sees no input — so any call to `message_agents`,
 local or not, arms the *turn's* gate for that whole turn — calls ordered
 before it included, since the fold is one pass before dispatch, which is the
