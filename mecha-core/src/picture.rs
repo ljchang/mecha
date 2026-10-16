@@ -94,6 +94,11 @@ pub struct Call {
     pub setting_photo: Option<String>,
     pub retouch: Option<String>,
     pub mask: Option<String>,
+    /// The area to change, named in words rather than painted ("the blue
+    /// scarf"): found by segmentation inside the picture job, and masked as
+    /// a painted area would be (`docs/SEGMENTATION-DESIGN.md` S1). Never
+    /// beside `mask` or `regions`.
+    pub mask_words: Option<String>,
     /// Coloured regions painted in `mask`, each with its own words (the
     /// owner's edit panel; IMAGE-REGION-EDIT-RESEARCH.md §7, M2). With
     /// them, `mask` is a region index and `retouch` is their legend.
@@ -165,13 +170,31 @@ pub fn parse(
     // A mask is a painted picture's path, from the owner's message. Anything
     // else in it (prose, a name, an object) is left out and said, never a
     // refusal (G1b: 3 of 65).
+    // Words and paths are told apart by shape (`looks_like_a_picture_path`),
+    // and a path-shaped one stays a path by design: one that does not
+    // resolve is left out and said, never read as words
+    // (`docs/SEGMENTATION-DESIGN.md` S1).
+    let mut mask_words: Option<String> = None;
     let mut mask = match obj.get("mask") {
         None | Some(Value::Null) => None,
         Some(Value::String(t)) if t.trim().is_empty() => None,
         Some(Value::String(t)) if looks_like_a_picture_path(t) => Some(t.trim().to_string()),
+        Some(Value::String(t)) => {
+            if t.trim().chars().count() > crate::imagegen::MASK_WORDS_CAP {
+                notes.push(format!(
+                    "The `mask` words were past {} characters, so they were left out.",
+                    crate::imagegen::MASK_WORDS_CAP
+                ));
+            } else {
+                mask_words = Some(t.trim().to_string());
+            }
+            None
+        }
         Some(_) => {
             notes.push(
-                "The `mask` given was not a painted picture's path, so it was left out.".into(),
+                "The `mask` given was neither a painted picture's path nor words, so it was left \
+                 out."
+                    .into(),
             );
             None
         }
@@ -235,6 +258,12 @@ pub fn parse(
         if retouch.is_some() {
             return Err("Regions carry their own words; no `retouch` goes beside them.".into());
         }
+        if mask_words.is_some() {
+            return Err(
+                "Painted regions carry their own mask; a `mask` in words cannot go beside them."
+                    .into(),
+            );
+        }
         retouch = Some(region_legend(&regions));
     }
     let size = match text(obj.get("size"), "size", 20)? {
@@ -250,6 +279,14 @@ pub fn parse(
                 .into(),
         );
         mask = None;
+    }
+    if mask_words.is_some() && (retouch.is_none() || picture.is_none()) {
+        notes.push(
+            "The `mask` was left out: an area named in words goes with a `retouch` of the \
+             `picture` it is in."
+                .into(),
+        );
+        mask_words = None;
     }
     let seed = match obj.get("seed") {
         None | Some(Value::Null) => None,
@@ -424,6 +461,7 @@ pub fn parse(
         setting_photo,
         retouch,
         mask,
+        mask_words,
         regions,
         size,
         seed,
@@ -644,6 +682,8 @@ pub struct Plan {
     pub seed: Seed,
     pub size: Option<crate::imagegen::Size>,
     pub mask: Option<String>,
+    /// An area named in words, segmented in the job (`Call::mask_words`).
+    pub mask_words: Option<String>,
     /// The scene this render lands as.
     pub next: Scene,
     pub delta: Delta,
@@ -866,6 +906,16 @@ pub fn plan(
             "The `mask` was left out: a scene change redraws more than a painted area.".into(),
         );
     }
+    // Words name an area exactly as paint does: no scene change beside them.
+    let mask_words = call
+        .mask_words
+        .clone()
+        .filter(|_| delta.is_empty() && unknown_removes.is_empty());
+    if call.mask_words.is_some() && mask_words.is_none() {
+        notes.push(
+            "The `mask` was left out: a scene change redraws more than the area it names.".into(),
+        );
+    }
     // Someone the call introduces needs their clothes. Clothes left out are
     // what the chat's record has them in (`worn`), else, for a library
     // character, asked for (G1b: 8 of 65 shape refusals were a newcomer
@@ -1059,6 +1109,7 @@ pub fn plan(
         seed: call.seed.map_or(Seed::Fresh, Seed::Given),
         size: call.size,
         mask,
+        mask_words,
         next,
         delta: delta.clone(),
         route: "new",
@@ -1139,7 +1190,8 @@ pub fn plan(
         let undressed = shown_of(&bare);
         let mut line = format!(
             "This picture had no record of who is in it, so {} {} taken as already in it, not \
-             added. Its people are known now, so later changes can redraw it or add someone.",
+             added. Its people are known now: later changes can add someone, and one that gives \
+             a setting can restage it.",
             crate::imagelib::join_and(&names),
             if names.len() == 1 { "is" } else { "are" }
         );
@@ -2180,11 +2232,9 @@ mod tests {
         let c = call(
             json!({"picture": "images/a.png", "retouch": "a hat", "mask": "the brass weathervane"}),
         );
-        assert!(
-            c.mask.is_none() && c.notes[0].contains("left out"),
-            "{:?}",
-            c.notes
-        );
+        // Words are kept as words (`docs/SEGMENTATION-DESIGN.md` S1).
+        assert!(c.mask.is_none() && c.notes.is_empty(), "{:?}", c.notes);
+        assert_eq!(c.mask_words.as_deref(), Some("the brass weathervane"));
         let c = call(json!({"picture": "images/a.png", "mask": "inbox/m.png",
             "scene": {"light": "dusk"}}));
         assert!(c.mask.is_none() && !c.notes.is_empty());
