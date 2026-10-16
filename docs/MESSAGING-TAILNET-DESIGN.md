@@ -55,8 +55,10 @@ whatever a sender says, so a body naming a taint is refused as malformed. The ro
 recipient lock. `from` stays a producer name (`work::valid_producer` refuses
 `@`). **Every sender-supplied field is validated at the route**, since on
 the wire none is harness-stamped any more: `from` by `valid_producer`,
-the message id by the same form, since the store writes it into a
-filename, `from_session` by the session-id form (`serve::persona_chat::valid_session_id`,
+the sender's message id by the same form — kept only for D6's ledger:
+**the stored id stays `Session::new_id()`**, never the sender's, since
+`write_message` renames into place with no existence check and a
+peer-chosen id could overwrite another message — `from_session` by the session-id form (`serve::persona_chat::valid_session_id`,
 promoted to one shared check rather than a second copy), `from_machine` by the same character
 set as a producer; anything else refuses the message. `render_delivery`
 interpolates `from_session` raw into the `<untrusted-content source="…">`
@@ -71,7 +73,8 @@ written by any other path must not open the fence either. The machine goes in a 
 surfaces show the pair as `chat@laptop`. "The same owner guard" includes
 the rest of a `POST`'s gate — the `x-mecha-request: 1` header every mutating
 route requires, and `sec-fetch-site` refused when present and not
-`same-origin` (a peer's client sends neither). The duplicate check's key —
+`same-origin`. A peer's client must send `x-mecha-request: 1` (the guard
+refuses a `POST` without it) and need not send `sec-fetch-site`. The duplicate check's key —
 `(from, body, reply_to)` today — gains `from_machine`, or two machines' `chat`
 sending one short body to one recipient would coalesce into a single message
 (review of #700). From there nothing is new: the receiver's runs claim it at a
@@ -106,8 +109,9 @@ and its MagicDNS name:
    30-second cache is not: each peer's last answer is kept in `.peers.json`
    under the messages root (`$MECHA_MESSAGES_DIR`, `[messages] dir`, or
    `~/.mecha/messages`) — dotted, as `.agents` is, to stay out of the producer
-   namespace — written when a peer answers, read and rewritten under the mailbox's own
-advisory lock so two senders cannot drop each other's timestamp, through a
+   namespace — written when a peer answers, read and rewritten under a lock of its own (a
+new one: `MailboxStore::lock` is per recipient and cannot name a dotted
+file) so two senders cannot drop each other's timestamp, through a
 temp file named for its writer and a rename,
    since several sessions send at once, so it survives a restart. A file that
    cannot be read is a finding, never an empty map: its peers list as
@@ -246,7 +250,11 @@ owner's own machines.
 
 **D8. The inbound axis.** A delivered remote message arrives fully tainted
 (D5), so its content is governed whatever the sender says. **`message_agents`'
-listing from a peer is marked `.from_outside()`** (review of #700): it is
+listing from a peer is untrusted input, both ways the loop reads it** — the
+tool declares `Capabilities::untrusted_input`, since the interlock folds a
+turn's taint from *declared* capabilities over the whole batch before
+dispatch, and its result is marked `.from_outside()`, which alone would leave
+a same-turn window (review of #700): it is
 validated to producer names (D7), but those come from the peer's own
 `.agents` markers, which a process on that machine can write, and D5 refuses
 to believe a peer — a name is still text a peer chose. The cost: listing the
@@ -305,7 +313,8 @@ everything it provokes.
    absent `Tailscale-User-Login` (refused), another login (refused) — a
    forged header carrying the owner's login is indistinguishable here, and
    the protection is `tailscale serve` stripping client-set headers, which no
-   test in this repository can reach — a missing
+   test in this repository can reach, so step 1's PR states it as assumed,
+   not measured — a missing
    `x-mecha-request` (refused), the owner's well-formed `POST` (stored — the
    happy path, stored with both taint legs), a body naming a `taint`
    (refused as malformed), one message id sent twice (delivered once), two
@@ -321,9 +330,11 @@ everything it provokes.
    answer. The `Egress` class of `message_send` is unchanged (none), so
    **the leak guard needs its own check on the remote path**: `leak_risk` is
    `leak_guard_armed && caps.can_send()`, false for `Egress::None`, so
-   `block_sends_after_private` would never see a remote send. The route's
-   sender refuses explicitly when that switch is on and the conversation
-   holds private data (D4). Tested: a clean conversation's remote send
+   `block_sends_after_private` would never see a remote send. The tool
+   refuses its own remote path when that switch is on and the conversation
+   holds private data (D4), reading `ToolCtx::taint` and `ToolCtx::security`
+   — the precedent is `WebSearch::call` narrowing itself off `ctx.taint`, so
+   nothing in `agent.rs` learns a tool's name. Tested: a clean conversation's remote send
    arrives fully tainted (proving the sender's taint is not what counts); a
    tainted conversation can still send; with `block_sends_after_private` on
    and private data in the conversation, a remote send is refused; a
