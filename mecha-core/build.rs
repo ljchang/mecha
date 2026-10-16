@@ -86,4 +86,7 @@ fn main() {
         }
     }
     println!("cargo:rerun-if-changed=build.rs");
+    // `include!`d above: any `rerun-if-changed` turns off cargo's
+    // package-wide default, so it is named (review of #699).
+    println!("cargo:rerun-if-changed=src/build_source.rs");
 }

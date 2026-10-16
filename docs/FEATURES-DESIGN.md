@@ -2217,7 +2217,11 @@ rule for mecha's own servers.
   crate builds `mecha-mail` and `mecha-docs`, from mecha's commit
   (`cargo install --git <repo> --rev <sha>`) or its version (`--version
   =<v>`), into `~/.mecha/sidecars/mail-mcp/`. A mecha that cannot tell its
-  source is not offered them, with why. The graph server keeps its pin
+  source is not offered them, with why — and nor is one built from a commit
+  no branch of mecha's repository holds (`local:`, the usual state of an
+  unpushed development checkout), which is told to build the servers from
+  that checkout (`cargo install --path mecha-mail --locked`), since `--rev`
+  could not fetch it. The graph server keeps its pin
   (`graph_mcp::REV`), now with the same staleness rule.
 - **An existing entry running a stale copy is repointed**, `command` alone,
   and said; nothing else in it changes. An entry running the owner's own
