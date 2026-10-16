@@ -964,7 +964,21 @@ pub struct McpWiring {
     pub install: &'static str,
     pub prefix_tools: bool,
     pub outbox: &'static [&'static str],
+    /// Environment a new entry carries: what the server must be told about
+    /// mecha's own servers, which its defaults do not know.
+    pub env: &'static [(&'static str, &'static str)],
 }
+
+/// The graph server's embedder: mecha's on-demand embeddings server and the
+/// model it serves. Without them the pinned server falls back to 768
+/// dimensions and refuses the 1024 harrier returns — every `kg_search` on a
+/// fresh install failed so (the owner's fresh Mac, 2026-10-15).
+/// `graph_embedder_is_mecha_s` holds each value to its source.
+pub const GRAPH_EMBED_ENV: &[(&str, &str)] = &[
+    ("MECHA_GRAPH_EMBED_URL", "http://127.0.0.1:8081"),
+    ("MECHA_GRAPH_EMBED_MODEL", crate::recommend::EMBED_ALIAS),
+    ("MECHA_GRAPH_EMBED_DIMS", crate::recommend::EMBED_DIMS),
+];
 
 impl McpWiring {
     /// The staged calls as an entry called `name` registers them: `outbox` is
@@ -997,6 +1011,7 @@ pub fn mcp_wiring(f: Feature) -> Option<McpWiring> {
             program: "mecha-mail",
             install: "cargo install mecha-mail --locked",
             prefix_tools: true,
+            env: &[],
             outbox: &[
                 "mail__mail_send",
                 "mail__mail_reply",
@@ -1010,6 +1025,7 @@ pub fn mcp_wiring(f: Feature) -> Option<McpWiring> {
             program: "mecha-docs",
             install: "cargo install mecha-mail --locked",
             prefix_tools: true,
+            env: &[],
             // Writing into a document a third party can read is a send
             // (`documents.md`): the three verbs that write into an existing
             // file stage for review (review of #669).
@@ -1027,6 +1043,7 @@ pub fn mcp_wiring(f: Feature) -> Option<McpWiring> {
             install: "mecha features enable graph",
             prefix_tools: false,
             outbox: &[],
+            env: GRAPH_EMBED_ENV,
         },
         _ => return None,
     })
@@ -1069,6 +1086,11 @@ pub struct McpWrite {
     /// An existing entry that does not force `untrusted_input = true`: never
     /// edited, named by the caller (review of #669).
     pub untrusted_missing: bool,
+    /// The variables of `McpWiring::env` an existing entry running the
+    /// program does not set: never edited — a graph store built at another
+    /// width would break under new ones — and said by the caller with the
+    /// lines to add (review of #698).
+    pub env_missing: Vec<(&'static str, &'static str)>,
     /// The command of an entry carrying the feature's name that runs some
     /// other program: left as it is, and no entry added beside it, so the
     /// caller names it (review of #669, pass 5).
@@ -1172,6 +1194,15 @@ pub fn write_mcp_entries(
                 .unwrap_or("")
                 .to_string()
         });
+        let env_missing: Vec<(&'static str, &'static str)> = match &existing {
+            Some(t) if runs(t) => wiring
+                .env
+                .iter()
+                .copied()
+                .filter(|(k, _)| t.get("env").and_then(|e| e.get(k)).is_none())
+                .collect(),
+            _ => Vec::new(),
+        };
         // An entry the owner wrote that does not force the capability: named,
         // never edited. It is the stronger gap — a mail read declares only
         // `readOnlyHint`, so without it a mail body never arms the untrusted
@@ -1201,6 +1232,13 @@ pub fn write_mcp_entries(
             entry.insert("command", toml_edit::value(command.display().to_string()));
             if !wiring.prefix_tools {
                 entry.insert("prefix_tools", toml_edit::value(false));
+            }
+            if !wiring.env.is_empty() {
+                let mut env = toml_edit::Table::new();
+                for (k, v) in wiring.env {
+                    env.insert(k, toml_edit::value(*v));
+                }
+                entry.insert("env", toml_edit::Item::Table(env));
             }
             let mut caps = toml_edit::Table::new();
             caps.insert("untrusted_input", toml_edit::value(true));
@@ -1232,6 +1270,7 @@ pub fn write_mcp_entries(
             wrote_outbox: false,
             outbox_missing: Vec::new(),
             untrusted_missing,
+            env_missing,
             runs_other,
             disabled,
         });
@@ -1652,7 +1691,7 @@ fn own_state(facts: &Facts, f: Feature) -> State {
             true => on("`factory-publish` on PATH — its drain fills ~/.mecha/requests"),
             false => off(
                 "`factory-publish` is not installed",
-                "install factory-publish from the mecha-factory repository",
+                "cargo install mecha-factory-publish --locked",
             ),
         },
         // The model's half: publishing tools, from an `[[mcp]]` entry.
@@ -1661,7 +1700,7 @@ fn own_state(facts: &Facts, f: Feature) -> State {
             facts,
             "factory-publish",
             facts.has_factory_binary,
-            "install factory-publish from the mecha-factory repository",
+            "cargo install mecha-factory-publish --locked",
             None,
             "",
         ),
@@ -1680,6 +1719,51 @@ fn own_state(facts: &Facts, f: Feature) -> State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The graph's entry carries mecha's embedder; mail's carries no
+    /// environment (the owner's fresh Mac, 2026-10-15).
+    #[test]
+    fn the_graph_entry_names_mecha_s_embedder() {
+        let root = std::env::temp_dir().join(format!("mecha-mcp-g-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let p = root.join("config.toml");
+        let graph = mcp_wiring(Feature::Graph).unwrap();
+        let mail = mcp_wiring(Feature::Mail).unwrap();
+        write_mcp_entries(
+            &p,
+            &[
+                (&graph, Path::new("/b/mecha-graph-mcp")),
+                (&mail, Path::new("/b/mecha-mail")),
+            ],
+            &|_| false,
+        )
+        .unwrap();
+        let cfg: crate::config::Config =
+            toml::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        let entry = |n: &str| cfg.mcp.iter().find(|m| m.name == n).unwrap().clone();
+        let env = entry("graph").env;
+        assert_eq!(env["MECHA_GRAPH_EMBED_DIMS"], crate::recommend::EMBED_DIMS);
+        assert_eq!(env.len(), GRAPH_EMBED_ENV.len());
+        assert!(entry("mail").env.is_empty());
+        // An entry written before this, with no embedder, is never edited
+        // and is reported with what it lacks (review of #698).
+        let old = root.join("old.toml");
+        std::fs::write(
+            &old,
+            "[[mcp]]\nname = \"graph\"\ncommand = \"/b/mecha-graph-mcp\"\nprefix_tools = false\n\
+             [mcp.capabilities]\nuntrusted_input = true\n",
+        )
+        .unwrap();
+        let before = std::fs::read_to_string(&old).unwrap();
+        let done = write_mcp_entries(&old, &[(&graph, Path::new("/b/mecha-graph-mcp"))], &|_| {
+            false
+        })
+        .unwrap();
+        assert!(!done[0].wrote_entry);
+        assert_eq!(done[0].env_missing, GRAPH_EMBED_ENV);
+        assert_eq!(std::fs::read_to_string(&old).unwrap(), before);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// One command decides the outbox once: `enable mail docs` stages both
     /// features' calls in the `[outbox]` it writes, in either order, rather

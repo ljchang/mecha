@@ -317,6 +317,33 @@ fn run_clock() -> Result<Arc<dyn mecha_core::clock::Clock>> {
     })
 }
 
+/// Whether a routed tool name belongs to a configured, prefixed MCP server
+/// none of whose tools registered: nothing of that server can run, so nothing
+/// it would route can run unstaged — the warning's whole concern — and a
+/// server that failed has said so already.
+fn routed_server_is_down(
+    name: &str,
+    servers: &[mecha_core::config::McpServerConfig],
+    registered: &[&str],
+) -> bool {
+    servers
+        .iter()
+        // Only a prefixed server: one with `prefix_tools = false` registers
+        // its tools bare, so a route spelled `<name>__…` never matches them
+        // and the real tool runs unstaged — exactly what the warning is for
+        // (review of #698).
+        .filter(|m| m.prefix_tools != Some(false))
+        .map(|m| m.name.as_str())
+        .find(|s| {
+            name.strip_prefix(*s)
+                .is_some_and(|rest| rest.starts_with("__"))
+        })
+        .is_some_and(|s| {
+            let prefix = format!("{s}__");
+            !registered.iter().any(|t| t.starts_with(&prefix))
+        })
+}
+
 fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     let denials = tools.denials.clone();
     let cfg = tools.config;
@@ -763,10 +790,17 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     // shape as the `[outbox]` warnings below, and it fires on every start
     // for the same reason; `--tool` narrowing is the caller saying so, and is
     // silent.
+    // What registered, read once for both checks below.
+    let registered: Vec<&str> = agent.registry().iter().map(|t| t.name()).collect();
     for name in policy.tools() {
         let narrowed_out =
             !excluded_by_allowlist(std::slice::from_ref(&name.to_string()), &opts.tools).is_empty();
-        if agent.registry().get(name).is_none() && !narrowed_out {
+        // A server that did not start, said already: nothing of it can run
+        // for the rule to judge (review of #698).
+        if agent.registry().get(name).is_none()
+            && !narrowed_out
+            && !routed_server_is_down(name, &cfg.mcp, &registered)
+        {
             eprintln!(
                 "mecha: [[rule]] names `{name}`, which is not a registered tool — check the \
                  spelling, or this rule judges nothing"
@@ -788,6 +822,13 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
                 !excluded_by_allowlist(std::slice::from_ref(&name.to_string()), &opts.tools)
                     .is_empty();
             if agent.registry().get(name).is_none() && !narrowed_out {
+                // A name under a configured server whose tools are all
+                // missing is that server down, said above — not a typo to
+                // hunt for (the owner's fresh Mac, 2026-10-14: eight lines
+                // blamed spelling for two servers that did not start).
+                if routed_server_is_down(name, &cfg.mcp, &registered) {
+                    continue;
+                }
                 eprintln!(
                     "mecha: [outbox] routes `{name}`, which is not a registered tool — \
                      check the spelling, or this routing protects nothing"
@@ -2811,6 +2852,33 @@ mod surface_only_tests {
 
 #[cfg(test)]
 mod tests {
+    /// A routed name under a server that did not start is that server
+    /// down, not a typo; a typo under a live server, or a name under no
+    /// server, still warns (the owner's fresh Mac, 2026-10-14).
+    #[test]
+    fn a_down_server_is_not_blamed_on_spelling() {
+        let server = |name: &str, prefix: Option<bool>| mecha_core::config::McpServerConfig {
+            name: name.into(),
+            prefix_tools: prefix,
+            ..Default::default()
+        };
+        let servers = [server("mail", None), server("docs", None)];
+        let live = ["docs__docs_append", "fs_read"];
+        let down = |name: &str| super::routed_server_is_down(name, &servers, &live);
+        assert!(down("mail__mail_send"));
+        assert!(!down("docs__docs_apend"));
+        assert!(!down("mial__mail_send"));
+        assert!(!down("mailx__send"));
+        // An unprefixed server registers bare names: a route spelled with
+        // its prefix is a real miss, and still warns (review of #698).
+        let bare = [server("graph", Some(false))];
+        assert!(!super::routed_server_is_down(
+            "graph__kg_search",
+            &bare,
+            &["kg_search"]
+        ));
+    }
+
     use super::{
         build_subagent, excluded_by_allowlist, fold_agent_switches, front_end_interactive,
         levers_off, pin_named_model, posture_for, step_escalation_enabled, step_escalation_slot,
