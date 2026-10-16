@@ -1306,7 +1306,12 @@ fn register_own_app(
                 };
                 match google_client_file(&path) {
                     Ok(client) => return Ok(client),
-                    Err(e) => eprintln!("{e:#}"),
+                    // A file the parser refuses (a Web client, likeliest) is
+                    // not offered again either.
+                    Err(e) => {
+                        eprintln!("{e:#}");
+                        declined = Some(path);
+                    }
                 }
             }
         }
@@ -2138,6 +2143,22 @@ mod tests {
             std::time::SystemTime::now() + std::time::Duration::from_secs(25 * 3600),
             &open,
         );
+        // A Web client's file in Downloads, taken and refused, is not
+        // offered again: the next Enter says so, and a path is pasted.
+        let web = dir.join("web");
+        std::fs::create_dir_all(&web).unwrap();
+        std::fs::write(
+            web.join("client_secret_web.json"),
+            r#"{"web":{"client_id":"6-w.apps.googleusercontent.com"}}"#,
+        )
+        .unwrap();
+        let refused = register_own_app(
+            &mut std::io::Cursor::new(format!("y\n\n\n\n{}\n", file.display())),
+            Provider::Google,
+            Some(&web),
+            std::time::SystemTime::now() + std::time::Duration::from_secs(25 * 3600),
+            &open,
+        );
         let from_downloads = register_own_app(
             &mut std::io::Cursor::new(b"y\n\n\n".to_vec()),
             Provider::Google,
@@ -2158,6 +2179,7 @@ mod tests {
             declined.unwrap().client_id,
             "4-h.apps.googleusercontent.com"
         );
+        assert_eq!(refused.unwrap().client_id, "4-h.apps.googleusercontent.com");
         let outlook = outlook.unwrap();
         assert_eq!(outlook.client_id, id);
         assert_eq!(outlook.tenant.as_deref(), Some("common"));
