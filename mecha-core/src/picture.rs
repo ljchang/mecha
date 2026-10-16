@@ -42,12 +42,25 @@ pub const REGION_COLOURS: [(&str, [u8; 3]); 8] = [
 /// The most regions one edit carries.
 pub const MAX_REGIONS: usize = 4;
 
-/// One painted region: its colour and what changes inside it.
+/// One painted region: its colour, what changes inside it, and a picture the
+/// owner dropped on it to take that change from (a face, most often).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Region {
     pub colour: String,
     pub rgb: [u8; 3],
     pub words: String,
+    /// A picture in this chat (`inbox/...` or `images/...`), read through the
+    /// path jail like the picture and the mask.
+    pub reference: Option<String>,
+}
+
+/// Whether a painted region's words are about a face: the one place a
+/// library name in them takes that character's face, and the only words a
+/// dropped picture gives its face to rather than its look (§5.3).
+pub fn about_a_face(words: &str) -> bool {
+    words
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|w| matches!(w.to_lowercase().as_str(), "face" | "faces"))
 }
 
 /// The legend the model reads for regions, in the measured M2 form: the
@@ -190,14 +203,26 @@ pub fn parse(
                         "The {name} region's words are past {field} characters."
                     ));
                 }
+                let reference = match r.get("reference") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::String(t)) if looks_like_a_picture_path(t) => {
+                        Some(t.trim().to_string())
+                    }
+                    Some(_) => {
+                        return Err(format!(
+                            "The {name} region's `reference` is not a picture's path."
+                        ))
+                    }
+                };
                 regions.push(Region {
                     colour: name.to_string(),
                     rgb: *rgb,
                     words: words.to_string(),
+                    reference,
                 });
             }
         }
-        Some(_) => return Err("`regions` is a list of {colour, words}.".into()),
+        Some(_) => return Err("`regions` is a list of {colour, words, reference?}.".into()),
     }
     if !regions.is_empty() {
         if mask.is_none() || picture.is_none() {
@@ -935,8 +960,17 @@ pub fn plan(
     // With regions the retouch is the harness's legend, whose own words
     // ("mark", a colour's name) would read as library names: what is checked
     // is what the owner wrote in each region (review of #623, pass 12).
+    // A region about a face is where a library name is brought in on
+    // purpose, to take that face (§5.3): it is not someone offstage, whom
+    // the image model would read as "the viewer" (review of #706, pass 3).
     if !call.regions.is_empty() {
-        for r in &call.regions {
+        // Only where that face is sent: one approved name, and no dropped
+        // picture outranking it (review of #706, pass 4). A face that still
+        // cannot be had (no detector, no face found) is read as "the viewer"
+        // by the image tool, which knows it.
+        for r in call.regions.iter().filter(|r| {
+            !(about_a_face(&r.words) && r.reference.is_none() && named_in(&r.words).len() == 1)
+        }) {
             prose.push(("retouch", r.words.clone()));
         }
     } else if let Some(r) = &call.retouch {
@@ -1482,6 +1516,16 @@ mod tests {
             bad(json!({"picture": "images/a.png", "mask": "inbox/r.png", "regions": five}))
                 .contains("at most 4")
         );
+        // A picture dropped on a region is its path in this chat, or refused
+        // by name, never dropped (review of #706).
+        let c = call(json!({"picture": "images/a.png", "mask": "inbox/r.png",
+            "regions": [{"colour": "magenta", "words": "her face", "reference": "inbox/f.png"},
+                        {"colour": "cyan", "words": "x"}]}));
+        assert_eq!(c.regions[0].reference.as_deref(), Some("inbox/f.png"));
+        assert_eq!(c.regions[1].reference, None);
+        assert!(bad(json!({"picture": "images/a.png", "mask": "inbox/r.png",
+            "regions": [{"colour": "magenta", "words": "x", "reference": "a stranger's face"}]}))
+        .contains("magenta region's `reference` is not a picture's path"));
     }
 
     /// The retired inputs are refused with what to do instead; nothing to
@@ -1736,6 +1780,45 @@ mod tests {
         // The owner's own words still are.
         let p = plan(
             &regions("Wren's green scarf"),
+            Some(&base),
+            None,
+            Origin::Clean,
+            &approved,
+            &named,
+            &|_| None,
+        )
+        .unwrap();
+        assert_eq!(p.offstage, vec!["wren".to_string()]);
+        // A region about a face brings the name in on purpose: its face is
+        // taken (§5.3), so it is not "the viewer" (review of #706, pass 3).
+        let p = plan(
+            &regions("Wren's face"),
+            Some(&base),
+            None,
+            Origin::Clean,
+            &approved,
+            &named,
+            &|_| None,
+        )
+        .unwrap();
+        assert!(p.offstage.is_empty(), "{:?}", p.offstage);
+        // Only where that face is sent: two names take neither, and a dropped
+        // picture outranks the name (review of #706, pass 4).
+        let p = plan(
+            &regions("Wren and Mark's faces"),
+            Some(&base),
+            None,
+            Origin::Clean,
+            &approved,
+            &named,
+            &|_| None,
+        )
+        .unwrap();
+        assert_eq!(p.offstage, vec!["mark".to_string(), "wren".to_string()]);
+        let dropped = call(json!({"picture": "images/a.png", "mask": "inbox/r.png",
+            "regions": [{"colour": "red", "words": "Wren's face", "reference": "inbox/f.png"}]}));
+        let p = plan(
+            &dropped,
             Some(&base),
             None,
             Origin::Clean,
