@@ -7265,10 +7265,12 @@ mod tests {
                 mecha_core::persona::edit::PanelRegion {
                     colour: "magenta".into(),
                     words: "make the scarf yellow".into(),
+                    reference: None,
                 },
                 mecha_core::persona::edit::PanelRegion {
                     colour: "cyan".into(),
-                    words: "remove the lamp".into(),
+                    words: "her face".into(),
+                    reference: Some("inbox/face.png".into()),
                 },
             ],
         };
@@ -7277,7 +7279,8 @@ mod tests {
             w.drawn.lock().unwrap().last().unwrap().clone(),
             serde_json::json!({"picture": "images/a.png", "mask": "inbox/regions-a.png",
                 "regions": [{"colour": "magenta", "words": "make the scarf yellow"},
-                            {"colour": "cyan", "words": "remove the lamp"}]})
+                            {"colour": "cyan", "words": "her face",
+                             "reference": "inbox/face.png"}]})
         );
         let drawn_so_far = w.drawn.lock().unwrap().len();
         // A Regenerate with a painted area is refused by name, never a

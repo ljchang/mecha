@@ -7,7 +7,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { composeEditMessage, composeRegionsMessage, maskName } from '../src/lib/image-edit.js';
+import { composeEditMessage, composeRegionsMessage, maskName, uploadRegionReferences } from '../src/lib/image-edit.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const src = fs.readFileSync(path.join(here, '..', 'src', 'lib', 'Chat.svelte'), 'utf8');
@@ -37,6 +37,7 @@ async function page({ mask, status = 200, regions = [], running = false, starts 
     'composeEditMessage',
     'composeRegionsMessage',
     'maskName',
+    'uploadRegionReferences',
     'text',
     'mask',
     'status',
@@ -52,7 +53,9 @@ async function page({ mask, status = 200, regions = [], running = false, starts 
      const sent = [];
      const fetch = async (url, opts) => {
        uploads.push({ url, body: opts.body });
-       return { status, ok: status === 200, json: async () => ({ path: 'inbox/mask-pic-7.png' }), text: async () => 'no room' };
+       // One status for every upload, or one each in order.
+       const st = Array.isArray(status) ? (status[uploads.length - 1] ?? 200) : status;
+       return { status: st, ok: st === 200, json: async () => ({ path: 'inbox/mask-pic-7.png' }), text: async () => 'no room' };
      };
      const closeIncognito = () => {};
      const send = async (opts = {}) => {
@@ -62,7 +65,7 @@ async function page({ mask, status = 200, regions = [], running = false, starts 
      ${sendEditSrc}
      return sendEdit({ text, mask, regions }).then(() => ({ uploads, sent, editing, draft }));`,
   );
-  return run(composeEditMessage, composeRegionsMessage, maskName, 'make the dress green', mask, status, regions, running, starts);
+  return run(composeEditMessage, composeRegionsMessage, maskName, uploadRegionReferences, 'make the dress green', mask, status, regions, running, starts);
 }
 
 {
@@ -123,6 +126,30 @@ async function page({ mask, status = 200, regions = [], running = false, starts 
   is((busy.editing?.error ?? '').includes('reply is running'), true, 'and the modal keeps the work and says why');
   const plain = await page({ mask: null });
   is(plain.sent[0].opts, {}, 'nothing painted sends no regions');
+  // A picture dropped on a region (owner, 2026-10-16: a face to put there)
+  // goes up beside the index, and the region names it.
+  const face = await page({
+    mask: 'INDEX-BLOB',
+    regions: [{ colour: 'magenta', words: 'her face', file: 'FACE-BLOB' }],
+  });
+  is(face.uploads.map((u) => u.body), ['INDEX-BLOB', 'FACE-BLOB'], 'the index, then the dropped picture');
+  is(
+    face.uploads[1].url.startsWith('/api/chat/chat-ab/upload?name=ref-magenta-pic-'),
+    true,
+    'into this chat, named for its picture and region',
+  );
+  is(
+    face.sent[0].opts.regions.regions,
+    [{ colour: 'magenta', words: 'her face', reference: 'inbox/mask-pic-7.png' }],
+    'the region carries the stored path, never the file',
+  );
+  const closed = await page({
+    mask: 'INDEX-BLOB',
+    status: [200, 410],
+    regions: [{ colour: 'magenta', words: 'her face', file: 'FACE-BLOB' }],
+  });
+  is(closed.uploads.map((u) => u.body), ['INDEX-BLOB', 'FACE-BLOB'], 'the index went up, then the picture met a closed chat');
+  is([closed.sent.length, closed.editing], [0, null], 'a chat closed under the picture upload sends nothing');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
