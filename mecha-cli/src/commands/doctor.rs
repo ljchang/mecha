@@ -201,6 +201,9 @@ fn run_remedy(remedy: &Remedy) -> Result<()> {
         .argv
         .split_first()
         .context("a remedy with an empty argv")?;
+    // mecha's own servers resolve to the matching build, never a stale copy
+    // (review of #699), as setup's remedies do.
+    let program = super::features::remedy_program(program).map_err(anyhow::Error::msg)?;
     let status = std::process::Command::new(program)
         .args(rest)
         .status()

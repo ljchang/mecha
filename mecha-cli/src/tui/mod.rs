@@ -4959,7 +4959,11 @@ fn spawn_remedy(argv: &[String]) -> Result<std::process::Child> {
     let program: std::path::PathBuf = if program.as_str() == "mecha" {
         crate::exe::self_exe()
     } else {
-        program.into()
+        // mecha's own servers: the matching build, never a stale copy on the
+        // PATH (review of #699).
+        crate::commands::features::remedy_program(program)
+            .map_err(anyhow::Error::msg)?
+            .into()
     };
     std::process::Command::new(program)
         .args(rest)
@@ -5013,7 +5017,11 @@ fn run_remedy_interactive(argv: &[String]) -> Result<()> {
     let program: std::path::PathBuf = if program.as_str() == "mecha" {
         crate::exe::self_exe()
     } else {
-        program.into()
+        // mecha's own servers: the matching build, never a stale copy on the
+        // PATH (review of #699).
+        crate::commands::features::remedy_program(program)
+            .map_err(anyhow::Error::msg)?
+            .into()
     };
     let status = std::process::Command::new(program)
         .args(rest)
