@@ -194,10 +194,13 @@
   // face to put there). Dropped, pasted or picked; kept as the file until
   // the send, when the chat uploads it beside the mask.
   let picker = $state(null);
+  // What the picture tool reads (`sniff_image`), as the library's picker
+  // takes: a GIF or HEIC would upload and then refuse the whole render.
+  const REFERENCE_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
   let pickingFor = $state(null);
 
   function attach(k, file) {
-    if (busy || !file || !String(file.type).startsWith('image/') || !regionList[k]) return;
+    if (busy || !file || !REFERENCE_TYPES.includes(file.type) || !regionList[k]) return;
     const r = regionList[k];
     if (r.preview) URL.revokeObjectURL(r.preview);
     regionList[k] = { ...r, file, preview: URL.createObjectURL(file) };
@@ -230,7 +233,7 @@
   }
 
   function pasteOn(k, e) {
-    const file = [...(e.clipboardData?.files ?? [])].find((f) => f.type.startsWith('image/'));
+    const file = [...(e.clipboardData?.files ?? [])].find((f) => REFERENCE_TYPES.includes(f.type));
     if (!file) return;
     e.preventDefault();
     attach(k, file);
@@ -616,7 +619,7 @@
         {/if}
       {/each}
     </div>
-    <input type="file" accept="image/*" hidden bind:this={picker} onchange={picked} />
+    <input type="file" accept={REFERENCE_TYPES.join(',')} hidden bind:this={picker} onchange={picked} />
   {:else}
   <label class="words">
     <span class="sr">What should change</span>

@@ -295,12 +295,6 @@ pub const EDIT_REFERENCE_SIZE: u32 = 1024;
 /// size is named explicitly ([`canvas_dims`]), so the picture stays full size.
 pub const UNMASKED_EDIT_REFERENCE_SIZE: u32 = 512;
 
-/// The size an edit is drawn at for the canvas `bytes`: [`edit_canvas`] at
-/// [`EDIT_REFERENCE_SIZE`] over its upright shape, which is what the encoder
-/// drew when no size was named and references went at 1024 (1184×896 for a
-/// 4:3 photo). Named explicitly now that the references go smaller, or the
-/// picture would come out at their size. `None` when the shape cannot be
-/// read; the edit then keeps 1024 references and names no size.
 /// Whether a painted region's words are about a face: the one place a
 /// library name in them takes that character's face (§5.3).
 fn about_a_face(words: &str) -> bool {
@@ -309,6 +303,12 @@ fn about_a_face(words: &str) -> bool {
         .any(|w| matches!(w.to_lowercase().as_str(), "face" | "faces"))
 }
 
+/// The size an edit is drawn at for the canvas `bytes`: [`edit_canvas`] at
+/// [`EDIT_REFERENCE_SIZE`] over its upright shape, which is what the encoder
+/// drew when no size was named and references went at 1024 (1184×896 for a
+/// 4:3 photo). Named explicitly now that the references go smaller, or the
+/// picture would come out at their size. `None` when the shape cannot be
+/// read; the edit then keeps 1024 references and names no size.
 pub(crate) fn canvas_dims(bytes: &[u8]) -> Option<(u32, u32)> {
     // Upright, as every other reader of a reference: a phone photo stored
     // sideways under the fit threshold keeps its tag, and the server turns it
@@ -4687,20 +4687,43 @@ impl Tool for ImageGenerate {
                             .unwrap_or_else(|_| {
                                 crate::face::Anchor::Unavailable("the face detector failed".into())
                             });
-                        let whole = |read: Reference| {
-                            let fitted = fit_reference(&read.bytes, self.reference_pixels);
-                            let ext = if fitted.is_some() { "png" } else { read.ext };
-                            (fitted.unwrap_or(read.bytes), ext, false, path.clone())
-                        };
                         match anchor {
                             crate::face::Anchor::Crop(crop) => {
                                 Some((crop, "png", true, path.clone()))
                             }
-                            crate::face::Anchor::NoFace => Some(whole(read)),
-                            crate::face::Anchor::Unavailable(why) => {
-                                dropped
-                                    .push(format!("No face could be taken from {path} ({why})."));
-                                Some(whole(read))
+                            other => {
+                                // The whole picture, then: a look, not a
+                                // face, said either way. Fitted off the
+                                // executor, as the canvas is: a phone photo
+                                // decodes, shrinks and re-encodes here.
+                                dropped.push(match other {
+                                    crate::face::Anchor::Unavailable(why) => {
+                                        format!("No face could be taken from {path} ({why}).")
+                                    }
+                                    _ => format!("No face was found in {path}."),
+                                });
+                                let budget = self.reference_pixels;
+                                let bytes = read.bytes;
+                                let fitted = tokio::task::spawn_blocking(move || {
+                                    let fitted = fit_reference(&bytes, budget);
+                                    (fitted, bytes)
+                                })
+                                .await;
+                                match fitted {
+                                    Ok((Some(fitted), _)) => {
+                                        Some((fitted, "png", false, path.clone()))
+                                    }
+                                    Ok((None, bytes)) => {
+                                        Some((bytes, read.ext, false, path.clone()))
+                                    }
+                                    Err(e) => {
+                                        return Ok(refused(format!(
+                                            "The picture on the {} region could not be prepared: \
+                                             {e}",
+                                            r.colour
+                                        )))
+                                    }
+                                }
                             }
                         }
                     }
