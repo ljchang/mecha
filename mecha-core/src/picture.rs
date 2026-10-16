@@ -829,6 +829,14 @@ pub fn plan(
     // could not be told from one the owner wrote, and came back beside a
     // later `together` (review of #608).
     let mut clothes_said: Vec<(String, String)> = Vec::new();
+    // Which identified people this call itself dressed: only those get a
+    // "Dress …" line. The others' clothes are the photo's.
+    let identified_dressed: Vec<String> = next
+        .people
+        .iter()
+        .filter(|p| identified.contains(&p.who.key()) && !p.wearing.trim().is_empty())
+        .map(|p| p.who.key())
+        .collect();
     for key in &delta.added {
         // Someone added past the scene's bound was cut from it (`apply`):
         // refused here, never drawn as a picture without them.
@@ -838,7 +846,14 @@ pub fn plan(
                 crate::scene::MAX_PEOPLE
             ));
         };
+        // An identified person's clothes are the photo's: nothing is drawn
+        // or said for them, but the record still holds clothes, or the next
+        // restage of this picture is refused for a blank `wearing`
+        // (`imagelib::compile_with`; review of #707, pass 4).
         if identified.contains(key) {
+            if p.wearing.trim().is_empty() {
+                p.wearing = WEARING_UNSAID.into();
+            }
             continue;
         }
         if p.wearing.trim().is_empty() {
@@ -1143,7 +1158,7 @@ pub fn plan(
             // Already in the picture: only what the call says about them is
             // drawn, and they get a crop only when something about them is.
             let before = lines.len();
-            if !p.wearing.trim().is_empty() {
+            if identified_dressed.contains(&key) {
                 lines.push(format!(
                     "Dress {name} in {}.",
                     p.wearing.trim_end_matches('.')
@@ -2284,6 +2299,57 @@ mod tests {
             placed.instruction.contains("Place Maya on the left."),
             "{}",
             placed.instruction
+        );
+    }
+
+    /// A person named on a photo lands in the record with clothes, so the
+    /// next restage of that picture compiles rather than being refused for a
+    /// blank `wearing`; no clothes line was drawn for them (review of #707,
+    /// pass 4).
+    #[test]
+    fn a_photos_named_people_can_be_restaged_later() {
+        let first = planned(
+            &call(json!({"picture": "inbox/her.jpg", "scene": {
+                "setting": "a narrow greenhouse", "people": [{"who": "maya"}]}})),
+            None,
+        );
+        assert!(
+            !first.instruction.contains("Dress"),
+            "{}",
+            first.instruction
+        );
+        let base = landed(&first, 9);
+        assert!(
+            base.people.iter().all(|p| !p.wearing.trim().is_empty()),
+            "{:?}",
+            base.people
+        );
+        let later = planned(
+            &call(json!({"picture": "images/a.png", "scene": {"camera": "from the doorway"}})),
+            Some(&base),
+        );
+        assert_eq!(later.route, "restaged");
+    }
+
+    /// A room photo beside the call that first names a photo's people is
+    /// refused by what it is: that restage drew them from the library and
+    /// dropped the owner's photo. Named first, the room can follow.
+    #[test]
+    fn a_room_photo_beside_a_naming_is_refused_by_name() {
+        let refused = plan(
+            &call(json!({"picture": "inbox/her.jpg", "scene": {
+                "setting": {"photo": "inbox/room.png"}, "people": [{"who": "maya"}]}})),
+            None,
+            Some("h".repeat(64)),
+            Origin::Clean,
+            &lib,
+            &names,
+            &|_| None,
+        )
+        .unwrap_err();
+        assert!(
+            refused.contains("name them first, then send the room"),
+            "{refused}"
         );
     }
 
