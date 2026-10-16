@@ -906,11 +906,10 @@ pub fn plan(
             "The `mask` was left out: a scene change redraws more than a painted area.".into(),
         );
     }
-    // Words name an area exactly as paint does: no scene change beside them.
-    let mask_words = call
-        .mask_words
-        .clone()
-        .filter(|_| delta.is_empty() && unknown_removes.is_empty());
+    // Words name an area exactly as paint does, and are kept exactly when
+    // paint is: no scene change beside them, but the call that first names a
+    // photo's people changes nothing drawn (review of #710).
+    let mask_words = call.mask_words.clone().filter(|_| unchanged);
     if call.mask_words.is_some() && mask_words.is_none() {
         notes.push(
             "The `mask` was left out: a scene change redraws more than the area it names.".into(),
@@ -2468,6 +2467,31 @@ mod tests {
         // recorded, a camera change is an edit of the photo (review of #707,
         // pass 7).
         assert_eq!(later.route, "edited");
+    }
+
+    /// Words in `mask` are kept exactly when paint is: on the call that
+    /// first names a photo's people, which draws no scene change, the area
+    /// named is still the mask (review of #710).
+    #[test]
+    fn mask_words_survive_the_call_that_first_names_a_photos_people() {
+        let p = planned(
+            &call(
+                json!({"picture": "inbox/her.jpg", "retouch": "Make the scarf blue.",
+                "mask": "the scarf", "scene": {"people": [{"who": "maya"}]}}),
+            ),
+            None,
+        );
+        assert_eq!(p.mask_words.as_deref(), Some("the scarf"), "{:?}", p.said);
+        assert!(p.next.people_known);
+        // A scene change that is drawn still drops them.
+        let moved = planned(
+            &call(
+                json!({"picture": "inbox/her.jpg", "retouch": "Make the scarf blue.",
+                "mask": "the scarf", "scene": {"camera": "from below"}}),
+            ),
+            None,
+        );
+        assert!(moved.mask_words.is_none());
     }
 
     /// A photo whose record has a setting but whose people are still

@@ -1551,6 +1551,13 @@ impl ComfyUi {
                 }
             };
             held.confirmed.push(filed.clone());
+            // A copy the server renamed is trailed too, as `run` does: the
+            // trail is the record that outlives this process (review of #331).
+            if filed != asked {
+                note(trail, &TrailEntry::File(filed.clone())).map_err(|e| {
+                    Failure::Other(e.context("the segmentation could not be recorded for cleanup"))
+                })?;
+            }
             let png = self
                 .submit_and_wait(sam_graph(&filed, words), cancel, timeout, trail, &mut held)
                 .await?;
@@ -5295,6 +5302,12 @@ impl Tool for ImageGenerate {
             // segmentation is followed by this job's render (§3).
             let mut seg_left: Option<String> = None;
             let mut seg_cancelled = false;
+            let unusable = |words: &str| {
+                format!(
+                    "What matched '{words}' could not be used as a mask, so the change was made \
+                     to the whole picture."
+                )
+            };
             // The words whose area became the mask, when one was found, and
             // how many separate areas it is.
             let mut masked_by: Option<(String, usize)> = None;
@@ -5338,20 +5351,20 @@ impl Tool for ImageGenerate {
                          whole picture."
                     )),
                     Ok(Some(mask)) => {
-                        let areas = found_areas(&mask).max(1);
                         let canvas = req.references[0].bytes.clone();
                         let prepared = tokio::task::spawn_blocking(move || {
+                            let areas = found_areas(&mask).max(1);
                             let mask = png_bytes(&image::DynamicImage::ImageLuma8(mask).to_rgb8())?;
                             let plan = prepare_mask(&canvas, &mask, EDIT_REFERENCE_SIZE)?;
                             let picture = png_bytes(&plan.picture)?;
                             let soft = png_bytes(
                                 &image::DynamicImage::ImageLuma8(plan.soft.clone()).to_rgb8(),
                             )?;
-                            Ok::<_, String>((plan, picture, soft))
+                            Ok::<_, String>((plan, picture, soft, areas))
                         })
                         .await;
                         match prepared {
-                            Ok(Ok((mp, picture, soft))) => {
+                            Ok(Ok((mp, picture, soft, areas))) => {
                                 req.references[0].bytes = picture;
                                 req.references[0].ext = "png";
                                 req.mask = Some(Reference {
@@ -5364,10 +5377,25 @@ impl Tool for ImageGenerate {
                                 mask_plan = Some(mp);
                                 masked_by = Some((words.clone(), areas));
                             }
-                            _ => dropped.push(format!(
-                                "What matched '{words}' was too small to edit alone, so the \
-                                 change was made to the whole picture."
-                            )),
+                            // `prepare_mask`'s two refusals of a mark too
+                            // small; anything else is an error, logged.
+                            Ok(Err(why))
+                                if why.starts_with("The mask marks nothing")
+                                    || why.starts_with("The painted area is too small") =>
+                            {
+                                dropped.push(format!(
+                                    "What matched '{words}' was too small to edit alone, so \
+                                     the change was made to the whole picture."
+                                ))
+                            }
+                            Ok(Err(why)) => {
+                                tracing::warn!("image_generate: a found mask was unusable: {why}");
+                                dropped.push(unusable(words));
+                            }
+                            Err(e) => {
+                                tracing::warn!("image_generate: a found mask was unusable: {e}");
+                                dropped.push(unusable(words));
+                            }
                         }
                     }
                 }
@@ -5418,6 +5446,11 @@ impl Tool for ImageGenerate {
                                     found = Err("the segmentation failed".into());
                                     break;
                                 }
+                                // No face, no face edge: the hair alone
+                                // would lay the new face into the hair and
+                                // say both followed their edges (review of
+                                // #710). The paint, said, instead.
+                                Ok(None) if *words == "face" => break,
                                 Ok(None) => {}
                                 Ok(Some(m)) => {
                                     found = Ok(Some(match found {
@@ -9326,6 +9359,60 @@ mod tests {
             saved.get_pixel(768, 640).0,
             [200, 20, 20],
             "the shirt region"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A face region asking for hair, where no face is found: the hair is
+    /// never asked for alone, which would lay the new face into the hair and
+    /// say both followed their edges. The paint, said (review of #710).
+    #[tokio::test]
+    async fn a_face_region_with_no_face_found_never_takes_the_hair_alone() {
+        let red = image::RgbImage::from_pixel(64, 64, image::Rgb([200, 20, 20]));
+        let mut result = std::io::Cursor::new(Vec::new());
+        red.write_to(&mut result, image::ImageFormat::Png).unwrap();
+        let (url, seen) = fake_with(Fake {
+            history: vec![done(), done()],
+            views: vec![mask_png(64, 64, (0, 0, 0, 0)), result.into_inner()],
+            sam: true,
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::write(dir.join("images/orig.png"), picture(8, [240, 220, 40])).unwrap();
+        std::fs::write(dir.join("inbox/face.png"), picture(8, [90, 60, 40])).unwrap();
+        std::fs::write(
+            dir.join("inbox/regions.png"),
+            index_png(64, 64, &[([255, 0, 255], (0, 16, 16, 56))]),
+        )
+        .unwrap();
+        let faces = stub_faces(crate::face::Anchor::Crop(picture(4, [1, 2, 3])));
+        let out = tool(&url)
+            .with_faces(faces)
+            .call(
+                json!({"picture": "images/orig.png", "mask": "inbox/regions.png",
+                       "regions": [{"colour": "magenta", "words": "her face and hair",
+                                    "reference": "inbox/face.png"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let seen = seen.lock().unwrap().clone();
+        let sam: Vec<&String> = seen
+            .iter()
+            .filter(|l| l.starts_with("POST /prompt") && l.contains("SAM3_Detect"))
+            .collect();
+        assert_eq!(sam.len(), 1, "the face only: {sam:?}");
+        assert!(
+            out.content.contains(
+                "No face was found in the picture, so the new face in the magenta region was \
+                 laid back along the paint."
+            ),
+            "{}",
+            out.content
         );
         std::fs::remove_dir_all(dir).ok();
     }
