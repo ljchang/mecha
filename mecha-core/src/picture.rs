@@ -42,12 +42,16 @@ pub const REGION_COLOURS: [(&str, [u8; 3]); 8] = [
 /// The most regions one edit carries.
 pub const MAX_REGIONS: usize = 4;
 
-/// One painted region: its colour and what changes inside it.
+/// One painted region: its colour, what changes inside it, and a picture the
+/// owner dropped on it to take that change from (a face, most often).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Region {
     pub colour: String,
     pub rgb: [u8; 3],
     pub words: String,
+    /// A picture in this chat (`inbox/...` or `images/...`), read through the
+    /// path jail like the picture and the mask.
+    pub reference: Option<String>,
 }
 
 /// The legend the model reads for regions, in the measured M2 form: the
@@ -190,14 +194,26 @@ pub fn parse(
                         "The {name} region's words are past {field} characters."
                     ));
                 }
+                let reference = match r.get("reference") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::String(t)) if looks_like_a_picture_path(t) => {
+                        Some(t.trim().to_string())
+                    }
+                    Some(_) => {
+                        return Err(format!(
+                            "The {name} region's `reference` is not a picture's path."
+                        ))
+                    }
+                };
                 regions.push(Region {
                     colour: name.to_string(),
                     rgb: *rgb,
                     words: words.to_string(),
+                    reference,
                 });
             }
         }
-        Some(_) => return Err("`regions` is a list of {colour, words}.".into()),
+        Some(_) => return Err("`regions` is a list of {colour, words, reference?}.".into()),
     }
     if !regions.is_empty() {
         if mask.is_none() || picture.is_none() {

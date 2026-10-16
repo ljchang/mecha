@@ -823,11 +823,15 @@ impl Extracted {
     }
 }
 
-/// One painted region from the edit panel: its colour and its words.
+/// One painted region from the edit panel: its colour, its words, and a
+/// picture the owner dropped on it (uploaded to the chat's `inbox/` first),
+/// whose face, or look, the region takes.
 #[derive(serde::Deserialize, Clone, Debug, PartialEq)]
 pub struct PanelRegion {
     pub colour: String,
     pub words: String,
+    #[serde(default)]
+    pub reference: Option<String>,
 }
 
 /// The edit panel's regions call (IMAGE-REGION-EDIT-RESEARCH.md §7, M2):
@@ -839,7 +843,11 @@ pub fn regions_call(picture: &str, index: &str, regions: &[PanelRegion]) -> serd
         "mask": index,
         "regions": regions
             .iter()
-            .map(|r| serde_json::json!({"colour": r.colour, "words": r.words}))
+            .map(|r| match &r.reference {
+                Some(reference) => serde_json::json!(
+                    {"colour": r.colour, "words": r.words, "reference": reference}),
+                None => serde_json::json!({"colour": r.colour, "words": r.words}),
+            })
             .collect::<Vec<_>>(),
     })
 }
@@ -848,7 +856,10 @@ pub fn regions_call(picture: &str, index: &str, regions: &[PanelRegion]) -> serd
 pub fn regions_change(regions: &[PanelRegion]) -> String {
     let each: Vec<String> = regions
         .iter()
-        .map(|r| format!("{}: {}", r.colour, r.words.trim()))
+        .map(|r| match &r.reference {
+            Some(from) => format!("{}: {} (from {from})", r.colour, r.words.trim()),
+            None => format!("{}: {}", r.colour, r.words.trim()),
+        })
         .collect();
     format!("in the painted regions, {}", each.join("; "))
 }

@@ -6365,10 +6365,12 @@ mod held_tests {
             PanelRegion {
                 colour: "magenta".into(),
                 words: "a red scarf".into(),
+                reference: Some("inbox/scarf.png".into()),
             },
             PanelRegion {
                 colour: "cyan".into(),
                 words: "snow on the roof".into(),
+                reference: None,
             },
         ];
         let (drawn, asked, messages, _live, _home) = harness_drawn_turn(
@@ -6385,6 +6387,15 @@ mod held_tests {
             drawn,
             vec![edit::regions_call("images/a.png", "inbox/r.png", &regions)],
             "the harness drew the regions"
+        );
+        // A picture dropped on a region rides with it to the tool.
+        assert_eq!(
+            drawn[0]["regions"][0]["reference"], "inbox/scarf.png",
+            "{drawn:?}"
+        );
+        assert!(
+            drawn[0]["regions"][1].get("reference").is_none(),
+            "{drawn:?}"
         );
         assert_eq!(asked.len(), 1, "one request: the closing reply");
         assert_eq!(
