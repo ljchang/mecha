@@ -12,7 +12,13 @@
   import PersonaCall from './PersonaCall.svelte';
   import { features } from './features.svelte.js';
   import { isShown } from './features.js';
-  import { composeEditMessage, composeRegenerateMessage, composeRegionsMessage, maskName } from './image-edit.js';
+  import {
+    composeEditMessage,
+    composeRegenerateMessage,
+    composeRegionsMessage,
+    maskName,
+    uploadRegionReferences,
+  } from './image-edit.js';
   import { pictureOf, clipOf, stillOut, waitingPictures, repeatedPictures, turnsWithoutPicture, downloadPicture, picturesIn, picturesSince, pictureVersions, shownVersion, makingText, slotText, repeatedClips } from './picture.js';
   import ClipPlayer from './ClipPlayer.svelte';
   import { carriesFiles, droppedFiles, withAttachments } from './attach.js';
@@ -365,17 +371,21 @@
     edit.busy = true;
     edit.error = null;
     try {
-      let maskPath = null;
-      if (mask) {
-        const res = await fetch(uploadUrl(chatKey, maskName(edit.path), token), { method: 'POST', body: mask });
+      const upload = async (name, body) => {
+        const res = await fetch(uploadUrl(chatKey, name, token), { method: 'POST', body });
         if (!res.ok) throw new Error((await res.text()).trim());
-        maskPath = (await res.json()).path;
-      }
+        return (await res.json()).path;
+      };
+      let maskPath = null;
+      if (mask) maskPath = await upload(maskName(edit.path), mask);
+      // A picture dropped on a region goes up beside the mask, and the
+      // region names it (owner, 2026-10-16: a face to put there).
+      const placed = regions.length ? await uploadRegionReferences(edit.path, regions, upload) : [];
       if (chatKey !== key) return;
       // Coloured regions (IMAGE-REGION-EDIT-RESEARCH.md §7, M2): the upload
       // is their index, and each region's words go as fields beside it.
       const message = regions.length
-        ? composeRegionsMessage(edit.path, maskPath, regions)
+        ? composeRegionsMessage(edit.path, maskPath, placed)
         : composeEditMessage(edit.path, maskPath, text);
       if (!message) {
         edit.busy = false; // never a modal that no button can close
@@ -397,7 +407,7 @@
       // so nothing is parsed back out of the words.
       await send({
         edit: regions.length
-          ? { picture: edit.path, mask: maskPath, words: '', regions }
+          ? { picture: edit.path, mask: maskPath, words: '', regions: placed }
           : { picture: edit.path, mask: maskPath ?? undefined, words: text.trim() },
       });
     } catch (err) {

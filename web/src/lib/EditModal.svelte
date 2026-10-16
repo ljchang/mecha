@@ -178,6 +178,7 @@
 
   function removeRegion(k) {
     if (busy || regionList.length < 2) return;
+    if (regionList[k]?.preview) URL.revokeObjectURL(regionList[k].preview);
     ops = opsWithout(ops, k);
     regionList = regionList.filter((_, i) => i !== k);
     layers = layers.filter((_, i) => i !== k);
@@ -188,6 +189,56 @@
     repaint();
     render();
   }
+
+  // A picture for a region to take its change from (owner, 2026-10-16: a
+  // face to put there). Dropped, pasted or picked; kept as the file until
+  // the send, when the chat uploads it beside the mask.
+  let picker = $state(null);
+  let pickingFor = $state(null);
+
+  function attach(k, file) {
+    if (busy || !file || !String(file.type).startsWith('image/') || !regionList[k]) return;
+    const r = regionList[k];
+    if (r.preview) URL.revokeObjectURL(r.preview);
+    regionList[k] = { ...r, file, preview: URL.createObjectURL(file) };
+  }
+
+  function detach(k) {
+    const r = regionList[k];
+    if (busy || !r?.file) return;
+    if (r.preview) URL.revokeObjectURL(r.preview);
+    regionList[k] = { ...r, file: null, preview: null };
+  }
+
+  function pickFor(k) {
+    pickingFor = k;
+    picker?.click();
+  }
+
+  function picked(e) {
+    const file = e.currentTarget.files?.[0];
+    if (pickingFor != null) attach(pickingFor, file);
+    pickingFor = null;
+    e.currentTarget.value = '';
+  }
+
+  function dropOn(k, e) {
+    const file = e.dataTransfer?.files?.[0];
+    if (!file) return;
+    e.preventDefault();
+    attach(k, file);
+  }
+
+  function pasteOn(k, e) {
+    const file = [...(e.clipboardData?.files ?? [])].find((f) => f.type.startsWith('image/'));
+    if (!file) return;
+    e.preventDefault();
+    attach(k, file);
+  }
+
+  $effect(() => () => {
+    for (const r of regionList) if (r.preview) URL.revokeObjectURL(r.preview);
+  });
 
   function draw(ctx, op) {
     ctx.save();
@@ -406,7 +457,11 @@
         onsend?.({
           text: words,
           mask: index,
-          regions: ks.map((k) => ({ colour: regionList[k].colour, words: regionList[k].words.trim() })),
+          regions: ks.map((k) => ({
+            colour: regionList[k].colour,
+            words: regionList[k].words.trim(),
+            file: regionList[k].file ?? null,
+          })),
         });
         return;
       }
@@ -527,18 +582,41 @@
     <div class="regionwords">
       {#each regionList as r, k (r.colour)}
         {#if paintedRegions[k]}
-          <label class="rw">
+          <div
+            class="rw"
+            role="group"
+            aria-label={`Region ${k + 1}, ${r.colour}`}
+            ondragover={(e) => e.dataTransfer?.types?.includes('Files') && e.preventDefault()}
+            ondrop={(e) => dropOn(k, e)}
+          >
             <span class="dot" style={`--c: rgb(${r.rgb.join(',')})`}>{k + 1}</span>
             <input
               type="text"
               bind:value={regionList[k].words}
-              placeholder={`What changes in ${r.colour}? e.g. make it red`}
+              aria-label={`What changes in region ${k + 1}`}
+              placeholder={r.file ? 'What to take from the picture, e.g. her face' : `What changes in ${r.colour}? e.g. make it red`}
+              onpaste={(e) => pasteOn(k, e)}
               disabled={busy}
             />
-          </label>
+            {#if r.preview}
+              <span class="ref">
+                <img src={r.preview} alt={`The picture for region ${k + 1}`} />
+                <button type="button" class="drop" aria-label={`Take the picture off region ${k + 1}`} onclick={() => detach(k)} disabled={busy}>×</button>
+              </span>
+            {:else}
+              <button
+                type="button"
+                class="quiet pic"
+                title="A picture for this region to take from, such as a face. You can also drop or paste one here."
+                onclick={() => pickFor(k)}
+                disabled={busy}>Picture</button
+              >
+            {/if}
+          </div>
         {/if}
       {/each}
     </div>
+    <input type="file" accept="image/*" hidden bind:this={picker} onchange={picked} />
   {:else}
   <label class="words">
     <span class="sr">What should change</span>
@@ -724,6 +802,21 @@
     display: flex;
     align-items: center;
     gap: 10px;
+  }
+  .ref {
+    display: inline-flex;
+    align-items: center;
+  }
+  .ref img {
+    width: 36px;
+    height: 36px;
+    object-fit: cover;
+    border-radius: 6px;
+    border: 1px solid var(--accent-700);
+  }
+  .pic {
+    padding: 6px 12px;
+    font-size: 13px;
   }
   .rw input {
     flex: 1;
