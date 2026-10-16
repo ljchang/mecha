@@ -348,8 +348,10 @@ those first; the OpenAI dialect lifts them into `role: "tool"` messages ahead
 of the parts array anyway), behind a caption naming the call and the file.
 
 **`image_view` is the one producer, and a look is on request.**
-`image_generate` returns a path and a seed and says to call `image_view` to
-check; the owner's ruling (2026-09-27) is that the pixels are not returned by
+`image_generate` returns a path and a seed, and its description says to look
+only when the owner asks — never to confirm a picture worked, and never to
+judge or redraw one unseen (the owner's ruling, 2026-10-14); the ruling of
+2026-09-27 is that the pixels are not returned by
 default, because a picture costs context by its *pixels* — about 1000 tokens
 for a square generation on the Qwen-VL presets — for the rest of the
 conversation, and most pictures are not ones the model was asked to check.
@@ -10332,6 +10334,22 @@ exhaustive `match`, so the build asks; the ones that are not say so.
       installed server held ~13.6 GB after a picture for good until 7e-2
       added `mecha-comfyui-idle.timer`. A companion unit needs its own name
       where the hand install's could share the machine.
+    - **A changed service raises its revision.** Every unit and plist an
+      install writes carries `user_service::stamp`'s
+      `mecha-service-rev: <id> <n>` line, `n` from `user_service::REVS`, and
+      each module's `*_revision_is_held_to_what_it_writes` test pins `n`
+      beside a hash of everything the install renders — units, launchers,
+      drop-ins, program files, the Mac agent. Change any of it and the test
+      fails until `n` is raised; an install carrying an older `n` (or none,
+      as everything before the stamp does) then reads *stale*, and `enable`
+      and `mecha setup` offer to run it again (FEATURES-DESIGN §14). An
+      existing install never got a fixed service otherwise: #689's ComfyUI
+      proxy reached no Mac that had ComfyUI already (2026-10-14). A
+      definition an install stops writing (a renamed or retired unit) must
+      leave the record through `Manifest::unrecord` in the same change, or
+      it reads stale after every refresh. The pins see only the text they are
+      handed: a file an install starts writing goes into its module's pin in
+      the same change, or a change to it never raises the number.
 11. **It asks the way `enable` asks.** Without a terminal, `features enable`
     installs nothing and says how to proceed (`--no-install` writes the
     switch alone). The guided `mecha setup` lists every download and install
