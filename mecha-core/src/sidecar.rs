@@ -1887,7 +1887,8 @@ mod tests {
         .unwrap();
         let p = plan(Feature::Image, &m, &GB10, &root.join("hub"), false).unwrap();
         let image: Vec<_> = p.files.iter().filter(|f| f.slot == "image").collect();
-        assert_eq!(image.len(), 3, "incomplete={incomplete}: {image:#?}");
+        // The model's three files and SAM 3.1's checkpoint.
+        assert_eq!(image.len(), 4, "incomplete={incomplete}: {image:#?}");
         assert!(
             image
                 .iter()
