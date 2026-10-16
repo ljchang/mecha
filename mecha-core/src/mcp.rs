@@ -56,6 +56,8 @@ pub struct McpClient {
     /// The owner offered this server's tools to persona chats
     /// ([`McpServerConfig::personas`]).
     personas: bool,
+    /// Listed tools never offered ([`McpServerConfig::disabled_tools`]).
+    disabled_tools: Vec<String>,
     stdin: tokio::sync::Mutex<Option<ChildStdin>>,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>>,
     next_id: AtomicU64,
@@ -257,6 +259,7 @@ impl McpClient {
             forced: cfg.capabilities.into(),
             trust_result_claims: cfg.trust_result_claims,
             personas: cfg.personas,
+            disabled_tools: cfg.disabled_tools.clone(),
             stdin: tokio::sync::Mutex::new(Some(stdin)),
             pending,
             next_id: AtomicU64::new(1),
@@ -465,10 +468,27 @@ impl McpClient {
             );
         }
 
+        // A name the config withholds that the server does not list is a
+        // typo or a renamed tool: said on every start, since a withholding
+        // that silently matches nothing is the silently-degrading guard.
+        for missing in self.disabled_tools.iter().filter(|d| {
+            !tools
+                .iter()
+                .any(|t| t.get("name").and_then(Value::as_str) == Some(d.as_str()))
+        }) {
+            tracing::warn!(
+                server = %self.name,
+                tool = %missing,
+                "[[mcp]] disabled_tools names a tool this server does not list"
+            );
+        }
         Ok(tools
             .into_iter()
             .filter_map(|t| {
                 let remote_name = t.get("name")?.as_str()?.to_string();
+                if self.disabled_tools.contains(&remote_name) {
+                    return None;
+                }
                 let hints = t.get("annotations").cloned().unwrap_or(Value::Null);
                 let hint = |k: &str| hints.get(k).and_then(Value::as_bool).unwrap_or(false);
                 // The server's opt-in to the chat's job queue, per tool. It
@@ -1258,6 +1278,48 @@ for line in sys.stdin:
     sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": result}) + "\n")
     sys.stdout.flush()
 "#;
+
+    /// A tool the config withholds is never offered, by its server's own
+    /// name and whether or not the tools are prefixed; the rest are
+    /// untouched, and a name the server does not list withholds nothing.
+    #[tokio::test]
+    async fn disabled_tools_are_never_offered() {
+        let root = std::env::temp_dir().join(format!("mecha-mcp-withheld-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let script = root.join("server.py");
+        std::fs::write(&script, SLOW_SERVER).unwrap();
+        for prefixed in [false, true] {
+            let cfg = McpServerConfig {
+                name: "slow".into(),
+                command: "python3".into(),
+                args: vec![
+                    script.display().to_string(),
+                    root.join("received.jsonl").display().to_string(),
+                ],
+                prefix_tools: Some(prefixed),
+                disabled_tools: vec!["quick".into(), "no-such-tool".into()],
+                ..Default::default()
+            };
+            let client = McpClient::connect(&cfg, &unconfined(), &root)
+                .await
+                .unwrap();
+            let names: Vec<String> = client
+                .list_tools()
+                .await
+                .unwrap()
+                .iter()
+                .map(|t| t.name().to_string())
+                .collect();
+            let want: &[&str] = if prefixed {
+                &["slow__render", "slow__sender"]
+            } else {
+                &["render", "sender"]
+            };
+            assert_eq!(names, want);
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     struct Slow {
         root: PathBuf,

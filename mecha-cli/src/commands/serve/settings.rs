@@ -559,7 +559,7 @@ async fn learning_verb(state: &super::WebState, args: &[&str]) -> Response {
 /// process would send an offer. Read-only: the voice worker is configured
 /// where it runs (`scripts/voice/`), and a reachability answer is what a
 /// settings page can honestly own from here.
-pub async fn voice(State(state): St) -> Json<serde_json::Value> {
+pub async fn voice(State(state): St) -> Response {
     let target = state.offer_target.as_ref().map(|t| t.as_str().to_string());
     let reachable = match &target {
         None => None,
@@ -575,17 +575,22 @@ pub async fn voice(State(state): St) -> Json<serde_json::Value> {
     // an empty list would surface the misconfiguration only after someone
     // has recorded themselves.
     let mut cloned_error: Option<String> = None;
+    // No unlock rides on this route, so a locked clone is never named here.
+    let locks = VoiceLocks::read(&state.library, None);
     let cloned = state
         .voices_dir
         .as_ref()
         .map(|dir| match cloned_voices(dir) {
-            Ok(list) => list,
+            Ok(list) => list
+                .into_iter()
+                .filter(|c| c["name"].as_str().is_some_and(|n| locks.shows(n)))
+                .collect(),
             Err(e) => {
                 cloned_error = Some(e);
                 Vec::new()
             }
         });
-    Json(serde_json::json!({
+    let answer = Json(serde_json::json!({
         // None = voice is not wired on this serve at all — a different fact
         // from "wired and down", and the page shows them differently.
         "offer_target": target,
@@ -596,8 +601,14 @@ pub async fn voice(State(state): St) -> Json<serde_json::Value> {
         // Set only when the configured directory could not be listed; the
         // page shows it instead of an empty store.
         "cloned_error": cloned_error,
+        // Set when the voice locks could not be read: `cloned` then names
+        // nothing, and that is "could not tell", not "nothing cloned".
+        "locks_error": locks.error(),
         "voices_dir": state.voices_dir.as_ref().map(|d| d.display().to_string()),
-    }))
+    }));
+    // Filtered by the lock, so as `library_voices`: a listing that held a
+    // locked clone for an unlock must not linger in a cache (review of #701).
+    super::library::no_store(answer.into_response())
 }
 
 /// The cloned references on disk — name, duration, and when each was made —
@@ -656,6 +667,93 @@ pub(super) fn cloned_voices(dir: &std::path::Path) -> Result<Vec<serde_json::Val
     Ok(out)
 }
 
+/// The voice lock as one request sees it (owner, 2026-10-15: voices lock as
+/// images and personas do). A browsing surface names a locked voice only
+/// for a live unlock — the library's token, its autolock — and names no
+/// voice at all to a locked page when the locks could not be read, since
+/// unknown is never clean. Nothing filtered is counted. The lock never
+/// withholds: calls, personas and Listen speak in a locked voice as before.
+pub(super) struct VoiceLocks {
+    locked: Result<std::collections::BTreeSet<String>, String>,
+    unlocked: bool,
+}
+
+impl VoiceLocks {
+    pub(super) fn read(library: &super::library::LibraryState, token: Option<&str>) -> VoiceLocks {
+        VoiceLocks {
+            locked: mecha_core::imagelib::locked_voices(&library.dir).map_err(|e| format!("{e:#}")),
+            unlocked: library.unlocked(token),
+        }
+    }
+
+    /// Whether this request may see `name`.
+    pub(super) fn shows(&self, name: &str) -> bool {
+        self.unlocked || matches!(&self.locked, Ok(set) if !set.contains(name))
+    }
+
+    /// Whether `name` is locked; `None` when the locks could not be read.
+    pub(super) fn is_locked(&self, name: &str) -> Option<bool> {
+        self.locked.as_ref().ok().map(|set| set.contains(name))
+    }
+
+    pub(super) fn unlocked(&self) -> bool {
+        self.unlocked
+    }
+
+    /// Whether the flags could not be read — the question, without
+    /// [`VoiceLocks::error`]'s log line.
+    pub(super) fn unreadable(&self) -> bool {
+        self.locked.is_err()
+    }
+
+    /// Why the flags could not be read, as a page may be told it: a fixed
+    /// sentence. The parser's own error quotes the offending line, and in
+    /// `voices.toml` that line is the locked names (review of #701, pass 5);
+    /// the detail goes to the log.
+    pub(super) fn error(&self) -> Option<&'static str> {
+        self.locked.as_ref().err().map(|why| {
+            tracing::warn!("the voice locks could not be read: {why}");
+            "the voice locks file could not be read"
+        })
+    }
+}
+
+/// Whether `name` is a voice this serve can vouch for: a clip in the voices
+/// directory (the default's included) or one the worker lists. A worker that
+/// cannot be asked vouches for nothing, so in an outage a server voice reads
+/// as missing — the same answer a locked one gets, which is the point: the
+/// lock and sample routes answer a locked voice exactly as one that does not
+/// exist (review of #701). Two routes knowingly do not, and say why where
+/// they are: a clone's 409 on a taken name (as an entry's is) and
+/// `/api/speak`, which the lock never withholds.
+async fn voice_exists(state: &super::WebState, name: &str) -> bool {
+    let stem = !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
+    if stem
+        && state
+            .voices_dir
+            .as_ref()
+            .is_some_and(|d| d.join(format!("{name}.wav")).is_file())
+    {
+        return true;
+    }
+    match &state.offer_target {
+        Some(target) => super::runner_voices(target)
+            .await
+            .is_ok_and(|listed| listed.iter().any(|v| v == name)),
+        None => false,
+    }
+}
+
+/// The one answer for a voice this request may not act on, whether it is
+/// locked or does not exist: word for word the same.
+fn no_such_voice() -> Response {
+    (StatusCode::NOT_FOUND, "no such voice\n").into_response()
+}
+
 #[derive(Deserialize)]
 pub struct VoicesQuery {
     #[serde(default)]
@@ -667,11 +765,14 @@ pub struct VoicesQuery {
 /// personas speak in it. Three sources, each said when it cannot be read
 /// rather than shown as nothing: the worker's list (`runner_voices`), the
 /// cloned clips (`cloned_voices`), and the persona store (`voices_in_use`,
-/// behind the lock).
+/// behind the lock). A locked voice is listed only for an unlock
+/// ([`VoiceLocks`]); `no-store`, as the image library's list is, because a
+/// list that held one must not linger in a cache.
 pub async fn library_voices(
     State(state): St,
     axum::extract::Query(q): axum::extract::Query<VoicesQuery>,
-) -> Json<serde_json::Value> {
+) -> Response {
+    let locks = VoiceLocks::read(&state.library, q.unlock.as_deref());
     let listed = match &state.offer_target {
         None => Err("this serve does not reach the voice worker ([voice] offer_target is empty)"),
         Some(target) => super::runner_voices(target).await,
@@ -721,6 +822,7 @@ pub async fn library_voices(
     names.extend(used.by_voice.keys().cloned());
     let voices: Vec<serde_json::Value> = names
         .into_iter()
+        .filter(|name| locks.shows(name))
         .map(|name| {
             let clone = cloned
                 .iter()
@@ -735,26 +837,75 @@ pub async fn library_voices(
                     "created": c["created"],
                 })),
                 "used_by": used.by_voice.get(&name).cloned().unwrap_or_default(),
+                // Null when the locks could not be read: unknown, not "no".
+                "locked": locks.is_locked(&name),
                 "name": name,
             })
         })
         .collect();
-    Json(serde_json::json!({
-        "voices": voices,
-        "list_error": listed.err(),
-        // None = cloning unconfigured; a store that could not be read is
-        // its own answer, as on the settings pane.
-        "cloning": state.voices_dir.is_some(),
-        // Why `used_by` may be short — "locked" or "unreadable" — or null when
-        // every persona was read: an empty list then means nobody.
-        "used_by_partial": used.partial,
-        "cloned_error": cloned_error,
-    }))
+    super::library::no_store(
+        Json(serde_json::json!({
+            "voices": voices,
+            "unlocked": locks.unlocked(),
+            // Why a locked page lists no voice at all: the locks could not be
+            // read, and a guess would show what they hide.
+            "locks_error": locks.error(),
+            "list_error": listed.err(),
+            // None = cloning unconfigured; a store that could not be read is
+            // its own answer, as on the settings pane.
+            "cloning": state.voices_dir.is_some(),
+            // Why `used_by` may be short — "locked" or "unreadable" — or null when
+            // every persona was read: an empty list then means nobody.
+            "used_by_partial": used.partial,
+            "cloned_error": cloned_error,
+        }))
+        .into_response(),
+    )
+}
+
+#[derive(Deserialize)]
+pub struct VoiceLockBody {
+    name: String,
+    locked: bool,
+    #[serde(default)]
+    unlock: Option<String>,
+}
+
+/// POST /api/library/voices/lock — lock or unlock one voice. As for an
+/// entry, a voice this request cannot see answers exactly as a missing one
+/// ([`voice_exists`]), so unlocking one needs the unlock that shows it;
+/// locking a visible one needs nothing, and it is gone from the page until
+/// the next unlock.
+pub async fn library_voice_lock(State(state): St, Json(body): Json<VoiceLockBody>) -> Response {
+    let locks = VoiceLocks::read(&state.library, body.unlock.as_deref());
+    if !voice_exists(&state, &body.name).await || !locks.shows(&body.name) {
+        return no_such_voice();
+    }
+    let dir = state.library.dir.clone();
+    let name = body.name.clone();
+    let locked = body.locked;
+    match tokio::task::spawn_blocking(move || {
+        mecha_core::imagelib::set_voice_locked(&dir, &name, locked)
+    })
+    .await
+    {
+        Ok(Ok(_)) => {
+            Json(serde_json::json!({ "name": body.name, "locked": locked })).into_response()
+        }
+        Ok(Err(e)) => (StatusCode::BAD_REQUEST, format!("{e:#}\n")).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "writing the voice locks\n",
+        )
+            .into_response(),
+    }
 }
 
 #[derive(Deserialize)]
 pub struct SampleQuery {
     pub(super) name: String,
+    #[serde(default)]
+    pub(super) unlock: Option<String>,
 }
 
 /// GET /api/library/voices/sample?name= — a fixed line spoken in that voice,
@@ -774,6 +925,14 @@ pub async fn library_voice_sample(
     };
     if q.name.is_empty() || q.name.len() > 64 || q.name.chars().any(char::is_control) {
         return (StatusCode::BAD_REQUEST, "not a voice name\n").into_response();
+    }
+    // A locked voice plays only for the unlock that lists it, and is
+    // otherwise missing, as a locked portrait is (#385) — the same answer,
+    // word for word, as a name nobody has (review of #701).
+    if !voice_exists(&state, &q.name).await
+        || !VoiceLocks::read(&state.library, q.unlock.as_deref()).shows(&q.name)
+    {
+        return no_such_voice();
     }
     let Ok(mut url) = reqwest::Url::parse(target).and_then(|t| t.join("/mecha/sample")) else {
         return (StatusCode::BAD_GATEWAY, "no voice worker address\n").into_response();
@@ -796,7 +955,13 @@ pub async fn library_voice_sample(
         return (StatusCode::BAD_GATEWAY, "reading the sample\n").into_response();
     };
     if status.is_success() {
-        return ([("content-type", "audio/wav")], bytes.to_vec()).into_response();
+        // A locked voice's audio, for an unlock, must not linger in a cache
+        // any more than its name on the list does (`speak`, #385's portrait).
+        return (
+            [("content-type", "audio/wav"), ("cache-control", "no-store")],
+            bytes.to_vec(),
+        )
+            .into_response();
     }
     // The worker's own refusal carries its reason in `error`; a 404 without
     // one is the route missing — a worker older than previews (review of
@@ -806,6 +971,9 @@ pub async fn library_voice_sample(
         .ok()
         .and_then(|v| v["error"].as_str().map(str::to_string));
     match why {
+        // The worker's own "not one I have" is said as the lock says it, so
+        // its wording cannot tell a missing voice from a hidden one.
+        Some(_) if status == StatusCode::NOT_FOUND => no_such_voice(),
         Some(why) => (status, format!("{why}\n")).into_response(),
         None if status == StatusCode::NOT_FOUND => (
             StatusCode::CONFLICT,
@@ -1161,6 +1329,13 @@ pub const MAX_CLONE_BYTES: usize = 32 * 1024 * 1024;
 #[derive(Deserialize)]
 pub struct CloneQuery {
     pub(super) name: String,
+    /// Recorded locked: hidden while browsing from its first moment, as an
+    /// entry added with the lock box ticked is.
+    #[serde(default)]
+    pub(super) locked: bool,
+    /// For deleting a locked voice, which only an unlock can see.
+    #[serde(default)]
+    pub(super) unlock: Option<String>,
 }
 
 /// POST /api/settings/voice/clone?name=x — body is the WAV itself.
@@ -1264,9 +1439,56 @@ pub async fn voice_clone(
         )
             .into_response();
     }
+    // Locked before the clip lands, so no listing ever shows it unlocked;
+    // a lock that cannot be written refuses the clip rather than placing a
+    // voice in the open the owner asked to hide.
+    // Whether this request added the flag, decided inside the store's own
+    // lock: two saves of one name must not both think they did, or the
+    // loser's rollback would unhide the winner's (review of #701).
+    // A flag that outlived its voice (a delete whose clear failed, a server
+    // voice that left the worker's list) must not hide a clip saved with the
+    // box unticked. Cleared only when no voice of that name exists, and only
+    // when the worker's list could be read: an outage must never unhide a
+    // locked server voice (review of #701, pass 5).
+    if !q.locked {
+        let listed = match &state.offer_target {
+            None => Some(Vec::new()),
+            Some(target) => super::runner_voices(target).await.ok(),
+        };
+        if listed.is_some_and(|l| !l.contains(&q.name)) {
+            if let Err(e) =
+                mecha_core::imagelib::set_voice_locked(&state.library.dir, &q.name, false)
+            {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    locks_refusal("the voice locks could not be checked", &e),
+                )
+                    .into_response();
+            }
+        }
+    }
+    let lock_added = if q.locked {
+        match mecha_core::imagelib::set_voice_locked(&state.library.dir, &q.name, true) {
+            Ok(added) => added,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    locks_refusal("the voice could not be locked", &e),
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        false
+    };
     let tmp = dir.join(format!(".{}.wav.tmp.{}", q.name, request_stamp()));
     let write = std::fs::write(&tmp, &body).and_then(|()| place_new(&tmp, &path));
     let _ = std::fs::remove_file(&tmp);
+    if write.is_err() && lock_added {
+        // Nothing landed: the flag would otherwise wait to hide whatever
+        // is next recorded under this name.
+        let _ = mecha_core::imagelib::set_voice_locked(&state.library.dir, &q.name, false);
+    }
     if let Err(e) = write {
         if e.kind() == std::io::ErrorKind::AlreadyExists {
             return (
@@ -1288,6 +1510,14 @@ pub async fn voice_clone(
             .into_response();
     }
     voice(State(state)).await.into_response()
+}
+
+/// A save refused over the voice locks, in words that never quote the file:
+/// its parse error carries the damaged line, which is the locked names
+/// (review of #701, pass 8). The detail goes to the log.
+fn locks_refusal(what: &str, e: &anyhow::Error) -> String {
+    tracing::warn!("{what}: {e:#}");
+    format!("{what}, so it was not saved\n")
 }
 
 /// Put a fully written `tmp` at `path` only if nothing is there yet.
@@ -1336,7 +1566,9 @@ pub async fn voice_clone_delete(State(state): St, Json(q): Json<CloneQuery>) -> 
             .into_response();
     }
     let path = dir.join(format!("{}.wav", q.name));
-    if !path.is_file() {
+    // A locked voice is deleted only by the unlock that shows it, and is
+    // otherwise missing: the same answer, word for word.
+    if !path.is_file() || !VoiceLocks::read(&state.library, q.unlock.as_deref()).shows(&q.name) {
         return (
             StatusCode::NOT_FOUND,
             format!(
@@ -1373,6 +1605,11 @@ pub async fn voice_clone_delete(State(state): St, Json(q): Json<CloneQuery>) -> 
             )
                 .into_response();
         }
+    }
+    // The flag goes with the voice, or it would hide the next clip recorded
+    // under this name. Left behind, it only hides: never the unsafe way.
+    if let Err(e) = mecha_core::imagelib::set_voice_locked(&state.library.dir, &q.name, false) {
+        tracing::warn!("voice `{}` deleted, its lock flag kept: {e:#}", q.name);
     }
     voice(State(state)).await.into_response()
 }
