@@ -840,6 +840,10 @@ pub fn min_available_mb_on(os: &str) -> u64 {
     }
 }
 
+/// Why [`ComfyUi::can_segment`] has no answer: the server could not be
+/// asked, which admission reads as unknown, never as "no SAM".
+const SEGMENT_UNASKED: &str = "the image server could not be asked about segmentation";
+
 /// What a segmentation adds to a picture job's need, in MB: SAM 3.1 loaded
 /// beside the image model (`docs/SEGMENTATION-DESIGN.md` §3). Its cold load
 /// peaked at 2,528 MB of GPU memory above a freed server on the GB10
@@ -1496,15 +1500,34 @@ impl ComfyUi {
     /// [`ComfyUi::can_segment`] as a yes or no for admission, a yes kept for
     /// the process: a call is charged SAM's memory only where SAM can load
     /// (review of #710, pass 2).
+    /// A server that could not be asked is charged, never admitted light:
+    /// unknown is never "no SAM" (review of #710, pass 3).
     async fn segments(&self) -> bool {
         if self.segments.load(Ordering::SeqCst) {
             return true;
         }
-        let can = self.can_segment().await.is_ok();
-        if can {
-            self.segments.store(true, Ordering::SeqCst);
+        match self.can_segment().await {
+            Ok(()) => {
+                self.segments.store(true, Ordering::SeqCst);
+                true
+            }
+            Err(why) => why == SEGMENT_UNASKED,
         }
-        can
+    }
+
+    /// Ready to segment, inside a job: the server waited for as a render
+    /// waits for it (a restart under the job, the idle reset), then asked.
+    /// `Err(None)` is a stop; `Err(Some(why))` is said, and the edit drawn
+    /// without the segmentation (review of #710, pass 3).
+    async fn ready_to_segment(
+        &self,
+        cancel: Option<&CancellationToken>,
+    ) -> std::result::Result<(), Option<String>> {
+        match self.await_server(cancel, SERVER_WAIT).await {
+            Err(Failure::Cancelled) => Err(None),
+            Err(Failure::Other(_)) => Err(Some("the image server is not answering".into())),
+            Ok(()) => self.can_segment().await.map_err(Some),
+        }
     }
 
     /// Whether the server can segment: ComfyUI's `SAM3_Detect` node, and
@@ -1514,14 +1537,14 @@ impl ComfyUi {
         let sam = self
             .get_json("object_info/SAM3_Detect")
             .await
-            .map_err(|_| "the image server could not be asked about segmentation".to_string())?;
+            .map_err(|_| SEGMENT_UNASKED.to_string())?;
         if sam.get("SAM3_Detect").is_none() {
             return Err("the image server's ComfyUI has no SAM 3 node".into());
         }
         let ckpt = self
             .get_json("object_info/CheckpointLoaderSimple")
             .await
-            .map_err(|_| "the image server could not be asked about segmentation".to_string())?;
+            .map_err(|_| SEGMENT_UNASKED.to_string())?;
         let listed = ckpt
             .pointer("/CheckpointLoaderSimple/input/required/ckpt_name/0")
             .and_then(Value::as_array)
@@ -5337,8 +5360,12 @@ impl Tool for ImageGenerate {
             // how many separate areas it is.
             let mut masked_by: Option<(String, usize)> = None;
             if let Some(words) = &segment_words {
-                let found = match me.backend.can_segment().await {
-                    Err(why) => Err(why),
+                let found = match me.backend.ready_to_segment(ctx.cancel.as_ref()).await {
+                    Err(None) => {
+                        seg_cancelled = true;
+                        Err("it was stopped".to_string())
+                    }
+                    Err(Some(why)) => Err(why),
                     Ok(()) => {
                         let (got, left) = me
                             .backend
@@ -5433,8 +5460,9 @@ impl Tool for ImageGenerate {
                 };
                 let mut found: std::result::Result<Option<image::GrayImage>, String> = Ok(None);
                 let mut took_hair = false;
-                match me.backend.can_segment().await {
-                    Err(why) => found = Err(why),
+                match me.backend.ready_to_segment(ctx.cancel.as_ref()).await {
+                    Err(None) => seg_cancelled = true,
+                    Err(Some(why)) => found = Err(why),
                     Ok(()) => {
                         let asked: &[&str] = if fe.hair {
                             &["face", "hair"]
@@ -6310,6 +6338,48 @@ mod tests {
             started.elapsed() >= Duration::from_millis(250),
             "answered before the server existed"
         );
+    }
+
+    /// Segmenting inside a job waits out a restart as a render does: a
+    /// word mask asked during the idle reset keeps its mask rather than
+    /// drawing the whole picture (review of #710, pass 3).
+    #[tokio::test]
+    async fn segmentation_waits_for_a_restarting_server() {
+        let addr = closed_port();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+            while let Ok((mut sock, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 2048];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let body = if head.contains("/object_info/CheckpointLoaderSimple") {
+                        json!({"CheckpointLoaderSimple": {"input": {"required": {
+                            "ckpt_name": [[SEGMENT_MODEL], {}]}}}})
+                    } else if head.contains("/object_info/SAM3_Detect") {
+                        json!({"SAM3_Detect": {"input": {}}})
+                    } else {
+                        json!({})
+                    }
+                    .to_string();
+                    let reply = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = sock.write_all(reply.as_bytes()).await;
+                });
+            }
+        });
+        let ready = server_at(addr).ready_to_segment(None).await;
+        assert!(ready.is_ok(), "{ready:?}");
+    }
+
+    /// Admission charges SAM for a server it could not ask: unknown is
+    /// never "no SAM" (review of #710, pass 3).
+    #[tokio::test]
+    async fn a_server_that_cannot_be_asked_is_charged_for_segmentation() {
+        assert!(server_at(closed_port()).segments().await);
     }
 
     /// The wait is bounded: a server that never comes is reported, with the
