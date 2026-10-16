@@ -210,12 +210,6 @@ pub fn rows_on(slot: &'static Slot, os: &str) -> &'static [Recommendation] {
 
 const GB10: &str = "DGX Spark (GB10)";
 
-/// The image slot on a Mac (the owner, 2026-10-13: bf16 by default, the
-/// turbo bf16 on demand). MPS has no int8 kernels: comfy-kitchen emulates the
-/// ConvRot file's every op, 3.1 s a step against bf16's 1.7-2.0, so the
-/// int8 picture took ~128 s and the bf16 ~79 s warm (FEATURES-DESIGN §12.3).
-/// The text encoder and VAE are the GB10's files; the encoder runs on the CPU
-/// there, its float8 scales having no MPS type.
 /// SAM 3.1, the segmenter picture edits run beside the image model
 /// (`docs/SEGMENTATION-DESIGN.md` §3): ComfyUI's own fp16 repackaging, under
 /// `checkpoints/` as ComfyUI's layout has it. A second source on both image
@@ -230,6 +224,12 @@ pub const SAM_SOURCE: Source = Source::HuggingFace {
     }],
 };
 
+/// The image slot on a Mac (the owner, 2026-10-13: bf16 by default, the
+/// turbo bf16 on demand). MPS has no int8 kernels: comfy-kitchen emulates the
+/// ConvRot file's every op, 3.1 s a step against bf16's 1.7-2.0, so the
+/// int8 picture took ~128 s and the bf16 ~79 s warm (FEATURES-DESIGN §12.3).
+/// The text encoder and VAE are the GB10's files; the encoder runs on the CPU
+/// there, its float8 scales having no MPS type.
 const IMAGE_MAC: &[Recommendation] = &[Recommendation {
     tier_gb: 128,
     memory: Memory::Unified {

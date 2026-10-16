@@ -123,15 +123,21 @@ const PYTHON: &str = "3.12";
 const COMMIT_STAMP: &str = ".mecha-commit";
 
 /// Every node type [`crate::imagegen`] sends but the GGUF loader, which only
-/// an owner's own `.gguf` needs. A test builds the graphs and holds the two
-/// sets equal, both ways.
-pub const NODES: [&str; 12] = [
+/// an owner's own `.gguf` needs: the picture's graphs and the segmentation's
+/// (`imagegen::sam_graph`), so an install on a ComfyUI with no SAM 3 node
+/// fails its check rather than linking a checkpoint nothing can load. A test
+/// builds the graphs and holds the two sets equal, both ways.
+pub const NODES: [&str; 16] = [
     "CLIPLoader",
+    "CLIPTextEncode",
+    "CheckpointLoaderSimple",
     "EmptyLatentImage",
     "ImageToMask",
     "KSampler",
     "LoadImage",
+    "MaskToImage",
     "PreviewImage",
+    "SAM3_Detect",
     "SetLatentNoiseMask",
     "TextEncodeQwenImage21",
     "UNETLoader",
@@ -1173,8 +1179,9 @@ mod tests {
     }
 
     /// The install checks exactly the node types mecha's graphs send — built
-    /// here, not read off the source: a text-to-image graph, an edit, and a
-    /// masked edit, with the default loader and a `.gguf` one. Both ways, so
+    /// here, not read off the source: a text-to-image graph, an edit, a
+    /// masked edit and a segmentation, with the default loader and a `.gguf`
+    /// one. Both ways, so
     /// a node added to a graph fails here, and so does one left in `NODES`
     /// that no graph sends any more (review of #645).
     #[test]
@@ -1200,6 +1207,7 @@ mod tests {
                 comfy_graph(&cfg, &req, &[], None),
                 comfy_graph(&cfg, &req, &refs, None),
                 comfy_graph(&cfg, &req, &refs, Some("mask.png")),
+                crate::imagegen::sam_graph("ref.png", "the sky"),
             ] {
                 for node in g.as_object().unwrap().values() {
                     sent.insert(node["class_type"].as_str().unwrap().to_string());
