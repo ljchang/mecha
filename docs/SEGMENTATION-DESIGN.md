@@ -107,6 +107,6 @@ Out of scope here. It needs the person split from the scene's record, which is a
   - "Face and hair" as one prompt returns the face alone, so the two are asked separately and joined.
   - The same render pasted back through the face mask scores the same identity as the ellipse (.81), keeps the photo's own hairline and earrings, and shows no seam.
   - **Through the built tool** (the real server, one seed): ArcFace .876 against the face wanted (the unedited photo: .196). Every changed pixel is inside the face; the stroke reached about 60 px above it, and the hairline there is the original's.
-- **Cost:** time per segmentation and SAM's memory peak, both in §3. Whether the image slot's `Peak` (`recommend.rs`) moves is decided with the install change, with the evidence beside it as the slot's other figures have.
+- **Cost:** time per segmentation and SAM's memory peak, both in §3. The install change moved the image slot's `Peak` (`recommend.rs`, Linux row) from 20,790 to 23,318 MB with the evidence beside it, as the slot's other figures have; the Mac row names SAM as not measured there.
 - **S3:** the §7.7 set (two shirts, two cups, a sleeve): stroke-only versus snapped masks, wrong-target and missed-target counts.
 - **S4:** the corpus's three edits whose layout similarity was at least 0.97: does the in-region difference tell a real change from none?
