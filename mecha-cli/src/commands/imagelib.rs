@@ -9,7 +9,9 @@
 //! approved text rides into every future prompt that names the character.
 //!
 //! It builds no provider and connects to nothing, so the library can be
-//! inspected and edited with the model and the image server both down.
+//! inspected and edited with the model and the image server both down. The
+//! exceptions fetch pinned weights once: `install-face-detector`, and
+//! `face compare`'s first run, which fetches ArcFace as a judge does.
 
 use anyhow::{bail, Context, Result};
 use mecha_core::imagelib::{self, Entry, Kind, Library, NewEntry, Origin, RefKind, Status};
@@ -573,8 +575,13 @@ async fn face(cmd: FaceCmd) -> Result<()> {
             let (label, bytes) = match (reference, character) {
                 (Some(p), _) => (p.display().to_string(), read(&p)?),
                 (None, Some(name)) => {
-                    let (lib, _) = Library::load(&Library::default_dir()?);
+                    let (lib, errors) = Library::load(&Library::default_dir()?);
                     let key = name.trim().to_lowercase();
+                    // An entry that did not load is said, never read as a
+                    // character that does not exist.
+                    for e in &errors {
+                        eprintln!("mecha: {} did not load — {}", e.path.display(), e.why);
+                    }
                     let entry = lib
                         .get(Kind::Character, &key)
                         .filter(|e| e.status == Status::Approved)
