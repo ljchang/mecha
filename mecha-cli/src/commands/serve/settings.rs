@@ -559,7 +559,7 @@ async fn learning_verb(state: &super::WebState, args: &[&str]) -> Response {
 /// process would send an offer. Read-only: the voice worker is configured
 /// where it runs (`scripts/voice/`), and a reachability answer is what a
 /// settings page can honestly own from here.
-pub async fn voice(State(state): St) -> Json<serde_json::Value> {
+pub async fn voice(State(state): St) -> Response {
     let target = state.offer_target.as_ref().map(|t| t.as_str().to_string());
     let reachable = match &target {
         None => None,
@@ -590,7 +590,7 @@ pub async fn voice(State(state): St) -> Json<serde_json::Value> {
                 Vec::new()
             }
         });
-    Json(serde_json::json!({
+    let answer = Json(serde_json::json!({
         // None = voice is not wired on this serve at all — a different fact
         // from "wired and down", and the page shows them differently.
         "offer_target": target,
@@ -605,7 +605,10 @@ pub async fn voice(State(state): St) -> Json<serde_json::Value> {
         // nothing, and that is "could not tell", not "nothing cloned".
         "locks_error": locks.error(),
         "voices_dir": state.voices_dir.as_ref().map(|d| d.display().to_string()),
-    }))
+    }));
+    // Filtered by the lock, so as `library_voices`: a listing that held a
+    // locked clone for an unlock must not linger in a cache (review of #701).
+    super::library::no_store(answer.into_response())
 }
 
 /// The cloned references on disk — name, duration, and when each was made —
@@ -1458,7 +1461,7 @@ pub async fn voice_clone(
             {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("the voice locks could not be checked, so it was not saved: {e:#}\n"),
+                    locks_refusal("the voice locks could not be checked", &e),
                 )
                     .into_response();
             }
@@ -1470,7 +1473,7 @@ pub async fn voice_clone(
             Err(e) => {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("the voice could not be locked, so it was not saved: {e:#}\n"),
+                    locks_refusal("the voice could not be locked", &e),
                 )
                     .into_response();
             }
@@ -1507,6 +1510,14 @@ pub async fn voice_clone(
             .into_response();
     }
     voice(State(state)).await.into_response()
+}
+
+/// A save refused over the voice locks, in words that never quote the file:
+/// its parse error carries the damaged line, which is the locked names
+/// (review of #701, pass 8). The detail goes to the log.
+fn locks_refusal(what: &str, e: &anyhow::Error) -> String {
+    tracing::warn!("{what}: {e:#}");
+    format!("{what}, so it was not saved\n")
 }
 
 /// Put a fully written `tmp` at `path` only if nothing is there yet.

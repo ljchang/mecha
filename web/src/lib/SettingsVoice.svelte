@@ -94,7 +94,9 @@
           value={unlisted ? UNLISTED : (vprefs.voice ?? '')}
           onchange={(e) => saveVoicePref({ voice: e.currentTarget.value })}
         >
-          {#if !vprefs.voice}<option value="">worker default</option>{/if}
+          <!-- Always a way back to the worker's own voice, a remembered one
+               hidden by the lock included (review of #701). -->
+          {#if !vprefs.voice || unlisted}<option value="">worker default</option>{/if}
           {#if unlisted}<option value={UNLISTED} disabled>—</option>{/if}
           {#each library.names as v}
             <option value={v}>{v}</option>

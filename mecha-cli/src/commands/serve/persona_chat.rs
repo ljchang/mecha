@@ -12619,6 +12619,16 @@ mod tests {
         serde_json::from_slice(&body).unwrap()
     }
 
+    /// Settings → Voice's own listing, as the page reads it.
+    async fn voice_settings(state: &super::super::WebState) -> serde_json::Value {
+        let got = super::super::settings::voice(State(state.clone())).await;
+        assert_eq!(got.headers()["cache-control"], "no-store");
+        let body = axum::body::to_bytes(got.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
     fn voice_names(listed: &serde_json::Value) -> Vec<String> {
         listed["voices"]
             .as_array()
@@ -12709,7 +12719,7 @@ mod tests {
             .iter()
             .all(|n| n == "solo"));
         // Settings → Voice's own listing names no locked clone.
-        let Json(settings) = super::super::settings::voice(State(state.clone())).await;
+        let settings = voice_settings(&state).await;
         assert!(!settings.to_string().contains("solo"), "{settings}");
         // The persona form offers only what the page may see.
         assert_eq!(form_voices(&state, None, None).await.names, ["ada"]);
@@ -12765,7 +12775,7 @@ mod tests {
         assert!(damaged["locks_error"].is_string(), "{damaged}");
         assert!(!damaged.to_string().contains("secretvoice"), "{damaged}");
         // Settings → Voice's listing says so too, rather than "none cloned".
-        let Json(settings) = super::super::settings::voice(State(state.clone())).await;
+        let settings = voice_settings(&state).await;
         assert_eq!(settings["cloned"], serde_json::json!([]));
         assert!(settings["locks_error"].is_string(), "{settings}");
         assert!(!settings.to_string().contains("secretvoice"), "{settings}");
@@ -12822,6 +12832,36 @@ mod tests {
         mecha_core::imagelib::set_voice_locked(&library.dir, "stale", true).unwrap();
         assert_eq!(save(state.clone(), "stale").await.status(), StatusCode::OK);
         assert!(!locked().contains("stale"));
+
+        // Damaged locks refuse the save, ticked or not, in words that never
+        // quote the file's line of locked names (review of #701, pass 8).
+        std::fs::write(
+            library.dir.join("voices.toml"),
+            "locked = [\"secretvoice\", 3]",
+        )
+        .unwrap();
+        for locked in [false, true] {
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert("content-type", "audio/wav".parse().unwrap());
+            let refused = super::super::settings::voice_clone(
+                State(state.clone()),
+                Query(super::super::settings::CloneQuery {
+                    name: format!("new{locked}"),
+                    locked,
+                    unlock: None,
+                }),
+                headers,
+                axum::body::Bytes::from(super::super::tests::tiny_wav(16_000, 6.0)),
+            )
+            .await;
+            assert_eq!(refused.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            let body = axum::body::to_bytes(refused.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body = String::from_utf8_lossy(&body);
+            assert!(!body.contains("secretvoice"), "{body}");
+            assert!(!clones.join(format!("new{locked}.wav")).exists());
+        }
     }
 
     /// A persona that speaks in a locked voice keeps it — calls still speak
