@@ -2129,7 +2129,7 @@ pub fn broken_named_in(lib: &Library, prompt: &str) -> Vec<String> {
 }
 
 /// "a", "a and b", "a, b and c".
-fn join_and(items: &[String]) -> String {
+pub(crate) fn join_and(items: &[String]) -> String {
     match items {
         [] => String::new(),
         [one] => one.clone(),

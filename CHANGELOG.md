@@ -147,6 +147,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Editing a photo of someone no longer redraws it from scratch.** The first
+  change that named who was in an uploaded photo, alongside any change to
+  the room, light or camera, was drawn as a new picture from words, so the
+  clothes, hair and body all changed. It is now an edit of the photo, and
+  the people named are who is in it, never a second copy of them.
+  Moving such a photo into a room photo in the call that names its people
+  is now refused with how to do it: name them first, then send the room.
+
 - **The model no longer redraws pictures it has not seen.** It cannot see
   what it draws, yet it judged pictures wrong and drew them again on its own
   — once over a picture that was right. The image tool now tells it the
