@@ -1,6 +1,7 @@
 # Messages between machines on the owner's tailnet
 
-**Status (2026-10-15): designed, not built; Q1 and Q2 ruled (§6).** The owner's ruling that starts
+**Status (2026-10-16): designed, not built; Q1–Q3 ruled (§6); the wake Q1
+asks for is open (§7).** The owner's ruling that starts
 it: *"tailnet machines count"* — the owner's own machines on their tailnet are
 inside the trust boundary. This document is what follows from that sentence,
 and what deliberately does not.
@@ -36,9 +37,13 @@ owner — the same test `mecha serve` already applies to every request:
 `Tailscale-User-Login` equal to `[web] owner_login`, the header `tailscale
 serve` sets for a request from a node the owner's login owns. A tagged node,
 another tailnet user, or a request that did not come through `tailscale serve`
-is refused. The machine a message came from is the tailnet's word too
-(`tailscale whois` of the peer), recorded beside the sender's own claim, so a
-message never names its origin on its own say-so.
+is refused. **The owner is verified; the machine is not.** `tailscale serve`
+proxies to `mecha serve` on loopback and passes the *user's* identity, not the
+sending node's, so which of the owner's machines sent a message is the
+sender's claim. That is acceptable only because the ruling trusts every one of
+the owner's machines alike: the machine name is a label for addressing a
+reply, recorded as the sender's claim, and never an input to any trust
+decision (review of #700).
 
 **D2. Transport: the receiver's `mecha serve`, one owner-gated route.** `POST
 /api/messages` on the peer's `mecha serve`, behind the same owner guard as
@@ -46,9 +51,11 @@ every other route. The body is a `MailboxMessage` without its id and status:
 `to`, `body`, `reply_to`, and the harness-stamped `from`, `from_session` and
 `taint`. The route writes it into the receiver's own mailbox store through
 `MailboxStore::send` — the same caps, the same duplicate check, the same
-recipient lock — with `from` qualified by machine (`chat@laptop`). From there
-nothing is new: the receiver's runs claim it at a turn boundary exactly as a
-local message. A machine that does not run `mecha serve` cannot receive; one
+recipient lock. `from` stays a producer name (`work::valid_producer` refuses
+`@`); the machine goes in a new optional `MailboxMessage::from_machine`,
+`None` for a local message and a default for an older build's file, and
+surfaces show the pair as `chat@laptop`. From there nothing is new: the
+receiver's runs claim it at a turn boundary exactly as a local message. A machine that does not run `mecha serve` cannot receive; one
 that runs it with `web` off refuses, as every route does.
 
 **D3. Finding the machines: the tailnet is the directory, automatically.**
@@ -65,8 +72,8 @@ and its MagicDNS name:
    `mecha serve` has no agents to offer and is no peer: nothing registers a
    machine, and nothing needs to.
 
-The list is read when a send or a listing needs it, never cached past a
-short window, so a machine that sleeps drops out and one that wakes comes
+The list is read when a send or a listing needs it, cached for 30 seconds at
+most, so a machine that sleeps drops out and one that wakes comes
 back without anyone doing anything. `[messages.peers]` in the global config
 (never a project layer, as `[messages]` already is) stays optional, for what
 the tailnet cannot say:
@@ -96,7 +103,11 @@ receiving run's interlock, which now knows what the message carried.
 
 **D5. Fail closed on the wire.** A message whose `taint` is missing or
 unreadable is untrusted on arrival, as a local one written by an older build
-is. A peer on another build may send fields this one does not know: unknown
+is. That needs a change below the route: `MailboxStore::send` stamps
+`taint_recorded: true` on every message today, so a wire body with no taint
+would land recorded *clean*. The route must store a missing taint as
+`taint_recorded: false` — the flag the fail-closed rule keys on — through a
+send that takes it (review of #700). A peer on another build may send fields this one does not know: unknown
 fields are ignored, never an error — a closed set written to an append-only
 store is a wire format. A peer's reply that cannot be parsed is an error to
 the sender, never a delivered message.
@@ -124,6 +135,14 @@ mbp                     unreachable
 A peer that does not answer is listed as unreachable, never as empty. Like
 `message_send`, the listing carries no egress class: it reads from the
 owner's own machines.
+
+**D8. The inbound axis.** A delivered message's body carries its sender's
+taint, merged as for a local one (D4), so its content is governed whatever
+the transport. `message_agents`' listing from a peer is not marked
+`.from_outside()`: it is the owner's machines answering with producer names
+the owner configured, and it never carries a message body. A peer's error or
+reply text is shown to the sender as the tool's own failure, never as
+external content it must act on.
 
 ## 3. What a message still cannot do
 
@@ -167,22 +186,24 @@ everything it provokes.
 
 ## 6. Rulings (the owner, 2026-10-15)
 
-- **Q1. A remote message can wake an idle session.** It follows the
-  receiver's own `[messages] inbound` policy exactly as a local message
-  does: where a live session starts a turn for a local message, it starts
-  one for a remote message too, and nothing remote-only holds it back. A
-  machine with no session of that producer running keeps the message until
-  one runs, as locally; `mecha serve` starting a run for it is not designed
-  here, and is the next question if that case matters.
+- **Q1. A remote message can wake an idle session.** No remote-only rule
+  holds a message back: it follows the receiver's own `[messages] inbound`
+  policy as a local message does. **But nothing wakes an idle session today,
+  for a local message either** (review of #700): `accept` folds messages into
+  a run already in flight, at its next turn boundary, and a session waiting
+  for the owner to type starts no turn. So the ruling sets the intent, and
+  the wake is new work for local and remote alike — §7.
 - **Q2. One mailbox per machine.** A message lands on the machine it is
   addressed to (`chat@laptop`), and only there.
 
-- **Q3. Finding peers is automatic** (D3): the owner's own online, untagged
-  nodes running `mecha serve` are peers, found from the tailnet; a machine
-  with no agent needs no registration.
+- **Q3. Finding peers is automatic** — D3.
 
 ## 7. Open, and deferred
 
-- **Waking a machine with no session running** (Q1's last sentence).
+- **The wake Q1 rules for.** Two cases, neither built: a live session idle
+  at its prompt (the TUI, a web chat), which would start a turn when an
+  accepted message arrives; and a machine with no session of that producer,
+  where `mecha serve` would start one. Each needs its own design before
+  step 2 ships the lead case of §1.
 - **Deferred by the owner:** the web app switching between the agents of
   the machines that serve one — the same discovery, offered as a picker.
