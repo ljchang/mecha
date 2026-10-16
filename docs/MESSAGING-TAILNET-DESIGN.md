@@ -52,7 +52,14 @@ every other route. The body is a `MailboxMessage` without its id and status:
 `taint`. The route writes it into the receiver's own mailbox store through
 `MailboxStore::send` — the same caps, the same duplicate check, the same
 recipient lock. `from` stays a producer name (`work::valid_producer` refuses
-`@`); the machine goes in a new optional `MailboxMessage::from_machine`,
+`@`). **Every sender-supplied field is validated at the route**, since on
+the wire none is harness-stamped any more: `from` by `valid_producer`,
+`from_session` by the session-id form, `from_machine` by the same character
+set as a producer; anything else refuses the message. `render_delivery`
+interpolates `from_session` raw into the `<untrusted-content source="…">`
+fence today — safe while the harness stamped it, a fence-breaker the moment a
+peer can set it (review of #700). The machine goes in a new optional
+`MailboxMessage::from_machine`,
 `None` for a local message and a default for an older build's file, and
 surfaces show the pair as `chat@laptop`. "The same owner guard" includes
 the rest of a `POST`'s gate: the `x-mecha-request: 1` header every mutating
@@ -80,7 +87,10 @@ and its MagicDNS name:
    machine, and nothing needs to. A node of the owner's that is offline, or
    answered within the last day and does not now, is listed as
    **unreachable** rather than dropped, so a peer that sleeps reads as one
-   that is asleep (review of #700).
+   that is asleep (review of #700). "Within the last day" needs a memory the
+   30-second cache is not: each peer's last answer is kept in
+   `~/.mecha/messages/peers.json`, written when a peer answers, so it
+   survives a restart.
 
 The `tailscale status --json` fork is the one `system/source.rs` already runs,
 with its budget and timeout; D3 reads node names from it, which the system
@@ -133,6 +143,14 @@ including an unconfined `shell` in an injected run on the owner's own machine
 — and the research keeps "trust asserted by a sender" deliberately absent;
 this is that rule, kept across the wire (review of #700). `from_machine`
 keeps a peer's message apart from the owner's own `mecha msg send` here.
+**The cost, stated with the rule:** taint lives on the conversation, so the
+first remote message a session reads arms `untrusted` there for good, and
+with private data already in it every `Egress::Chosen` tool is refused for
+the rest of that session. A laptop chat that reads the GB10's nightly brief
+can still reply by message (no egress class) but no longer reach a
+destination the model names, where the same brief sent one machine nearer
+would have cost nothing. That is the price of not believing a peer's word,
+and it is §7's open question whether it is the right one for §1's lead case.
 A peer on another build may send fields this one does not know: unknown
 fields are ignored, never an error — a closed set written to an append-only
 store is a wire format. A peer's reply that cannot be parsed is an error to
@@ -203,11 +221,16 @@ everything it provokes.
    widened by it; a missing taint stored unrecorded and every remote taint
    with `untrusted` added (D5); delivery labelled with the machine —
    `render_delivery` says "on this machine" today, and a remote message says
-   which (§3), **in the interpolated part only**: `mailbox::DELIVERY_STEM`
-   is what `agent::is_harness_voice` matches, and a delivery that falls off
-   that list is mined as an owner correction; and `GET /api/messages/agents`
-   (D7), built from the live markers and the trigger store. Tested with a
-   forged header (refused), another login (refused), a missing
+   which (§3) — through a second stem, `REMOTE_DELIVERY_STEM` ("another
+   mecha agent on <machine>"), added to `agent::is_harness_voice`'s closed
+   list beside `DELIVERY_STEM`: a delivery that matched neither would be
+   mined as an owner correction, and keeping the local stem would have the
+   harness say "on this machine" of a message that is not; and `GET /api/messages/agents`
+   (D7), built from the live markers and the trigger store. Tested with an
+   absent `Tailscale-User-Login` (refused), another login (refused) — a
+   forged header carrying the owner's login is indistinguishable here, and
+   the protection is `tailscale serve` stripping client-set headers, which no
+   test in this repository can reach — a missing
    `x-mecha-request` (refused), the owner's well-formed `POST` (stored — the
    happy path), a missing taint (stored untrusted), a clean asserted taint
    (stored untrusted), two machines' identical bodies (both kept), a remote
@@ -244,6 +267,10 @@ everything it provokes.
 
 ## 7. Open, and deferred
 
+- **Whether a remote message should cost a session its `Chosen` egress**
+  (D5's price). The alternative to always-untrusted is a narrower mark —
+  untrusted for what the message carries, not for the session — which the
+  taint model does not have today.
 - **The wake Q1 rules for.** Two cases, neither built: a live session idle
   at its prompt (the TUI, a web chat), which would start a turn when an
   accepted message arrives; and a machine with no session of that producer,
