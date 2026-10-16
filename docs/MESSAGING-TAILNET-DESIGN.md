@@ -47,9 +47,10 @@ decision (review of #700).
 
 **D2. Transport: the receiver's `mecha serve`, one owner-gated route.** `POST
 /api/messages` on the peer's `mecha serve`, behind the same owner guard as
-every other route. The body is a `MailboxMessage` without its id and status:
-`to`, `body`, `reply_to`, and the harness-stamped `from`, `from_session` and
-`taint`. The route writes it into the receiver's own mailbox store through
+every other route. The body carries `to`, `body`, `reply_to`, the
+harness-stamped `from` and `from_session`, and the sender's own message id
+for idempotency (D6) — and **no `taint`**: D5 adds both legs on arrival
+whatever a sender says, so a body naming a taint is refused as malformed. The route writes it into the receiver's own mailbox store through
 `MailboxStore::send` — the same caps, the same duplicate check, the same
 recipient lock. `from` stays a producer name (`work::valid_producer` refuses
 `@`). **Every sender-supplied field is validated at the route**, since on
@@ -104,7 +105,8 @@ and its MagicDNS name:
    30-second cache is not: each peer's last answer is kept in `.peers.json`
    under the messages root (`$MECHA_MESSAGES_DIR`, `[messages] dir`, or
    `~/.mecha/messages`) — dotted, as `.agents` is, to stay out of the producer
-   namespace — written when a peer answers through a temp file and rename,
+   namespace — written when a peer answers through a temp file named for its writer (pid
+and a counter) and a rename,
    since several sessions send at once, so it survives a restart. A file that
    cannot be read is a finding, never an empty map: its peers list as
    unreachable, not as gone (review of #700).
@@ -140,7 +142,14 @@ unknown or unreachable machine is an error that lists the peers found.
 
 **D4. Egress: none, because the boundary moved — and the taint moves with
 it.** A send to a peer is classified as a local send is: no `Egress` class,
-so the interlock does not refuse it. The model *does* name a destination
+so the interlock does not refuse it. **But the leak guard still sees it.**
+`block_sends_after_private` is the control an operator turns on to stop
+private data leaving the box, and its check keys on `can_send()`, which is
+false for `Egress::None` — a send to a peer *does* leave the box, so the
+remote path is refused by that guard explicitly after private data, as any
+send is (review of #700). The interlock and the leak guard answer different
+questions, and only the first is answered by the range argument below. The
+model *does* name a destination
 now — `to`'s machine half is its choice — so what holds the class at none is
 not the absence of a choice but its range: **every value `to` can take is one
 of the owner's own machines**, found from the tailnet's identity of the owner
@@ -195,9 +204,11 @@ the sender, never a delivered message.
 **D6. No store-and-forward in phase 1.** A send to an unreachable peer fails
 at once, to the sender, as a tool error the model can route around ("`spark`
 did not answer: its `mecha serve` is not reachable"). **A send is
-idempotent**: the sender names each message with an id of its own, and the
-receiver keeps it and refuses a second message with the same id from the same
-machine, so a `POST` that timed out after the receiver stored it, and is sent
+idempotent**: the sender names each message with an id of its own, sent on
+the wire (D2), and the receiver keeps every id it has stored, per sending
+machine, in a ledger beside the mailbox that outlives `prune_resolved` (a
+week; a retry arrives within seconds), and refuses a second message with the
+same id from the same machine, so a `POST` that timed out after the receiver stored it, and is sent
 again, is not delivered twice — the existing duplicate key cannot see that,
 since by then the first copy may already be claimed (review of #700). Queuing for a peer that
 comes back later is phase 3, if the cases above need it.
@@ -269,8 +280,8 @@ everything it provokes.
 1. **Receive.** `POST /api/messages` on `mecha serve`: the owner guard and
    the `messages` switch (D2); `MailboxStore::send` with `from` a producer and
    the sender-claimed machine in `from_machine` (D1, D2), the duplicate key
-   widened by it; a missing taint stored unrecorded and every remote taint
-   with `untrusted` added (D5); delivery labelled with the machine —
+   widened by it; every remote message stored with both taint legs —
+   `private` and `untrusted` — whatever it carried (D5); delivery labelled with the machine —
    `render_delivery` says "on this machine" today, and a remote message says
    which (§3) — through a second stem, `REMOTE_DELIVERY_STEM`, added to
    `agent::is_harness_voice`'s closed list beside `DELIVERY_STEM`. That list
@@ -287,8 +298,9 @@ everything it provokes.
    the protection is `tailscale serve` stripping client-set headers, which no
    test in this repository can reach — a missing
    `x-mecha-request` (refused), the owner's well-formed `POST` (stored — the
-   happy path), a missing taint (stored untrusted), a clean asserted taint
-   (stored untrusted), two machines' identical bodies (both kept), a remote
+   happy path, stored with both taint legs), a body naming a `taint`
+   (refused as malformed), one message id sent twice (delivered once), two
+   machines' identical bodies (both kept), a remote
    delivery still recognised as the harness's voice, and a listing carrying a
    non-producer name (dropped).
 2. **Find and send.** Peers from `tailscale status --json` (D3), with
