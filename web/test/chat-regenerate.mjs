@@ -16,7 +16,7 @@ const readOut = (marker) => {
   return src.slice(start, src.indexOf('\n  }\n', start) + 4);
 };
 const fns = [
-  '  async function send({ text: fixed = null, regenerate = null } = {}) {',
+  '  async function send({ text: fixed = null, regenerate = null, regions = null } = {}) {',
   '  async function regenerate(root, picture) {',
 ].map(readOut).join('\n');
 
@@ -97,6 +97,7 @@ function page({ running = false, status = 200 } = {}) {
   await p.typed('hello');
   const body = p.state().bodies[0];
   is('regenerate' in body, false, 'a typed turn sends no regenerate field');
+  is('regions' in body, false, 'nor any regions');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

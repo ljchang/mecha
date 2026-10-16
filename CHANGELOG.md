@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The assistant's chat edits pictures in coloured regions, as persona
+  chats do.** Paint up to four regions, each in its own colour with its own
+  words, and the change is drawn as one edit. Painting nothing still edits
+  the whole picture from your words.
+
 - **`mecha features enable mail` and `enable docs` install their servers**,
   built from the same source as your `mecha`, into `~/.mecha/sidecars/`. A
   `mecha-mail`, `mecha-docs` or `mecha-graph-mcp` on your `PATH` from another
