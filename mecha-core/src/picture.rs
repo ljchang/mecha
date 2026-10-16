@@ -1023,6 +1023,32 @@ pub fn plan(
         }
         return Ok(out);
     };
+    // People identified on a photo are drawn from it on every route, not only
+    // the edit: they leave `added` (who the image tool would describe, with a
+    // library description and a default pose) and the crops before any route
+    // returns, and the result says how they were read, since naming someone
+    // here no longer adds them (review of #707, pass 3).
+    if !identified.is_empty() {
+        out.delta.added.retain(|k| !identified.contains(k));
+        out.faces.retain(|k| !identified.contains(k));
+        let names: Vec<String> = out
+            .next
+            .people
+            .iter()
+            .filter(|p| identified.contains(&p.who.key()))
+            .map(|p| shown(&p.who))
+            .collect();
+        let line = format!(
+            "This picture had no record of who is in it, so {} {} taken as already in it, not \
+             added. Its people are known now, so later changes can redraw it or add someone.",
+            crate::imagelib::join_and(&names),
+            if names.len() == 1 { "is" } else { "are" }
+        );
+        out.said = Some(match out.said.take() {
+            Some(said) => format!("{said} {line}"),
+            None => line,
+        });
+    }
     // A retouch: the one free-text change to the picture itself.
     if let Some(r) = call.retouch.as_ref().filter(|_| unchanged) {
         out.render = Render::Edit {
@@ -1292,7 +1318,8 @@ pub fn plan(
         None => String::new(),
     };
     out.route = "edited";
-    if restage && (!known || no_setting) {
+    // Said already for people identified on a photo (above).
+    if restage && (!known || no_setting) && (no_setting || identified.is_empty()) {
         let line = if no_setting {
             "The scene has no setting to redraw it from, so this was drawn as an edit of the \
              picture. Giving `scene.setting` lets later changes redraw it."
@@ -2277,6 +2304,19 @@ mod tests {
             p.instruction
         );
         assert!(p.faces.is_empty());
+        assert!(
+            p.delta.added.is_empty(),
+            "identified on every route: {:?}",
+            p.delta
+        );
+        assert!(
+            p.said
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Maya is taken as already in it"),
+            "{:?}",
+            p.said
+        );
         assert!(p.next.people_known);
         let p = planned(
             &call(
