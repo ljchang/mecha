@@ -768,12 +768,38 @@ pub fn plan(
     let (mut next, delta) = Scene::apply(base, &change, by, new_picture);
     let mut notes: Vec<String> = call.notes.clone();
     notes.extend(notes_ahead);
+    // On a picture whose people were not known before this call (a photo
+    // with no record), the people the call names are who is in it, not
+    // people to add (§5.1, N2: "once a call declares them, the record knows
+    // them"). Drawn as "Add Maya." on a photo of Maya, the edit draws her a
+    // second time; and their clothes are the photo's, so none are made up.
+    let identified: Vec<String> = if new_picture || known_before {
+        Vec::new()
+    } else {
+        delta.added.clone()
+    };
+    // Naming who is in such a photo, and saying nothing more about them,
+    // changes nothing in it. Their clothes, pose or expression, said, are a
+    // change to draw.
+    let only_identified = !identified.is_empty()
+        && {
+            let mut rest = delta.clone();
+            rest.added.clear();
+            rest.is_empty()
+        }
+        && next
+            .people
+            .iter()
+            .filter(|p| identified.contains(&p.who.key()))
+            .all(|p| {
+                p.wearing.trim().is_empty()
+                    && p.doing.trim().is_empty()
+                    && p.expression.trim().is_empty()
+            });
+    let unchanged = (delta.is_empty() || only_identified) && unknown_removes.is_empty();
     // A painted area keeps everything outside it, so it cannot carry a
     // scene change: the change is drawn, and the mask left out and said.
-    let mask = call
-        .mask
-        .clone()
-        .filter(|_| delta.is_empty() && unknown_removes.is_empty());
+    let mask = call.mask.clone().filter(|_| unchanged);
     // Regions are the owner's words for places in this picture, and their
     // legend is already the retouch: with the mask dropped it would ride
     // into a redrawn picture's prompt describing outlines that are not there
@@ -800,6 +826,9 @@ pub fn plan(
     // later `together` (review of #608).
     let mut clothes_said: Vec<(String, String)> = Vec::new();
     for key in &delta.added {
+        if identified.contains(key) {
+            continue;
+        }
         // Someone added past the scene's bound was cut from it (`apply`):
         // refused here, never drawn as a picture without them.
         let Some(p) = next.people.iter_mut().find(|p| &p.who.key() == key) else {
@@ -964,7 +993,7 @@ pub fn plan(
         also: call
             .retouch
             .clone()
-            .filter(|_| call.picture.is_none() || !delta.is_empty() || !unknown_removes.is_empty()),
+            .filter(|_| call.picture.is_none() || !unchanged),
         offstage,
     };
     // A new picture: its setting is a photo (people placed in it), or words.
@@ -991,11 +1020,7 @@ pub fn plan(
         return Ok(out);
     };
     // A retouch: the one free-text change to the picture itself.
-    if let Some(r) = call
-        .retouch
-        .as_ref()
-        .filter(|_| delta.is_empty() && unknown_removes.is_empty())
-    {
+    if let Some(r) = call.retouch.as_ref().filter(|_| unchanged) {
         out.render = Render::Edit {
             canvas: Canvas::Picture(picture),
             camera_moves: false,
@@ -1007,7 +1032,9 @@ pub fn plan(
         return Ok(out);
     }
     // Nothing changed at all: draw the scene again at a new seed (§5.1, B4).
-    if delta.is_empty() && unknown_removes.is_empty() {
+    // Naming who is in a photo with no record is no change to it: drawn
+    // again as it is, and its record now knows its people.
+    if unchanged {
         out.route = "redrawn";
         return Ok(match (setting_photo, base.is_some()) {
             (Some(photo), _) => Plan {
@@ -1038,7 +1065,12 @@ pub fn plan(
         });
     }
     let restage = delta.restages() || delta.style;
-    let known = out.next.people_known;
+    // Known before this call, not after it: the call that first declares a
+    // photo's people is an edit of the photo, and later ones may restage it
+    // (§5.1, N2). Read after, the first call naming the person on the
+    // owner's photo redrew it from words, clothes, hair and all
+    // (owner, 2026-10-16).
+    let known = known_before;
     if restage && known && (setting_photo.is_some() || words_setting) {
         out.route = "restaged";
         return Ok(match setting_photo {
@@ -1071,6 +1103,31 @@ pub fn plan(
     for p in &out.people {
         let key = p.who.key();
         let name = shown(&p.who);
+        if identified.contains(&key) {
+            // Already in the picture: only what the call says about them is
+            // drawn, and they get a crop only when something about them is.
+            let before = lines.len();
+            if !p.wearing.trim().is_empty() {
+                lines.push(format!(
+                    "Dress {name} in {}.",
+                    p.wearing.trim_end_matches('.')
+                ));
+            }
+            if !p.expression.trim().is_empty() {
+                lines.push(format!(
+                    "Give {name} this expression: {}.",
+                    p.expression.trim_end_matches('.')
+                ));
+            }
+            let doing = p.doing.trim().trim_end_matches('.');
+            if !doing.is_empty() {
+                lines.push(format!("Have {name} {doing}."));
+            }
+            if lines.len() > before {
+                touched.push(key);
+            }
+            continue;
+        }
         if delta.added.contains(&key) {
             let at = p.at.map(|a| format!(" {}", a.name())).unwrap_or_default();
             lines.push(format!("Add {name}{at}."));
@@ -1214,6 +1271,9 @@ pub fn plan(
         let line = if no_setting {
             "The scene has no setting to redraw it from, so this was drawn as an edit of the \
              picture. Giving `scene.setting` lets later changes redraw it."
+        } else if out.next.people_known {
+            "This picture had no record of who is in it, so this change was drawn as an edit \
+             of it. Its people are known now, so later changes can redraw it."
         } else {
             "The picture's people are not known yet, so this was drawn as an edit of it rather \
              than redrawn from its setting. Saying who is in it lets later changes redraw it."
@@ -2074,6 +2134,82 @@ mod tests {
             }
         );
         assert_eq!(p.route, "restaged");
+    }
+
+    /// The first call to name a photo's people is an edit of the photo,
+    /// never a restage from words (§5.1, N2: the decision reads what was
+    /// known before the call). They are who is in it, not people to add:
+    /// only what the call says about them is drawn (owner, 2026-10-16: the
+    /// first call naming the person on a photo redrew it, clothes and all).
+    #[test]
+    fn a_photos_first_call_naming_its_people_edits_it_and_never_adds_them() {
+        let p = planned(
+            &call(json!({"picture": "inbox/her.jpg", "scene": {
+                "setting": "a narrow greenhouse", "camera": "from the doorway",
+                "people": [{"who": "maya", "wearing": "a mustard raincoat"}]}})),
+            None,
+        );
+        assert_eq!(p.route, "edited");
+        assert!(matches!(
+            p.render,
+            Render::Edit {
+                canvas: Canvas::Picture(_),
+                ..
+            }
+        ));
+        assert!(
+            p.instruction.contains("Dress Maya in a mustard raincoat."),
+            "{}",
+            p.instruction
+        );
+        assert!(!p.instruction.contains("Add Maya"), "{}", p.instruction);
+        assert_eq!(p.faces, ["maya"], "a crop for who the call changes");
+        assert!(
+            p.said.as_deref().unwrap_or_default().contains("known now"),
+            "{:?}",
+            p.said
+        );
+        assert!(p.next.people_known);
+        // Once known, a later change restages it as any recorded picture.
+        let base = landed(&p, 9);
+        let later = planned(
+            &call(
+                json!({"picture": "images/a.png", "scene": {"camera": "from the potting bench"}}),
+            ),
+            Some(&base),
+        );
+        assert_eq!(later.route, "restaged");
+    }
+
+    /// Naming who is in a photo, and nothing else, changes nothing in it:
+    /// drawn again as it is, and the record learns its people. A retouch
+    /// beside the naming is the change, sent once, and its mask is kept.
+    #[test]
+    fn naming_who_is_in_a_photo_alone_changes_nothing_in_it() {
+        let named = json!([{"who": "maya"}]);
+        let p = planned(
+            &call(json!({"picture": "inbox/her.jpg", "scene": {"people": named}})),
+            None,
+        );
+        assert_eq!(p.route, "redrawn");
+        assert!(
+            p.instruction.starts_with("Draw this picture again"),
+            "{}",
+            p.instruction
+        );
+        assert!(p.faces.is_empty());
+        assert!(p.next.people_known);
+        let p = planned(
+            &call(
+                json!({"picture": "inbox/her.jpg", "retouch": "Hang a brass lantern by the door.",
+                "mask": "inbox/m.png", "scene": {"people": named}}),
+            ),
+            None,
+        );
+        assert_eq!(p.route, "retouched");
+        assert_eq!(p.instruction, "Hang a brass lantern by the door.");
+        assert_eq!(p.also, None, "the retouch is sent once");
+        assert_eq!(p.mask.as_deref(), Some("inbox/m.png"));
     }
 
     /// A picture with no record: a retouch is a retouch; a pose change,
