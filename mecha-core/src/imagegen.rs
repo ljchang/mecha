@@ -7824,6 +7824,48 @@ mod tests {
     /// A face detector that panics costs the crops and nothing else: the
     /// person is still drawn and kept in the manifest's `cast` (review of
     /// #586), and the result says why there was no crop (review of #597).
+    /// A photo's first call naming its people sends only what the call says
+    /// about them: no library description, no default pose and no crop
+    /// pulling them toward a portrait (review of #707, pass 2: the plan said
+    /// so, and the request did not).
+    #[tokio::test]
+    async fn people_named_on_a_photo_are_drawn_from_it_with_only_what_was_asked() {
+        let (url, seen) = fake_with(Fake {
+            history: vec![done()],
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        let lib = library_with(&["maya"]);
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::write(dir.join("inbox/her.png"), PNG).unwrap();
+        let faces = stub_faces(crate::face::Anchor::Crop(picture(4, [1, 2, 3])));
+        let out = tool(&url)
+            .with_library_dir(lib.clone())
+            .with_faces(faces.clone())
+            .call(
+                json!({"picture": "inbox/her.png", "scene": {
+                    "setting": "a narrow greenhouse",
+                    "people": [{"who": "maya", "wearing": "a mustard raincoat"}]}}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let seen = seen.lock().unwrap().clone();
+        let submitted = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+        assert!(
+            submitted.contains("Dress Maya in a mustard raincoat."),
+            "{submitted}"
+        );
+        assert!(!submitted.contains("standing naturally"), "{submitted}");
+        assert!(!submitted.contains("a memorable face"), "{submitted}");
+        assert!(!submitted.contains("Add Maya"), "{submitted}");
+        assert_eq!(faces.asked.load(Ordering::SeqCst), 0, "no portrait crop");
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
     #[tokio::test]
     async fn a_panicking_detector_keeps_the_people_on_record() {
         struct Panics;
@@ -7836,19 +7878,34 @@ mod tests {
                 panic!("detector down")
             }
         }
-        let (url, _) = fake(vec![done()], "200 OK").await;
+        let (url, _) = distinct(2).await;
         let dir = tempdir();
+        let store = tempdir();
         let lib = library_with(&["maya"]);
         let t = tool(&url)
             .with_library_dir(lib.clone())
             .with_faces(Arc::new(Panics));
         std::fs::create_dir_all(dir.join("inbox")).unwrap();
         std::fs::write(dir.join("inbox/room.png"), PNG).unwrap();
-        let out = t
+        let c = scene_ctx(&dir, &store, "chat-a");
+        // Naming her on the photo draws her from it: no crop is asked for,
+        // so the detector is not reached (review of #707, pass 2).
+        let first = t
             .call(
                 json!({"picture": "inbox/room.png",
                        "scene": {"people": [{"who": "maya", "wearing": "a coat", "doing": "sitting on the bench"}]}}),
-                &ctx(&dir),
+                &c,
+            )
+            .await
+            .unwrap();
+        assert!(!first.is_error, "{}", first.content);
+        // Dressing her on the recorded picture anchors her face, and the
+        // detector panics there.
+        let out = t
+            .call(
+                json!({"picture": picture_of(&first.content),
+                       "scene": {"people": [{"who": "maya", "wearing": "a red scarf"}]}}),
+                &c,
             )
             .await
             .unwrap();
@@ -7865,6 +7922,7 @@ mod tests {
             out.content
         );
         std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
         std::fs::remove_dir_all(lib).ok();
     }
 
