@@ -9,7 +9,9 @@
 //! approved text rides into every future prompt that names the character.
 //!
 //! It builds no provider and connects to nothing, so the library can be
-//! inspected and edited with the model and the image server both down.
+//! inspected and edited with the model and the image server both down. The
+//! exceptions fetch pinned weights once: `install-face-detector`, and
+//! `face compare`'s first run, which fetches ArcFace as a judge does.
 
 use anyhow::{bail, Context, Result};
 use mecha_core::imagelib::{self, Entry, Kind, Library, NewEntry, Origin, RefKind, Status};
@@ -158,6 +160,13 @@ pub enum Cmd {
     /// (py-feat's RetinaFace-R34, 89 MB, checked against its pin). Without
     /// it those edits draw as before and their manifests say why.
     InstallFaceDetector,
+    /// Faces in pictures, read with mecha's own face detector and ArcFace:
+    /// find them, cut the crop an edit is anchored to, or compare who they
+    /// are.
+    Face {
+        #[command(subcommand)]
+        cmd: FaceCmd,
+    },
     /// Attach a typed picture to an approved character: a `face`, a
     /// `full_body` in a neutral, square-on stance (its pose carries into
     /// pictures), or a labelled `detail` such as a tattoo. A new version.
@@ -191,6 +200,47 @@ pub enum Cmd {
     ApproveReference { id: String },
     /// Drop a staged reference change; its picture goes once nothing names it.
     RejectReference { id: String },
+}
+
+#[derive(clap::Subcommand, Debug)]
+pub enum FaceCmd {
+    /// Every face in each picture: its box, in the picture's own pixels,
+    /// and the detector's score, best first.
+    Detect {
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// The tight crop of a picture's largest face that an edit is anchored
+    /// to, as a PNG. Refuses to write over a file.
+    Crop {
+        file: PathBuf,
+        /// Where the PNG goes.
+        #[arg(long, short)]
+        out: PathBuf,
+    },
+    /// How alike the faces in each picture are to one reference face:
+    /// ArcFace's cosine similarity, from -1 to 1, largest face first. The
+    /// reference is a picture's largest face, or a character's face
+    /// reference (its portrait when it has none). ArcFace's weights are
+    /// fetched the first time, and their licence said.
+    Compare {
+        /// The picture whose largest face is the reference.
+        #[arg(
+            long,
+            conflicts_with = "character",
+            required_unless_present = "character"
+        )]
+        reference: Option<PathBuf>,
+        /// A library character whose face is the reference.
+        #[arg(long)]
+        character: Option<String>,
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// One y/N question, where EOF is "no" — the outbox's rule: a review surface
@@ -396,12 +446,19 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
             | Cmd::Pending { .. }
             | Cmd::SetLockPassword
             | Cmd::SetAutolock { .. }
+            | Cmd::Face { .. }
     ) {
         super::features::require(mecha_core::feature::Feature::Library)?;
     }
     if let Cmd::InstallFaceDetector = args.cmd {
         super::features::require(mecha_core::feature::Feature::Image)?;
         return install_face_detector().await;
+    }
+    // Reads only: pictures on disk, and a character's face for `compare`.
+    // The detector is the image feature's, as its install is.
+    if let Cmd::Face { cmd } = args.cmd {
+        super::features::require(mecha_core::feature::Feature::Image)?;
+        return face(cmd).await;
     }
     let dir = Library::default_dir()?;
     run(&dir, args.cmd)
@@ -432,6 +489,178 @@ async fn install_face_detector() -> Result<()> {
     Ok(())
 }
 
+/// `mecha imagelib face`. Nothing here judges: a similarity is printed as
+/// the number it is, and a picture with no face says so rather than a zero.
+/// A picture that cannot be read is said in its row, the rest are still
+/// read, and the command then fails, so a script sees it.
+async fn face(cmd: FaceCmd) -> Result<()> {
+    use mecha_core::{face, face_id};
+    let detector = face::weights()?.with_context(|| {
+        format!(
+            "the face detector is not installed: `{}`",
+            face::INSTALL_HINT
+        )
+    })?;
+    let read = |p: &PathBuf| std::fs::read(p).with_context(|| format!("reading {}", p.display()));
+    let rounded = |f: &face::Face| [f.x0, f.y0, f.x1, f.y1].map(|v| v.round() as i64);
+    let mut unread = 0usize;
+    match cmd {
+        FaceCmd::Detect { files, json } => {
+            let det = face::Detector::load(&detector)?;
+            let mut all = Vec::new();
+            for file in &files {
+                let faces = match read(file).and_then(|b| face::detect_bytes(&det, &b)) {
+                    Ok(faces) => faces,
+                    Err(e) => {
+                        unread += 1;
+                        if json {
+                            all.push(serde_json::json!({"file": file, "error": format!("{e:#}")}));
+                        } else {
+                            println!("{}: not read: {e:#}", file.display());
+                        }
+                        continue;
+                    }
+                };
+                if json {
+                    all.push(serde_json::json!({
+                        "file": file,
+                        "faces": faces.iter().map(|f| serde_json::json!({
+                            "box": rounded(f), "score": f.score,
+                        })).collect::<Vec<_>>(),
+                    }));
+                } else if faces.is_empty() {
+                    println!("{}: no face", file.display());
+                } else {
+                    for f in &faces {
+                        let [x0, y0, x1, y1] = rounded(f);
+                        println!(
+                            "{}: face at {x0},{y0} to {x1},{y1}, score {:.2}",
+                            file.display(),
+                            f.score
+                        );
+                    }
+                }
+            }
+            if json {
+                println!("{}", serde_json::to_string_pretty(&all)?);
+            }
+        }
+        FaceCmd::Crop { file, out } => {
+            let det = face::Detector::load(&detector)?;
+            let Some(png) = face::anchor_crop(&det, &read(&file)?)? else {
+                bail!("no face was found in {}", file.display());
+            };
+            // Created, never replaced: the check and the write are one call.
+            let mut created = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&out)
+                .with_context(|| format!("writing {}", out.display()))?;
+            if let Err(e) = std::io::Write::write_all(&mut created, &png) {
+                // A half-written crop would block the retry it asks for.
+                drop(created);
+                std::fs::remove_file(&out).ok();
+                return Err(e).with_context(|| format!("writing {}", out.display()));
+            }
+            println!("{}", out.display());
+        }
+        FaceCmd::Compare {
+            reference,
+            character,
+            files,
+            json,
+        } => {
+            // The reference first: a mistyped path or name should not cost
+            // ArcFace's download before it is said.
+            let (label, bytes) = match (reference, character) {
+                (Some(p), _) => (p.display().to_string(), read(&p)?),
+                (None, Some(name)) => {
+                    let (lib, errors) = Library::load(&Library::default_dir()?);
+                    let key = name.trim().to_lowercase();
+                    // An entry that did not load is said, never read as a
+                    // character that does not exist.
+                    for e in &errors {
+                        eprintln!("mecha: {} did not load — {}", e.path.display(), e.why);
+                    }
+                    let entry = lib
+                        .get(Kind::Character, &key)
+                        .filter(|e| e.status == Status::Approved)
+                        .with_context(|| format!("no approved character `{key}`"))?;
+                    let face = lib.face_picture(entry)?;
+                    (format!("{key}'s {}", face.which()), face.bytes)
+                }
+                (None, None) => bail!("give --reference or --character"),
+            };
+            let arcface = super::replay_judge::arcface_weights().await?;
+            let reader = face_id::Reader::load(&detector, &arcface)?;
+            let Some((_, want)) = reader.read_bytes(&bytes, &label)?.into_iter().next() else {
+                bail!("no face was found in {label}");
+            };
+            let mut all = Vec::new();
+            if !json {
+                println!("against {label}:");
+            }
+            for file in &files {
+                let faces = match read(file)
+                    .and_then(|b| reader.read_bytes(&b, &file.display().to_string()))
+                {
+                    Ok(faces) => faces,
+                    Err(e) => {
+                        unread += 1;
+                        if json {
+                            all.push(serde_json::json!({"file": file, "error": format!("{e:#}")}));
+                        } else {
+                            println!("  {:>8}  {}: {e:#}", "not read", file.display());
+                        }
+                        continue;
+                    }
+                };
+                let scored: Vec<(face::Face, f32)> = faces
+                    .iter()
+                    .map(|(f, e)| (*f, face_id::similarity(&want, e)))
+                    .collect();
+                if json {
+                    all.push(serde_json::json!({
+                        "file": file,
+                        "faces": scored.iter().map(|(f, s)| serde_json::json!({
+                            "box": rounded(f), "score": f.score, "similarity": s,
+                        })).collect::<Vec<_>>(),
+                    }));
+                    continue;
+                }
+                match scored.split_first() {
+                    None => println!("  {:>8}  {}", "no face", file.display()),
+                    Some(((_, s), rest)) => {
+                        let more = if rest.is_empty() {
+                            String::new()
+                        } else {
+                            let others: Vec<String> =
+                                rest.iter().map(|(_, s)| format!("{s:.3}")).collect();
+                            format!("  (smaller faces: {})", others.join(", "))
+                        };
+                        println!("  {s:>8.3}  {}{more}", file.display());
+                    }
+                }
+            }
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "reference": label, "files": all,
+                    }))?
+                );
+            }
+        }
+    }
+    if unread > 0 {
+        bail!(
+            "{unread} picture{} could not be read",
+            if unread == 1 { "" } else { "s" }
+        );
+    }
+    Ok(())
+}
+
 fn run(dir: &std::path::Path, cmd: Cmd) -> Result<()> {
     let (lib, errors) = Library::load(dir);
     for e in &errors {
@@ -440,6 +669,7 @@ fn run(dir: &std::path::Path, cmd: Cmd) -> Result<()> {
     match cmd {
         // Async, so `execute` runs it before reaching here.
         Cmd::InstallFaceDetector => anyhow::bail!("install-face-detector runs from `execute`"),
+        Cmd::Face { .. } => anyhow::bail!("face runs from `execute`"),
         Cmd::List { all, json } => {
             let entries: Vec<&Entry> = lib
                 .all()
@@ -736,6 +966,21 @@ mod tests {
                 yes: true,
             },
         )
+    }
+
+    /// `face compare` takes exactly one reference: a picture or a
+    /// character, never both and never neither.
+    #[test]
+    fn face_compare_takes_one_reference() {
+        use clap::Parser;
+        let parse = |args: &[&str]| {
+            crate::Cli::try_parse_from(["mecha", "imagelib", "face", "compare"].iter().chain(args))
+        };
+        assert!(parse(&["--character", "wren", "a.png"]).is_ok());
+        assert!(parse(&["--reference", "r.png", "a.png", "b.png"]).is_ok());
+        assert!(parse(&["a.png"]).is_err());
+        assert!(parse(&["--reference", "r.png", "--character", "wren", "a.png"]).is_err());
+        assert!(parse(&["--character", "wren"]).is_err());
     }
 
     #[test]
