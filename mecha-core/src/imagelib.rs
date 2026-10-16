@@ -465,6 +465,20 @@ impl Library {
         self.read_checked(blob, &format!("`{}`'s portrait", entry.name))
     }
 
+    /// The picture of a character's face: its `face` reference when it has
+    /// one ("a better face than the portrait shows", [`RefKind::Face`]), its
+    /// portrait otherwise, with which one it was. Both under the hash check.
+    pub fn face_picture(&self, entry: &Entry) -> Result<(Vec<u8>, &'static str)> {
+        match entry
+            .sendable_references()
+            .into_iter()
+            .find(|r| r.kind == RefKind::Face)
+        {
+            Some(face) => Ok((self.read_reference(entry, face)?.0, "face reference")),
+            None => Ok((self.read_portrait(entry)?.0, "portrait")),
+        }
+    }
+
     /// A reference's picture, under the portrait's hash check: bytes swapped
     /// under an approved hash are refused, not sent (§9.3).
     pub fn read_reference(
@@ -3009,6 +3023,25 @@ mod tests {
         assert_eq!(wren.references.len(), 2);
         assert_eq!(wren.references[0].kind, RefKind::Unknown);
         assert!(wren.sendable_references().is_empty());
+    }
+
+    /// A character's face is its `face` reference when it has one, and its
+    /// portrait otherwise; each says which it was.
+    #[test]
+    fn a_face_reference_is_preferred_over_the_portrait() {
+        let dir = scratch();
+        create(dir.path(), character("wren", Origin::Owner)).unwrap();
+        let lib = Library::load(dir.path()).0;
+        let wren = lib.get(Kind::Character, "wren").unwrap();
+        let (portrait, _) = lib.read_portrait(wren).unwrap();
+        assert_eq!(lib.face_picture(wren).unwrap(), (portrait, "portrait"));
+        add_reference(dir.path(), "wren", RefKind::Face, &png_of([7, 7, 7]), None).unwrap();
+        let lib = Library::load(dir.path()).0;
+        let wren = lib.get(Kind::Character, "wren").unwrap();
+        assert_eq!(
+            lib.face_picture(wren).unwrap(),
+            (png_of([7, 7, 7]), "face reference")
+        );
     }
 
     /// A hand-edited reference can't point outside `blobs/`, and bytes

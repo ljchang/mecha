@@ -357,6 +357,49 @@ impl Embedder {
     }
 }
 
+/// The face detector and ArcFace together: every face in a picture with its
+/// embedding. The replay judges read pictures through it, and so does
+/// `mecha imagelib face`, so a number the owner checks by hand is the number
+/// a judge would give.
+pub struct Reader {
+    detector: crate::face::Detector,
+    embedder: Embedder,
+}
+
+impl Reader {
+    /// Both models from their weights.
+    pub fn load(detector: &Path, arcface: &Path) -> Result<Self> {
+        Ok(Reader {
+            detector: crate::face::Detector::load(detector)?,
+            embedder: Embedder::load(arcface)?,
+        })
+    }
+
+    /// Every face in `img` with its embedding, found on a copy no longer
+    /// than the detector's bound on its long side (`face::DETECT_SIDE`), as
+    /// a portrait's crop is, so a large photo costs no more than a small
+    /// one. Each face is embedded in the copy it was found in, then its box
+    /// and landmarks are given in `img`'s own pixels. CPU work: run it off
+    /// an async runtime.
+    pub fn read(&self, img: &image::RgbImage) -> Result<Vec<(Face, Vec<f32>)>> {
+        let (looked, scale) = crate::face::bounded(img);
+        self.detector
+            .detect(&looked)?
+            .into_iter()
+            .map(|f| Ok((f.unscaled(scale), self.embedder.embed(&looked, &f)?)))
+            .collect()
+    }
+
+    /// [`Reader::read`] over a picture file's `bytes`, upright as a browser
+    /// shows it, largest face first. `what` names the picture in an error.
+    pub fn read_bytes(&self, bytes: &[u8], what: &str) -> Result<Vec<(Face, Vec<f32>)>> {
+        let img = crate::image::decode_upright(bytes, what)?.to_rgb8();
+        let mut faces = self.read(&img)?;
+        faces.sort_by(|a, b| b.0.box_area().total_cmp(&a.0.box_area()));
+        Ok(faces)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

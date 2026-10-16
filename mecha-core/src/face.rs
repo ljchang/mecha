@@ -143,17 +143,7 @@ impl Detector {
 pub fn anchor_crop(detector: &Detector, bytes: &[u8]) -> Result<Option<Vec<u8>>> {
     let picture = crate::image::decode_upright(bytes, "the portrait")?.to_rgb8();
     let (pw, ph) = picture.dimensions();
-    let scale = (DETECT_SIDE as f32 / pw.max(ph) as f32).min(1.0);
-    let seen = if scale < 1.0 {
-        image::imageops::resize(
-            &picture,
-            ((pw as f32 * scale).round() as u32).max(1),
-            ((ph as f32 * scale).round() as u32).max(1),
-            image::imageops::FilterType::Triangle,
-        )
-    } else {
-        picture.clone()
-    };
+    let (seen, scale) = bounded(&picture);
     let faces = detector.detect(&seen)?;
     let Some(face) = faces
         .iter()
@@ -169,6 +159,58 @@ pub fn anchor_crop(detector: &Detector, bytes: &[u8]) -> Result<Option<Vec<u8>>>
         .write_to(&mut png, image::ImageFormat::Png)
         .map_err(|e| anyhow!("encoding the face crop: {e}"))?;
     Ok(Some(png.into_inner()))
+}
+
+/// `img` as the detector reads it: a copy no longer than [`DETECT_SIDE`] on
+/// its long side, and the scale it was taken at (1 when it was already
+/// small enough, and then no copy). A face found in the copy is in the
+/// original's pixels once divided by the scale.
+pub fn bounded(img: &image::RgbImage) -> (std::borrow::Cow<'_, image::RgbImage>, f32) {
+    let (w, h) = img.dimensions();
+    let scale = (DETECT_SIDE as f32 / w.max(h).max(1) as f32).min(1.0);
+    if scale >= 1.0 {
+        return (std::borrow::Cow::Borrowed(img), 1.0);
+    }
+    let small = image::imageops::resize(
+        img,
+        ((w as f32 * scale).round() as u32).max(1),
+        ((h as f32 * scale).round() as u32).max(1),
+        image::imageops::FilterType::Triangle,
+    );
+    (std::borrow::Cow::Owned(small), scale)
+}
+
+/// Every face in a picture file's `bytes`, upright as a browser shows it,
+/// in its own pixels, best first: what `mecha imagelib face detect` says.
+pub fn detect_bytes(detector: &Detector, bytes: &[u8]) -> Result<Vec<Face>> {
+    let picture = crate::image::decode_upright(bytes, "the picture")?.to_rgb8();
+    let (seen, scale) = bounded(&picture);
+    Ok(detector
+        .detect(&seen)?
+        .into_iter()
+        .map(|f| f.unscaled(scale))
+        .collect())
+}
+
+impl Face {
+    /// The box's area, in the pixels it is given in.
+    pub fn box_area(&self) -> f32 {
+        self.area()
+    }
+
+    /// This face in a picture `1 / scale` times the size of the one it
+    /// was found in: [`bounded`]'s copy back to the original.
+    pub fn unscaled(self, scale: f32) -> Face {
+        let back = |v: f32| v / scale;
+        Face {
+            x0: back(self.x0),
+            y0: back(self.y0),
+            x1: back(self.x1),
+            y1: back(self.y1),
+            score: self.score,
+            points: self.points.map(|[x, y]| [back(x), back(y)]),
+        }
+    }
 }
 
 /// The crop's top-left corner and side, in the picture's pixels, for a face
