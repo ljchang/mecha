@@ -54,9 +54,14 @@ every other route. The body is a `MailboxMessage` without its id and status:
 recipient lock. `from` stays a producer name (`work::valid_producer` refuses
 `@`); the machine goes in a new optional `MailboxMessage::from_machine`,
 `None` for a local message and a default for an older build's file, and
-surfaces show the pair as `chat@laptop`. From there nothing is new: the
-receiver's runs claim it at a turn boundary exactly as a local message. A machine that does not run `mecha serve` cannot receive; one
-that runs it with `web` off refuses, as every route does.
+surfaces show the pair as `chat@laptop`. The duplicate check's key —
+`(from, body, reply_to)` today — gains `from_machine`, or two machines' `chat`
+sending one short body to one recipient would coalesce into a single message
+(review of #700). From there nothing is new: the receiver's runs claim it at a
+turn boundary exactly as a local message. A machine that does not run `mecha
+serve` cannot receive; the route refuses where `web` is off, as every route
+does, and where the receiver's own `messages` switch is off, since nothing
+there would ever claim what it stored.
 
 **D3. Finding the machines: the tailnet is the directory, automatically.**
 The owner's ruling (2026-10-15): *"Let's go automatic. No agent means no need
@@ -70,7 +75,14 @@ and its MagicDNS name:
 3. a node that answers, as the owner (D1), is a peer under its MagicDNS
    short name (`spark` for `spark.tail1234.ts.net`). A node not running
    `mecha serve` has no agents to offer and is no peer: nothing registers a
-   machine, and nothing needs to.
+   machine, and nothing needs to. A node of the owner's that is offline, or
+   answered within the last day and does not now, is listed as
+   **unreachable** rather than dropped, so a peer that sleeps reads as one
+   that is asleep (review of #700).
+
+The `tailscale status --json` fork is the one `system/source.rs` already runs,
+with its budget and timeout; D3 reads node names from it, which the system
+series deliberately leaves out.
 
 The list is read when a send or a listing needs it, cached for 30 seconds at
 most, so a machine that sleeps drops out and one that wakes comes
@@ -80,16 +92,20 @@ the tailnet cannot say:
 
 ```toml
 [messages.peers]
-gpu = "spark"          # a nickname for a node
-exclude = ["old-mbp"]  # a node of the owner's never treated as a peer
+nicknames = { gpu = "spark" }  # a nickname for a node
+exclude = ["old-mbp"]          # a node of the owner's never treated as a peer
 ```
 
 `message_send`'s `to` accepts `chat` (this machine) or `chat@spark`; an
 unknown or unreachable machine is an error that lists the peers found.
 
 **D4. Egress: none, because the boundary moved — and the taint moves with
-it.** A send to a configured peer is classified as a local send is: no
-`Egress` class, so the interlock does not refuse it. `MessageSendTool`
+it.** A send to a peer is classified as a local send is: no `Egress` class,
+so the interlock does not refuse it. **What makes that hold is that `to`'s
+machine half resolves only against the discovered peer set (D3)**: the model
+names a peer, never a host or a URL, so the tool has no destination the model
+chooses — the whole difference from `http_fetch`, which is `Chosen` because
+the model picks the host (review of #700). `MessageSendTool`
 declares none of the four capabilities today because "the payload lands in
 `~/.mecha`, owner-only, same uid — no exfiltration channel"; the ruling
 extends the same reason to the owner's other machines. What keeps this safe is
@@ -107,7 +123,11 @@ is. That needs a change below the route: `MailboxStore::send` stamps
 `taint_recorded: true` on every message today, so a wire body with no taint
 would land recorded *clean*. The route must store a missing taint as
 `taint_recorded: false` — the flag the fail-closed rule keys on — through a
-send that takes it (review of #700). A peer on another build may send fields this one does not know: unknown
+send that takes it (review of #700). A taint a peer *asserts* is taken as
+the receiver takes a local one — stamped by the sending harness, on a machine
+the ruling trusts as this one — and `from_machine` keeps a peer's message
+apart from the owner's own `mecha msg send` on this machine, which has none.
+A peer on another build may send fields this one does not know: unknown
 fields are ignored, never an error — a closed set written to an append-only
 store is a wire format. A peer's reply that cannot be parsed is an error to
 the sender, never a delivered message.
@@ -132,7 +152,10 @@ spark                   chat ○             nightly-graph ● live    hud-refre
 mbp                     unreachable
 ```
 
-A peer that does not answer is listed as unreachable, never as empty. Like
+A peer that does not answer is listed as unreachable, never as empty. A
+listing's names are checked as the receiver checks its own
+(`work::valid_producer`, a bounded count) and anything else is dropped, so a
+peer's answer is only ever producer names (review of #700). Like
 `message_send`, the listing carries no egress class: it reads from the
 owner's own machines.
 
@@ -165,11 +188,14 @@ everything it provokes.
 
 ## 5. Build order
 
-1. **Receive.** `POST /api/messages` on `mecha serve`: the owner guard, the
-   peer's machine from `tailscale whois`, `MailboxStore::send` with
-   `from = <producer>@<machine>`, and `GET /api/messages/agents` (D7).
-   Tested with a forged header (refused),
-   another login (refused), a missing taint (stored untrusted).
+1. **Receive.** `POST /api/messages` on `mecha serve`: the owner guard and
+   the `messages` switch (D2); `MailboxStore::send` with `from` a producer and
+   the sender-claimed machine in `from_machine` (D1, D2), the duplicate key
+   widened by it; a missing taint stored unrecorded (D5); delivery labelled
+   with the machine — `render_delivery` says "on this machine" today, and a
+   remote message says which (§3); and `GET /api/messages/agents` (D7).
+   Tested with a forged header (refused), another login (refused), a missing
+   taint (stored untrusted), two machines' identical bodies (both kept).
 2. **Find and send.** Peers from `tailscale status --json` (D3), with
    `[messages.peers]` for nicknames and exclusions; `message_agents` and
    `mecha msg agents --all` list every machine's agents (D7);
