@@ -697,6 +697,12 @@ impl VoiceLocks {
         self.unlocked
     }
 
+    /// Whether the flags could not be read — the question, without
+    /// [`VoiceLocks::error`]'s log line.
+    pub(super) fn unreadable(&self) -> bool {
+        self.locked.is_err()
+    }
+
     /// Why the flags could not be read, as a page may be told it: a fixed
     /// sentence. The parser's own error quotes the offending line, and in
     /// `voices.toml` that line is the locked names (review of #701, pass 5);
