@@ -31,14 +31,17 @@ The 2026-10-16 corpus read covered 145 image calls since 10-08. These are the fa
 
 - **On the GPU, beside the render it serves.** Every masked edit already runs on ComfyUI, and ComfyUI has SAM 3 natively, so running it there adds no stack, no new service and no port. It shares the server's memory admission (`imagegen::memory_need_mb`) and idle reset. A segmentation is a fraction of a second against a 40–60 s render.
 - **The detector and ArcFace stay native** (`face.rs`, `face_id.rs`). They are small, CPU-fast, cached, and needed outside the image server: the CLI, the judges, the Mac without ComfyUI.
-- **The weights need a pinned, original-layout checkpoint.** ComfyUI's `SAM3` model reads Meta's original key layout (`detector.*` / `tracker.*`, `comfy/model_detection.py`), not the transformers layout cached here (`detector_model.*`). The install fetches a pinned file through `fetch.rs` (sha256-checked, resumable) into ComfyUI's checkpoints. Which file to pin is open question Q2.
-- **Memory:** about 3.3 GB at F32 as cached, and about half at fp16. It loads with the first segmentation and goes with the server's idle reset.
+- **The weights: SAM 3.1, ComfyUI's own fp16 repackaging** (`Comfy-Org/sam3.1`, `checkpoints/sam3.1_multiplex_fp16.safetensors`, 1,745,546,848 bytes, sha256 `9ba99c92…eb03`; the SAM licence). It is what ComfyUI's SAM3 blueprint loads, with `CheckpointLoaderSimple`, and the model the owner has access approval for. The transformers-layout weights cached here (`facebook/sam3`) do not load in ComfyUI, which reads Meta's original `detector.*`/`tracker.*` keys.
+- **Installed the way the image slot's models are** (`comfyui_unit.rs`): pinned in the image slot's row in `recommend::SLOTS`, fetched into the hub, symlinked where ComfyUI looks, recorded in the manifest, and checked against the server's own model listing. The precedent is the turbo model, an optional extra file on the same slot (`TURBO_FILE`, `turbo_wanted`, `turbo_linked`). Being in the slot's `sources` is what makes `features --probe` and the install plan count its 1.7 GB; outside them, every surface would under-report the image feature. (The copy placed straight into `models/checkpoints/` on 2026-10-16 for §7's first measurement is replaced by this install, not kept beside it.)
+- **Memory: segmentation runs only inside an admitted picture job.** The admission gauge cannot tell which model a ComfyUI process holds: `loaded_from_stats` answers "has loaded anything", so SAM loaded alone would make the next picture's ask about 8 GiB too small (`memory_need_mb`, `load_cost_mb`). Inside a picture job, SAM never loads without the image model, so the gauge stays true. The job's own need gains SAM's measured peak (§7), and the server's idle reset takes both.
+- **Measured cost** (2026-10-16, warm server, the #706 photo at 640×1632): the first segmentation in a process took 5.0 s, loading included; each one after took 1.0 s. That is against 40–60 s for the render it serves. The memory peak is not yet measured (§7).
 
 ## 4. What changes, in order of value
 
 ### S1. Words to mask (failure 1)
 
-- `mask` keeps its name in the model's schema, with a new description: "The part of the picture to change, in a few words ('the green jacket', 'the sky'), or a painted mask's path."
+- `mask` keeps its name in the model's schema, with a new description: "The part of the picture to change, in a few words ('the green jacket', 'the sky'), or a painted mask's path." **Both places that state the rule change together:** the schema's description and the tool's instruction block, which says "With a painted area, also pass its `mask`, and never make one up". Two contradictory sentences about one field in one cached prefix would be worse than either.
+- **Words and paths are told apart by `picture::looks_like_a_picture_path`** (a `/`, no whitespace, a picture extension), so "the green jacket" is never read as a path. A path-shaped `mask` that does not resolve stays what it is today: left out and said ("The mask inbox/… was left out"). It never becomes a text prompt.
 - Words go to `SAM3_Detect` with the picture and threshold 0.5.
   - One instance: that is the mask.
   - Several: the union. Each painted region still settles "which one" (§7.7).
@@ -82,6 +85,10 @@ Out of scope here. It needs the person split from the scene's record, which is a
 ## 7. Measurement plan
 
 - **S1:** replay the 19 word-masks from the corpus through the new path. Record what SAM 3 found per call, then judge by eye whether the right thing was masked. The count goes in the PR. The words are not quoted (no persona text in the repo).
-- **S2:** two seeds × paint-only versus SAM-edged composite on the #706 photo. ArcFace by `mecha imagelib face compare` (#705), plus the seam by eye in a contact sheet.
+- **S2:** two seeds × paint-only versus SAM-edged composite on the #706 photo. ArcFace by `mecha imagelib face compare` (#705), plus the seam by eye in a contact sheet. **First read (2026-10-16):**
+  - The "face" mask runs jaw to hairline, and the "hair" mask catches the loose strands.
+  - "Face and hair" as one prompt returns the face alone, so the two are asked separately and joined.
+  - The same render pasted back through the face mask scores the same identity as the ellipse (.81), keeps the photo's own hairline and earrings, and shows no seam.
+- **Cost:** time per segmentation (above) and the memory peak of a picture job with SAM beside the image model. The peak decides whether the image slot's `Peak` (`recommend.rs`) moves; evidence for that figure goes beside it, as the slot's other figures have.
 - **S3:** the §7.7 set (two shirts, two cups, a sleeve): stroke-only versus snapped masks, wrong-target and missed-target counts.
 - **S4:** the corpus's three edits whose layout similarity was at least 0.97: does the in-region difference tell a real change from none?
