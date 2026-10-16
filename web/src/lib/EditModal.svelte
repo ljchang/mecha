@@ -5,7 +5,8 @@
   // for pixel (`image_generate`'s mask, IMAGE-REGION-EDIT-RESEARCH.md §5).
   // Nothing painted edits the whole picture, as the button did before.
   //
-  // With `multi` (the persona chat, IMAGE-REGION-EDIT-RESEARCH.md §7, M2) the
+  // With `multi` (both chats' modals since 2026-10-16, a call's excepted;
+  // IMAGE-REGION-EDIT-RESEARCH.md §7, M2) the
   // owner paints up to four regions, each in its own colour with its own
   // words; the send carries a colour-indexed picture of them and the words
   // per colour, and the harness builds the legend the model reads.

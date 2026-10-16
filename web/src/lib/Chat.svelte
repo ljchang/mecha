@@ -7,7 +7,7 @@
   import PictureQueue from './PictureQueue.svelte';
   import { replyContext } from './speech.js';
   import EditModal from './EditModal.svelte';
-  import { composeEditMessage, composeRegenerateMessage, maskName } from './image-edit.js';
+  import { composeEditMessage, composeRegenerateMessage, composeRegionsMessage, maskName } from './image-edit.js';
   import { pictureOf, clipOf, stillOut, waitingPictures, repeatedPictures, downloadPicture, pictureVersions, shownVersion, makingText, repeatedClips, jobStarts } from './picture.js';
   import { clockOf } from './persona.js';
   import ClipPlayer from './ClipPlayer.svelte';
@@ -1309,8 +1309,10 @@
 
   // `text` and `regenerate`: a Regenerate's turn (IMAGE-DESIGN.md §5.4),
   // which the page composes and sends as it is, leaving the owner's draft
-  // and files in the composer. True when the server started the turn.
-  async function send({ text: fixed = null, regenerate = null } = {}) {
+  // and files in the composer. `regions`: the edit modal's painted regions,
+  // drawn by the harness before the model replies. True when the server
+  // started the turn.
+  async function send({ text: fixed = null, regenerate = null, regions = null } = {}) {
     const own = fixed === null;
     // Named in the text and listed beside it (`withAttachments`).
     const attached = own ? [...attachments] : [];
@@ -1327,7 +1329,13 @@
       const res = await fetch(`/api/chat/${sessionKey}/send`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ text, request_id, attachments: attached, regenerate: regenerate ?? undefined }),
+        body: JSON.stringify({
+          text,
+          request_id,
+          attachments: attached,
+          regenerate: regenerate ?? undefined,
+          regions: regions ?? undefined,
+        }),
       });
       if (res.status === 410) {
         if (sessionKey === key) closeIncognito('closed');
@@ -1520,10 +1528,17 @@
   // `image_generate`, not for the model to look at (image-edit.js). The text
   // then goes out through `send`, like anything typed — steering a run in
   // progress, an incognito chat and a failure all behave the same.
-  async function sendEdit({ text, mask }) {
+  async function sendEdit({ text, mask, regions = [] }) {
     const sessionKey = key;
     const edit = editing;
     if (!edit) return;
+    // Painted regions are drawn by the harness on a turn of their own, and a
+    // message into a running turn steers it as text alone, so they wait
+    // (the server refuses them with a 409 too). The modal keeps the work.
+    if (regions.length && running) {
+      edit.error = 'A reply is running — send the painted regions once it finishes.';
+      return;
+    }
     edit.busy = true;
     edit.error = null;
     try {
@@ -1540,9 +1555,34 @@
         maskPath = (await res.json()).path;
       }
       if (sessionKey !== key) return;
-      const message = composeEditMessage(edit.path, maskPath, text);
+      // Coloured regions (IMAGE-REGION-EDIT-RESEARCH.md §7, M2; owner,
+      // 2026-10-16: as the persona chat's): the upload is their index, and
+      // each region's words go as fields beside the message the owner sees,
+      // since the model's own picture tool has no field for regions.
+      const message = regions.length
+        ? composeRegionsMessage(edit.path, maskPath, regions)
+        : composeEditMessage(edit.path, maskPath, text);
       if (!message) {
         edit.busy = false; // never a modal that no button can close
+        return;
+      }
+      if (regions.length) {
+        // Held until the server starts the turn: a run that began after the
+        // check above is refused (409), and the paint must not go with it
+        // (review of #703). The draft the first region took is consumed only
+        // then.
+        const started = await send({
+          text: message,
+          regions: { picture: edit.path, mask: maskPath, regions: regions.map(({ colour, words }) => ({ colour, words })) },
+        });
+        if (editing !== edit) return;
+        if (started) {
+          draft = '';
+          editing = null;
+        } else {
+          edit.busy = false;
+          edit.error = 'The painted regions were not sent — the chat says why. They are still here.';
+        }
         return;
       }
       draft = message;
@@ -2580,6 +2620,7 @@
     initial={editing.initial}
     busy={editing.busy}
     error={editing.error}
+    multi
     onsend={sendEdit}
     onclose={() => (editing = null)}
   />
