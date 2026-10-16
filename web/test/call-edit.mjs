@@ -10,6 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { uploadRegionReferences } from '../src/lib/image-edit.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -40,6 +41,7 @@ const fns = ['  function editImage(path) {', '  function editInCall(path) {', ' 
 function rig({ live = true } = {}) {
   return new Function(
     'live',
+    'uploadRegionReferences',
     `'use strict';
      const log = [];
      let key = 'k1', token = null, input = 'typed in the chat box', imageEdit = null;
@@ -52,11 +54,11 @@ function rig({ live = true } = {}) {
      const maskName = (p) => p + '.mask.png';
      const composeEditMessage = (p, mask, text) => (text ? 'edit ' + p + ': ' + text : null);
      const composeRegionsMessage = (p, idx, rs) => 'regions ' + p + ': ' + rs.map((r) => r.colour).join(',');
-     const fetch = async () => ({ ok: true, json: async () => ({ path: 'inbox/mask.png' }) });
+     const fetch = async (url) => (log.push('upload'), { ok: true, json: async () => ({ path: 'inbox/mask.png' }) });
      const send = async (opts) => log.push('chat-send:' + input + (opts?.edit ? ' [edit ' + JSON.stringify(opts.edit) + ']' : ''));
      ${fns}
      return { editImage, editInCall, closeEdit, sendEdit, log, state: () => ({ imageEdit, input }) };`,
-  )(live);
+  )(live, uploadRegionReferences);
 }
 
 {
@@ -90,6 +92,25 @@ function rig({ live = true } = {}) {
     'regions go to the chat send as fields',
   );
   is(sent.includes('"mask":"inbox/mask.png"'), true, 'with the uploaded index as the mask');
+}
+
+{
+  // A picture dropped on a region (owner, 2026-10-16: a face to put there)
+  // is uploaded beside the index, and the region names it.
+  const r = rig();
+  r.editImage('images/a.png');
+  await r.sendEdit({
+    text: '',
+    mask: new Blob(['x']),
+    regions: [{ colour: 'magenta', words: 'her face', file: new Blob(['face'], { type: 'image/png' }) }],
+  });
+  is(r.log.filter((l) => l === 'upload').length, 2, 'the index and the dropped picture go up');
+  const sent = r.log.find((l) => l.startsWith('chat-send:')) ?? '';
+  is(
+    sent.includes('"regions":[{"colour":"magenta","words":"her face","reference":"inbox/mask.png"}]'),
+    true,
+    'the region carries the uploaded picture, never the file itself',
+  );
 }
 
 {
