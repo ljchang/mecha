@@ -274,20 +274,22 @@ impl IdentityJudge {
                 .library
                 .get(crate::imagelib::Kind::Character, &key)
                 .ok_or_else(|| format!("{who} is not in the library"))?;
-            let (bytes, _) = self
+            // The character's face as `imagelib face compare --character`
+            // reads it, its `face` reference before its portrait, so the
+            // number checked by hand is the judge's (review of #705).
+            let picture = self
                 .library
-                .read_portrait(entry)
-                .map_err(|e| format!("{who}'s portrait could not be read: {e:#}"))?;
-            let img = crate::image::decode_upright(&bytes, "the portrait")
-                .map_err(|e| format!("{who}'s portrait did not decode: {e:#}"))?
+                .face_picture(entry)
+                .map_err(|e| format!("{who}'s face picture could not be read: {e:#}"))?;
+            let img = crate::image::decode_upright(&picture.bytes, "the face picture")
+                .map_err(|e| format!("{who}'s {} did not decode: {e:#}", picture.which()))?
                 .to_rgb8();
             let faces = self
                 .found(&img)
-                .map_err(|e| format!("{who}'s portrait: {e:#}"))?;
-            let area = |f: &crate::face::Face| (f.x1 - f.x0) * (f.y1 - f.y0);
+                .map_err(|e| format!("{who}'s {}: {e:#}", picture.which()))?;
             faces
                 .into_iter()
-                .max_by(|a, b| area(&a.0).total_cmp(&area(&b.0)))
+                .max_by(|a, b| a.0.area().total_cmp(&b.0.area()))
                 .map(|(_, e)| e)
                 .ok_or_else(|| format!("{who}'s portrait shows no face"))
         })();

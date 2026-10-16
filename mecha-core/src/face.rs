@@ -64,7 +64,8 @@ pub struct Face {
 }
 
 impl Face {
-    fn area(&self) -> f32 {
+    /// The box's area, in the pixels it is given in.
+    pub fn area(&self) -> f32 {
         (self.x1 - self.x0).max(0.0) * (self.y1 - self.y0).max(0.0)
     }
 }
@@ -141,7 +142,7 @@ impl Detector {
 /// its selfie pose into four of six scenes. The tight crop's edits kept their
 /// asked-for frowns, lowered eyes, hair changes and camera.
 pub fn anchor_crop(detector: &Detector, bytes: &[u8]) -> Result<Option<Vec<u8>>> {
-    let picture = crate::image::decode_upright(bytes, "the portrait")?.to_rgb8();
+    let picture = crate::image::decode_upright(bytes, "the picture")?.to_rgb8();
     let (pw, ph) = picture.dimensions();
     let (seen, scale) = bounded(&picture);
     let faces = detector.detect(&seen)?;
@@ -193,11 +194,6 @@ pub fn detect_bytes(detector: &Detector, bytes: &[u8]) -> Result<Vec<Face>> {
 }
 
 impl Face {
-    /// The box's area, in the pixels it is given in.
-    pub fn box_area(&self) -> f32 {
-        self.area()
-    }
-
     /// This face in a picture `1 / scale` times the size of the one it
     /// was found in: [`bounded`]'s copy back to the original.
     pub fn unscaled(self, scale: f32) -> Face {
@@ -1320,12 +1316,6 @@ mod tests {
         }
     }
 
-    /// The cache around the detector, on a scratch library: a crop is made
-    /// once and answered from disk after, a portrait with no face is
-    /// remembered as such, and a crop that could not be had is said and
-    /// never cached. (The first cut never created the cache directory, so
-    /// every crop failed to save and the edit went unanchored — found on
-    /// review of #569; the stubbed tests in `imagegen` could not see it.)
     /// A face found on [`bounded`]'s copy comes back in the original's
     /// pixels: a picture past the bound is read at half size here, and a
     /// small one is read as itself, not copied (review of #705).
@@ -1352,13 +1342,19 @@ mod tests {
         );
         assert_eq!(back.points, [[30.0, 50.0]; 5]);
         assert_eq!(back.score, 0.9);
-        assert_eq!(back.box_area(), 4.0 * found.box_area());
+        assert_eq!(back.area(), 4.0 * found.area());
         let small = image::RgbImage::new(64, 32);
         let (seen, scale) = bounded(&small);
         assert!(matches!(seen, std::borrow::Cow::Borrowed(_)));
         assert_eq!(scale, 1.0);
     }
 
+    /// The cache around the detector, on a scratch library: a crop is made
+    /// once and answered from disk after, a portrait with no face is
+    /// remembered as such, and a crop that could not be had is said and
+    /// never cached. (The first cut never created the cache directory, so
+    /// every crop failed to save and the edit went unanchored — found on
+    /// review of #569; the stubbed tests in `imagegen` could not see it.)
     #[test]
     fn a_crop_is_made_once_cached_and_a_missing_face_remembered() {
         let dir = std::env::temp_dir().join(format!("mecha-face-{}", uuid::Uuid::new_v4()));

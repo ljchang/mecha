@@ -554,8 +554,12 @@ async fn face(cmd: FaceCmd) -> Result<()> {
                 .create_new(true)
                 .open(&out)
                 .with_context(|| format!("writing {}", out.display()))?;
-            std::io::Write::write_all(&mut created, &png)
-                .with_context(|| format!("writing {}", out.display()))?;
+            if let Err(e) = std::io::Write::write_all(&mut created, &png) {
+                // A half-written crop would block the retry it asks for.
+                drop(created);
+                std::fs::remove_file(&out).ok();
+                return Err(e).with_context(|| format!("writing {}", out.display()));
+            }
             println!("{}", out.display());
         }
         FaceCmd::Compare {
@@ -564,8 +568,8 @@ async fn face(cmd: FaceCmd) -> Result<()> {
             files,
             json,
         } => {
-            let arcface = super::replay_judge::arcface_weights().await?;
-            let reader = face_id::Reader::load(&detector, &arcface)?;
+            // The reference first: a mistyped path or name should not cost
+            // ArcFace's download before it is said.
             let (label, bytes) = match (reference, character) {
                 (Some(p), _) => (p.display().to_string(), read(&p)?),
                 (None, Some(name)) => {
@@ -580,6 +584,8 @@ async fn face(cmd: FaceCmd) -> Result<()> {
                 }
                 (None, None) => bail!("give --reference or --character"),
             };
+            let arcface = super::replay_judge::arcface_weights().await?;
+            let reader = face_id::Reader::load(&detector, &arcface)?;
             let Some((_, want)) = reader.read_bytes(&bytes, &label)?.into_iter().next() else {
                 bail!("no face was found in {label}");
             };
