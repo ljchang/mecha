@@ -416,9 +416,11 @@
       {#if !isShown(features.rows, 'library')}
         <!-- Reached with image generation off (it opens anyway): say why the
              other panes are not here. -->
-        <div class="barnote">The image library is off — characters and styles are hidden, and locked personas stay unnamed here.</div>
+        <div class="barnote">The image library is off — characters and styles are hidden, and locked voices and personas stay hidden here.</div>
       {/if}
-      <VoicesPane {token} oncount={(n) => (voiceCount = n)} />
+      <!-- Lock only where Unlock is: the toggle above shows once the library
+           has answered (review of #701, pass 4). -->
+      <VoicesPane {token} canLock={!!data} oncount={(n) => (voiceCount = n)} />
     {:else}
     {#if error}
       <div class="warnline">{error}</div>

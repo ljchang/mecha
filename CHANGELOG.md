@@ -15,6 +15,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   build is passed over and an entry running it is pointed at the matching
   one; one you built from your own checkout is left as yours. `mecha
   --version` now says which build it is: `0.1.24 (git 7d7f0fa05)`.
+- **Voices lock like pictures and personas.** Library → Voices has Lock and
+  Unlock on each voice, and a *lock* box when saving a recording. A locked
+  voice is hidden while browsing — off the voice library, the assistant's
+  voice picker and a persona's Voice choices — until the library is
+  unlocked, with nothing saying how many are hidden. Anything already set to
+  it still speaks in it.
+
+- **The assistant's chat shows how long a picture or clip has been running.**
+  A still-out row reads "working on it… 2:14" or "drawing a picture… 0:41",
+  as a persona chat's already did, and keeps counting across a reload.
+
+- **`[[mcp]] disabled_tools` withholds single tools from a server.** By the
+  server's own names, narrowing only, and a name the server does not list is
+  warned about on every start. For a status tool a chat only uses to poll
+  work it already runs in the background (`disabled_tools =
+  ["video_status"]`).
+
 - **Services an older mecha installed are refreshed.** Every unit and launchd
   agent mecha writes now carries a revision; `mecha features enable` and
   `mecha setup` find one an older build wrote and offer to rewrite and
@@ -23,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on request. Before this, an existing install kept its old services through
   every upgrade — on a Mac, ComfyUI never moved behind the on-demand proxy.
   The chat router's refresh is `mecha setup chat`'s.
+
 - **Models can attach pictures to a library character.** Ask a chat to save a
   picture to a character as a full body, a face, or a labelled detail such as
   a tattoo. A chat that has read nothing from outside attaches it at once,
@@ -88,6 +106,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   --adopt` is still Linux-only.
 
 ### Changed
+
+- **Settings → Voice picks from the voice library.** The assistant's voice
+  picker lists the library's unlocked voices as they stand, so a voice
+  recorded a moment ago is there without a call first. It used to list the
+  voices the last call reported, remembered on the device.
 
 - **Incognito chat is part of the web app, not a feature of its own.**
   `mecha setup` no longer asks about it separately: it is on wherever the
