@@ -334,7 +334,7 @@ fn prompt_of(render: &Value, picture: &Path) -> Option<String> {
 /// install). `None` when the face detector is not installed: faces and
 /// identity are then not judged, and that is said.
 async fn load_faces() -> Result<Option<std::sync::Arc<rj::IdentityJudge>>> {
-    use mecha_core::{face, face_id};
+    use mecha_core::face;
     let Some(detector) = face::weights()? else {
         eprintln!(
             "note: the face detector is not installed (`{}`), so faces and identity are not \
@@ -343,26 +343,32 @@ async fn load_faces() -> Result<Option<std::sync::Arc<rj::IdentityJudge>>> {
         );
         return Ok(None);
     };
-    let arcface = match face_id::weights()? {
-        Some(p) => p,
-        None => {
-            eprintln!("fetching {}", face_id::LICENCE);
-            let total = face_id::WEIGHTS.bytes;
-            let mut shown = 0u64;
-            face_id::install(&mut |got| {
-                if got >= shown + total / 10 || got == total {
-                    shown = got;
-                    eprintln!("  {} of {} MB", got / 1_000_000, total / 1_000_000);
-                }
-            })
-            .await?
-        }
-    };
+    let arcface = arcface_weights().await?;
     let library = mecha_core::imagelib::Library::default_dir()?;
     let judge =
         tokio::task::spawn_blocking(move || rj::IdentityJudge::load(&detector, &arcface, &library))
             .await??;
     Ok(Some(std::sync::Arc::new(judge)))
+}
+
+/// ArcFace's weights, fetched the first time a judge needs them with their
+/// licence said (owner, 2026-10-11: on a judge's first use, never by a
+/// feature's install). `mecha imagelib face compare` is such a judge.
+pub(crate) async fn arcface_weights() -> Result<std::path::PathBuf> {
+    use mecha_core::face_id;
+    if let Some(p) = face_id::weights()? {
+        return Ok(p);
+    }
+    eprintln!("fetching {}", face_id::LICENCE);
+    let total = face_id::WEIGHTS.bytes;
+    let mut shown = 0u64;
+    face_id::install(&mut |got| {
+        if got >= shown + total / 10 || got == total {
+            shown = got;
+            eprintln!("  {} of {} MB", got / 1_000_000, total / 1_000_000);
+        }
+    })
+    .await
 }
 
 /// One question, answered or not: the answer's text, or why there is none.

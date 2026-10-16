@@ -225,8 +225,7 @@ pub fn shared(scene: &Scene, clause: &Clause, other: usize) -> bool {
 /// The identity judge's models and the library its cast is read from: the
 /// face detector, ArcFace, and each character's portrait embedded once.
 pub struct IdentityJudge {
-    detector: crate::face::Detector,
-    embedder: crate::face_id::Embedder,
+    reader: crate::face_id::Reader,
     library: crate::imagelib::Library,
     portraits:
         std::sync::Mutex<std::collections::HashMap<String, std::result::Result<Vec<f32>, String>>>,
@@ -250,49 +249,16 @@ impl IdentityJudge {
         library: &std::path::Path,
     ) -> anyhow::Result<Self> {
         Ok(IdentityJudge {
-            detector: crate::face::Detector::load(detector)?,
-            embedder: crate::face_id::Embedder::load(arcface)?,
+            reader: crate::face_id::Reader::load(detector, arcface)?,
             library: crate::imagelib::Library::load(library).0,
             portraits: Default::default(),
         })
     }
 
-    /// Every face in `img`, with its embedding, found on a copy no longer
-    /// than the detector's bound on its long side (`face::DETECT_SIDE`), as
-    /// a portrait's crop is, so a large photo costs no more than a
-    /// picture; each face's box and points are carried back to `img`.
+    /// Every face in `img`, with its embedding, in `img`'s own pixels
+    /// (`face_id::Reader::read`).
     fn found(&self, img: &image::RgbImage) -> anyhow::Result<Vec<(crate::face::Face, Vec<f32>)>> {
-        let long = img.width().max(img.height()).max(1);
-        let scale = (crate::face::DETECT_SIDE as f32 / long as f32).min(1.0);
-        let small;
-        let looked = if scale < 1.0 {
-            small = image::imageops::resize(
-                img,
-                ((img.width() as f32 * scale).round() as u32).max(1),
-                ((img.height() as f32 * scale).round() as u32).max(1),
-                image::imageops::FilterType::Triangle,
-            );
-            &small
-        } else {
-            img
-        };
-        self.detector
-            .detect(looked)?
-            .into_iter()
-            .map(|f| {
-                let embedding = self.embedder.embed(looked, &f)?;
-                let back = |v: f32| v / scale;
-                let face = crate::face::Face {
-                    x0: back(f.x0),
-                    y0: back(f.y0),
-                    x1: back(f.x1),
-                    y1: back(f.y1),
-                    score: f.score,
-                    points: f.points.map(|[x, y]| [back(x), back(y)]),
-                };
-                Ok((face, embedding))
-            })
-            .collect()
+        self.reader.read(img)
     }
 
     /// A library character's portrait, embedded: its largest face. Once
@@ -308,6 +274,9 @@ impl IdentityJudge {
                 .library
                 .get(crate::imagelib::Kind::Character, &key)
                 .ok_or_else(|| format!("{who} is not in the library"))?;
+            // The portrait, which a new picture is drawn from (`compile`
+            // sends it): a judge grades the generator against what it saw,
+            // never a `face` reference it did not (review of #705, pass 3).
             let (bytes, _) = self
                 .library
                 .read_portrait(entry)
@@ -318,10 +287,9 @@ impl IdentityJudge {
             let faces = self
                 .found(&img)
                 .map_err(|e| format!("{who}'s portrait: {e:#}"))?;
-            let area = |f: &crate::face::Face| (f.x1 - f.x0) * (f.y1 - f.y0);
             faces
                 .into_iter()
-                .max_by(|a, b| area(&a.0).total_cmp(&area(&b.0)))
+                .max_by(|a, b| a.0.area().total_cmp(&b.0.area()))
                 .map(|(_, e)| e)
                 .ok_or_else(|| format!("{who}'s portrait shows no face"))
         })();
@@ -339,7 +307,11 @@ impl IdentityJudge {
             crops: Vec::new(),
             errors: Vec::new(),
         };
-        let img = match image::load_from_memory(bytes) {
+        // Upright, as `mecha imagelib face compare` reads a picture
+        // (`face_id::Reader::read_bytes`): a phone photo's EXIF turn read
+        // one way here and another there gave the same picture two numbers
+        // (review of #705, pass 4).
+        let img = match crate::image::decode_upright(bytes, "the picture") {
             Ok(i) => i.to_rgb8(),
             Err(e) => {
                 seen.errors.push(format!("the picture did not decode: {e}"));
