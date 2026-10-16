@@ -1,6 +1,6 @@
 # Segmentation for picture edits: design
 
-**Status:** ruled by the owner, 2026-10-16 (§6). S1 and S2 are built (`feat/sam-masks`, 2026-10-16) on a checkpoint placed by hand; installing it through the image slot's sources (§3) is the next change. S3 and S4 wait.
+**Status:** ruled by the owner, 2026-10-16 (§6). S1 and S2 are built, and SAM 3.1 installs with the image slot (`recommend::SAM_SOURCE`, §3), 2026-10-16 (#710). S3 and S4 wait.
 **Owner's ask (2026-10-16):** "we also have the SAM segmentation model available to use as well if it is useful to help with the masking", and "whatever will work the best and is the most performant".
 **Where it fits:** IMAGE-DESIGN §15.6 lists "in-place per-person edits (arm B): segmentation-backed" as the owner's open decision. This design answers it, and also covers the masking problems found in the 2026-10-16 corpus read.
 

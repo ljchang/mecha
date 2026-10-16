@@ -1433,7 +1433,7 @@ mod tests {
         let image = if std::env::consts::OS == "macos" {
             33_485
         } else {
-            20_790
+            23_318
         };
         assert_eq!(b.gpu.loaded_floor.known_mb, 5_243 + image);
         // Each line's floor is its own: nothing resident is known here, and
