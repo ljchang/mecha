@@ -616,6 +616,76 @@ pub fn unet_loader(diffusion_model: &str) -> (&'static str, Value) {
     }
 }
 
+/// The segmentation checkpoint, as the image server lists it: SAM 3.1 in
+/// ComfyUI's own fp16 repackaging (`docs/SEGMENTATION-DESIGN.md` §3).
+pub const SEGMENT_MODEL: &str = "sam3.1_multiplex_fp16.safetensors";
+
+/// The longest words a mask is asked for by: as long as any other short
+/// prose field the tool takes, and far past "the blue scarf on the chair".
+pub const MASK_WORDS_CAP: usize = 120;
+
+/// ComfyUI's graph for one SAM 3.1 segmentation (`docs/SEGMENTATION-DESIGN.md`):
+/// the picture uploaded as `uploaded`, `words` as the text prompt, and the
+/// union of every match out as a white-on-black picture. ComfyUI's own nodes
+/// (`comfy_extras/nodes_sam3.py`), as its SAM3 blueprint wires them; the
+/// threshold and refinement are the blueprint's.
+pub fn sam_graph(uploaded: &str, words: &str) -> Value {
+    json!({
+        "ckpt": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": SEGMENT_MODEL}},
+        "text": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["ckpt", 1], "text": words}},
+        "img": {"class_type": "LoadImage", "inputs": {"image": format!("{uploaded} [temp]")}},
+        "sam": {"class_type": "SAM3_Detect", "inputs": {
+            "model": ["ckpt", 0], "image": ["img", 0], "conditioning": ["text", 0],
+            "threshold": 0.5, "refine_iterations": 2, "individual_masks": false}},
+        "toimg": {"class_type": "MaskToImage", "inputs": {"mask": ["sam", 0]}},
+        "out": {"class_type": "PreviewImage", "inputs": {"images": ["toimg", 0]}},
+    })
+}
+
+/// How many separate areas a segmentation found: the 4-connected white
+/// parts of `mask`, leaving out specks under a thousandth of the picture,
+/// which a refinement pass can strand at an edge. Said beside the edit,
+/// because a mask the model named is a guess (`docs/SEGMENTATION-DESIGN.md` S1).
+pub fn found_areas(mask: &image::GrayImage) -> usize {
+    let (w, h) = mask.dimensions();
+    let speck = (w as usize * h as usize) / 1000;
+    let mut seen = vec![false; w as usize * h as usize];
+    let mut areas = 0;
+    let mut stack = Vec::new();
+    for start in 0..seen.len() {
+        let (sx, sy) = ((start % w as usize) as u32, (start / w as usize) as u32);
+        if seen[start] || mask.get_pixel(sx, sy).0[0] <= 127 {
+            continue;
+        }
+        seen[start] = true;
+        stack.push((sx, sy));
+        let mut size = 0;
+        while let Some((x, y)) = stack.pop() {
+            size += 1;
+            let near = [
+                (x.wrapping_sub(1), y),
+                (x + 1, y),
+                (x, y.wrapping_sub(1)),
+                (x, y + 1),
+            ];
+            for (nx, ny) in near {
+                if nx >= w || ny >= h {
+                    continue;
+                }
+                let i = ny as usize * w as usize + nx as usize;
+                if !seen[i] && mask.get_pixel(nx, ny).0[0] > 127 {
+                    seen[i] = true;
+                    stack.push((nx, ny));
+                }
+            }
+        }
+        if size > speck {
+            areas += 1;
+        }
+    }
+    areas
+}
+
 /// ComfyUI's graph for one generation with Qwen-Image 2.1 — text to image,
 /// or an edit when `uploaded` names reference images already on the server.
 ///
@@ -708,8 +778,11 @@ pub fn comfy_graph(
 /// reloading needs ~9-12 GB more, measured 2026-10-02), so it is asked for
 /// the larger of the two. `None` - the stats could not be read - pays cold:
 /// unknown is never warm.
-pub fn memory_need_mb(loaded: Option<bool>, min_mb: u64) -> u64 {
-    match loaded {
+pub fn memory_need_mb(loaded: Option<bool>, min_mb: u64, may_segment: bool) -> u64 {
+    // A job that may segment asks for SAM too, warm or not: the gauge cannot
+    // tell it apart from the image model once either has loaded (§3).
+    let sam = if may_segment { SEGMENT_NEED_MB } else { 0 };
+    sam + match loaded {
         // What a load costs is what a loaded server has already paid; the
         // rest of the operator's figure is their margin, theirs to keep
         // (review of #515). A need computed down to 0 is "the reserve
@@ -766,6 +839,13 @@ pub fn min_available_mb_on(os: &str) -> u64 {
         20_480
     }
 }
+
+/// What a segmentation adds to a picture job's need, in MB: SAM 3.1 loaded
+/// beside the image model (`docs/SEGMENTATION-DESIGN.md` §3). Its cold load
+/// peaked at 2,528 MB of GPU memory above a freed server on the GB10
+/// workstation (2026-10-16), where the GPU's memory is the system's, rounded
+/// up to a whole GiB as the other figures are. Not measured on a Mac.
+pub const SEGMENT_NEED_MB: u64 = 3_072;
 
 /// What a reload from a `/free`d state still needs on `os` — the worse of
 /// the two states `/system_stats` cannot tell apart. Linux: ~12 GiB,
@@ -1408,6 +1488,92 @@ impl ComfyUi {
         }
     }
 
+    /// Whether the server can segment: ComfyUI's `SAM3_Detect` node, and
+    /// [`SEGMENT_MODEL`] among its checkpoints. A short reason when not,
+    /// which the result says (`docs/SEGMENTATION-DESIGN.md` §5).
+    async fn can_segment(&self) -> std::result::Result<(), String> {
+        let sam = self
+            .get_json("object_info/SAM3_Detect")
+            .await
+            .map_err(|_| "the image server could not be asked about segmentation".to_string())?;
+        if sam.get("SAM3_Detect").is_none() {
+            return Err("the image server's ComfyUI has no SAM 3 node".into());
+        }
+        let ckpt = self
+            .get_json("object_info/CheckpointLoaderSimple")
+            .await
+            .map_err(|_| "the image server could not be asked about segmentation".to_string())?;
+        let listed = ckpt
+            .pointer("/CheckpointLoaderSimple/input/required/ckpt_name/0")
+            .and_then(Value::as_array)
+            .is_some_and(|c| c.iter().any(|n| n.as_str() == Some(SEGMENT_MODEL)));
+        if !listed {
+            return Err("SAM 3.1 segmentation is not installed on the image server".into());
+        }
+        Ok(())
+    }
+
+    /// SAM 3.1's mask of what `words` name in `picture`, as a white-on-black
+    /// picture at the server's size: `Ok(None)` when nothing matched. Run
+    /// inside an admitted picture job, before its render, never on its own
+    /// (`docs/SEGMENTATION-DESIGN.md` §3: the admission gauge cannot tell
+    /// which model a process holds). Its temp copies are deleted as a
+    /// render's are; what could not be is the second value, said.
+    async fn segment(
+        &self,
+        cfg: &ImageConfig,
+        picture: &Reference,
+        words: &str,
+        cancel: Option<&CancellationToken>,
+        timeout: Duration,
+        trail: Option<&std::path::Path>,
+    ) -> (
+        std::result::Result<Option<image::GrayImage>, Failure>,
+        Option<String>,
+    ) {
+        let mut held = Held::default();
+        let got = async {
+            self.await_server(cancel, SERVER_WAIT).await?;
+            let asked = format!(
+                "mecha-{:08x}{:08x}.{}",
+                fresh_seed(),
+                fresh_seed(),
+                picture.ext
+            );
+            note(trail, &TrailEntry::File(asked.clone())).map_err(|e| {
+                Failure::Other(e.context("the segmentation could not be recorded for cleanup"))
+            })?;
+            let filed = match self.upload(picture, &asked).await {
+                Ok(filed) => filed,
+                Err(e) => {
+                    held.possible.push(asked);
+                    return Err(Failure::Other(e));
+                }
+            };
+            held.confirmed.push(filed.clone());
+            let png = self
+                .submit_and_wait(sam_graph(&filed, words), cancel, timeout, trail, &mut held)
+                .await?;
+            let mask = image::load_from_memory(&png)
+                .map_err(|e| Failure::Other(anyhow!("the segmentation did not decode: {e}")))?
+                .to_luma8();
+            Ok(mask.pixels().any(|p| p.0[0] > 127).then_some(mask))
+        }
+        .await;
+        let dir = cfg.server_temp_dir.as_deref();
+        let mut left: Vec<String> = [
+            discard(dir, &held.confirmed, false),
+            discard(dir, &held.possible, true),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if !held.elsewhere.is_empty() {
+            left.push(held.elsewhere.join(", "));
+        }
+        (got, (!left.is_empty()).then(|| left.join("; ")))
+    }
+
     async fn run(
         &self,
         cfg: &ImageConfig,
@@ -1479,17 +1645,40 @@ impl ComfyUi {
             }
             uploaded.push(filed);
         }
-        // The id is minted here and written down before the server sees the
-        // job; ComfyUI takes a client's id in canonical UUID form. An older
-        // server mints its own, which is written down as soon as it answers.
-        let asked = uuid::Uuid::new_v4().to_string();
-        record(TrailEntry::Job(asked.clone()))?;
         // The mask is uploaded last, and is no reference.
         let (refs, mask) = match req.mask {
             Some(_) => (&uploaded[..uploaded.len() - 1], uploaded.last()),
             None => (&uploaded[..], None),
         };
         let graph = comfy_graph(cfg, req, refs, mask.map(String::as_str));
+        self.submit_and_wait(graph, cancel, timeout, trail, held)
+            .await
+    }
+
+    /// One graph through the server: submitted under an id written down
+    /// first, polled until it finishes or fails, the image it made fetched
+    /// and checked, and everything it wrote put on the trail and `held` for
+    /// deleting. Cancel, the timeout and a server that stops answering all
+    /// take the job back off the server. A picture's render and a
+    /// segmentation (`segment`) both go through it.
+    async fn submit_and_wait(
+        &self,
+        graph: Value,
+        cancel: Option<&CancellationToken>,
+        timeout: Duration,
+        trail: Option<&std::path::Path>,
+        held: &mut Held,
+    ) -> std::result::Result<Vec<u8>, Failure> {
+        let record = |entry: TrailEntry| {
+            note(trail, &entry).map_err(|e| {
+                Failure::Other(e.context("the image job could not be recorded for cleanup"))
+            })
+        };
+        // The id is minted here and written down before the server sees the
+        // job; ComfyUI takes a client's id in canonical UUID form. An older
+        // server mints its own, which is written down as soon as it answers.
+        let asked = uuid::Uuid::new_v4().to_string();
+        record(TrailEntry::Job(asked.clone()))?;
         let submitted = self
             .post_json(
                 "prompt",
@@ -1923,6 +2112,157 @@ pub struct MaskPlan {
     pub bounds: (u32, u32, u32, u32),
 }
 
+/// A painted mask at the canvas's size, hard-edged. Any real coverage
+/// counts: a thin stroke on a large photo is averaged down by the resize, and
+/// 127 would erase it before the owner is told it is too small (review of
+/// #429).
+fn hard_at(mask: &image::GrayImage, cw: u32, ch: u32) -> image::GrayImage {
+    let luma = image::imageops::resize(mask, cw, ch, image::imageops::FilterType::Triangle);
+    image::GrayImage::from_fn(cw, ch, |x, y| {
+        image::Luma([if luma.get_pixel(x, y).0[0] > 16 {
+            255
+        } else {
+            0
+        }])
+    })
+}
+
+/// The painted area grown past its edge. The grow is a blur thresholded
+/// low: with σ = 12, "> 10" reaches about 21 px past the painted edge. The
+/// threshold moves with the sigma; change them together. (The 16 in
+/// [`hard_at`] is coverage after a resize, not this.)
+fn grow_mask(hard: &image::GrayImage) -> image::GrayImage {
+    let grown = image::imageops::fast_blur(hard, MASK_GROW_SIGMA);
+    image::GrayImage::from_fn(hard.width(), hard.height(), |x, y| {
+        image::Luma([if grown.get_pixel(x, y).0[0] > 10 {
+            255
+        } else {
+            0
+        }])
+    })
+}
+
+/// The grown area feathered for the composite. Painted pixels stay fully
+/// redrawn, whatever the blur did to them.
+fn feather_mask(grown: &image::GrayImage, hard: &image::GrayImage) -> image::GrayImage {
+    let soft = image::imageops::fast_blur(grown, MASK_FEATHER_SIGMA);
+    image::GrayImage::from_fn(hard.width(), hard.height(), |x, y| {
+        image::Luma([soft.get_pixel(x, y).0[0].max(hard.get_pixel(x, y).0[0])])
+    })
+}
+
+/// How far a segmented face is grown before it is feathered, in canvas
+/// pixels, and the feather's sigma: enough to carry the jaw's shadow and the
+/// hairline's first strands, measured by eye on the 2026-10-16 composites
+/// (`docs/SEGMENTATION-DESIGN.md` S2).
+const FACE_EDGE_GROW: u32 = 5;
+const FACE_EDGE_FEATHER: f32 = 3.0;
+
+/// The composite's mask for an edit whose painted regions take a face
+/// (`docs/SEGMENTATION-DESIGN.md` S2): inside the face regions, the paint ∩
+/// the face SAM found (grown [`FACE_EDGE_GROW`], feathered), so the new face
+/// is laid back along the face's own edges and the photo keeps its hairline,
+/// ears and earrings; every other region keeps its own softened paint
+/// (`others`, the hard paint of the regions with no face). Never past
+/// `soft`, so nothing outside the paint's own edge can change. `None` when
+/// the face found is not inside the face regions' paint (another face in the
+/// picture, or none): the paint is kept then, and said.
+pub fn edge_faces(
+    soft: &image::GrayImage,
+    others: Option<&image::GrayImage>,
+    found: &image::GrayImage,
+) -> Option<image::GrayImage> {
+    let (w, h) = soft.dimensions();
+    let found = image::imageops::resize(found, w, h, image::imageops::FilterType::Triangle);
+    // A square grow, separable: rows, then columns.
+    let r = FACE_EDGE_GROW as i64;
+    let on = |img: &image::GrayImage, x: i64, y: i64| {
+        x >= 0
+            && y >= 0
+            && x < w as i64
+            && y < h as i64
+            && img.get_pixel(x as u32, y as u32).0[0] > 127
+    };
+    let rows = image::GrayImage::from_fn(w, h, |x, y| {
+        let hit = (-r..=r).any(|d| on(&found, x as i64 + d, y as i64));
+        image::Luma([if hit { 255 } else { 0 }])
+    });
+    let grown = image::GrayImage::from_fn(w, h, |x, y| {
+        let hit = (-r..=r).any(|d| on(&rows, x as i64, y as i64 + d));
+        image::Luma([if hit { 255 } else { 0 }])
+    });
+    let face = image::imageops::fast_blur(&grown, FACE_EDGE_FEATHER);
+    let kept = others.map(|hard| feather_mask(&grow_mask(hard), hard));
+    let (mut painted, mut faced) = (0u64, 0u64);
+    let out = image::GrayImage::from_fn(w, h, |x, y| {
+        let s = soft.get_pixel(x, y).0[0];
+        let k = kept.as_ref().map_or(0, |k| k.get_pixel(x, y).0[0]);
+        let f = s.min(face.get_pixel(x, y).0[0]);
+        if k == 0 {
+            painted += u64::from(s);
+            faced += u64::from(f);
+        }
+        image::Luma([k.max(f)])
+    });
+    // The face found must fill a real part of the face regions' paint: a
+    // sliver at its edge is a neighbour's face, not this one.
+    (painted > 0 && faced * 10 >= painted).then_some(out)
+}
+
+/// What an edit whose painted regions take a face needs, in its job, to lay
+/// the new face back along the face's own edges ([`edge_faces`]).
+struct FaceEdges {
+    /// The hard paint of the regions with no face, which keep their own.
+    others: Option<image::GrayImage>,
+    /// A face region's words name the hair too: SAM's "hair" is added.
+    hair: bool,
+    colours: Vec<String>,
+}
+
+/// What a face region's note adds when its character's face could not be
+/// had on a picture whose people are known: the name is read as the viewer
+/// there, so "its words alone" are not the words as given (review of #706).
+fn viewer_said(names_checked: bool, shown: &str) -> String {
+    if names_checked {
+        format!(", with {shown} read as the viewer, since {shown} is not in the picture")
+    } else {
+        String::new()
+    }
+}
+
+/// Whether a painted region's words name the hair, which a face region then
+/// takes with the face (`docs/SEGMENTATION-DESIGN.md` S2).
+fn about_hair(words: &str) -> bool {
+    words
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|w| matches!(w.to_lowercase().as_str(), "hair" | "hairline" | "hairstyle"))
+}
+
+/// The hard paint of `regions` in a region index, at the canvas's size, as
+/// [`prepare_mask`] reads the union. `None` for no regions.
+pub fn regions_hard(
+    index: &[u8],
+    regions: &[&crate::picture::Region],
+    cw: u32,
+    ch: u32,
+) -> std::result::Result<Option<image::GrayImage>, String> {
+    if regions.is_empty() {
+        return Ok(None);
+    }
+    let index = crate::image::decode(index, "the regions")
+        .map_err(|e| format!("{e:#}"))?
+        .to_rgb8();
+    let union = image::GrayImage::from_fn(index.width(), index.height(), |x, y| {
+        let p = index.get_pixel(x, y).0;
+        image::Luma([if regions.iter().any(|r| r.rgb == p) {
+            255
+        } else {
+            0
+        }])
+    });
+    Ok(Some(hard_at(&union, cw, ch)))
+}
+
 /// Size the picture to its edit canvas and turn the owner's painted mask into
 /// the one the sampler and the composite use. Refused, with a sentence for
 /// the model, when the mask marks nothing, or its shape differs from the
@@ -1933,7 +2273,7 @@ pub fn prepare_mask(
     mask: &[u8],
     resolution: u32,
 ) -> std::result::Result<MaskPlan, String> {
-    use image::imageops::{fast_blur, resize, FilterType};
+    use image::imageops::{resize, FilterType};
     // Upright, as the page painted over it: a phone photo stored sideways
     // with a tag would otherwise read as the other shape from its mask.
     let picture =
@@ -1957,19 +2297,7 @@ pub fn prepare_mask(
     } else {
         resize(&picture.to_rgb8(), cw, ch, FilterType::Lanczos3)
     };
-    let hard = image::GrayImage::from_fn(cw, ch, {
-        let luma = resize(&mask.to_luma8(), cw, ch, FilterType::Triangle);
-        // Any real coverage counts: a thin stroke on a large photo is
-        // averaged down by the resize, and 127 would erase it before the
-        // owner is told it is too small (review of #429).
-        move |x, y| {
-            image::Luma([if luma.get_pixel(x, y).0[0] > 16 {
-                255
-            } else {
-                0
-            }])
-        }
-    });
+    let hard = hard_at(&mask.to_luma8(), cw, ch);
     let mut bounds: Option<(u32, u32, u32, u32)> = None;
     for (x, y, p) in hard.enumerate_pixels() {
         if p.0[0] > 0 {
@@ -1984,18 +2312,7 @@ pub fn prepare_mask(
                 .into(),
         );
     };
-    // The grow is a blur thresholded low: with σ = 12, "> 10" reaches about
-    // 21 px past the painted edge. The threshold moves with the sigma; change
-    // them together. (The 16 in `hard` above is coverage after a resize, not
-    // this.)
-    let grown = fast_blur(&hard, MASK_GROW_SIGMA);
-    let grown = image::GrayImage::from_fn(cw, ch, |x, y| {
-        image::Luma([if grown.get_pixel(x, y).0[0] > 10 {
-            255
-        } else {
-            0
-        }])
-    });
+    let grown = grow_mask(&hard);
     // A dab too small to survive the grow step would leave the sampler
     // nothing to redraw and the composite nothing to change, while the result
     // said the painted area was redrawn: refused, like an empty mask (review
@@ -2007,11 +2324,7 @@ pub fn prepare_mask(
                 .into(),
         );
     }
-    let soft = fast_blur(&grown, MASK_FEATHER_SIGMA);
-    // Painted pixels stay fully redrawn, whatever the blur did to them.
-    let soft = image::GrayImage::from_fn(cw, ch, |x, y| {
-        image::Luma([soft.get_pixel(x, y).0[0].max(hard.get_pixel(x, y).0[0])])
-    });
+    let soft = feather_mask(&grown, &hard);
     Ok(MaskPlan {
         picture,
         source: (pw, ph),
@@ -2285,7 +2598,11 @@ impl ImageGenerate {
     /// need below plus the reserve, refused under memory pressure, and
     /// refused when the gauge cannot be read. Only the operator's own
     /// `min_available_mb = 0` switches it off.
-    async fn memory_guard(&self, model: crate::sampling::Model) -> std::result::Result<(), String> {
+    async fn memory_guard(
+        &self,
+        model: crate::sampling::Model,
+        may_segment: bool,
+    ) -> std::result::Result<(), String> {
         if self.cfg.min_available_mb == 0 {
             return Ok(());
         }
@@ -2304,7 +2621,7 @@ impl ImageGenerate {
         } else {
             self.backend.loaded().await
         };
-        let need_mb = memory_need_mb(loaded, self.cfg.min_available_mb);
+        let need_mb = memory_need_mb(loaded, self.cfg.min_available_mb, may_segment);
         let series = crate::system::db_path().ok();
         let verdict = crate::system::floor::admit_now(
             need_mb.saturating_mul(1024 * 1024),
@@ -2775,9 +3092,11 @@ pub const DESCRIPTION: &str = "Draw a picture with the local image model, or cha
      picture, and restating what is already true changes nothing (a call that changes \
      nothing draws the scene again). Take someone out with `remove`. One small change to the \
      picture itself (an object, a colour, a detail) goes in `retouch`, in words: never \
-     clothes, a pose, an expression or a person, which are `scene.people`. With a painted \
-     area, also pass its `mask`, and never make one up. When the user attaches a photo of a \
-     place and wants someone in it, that photo is the setting: `scene.setting` is \
+     clothes, a pose, an expression or a person, which are `scene.people`. To change only \
+     one thing in the picture, name it in `mask` as what it is, in a few words (never a \
+     name or a position); with a painted area, `mask` is its path, never one made up. When \
+     the user attaches a photo of a place and wants someone in it, that photo is the \
+     setting: `scene.setting` is \
      {\"photo\": <its path>}, not the room described in words; a photo attached earlier in \
      the chat is still a setting you can name by its path. Nobody is drawn twice, and at most \
      five people with faces fit one picture. The library supplies how its characters look \
@@ -3395,7 +3714,7 @@ impl Tool for ImageGenerate {
                     }
                 },
                 "retouch": {"type": "string", "description": RETOUCH_DESC},
-                "mask": {"type": "string", "description": "The painted area the user's message names, beside a retouch. Never make one up."},
+                "mask": {"type": "string", "description": "Beside a retouch: the one thing in the picture to change, named as what it is in a few words ('the green jacket', 'the sky'), never by a person's name or a position in the picture; or the path of the painted area the user's message names. Never make up a path."},
                 "size": {"type": "string", "enum": ["square", "landscape", "portrait"]}
             }
         });
@@ -3601,7 +3920,13 @@ impl Tool for ImageGenerate {
         // guards.
         // Read once, so the guard and the request agree on the model.
         let tuning = self.tuning(ctx);
-        if let Err(why) = self.memory_guard(tuning.model.unwrap_or_default()).await {
+        // Words in `mask`, or painted regions (whose faces are edged by
+        // segmentation), may load SAM inside the job.
+        let may_segment = call.mask_words.is_some() || !call.regions.is_empty();
+        if let Err(why) = self
+            .memory_guard(tuning.model.unwrap_or_default(), may_segment)
+            .await
+        {
             return Ok(refused(why));
         }
         // The picture being changed, read once: its bytes key its record and
@@ -3775,6 +4100,9 @@ impl Tool for ImageGenerate {
         }
         let mut used: Vec<crate::imagelib::Used> = Vec::new();
         let mut mask_plan: Option<MaskPlan> = None;
+        // The painted regions' index, kept for the face regions' edges.
+        let mut region_index: Option<Vec<u8>> = None;
+        let mut face_edges: Option<FaceEdges> = None;
         let mut crops_said: Vec<String> = Vec::new();
         // Whether the people's parts were split (`roles`), for the manifest:
         // the split is prompt-only and its fallback silent, so this is the
@@ -4349,6 +4677,9 @@ impl Tool for ImageGenerate {
                     ));
                 }
                 if let Some((raw, mask)) = mask_read {
+                    if !call.regions.is_empty() {
+                        region_index = Some(mask.bytes.clone());
+                    }
                     let pic = req.references[0].bytes.clone();
                     let resolution = req.reference_size;
                     let regions = call.regions.clone();
@@ -4667,6 +4998,7 @@ impl Tool for ImageGenerate {
         let names_checked = plan.next.people_known;
         if mask_plan.is_some() && !call.regions.is_empty() {
             let mut lines: Vec<String> = Vec::new();
+            let mut face_regions: Vec<crate::picture::Region> = Vec::new();
             for r in &call.regions {
                 let found = match &r.reference {
                     Some(path) => {
@@ -4783,8 +5115,9 @@ impl Tool for ImageGenerate {
                                             dropped.push(format!(
                                                 "No face was found in {shown}'s library \
                                                  picture, so the {} region was drawn from its \
-                                                 words alone.",
-                                                r.colour
+                                                 words alone{}.",
+                                                r.colour,
+                                                viewer_said(names_checked, &shown)
                                             ));
                                             None
                                         }
@@ -4795,8 +5128,9 @@ impl Tool for ImageGenerate {
                                             dropped.push(format!(
                                                 "{shown}'s face could not be taken from the \
                                                  library ({why}), so the {} region was drawn \
-                                                 from its words alone.",
-                                                r.colour
+                                                 from its words alone{}.",
+                                                r.colour,
+                                                viewer_said(names_checked, &shown)
                                             ));
                                             None
                                         }
@@ -4810,6 +5144,9 @@ impl Tool for ImageGenerate {
                     },
                 };
                 if let Some((bytes, ext, is_face, from)) = found {
+                    if is_face {
+                        face_regions.push(r.clone());
+                    }
                     req.references.push(Reference {
                         path: format!("the {} region's reference", r.colour),
                         bytes,
@@ -4852,6 +5189,36 @@ impl Tool for ImageGenerate {
                 // full canvas (review of #706).
                 if req.size.is_some() && lines.len() == call.regions.len() {
                     req.reference_size = UNMASKED_EDIT_REFERENCE_SIZE;
+                }
+            }
+            // A face laid back through a brush stroke takes the stroke's edge,
+            // not the jaw's or the hairline's: the job finds the face, and the
+            // composite follows it inside the face regions (S2).
+            if let (false, Some(index), Some(mp)) =
+                (face_regions.is_empty(), &region_index, &mask_plan)
+            {
+                let others: Vec<crate::picture::Region> = call
+                    .regions
+                    .iter()
+                    .filter(|r| !face_regions.iter().any(|f| f.rgb == r.rgb))
+                    .cloned()
+                    .collect();
+                let (cw, ch) = mp.picture.dimensions();
+                let index = index.clone();
+                let hard = tokio::task::spawn_blocking(move || {
+                    regions_hard(&index, &others.iter().collect::<Vec<_>>(), cw, ch)
+                })
+                .await;
+                match hard {
+                    Ok(Ok(others)) => {
+                        face_edges = Some(FaceEdges {
+                            others,
+                            hair: face_regions.iter().any(|r| about_hair(&r.words)),
+                            colours: face_regions.iter().map(|r| r.colour.clone()).collect(),
+                        })
+                    }
+                    Ok(Err(e)) => tracing::warn!("image_generate: region paint unread: {e}"),
+                    Err(e) => tracing::warn!("image_generate: region paint unread: {e}"),
                 }
             }
         }
@@ -4901,6 +5268,20 @@ impl Tool for ImageGenerate {
             }),
         };
         let size_asked = call.size.is_some();
+        // An area named in words, on an edit of the picture with no painted
+        // mask: found in the job, after admission, before the render
+        // (`docs/SEGMENTATION-DESIGN.md` S1 and §3).
+        let segment_words = plan.mask_words.clone().filter(|_| {
+            mask_plan.is_none()
+                && !req.references.is_empty()
+                && matches!(
+                    plan.render,
+                    crate::picture::Render::Edit {
+                        canvas: crate::picture::Canvas::Picture(_),
+                        ..
+                    }
+                )
+        });
         // Its line in the chat's queue, taken before the job owns the plan.
         let label = queue_label(&plan.next);
         let job = async move {
@@ -4908,34 +5289,247 @@ impl Tool for ImageGenerate {
             me.generation.fetch_add(1, Ordering::SeqCst);
             let started = Instant::now();
             let timeout = Duration::from_secs(me.cfg.timeout_secs);
+            // The named area becomes the painted mask it names; anything that
+            // keeps it from being one draws the whole picture, as the words
+            // were before, and says so. Never a refusal, so every
+            // segmentation is followed by this job's render (§3).
+            let mut seg_left: Option<String> = None;
+            let mut seg_cancelled = false;
+            // The words whose area became the mask, when one was found, and
+            // how many separate areas it is.
+            let mut masked_by: Option<(String, usize)> = None;
+            if let Some(words) = &segment_words {
+                let found = match me.backend.can_segment().await {
+                    Err(why) => Err(why),
+                    Ok(()) => {
+                        let (got, left) = me
+                            .backend
+                            .segment(
+                                &me.cfg,
+                                &req.references[0],
+                                words,
+                                ctx.cancel.as_ref(),
+                                timeout,
+                                ctx.image_trail.as_deref(),
+                            )
+                            .await;
+                        seg_left = left;
+                        match got {
+                            Err(Failure::Cancelled) => {
+                                seg_cancelled = true;
+                                Err("it was stopped".to_string())
+                            }
+                            Err(Failure::Other(e)) => {
+                                tracing::warn!("image_generate: segmentation failed: {e:#}");
+                                Err("the segmentation failed".to_string())
+                            }
+                            Ok(found) => Ok(found),
+                        }
+                    }
+                };
+                match found {
+                    Err(_) if seg_cancelled => {}
+                    Err(why) => dropped.push(format!(
+                        "The area '{words}' could not be found ({why}), so the change was made \
+                         to the whole picture."
+                    )),
+                    Ok(None) => dropped.push(format!(
+                        "Nothing in the picture matched '{words}', so the change was made to the \
+                         whole picture."
+                    )),
+                    Ok(Some(mask)) => {
+                        let areas = found_areas(&mask).max(1);
+                        let canvas = req.references[0].bytes.clone();
+                        let prepared = tokio::task::spawn_blocking(move || {
+                            let mask = png_bytes(&image::DynamicImage::ImageLuma8(mask).to_rgb8())?;
+                            let plan = prepare_mask(&canvas, &mask, EDIT_REFERENCE_SIZE)?;
+                            let picture = png_bytes(&plan.picture)?;
+                            let soft = png_bytes(
+                                &image::DynamicImage::ImageLuma8(plan.soft.clone()).to_rgb8(),
+                            )?;
+                            Ok::<_, String>((plan, picture, soft))
+                        })
+                        .await;
+                        match prepared {
+                            Ok(Ok((mp, picture, soft))) => {
+                                req.references[0].bytes = picture;
+                                req.references[0].ext = "png";
+                                req.mask = Some(Reference {
+                                    path: format!("the area '{words}'"),
+                                    bytes: soft,
+                                    ext: "png",
+                                });
+                                req.size = None;
+                                req.reference_size = EDIT_REFERENCE_SIZE;
+                                mask_plan = Some(mp);
+                                masked_by = Some((words.clone(), areas));
+                            }
+                            _ => dropped.push(format!(
+                                "What matched '{words}' was too small to edit alone, so the \
+                                 change was made to the whole picture."
+                            )),
+                        }
+                    }
+                }
+            }
+            // A face region's composite follows the face SAM finds on the
+            // canvas, inside the paint (S2). Anything that keeps it from
+            // doing so lays the face back along the paint, as before, and
+            // says so; never a refusal.
+            if let (Some(fe), Some(mp)) = (&face_edges, mask_plan.as_mut()) {
+                let which = match fe.colours.as_slice() {
+                    [one] => format!("the {one} region"),
+                    many => format!("the {} regions", many.join(" and ")),
+                };
+                let mut found: std::result::Result<Option<image::GrayImage>, String> = Ok(None);
+                match me.backend.can_segment().await {
+                    Err(why) => found = Err(why),
+                    Ok(()) => {
+                        let asked: &[&str] = if fe.hair {
+                            &["face", "hair"]
+                        } else {
+                            &["face"]
+                        };
+                        for words in asked {
+                            let (got, left) = me
+                                .backend
+                                .segment(
+                                    &me.cfg,
+                                    &req.references[0],
+                                    words,
+                                    ctx.cancel.as_ref(),
+                                    timeout,
+                                    ctx.image_trail.as_deref(),
+                                )
+                                .await;
+                            if let Some(left) = left {
+                                seg_left = Some(match seg_left.take() {
+                                    Some(before) => format!("{before}; {left}"),
+                                    None => left,
+                                });
+                            }
+                            match got {
+                                Err(Failure::Cancelled) => {
+                                    seg_cancelled = true;
+                                    break;
+                                }
+                                Err(Failure::Other(e)) => {
+                                    tracing::warn!("image_generate: segmentation failed: {e:#}");
+                                    found = Err("the segmentation failed".into());
+                                    break;
+                                }
+                                Ok(None) => {}
+                                Ok(Some(m)) => {
+                                    found = Ok(Some(match found {
+                                        Ok(Some(mut acc)) if acc.dimensions() == m.dimensions() => {
+                                            for (a, b) in acc.pixels_mut().zip(m.pixels()) {
+                                                a.0[0] = a.0[0].max(b.0[0]);
+                                            }
+                                            acc
+                                        }
+                                        _ => m,
+                                    }));
+                                }
+                            }
+                        }
+                    }
+                }
+                if !seg_cancelled {
+                    let laid = match found {
+                        Err(why) => Err(format!(
+                            "The new face in {which} was laid back along the paint: the face's \
+                             own edges could not be found ({why})."
+                        )),
+                        Ok(None) => Err(format!(
+                            "No face was found in the picture, so the new face in {which} was \
+                             laid back along the paint."
+                        )),
+                        Ok(Some(found)) => {
+                            let (soft, others) = (mp.soft.clone(), fe.others.clone());
+                            match tokio::task::spawn_blocking(move || {
+                                edge_faces(&soft, others.as_ref(), &found)
+                            })
+                            .await
+                            {
+                                Ok(Some(edged)) => Ok(edged),
+                                _ => Err(format!(
+                                    "The face found in the picture is not inside {which}, so the \
+                                     new face was laid back along the paint."
+                                )),
+                            }
+                        }
+                    };
+                    match laid {
+                        Ok(edged) => {
+                            mp.soft = edged;
+                            dropped.push(if fe.hair {
+                                format!(
+                                    "The new face and hair in {which} were laid back along \
+                                     their own edges rather than the paint's."
+                                )
+                            } else {
+                                format!(
+                                    "The new face in {which} was laid back along the face's own \
+                                     edges rather than the paint's, so the hair and everything \
+                                     around the face are the original's."
+                                )
+                            });
+                        }
+                        Err(said) => dropped.push(said),
+                    }
+                }
+            }
             // Built in layers when the switch decided so; any step that
             // fails draws the single pass and says so (§15.5).
             let mut layered: Option<(crate::scene::Layers, Vec<Value>)> = None;
             let mut layers_note: Option<String> = None;
             let mut layer_left: Vec<String> = Vec::new();
-            let Outcome { image, left } = match &layers_plan {
-                Some(lp) => match me
-                    .build_layers(ctx, lp, &req, timeout, &stamp, &mut layer_left)
-                    .await
-                {
-                    Ok(built) => {
-                        layered = Some((built.record, built.steps));
-                        Outcome {
-                            image: Ok(built.bytes),
-                            left: built.left,
+            let Outcome { image, left } = if seg_cancelled {
+                Outcome {
+                    image: Err(Failure::Cancelled),
+                    left: seg_left.take(),
+                }
+            } else {
+                match &layers_plan {
+                    Some(lp) => match me
+                        .build_layers(ctx, lp, &req, timeout, &stamp, &mut layer_left)
+                        .await
+                    {
+                        Ok(built) => {
+                            layered = Some((built.record, built.steps));
+                            Outcome {
+                                image: Ok(built.bytes),
+                                left: built.left,
+                            }
                         }
-                    }
-                    Err(LayersFailed::Cancelled(left)) => Outcome {
-                        image: Err(Failure::Cancelled),
-                        left,
+                        Err(LayersFailed::Cancelled(left)) => Outcome {
+                            image: Err(Failure::Cancelled),
+                            left,
+                        },
+                        Err(LayersFailed::At(step, why)) => {
+                            tracing::warn!("image_generate: layers failed at {step}: {why}");
+                            layers_note = Some(format!(
+                                "Layers failed at {step}: {why}; drawn in one pass."
+                            ));
+                            let mut out = me
+                                .backend
+                                .generate(
+                                    &me.cfg,
+                                    &req,
+                                    ctx.cancel.as_ref(),
+                                    timeout,
+                                    ctx.image_trail.as_deref(),
+                                )
+                                .await;
+                            // The failed build's own copies the server kept,
+                            // said beside the single pass's.
+                            layer_left.extend(out.left.take());
+                            out.left = (!layer_left.is_empty()).then(|| layer_left.join("; "));
+                            out
+                        }
                     },
-                    Err(LayersFailed::At(step, why)) => {
-                        tracing::warn!("image_generate: layers failed at {step}: {why}");
-                        layers_note = Some(format!(
-                            "Layers failed at {step}: {why}; drawn in one pass."
-                        ));
-                        let mut out = me
-                            .backend
+                    None => {
+                        me.backend
                             .generate(
                                 &me.cfg,
                                 &req,
@@ -4943,27 +5537,16 @@ impl Tool for ImageGenerate {
                                 timeout,
                                 ctx.image_trail.as_deref(),
                             )
-                            .await;
-                        // The failed build's own copies the server kept,
-                        // said beside the single pass's.
-                        layer_left.extend(out.left.take());
-                        out.left = (!layer_left.is_empty()).then(|| layer_left.join("; "));
-                        out
+                            .await
                     }
-                },
-                None => {
-                    me.backend
-                        .generate(
-                            &me.cfg,
-                            &req,
-                            ctx.cancel.as_ref(),
-                            timeout,
-                            ctx.image_trail.as_deref(),
-                        )
-                        .await
                 }
             };
             me.arm_unload();
+            // The segmentation's own temp copies, said beside the render's.
+            let left = match (left, seg_left) {
+                (Some(a), Some(b)) => Some(format!("{a}; {b}")),
+                (a, b) => a.or(b),
+            };
             let left = left
                 .map(|left| {
                     if ctx.image_trail.is_some() {
@@ -5105,6 +5688,7 @@ impl Tool for ImageGenerate {
                 "layers_fell_back": layers_note,
                 "picture": picture_path,
                 "mask": plan.mask,
+                "mask_words": masked_by.as_ref().map(|(w, _)| w),
                 "seed": req.seed,
                 "steps": req.sampling.steps,
                 "size": req.size,
@@ -5248,7 +5832,12 @@ impl Tool for ImageGenerate {
                 }
             };
             if let Some(mp) = &mask_plan {
-                let mask = plan.mask.as_deref().unwrap_or("the mask");
+                let area = match (&plan.mask, &masked_by) {
+                    (Some(m), _) => format!("the area painted in {m}"),
+                    (None, Some((w, 1))) => format!("what was found for '{w}' (1 area)"),
+                    (None, Some((w, n))) => format!("what was found for '{w}' ({n} areas)"),
+                    (None, None) => "the painted area".to_string(),
+                };
                 if size_asked {
                     text.push_str(
                         " (The size asked for was not used: a masked edit keeps the picture's own \
@@ -5258,16 +5847,16 @@ impl Tool for ImageGenerate {
                 let (cw, ch) = mp.picture.dimensions();
                 text.push_str(&if mp.source == (cw, ch) {
                     format!(
-                        " Only the area painted in {mask} was redrawn, blended over a narrow \
+                        " Only {area} was redrawn, blended over a narrow \
                          edge around it; everything beyond that edge is the original, pixel for \
                          pixel."
                     )
                 } else {
                     let (pw, ph) = mp.source;
                     format!(
-                        " Only the area painted in {mask} was redrawn. The picture is \
+                        " Only {area} was redrawn. The picture is \
                          {pw}×{ph} and was edited at {cw}×{ch}, its edit size, as any edit of it \
-                         is; outside the painted area the result is the original at that size."
+                         is; outside that area the result is the original at that size."
                     )
                 });
             }
@@ -5541,17 +6130,32 @@ mod tests {
     #[test]
     fn the_memory_asked_for_follows_what_the_server_holds() {
         let cold = min_available_mb_on(std::env::consts::OS);
-        assert_eq!(memory_need_mb(Some(false), cold), cold);
-        assert_eq!(memory_need_mb(None, cold), cold, "unknown is never warm");
+        assert_eq!(memory_need_mb(Some(false), cold, false), cold);
         assert_eq!(
-            memory_need_mb(Some(true), cold),
+            memory_need_mb(None, cold, false),
+            cold,
+            "unknown is never warm"
+        );
+        assert_eq!(
+            memory_need_mb(Some(true), cold, false),
             reload_mb_on(std::env::consts::OS)
         );
         // An operator's raised margin is kept, not capped at the default's.
-        assert_eq!(memory_need_mb(Some(true), 50_000), 50_000 - load_cost_mb());
+        assert_eq!(
+            memory_need_mb(Some(true), 50_000, false),
+            50_000 - load_cost_mb()
+        );
         // A small figure is not computed into the "check off" sentinel: the
         // unreadable-gauge refusal must survive it.
-        assert_eq!(memory_need_mb(Some(true), 4_000), 0);
+        assert_eq!(memory_need_mb(Some(true), 4_000, false), 0);
+        // A job that may segment asks for SAM on top, warm or cold: the
+        // gauge cannot tell SAM from the image model once either has loaded.
+        for loaded in [Some(true), Some(false), None] {
+            assert_eq!(
+                memory_need_mb(loaded, cold, true),
+                memory_need_mb(loaded, cold, false) + SEGMENT_NEED_MB
+            );
+        }
         // A need of 0 is the reserve alone, and the floor still refuses an
         // unreadable gauge for it: only the operator's own 0 is "off".
         assert!(!crate::system::floor::admit(
@@ -5562,7 +6166,7 @@ mod tests {
         )
         .admitted());
         // Only the operator's own 0 switches it off.
-        assert_eq!(memory_need_mb(Some(true), 0), 0);
+        assert_eq!(memory_need_mb(Some(true), 0, false), 0);
     }
 
     /// The stats as ComfyUI 0.37 answered them on 2026-10-02, fresh, loaded
@@ -5788,6 +6392,9 @@ mod tests {
         views: Vec<Vec<u8>>,
         /// The unet loader lists no turbo model: one never fetched.
         no_turbo: bool,
+        /// The checkpoint loader lists [`SEGMENT_MODEL`]: segmentation is
+        /// installed. `SAM3_Detect` is answered either way, as every node is.
+        sam: bool,
     }
 
     impl Default for Fake {
@@ -5803,6 +6410,7 @@ mod tests {
                 interrupted_record: None,
                 views: Vec::new(),
                 no_turbo: false,
+                sam: false,
             }
         }
     }
@@ -5819,6 +6427,7 @@ mod tests {
             interrupted_record,
             views,
             no_turbo,
+            sam,
         } = opts;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -5893,6 +6502,7 @@ mod tests {
                                 "scheduler": [["simple", "beta"], {}]}}}}),
                             "CLIPLoader" => files("clip_name", "qwen3vl_8b_w4a8.safetensors"),
                             "VAELoader" => files("vae_name", "qwen_image_2.1_vae_bf16.safetensors"),
+                            "CheckpointLoaderSimple" if sam => files("ckpt_name", SEGMENT_MODEL),
                             _ => json!({node: {"input": {}}}),
                         })
                     } else if path == "/prompt" {
@@ -8635,6 +9245,137 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
+    /// With segmentation installed, a face region's result is laid back
+    /// along the face found on the canvas, inside the paint: the rest of the
+    /// stroke keeps the original (the hairline, the ears), and a region with
+    /// no face keeps its whole paint (S2).
+    #[tokio::test]
+    async fn a_face_region_follows_the_face_found_rather_than_the_stroke() {
+        let red = image::RgbImage::from_pixel(64, 64, image::Rgb([200, 20, 20]));
+        let mut result = std::io::Cursor::new(Vec::new());
+        red.write_to(&mut result, image::ImageFormat::Png).unwrap();
+        let (url, seen) = fake_with(Fake {
+            history: vec![done(), done()],
+            views: vec![mask_png(64, 64, (2, 24, 10, 40)), result.into_inner()],
+            sam: true,
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        let original = picture(8, [240, 220, 40]);
+        std::fs::write(dir.join("images/orig.png"), &original).unwrap();
+        std::fs::write(dir.join("inbox/face.png"), picture(8, [90, 60, 40])).unwrap();
+        std::fs::write(
+            dir.join("inbox/regions.png"),
+            index_png(
+                64,
+                64,
+                &[
+                    ([255, 0, 255], (0, 16, 16, 56)),
+                    ([0, 255, 255], (40, 16, 56, 56)),
+                ],
+            ),
+        )
+        .unwrap();
+        let faces = stub_faces(crate::face::Anchor::Crop(picture(4, [1, 2, 3])));
+        let out = tool(&url)
+            .with_faces(faces)
+            .call(
+                json!({"picture": "images/orig.png", "mask": "inbox/regions.png",
+                       "regions": [{"colour": "magenta", "words": "her face",
+                                    "reference": "inbox/face.png"},
+                                   {"colour": "cyan", "words": "make his shirt green"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains(
+                "The new face in the magenta region was laid back along the face's own edges"
+            ),
+            "{}",
+            out.content
+        );
+        let seen = seen.lock().unwrap().clone();
+        let prompts: Vec<&String> = seen
+            .iter()
+            .filter(|l| l.starts_with("POST /prompt"))
+            .collect();
+        assert_eq!(prompts.len(), 2, "the face, then the render");
+        assert!(
+            prompts[0].contains("SAM3_Detect") && prompts[0].contains("\"text\":\"face\""),
+            "{}",
+            prompts[0]
+        );
+        let saved =
+            image::load_from_memory(&std::fs::read(dir.join(picture_of(&out.content))).unwrap())
+                .unwrap()
+                .to_rgb8();
+        let canvas = prepare_mask(&original, &mask_png(64, 64, (0, 16, 16, 56)), 1024).unwrap();
+        // The canvas is 1024 square: one cell of the 64 grid is 16 px.
+        assert_eq!(saved.get_pixel(96, 512).0, [200, 20, 20], "the face");
+        assert_eq!(
+            saved.get_pixel(96, 300),
+            canvas.picture.get_pixel(96, 300),
+            "the stroke above the face is the original"
+        );
+        assert_eq!(
+            saved.get_pixel(768, 640).0,
+            [200, 20, 20],
+            "the shirt region"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Without segmentation, a face region is laid back along the paint, as
+    /// before S2, and the result says why.
+    #[tokio::test]
+    async fn a_face_region_without_segmentation_keeps_the_stroke_and_says_so() {
+        let red = image::RgbImage::from_pixel(64, 64, image::Rgb([200, 20, 20]));
+        let mut result = std::io::Cursor::new(Vec::new());
+        red.write_to(&mut result, image::ImageFormat::Png).unwrap();
+        let (url, _seen) = fake_with(Fake {
+            history: vec![done()],
+            views: vec![result.into_inner()],
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::write(dir.join("images/orig.png"), picture(8, [240, 220, 40])).unwrap();
+        std::fs::write(dir.join("inbox/face.png"), picture(8, [90, 60, 40])).unwrap();
+        std::fs::write(
+            dir.join("inbox/regions.png"),
+            index_png(64, 64, &[([255, 0, 255], (0, 16, 16, 56))]),
+        )
+        .unwrap();
+        let faces = stub_faces(crate::face::Anchor::Crop(picture(4, [1, 2, 3])));
+        let out = tool(&url)
+            .with_faces(faces)
+            .call(
+                json!({"picture": "images/orig.png", "mask": "inbox/regions.png",
+                       "regions": [{"colour": "magenta", "words": "her face",
+                                    "reference": "inbox/face.png"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains(
+                "The new face in the magenta region was laid back along the paint: the face's \
+                 own edges could not be found (SAM 3.1 segmentation is not installed"
+            ),
+            "{}",
+            out.content
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
     /// A face region whose character's face cannot be had puts no stranger
     /// under the name on a picture whose people are known: the prompt reads
     /// "the viewer". On a photo with no record the name may be someone
@@ -8930,6 +9671,186 @@ mod tests {
         assert!(
             !seen.iter().any(|l| l.starts_with("POST /prompt")),
             "{seen:?}"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A masked edit whose mask is named in words, on a server that can
+    /// segment: what SAM answers for each case is `views[0]`.
+    async fn edit_with_mask_words(
+        sam: bool,
+        found: Vec<u8>,
+    ) -> (ToolOutput, Vec<String>, std::path::PathBuf, Vec<u8>) {
+        let green = image::RgbImage::from_pixel(64, 64, image::Rgb([10, 200, 30]));
+        let mut result = std::io::Cursor::new(Vec::new());
+        green
+            .write_to(&mut result, image::ImageFormat::Png)
+            .unwrap();
+        let (url, seen) = fake_with(Fake {
+            history: vec![done(), done()],
+            views: vec![found, result.into_inner()],
+            sam,
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        let original = picture(8, [240, 220, 40]);
+        std::fs::write(dir.join("images/orig.png"), &original).unwrap();
+        let out = tool(&url)
+            .call(
+                json!({"picture": "images/orig.png", "retouch": "Make the sky orange.",
+                       "mask": "the sky"}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        let seen = seen.lock().unwrap().clone();
+        (out, seen, dir, original)
+    }
+
+    fn prompts(seen: &[String]) -> Vec<&String> {
+        seen.iter()
+            .filter(|l| l.starts_with("POST /prompt"))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn an_area_named_in_words_is_found_and_only_it_is_redrawn() {
+        let mask = mask_png(64, 64, (0, 16, 16, 56));
+        let (out, seen, dir, original) = edit_with_mask_words(true, mask.clone()).await;
+        assert!(!out.is_error, "{}", out.content);
+        let prompts = prompts(&seen);
+        assert_eq!(prompts.len(), 2, "the segmentation, then the render");
+        assert!(
+            prompts[0].contains("SAM3_Detect") && prompts[0].contains("the sky"),
+            "{}",
+            prompts[0]
+        );
+        assert!(!prompts[0].contains("KSampler"), "{}", prompts[0]);
+        assert!(prompts[1].contains("SetLatentNoiseMask"), "{}", prompts[1]);
+        assert!(
+            out.content
+                .contains("Only what was found for 'the sky' (1 area) was redrawn"),
+            "{}",
+            out.content
+        );
+        // Outside the area found, the original; inside, the render.
+        let png = out
+            .content
+            .lines()
+            .next()
+            .unwrap()
+            .strip_prefix("image: ")
+            .unwrap();
+        let saved = image::load_from_memory(&std::fs::read(dir.join(png)).unwrap())
+            .unwrap()
+            .to_rgb8();
+        let canvas = prepare_mask(&original, &mask, EDIT_REFERENCE_SIZE).unwrap();
+        assert_eq!(
+            saved.get_pixel(800, 576),
+            canvas.picture.get_pixel(800, 576)
+        );
+        assert_eq!(saved.get_pixel(128, 576).0, [10, 200, 30]);
+        let m = manifest_of(&dir, &out.content);
+        assert_eq!(m["mask_words"], "the sky", "{m}");
+        assert!(m["mask"].is_null(), "{m}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    fn square(w: u32, (x0, y0, x1, y1): (u32, u32, u32, u32)) -> image::GrayImage {
+        image::GrayImage::from_fn(w, w, |x, y| {
+            image::Luma([if (x0..x1).contains(&x) && (y0..y1).contains(&y) {
+                255
+            } else {
+                0
+            }])
+        })
+    }
+
+    #[test]
+    fn a_face_region_is_laid_back_along_the_face_found_inside_its_paint() {
+        let soft = square(100, (20, 20, 96, 96));
+        let face = square(100, (40, 40, 60, 60));
+        let out = edge_faces(&soft, None, &face).unwrap();
+        assert_eq!(out.get_pixel(50, 50).0[0], 255, "the face is redrawn");
+        assert_eq!(out.get_pixel(25, 25).0[0], 0, "the paint around it is not");
+        assert_eq!(out.get_pixel(5, 5).0[0], 0, "nor anything past the paint");
+        assert!(out.get_pixel(62, 50).0[0] > 0, "the face's edge, grown");
+        // A region with no face keeps its own softened paint.
+        let others = square(100, (86, 86, 94, 94));
+        let out = edge_faces(&soft, Some(&others), &face).unwrap();
+        assert_eq!(out.get_pixel(90, 90).0[0], 255);
+        assert_eq!(out.get_pixel(25, 25).0[0], 0);
+        // Never past the paint, or the no-face regions' own soft edge.
+        let kept = feather_mask(&grow_mask(&others), &others);
+        for (x, y, o) in out.enumerate_pixels() {
+            let bound = soft.get_pixel(x, y).0[0].max(kept.get_pixel(x, y).0[0]);
+            assert!(o.0[0] <= bound, "({x}, {y})");
+        }
+    }
+
+    #[test]
+    fn a_face_outside_the_face_region_keeps_the_paint() {
+        let soft = square(100, (20, 20, 80, 80));
+        // A face elsewhere in the picture, and one at the paint's edge only.
+        for face in [square(100, (0, 0, 8, 8)), square(100, (85, 20, 100, 80))] {
+            assert!(edge_faces(&soft, None, &face).is_none());
+        }
+        assert!(about_hair("her face and hair") && !about_hair("her face, chair behind"));
+    }
+
+    #[test]
+    fn found_areas_counts_separate_parts_and_leaves_out_specks() {
+        let mut m = image::GrayImage::new(100, 100);
+        assert_eq!(found_areas(&m), 0);
+        for (x, y) in (10..30).flat_map(|x| (10..30).map(move |y| (x, y))) {
+            m.put_pixel(x, y, image::Luma([255]));
+        }
+        assert_eq!(found_areas(&m), 1);
+        // A second part, touching the first only at a corner: separate.
+        for (x, y) in (30..50).flat_map(|x| (30..50).map(move |y| (x, y))) {
+            m.put_pixel(x, y, image::Luma([255]));
+        }
+        assert_eq!(found_areas(&m), 2);
+        // A speck of ten pixels, a thousandth of the picture: not an area.
+        for x in 80..90 {
+            m.put_pixel(x, 90, image::Luma([255]));
+        }
+        assert_eq!(found_areas(&m), 2);
+    }
+
+    #[tokio::test]
+    async fn an_area_named_in_words_without_segmentation_redraws_the_whole_picture() {
+        let (out, seen, dir, _) = edit_with_mask_words(false, PNG.to_vec()).await;
+        assert!(!out.is_error, "{}", out.content);
+        let prompts = prompts(&seen);
+        assert_eq!(prompts.len(), 1, "{seen:?}");
+        assert!(!prompts[0].contains("SAM3_Detect"), "{}", prompts[0]);
+        assert!(!prompts[0].contains("SetLatentNoiseMask"), "{}", prompts[0]);
+        assert!(
+            out.content.contains(
+                "The area 'the sky' could not be found (SAM 3.1 segmentation is not installed"
+            ) && out.content.contains("the whole picture"),
+            "{}",
+            out.content
+        );
+        assert!(manifest_of(&dir, &out.content)["mask_words"].is_null());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn an_area_named_in_words_that_matches_nothing_redraws_the_whole_picture() {
+        let (out, seen, dir, _) = edit_with_mask_words(true, mask_png(64, 64, (0, 0, 0, 0))).await;
+        assert!(!out.is_error, "{}", out.content);
+        let prompts = prompts(&seen);
+        assert_eq!(prompts.len(), 2, "{seen:?}");
+        assert!(!prompts[1].contains("SetLatentNoiseMask"), "{}", prompts[1]);
+        assert!(
+            out.content
+                .contains("Nothing in the picture matched 'the sky'"),
+            "{}",
+            out.content
         );
         std::fs::remove_dir_all(dir).ok();
     }

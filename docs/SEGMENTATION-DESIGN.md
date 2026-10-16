@@ -1,6 +1,6 @@
 # Segmentation for picture edits: design
 
-**Status:** ruled by the owner, 2026-10-16 (§6). Nothing is built yet; S1 and S2 come first.
+**Status:** ruled by the owner, 2026-10-16 (§6). S1 and S2 are built (`feat/sam-masks`, 2026-10-16) on a checkpoint placed by hand; installing it through the image slot's sources (§3) is the next change. S3 and S4 wait.
 **Owner's ask (2026-10-16):** "we also have the SAM segmentation model available to use as well if it is useful to help with the masking", and "whatever will work the best and is the most performant".
 **Where it fits:** IMAGE-DESIGN §15.6 lists "in-place per-person edits (arm B): segmentation-backed" as the owner's open decision. This design answers it, and also covers the masking problems found in the 2026-10-16 corpus read.
 
@@ -23,7 +23,7 @@ The 2026-10-16 corpus read covered 145 image calls since 10-08. These are the fa
 | In ComfyUI | native: `comfy_extras/nodes_sam3.py` (`SAM3_Detect`, `SAM3_VideoTrack`) in both builds here | no native node |
 | Cached here | `models--facebook--sam3` (3.3 GB, F32, transformers layout) | `models--facebook--sapiens2-seg-0.4b` (1.6 GB) |
 
-**SAM 3.1 where it does better.** ComfyUI also loads SAM 3.1 natively (`SAM31` in `comfy/supported_models.py`), and the owner has access approval for it. The checkpoint is chosen by measurement on our own edits (§7), not by version number.
+**SAM 3.1 where it does better.** ComfyUI also loads SAM 3.1 natively (`SAM31` in `comfy/supported_models.py`), and the owner has access approval for it. SAM 3.1 is the checkpoint (§3, the owner's Q2), and §7 checks it on our own edits.
 
 **Sapiens2 is out.** Its licence forbids pornographic use and deepfakes, and persona pictures are in that territory. That makes it unusable for mecha's picture tool, even though it is the better body-part segmenter. SAM 3's text prompts cover the same ground ("face", "hair", "the green jacket", "the left sleeve").
 
@@ -34,8 +34,8 @@ The 2026-10-16 corpus read covered 145 image calls since 10-08. These are the fa
 - **The weights: SAM 3.1, decided.** ComfyUI's own fp16 repackaging (`Comfy-Org/sam3.1`, `checkpoints/sam3.1_multiplex_fp16.safetensors`, 1,745,546,848 bytes, sha256 `9ba99c92…eb03`; the SAM licence). It is what ComfyUI's SAM3 blueprint loads, with `CheckpointLoaderSimple`, and the owner has access approval for it. SAM 3 is not an arm: its only file ComfyUI can load is Meta's original pickle (`sam3.pt`), and the transformers-layout weights cached here (`facebook/sam3`) do not load at all. §7 checks the choice on our edits rather than choosing it.
 - **Installed as a second `Source` on both of the image slot's rows** in `recommend::SLOTS`: the int8 ConvRot row and `IMAGE_MAC` each carry their own `sources`, so SAM goes in both, or the Mac never fetches it. `Comfy-Org/sam3.1` is its own repo, beside the slot's `Comfy-Org/Qwen-Image-2.1`. It is fetched into the hub, symlinked where ComfyUI looks, recorded in the manifest, and checked against the server's own listing, as `comfyui_unit.rs` does for the slot's files. Being in the slot's `sources` is what makes `features --probe` and the install plan count its 1.7 GB.
 - **The turbo model is deliberately different**, and it is the counter-example rather than the precedent. `TURBO_FILE` sits outside the slot's `sources`, in `comfyui_unit.rs`, fetched on demand by the owner's 2026-10-11 ruling, with its own accounting in `features enable`. SAM goes in `sources` because S1 and S2 serve every masked edit, not an opt-in render mode. (The copy placed straight into `models/checkpoints/` on 2026-10-16 for §7's first read is replaced by this install, not kept beside it.)
-- **Memory: segmentation runs only inside an admitted picture job, and every segmentation is followed by that job's render.** The admission gauge cannot tell which model a ComfyUI process holds: `loaded_from_stats` answers "has loaded anything", so SAM loaded alone would make the next picture's ask about 8 GiB too small (`memory_need_mb`, `load_cost_mb`). Inside a picture job, SAM never loads without the image model, so the gauge stays true. That holds *because* no segmentation ends the job without a render: a mask SAM found that `prepare_mask` then refuses is dropped and the edit drawn without it (S1), never a refusal that would leave SAM loaded alone. The job's own need gains SAM's measured peak (§7), and the server's idle reset takes both.
-- **Measured cost** (2026-10-16, warm server, the #706 photo at 640×1632): the first segmentation in a process took 5.0 s, loading included; each one after took 1.0 s. That is against 40–60 s for the render it serves. The memory peak is not yet measured (§7).
+- **Memory: segmentation runs only inside an admitted picture job, and every segmentation is followed by that job's render.** The admission gauge cannot tell which model a ComfyUI process holds: `loaded_from_stats` answers "has loaded anything", so SAM loaded alone would make the next picture's ask about 8 GiB too small (`memory_need_mb`, `load_cost_mb`). Inside a picture job, SAM never loads without the image model, so the gauge stays true. That holds *because* no segmentation ends the job without a render: a mask SAM found that `prepare_mask` then refuses is dropped and the edit drawn without it (S1), never a refusal that would leave SAM loaded alone. The job's need gains SAM's measured peak (`imagegen::SEGMENT_NEED_MB`, below) whenever the call may segment (words in `mask`, or painted regions), warm or cold, and the server's idle reset takes both. A job stopped mid-segmentation is the one way SAM is left loaded without a render; the stop is the owner's, and the next job's ask stays conservative by the same rule.
+- **Measured cost** (2026-10-16, warm server, the #706 photo at 640×1632): the first segmentation in a process took 5.0 s, loading included; each one after took 1.0 s. That is against 40–60 s for the render it serves. **Memory:** SAM 3.1's cold load peaked at 2,528 MB of GPU memory above a freed server (369 → 2,897 MB, ComfyUI's own process by `nvidia-smi`), and keeps 1,920 MB resident after. On the GB10 that is the system's memory, so `SEGMENT_NEED_MB` is 3 GiB. Not measured on a Mac.
 
 ## 4. What changes, in order of value
 
@@ -61,6 +61,7 @@ The 2026-10-16 corpus read covered 145 image calls since 10-08. These are the fa
 ### S2. Face and hair edges for face regions (failure 2)
 
 - When a region takes a face (#706), the composite uses the painted region ∩ SAM 3's "face" mask grown by a few pixels, instead of the paint alone. With "face and hair" in the region's words, the "hair" mask is added.
+- **As built** (`imagegen::edge_faces`): the face is found on the canvas inside the job, grown 5 px and feathered (σ 3), and the composite's mask is `max(the no-face regions' own softened paint, min(soft paint, face))`. It is never past the paint's own edge, so nothing outside the paint can change. A face that fills under a tenth of the face regions' paint is someone else's (a neighbour's face, or one at the stroke's edge): the paint is kept, and said.
 - **Measured before it ships:** ArcFace against the face wanted (`mecha imagelib face compare`, from #705), and the seam by eye, on the same photo and crops as #706. Paint alone is the control.
 
 ### S3. Snap a painted stroke to its object (failures 2 and 3)
@@ -100,11 +101,12 @@ Out of scope here. It needs the person split from the scene's record, which is a
 
 ## 7. Measurement plan
 
-- **S1:** replay the 19 word-masks from the corpus through the new path. Record what SAM 3 found per call, then judge by eye whether the right thing was masked. The count goes in the PR. The words are not quoted (no persona text in the repo).
+- **S1:** replay the 19 word-masks from the corpus through the new path. Record what SAM 3 found per call, then judge by eye whether the right thing was masked. The count goes in the PR. The words are not quoted (no persona text in the repo). **Read (2026-10-16, 22 calls by then):** 16 had their picture on disk, and SAM found something for all 16. By eye, 11 were right, 2 partial and 3 wrong. Every one that missed was a name or a position: SAM 3 finds things by what they are, so it cannot know a name, and a position phrase gave it a noun inside the phrase. Both statements of the rule now ask for what the thing is, never a name or a position. A wrong find redraws a smaller area than was meant, where before the whole picture was redrawn; the result says what was found either way.
 - **S2:** two seeds × paint-only versus SAM-edged composite on the #706 photo. ArcFace by `mecha imagelib face compare` (#705), plus the seam by eye in a contact sheet. **First read (2026-10-16):**
   - The "face" mask runs jaw to hairline, and the "hair" mask catches the loose strands.
   - "Face and hair" as one prompt returns the face alone, so the two are asked separately and joined.
   - The same render pasted back through the face mask scores the same identity as the ellipse (.81), keeps the photo's own hairline and earrings, and shows no seam.
-- **Cost:** time per segmentation (above) and the memory peak of a picture job with SAM beside the image model. The peak decides whether the image slot's `Peak` (`recommend.rs`) moves; evidence for that figure goes beside it, as the slot's other figures have.
+  - **Through the built tool** (the real server, one seed): ArcFace .876 against the face wanted (the unedited photo: .196). Every changed pixel is inside the face; the stroke reached about 60 px above it, and the hairline there is the original's.
+- **Cost:** time per segmentation and SAM's memory peak, both in §3. Whether the image slot's `Peak` (`recommend.rs`) moves is decided with the install change, with the evidence beside it as the slot's other figures have.
 - **S3:** the §7.7 set (two shirts, two cups, a sleeve): stroke-only versus snapped masks, wrong-target and missed-target counts.
 - **S4:** the corpus's three edits whose layout similarity was at least 0.97: does the in-region difference tell a real change from none?
