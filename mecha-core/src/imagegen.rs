@@ -4657,6 +4657,9 @@ impl Tool for ImageGenerate {
         // all, .10–.25. Nothing outside the paint is drawn, so the
         // references go at the unmasked size even for a person without a
         // crop: the canvas is nobody's identity source there.
+        // Who the prompt reads as "the viewer": the plan's offstage people,
+        // and anyone a face region named whose face could not be sent.
+        let mut viewers = plan.offstage.clone();
         if mask_plan.is_some() && !call.regions.is_empty() {
             let mut lines: Vec<String> = Vec::new();
             for r in &call.regions {
@@ -4676,9 +4679,9 @@ impl Tool for ImageGenerate {
                         // "a red dress like this" over a model in it keeps the
                         // dress, never her face (review of #706, pass 3).
                         let about_face = crate::picture::about_a_face(&r.words);
-                        let faces = Arc::clone(&self.faces);
-                        let bytes = read.bytes.clone();
                         let anchor = if about_face {
+                            let faces = Arc::clone(&self.faces);
+                            let bytes = read.bytes.clone();
                             tokio::task::spawn_blocking(move || faces.crop(&bytes))
                                 .await
                                 .unwrap_or_else(|_| {
@@ -4769,6 +4772,7 @@ impl Tool for ImageGenerate {
                                             Some((crop, "png", true, format!("{shown}'s face")))
                                         }
                                         crate::face::Anchor::NoFace => {
+                                            viewers.push(name.clone());
                                             dropped.push(format!(
                                                 "No face was found in {shown}'s library \
                                                  picture, so the {} region was drawn from its \
@@ -4778,6 +4782,7 @@ impl Tool for ImageGenerate {
                                             None
                                         }
                                         crate::face::Anchor::Unavailable(why) => {
+                                            viewers.push(name.clone());
                                             dropped.push(format!(
                                                 "{shown}'s face could not be taken from the \
                                                  library ({why}), so the {} region was drawn \
@@ -4858,7 +4863,7 @@ impl Tool for ImageGenerate {
             .iter()
             .flat_map(|t| t.value.iter().map(|w| w.words.as_str()))
             .collect();
-        req.prompt = crate::picture::as_viewer(&req.prompt, &plan.offstage, &rendered);
+        req.prompt = crate::picture::as_viewer(&req.prompt, &viewers, &rendered);
         if req.prompt.chars().count() > crate::imagelib::MAX_COMPILED_PROMPT {
             return Ok(refused(format!(
                 "The picture's description came to over {} characters; say less in the scene.",
@@ -8534,6 +8539,54 @@ mod tests {
             canvas.picture.get_pixel(w / 2, h / 20)
         );
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A face region whose character's face cannot be had puts no stranger
+    /// under the name: the prompt reads "the viewer" (review of #706, pass 4).
+    #[tokio::test]
+    async fn a_named_face_that_cannot_be_had_is_read_as_the_viewer() {
+        let red = image::RgbImage::from_pixel(64, 64, image::Rgb([200, 20, 20]));
+        let mut result = std::io::Cursor::new(Vec::new());
+        red.write_to(&mut result, image::ImageFormat::Png).unwrap();
+        let (url, seen) = fake_with(Fake {
+            history: vec![done()],
+            views: vec![result.into_inner()],
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        let lib = library_with(&["maya"]);
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::write(dir.join("images/orig.png"), picture(8, [240, 220, 40])).unwrap();
+        std::fs::write(
+            dir.join("inbox/regions.png"),
+            index_png(64, 64, &[([255, 0, 255], (0, 16, 16, 56))]),
+        )
+        .unwrap();
+        let faces = stub_faces(crate::face::Anchor::Unavailable("not installed".into()));
+        let out = tool(&url)
+            .with_library_dir(lib.clone())
+            .with_faces(faces.clone())
+            .call(
+                json!({"picture": "images/orig.png", "mask": "inbox/regions.png",
+                       "regions": [{"colour": "magenta", "words": "Maya's face"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let seen = seen.lock().unwrap().clone();
+        let submitted = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+        assert!(!submitted.contains("Maya"), "{submitted}");
+        assert!(submitted.contains("the viewer"), "{submitted}");
+        assert!(
+            out.content.contains("could not be taken from the library"),
+            "{}",
+            out.content
+        );
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
     }
 
     /// A picture dropped on a region whose words are not about a face is a
