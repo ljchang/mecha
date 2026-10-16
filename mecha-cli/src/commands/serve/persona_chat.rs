@@ -12776,6 +12776,54 @@ mod tests {
         assert!(unlocked["voices"][0]["locked"].is_null(), "{unlocked}");
     }
 
+    /// A save with the lock box unticked clears a flag no voice holds — and
+    /// only then: a flag on a voice the worker lists is kept, and so is one
+    /// the worker could not be asked about, since an outage must never unhide
+    /// a locked server voice (review of #701, pass 7).
+    #[tokio::test]
+    async fn an_unticked_save_never_unhides_a_locked_server_voice() {
+        let w = world();
+        let clones = w.root.join("voices");
+        std::fs::create_dir_all(&clones).unwrap();
+        let (target, _) = voice_runner(&["ada"]).await;
+        let (state, library) = voice_state(&w, target, clones.clone());
+        let save = |state: super::super::WebState, name: &str| {
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert("content-type", "audio/wav".parse().unwrap());
+            super::super::settings::voice_clone(
+                State(state),
+                Query(super::super::settings::CloneQuery {
+                    name: name.into(),
+                    locked: false,
+                    unlock: None,
+                }),
+                headers,
+                axum::body::Bytes::from(super::super::tests::tiny_wav(16_000, 6.0)),
+            )
+        };
+        let locked = || mecha_core::imagelib::locked_voices(&library.dir).unwrap();
+
+        // A server voice the worker lists, locked, with no clip of that name.
+        mecha_core::imagelib::set_voice_locked(&library.dir, "ada", true).unwrap();
+        assert_eq!(save(state.clone(), "ada").await.status(), StatusCode::OK);
+        assert!(
+            locked().contains("ada"),
+            "a listed voice's flag was cleared"
+        );
+
+        // A worker that cannot be asked vouches for nothing either way.
+        mecha_core::imagelib::set_voice_locked(&library.dir, "ghost", true).unwrap();
+        let mut down = state.clone();
+        down.offer_target = Some(Arc::new("http://127.0.0.1:9/api/offer".into()));
+        assert_eq!(save(down, "ghost").await.status(), StatusCode::OK);
+        assert!(locked().contains("ghost"), "an outage cleared a flag");
+
+        // Asked, and holding no voice of that name: the flag was stale.
+        mecha_core::imagelib::set_voice_locked(&library.dir, "stale", true).unwrap();
+        assert_eq!(save(state.clone(), "stale").await.status(), StatusCode::OK);
+        assert!(!locked().contains("stale"));
+    }
+
     /// A persona that speaks in a locked voice keeps it — calls still speak
     /// in it — and a locked page never sees its name: not in the settings
     /// text, the form, or the waiting card; every save keeps the line as it
