@@ -220,6 +220,28 @@ impl RefKind {
     }
 }
 
+/// A character's face picture, [`Library::face_picture`]: its bytes, their
+/// extension as [`Library::read_portrait`] gives it, and which picture it
+/// was.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FacePicture {
+    pub bytes: Vec<u8>,
+    pub ext: &'static str,
+    /// The character's `face` reference, rather than its portrait.
+    pub from_face_reference: bool,
+}
+
+impl FacePicture {
+    /// Which picture it was, as a sentence names it.
+    pub fn which(&self) -> &'static str {
+        if self.from_face_reference {
+            "face reference"
+        } else {
+            "portrait"
+        }
+    }
+}
+
 /// One typed reference: a blob under `blobs/`, checked like the portrait.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Reference {
@@ -467,15 +489,29 @@ impl Library {
 
     /// The picture of a character's face: its `face` reference when it has
     /// one ("a better face than the portrait shows", [`RefKind::Face`]), its
-    /// portrait otherwise, with which one it was. Both under the hash check.
-    pub fn face_picture(&self, entry: &Entry) -> Result<(Vec<u8>, &'static str)> {
+    /// portrait otherwise. Both under the hash check.
+    pub fn face_picture(&self, entry: &Entry) -> Result<FacePicture> {
         match entry
             .sendable_references()
             .into_iter()
             .find(|r| r.kind == RefKind::Face)
         {
-            Some(face) => Ok((self.read_reference(entry, face)?.0, "face reference")),
-            None => Ok((self.read_portrait(entry)?.0, "portrait")),
+            Some(face) => {
+                let (bytes, ext) = self.read_reference(entry, face)?;
+                Ok(FacePicture {
+                    bytes,
+                    ext,
+                    from_face_reference: true,
+                })
+            }
+            None => {
+                let (bytes, ext) = self.read_portrait(entry)?;
+                Ok(FacePicture {
+                    bytes,
+                    ext,
+                    from_face_reference: false,
+                })
+            }
         }
     }
 
@@ -3034,13 +3070,15 @@ mod tests {
         let lib = Library::load(dir.path()).0;
         let wren = lib.get(Kind::Character, "wren").unwrap();
         let (portrait, _) = lib.read_portrait(wren).unwrap();
-        assert_eq!(lib.face_picture(wren).unwrap(), (portrait, "portrait"));
+        let got = lib.face_picture(wren).unwrap();
+        assert_eq!((got.which(), got.bytes), ("portrait", portrait));
         add_reference(dir.path(), "wren", RefKind::Face, &png_of([7, 7, 7]), None).unwrap();
         let lib = Library::load(dir.path()).0;
         let wren = lib.get(Kind::Character, "wren").unwrap();
+        let got = lib.face_picture(wren).unwrap();
         assert_eq!(
-            lib.face_picture(wren).unwrap(),
-            (png_of([7, 7, 7]), "face reference")
+            (got.which(), got.bytes),
+            ("face reference", png_of([7, 7, 7]))
         );
     }
 
