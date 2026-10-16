@@ -246,6 +246,26 @@ pub fn own_server(id: &str) -> Option<(&'static str, crate::own_build::Source)> 
 /// Whether `bin` is a copy of one of mecha's own servers, by `program`,
 /// from another build than the one wanted (§15).
 pub fn stale_copy(program: &str, bin: &Path) -> bool {
+    stale_copy_with(program, bin, crate::onboarding::find_program)
+}
+
+/// [`stale_copy`] with the PATH lookup to resolve a bare name by. An
+/// `[[mcp]]` entry's `command` is often just `mecha-graph-mcp` — the form the
+/// docs ship — which has no directory to find cargo's record beside, so it is
+/// resolved as the process that starts it would (review of #699).
+pub fn stale_copy_with(program: &str, bin: &Path, find: impl Fn(&str) -> Option<PathBuf>) -> bool {
+    let resolved;
+    let bin = if bin.components().count() == 1 {
+        match bin.to_str().and_then(&find) {
+            Some(found) => {
+                resolved = found;
+                resolved.as_path()
+            }
+            None => return false,
+        }
+    } else {
+        bin
+    };
     let id = if program == crate::graph_mcp::PROGRAM {
         crate::graph_mcp::ID
     } else if crate::mail_mcp::PROGRAMS.contains(&program) {
@@ -1669,6 +1689,32 @@ mod tests {
         );
         record(REV);
         assert_eq!(state(&m), SidecarState::Installed);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An entry's bare `command` (`mecha-graph-mcp`, the form the docs ship)
+    /// is judged as the binary the PATH resolves it to: a stale copy there is
+    /// stale under its bare name too, and a name nothing resolves is not
+    /// judged at all (review of #699).
+    #[test]
+    fn a_bare_command_is_judged_as_what_the_path_resolves() {
+        let root = scratch();
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        let copy = root.join("bin/mecha-graph-mcp");
+        std::fs::write(&copy, "").unwrap();
+        std::fs::write(
+            root.join(".crates2.json"),
+            r#"{"installs":{"mecha-graph-mcp 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)":{"bins":["mecha-graph-mcp"]}}}"#,
+        )
+        .unwrap();
+        let program = crate::graph_mcp::PROGRAM;
+        let finds = |name: &str| (name == program).then(|| copy.clone());
+        assert!(stale_copy_with(program, Path::new(program), finds));
+        assert!(
+            stale_copy_with(program, &copy, finds),
+            "the full path agrees"
+        );
+        assert!(!stale_copy_with(program, Path::new(program), |_| None));
         let _ = std::fs::remove_dir_all(&root);
     }
 
