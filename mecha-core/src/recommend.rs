@@ -264,7 +264,7 @@ const IMAGE_MAC: &[Recommendation] = &[Recommendation {
             },
         ],
     }, SAM_SOURCE],
-    excludes: Some("what a loaded server holds between pictures: there is no idle reset on a Mac, so ~13.6 GB on MPS and ~6 GiB RSS stay until `[image] unload_after_secs` sends /free, and what /free gives back on MPS is not measured; the CPU text encoder's own memory, not measured apart from the process; and SAM 3.1's load for an edit that segments, 2.5 GB on the GB10 and not measured on a Mac"),
+    excludes: Some("what a loaded server holds between pictures: there is no idle reset on a Mac, so ~13.6 GB on MPS and ~6 GiB RSS stay until `[image] unload_after_secs` sends /free, and what /free gives back on MPS is not measured; the CPU text encoder's own memory, not measured apart from the process; and SAM 3.1's load for an edit that segments: 2.5 GB on the GB10, not measured on a Mac, where the gate asks the GB10's 3 GiB on top of this row's figure for a call that may segment"),
 }];
 
 const MAC_M5: &str = "MacBook Pro (M5 Max)";
