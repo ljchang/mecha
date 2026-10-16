@@ -54,7 +54,8 @@ every other route. The body is a `MailboxMessage` without its id and status:
 recipient lock. `from` stays a producer name (`work::valid_producer` refuses
 `@`). **Every sender-supplied field is validated at the route**, since on
 the wire none is harness-stamped any more: `from` by `valid_producer`,
-`from_session` by the session-id form, `from_machine` by the same character
+`from_session` by the session-id form (`serve::persona_chat::valid_session_id`,
+promoted to one shared check rather than a second copy), `from_machine` by the same character
 set as a producer; anything else refuses the message. `render_delivery`
 interpolates `from_session` raw into the `<untrusted-content source="…">`
 fence today — safe while the harness stamped it, a fence-breaker the moment a
@@ -62,8 +63,9 @@ peer can set it (review of #700). The machine goes in a new optional
 `MailboxMessage::from_machine`,
 `None` for a local message and a default for an older build's file, and
 surfaces show the pair as `chat@laptop`. "The same owner guard" includes
-the rest of a `POST`'s gate: the `x-mecha-request: 1` header every mutating
-route requires. The duplicate check's key —
+the rest of a `POST`'s gate — the `x-mecha-request: 1` header every mutating
+route requires, and `sec-fetch-site` refused when present and not
+`same-origin` (a peer's client sends neither). The duplicate check's key —
 `(from, body, reply_to)` today — gains `from_machine`, or two machines' `chat`
 sending one short body to one recipient would coalesce into a single message
 (review of #700). From there nothing is new: the receiver's runs claim it at a
@@ -88,9 +90,10 @@ and its MagicDNS name:
    answered within the last day and does not now, is listed as
    **unreachable** rather than dropped, so a peer that sleeps reads as one
    that is asleep (review of #700). "Within the last day" needs a memory the
-   30-second cache is not: each peer's last answer is kept in
-   `~/.mecha/messages/peers.json`, written when a peer answers, so it
-   survives a restart.
+   30-second cache is not: each peer's last answer is kept in `peers.json`
+   under the messages root (`$MECHA_MESSAGES_DIR`, `[messages] dir`, or
+   `~/.mecha/messages`), written when a peer answers, so it survives a
+   restart.
 
 The `tailscale status --json` fork is the one `system/source.rs` already runs,
 with its budget and timeout; D3 reads node names from it, which the system
@@ -105,19 +108,27 @@ the tailnet cannot say:
 ```toml
 [messages.peers]
 nicknames = { gpu = "spark" }  # a nickname for a node
-exclude = ["old-mbp"]          # a node of the owner's never treated as a peer
+exclude = ["old-mbp"]          # a node of the owner's never sent to or listed
 ```
+
+`exclude` is outbound only: no send to it, no listing of it. It cannot keep
+messages *from* that node out, because the receiving side cannot tell which
+of the owner's machines sent one (D1) — filtering on `from_machine` would be
+the trust decision D1 forbids (review of #700).
 
 `message_send`'s `to` accepts `chat` (this machine) or `chat@spark`; an
 unknown or unreachable machine is an error that lists the peers found.
 
 **D4. Egress: none, because the boundary moved — and the taint moves with
 it.** A send to a peer is classified as a local send is: no `Egress` class,
-so the interlock does not refuse it. **What makes that hold is that `to`'s
-machine half resolves only against the discovered peer set (D3)**: the model
-names a peer, never a host or a URL, so the tool has no destination the model
-chooses — the whole difference from `http_fetch`, which is `Chosen` because
-the model picks the host (review of #700). `MessageSendTool`
+so the interlock does not refuse it. The model *does* name a destination
+now — `to`'s machine half is its choice — so what holds the class at none is
+not the absence of a choice but its range: **every value `to` can take is one
+of the owner's own machines**, found from the tailnet's identity of the owner
+(D3) and resolved only against that set; the model names a peer, never a host
+or a URL. That is the local precedent widened by the ruling, and it is not a
+licence for a fixed allowlist of anyone else's hosts — `http_fetch` is
+`Chosen` because its range is the internet (review of #700). `MessageSendTool`
 declares none of the four capabilities today because "the payload lands in
 `~/.mecha`, owner-only, same uid — no exfiltration channel"; the ruling
 extends the same reason to the owner's other machines. What keeps this safe is
@@ -221,11 +232,15 @@ everything it provokes.
    widened by it; a missing taint stored unrecorded and every remote taint
    with `untrusted` added (D5); delivery labelled with the machine —
    `render_delivery` says "on this machine" today, and a remote message says
-   which (§3) — through a second stem, `REMOTE_DELIVERY_STEM` ("another
-   mecha agent on <machine>"), added to `agent::is_harness_voice`'s closed
-   list beside `DELIVERY_STEM`: a delivery that matched neither would be
-   mined as an owner correction, and keeping the local stem would have the
-   harness say "on this machine" of a message that is not; and `GET /api/messages/agents`
+   which (§3) — through a second stem, `REMOTE_DELIVERY_STEM`, added to
+   `agent::is_harness_voice`'s closed list beside `DELIVERY_STEM`. That list
+   matches by `contains` on *contiguous* fixed text, so the stem holds no
+   machine name: the header reads "from `chat@spark` — another mecha agent on
+   another of the owner's machines, not the user", and the stem is the fixed
+   run "another mecha agent on another of the owner's machines" (review of
+   #700). A delivery matching neither would be mined as an owner correction,
+   and keeping the local stem would have the harness say "on this machine" of
+   a message that is not; and `GET /api/messages/agents`
    (D7), built from the live markers and the trigger store. Tested with an
    absent `Tailscale-User-Login` (refused), another login (refused) — a
    forged header carrying the owner's login is indistinguishable here, and
