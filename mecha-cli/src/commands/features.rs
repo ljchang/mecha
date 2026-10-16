@@ -933,20 +933,35 @@ pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
 /// servers, the build its `[[mcp]]` entry would run — so a sign-in after
 /// `enable` is the matching server's, never a stale copy on the PATH whose
 /// `auth` takes other arguments (review of #699). Anything else as named.
-pub(super) fn remedy_program(program: &str) -> std::ffi::OsString {
+/// A stale copy with nothing matching installed is refused, never run as a
+/// fallback (review of #699): its `auth` is the one that took other
+/// arguments.
+pub(super) fn remedy_program(program: &str) -> Result<std::ffi::OsString, String> {
     let own = mecha_core::mail_mcp::PROGRAMS.contains(&program)
         || program == mecha_core::graph_mcp::PROGRAM;
     if !own {
-        return program.into();
+        return Ok(program.into());
     }
     let home = mecha_core::work::mecha_home().ok();
-    mcp_command(
-        program,
-        mecha_core::onboarding::find_program(program),
-        home.as_deref(),
-    )
-    .map(Into::into)
-    .unwrap_or_else(|| program.into())
+    let on_path = mecha_core::onboarding::find_program(program);
+    if let Some(found) = mcp_command(program, on_path.clone(), home.as_deref()) {
+        return Ok(found.into());
+    }
+    match on_path {
+        Some(p) if mecha_core::sidecar::stale_copy(program, &p) => Err(format!(
+            "the `{program}` on your PATH ({}) is another build's, and the matching one is not \
+             installed — `mecha features enable {}` builds it",
+            p.display(),
+            if program == mecha_core::graph_mcp::PROGRAM {
+                "graph"
+            } else if program == "mecha-docs" {
+                "docs"
+            } else {
+                "mail"
+            }
+        )),
+        _ => Ok(program.into()),
+    }
 }
 
 fn mcp_command(

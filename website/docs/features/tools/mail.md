@@ -28,12 +28,13 @@ switch is off, and with it off the server is not started and the `mecha mail`
 verbs refuse. `mecha features enable mail` writes the switch (or say yes when
 `mecha setup` offers it) and, where no `[[mcp]]` entry runs `mecha-mail` or is
 called `mail`, writes the one below: the program by its absolute path, its
-results untrusted, and its sends in an `[outbox]` when you have none. It
-never edits an entry or an `[outbox]` you wrote — it names what yours lacks —
-and it writes no `[outbox]` where a `[[rule]]` of yours names one of those
-sends, saying which. It builds the servers too, from the same source as
-your `mecha` (a copy on your `PATH` from another build is passed over, and an
-entry running one is pointed at the matching build); [signing
+results untrusted, and its sends in an `[outbox]` when you have none. An
+entry or an `[outbox]` you wrote is only named for what it lacks, never
+edited — with one exception: an entry running a `mecha-mail` from another
+build has its `command` pointed at the matching build, and nothing else in it
+changes. It writes no `[outbox]` where a `[[rule]]` of yours names one of
+those sends, saying which. It builds the servers too, from the same source as
+your `mecha`, passing over a copy on your `PATH` from another build; [signing
 in](#signing-in) stays yours, and `mecha setup` runs the sign-in on its yes.
 
 ```toml
