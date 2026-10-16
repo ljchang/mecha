@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`mecha-mail auth` takes a sign-in app you already have.** Before the
+  registration pages it asks whether you have one, from another machine for
+  instance. On a yes, Google wants only the client file (drag it in, or Enter
+  for the newest in Downloads) and Outlook its two ids; the pages are skipped.
+  `mecha setup` runs the same question when it signs you in to mail.
+
 - **`mecha imagelib face`: check faces yourself.** `detect` lists the faces
   in a picture, `crop` cuts the tight face crop an edit is anchored to, and
   `compare` scores how alike faces are (ArcFace, -1 to 1) against a picture
