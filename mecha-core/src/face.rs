@@ -253,6 +253,12 @@ pub trait FaceAnchors: Send + Sync {
     fn faces_in(&self, _png: &[u8]) -> std::result::Result<usize, String> {
         Err("no face detector here".into())
     }
+
+    /// The anchor crop of any picture's largest face, not cached: a face
+    /// the owner dropped on a painted region (`IMAGE-DESIGN.md` §5.3).
+    fn crop(&self, _picture: &[u8]) -> Anchor {
+        Anchor::Unavailable("no face detector here".into())
+    }
 }
 
 /// The cache's generation. A crop depends on the weights, the thresholds,
@@ -278,22 +284,7 @@ pub fn cache_paths(library_dir: &Path, blob: &str) -> (PathBuf, PathBuf) {
 
 impl FaceAnchors for CachedRetinaFace {
     fn faces_in(&self, png: &[u8]) -> std::result::Result<usize, String> {
-        let weights = match weights() {
-            Ok(Some(w)) => w,
-            Ok(None) => {
-                return Err(format!(
-                    "the face detector is not installed ({INSTALL_HINT})"
-                ))
-            }
-            Err(e) => {
-                tracing::warn!("face detector weights: {e:#}");
-                return Err("the face detector's weights could not be checked".into());
-            }
-        };
-        let detector = Detector::load(&weights).map_err(|e| {
-            tracing::warn!("face detector: {e:#}");
-            "the face detector could not be loaded".to_string()
-        })?;
+        let detector = load_detector()?;
         let img = image::load_from_memory(png)
             .map_err(|e| format!("the picture did not read: {e}"))?
             .to_rgb8();
@@ -304,31 +295,50 @@ impl FaceAnchors for CachedRetinaFace {
     }
 
     fn anchor(&self, library: &crate::imagelib::Library, entry: &crate::imagelib::Entry) -> Anchor {
-        cached(library, entry, &|portrait| {
-            // A short reason for the manifest, which the model can read; the
-            // detail, home paths and all, goes to the log.
-            let weights = match weights() {
-                Ok(Some(w)) => w,
-                Ok(None) => {
-                    return Err(format!(
-                        "the face detector is not installed ({INSTALL_HINT})"
-                    ))
-                }
-                Err(e) => {
-                    tracing::warn!("face detector weights: {e:#}");
-                    return Err("the face detector's weights could not be checked".into());
-                }
-            };
-            let detector = Detector::load(&weights).map_err(|e| {
-                tracing::warn!("face detector: {e:#}");
-                "the face detector could not be loaded".to_string()
-            })?;
-            anchor_crop(&detector, portrait).map_err(|e| {
+        cached(library, entry, &|picture| {
+            anchor_crop(&load_detector()?, picture).map_err(|e| {
                 tracing::warn!("face crop: {e:#}");
-                "no face crop could be made from the portrait".to_string()
+                "no face crop could be made from the character's face".to_string()
             })
         })
     }
+
+    fn crop(&self, picture: &[u8]) -> Anchor {
+        let detector = match load_detector() {
+            Ok(d) => d,
+            Err(why) => return Anchor::Unavailable(why),
+        };
+        match anchor_crop(&detector, picture) {
+            Ok(Some(crop)) => Anchor::Crop(crop),
+            Ok(None) => Anchor::NoFace,
+            Err(e) => {
+                tracing::warn!("face crop: {e:#}");
+                Anchor::Unavailable("no face crop could be made from the picture".into())
+            }
+        }
+    }
+}
+
+/// The detector, from its pinned weights, or a short reason for the
+/// manifest, which the model can read; the detail, home paths and all, goes
+/// to the log.
+fn load_detector() -> std::result::Result<Detector, String> {
+    let weights = match weights() {
+        Ok(Some(w)) => w,
+        Ok(None) => {
+            return Err(format!(
+                "the face detector is not installed ({INSTALL_HINT})"
+            ))
+        }
+        Err(e) => {
+            tracing::warn!("face detector weights: {e:#}");
+            return Err("the face detector's weights could not be checked".into());
+        }
+    };
+    Detector::load(&weights).map_err(|e| {
+        tracing::warn!("face detector: {e:#}");
+        "the face detector could not be loaded".to_string()
+    })
 }
 
 /// What a detector made of a portrait: a crop, no face, or why it could not
@@ -344,7 +354,15 @@ fn cached(
     entry: &crate::imagelib::Entry,
     detect: &dyn Fn(&[u8]) -> Found,
 ) -> Anchor {
-    let Some(blob) = entry.portrait.as_deref() else {
+    // The character's face reference when it has one ("a better face than
+    // the portrait shows"), its portrait otherwise: cached by that picture's
+    // own blob, so a new face reference is a new crop.
+    let face_ref = entry
+        .sendable_references()
+        .into_iter()
+        .find(|r| r.kind == crate::imagelib::RefKind::Face)
+        .map(|r| r.blob.as_str());
+    let Some(blob) = face_ref.or(entry.portrait.as_deref()) else {
         return Anchor::Unavailable("the character has no portrait".into());
     };
     let (png, none) = cache_paths(library.dir(), blob);
@@ -354,16 +372,16 @@ fn cached(
     if none.exists() {
         return Anchor::NoFace;
     }
-    // Re-hashed on read: a portrait whose bytes no longer match its blob
+    // Re-hashed on read: a picture whose bytes no longer match its blob
     // name is refused, as it is for a cast.
-    let portrait = match library.read_portrait(entry) {
-        Ok((bytes, _)) => bytes,
+    let picture = match library.face_picture(entry) {
+        Ok(face) => face.bytes,
         Err(e) => {
             tracing::warn!("face crop: {e:#}");
-            return Anchor::Unavailable("the portrait could not be read".into());
+            return Anchor::Unavailable("the character's face picture could not be read".into());
         }
     };
-    let found = match detect(&portrait) {
+    let found = match detect(&picture) {
         Ok(found) => found,
         Err(why) => return Anchor::Unavailable(why),
     };
@@ -1395,6 +1413,30 @@ mod tests {
             cached(&lib, get("ann"), &|_| Ok(Some(b"later".to_vec()))),
             Anchor::Crop(b"later".to_vec())
         );
+        // A face reference added later is what the crop is cut from, as a
+        // new crop: the portrait's cached one is not reused.
+        let face = image::RgbImage::from_pixel(2, 2, image::Rgb([200, 9, 9]));
+        let mut face_png = std::io::Cursor::new(Vec::new());
+        face.write_to(&mut face_png, image::ImageFormat::Png)
+            .unwrap();
+        let face_png = face_png.into_inner();
+        crate::imagelib::add_reference(
+            &dir,
+            "maya",
+            crate::imagelib::RefKind::Face,
+            &face_png,
+            None,
+        )
+        .unwrap();
+        let (lib, _) = crate::imagelib::Library::load(&dir);
+        let maya = lib.get(crate::imagelib::Kind::Character, "maya").unwrap();
+        let seen = std::sync::Mutex::new(Vec::new());
+        let from_face = cached(&lib, maya, &|picture| {
+            seen.lock().unwrap().push(picture.to_vec());
+            Ok(Some(b"face crop".to_vec()))
+        });
+        assert_eq!(from_face, Anchor::Crop(b"face crop".to_vec()));
+        assert_eq!(*seen.lock().unwrap(), [face_png]);
         std::fs::remove_dir_all(dir).ok();
     }
 

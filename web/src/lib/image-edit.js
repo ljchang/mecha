@@ -130,8 +130,36 @@ export function indexPixels(width, height, layers, rgbs) {
  *  each region's colour and words. `null` when a painted region has none. */
 export function composeRegionsMessage(picturePath, indexPath, regions) {
   if (!regions.length || regions.some((r) => !(r.words ?? '').trim())) return null;
-  const each = regions.map((r) => `${r.colour}: ${r.words.trim()}`).join('; ');
+  const each = regions
+    .map((r) => `${r.colour}: ${r.words.trim()}${r.reference ? ` (from ${r.reference})` : ''}`)
+    .join('; ');
   return `Edit ${picturePath} in regions ${indexPath}: ${each}`;
+}
+
+/** A picture dropped on a region, its upload name: tied to the picture it
+ *  was painted over and the region's colour, as a mask's is. */
+export function referenceName(picturePath, colour, file, now = Date.now()) {
+  const ext = { 'image/jpeg': 'jpg', 'image/webp': 'webp' }[file?.type] ?? 'png';
+  const tame = String(colour).replace(/[^a-z]+/gi, '') || 'region';
+  return maskName(picturePath, now).replace(/^mask-/, `ref-${tame}-`).replace(/\.png$/, `.${ext}`);
+}
+
+/** The regions as the server takes them, `{colour, words, reference?}`: each
+ *  picture dropped on a region (owner, 2026-10-16: a face to put there) is
+ *  uploaded first through `upload(name, file)`, which answers its stored
+ *  path, or `null` when the chat is gone, and then this answers `null`. */
+export async function uploadRegionReferences(picturePath, regions, upload, now = Date.now()) {
+  const out = [];
+  for (const r of regions) {
+    const region = { colour: r.colour, words: r.words };
+    if (r.file) {
+      const path = await upload(referenceName(picturePath, r.colour, r.file, now), r.file);
+      if (path == null) return null;
+      region.reference = path;
+    }
+    out.push(region);
+  }
+  return out;
 }
 
 // Whether the modal holds work: paint, or words changed from the chat's draft.

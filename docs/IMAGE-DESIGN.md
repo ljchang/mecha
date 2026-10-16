@@ -194,6 +194,14 @@ A panel press is the owner's instruction to the image model, not something said 
 
 This removes the panel loop at its source (§2.9), because the persona never makes the call. It also removes the model's field choice for the turns where it chose wrong. Typed requests in chat ("draw us at the beach") still go through the persona model, with the one-shape schema (§5.1).
 
+**A face on a painted region (owner, 2026-10-16).** A region can carry a picture the owner dropped, pasted or picked on its row in the modal. The page uploads it to the chat's `inbox/` beside the region index and sends its path as the region's `reference`; like regions, the field is the harness's alone, never in the model's schema. A region whose words name exactly one approved library character and are about a face ("Maya's face", not "Maya's shirt"), and carries no picture, takes that character's face. When any region has a face:
+
+- **The face is a tight crop** (`face::anchor_crop`): of the dropped picture when the detector finds a face in it, else the whole picture goes as a look ("take the look from `<imageN>`"); of the character's `face` reference when it has one, else its portrait. It rides after the outlines, and the prompt adds "In the {colour} outline, take only the facial identity from `<imageN>`, nothing else."
+- **The picture is sampled unmasked and laid back through the paint.** Sampled inside the mask, the original face pulls back through the noised source. Outside the paint nothing is drawn. The references go at the unmasked size only when every painted region takes its change from a reference of its own; a region with none is drawn from the canvas, which keeps its full size (#601).
+- **The result says where each face came from** ("The magenta region was given the face from inbox/…"), and a face that could not be had is said, never silently drawn without.
+
+Measured on the owner's full-body photo and a crop of the face wanted, two seeds each, ArcFace against that crop (`mecha imagelib face compare`): the edits before this, which sent no face, .10–.25; the face crop sampled inside a head mask, .40–.52; sampled unmasked and laid back through it, .79 and .85 (two seeds), and .81, .81, .81 and .85 for the request exactly as the engine sends it (outlines included; the last two with a keep sentence), every pixel outside the paint the original's and no visible seam. A crop of the character's portrait carried its hair as well as its face, which a `face` reference cut tight avoids.
+
 ### 5.4 Regenerate (R8)
 
 The same scene, a new seed, the same render plan. It goes through `dispatch_one` and is recorded as the panel's fact with the change `REDRAWN` (`persona::edit`); the card carries `version_of`, the picture it is a version of. The card shows versions ‹ 1/2 ›, and the version showing is the one Edit and Regenerate build on. R8's ruling stands. R8-2's call reconstruction (#593) is not needed, because the scene is the record. #593 is closed unmerged.
@@ -460,7 +468,7 @@ All of these were measured; none is built yet:
 
 - **Role nouns in the cutout and placing prompts** (mecha-a3's change 2): this build always says "the person".
 - **Reshaping a layered picture** (arm A): redraw one cutout and re-place it at the same placing seed. It landed 16 of 16.
-- **In-place per-person edits** (arm B): segmentation-backed. The segmentation service is the owner's open decision.
+- **In-place per-person edits** (arm B): segmentation-backed. The segmentation service is ruled in `SEGMENTATION-DESIGN.md` (owner, 2026-10-16); arm B itself is not yet designed.
 - **Reframing the finished picture to the people, and a face pass.**
   - The crop needs the people's boxes.
   - The face pass must be gated on head turn under about 45°. At profile it pasted a frontal face 4 of 8.

@@ -15,6 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for the newest in Downloads) and Outlook its two ids; the pages are skipped.
   `mecha setup` runs the same question when it signs you in to mail.
 
+- **Put a face on a painted region.** In the picture editor, each painted
+  region now has a *Picture* button, and takes a picture dropped or pasted on
+  its row: say "her face" and the region gets the face from that picture,
+  with everything outside the paint left exactly as it was. A region whose
+  words name a library character and its face ("Maya's face") takes that
+  character's face (its `face` reference when it has one). Measured on a full-body photo, the face landed
+  at ArcFace .79–.85 over six renders against the one wanted, up from
+  .10–.25.
+
 - **`mecha imagelib face`: check faces yourself.** `detect` lists the faces
   in a picture, `crop` cuts the tight face crop an edit is anchored to, and
   `compare` scores how alike faces are (ArcFace, -1 to 1) against a picture
