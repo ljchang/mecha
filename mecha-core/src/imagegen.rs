@@ -844,7 +844,8 @@ pub fn min_available_mb_on(os: &str) -> u64 {
 /// beside the image model (`docs/SEGMENTATION-DESIGN.md` §3). Its cold load
 /// peaked at 2,528 MB of GPU memory above a freed server on the GB10
 /// workstation (2026-10-16), where the GPU's memory is the system's, rounded
-/// up to a whole GiB as the other figures are. Not measured on a Mac.
+/// up to a whole GiB as the other figures are. Not measured on a Mac, where
+/// the same figure is asked as a floor (`recommend`'s Mac image row says so).
 pub const SEGMENT_NEED_MB: u64 = 3_072;
 
 /// What a reload from a `/free`d state still needs on `os` — the worse of
@@ -935,6 +936,9 @@ struct ComfyUi {
     /// server as holding the standard model and loaded it beside turbo
     /// (mecha-a3's gate of #648). Unset (tests), this process's memory alone.
     model_record: std::sync::OnceLock<std::path::PathBuf>,
+    /// The server has been seen able to segment ([`ComfyUi::segments`]).
+    /// Only a yes is kept: an install that adds SAM is seen on the next ask.
+    segments: std::sync::atomic::AtomicBool,
 }
 
 /// Why a generation did not produce an image.
@@ -1158,6 +1162,7 @@ impl ComfyUi {
             poll: Duration::from_secs(1),
             answered: std::sync::atomic::AtomicBool::new(false),
             model_record: std::sync::OnceLock::new(),
+            segments: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -1486,6 +1491,20 @@ impl ComfyUi {
             image,
             left: (!left.is_empty()).then(|| left.join("; ")),
         }
+    }
+
+    /// [`ComfyUi::can_segment`] as a yes or no for admission, a yes kept for
+    /// the process: a call is charged SAM's memory only where SAM can load
+    /// (review of #710, pass 2).
+    async fn segments(&self) -> bool {
+        if self.segments.load(Ordering::SeqCst) {
+            return true;
+        }
+        let can = self.can_segment().await.is_ok();
+        if can {
+            self.segments.store(true, Ordering::SeqCst);
+        }
+        can
     }
 
     /// Whether the server can segment: ComfyUI's `SAM3_Detect` node, and
@@ -2270,6 +2289,15 @@ pub fn regions_hard(
     Ok(Some(hard_at(&union, cw, ch)))
 }
 
+/// [`prepare_mask`]'s two refusals of a mask whose marks are too few: the
+/// owner's paint is refused with them, and a mask segmentation found is
+/// dropped and said instead (S1), told apart by these, not by an error's
+/// other wording.
+const MASK_MARKS_NOTHING: &str = "The mask marks nothing: its painted (white) area is empty. \
+                                  Ask the user to paint the part to change.";
+const MASK_TOO_SMALL: &str = "The painted area is too small to edit: ask the user to paint \
+                              over more of what should change.";
+
 /// Size the picture to its edit canvas and turn the owner's painted mask into
 /// the one the sampler and the composite use. Refused, with a sentence for
 /// the model, when the mask marks nothing, or its shape differs from the
@@ -2313,11 +2341,7 @@ pub fn prepare_mask(
         }
     }
     let Some(bounds) = bounds else {
-        return Err(
-            "The mask marks nothing: its painted (white) area is empty. Ask the user to \
-             paint the part to change."
-                .into(),
-        );
+        return Err(MASK_MARKS_NOTHING.into());
     };
     let grown = grow_mask(&hard);
     // A dab too small to survive the grow step would leave the sampler
@@ -2325,11 +2349,7 @@ pub fn prepare_mask(
     // said the painted area was redrawn: refused, like an empty mask (review
     // of #429).
     if !grown.pixels().any(|p| p.0[0] > 0) {
-        return Err(
-            "The painted area is too small to edit: ask the user to paint over more of \
-             what should change."
-                .into(),
-        );
+        return Err(MASK_TOO_SMALL.into());
     }
     let soft = feather_mask(&grown, &hard);
     Ok(MaskPlan {
@@ -2628,6 +2648,11 @@ impl ImageGenerate {
         } else {
             self.backend.loaded().await
         };
+        // SAM is charged where it can load. Asked on Linux only, as `loaded`
+        // is: on a Mac the ask goes through the on-demand proxy and starts
+        // ComfyUI, so a Mac is charged whenever the call may segment.
+        let may_segment =
+            may_segment && (cfg!(target_os = "macos") || self.backend.segments().await);
         let need_mb = memory_need_mb(loaded, self.cfg.min_available_mb, may_segment);
         let series = crate::system::db_path().ok();
         let verdict = crate::system::floor::admit_now(
@@ -5379,10 +5404,7 @@ impl Tool for ImageGenerate {
                             }
                             // `prepare_mask`'s two refusals of a mark too
                             // small; anything else is an error, logged.
-                            Ok(Err(why))
-                                if why.starts_with("The mask marks nothing")
-                                    || why.starts_with("The painted area is too small") =>
-                            {
+                            Ok(Err(why)) if why == MASK_MARKS_NOTHING || why == MASK_TOO_SMALL => {
                                 dropped.push(format!(
                                     "What matched '{words}' was too small to edit alone, so \
                                      the change was made to the whole picture."
@@ -5410,6 +5432,7 @@ impl Tool for ImageGenerate {
                     many => format!("the {} regions", many.join(" and ")),
                 };
                 let mut found: std::result::Result<Option<image::GrayImage>, String> = Ok(None);
+                let mut took_hair = false;
                 match me.backend.can_segment().await {
                     Err(why) => found = Err(why),
                     Ok(()) => {
@@ -5453,6 +5476,7 @@ impl Tool for ImageGenerate {
                                 Ok(None) if *words == "face" => break,
                                 Ok(None) => {}
                                 Ok(Some(m)) => {
+                                    took_hair |= *words == "hair";
                                     found = Ok(Some(match found {
                                         Ok(Some(mut acc)) if acc.dimensions() == m.dimensions() => {
                                             for (a, b) in acc.pixels_mut().zip(m.pixels()) {
@@ -5495,16 +5519,21 @@ impl Tool for ImageGenerate {
                     match laid {
                         Ok(edged) => {
                             mp.soft = edged;
-                            dropped.push(if fe.hair {
+                            dropped.push(if took_hair {
                                 format!(
                                     "The new face and hair in {which} were laid back along \
                                      their own edges rather than the paint's."
                                 )
                             } else {
+                                let hair = if fe.hair {
+                                    " No hair was found, so the hair is the original's."
+                                } else {
+                                    ""
+                                };
                                 format!(
                                     "The new face in {which} was laid back along the face's own \
                                      edges rather than the paint's, so the hair and everything \
-                                     around the face are the original's."
+                                     around the face are the original's.{hair}"
                                 )
                             });
                         }
@@ -9417,6 +9446,57 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
+    /// A face region asking for hair, where the face is found and the hair
+    /// is not: the face follows its own edges, and the result says the hair
+    /// is the original's, never that both were taken (review of #710).
+    #[tokio::test]
+    async fn a_face_region_whose_hair_is_not_found_says_so() {
+        let red = image::RgbImage::from_pixel(64, 64, image::Rgb([200, 20, 20]));
+        let mut result = std::io::Cursor::new(Vec::new());
+        red.write_to(&mut result, image::ImageFormat::Png).unwrap();
+        let (url, _) = fake_with(Fake {
+            history: vec![done(), done(), done()],
+            views: vec![
+                mask_png(64, 64, (2, 24, 10, 40)),
+                mask_png(64, 64, (0, 0, 0, 0)),
+                result.into_inner(),
+            ],
+            sam: true,
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::write(dir.join("images/orig.png"), picture(8, [240, 220, 40])).unwrap();
+        std::fs::write(dir.join("inbox/face.png"), picture(8, [90, 60, 40])).unwrap();
+        std::fs::write(
+            dir.join("inbox/regions.png"),
+            index_png(64, 64, &[([255, 0, 255], (0, 16, 16, 56))]),
+        )
+        .unwrap();
+        let faces = stub_faces(crate::face::Anchor::Crop(picture(4, [1, 2, 3])));
+        let out = tool(&url)
+            .with_faces(faces)
+            .call(
+                json!({"picture": "images/orig.png", "mask": "inbox/regions.png",
+                       "regions": [{"colour": "magenta", "words": "her face and hair",
+                                    "reference": "inbox/face.png"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("laid back along the face's own edges")
+                && out.content.contains("No hair was found")
+                && !out.content.contains("face and hair in"),
+            "{}",
+            out.content
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
     /// Without segmentation, a face region is laid back along the paint, as
     /// before S2, and the result says why.
     #[tokio::test]
@@ -9905,6 +9985,56 @@ mod tests {
             m.put_pixel(x, 90, image::Luma([255]));
         }
         assert_eq!(found_areas(&m), 2);
+    }
+
+    /// Admission charges SAM only where the server can segment, and keeps
+    /// a yes for the process (review of #710, pass 2).
+    #[tokio::test]
+    async fn segmentation_is_charged_only_where_the_server_can_segment() {
+        let (url, seen) = fake_with(Fake {
+            sam: true,
+            ..Fake::default()
+        })
+        .await;
+        let t = tool(&url);
+        assert!(t.backend.segments().await);
+        assert!(t.backend.segments().await);
+        let asks = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.contains("/object_info/SAM3_Detect"))
+            .count();
+        assert_eq!(asks, 1, "a yes is kept");
+        let (url, _) = fake_with(Fake::default()).await;
+        assert!(!tool(&url).backend.segments().await);
+    }
+
+    /// What SAM found but `prepare_mask` refuses: a speck is too small to
+    /// edit alone; a mask of another shape could not be used. Both draw the
+    /// whole picture and say which.
+    #[tokio::test]
+    async fn a_found_mask_too_small_or_unusable_redraws_the_whole_picture() {
+        // One white pixel at 4096 square averages under the canvas's floor.
+        let (out, seen, dir, _) =
+            edit_with_mask_words(true, mask_png(4096, 4096, (0, 0, 1, 1))).await;
+        assert!(
+            out.content
+                .contains("What matched 'the sky' was too small to edit alone"),
+            "{}",
+            out.content
+        );
+        assert!(!prompts(&seen)[1].contains("SetLatentNoiseMask"));
+        std::fs::remove_dir_all(dir).ok();
+        let (out, seen, dir, _) = edit_with_mask_words(true, mask_png(64, 16, (0, 0, 32, 8))).await;
+        assert!(
+            out.content
+                .contains("What matched 'the sky' could not be used as a mask"),
+            "{}",
+            out.content
+        );
+        assert!(!prompts(&seen)[1].contains("SetLatentNoiseMask"));
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[tokio::test]
