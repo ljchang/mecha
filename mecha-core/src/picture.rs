@@ -54,6 +54,17 @@ pub struct Region {
     pub reference: Option<String>,
 }
 
+impl Call {
+    /// Whether this call may load SAM inside its job, and so is charged for
+    /// it at admission: words in `mask` (S1), or a painted region whose
+    /// words are about a face, the only regions that take one and so are
+    /// edged by segmentation (S2). A region edit with no face never is
+    /// (review of #710).
+    pub fn may_segment(&self) -> bool {
+        self.mask_words.is_some() || self.regions.iter().any(|r| about_a_face(&r.words))
+    }
+}
+
 /// Whether a painted region's words are about a face: the one place a
 /// library name in them takes that character's face, and the only words a
 /// dropped picture gives its face to rather than its look (§5.3).
@@ -2476,6 +2487,21 @@ mod tests {
         // recorded, a camera change is an edit of the photo (review of #707,
         // pass 7).
         assert_eq!(later.route, "edited");
+    }
+
+    /// Only words in `mask` or a face region are charged for segmentation.
+    #[test]
+    fn a_call_may_segment_only_with_words_or_a_face_region() {
+        let words = call(json!({"picture": "images/a.png", "retouch": "x", "mask": "the sky"}));
+        assert!(words.may_segment());
+        let paint = call(json!({"picture": "images/a.png", "retouch": "x", "mask": "inbox/m.png"}));
+        assert!(!paint.may_segment());
+        let region = |w: &str| {
+            call(json!({"picture": "images/a.png", "mask": "inbox/r.png",
+                "regions": [{"colour": "magenta", "words": w}]}))
+        };
+        assert!(!region("make the shirt red").may_segment());
+        assert!(region("her face").may_segment());
     }
 
     /// A bare file name in `mask` is a path, never words for segmentation

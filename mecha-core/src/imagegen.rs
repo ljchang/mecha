@@ -3975,9 +3975,7 @@ impl Tool for ImageGenerate {
         // guards.
         // Read once, so the guard and the request agree on the model.
         let tuning = self.tuning(ctx);
-        // Words in `mask`, or painted regions (whose faces are edged by
-        // segmentation), may load SAM inside the job.
-        let may_segment = call.mask_words.is_some() || !call.regions.is_empty();
+        let may_segment = call.may_segment();
         if let Err(why) = self
             .memory_guard(tuning.model.unwrap_or_default(), may_segment)
             .await
@@ -5460,6 +5458,7 @@ impl Tool for ImageGenerate {
                 };
                 let mut found: std::result::Result<Option<image::GrayImage>, String> = Ok(None);
                 let mut took_hair = false;
+                let mut hair_failed = false;
                 match me.backend.ready_to_segment(ctx.cancel.as_ref()).await {
                     Err(None) => seg_cancelled = true,
                     Err(Some(why)) => found = Err(why),
@@ -5490,6 +5489,17 @@ impl Tool for ImageGenerate {
                             match got {
                                 Err(Failure::Cancelled) => {
                                     seg_cancelled = true;
+                                    break;
+                                }
+                                // A face already found is kept when only
+                                // the hair fails: the face edge is the
+                                // better composite, and the hair is said
+                                // to be the original's (review of #710).
+                                Err(Failure::Other(e))
+                                    if *words == "hair" && matches!(found, Ok(Some(_))) =>
+                                {
+                                    tracing::warn!("image_generate: segmentation failed: {e:#}");
+                                    hair_failed = true;
                                     break;
                                 }
                                 Err(Failure::Other(e)) => {
@@ -5553,10 +5563,15 @@ impl Tool for ImageGenerate {
                                      their own edges rather than the paint's."
                                 )
                             } else {
-                                let hair = if fe.hair {
-                                    " No hair was found, so the hair is the original's."
-                                } else {
-                                    ""
+                                let hair = match (fe.hair, hair_failed) {
+                                    (false, _) => "",
+                                    (true, false) => {
+                                        " No hair was found, so the hair is the original's."
+                                    }
+                                    (true, true) => {
+                                        " The hair could not be found (the segmentation failed), \
+                                         so the hair is the original's."
+                                    }
                                 };
                                 format!(
                                     "The new face in {which} was laid back along the face's own \
@@ -9510,6 +9525,59 @@ mod tests {
                 "No face was found in the picture, so the new face in the magenta region was \
                  laid back along the paint."
             ),
+            "{}",
+            out.content
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A face region whose hair segmentation fails after the face was found
+    /// keeps the face's own edge and says the hair is the original's, rather
+    /// than throwing the face away (review of #710).
+    #[tokio::test]
+    async fn a_face_region_whose_hair_fails_keeps_the_face() {
+        let red = image::RgbImage::from_pixel(64, 64, image::Rgb([200, 20, 20]));
+        let mut result = std::io::Cursor::new(Vec::new());
+        red.write_to(&mut result, image::ImageFormat::Png).unwrap();
+        let (url, _) = fake_with(Fake {
+            history: vec![done(), done(), done()],
+            // The hair's answer does not decode: a failed segmentation.
+            views: vec![
+                mask_png(64, 64, (2, 24, 10, 40)),
+                PNG.to_vec(),
+                result.into_inner(),
+            ],
+            sam: true,
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::write(dir.join("images/orig.png"), picture(8, [240, 220, 40])).unwrap();
+        std::fs::write(dir.join("inbox/face.png"), picture(8, [90, 60, 40])).unwrap();
+        std::fs::write(
+            dir.join("inbox/regions.png"),
+            index_png(64, 64, &[([255, 0, 255], (0, 16, 16, 56))]),
+        )
+        .unwrap();
+        let faces = stub_faces(crate::face::Anchor::Crop(picture(4, [1, 2, 3])));
+        let out = tool(&url)
+            .with_faces(faces)
+            .call(
+                json!({"picture": "images/orig.png", "mask": "inbox/regions.png",
+                       "regions": [{"colour": "magenta", "words": "her face and hair",
+                                    "reference": "inbox/face.png"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("laid back along the face's own edges")
+                && out
+                    .content
+                    .contains("The hair could not be found (the segmentation failed)"),
             "{}",
             out.content
         );

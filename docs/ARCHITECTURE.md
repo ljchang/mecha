@@ -1052,7 +1052,8 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
   only ahead of that job's render, so SAM never loads without the image
   model the admission gauge assumes. A call that may segment asks for
   `SEGMENT_NEED_MB` on top, where the server can segment (a Mac, which is
-  not asked, always).
+  not asked, always). A call may segment when `mask` is words or a painted
+  region's words are about a face.
   - **S1: words in `mask`** become the mask SAM finds for them, prepared as
     paint is. Anything that keeps them from being one (not installed, an
     error, nothing found, too small) draws the whole picture and says why;
