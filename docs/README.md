@@ -111,6 +111,7 @@ something shipped.
 | [`REMOTE-CONTROL-DESIGN.md`](REMOTE-CONTROL-DESIGN.md) | One live TUI session and a named Slack thread as the same conversation |
 | [`REMOTE-SURFACE-DESIGN.md`](REMOTE-SURFACE-DESIGN.md) | How the tailnet web surface gets built, and what it replaces |
 | [`SCHEDULING-DESIGN.md`](SCHEDULING-DESIGN.md) | The scheduling instrument: booking, the admin door, the frontend |
+| [`SEGMENTATION-DESIGN.md`](SEGMENTATION-DESIGN.md) | Masks for picture edits from SAM 3 (3.1) in the image server: words to mask, face and hair edges first, why Sapiens2 is out on its licence, and failure said, never silent. §6 holds the owner's rulings (2026-10-16) |
 | [`SLACK-ACTIONS-DESIGN.md`](SLACK-ACTIONS-DESIGN.md) | Executable actions from a phone: the closed `Action` enum and the tainted two-step |
 | [`SLACK-DESIGN.md`](SLACK-DESIGN.md) | How mecha is driven from Slack: the transport, the allowlist, the thread state machine |
 | [`SPOKEN-OVERRIDE-DESIGN.md`](SPOKEN-OVERRIDE-DESIGN.md) | Changing a harness-supplied parameter by ear: state the default, accept an override, read the result back |
