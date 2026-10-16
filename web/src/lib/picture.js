@@ -116,6 +116,24 @@ export function makingText(entry) {
   return entry?.name === 'image_generate' ? 'drawing a picture…' : 'working on it…';
 }
 
+// When each running job began, by this page's clock, for the clock on its
+// still-out row ("working on it… 2:14"). Taken from the server's
+// `elapsed_ms`, a duration, so a phone whose clock is off still counts from
+// the right moment (review of #431); a start already known is kept, so the
+// clock does not step back on every queue event, and a job no longer
+// running is dropped.
+export function jobStarts(prev, queue, now = Date.now()) {
+  const out = new Map();
+  for (const q of queue ?? []) {
+    if (!q?.running || !q.call_id) continue;
+    const known = prev?.get(q.call_id);
+    const elapsed = Number(q.elapsed_ms);
+    if (known !== undefined) out.set(q.call_id, known);
+    else if (q.elapsed_ms != null && Number.isFinite(elapsed)) out.set(q.call_id, now - elapsed);
+  }
+  return out;
+}
+
 // What the call screen's one slot says while work is out. Its one Stop stops
 // all of it, so a picture beside other work names both, rather than call a
 // clip a picture or a picture "it" (review of #668, pass 5).
