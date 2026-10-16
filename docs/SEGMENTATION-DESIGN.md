@@ -31,8 +31,9 @@ The 2026-10-16 corpus read covered 145 image calls since 10-08. These are the fa
 
 - **On the GPU, beside the render it serves.** Every masked edit already runs on ComfyUI, and ComfyUI has SAM 3 natively, so running it there adds no stack, no new service and no port. It shares the server's memory admission (`imagegen::memory_need_mb`) and idle reset. A segmentation is a fraction of a second against a 40–60 s render.
 - **The detector and ArcFace stay native** (`face.rs`, `face_id.rs`). They are small, CPU-fast, cached, and needed outside the image server: the CLI, the judges, the Mac without ComfyUI.
-- **The weights: SAM 3.1, ComfyUI's own fp16 repackaging** (`Comfy-Org/sam3.1`, `checkpoints/sam3.1_multiplex_fp16.safetensors`, 1,745,546,848 bytes, sha256 `9ba99c92…eb03`; the SAM licence). It is what ComfyUI's SAM3 blueprint loads, with `CheckpointLoaderSimple`, and the model the owner has access approval for. The transformers-layout weights cached here (`facebook/sam3`) do not load in ComfyUI, which reads Meta's original `detector.*`/`tracker.*` keys.
-- **Installed the way the image slot's models are** (`comfyui_unit.rs`): pinned in the image slot's row in `recommend::SLOTS`, fetched into the hub, symlinked where ComfyUI looks, recorded in the manifest, and checked against the server's own model listing. The precedent is the turbo model, an optional extra file on the same slot (`TURBO_FILE`, `turbo_wanted`, `turbo_linked`). Being in the slot's `sources` is what makes `features --probe` and the install plan count its 1.7 GB; outside them, every surface would under-report the image feature. (The copy placed straight into `models/checkpoints/` on 2026-10-16 for §7's first measurement is replaced by this install, not kept beside it.)
+- **The weights: SAM 3.1, decided.** ComfyUI's own fp16 repackaging (`Comfy-Org/sam3.1`, `checkpoints/sam3.1_multiplex_fp16.safetensors`, 1,745,546,848 bytes, sha256 `9ba99c92…eb03`; the SAM licence). It is what ComfyUI's SAM3 blueprint loads, with `CheckpointLoaderSimple`, and the owner has access approval for it. SAM 3 is not an arm: its only file ComfyUI can load is Meta's original pickle (`sam3.pt`), and the transformers-layout weights cached here (`facebook/sam3`) do not load at all. §7 checks the choice on our edits rather than choosing it.
+- **Installed as a second `Source` on the image slot** in `recommend::SLOTS`. `Comfy-Org/sam3.1` is its own repo, beside the slot's `Comfy-Org/Qwen-Image-2.1`. It is fetched into the hub, symlinked where ComfyUI looks, recorded in the manifest, and checked against the server's own listing, as `comfyui_unit.rs` does for the slot's files. Being in the slot's `sources` is what makes `features --probe` and the install plan count its 1.7 GB.
+- **The turbo model is deliberately different**, and it is the counter-example rather than the precedent. `TURBO_FILE` sits outside the slot's `sources`, in `comfyui_unit.rs`, fetched on demand by the owner's 2026-10-11 ruling, with its own accounting in `features enable`. SAM goes in `sources` because S1 and S2 serve every masked edit, not an opt-in render mode. (The copy placed straight into `models/checkpoints/` on 2026-10-16 for §7's first read is replaced by this install, not kept beside it.)
 - **Memory: segmentation runs only inside an admitted picture job.** The admission gauge cannot tell which model a ComfyUI process holds: `loaded_from_stats` answers "has loaded anything", so SAM loaded alone would make the next picture's ask about 8 GiB too small (`memory_need_mb`, `load_cost_mb`). Inside a picture job, SAM never loads without the image model, so the gauge stays true. The job's own need gains SAM's measured peak (§7), and the server's idle reset takes both.
 - **Measured cost** (2026-10-16, warm server, the #706 photo at 640×1632): the first segmentation in a process took 5.0 s, loading included; each one after took 1.0 s. That is against 40–60 s for the render it serves. The memory peak is not yet measured (§7).
 
@@ -41,7 +42,13 @@ The 2026-10-16 corpus read covered 145 image calls since 10-08. These are the fa
 ### S1. Words to mask (failure 1)
 
 - `mask` keeps its name in the model's schema, with a new description: "The part of the picture to change, in a few words ('the green jacket', 'the sky'), or a painted mask's path." **Both places that state the rule change together:** the schema's description and the tool's instruction block, which says "With a painted area, also pass its `mask`, and never make one up". Two contradictory sentences about one field in one cached prefix would be worse than either.
-- **Words and paths are told apart by `picture::looks_like_a_picture_path`** (a `/`, no whitespace, a picture extension), so "the green jacket" is never read as a path. A path-shaped `mask` that does not resolve stays what it is today: left out and said ("The mask inbox/… was left out"). It never becomes a text prompt.
+- **Words and paths are told apart by `picture::looks_like_a_picture_path`** (a `/`, no whitespace, a picture extension), so "the green jacket" is never read as a path. **Path-shaped wins, by design:** a path-shaped `mask` that does not resolve stays what it is today, left out and said ("The mask inbox/… was left out"), and never falls back to a text prompt. The ordering is deliberate, not an accident of the helper.
+- **The words are capped**, as every other prose field is. Today the path check is the field's only bound (200 characters); words get a `parse` cap of their own.
+- **A model-authored mask, and IMAGE-REGION-EDIT-RESEARCH §6.** §6 names "a model-chosen or all-white mask" as the silently-degrading guard. S1 makes the model the mask's author on purpose, and it comes out on the safe side for two reasons:
+  - Today a word mask is **dropped**, and the edit redraws the whole picture. A SAM mask strictly narrows what changes, so the case §6 feared is the status quo, not S1.
+  - A word mask carries no path, so it cannot name another file in the workspace, which is §6's other half.
+
+  What §6's worry still asks for is that the mask be said ("Masked 'the blue scarf': 1 area"), never silent.
 - Words go to `SAM3_Detect` with the picture and threshold 0.5.
   - One instance: that is the mask.
   - Several: the union. Each painted region still settles "which one" (§7.7).
@@ -63,7 +70,14 @@ The 2026-10-16 corpus read covered 145 image calls since 10-08. These are the fa
 ### S4. Change inside the region (failure 4), a consequence of S1
 
 - **Painted edits already have it:** `imagegen::layout_similarity_painted` reads only the cells the mask mostly covers, whenever there is a `mask_plan` (review of #429).
-- **The gap is the unmasked edit.** That is where all 19 word-mask calls went, because their masks were dropped. S1 gives them a mask, so they gain the same in-region reading without new code. What is left is the wording: say "the painted area came back unchanged" when the reading says so, rather than the near-copy layout fact alone.
+- **The gap is the unmasked edit.** That is where all 19 word-mask calls went, because their masks were dropped. S1 gives them a mask, so they gain the same in-region reading without new code, **above a size floor.**
+- **The floor:** `layout_similarity_painted` reads only the 32×32 cells the soft mask covers at 200 or more, and returns `None` under 16 of them ("no reading, not a low one"). A mask for "the left earring" or "the lantern" often sits under it.
+- **What the owner is told:**
+  - a reading when the area is large enough;
+  - "the masked area is too small to compare" when it is not, rather than the near-copy layout fact;
+  - "the painted area came back unchanged" when the reading says so.
+
+  A dash is never a zero.
 
 ### S5. Arm B, per-person edits in layers
 
