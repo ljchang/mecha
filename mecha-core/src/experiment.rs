@@ -482,6 +482,9 @@ impl Fixtures {
                 // nothing (§9).
                 personas: false,
                 disabled: false,
+                // A fixture offers every tool it lists: the trial measures
+                // the environment as written.
+                disabled_tools: Vec::new(),
                 owner_zone: None,
             });
         }

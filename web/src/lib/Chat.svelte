@@ -1,5 +1,5 @@
 <script>
-  import { tick } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import { apiFetch as fetch } from './api.js';
   import { tameName, validName } from './library.js';
   import ModelChip from './ModelChip.svelte';
@@ -8,7 +8,8 @@
   import { replyContext } from './speech.js';
   import EditModal from './EditModal.svelte';
   import { composeEditMessage, composeRegenerateMessage, maskName } from './image-edit.js';
-  import { pictureOf, clipOf, stillOut, waitingPictures, repeatedPictures, downloadPicture, pictureVersions, shownVersion, makingText, repeatedClips } from './picture.js';
+  import { pictureOf, clipOf, stillOut, waitingPictures, repeatedPictures, downloadPicture, pictureVersions, shownVersion, makingText, repeatedClips, jobStarts } from './picture.js';
+  import { clockOf } from './persona.js';
   import ClipPlayer from './ClipPlayer.svelte';
   import { carriesFiles, droppedFiles, withAttachments } from './attach.js';
   import { rowSummary, ROUTING_KEYS } from './outbox-view.js';
@@ -1409,6 +1410,26 @@
   }
   // Pictures waiting behind the one drawing (`waitingPictures`).
   const queuedPictures = $derived(waitingPictures(entries, queue));
+  // The clock on a still-out row — "working on it… 2:14" — as a persona
+  // chat has (owner, 2026-10-15): when each running job began, from the
+  // server's queue line, and a `now` that ticks only while something is out.
+  let jobStart = $state(new Map());
+  $effect(() => {
+    const line = queue;
+    jobStart = jobStarts(untrack(() => jobStart), line);
+  });
+  let now = $state(Date.now());
+  const anyOut = $derived(entries.some(stillOut));
+  $effect(() => {
+    if (!anyOut) return;
+    now = Date.now();
+    const timer = setInterval(() => (now = Date.now()), 1000);
+    return () => clearInterval(timer);
+  });
+  const outClock = (entry) => {
+    const started = jobStart.get(entry.id);
+    return started === undefined ? '' : ` ${clockOf(now - started)}`;
+  };
 
   const workspaceFile = (path) => `/api/chat/${key}/file?path=${encodeURIComponent(path)}`;
 
@@ -2057,7 +2078,7 @@
           {#if entry.pending}<span class="tool-state">running…</span>
           {:else if entry.blocked}<span class="tool-state">blocked</span>
           {:else if entry.is_error}<span class="tool-state">failed</span>
-          {:else if stillOut(entry)}<span class="tool-state">{queuedPictures.has(i) ? 'waiting its turn…' : makingText(entry)}</span>{/if}
+          {:else if stillOut(entry)}<span class="tool-state">{queuedPictures.has(i) ? 'waiting its turn…' : `${makingText(entry)}${outClock(entry)}`}</span>{/if}
         </div>
         <!-- Still being drawn past the turn that asked for it (§5.4): it
              lands on this row when done. Its Stop ends the picture alone,
