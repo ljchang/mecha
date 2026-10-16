@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`mecha imagelib face`: check faces yourself.** `detect` lists the faces
+  in a picture, `crop` cuts the tight face crop an edit is anchored to, and
+  `compare` scores how alike faces are (ArcFace, -1 to 1) against a picture
+  or a character (`--character maya`, using its `face` reference when it has
+  one). It is the same detector and ArcFace the replay judges use, so the
+  number matches theirs. ArcFace's weights are fetched the first time
+  `compare` runs, under InsightFace's non-commercial licence, which it says.
+
 - **The assistant's chat edits pictures in coloured regions, as persona
   chats do.** Paint up to four regions, each in its own colour with its own
   words, and the change is drawn as one edit. Painting nothing still edits

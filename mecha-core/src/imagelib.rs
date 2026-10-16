@@ -220,6 +220,28 @@ impl RefKind {
     }
 }
 
+/// A character's face picture, [`Library::face_picture`]: its bytes, their
+/// extension as [`Library::read_portrait`] gives it, and which picture it
+/// was.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FacePicture {
+    pub bytes: Vec<u8>,
+    pub ext: &'static str,
+    /// The character's `face` reference, rather than its portrait.
+    pub from_face_reference: bool,
+}
+
+impl FacePicture {
+    /// Which picture it was, as a sentence names it.
+    pub fn which(&self) -> &'static str {
+        if self.from_face_reference {
+            "face reference"
+        } else {
+            "portrait"
+        }
+    }
+}
+
 /// One typed reference: a blob under `blobs/`, checked like the portrait.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Reference {
@@ -463,6 +485,34 @@ impl Library {
             .as_deref()
             .ok_or_else(|| anyhow!("`{}` has no portrait", entry.name))?;
         self.read_checked(blob, &format!("`{}`'s portrait", entry.name))
+    }
+
+    /// The picture of a character's face: its `face` reference when it has
+    /// one ("a better face than the portrait shows", [`RefKind::Face`]), its
+    /// portrait otherwise. Both under the hash check.
+    pub fn face_picture(&self, entry: &Entry) -> Result<FacePicture> {
+        match entry
+            .sendable_references()
+            .into_iter()
+            .find(|r| r.kind == RefKind::Face)
+        {
+            Some(face) => {
+                let (bytes, ext) = self.read_reference(entry, face)?;
+                Ok(FacePicture {
+                    bytes,
+                    ext,
+                    from_face_reference: true,
+                })
+            }
+            None => {
+                let (bytes, ext) = self.read_portrait(entry)?;
+                Ok(FacePicture {
+                    bytes,
+                    ext,
+                    from_face_reference: false,
+                })
+            }
+        }
     }
 
     /// A reference's picture, under the portrait's hash check: bytes swapped
@@ -3009,6 +3059,27 @@ mod tests {
         assert_eq!(wren.references.len(), 2);
         assert_eq!(wren.references[0].kind, RefKind::Unknown);
         assert!(wren.sendable_references().is_empty());
+    }
+
+    /// A character's face is its `face` reference when it has one, and its
+    /// portrait otherwise; each says which it was.
+    #[test]
+    fn a_face_reference_is_preferred_over_the_portrait() {
+        let dir = scratch();
+        create(dir.path(), character("wren", Origin::Owner)).unwrap();
+        let lib = Library::load(dir.path()).0;
+        let wren = lib.get(Kind::Character, "wren").unwrap();
+        let (portrait, _) = lib.read_portrait(wren).unwrap();
+        let got = lib.face_picture(wren).unwrap();
+        assert_eq!((got.which(), got.bytes), ("portrait", portrait));
+        add_reference(dir.path(), "wren", RefKind::Face, &png_of([7, 7, 7]), None).unwrap();
+        let lib = Library::load(dir.path()).0;
+        let wren = lib.get(Kind::Character, "wren").unwrap();
+        let got = lib.face_picture(wren).unwrap();
+        assert_eq!(
+            (got.which(), got.bytes),
+            ("face reference", png_of([7, 7, 7]))
+        );
     }
 
     /// A hand-edited reference can't point outside `blobs/`, and bytes
