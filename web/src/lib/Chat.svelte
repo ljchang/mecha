@@ -7,7 +7,13 @@
   import PictureQueue from './PictureQueue.svelte';
   import { replyContext } from './speech.js';
   import EditModal from './EditModal.svelte';
-  import { composeEditMessage, composeRegenerateMessage, composeRegionsMessage, maskName } from './image-edit.js';
+  import {
+    composeEditMessage,
+    composeRegenerateMessage,
+    composeRegionsMessage,
+    maskName,
+    uploadRegionReferences,
+  } from './image-edit.js';
   import { pictureOf, clipOf, stillOut, waitingPictures, repeatedPictures, downloadPicture, pictureVersions, shownVersion, makingText, repeatedClips, jobStarts } from './picture.js';
   import { clockOf } from './persona.js';
   import ClipPlayer from './ClipPlayer.svelte';
@@ -1542,25 +1548,35 @@
     edit.busy = true;
     edit.error = null;
     try {
+      // Into this chat's inbox; `null` when the chat closed under it (an
+      // incognito room), and then nothing is sent.
+      const upload = async (name, body) => {
+        const q = new URLSearchParams({ name });
+        const res = await fetch(`/api/chat/${sessionKey}/upload?${q}`, { method: 'POST', body });
+        if (res.status === 410) return null;
+        if (!res.ok) throw new Error((await res.text()).trim());
+        return (await res.json()).path;
+      };
+      const gone = () => {
+        if (sessionKey === key) closeIncognito('closed');
+        editing = null;
+      };
       let maskPath = null;
       if (mask) {
-        const q = new URLSearchParams({ name: maskName(edit.path) });
-        const res = await fetch(`/api/chat/${sessionKey}/upload?${q}`, { method: 'POST', body: mask });
-        if (res.status === 410) {
-          if (sessionKey === key) closeIncognito('closed');
-          editing = null;
-          return;
-        }
-        if (!res.ok) throw new Error((await res.text()).trim());
-        maskPath = (await res.json()).path;
+        maskPath = await upload(maskName(edit.path), mask);
+        if (maskPath == null) return gone();
       }
+      // A picture dropped on a region goes up beside the mask, and the
+      // region names it (owner, 2026-10-16: a face to put there).
+      const placed = regions.length ? await uploadRegionReferences(edit.path, regions, upload) : [];
+      if (placed == null) return gone();
       if (sessionKey !== key) return;
       // Coloured regions (IMAGE-REGION-EDIT-RESEARCH.md §7, M2; owner,
       // 2026-10-16: as the persona chat's): the upload is their index, and
       // each region's words go as fields beside the message the owner sees,
       // since the model's own picture tool has no field for regions.
       const message = regions.length
-        ? composeRegionsMessage(edit.path, maskPath, regions)
+        ? composeRegionsMessage(edit.path, maskPath, placed)
         : composeEditMessage(edit.path, maskPath, text);
       if (!message) {
         edit.busy = false; // never a modal that no button can close
@@ -1573,7 +1589,7 @@
         // then.
         const started = await send({
           text: message,
-          regions: { picture: edit.path, mask: maskPath, regions: regions.map(({ colour, words }) => ({ colour, words })) },
+          regions: { picture: edit.path, mask: maskPath, regions: placed },
         });
         if (editing !== edit) return;
         if (started) {
