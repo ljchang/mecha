@@ -77,6 +77,25 @@ pub const MICROSOFT: &[Step] = &[
     },
 ];
 
+/// Where an app already registered — for another machine, say — gives its
+/// client file again: the Desktop client's page downloads it.
+pub const GOOGLE_CLIENTS: &str = "https://console.cloud.google.com/auth/clients";
+
+/// A path as pasted at a terminal: the quotes a copy or a drag-and-drop adds
+/// are dropped, `\ ` is a space, and a leading `~/` is the home folder.
+pub fn pasted_path(text: &str, home: Option<&Path>) -> PathBuf {
+    let t = text.trim();
+    let t = ['"', '\'']
+        .iter()
+        .find_map(|q| t.strip_prefix(*q).and_then(|s| s.strip_suffix(*q)))
+        .unwrap_or(t);
+    let t = t.replace("\\ ", " ");
+    match (t.strip_prefix("~/"), home) {
+        (Some(rest), Some(home)) => home.join(rest),
+        _ => PathBuf::from(t),
+    }
+}
+
 /// Where a browser saves the downloaded client file.
 pub fn downloads_dir() -> Option<PathBuf> {
     dirs::download_dir().or_else(|| dirs::home_dir().map(|h| h.join("Downloads")))
@@ -183,6 +202,24 @@ mod tests {
         let found = find_client_json(&dir, since);
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(found, Some(new));
+    }
+
+    /// A path dragged into a terminal or copied with quotes reads as the
+    /// file it names.
+    #[test]
+    fn a_pasted_path_is_the_file_it_names() {
+        let home = Path::new("/Users/sam");
+        let want = PathBuf::from("/Users/sam/Downloads/client secret.json");
+        for pasted in [
+            "/Users/sam/Downloads/client\\ secret.json ",
+            "'/Users/sam/Downloads/client secret.json'",
+            "\"/Users/sam/Downloads/client secret.json\"",
+            "~/Downloads/client secret.json",
+        ] {
+            assert_eq!(pasted_path(pasted, Some(home)), want, "{pasted}");
+        }
+        // Without a home folder, `~` is left as typed.
+        assert_eq!(pasted_path("~/x.json", None), PathBuf::from("~/x.json"));
     }
 
     #[test]
