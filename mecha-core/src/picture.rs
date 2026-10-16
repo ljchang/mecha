@@ -1042,8 +1042,10 @@ pub fn plan(
         out.route = "redrawn";
         // Naming a photo's people is never a redraw from the record's words
         // or room photo: the photo is what they are in (review of #707).
-        let setting_photo = setting_photo.filter(|_| !only_identified);
-        let words_setting = words_setting && !only_identified;
+        // Nor is any all-equal call on a picture whose people were not known:
+        // the record's setting has nobody in it to redraw.
+        let setting_photo = setting_photo.filter(|_| known_before);
+        let words_setting = words_setting && known_before;
         return Ok(match (setting_photo, base.is_some()) {
             (Some(photo), _) => Plan {
                 render: Render::Edit {
@@ -1231,8 +1233,14 @@ pub fn plan(
         }
     }
     // Crops go to the people this edit changes, who must look like themselves
-    // after it; everyone else is on the canvas already.
-    out.faces.retain(|k| touched.contains(k));
+    // after it; everyone else is on the canvas already. People identified on
+    // a photo are drawn from the photo itself: no crop pulls them toward a
+    // portrait, and they leave `added`, which is who the image tool would
+    // describe, with a library description and a default pose (review of
+    // #707, pass 2). The instruction's own line carries what was asked.
+    out.faces
+        .retain(|k| touched.contains(k) && !identified.contains(k));
+    out.delta.added.retain(|k| !identified.contains(k));
     out.render = Render::Edit {
         canvas: Canvas::Picture(picture),
         camera_moves: delta.camera,
@@ -1240,6 +1248,13 @@ pub fn plan(
     // An edit with no line would send the keep sentence alone, the shape
     // that returns the picture unchanged (#408): refused, saying what would
     // draw (review of #597).
+    if lines.is_empty() && !identified.is_empty() && delta.setting && setting_photo.is_some() {
+        return Err(
+            "A picture whose people are not known yet cannot be moved into a room photo in the \
+             same call that names them: name them first, then send the room."
+                .into(),
+        );
+    }
     if lines.is_empty() {
         return Err(
             "This change gives the picture nothing to draw: say who is in it, or put the change \
@@ -2173,7 +2188,15 @@ mod tests {
             p.instruction
         );
         assert!(!p.instruction.contains("Add Maya"), "{}", p.instruction);
-        assert_eq!(p.faces, ["maya"], "a crop for who the call changes");
+        assert!(
+            p.faces.is_empty(),
+            "drawn from the photo, never a portrait's crop"
+        );
+        assert!(
+            p.delta.added.is_empty(),
+            "identified, not added: {:?}",
+            p.delta
+        );
         assert!(
             p.said.as_deref().unwrap_or_default().contains("known now"),
             "{:?}",
