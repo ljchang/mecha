@@ -4644,6 +4644,217 @@ impl Tool for ImageGenerate {
                 };
             }
         }
+        // A face on a painted region (owner, 2026-10-16). A region carrying a
+        // face (a picture the owner dropped on it, or the one library
+        // character its words name) takes that face's tight crop as a
+        // reference, and the picture is sampled unmasked, then laid back
+        // through the painted regions only. Measured on the warm server the
+        // same day, the owner's photo and a crop of the face wanted, two
+        // seeds: unmasked with the crop held that face at ArcFace .79–.85
+        // with every pixel outside the paint the original's; sampled inside
+        // the mask it reached .40–.52, the original face pulling back through
+        // the noised source; the edits before this, with no face sent at
+        // all, .10–.25. Nothing outside the paint is drawn, so the
+        // references go at the unmasked size even for a person without a
+        // crop: the canvas is nobody's identity source there.
+        // Who the prompt reads as "the viewer": the plan's offstage people,
+        // and anyone a face region named whose face could not be sent, but
+        // only on a picture whose people are known: on one with no record a
+        // name may be someone already in it, and the edit keeps their face
+        // from the canvas (`picture::plan`'s `checks_names`, mecha-a3's G1;
+        // review of #706, pass 5).
+        let mut viewers = plan.offstage.clone();
+        let names_checked = plan.next.people_known;
+        if mask_plan.is_some() && !call.regions.is_empty() {
+            let mut lines: Vec<String> = Vec::new();
+            for r in &call.regions {
+                let found = match &r.reference {
+                    Some(path) => {
+                        let read = match read_references(ctx, std::slice::from_ref(path)).await {
+                            Ok(mut read) => read.remove(0),
+                            Err(why) => {
+                                return Ok(refused(format!(
+                                    "The picture on the {} region could not be read ({why}), \
+                                     so nothing was drawn. Ask the owner to drop it again.",
+                                    r.colour
+                                )))
+                            }
+                        };
+                        // Its face only when the region's words are about one:
+                        // "a red dress like this" over a model in it keeps the
+                        // dress, never her face (review of #706, pass 3).
+                        let about_face = crate::picture::about_a_face(&r.words);
+                        let anchor = if about_face {
+                            let faces = Arc::clone(&self.faces);
+                            let bytes = read.bytes.clone();
+                            tokio::task::spawn_blocking(move || faces.crop(&bytes))
+                                .await
+                                .unwrap_or_else(|_| {
+                                    crate::face::Anchor::Unavailable(
+                                        "the face detector failed".into(),
+                                    )
+                                })
+                        } else {
+                            crate::face::Anchor::NoFace
+                        };
+                        match anchor {
+                            crate::face::Anchor::Crop(crop) => {
+                                Some((crop, "png", true, path.clone()))
+                            }
+                            other => {
+                                // The whole picture, then: a look, not a
+                                // face, said either way. Fitted off the
+                                // executor, as the canvas is: a phone photo
+                                // decodes, shrinks and re-encodes here.
+                                match other {
+                                    crate::face::Anchor::Unavailable(why) => dropped.push(format!(
+                                        "No face could be taken from {path} ({why})."
+                                    )),
+                                    _ if about_face => {
+                                        dropped.push(format!("No face was found in {path}."))
+                                    }
+                                    _ => {}
+                                }
+                                let budget = self.reference_pixels;
+                                let bytes = read.bytes;
+                                let fitted = tokio::task::spawn_blocking(move || {
+                                    let fitted = fit_reference(&bytes, budget);
+                                    (fitted, bytes)
+                                })
+                                .await;
+                                match fitted {
+                                    Ok((Some(fitted), _)) => {
+                                        Some((fitted, "png", false, path.clone()))
+                                    }
+                                    Ok((None, bytes)) => {
+                                        Some((bytes, read.ext, false, path.clone()))
+                                    }
+                                    Err(e) => {
+                                        return Ok(refused(format!(
+                                            "The picture on the {} region could not be prepared: \
+                                             {e}",
+                                            r.colour
+                                        )))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // A name in a region's words takes that character's face
+                    // only when the words are about a face: "Maya's shirt in
+                    // red" is a shirt (review of #706).
+                    None => match crate::imagelib::named_in(&lib, &r.words).as_slice() {
+                        [name] if crate::picture::about_a_face(&r.words) => {
+                            let entry = lib
+                                .get(crate::imagelib::Kind::Character, name)
+                                .filter(|e| e.status == crate::imagelib::Status::Approved)
+                                .cloned();
+                            match entry {
+                                Some(entry) => {
+                                    let (entry_version, entry_portrait) =
+                                        (entry.version, entry.portrait.clone());
+                                    let faces = Arc::clone(&self.faces);
+                                    let for_faces = lib.clone();
+                                    let anchor = tokio::task::spawn_blocking(move || {
+                                        faces.anchor(&for_faces, &entry)
+                                    })
+                                    .await
+                                    .unwrap_or_else(|_| {
+                                        crate::face::Anchor::Unavailable(
+                                            "the face detector failed".into(),
+                                        )
+                                    });
+                                    let shown = capitalized(name);
+                                    match anchor {
+                                        crate::face::Anchor::Crop(crop) => {
+                                            used.push(crate::imagelib::Used {
+                                                kind: crate::imagelib::Kind::Character,
+                                                name: name.clone(),
+                                                version: entry_version,
+                                                portrait: entry_portrait.clone(),
+                                                full_body: None,
+                                            });
+                                            Some((crop, "png", true, format!("{shown}'s face")))
+                                        }
+                                        crate::face::Anchor::NoFace => {
+                                            if names_checked {
+                                                viewers.push(name.clone());
+                                            }
+                                            dropped.push(format!(
+                                                "No face was found in {shown}'s library \
+                                                 picture, so the {} region was drawn from its \
+                                                 words alone.",
+                                                r.colour
+                                            ));
+                                            None
+                                        }
+                                        crate::face::Anchor::Unavailable(why) => {
+                                            if names_checked {
+                                                viewers.push(name.clone());
+                                            }
+                                            dropped.push(format!(
+                                                "{shown}'s face could not be taken from the \
+                                                 library ({why}), so the {} region was drawn \
+                                                 from its words alone.",
+                                                r.colour
+                                            ));
+                                            None
+                                        }
+                                    }
+                                }
+                                None => None,
+                            }
+                        }
+                        // None named, or several: the words alone say whose.
+                        _ => None,
+                    },
+                };
+                if let Some((bytes, ext, is_face, from)) = found {
+                    req.references.push(Reference {
+                        path: format!("the {} region's reference", r.colour),
+                        bytes,
+                        ext,
+                    });
+                    let k = req.references.len();
+                    lines.push(if is_face {
+                        format!(
+                            "In the {} outline, take only the facial identity from <image{k}>, \
+                             nothing else.",
+                            r.colour
+                        )
+                    } else {
+                        format!(
+                            "In the {} outline, take the look from <image{k}>.",
+                            r.colour
+                        )
+                    });
+                    dropped.push(format!(
+                        "The {} region {} {from}.",
+                        r.colour,
+                        if is_face {
+                            "was given the face from"
+                        } else {
+                            "was given the look of"
+                        }
+                    ));
+                }
+            }
+            if !lines.is_empty() {
+                req.prompt = format!("{} {}", req.prompt.trim(), lines.join(" "));
+                // Sampled whole; `mask_plan` still lays the result back
+                // through the paint, and reads the change inside it.
+                req.mask = None;
+                req.size = canvas_dims(&req.references[0].bytes);
+                // Small references only when every painted region takes
+                // its change from a reference of its own, as measured: a
+                // region with none is drawn from the canvas, which at 512
+                // lost identity (.66–.70 to .42–.53, #601), so it keeps the
+                // full canvas (review of #706).
+                if req.size.is_some() && lines.len() == call.regions.len() {
+                    req.reference_size = UNMASKED_EDIT_REFERENCE_SIZE;
+                }
+            }
+        }
         // The planner caps faces, so this never fires; it is the budget's
         // own check, so a planner change cannot quietly pass it.
         if is_edit && req.references.len() > EDIT_REFERENCE_BUDGET {
@@ -4661,7 +4872,7 @@ impl Tool for ImageGenerate {
             .iter()
             .flat_map(|t| t.value.iter().map(|w| w.words.as_str()))
             .collect();
-        req.prompt = crate::picture::as_viewer(&req.prompt, &plan.offstage, &rendered);
+        req.prompt = crate::picture::as_viewer(&req.prompt, &viewers, &rendered);
         if req.prompt.chars().count() > crate::imagelib::MAX_COMPILED_PROMPT {
             return Ok(refused(format!(
                 "The picture's description came to over {} characters; say less in the scene.",
@@ -8131,6 +8342,7 @@ mod tests {
             colour: name.to_string(),
             rgb: *rgb,
             words: words.into(),
+            reference: None,
         }
     }
 
@@ -8326,6 +8538,302 @@ mod tests {
             canvas.picture.get_pixel(w / 2, h / 20)
         );
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A face dropped on a painted region (owner, 2026-10-16): its tight
+    /// crop rides as the picture after the outlines, the edit is sampled
+    /// unmasked at the canvas's own shape, the prompt says which region
+    /// takes the face, and the result is still laid back only inside the
+    /// paint. Sampled inside the mask the face reached ArcFace .40–.52;
+    /// unmasked and laid back, .79–.85.
+    #[tokio::test]
+    async fn a_face_dropped_on_a_region_is_sent_and_sampled_unmasked() {
+        let red = image::RgbImage::from_pixel(64, 64, image::Rgb([200, 20, 20]));
+        let mut result = std::io::Cursor::new(Vec::new());
+        red.write_to(&mut result, image::ImageFormat::Png).unwrap();
+        let (url, seen) = fake_with(Fake {
+            history: vec![done()],
+            views: vec![result.into_inner()],
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        let original = picture(8, [240, 220, 40]);
+        std::fs::write(dir.join("images/orig.png"), &original).unwrap();
+        std::fs::write(dir.join("inbox/face.png"), picture(8, [90, 60, 40])).unwrap();
+        std::fs::write(
+            dir.join("inbox/regions.png"),
+            index_png(
+                64,
+                64,
+                &[
+                    ([255, 0, 255], (0, 16, 16, 56)),
+                    ([0, 255, 255], (40, 16, 56, 56)),
+                ],
+            ),
+        )
+        .unwrap();
+        let faces = stub_faces(crate::face::Anchor::Crop(picture(4, [1, 2, 3])));
+        let out = tool(&url)
+            .with_faces(faces.clone())
+            .call(
+                json!({"picture": "images/orig.png", "mask": "inbox/regions.png",
+                       "regions": [{"colour": "magenta", "words": "her face",
+                                    "reference": "inbox/face.png"},
+                                   {"colour": "cyan", "words": "make his shirt green"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(
+            faces.asked.load(Ordering::SeqCst),
+            1,
+            "the dropped picture was cropped"
+        );
+        assert!(
+            out.content
+                .contains("The magenta region was given the face from inbox/face.png."),
+            "{}",
+            out.content
+        );
+        let seen = seen.lock().unwrap().clone();
+        let uploads = seen
+            .iter()
+            .filter(|l| l.starts_with("POST /upload/image"))
+            .count();
+        assert_eq!(
+            uploads, 3,
+            "the picture, its outlined copy, and the face crop"
+        );
+        let submitted = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+        assert!(submitted.contains("images.image_3"), "{submitted}");
+        assert!(!submitted.contains("SetLatentNoiseMask"), "{submitted}");
+        assert!(submitted.contains("EmptyLatentImage"), "{submitted}");
+        assert!(
+            submitted.contains(
+                "In the magenta outline, take only the facial identity from <image3>, nothing else."
+            ),
+            "{submitted}"
+        );
+        // The cyan region has no reference of its own: the canvas is its
+        // source, so it stays at full size (review of #706).
+        assert!(submitted.contains("\"resolution\":1024"), "{submitted}");
+        let png = picture_of(&out.content);
+        let saved = image::load_from_memory(&std::fs::read(dir.join(png)).unwrap())
+            .unwrap()
+            .to_rgb8();
+        // Between the two regions, untouched.
+        let (w, h) = saved.dimensions();
+        let canvas = prepare_mask(&original, &mask_png(64, 64, (0, 16, 16, 56)), 1024).unwrap();
+        assert_eq!(
+            saved.get_pixel(w / 2, h / 20),
+            canvas.picture.get_pixel(w / 2, h / 20)
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A face region whose character's face cannot be had puts no stranger
+    /// under the name on a picture whose people are known: the prompt reads
+    /// "the viewer". On a photo with no record the name may be someone
+    /// already in it, so it stays (G1; review of #706, passes 4 and 5).
+    #[tokio::test]
+    async fn a_named_face_that_cannot_be_had_is_the_viewer_only_where_names_are_checked() {
+        let red = image::RgbImage::from_pixel(64, 64, image::Rgb([200, 20, 20]));
+        let mut result = std::io::Cursor::new(Vec::new());
+        red.write_to(&mut result, image::ImageFormat::Png).unwrap();
+        let (url, seen) = fake_with(Fake {
+            history: vec![done(); 3],
+            views: vec![result.into_inner(); 3],
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        let store = tempdir();
+        let lib = library_with(&["maya", "john"]);
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::write(dir.join("images/orig.png"), picture(8, [240, 220, 40])).unwrap();
+        std::fs::write(
+            dir.join("inbox/regions.png"),
+            index_png(64, 64, &[([255, 0, 255], (0, 16, 16, 56))]),
+        )
+        .unwrap();
+        let faces = stub_faces(crate::face::Anchor::Unavailable("not installed".into()));
+        let t = tool(&url)
+            .with_library_dir(lib.clone())
+            .with_faces(faces.clone());
+        let last_prompt = || {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|l| l.starts_with("POST /prompt"))
+                .unwrap()
+                .clone()
+        };
+        let region = |picture: &str| {
+            json!({"picture": picture, "mask": "inbox/regions.png",
+                   "regions": [{"colour": "magenta", "words": "Maya's face"}]})
+        };
+        // No record: the name stays.
+        let out = t.call(region("images/orig.png"), &ctx(&dir)).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let sent = last_prompt();
+        assert!(sent.contains("Maya"), "{sent}");
+        assert!(
+            out.content.contains("could not be taken from the library"),
+            "{}",
+            out.content
+        );
+        // A recorded picture of John: Maya is not in it, so she is the viewer.
+        let c = scene_ctx(&dir, &store, "chat-a");
+        let john = t
+            .call(
+                json!({"scene": {"setting": "a study", "people": [
+                    {"who": "john", "wearing": "a coat", "doing": "reading"}]}}),
+                &c,
+            )
+            .await
+            .unwrap();
+        assert!(!john.is_error, "{}", john.content);
+        std::fs::write(
+            dir.join("inbox/regions.png"),
+            index_png(64, 64, &[([255, 0, 255], (0, 16, 16, 56))]),
+        )
+        .unwrap();
+        let out = t
+            .call(region(&picture_of(&john.content)), &c)
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let sent = last_prompt();
+        assert!(!sent.contains("Maya"), "{sent}");
+        assert!(sent.contains("the viewer"), "{sent}");
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// A picture dropped on a region whose words are not about a face is a
+    /// look, whoever is in it: the detector is not asked and the prompt takes
+    /// the look (review of #706, pass 3: a dress worn by a model lost the
+    /// dress to her face).
+    #[tokio::test]
+    async fn a_dropped_picture_is_a_look_unless_the_words_are_about_a_face() {
+        let red = image::RgbImage::from_pixel(64, 64, image::Rgb([200, 20, 20]));
+        let mut result = std::io::Cursor::new(Vec::new());
+        red.write_to(&mut result, image::ImageFormat::Png).unwrap();
+        let (url, seen) = fake_with(Fake {
+            history: vec![done()],
+            views: vec![result.into_inner()],
+            ..Fake::default()
+        })
+        .await;
+        let dir = tempdir();
+        std::fs::create_dir_all(dir.join("images")).unwrap();
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::write(dir.join("images/orig.png"), picture(8, [240, 220, 40])).unwrap();
+        std::fs::write(dir.join("inbox/dress.png"), picture(8, [150, 20, 30])).unwrap();
+        std::fs::write(
+            dir.join("inbox/regions.png"),
+            index_png(64, 64, &[([255, 0, 255], (0, 16, 16, 56))]),
+        )
+        .unwrap();
+        let faces = stub_faces(crate::face::Anchor::Crop(picture(4, [1, 2, 3])));
+        let out = tool(&url)
+            .with_faces(faces.clone())
+            .call(
+                json!({"picture": "images/orig.png", "mask": "inbox/regions.png",
+                       "regions": [{"colour": "magenta", "words": "a red dress like this",
+                                    "reference": "inbox/dress.png"}]}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(faces.asked.load(Ordering::SeqCst), 0, "no face looked for");
+        let seen = seen.lock().unwrap().clone();
+        let submitted = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+        assert!(
+            submitted.contains("In the magenta outline, take the look from <image3>."),
+            "{submitted}"
+        );
+        assert!(!submitted.contains("facial identity"), "{submitted}");
+        assert!(
+            out.content.contains("given the look of inbox/dress.png"),
+            "{}",
+            out.content
+        );
+        assert!(!out.content.contains("No face"), "{}", out.content);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A library name in a region's words takes that character's face only
+    /// when the words are about a face, and the character is recorded as
+    /// used; with every painted region holding a face, the references go
+    /// small (review of #706).
+    #[tokio::test]
+    async fn a_name_in_a_region_takes_a_face_only_when_the_words_are_about_one() {
+        for (words, wants_face) in [("Maya's shirt in red", false), ("Maya's face", true)] {
+            let red = image::RgbImage::from_pixel(64, 64, image::Rgb([200, 20, 20]));
+            let mut result = std::io::Cursor::new(Vec::new());
+            red.write_to(&mut result, image::ImageFormat::Png).unwrap();
+            let (url, seen) = fake_with(Fake {
+                history: vec![done()],
+                views: vec![result.into_inner()],
+                ..Fake::default()
+            })
+            .await;
+            let dir = tempdir();
+            let lib = library_with(&["maya"]);
+            std::fs::create_dir_all(dir.join("images")).unwrap();
+            std::fs::create_dir_all(dir.join("inbox")).unwrap();
+            std::fs::write(dir.join("images/orig.png"), picture(8, [240, 220, 40])).unwrap();
+            std::fs::write(
+                dir.join("inbox/regions.png"),
+                index_png(64, 64, &[([255, 0, 255], (0, 16, 16, 56))]),
+            )
+            .unwrap();
+            let faces = stub_faces(crate::face::Anchor::Crop(picture(4, [1, 2, 3])));
+            let out = tool(&url)
+                .with_library_dir(lib.clone())
+                .with_faces(faces.clone())
+                .call(
+                    json!({"picture": "images/orig.png", "mask": "inbox/regions.png",
+                           "regions": [{"colour": "magenta", "words": words}]}),
+                    &ctx(&dir),
+                )
+                .await
+                .unwrap();
+            assert!(!out.is_error, "{words}: {}", out.content);
+            let asked = faces.asked.load(Ordering::SeqCst);
+            let seen = seen.lock().unwrap().clone();
+            let submitted = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+            if wants_face {
+                assert_eq!(asked, 1, "{words}");
+                assert!(
+                    submitted.contains("facial identity from <image3>"),
+                    "{submitted}"
+                );
+                assert!(submitted.contains("\"resolution\":512"), "{submitted}");
+                assert!(
+                    out.content.contains("given the face from Maya's face"),
+                    "{}",
+                    out.content
+                );
+                let m = manifest_of(&dir, &out.content);
+                assert_eq!(m["cast"][0]["name"], "maya", "{m}");
+            } else {
+                assert_eq!(asked, 0, "{words}: a shirt is not a face");
+                assert!(!submitted.contains("facial identity"), "{submitted}");
+                assert!(submitted.contains("SetLatentNoiseMask"), "{submitted}");
+            }
+            std::fs::remove_dir_all(dir).ok();
+            std::fs::remove_dir_all(lib).ok();
+        }
     }
 
     #[tokio::test]
@@ -8646,6 +9154,11 @@ mod tests {
             _: &crate::imagelib::Library,
             _: &crate::imagelib::Entry,
         ) -> crate::face::Anchor {
+            self.asked.fetch_add(1, Ordering::SeqCst);
+            self.answer.clone()
+        }
+
+        fn crop(&self, _: &[u8]) -> crate::face::Anchor {
             self.asked.fetch_add(1, Ordering::SeqCst);
             self.answer.clone()
         }
