@@ -1194,6 +1194,13 @@ pub struct McpServerConfig {
     pub personas: bool,
     /// Skip this server without deleting its config.
     pub disabled: bool,
+    /// Tools this server lists that the model is never offered, by the
+    /// server's own names (unprefixed). Narrowing only, so any layer may set
+    /// it. The case it exists for: a server whose `*_status` tool is for
+    /// clients without a job queue, which a chat that runs the work in the
+    /// background only ever uses to poll (2026-10-15). A name the server
+    /// does not list is warned about at every start, never ignored quietly.
+    pub disabled_tools: Vec<String>,
 }
 
 /// A leading `~` in a path the owner wrote, resolved against the home

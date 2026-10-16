@@ -16,6 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unlocked, with nothing saying how many are hidden. Anything already set to
   it still speaks in it.
 
+- **The assistant's chat shows how long a picture or clip has been running.**
+  A still-out row reads "working on it… 2:14" or "drawing a picture… 0:41",
+  as a persona chat's already did, and keeps counting across a reload.
+
+- **`[[mcp]] disabled_tools` withholds single tools from a server.** By the
+  server's own names, narrowing only, and a name the server does not list is
+  warned about on every start. For a status tool a chat only uses to poll
+  work it already runs in the background (`disabled_tools =
+  ["video_status"]`).
+
 - **Services an older mecha installed are refreshed.** Every unit and launchd
   agent mecha writes now carries a revision; `mecha features enable` and
   `mecha setup` find one an older build wrote and offer to rewrite and
