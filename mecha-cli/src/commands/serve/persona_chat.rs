@@ -5244,7 +5244,7 @@ async fn form_voices(
     token: Option<&str>,
 ) -> mecha_core::persona::VoiceChoices {
     let locks = super::settings::VoiceLocks::read(&state.library, token);
-    if !locks.unlocked() && locks.error().is_some() {
+    if !locks.unlocked() && locks.unreadable() {
         // Not "the worker lists none": nothing can be offered without
         // naming what the lock hides.
         return mecha_core::persona::VoiceChoices {

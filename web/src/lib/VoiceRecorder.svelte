@@ -6,7 +6,9 @@
   import { apiFetch as fetch } from './api.js';
   import { cloneUrl } from './library.js';
 
-  let { onsaved = () => {} } = $props();
+  // `canLock` as the pane has it: a voice saved locked where the page has no
+  // unlock could never be shown again from here (review of #701, pass 6).
+  let { canLock = false, onsaved = () => {} } = $props();
 
   // ── Voice cloning ──────────────────────────────────────────────────────
   // The TTS is a zero-shot cloner: a "voice" is a reference WAV in the
@@ -132,7 +134,7 @@
     cloneBusy = true;
     cloneError = null;
     try {
-      const res = await fetch(cloneUrl(cloneName, cloneLocked), {
+      const res = await fetch(cloneUrl(cloneName, canLock && cloneLocked), {
         method: 'POST',
         headers: { 'Content-Type': 'audio/wav' },
         body: recWav,
@@ -213,10 +215,12 @@
       </button>
       <button class="btn" onclick={discardClone}>Discard</button>
     </div>
-    <label class="lockline">
-      <input type="checkbox" bind:checked={cloneLocked} />
-      lock (hide while browsing)
-    </label>
+    {#if canLock}
+      <label class="lockline">
+        <input type="checkbox" bind:checked={cloneLocked} />
+        lock (hide while browsing)
+      </label>
+    {/if}
   {/if}
   {#if cloneError}
     <div class="sub notice">{cloneError}</div>

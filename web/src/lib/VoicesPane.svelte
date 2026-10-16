@@ -173,7 +173,7 @@
 
   {#if data.cloning}
     <div class="kicker">Add a voice</div>
-    <VoiceRecorder onsaved={load} />
+    <VoiceRecorder {canLock} onsaved={load} />
   {:else}
     <div class="barnote">
       Recording a voice needs <code>[voice] voices_dir</code> — the directory the TTS reads its
