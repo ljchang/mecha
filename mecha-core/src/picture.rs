@@ -248,6 +248,14 @@ pub fn parse(
         Some(_) => return Err("`regions` is a list of {colour, words, reference?}.".into()),
     }
     if !regions.is_empty() {
+        // Before the generic check: words in `mask` leave `mask` empty, and
+        // are refused by name (review of #710, pass 3).
+        if mask_words.is_some() {
+            return Err(
+                "Painted regions carry their own mask; a `mask` in words cannot go beside them."
+                    .into(),
+            );
+        }
         if mask.is_none() || picture.is_none() {
             return Err(
                 "Regions go with the `mask` they were painted in and the `picture` it was \
@@ -257,12 +265,6 @@ pub fn parse(
         }
         if retouch.is_some() {
             return Err("Regions carry their own words; no `retouch` goes beside them.".into());
-        }
-        if mask_words.is_some() {
-            return Err(
-                "Painted regions carry their own mask; a `mask` in words cannot go beside them."
-                    .into(),
-            );
         }
         retouch = Some(region_legend(&regions));
     }
@@ -1557,6 +1559,11 @@ mod tests {
         assert!(bad(json!({"picture": "images/a.png",
             "regions": [{"colour": "magenta", "words": "x"}]}))
         .contains("go with the `mask`"));
+        // Words in `mask` beside regions are refused by name (review of
+        // #710, pass 3).
+        assert!(bad(json!({"picture": "images/a.png", "mask": "the sky",
+            "regions": [{"colour": "magenta", "words": "x"}]}))
+        .contains("a `mask` in words cannot go beside them"));
         assert!(bad(
             json!({"picture": "images/a.png", "mask": "inbox/r.png", "retouch": "y",
             "regions": [{"colour": "magenta", "words": "x"}]})
