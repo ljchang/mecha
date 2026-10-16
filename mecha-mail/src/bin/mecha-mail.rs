@@ -1269,6 +1269,10 @@ fn register_own_app(
                  app is still in Testing, add this account under Audience, Test users.",
                 wizard::GOOGLE_CLIENTS
             );
+            // Downloads is searched from any day, so what it finds is asked
+            // about, as the offer before the walk is: an old file from another
+            // project fails at Google's sign-in, not here (review of #709).
+            let mut declined: Option<std::path::PathBuf> = None;
             loop {
                 let answer = line(
                     "Client file's path (drag it here), or Enter to take the newest in \
@@ -1277,8 +1281,19 @@ fn register_own_app(
                 let path = if answer.is_empty() {
                     match downloads.and_then(|d| wizard::find_client_json(d, std::time::UNIX_EPOCH))
                     {
+                        Some(p) if declined.as_ref() == Some(&p) => {
+                            eprintln!("That is the newest there; drag the one you mean here");
+                            continue;
+                        }
                         Some(p) => {
                             eprintln!("Found {}", p.display());
+                            if line("Use it? [Y/n] ")?
+                                .to_ascii_lowercase()
+                                .starts_with('n')
+                            {
+                                declined = Some(p);
+                                continue;
+                            }
                             p
                         }
                         None => {
@@ -1335,7 +1350,16 @@ fn register_own_app(
         }
         Provider::Outlook => {
             if reuse {
-                eprintln!("\nBoth ids are on the app registration's Overview page.");
+                // The two app-level settings a registration made for something
+                // else may lack, in the walk's own words: without them the
+                // device code fails at Entra, after the wizard (review of #709).
+                eprintln!(
+                    "\nBoth ids are on the app registration's Overview page. An app registered \
+                     for something else needs these two, as the steps set them:"
+                );
+                for step in &wizard::MICROSOFT[1..3] {
+                    eprintln!("  - {}", step.what);
+                }
             }
             let client_id = loop {
                 let a = line("Application (client) ID: ")?;
@@ -2063,8 +2087,8 @@ mod tests {
 
     /// An app already registered skips every page: Google's client file by
     /// a pasted path (quoted, as a drag-and-drop gives it, after a wrong one
-    /// is said and asked again) or by Enter from Downloads, however old;
-    /// Outlook's two ids straight away.
+    /// is said and asked again) or by Enter from Downloads, however old,
+    /// once confirmed; Outlook's two ids straight away.
     #[test]
     fn a_sign_in_app_you_already_have_skips_the_walk() {
         let dir = std::env::temp_dir().join(format!("mecha-wiz-h-{}", std::process::id()));
@@ -2098,14 +2122,24 @@ mod tests {
             run(pasted, Provider::Google).unwrap().client_id,
             "4-h.apps.googleusercontent.com"
         );
-        // Enter takes the newest client file in Downloads, from any day.
+        // Enter offers the newest client file in Downloads, from any day,
+        // and Enter again takes it.
         std::fs::write(
             downloads.join("client_secret_5-d.apps.googleusercontent.com.json"),
             r#"{"installed":{"client_id":"5-d.apps.googleusercontent.com","client_secret":"s"}}"#,
         )
         .unwrap();
+        // Declined, the same file is not offered again; Enter on the second
+        // ask is still that one refused, so the path is pasted.
+        let declined = register_own_app(
+            &mut std::io::Cursor::new(format!("y\n\nn\n\n{}\n", file.display())),
+            Provider::Google,
+            Some(&downloads),
+            std::time::SystemTime::now() + std::time::Duration::from_secs(25 * 3600),
+            &open,
+        );
         let from_downloads = register_own_app(
-            &mut std::io::Cursor::new(b"y\n\n".to_vec()),
+            &mut std::io::Cursor::new(b"y\n\n\n".to_vec()),
             Provider::Google,
             Some(&downloads),
             // Started after the file was written: the recent-file offer
@@ -2119,6 +2153,10 @@ mod tests {
         assert_eq!(
             from_downloads.unwrap().client_id,
             "5-d.apps.googleusercontent.com"
+        );
+        assert_eq!(
+            declined.unwrap().client_id,
+            "4-h.apps.googleusercontent.com"
         );
         let outlook = outlook.unwrap();
         assert_eq!(outlook.client_id, id);

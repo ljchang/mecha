@@ -183,6 +183,10 @@ mod tests {
             assert!(s.url.starts_with("https://"), "{s:?}");
         }
         assert!(GOOGLE.last().unwrap().what.contains("Download JSON"));
+        // `mecha-mail auth` prints steps 2 and 3 to an owner reusing an app:
+        // the two settings an app registered for something else may lack.
+        assert!(MICROSOFT[1].what.contains("Allow public client flows"));
+        assert!(MICROSOFT[2].what.contains("API permissions"));
         assert!(GOOGLE
             .iter()
             .any(|s| s.url.contains("gmail.googleapis.com") && s.url.contains("calendar")));
