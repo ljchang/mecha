@@ -965,8 +965,8 @@ fn services_step(
 
 /// A step's remedy from the row's next command — when it is one. Setup only
 /// ever *runs* a command; a config edit (`add an [image] table`, `set
-/// [documents] ocr = true`) or an instruction (`install factory-publish from
-/// …`) is said in the detail and never run, because the edit is the owner's
+/// [documents] ocr = true`) or an instruction (`set [web] owner_login to your
+/// Tailscale login`) is said in the detail and never run, because the edit is the owner's
 /// to make (the module rule: setup never writes down what it was not told).
 fn with_next(mut step: Step, next: Option<&str>) -> Step {
     let Some(next) = next else { return step };

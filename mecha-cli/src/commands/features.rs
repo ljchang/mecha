@@ -124,7 +124,11 @@ pub async fn execute(args: Args) -> Result<()> {
             turbo,
             reinstall,
         }) => return enable(&ids, no_install, turbo, reinstall, false).await,
-        Some(Cmd::Disable { ids }) => return set(&ids, false),
+        Some(Cmd::Disable { ids }) => {
+            set(&ids, false)?;
+            println!("{RESTART_NOTE}");
+            return Ok(());
+        }
         Some(Cmd::Plan { id, json, verify }) => return plan(&id, json, verify),
         Some(Cmd::LogCap {
             log,
@@ -229,7 +233,13 @@ pub(super) async fn enable(
     yes: bool,
 ) -> Result<()> {
     let on = enable_unwired(ids, no_install, turbo, reinstall, yes).await?;
-    mcp_entries(&on)
+    // The switches are written whatever the wiring does: the note is said
+    // either way (review of #698).
+    let wired = mcp_entries(&on);
+    if !on.is_empty() {
+        println!("{RESTART_NOTE}");
+    }
+    wired
 }
 
 /// [`enable`] up to the `[[mcp]]` wiring, returning the features it switched
@@ -830,6 +840,22 @@ pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
                 f.id()
             );
         }
+        // Never edited — a store built at another width would break — and
+        // said with the lines to add (review of #698).
+        if !done.env_missing.is_empty() {
+            let lines: Vec<String> = done
+                .env_missing
+                .iter()
+                .map(|(k, v)| format!("{k} = \"{v}\""))
+                .collect();
+            println!(
+                "  the [[mcp]] entry for {} is left as it is — it does not tell the server mecha's \
+                 embeddings server, so it assumes another width; unless its store was built with \
+                 another embedder, add under [mcp.env]: {}",
+                wiring.name,
+                lines.join(", ")
+            );
+        }
         if done.untrusted_missing && done.runs_other.is_none() {
             println!(
                 "  the [[mcp]] entry for {} is left as it is — it needs \
@@ -1205,9 +1231,14 @@ fn set(ids: &[String], on: bool) -> Result<()> {
             println!("  `{}` needs it, and now reads blocked", dependent.id());
         }
     }
-    println!("Services that are already running pick this up when they restart.");
     Ok(())
 }
+
+/// Said once per command, after every switch it wrote: the guided setup
+/// enables one feature at a time, and printed per feature it read fourteen
+/// times (the owner's fresh Mac, 2026-10-14).
+pub(super) const RESTART_NOTE: &str =
+    "Services that are already running pick this up when they restart.";
 
 /// What disabling `features` leaves blocked, said rather than discovered: each
 /// feature or part another switch owns that is on now and would not be after.
