@@ -783,8 +783,11 @@ pub fn plan(
     // change to draw.
     let only_identified = !identified.is_empty()
         && {
+            // Naming them ends a recorded relation between unknown people
+            // (`together_cleared`), which draws nothing on its own.
             let mut rest = delta.clone();
             rest.added.clear();
+            rest.together_cleared = false;
             rest.is_empty()
         }
         && next
@@ -795,6 +798,7 @@ pub fn plan(
                 p.wearing.trim().is_empty()
                     && p.doing.trim().is_empty()
                     && p.expression.trim().is_empty()
+                    && p.at.is_none()
             });
     let unchanged = (delta.is_empty() || only_identified) && unknown_removes.is_empty();
     // A painted area keeps everything outside it, so it cannot carry a
@@ -826,9 +830,6 @@ pub fn plan(
     // later `together` (review of #608).
     let mut clothes_said: Vec<(String, String)> = Vec::new();
     for key in &delta.added {
-        if identified.contains(key) {
-            continue;
-        }
         // Someone added past the scene's bound was cut from it (`apply`):
         // refused here, never drawn as a picture without them.
         let Some(p) = next.people.iter_mut().find(|p| &p.who.key() == key) else {
@@ -837,6 +838,9 @@ pub fn plan(
                 crate::scene::MAX_PEOPLE
             ));
         };
+        if identified.contains(key) {
+            continue;
+        }
         if p.wearing.trim().is_empty() {
             match (worn(key), &p.who) {
                 (Some((w, from)), _) => {
@@ -1036,6 +1040,10 @@ pub fn plan(
     // again as it is, and its record now knows its people.
     if unchanged {
         out.route = "redrawn";
+        // Naming a photo's people is never a redraw from the record's words
+        // or room photo: the photo is what they are in (review of #707).
+        let setting_photo = setting_photo.filter(|_| !only_identified);
+        let words_setting = words_setting && !only_identified;
         return Ok(match (setting_photo, base.is_some()) {
             (Some(photo), _) => Plan {
                 render: Render::Edit {
@@ -1120,8 +1128,10 @@ pub fn plan(
                 ));
             }
             let doing = p.doing.trim().trim_end_matches('.');
-            if !doing.is_empty() {
-                lines.push(format!("Have {name} {doing}."));
+            match (doing.is_empty(), p.at) {
+                (false, _) => lines.push(format!("Have {name} {doing}.")),
+                (true, Some(at)) => lines.push(format!("Place {name} {}.", at.name())),
+                (true, None) => {}
             }
             if lines.len() > before {
                 touched.push(key);
@@ -2179,6 +2189,52 @@ mod tests {
             Some(&base),
         );
         assert_eq!(later.route, "restaged");
+    }
+
+    /// A photo whose record has a setting but whose people are still
+    /// unknown: naming them is an edit of the photo, never a redraw from the
+    /// record's words; a place said for them is drawn (review of #707).
+    #[test]
+    fn naming_a_photos_people_after_its_setting_keeps_the_photo() {
+        let first = planned(
+            &call(json!({"picture": "inbox/her.jpg", "scene": {
+                "setting": "a narrow greenhouse", "camera": "from the doorway"}})),
+            None,
+        );
+        assert!(first
+            .said
+            .as_deref()
+            .unwrap_or_default()
+            .contains("not known yet"));
+        let base = landed(&first, 9);
+        assert!(!base.people_known && base.setting.is_some());
+        let named = planned(
+            &call(json!({"picture": "images/a.png", "scene": {"people": [{"who": "maya"}]}})),
+            Some(&base),
+        );
+        assert!(
+            matches!(
+                named.render,
+                Render::Edit {
+                    canvas: Canvas::Picture(_),
+                    ..
+                }
+            ),
+            "{:?}",
+            named.render
+        );
+        assert!(named.next.people_known);
+        let placed = planned(
+            &call(json!({"picture": "images/a.png", "scene": {"people": [
+                {"who": "maya", "where": "left"}]}})),
+            Some(&base),
+        );
+        assert_eq!(placed.route, "edited");
+        assert!(
+            placed.instruction.contains("Place Maya on the left."),
+            "{}",
+            placed.instruction
+        );
     }
 
     /// Naming who is in a photo, and nothing else, changes nothing in it:
