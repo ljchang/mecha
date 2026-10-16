@@ -82,14 +82,28 @@ pub const MICROSOFT: &[Step] = &[
 pub const GOOGLE_CLIENTS: &str = "https://console.cloud.google.com/auth/clients";
 
 /// A path as pasted at a terminal: the quotes a copy or a drag-and-drop adds
-/// are dropped, `\ ` is a space, and a leading `~/` is the home folder.
+/// are dropped, outside quotes a backslash escapes the character after it
+/// (a drag escapes every shell metacharacter, so `\ ` and `\(1\)` both),
+/// and a leading `~/` is the home folder.
 pub fn pasted_path(text: &str, home: Option<&Path>) -> PathBuf {
     let t = text.trim();
-    let t = ['"', '\'']
+    let quoted = ['"', '\'']
         .iter()
-        .find_map(|q| t.strip_prefix(*q).and_then(|s| s.strip_suffix(*q)))
-        .unwrap_or(t);
-    let t = t.replace("\\ ", " ");
+        .find_map(|q| t.strip_prefix(*q).and_then(|s| s.strip_suffix(*q)));
+    let t = match quoted {
+        Some(inner) => inner.to_string(),
+        None => {
+            let mut out = String::with_capacity(t.len());
+            let mut chars = t.chars();
+            while let Some(c) = chars.next() {
+                match c {
+                    '\\' => out.extend(chars.next()),
+                    c => out.push(c),
+                }
+            }
+            out
+        }
+    };
     match (t.strip_prefix("~/"), home) {
         (Some(rest), Some(home)) => home.join(rest),
         _ => PathBuf::from(t),
@@ -215,6 +229,14 @@ mod tests {
             "'/Users/sam/Downloads/client secret.json'",
             "\"/Users/sam/Downloads/client secret.json\"",
             "~/Downloads/client secret.json",
+        ] {
+            assert_eq!(pasted_path(pasted, Some(home)), want, "{pasted}");
+        }
+        // A second download of one file, dragged in: its parens come escaped.
+        let want = PathBuf::from("/Users/sam/Downloads/client_secret_1 (1).json");
+        for pasted in [
+            "/Users/sam/Downloads/client_secret_1\\ \\(1\\).json",
+            "'/Users/sam/Downloads/client_secret_1 (1).json'",
         ] {
             assert_eq!(pasted_path(pasted, Some(home)), want, "{pasted}");
         }

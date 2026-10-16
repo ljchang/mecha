@@ -1241,9 +1241,12 @@ fn register_own_app(
              machine say? [y/N] "
         }
     };
+    // Said before the question, so a first-time owner knows what an app is
+    // before being asked whether they have one (review of #709).
+    eprintln!("\n{intro}");
     let reuse = line(have)?.to_ascii_lowercase().starts_with('y');
     if !reuse {
-        eprintln!("\n{intro}\n");
+        eprintln!();
         let mut last_url = "";
         for (i, step) in steps.iter().enumerate() {
             eprintln!("{}. {}", i + 1, step.what);
