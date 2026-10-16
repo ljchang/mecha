@@ -54,6 +54,15 @@ pub struct Region {
     pub reference: Option<String>,
 }
 
+/// Whether a painted region's words are about a face: the one place a
+/// library name in them takes that character's face, and the only words a
+/// dropped picture gives its face to rather than its look (§5.3).
+pub fn about_a_face(words: &str) -> bool {
+    words
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|w| matches!(w.to_lowercase().as_str(), "face" | "faces"))
+}
+
 /// The legend the model reads for regions, in the measured M2 form: the
 /// outlines are in `<image2>`, the picture is `<image1>`, and each colour's
 /// words follow it (mecha-a3, 2026-10-09: 0 of 24 wrong targets).
@@ -882,8 +891,11 @@ pub fn plan(
     // With regions the retouch is the harness's legend, whose own words
     // ("mark", a colour's name) would read as library names: what is checked
     // is what the owner wrote in each region (review of #623, pass 12).
+    // A region about a face is where a library name is brought in on
+    // purpose, to take that face (§5.3): it is not someone offstage, whom
+    // the image model would read as "the viewer" (review of #706, pass 3).
     if !call.regions.is_empty() {
-        for r in &call.regions {
+        for r in call.regions.iter().filter(|r| !about_a_face(&r.words)) {
             prose.push(("retouch", r.words.clone()));
         }
     } else if let Some(r) = &call.retouch {
@@ -1603,6 +1615,19 @@ mod tests {
         )
         .unwrap();
         assert_eq!(p.offstage, vec!["wren".to_string()]);
+        // A region about a face brings the name in on purpose: its face is
+        // taken (§5.3), so it is not "the viewer" (review of #706, pass 3).
+        let p = plan(
+            &regions("Wren's face"),
+            Some(&base),
+            None,
+            Origin::Clean,
+            &approved,
+            &named,
+            &|_| None,
+        )
+        .unwrap();
+        assert!(p.offstage.is_empty(), "{:?}", p.offstage);
     }
 
     /// Regions beside a scene change are refused: the change drops the mask,

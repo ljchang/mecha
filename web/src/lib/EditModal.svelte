@@ -229,6 +229,12 @@
     const file = e.dataTransfer?.files?.[0];
     if (!file) return;
     e.preventDefault();
+    // Said, never swallowed: a HEIC or GIF would otherwise do nothing.
+    if (!REFERENCE_TYPES.includes(file.type)) {
+      encodeError = 'A region takes a PNG, JPEG or WebP picture.';
+      return;
+    }
+    encodeError = null;
     attach(k, file);
   }
 
