@@ -890,8 +890,9 @@ async fn check(port: u16, model_files: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// Every file the three loaders offer, off `/object_info`: each loader's
-/// first input's choices.
+/// Every file the four loaders offer, off `/object_info`: each loader's
+/// first input's choices. The checkpoint loader is SAM 3.1's
+/// (`recommend::SAM_SOURCE`).
 fn listed_models(info: &serde_json::Value) -> Vec<String> {
     let choices = |node: &str, input: &str| -> Vec<String> {
         info[node]["input"]["required"][input][0]
@@ -906,6 +907,7 @@ fn listed_models(info: &serde_json::Value) -> Vec<String> {
     let mut out = choices("UNETLoader", "unet_name");
     out.extend(choices("CLIPLoader", "clip_name"));
     out.extend(choices("VAELoader", "vae_name"));
+    out.extend(choices("CheckpointLoaderSimple", "ckpt_name"));
     out
 }
 
@@ -1226,7 +1228,8 @@ mod tests {
             .filter_map(|(_, _, f)| f.path.rsplit('/').next())
             .collect();
         let d = crate::imagegen::ImageConfig::default();
-        for wanted in [&d.diffusion_model, &d.text_encoder, &d.vae] {
+        let sam = crate::imagegen::SEGMENT_MODEL.to_string();
+        for wanted in [&d.diffusion_model, &d.text_encoder, &d.vae, &sam] {
             assert!(
                 names.contains(&wanted.as_str()),
                 "{wanted} not in {names:?}"
@@ -1235,7 +1238,7 @@ mod tests {
         for (_, _, f) in models(&machine).unwrap() {
             let top = f.path.split('/').next().unwrap();
             assert!(
-                ["diffusion_models", "text_encoders", "vae"].contains(&top),
+                ["diffusion_models", "text_encoders", "vae", "checkpoints"].contains(&top),
                 "{} is not under a folder ComfyUI reads",
                 f.path
             );
