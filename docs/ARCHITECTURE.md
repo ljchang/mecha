@@ -894,6 +894,12 @@ pinned in `face.rs`), run by `face.rs`'s own small network on
 - **The convolution is checked against its definition** at every shape it
   uses (`the_convolution_matches_its_definition_at_every_shape_used`).
 - **Install:** `mecha imagelib install-face-detector` fetches the weights.
+- **The owner can read faces too:** `mecha imagelib face detect | crop |
+  compare`. `compare` reads through `face_id::Reader`, the same detector and
+  ArcFace `persona::replay_judge::IdentityJudge` reads through, so a number
+  checked by hand is the number a judge gives. ArcFace is fetched on
+  `compare`'s first run as on a judge's (`replay_judge::arcface_weights`),
+  under the owner's ruling of 2026-10-11.
 
 **Every picture's scene is recorded, in every served chat** (`scene.rs`,
 `IMAGE-DESIGN.md` §6, one path: the owner's ruling, 2026-10-07). A render

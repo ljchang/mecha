@@ -1326,6 +1326,39 @@ mod tests {
     /// never cached. (The first cut never created the cache directory, so
     /// every crop failed to save and the edit went unanchored — found on
     /// review of #569; the stubbed tests in `imagegen` could not see it.)
+    /// A face found on [`bounded`]'s copy comes back in the original's
+    /// pixels: a picture past the bound is read at half size here, and a
+    /// small one is read as itself, not copied (review of #705).
+    #[test]
+    fn a_face_found_on_the_bounded_copy_is_given_in_the_originals_pixels() {
+        let big = image::RgbImage::new(2 * DETECT_SIDE, DETECT_SIDE);
+        let (seen, scale) = bounded(&big);
+        assert_eq!(
+            (seen.width(), seen.height(), scale),
+            (DETECT_SIDE, DETECT_SIDE / 2, 0.5)
+        );
+        let found = Face {
+            x0: 10.0,
+            y0: 20.0,
+            x1: 30.0,
+            y1: 40.0,
+            score: 0.9,
+            points: [[15.0, 25.0]; 5],
+        };
+        let back = found.unscaled(scale);
+        assert_eq!(
+            [back.x0, back.y0, back.x1, back.y1],
+            [20.0, 40.0, 60.0, 80.0]
+        );
+        assert_eq!(back.points, [[30.0, 50.0]; 5]);
+        assert_eq!(back.score, 0.9);
+        assert_eq!(back.box_area(), 4.0 * found.box_area());
+        let small = image::RgbImage::new(64, 32);
+        let (seen, scale) = bounded(&small);
+        assert!(matches!(seen, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(scale, 1.0);
+    }
+
     #[test]
     fn a_crop_is_made_once_cached_and_a_missing_face_remembered() {
         let dir = std::env::temp_dir().join(format!("mecha-face-{}", uuid::Uuid::new_v4()));

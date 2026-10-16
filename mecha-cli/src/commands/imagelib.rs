@@ -489,6 +489,8 @@ async fn install_face_detector() -> Result<()> {
 
 /// `mecha imagelib face`. Nothing here judges: a similarity is printed as
 /// the number it is, and a picture with no face says so rather than a zero.
+/// A picture that cannot be read is said in its row, the rest are still
+/// read, and the command then fails, so a script sees it.
 async fn face(cmd: FaceCmd) -> Result<()> {
     use mecha_core::{face, face_id};
     let detector = face::weights()?.with_context(|| {
@@ -499,12 +501,24 @@ async fn face(cmd: FaceCmd) -> Result<()> {
     })?;
     let read = |p: &PathBuf| std::fs::read(p).with_context(|| format!("reading {}", p.display()));
     let rounded = |f: &face::Face| [f.x0, f.y0, f.x1, f.y1].map(|v| v.round() as i64);
+    let mut unread = 0usize;
     match cmd {
         FaceCmd::Detect { files, json } => {
             let det = face::Detector::load(&detector)?;
             let mut all = Vec::new();
             for file in &files {
-                let faces = face::detect_bytes(&det, &read(file)?)?;
+                let faces = match read(file).and_then(|b| face::detect_bytes(&det, &b)) {
+                    Ok(faces) => faces,
+                    Err(e) => {
+                        unread += 1;
+                        if json {
+                            all.push(serde_json::json!({"file": file, "error": format!("{e:#}")}));
+                        } else {
+                            println!("{}: not read: {e:#}", file.display());
+                        }
+                        continue;
+                    }
+                };
                 if json {
                     all.push(serde_json::json!({
                         "file": file,
@@ -530,14 +544,18 @@ async fn face(cmd: FaceCmd) -> Result<()> {
             }
         }
         FaceCmd::Crop { file, out } => {
-            if out.exists() {
-                bail!("{} already exists", out.display());
-            }
             let det = face::Detector::load(&detector)?;
             let Some(png) = face::anchor_crop(&det, &read(&file)?)? else {
                 bail!("no face was found in {}", file.display());
             };
-            std::fs::write(&out, png).with_context(|| format!("writing {}", out.display()))?;
+            // Created, never replaced: the check and the write are one call.
+            let mut created = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&out)
+                .with_context(|| format!("writing {}", out.display()))?;
+            std::io::Write::write_all(&mut created, &png)
+                .with_context(|| format!("writing {}", out.display()))?;
             println!("{}", out.display());
         }
         FaceCmd::Compare {
@@ -546,21 +564,7 @@ async fn face(cmd: FaceCmd) -> Result<()> {
             files,
             json,
         } => {
-            let arcface = match face_id::weights()? {
-                Some(p) => p,
-                None => {
-                    eprintln!("fetching {}", face_id::LICENCE);
-                    let total = face_id::WEIGHTS.bytes;
-                    let mut shown = 0u64;
-                    face_id::install(&mut |got| {
-                        if got >= shown + total / 10 || got == total {
-                            shown = got;
-                            eprintln!("  {} of {} MB", got / 1_000_000, total / 1_000_000);
-                        }
-                    })
-                    .await?
-                }
-            };
+            let arcface = super::replay_judge::arcface_weights().await?;
             let reader = face_id::Reader::load(&detector, &arcface)?;
             let (label, bytes) = match (reference, character) {
                 (Some(p), _) => (p.display().to_string(), read(&p)?),
@@ -571,8 +575,8 @@ async fn face(cmd: FaceCmd) -> Result<()> {
                         .get(Kind::Character, &key)
                         .filter(|e| e.status == Status::Approved)
                         .with_context(|| format!("no approved character `{key}`"))?;
-                    let (bytes, which) = lib.face_picture(entry)?;
-                    (format!("{key}'s {which}"), bytes)
+                    let face = lib.face_picture(entry)?;
+                    (format!("{key}'s {}", face.which()), face.bytes)
                 }
                 (None, None) => bail!("give --reference or --character"),
             };
@@ -584,7 +588,20 @@ async fn face(cmd: FaceCmd) -> Result<()> {
                 println!("against {label}:");
             }
             for file in &files {
-                let faces = reader.read_bytes(&read(file)?, &file.display().to_string())?;
+                let faces = match read(file)
+                    .and_then(|b| reader.read_bytes(&b, &file.display().to_string()))
+                {
+                    Ok(faces) => faces,
+                    Err(e) => {
+                        unread += 1;
+                        if json {
+                            all.push(serde_json::json!({"file": file, "error": format!("{e:#}")}));
+                        } else {
+                            println!("  {:>8}  {}: {e:#}", "not read", file.display());
+                        }
+                        continue;
+                    }
+                };
                 let scored: Vec<(face::Face, f32)> = faces
                     .iter()
                     .map(|(f, e)| (*f, face_id::similarity(&want, e)))
@@ -599,7 +616,7 @@ async fn face(cmd: FaceCmd) -> Result<()> {
                     continue;
                 }
                 match scored.split_first() {
-                    None => println!("     no face  {}", file.display()),
+                    None => println!("  {:>8}  {}", "no face", file.display()),
                     Some(((_, s), rest)) => {
                         let more = if rest.is_empty() {
                             String::new()
@@ -621,6 +638,12 @@ async fn face(cmd: FaceCmd) -> Result<()> {
                 );
             }
         }
+    }
+    if unread > 0 {
+        bail!(
+            "{unread} picture{} could not be read",
+            if unread == 1 { "" } else { "s" }
+        );
     }
     Ok(())
 }
