@@ -1997,6 +1997,27 @@ module.
   fixed sentence, so the route cannot be made to say anything, and the worker
   refuses an unlisted voice before asking the TTS. Clones are still written
   and deleted through `/api/settings/voice/clone`; only the page moved.
+- **Voices lock as entries and personas do** (owner, 2026-10-15). A voice is
+  a clip in the TTS's directory with no record of ours, so its flag lives in
+  the image library's directory (`imagelib::locked_voices`, `voices.toml`),
+  beside the password and autolock that show it — one lock, one unlock token,
+  over the three stores. `settings::VoiceLocks` is the one filter: every
+  browsing surface (the library list, a sample, Delete, `/api/settings/voice`,
+  the persona form's choices and its settings text, the waiting card) names
+  a locked voice only for a live unlock, counts nothing it leaves out, and
+  names no voice to a locked page when the flags cannot be read. A visible
+  persona's locked `voice` line is hidden, never cut (`persona::hide_keys` /
+  `restore_keys`, the same pair as a locked portrait). The lock never
+  withholds: the worker, `call_voice` and Listen are untouched — so
+  `/api/speak` still speaks a locked voice the device names, where the
+  library's sample 404s; that is the lock's stated limit, not a gap. A clip
+  saved locked is flagged before it lands; a deleted one takes its flag with
+  it.
+- **The assistant's voice picker reads the voice library** (Settings → Voice,
+  2026-10-15): `/api/library/voices` with no unlock, so it offers exactly the
+  unlocked voices, read live. It once read the worker's list cached in the
+  browser from the last call, which kept every voice's name on the device
+  and missed a clone until a call had run; voice-core no longer caches it.
 - **Call minutes have their own file** (`safety::CallRecord`,
   `calls.jsonl`). A call record in `dose.jsonl` would read as one more turn to
   an older binary, because `DoseRecord` takes unknown fields. The page reports

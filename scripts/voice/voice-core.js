@@ -93,15 +93,18 @@ function readStored() {
     const p = JSON.parse(raw), out = {};
     if (typeof p.voice === "string") out.voice = p.voice;
     if (typeof p.speed === "number") out.speed = p.speed;
-    if (Array.isArray(p.voices) && p.voices.every(v => typeof v === "string")) out.voices = p.voices;
+    /* No `voices`: the pickers read the voice library from serve, behind
+     * its lock (2026-10-15), and a cached copy of the worker's whole list
+     * would keep a locked voice's name on the device. An old copy is
+     * dropped with the next write. */
     if (typeof p.range?.min === "number" && typeof p.range?.max === "number") out.range = { min: p.range.min, max: p.range.max };
     return out;
   } catch { return {}; }
 }
 
 /* What a connection sends as its opening patch: the preference alone. The
- * cached voices/range are for a picker with no live call to ask, never
- * something to send back at a worker that owns both. */
+ * cached range is for a picker with no live call to ask, never something
+ * to send back at a worker that owns it. */
 function readPrefs() {
   const { voice, speed } = readStored();
   const out = {};
@@ -110,23 +113,24 @@ function readPrefs() {
   return out;
 }
 
-/* Merge, never overwrite blind: a worker whose TTS list was unreachable
- * this call answers voices:null, and wiping the cached list over that
- * would cost the settings page its picker until the next healthy call. */
+/* Merge, never overwrite blind: a patch that carries only a voice keeps
+ * the remembered speed and range. */
 function writePrefs(d) {
   try {
     const out = readStored();
     if (typeof d?.voice === "string") out.voice = d.voice;
     if (typeof d?.speed === "number") out.speed = d.speed;
-    if (Array.isArray(d?.voices) && d.voices.every(v => typeof v === "string")) out.voices = d.voices;
     if (typeof d?.range?.min === "number" && typeof d?.range?.max === "number") out.range = { min: d.range.min, max: d.range.max };
     localStorage.setItem(PREFS_KEY, JSON.stringify(out));
+    /* Read once above and now kept under PREFS_KEY: the old key's copy, a
+     * cached voice list with it, has nothing left to say. */
+    localStorage.removeItem(LEGACY_PREFS_KEY);
   } catch { /* private window, or storage disabled - not worth a failure */ }
 }
 
 /* The settings page's half: read everything remembered (preference plus the
- * last call's voices/range), and save a picked voice/speed without touching
- * the cache. The next call's opening patch carries the change - voice-core
+ * last call's range), and save a picked voice/speed without touching the
+ * cache. The next call's opening patch carries the change - voice-core
  * itself sends readPrefs() the moment the data channel opens. */
 export function readVoicePrefs() {
   return readStored();
@@ -817,11 +821,11 @@ export function createVoiceSession(opts = {}) {
           // Written before the UI renders it, and written from the
           // server's state rather than from whatever was asked for.
           // A persona call's voice and rate are the persona's, never the
-          // listener's preference — but the worker's list and range are the
-          // same either way, and the settings picker reads them from here
-          // (review of #483).
+          // listener's preference — but the worker's range is the same
+          // either way, and the settings slider reads it from here (review
+          // of #483).
           if (cfg.rememberVoice) writePrefs(msg.data);
-          else writePrefs({ voices: msg.data.voices, range: msg.data.range });
+          else writePrefs({ range: msg.data.range });
           cfg.onVoiceConfig(msg.data);
         }
         // The worker's own watch over its microphone audio: it saw the gap

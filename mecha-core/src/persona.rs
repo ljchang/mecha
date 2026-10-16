@@ -2343,17 +2343,17 @@ pub fn edit_settings(
     write_owner_file(dir, name, OwnerFile::Settings, &edited, Some(base))
 }
 
-/// Is this line a root-table `character = …` assignment? Line-based on
-/// purpose, so a file that no longer parses is redacted all the same: every
-/// line before the first `[table]` header whose key is `character`, bare or
-/// quoted. A `# character = …` comment is not one.
-fn is_character_line(line: &str) -> bool {
+/// Is this line a root-table `key = …` assignment? Line-based on purpose,
+/// so a file that no longer parses is redacted all the same: every line
+/// before the first `[table]` header whose key is `key`, bare or quoted. A
+/// `# character = …` comment is not one.
+fn is_key_line(line: &str, key: &str) -> bool {
     let t = line.trim_start();
-    let key = t
-        .strip_prefix("character")
-        .or_else(|| t.strip_prefix("\"character\""))
-        .or_else(|| t.strip_prefix("'character'"));
-    matches!(key, Some(rest) if rest.trim_start().starts_with('='))
+    let rest = t
+        .strip_prefix(key)
+        .or_else(|| t.strip_prefix(&format!("\"{key}\"")))
+        .or_else(|| t.strip_prefix(&format!("'{key}'")));
+    matches!(rest, Some(rest) if rest.trim_start().starts_with('='))
 }
 
 /// The root-table lines of a TOML text, by index: those before the first
@@ -2364,28 +2364,28 @@ fn root_lines(text: &str) -> usize {
         .unwrap_or(usize::MAX)
 }
 
-/// The lines, first and last inclusive, that a root `character = …` spans:
+/// The lines, first and last inclusive, that a root `key = …` spans:
 /// from its key to the end of its value, however many lines that is (a
 /// `"""` string), read with `toml_edit`'s span-keeping parser. A text that
 /// does not parse falls back to the line, and every line after it while a
 /// multi-line string it opened is still open — never to less (review of
 /// #430: a line-based cut left the rest of a multi-line value served).
-fn character_lines(text: &str) -> Option<(usize, usize)> {
+fn key_lines(text: &str, key: &str) -> Option<(usize, usize)> {
     let line_of = |at: usize| text[..at.min(text.len())].matches('\n').count();
     if let Ok(doc) = toml_edit::Document::parse(text) {
         let spanned = doc
             .as_table()
-            .get_key_value("character")
+            .get_key_value(key)
             .and_then(|(k, v)| Some((k.span()?.start, v.span()?.end)));
         match spanned {
             Some((start, end)) => return Some((line_of(start), line_of(end.saturating_sub(1)))),
-            None if doc.as_table().get("character").is_none() => return None,
+            None if doc.as_table().get(key).is_none() => return None,
             None => {}
         }
     }
     let root = root_lines(text);
     let lines: Vec<&str> = text.lines().collect();
-    let first = (0..lines.len().min(root)).find(|&i| is_character_line(lines[i]))?;
+    let first = (0..lines.len().min(root)).find(|&i| is_key_line(lines[i], key))?;
     let opens = ["\"\"\"", "'''"]
         .into_iter()
         .find(|q| lines[first].matches(q).count() % 2 == 1);
@@ -2431,47 +2431,59 @@ fn root_boundary(text: &str, want: usize) -> usize {
     at.min(first_table)
 }
 
-/// `persona.toml` as a locked page may see it: without the `character`
-/// assignment when the persona's portrait is a locked library character
-/// (owner ruling, 2026-09-30 — the link is hidden, never cut). Everything
-/// else is the file as written.
-pub fn hide_character(text: &str) -> String {
-    let Some((first, last)) = character_lines(text) else {
-        return text.to_string();
-    };
-    let mut out: String = text
-        .lines()
-        .enumerate()
-        .filter(|(i, _)| !(first..=last).contains(i))
-        .map(|(_, l)| format!("{l}\n"))
-        .collect();
-    if !text.ends_with('\n') {
-        out.pop();
+/// `persona.toml` as a locked page may see it: without the assignments to
+/// `keys` — `character` when the persona's portrait is a locked library
+/// character (owner ruling, 2026-09-30 — the link is hidden, never cut),
+/// `voice` when it speaks in a locked voice (2026-10-15). Everything else is
+/// the file as written.
+pub fn hide_keys(keys: &[&str], text: &str) -> String {
+    let mut text = text.to_string();
+    for key in keys {
+        let Some((first, last)) = key_lines(&text, key) else {
+            continue;
+        };
+        let mut out: String = text
+            .lines()
+            .enumerate()
+            .filter(|(i, _)| !(first..=last).contains(i))
+            .map(|(_, l)| format!("{l}\n"))
+            .collect();
+        if !text.ends_with('\n') {
+            out.pop();
+        }
+        text = out;
     }
-    out
+    text
 }
 
-/// A save from a page that was shown [`hide_character`]'s text: the hidden
+/// A save from a page that was shown [`hide_keys`]'s text: each hidden
 /// assignment put back **as it is in `disk`** — its spelling, every line of
 /// it and any comment on it — at its old line number, kept inside the root
 /// table (review of #430: a fresh bare `character = …` lost the owner's
-/// comment). Unless the owner wrote a `character` of their own, which stands.
-pub fn restore_character(text: &str, disk: &str) -> String {
-    if character_lines(text).is_some() {
-        return text.to_string();
+/// comment). Unless the owner wrote that key of their own, which stands.
+pub fn restore_keys(keys: &[&str], text: &str, disk: &str) -> String {
+    // In the order they stand on disk, so each goes back at its own line
+    // number with the ones above it already in place — whatever order
+    // `keys` names them in (review of #701).
+    let mut spans: Vec<(usize, usize)> = keys
+        .iter()
+        .filter(|key| key_lines(text, key).is_none())
+        .filter_map(|key| key_lines(disk, key))
+        .collect();
+    spans.sort_unstable();
+    let mut text = text.to_string();
+    for (first, last) in spans {
+        let hidden: Vec<&str> = disk.lines().skip(first).take(last - first + 1).collect();
+        let mut lines: Vec<&str> = text.lines().collect();
+        let at = root_boundary(&text, first).min(lines.len());
+        lines.splice(at..at, hidden);
+        let mut out = lines.join("\n");
+        if text.ends_with('\n') || text.is_empty() {
+            out.push('\n');
+        }
+        text = out;
     }
-    let Some((first, last)) = character_lines(disk) else {
-        return text.to_string();
-    };
-    let hidden: Vec<&str> = disk.lines().skip(first).take(last - first + 1).collect();
-    let mut lines: Vec<&str> = text.lines().collect();
-    let at = root_boundary(text, first).min(lines.len());
-    lines.splice(at..at, hidden);
-    let mut out = lines.join("\n");
-    if text.ends_with('\n') || text.is_empty() {
-        out.push('\n');
-    }
-    out
+    text
 }
 
 /// The sections a Markdown owner file must keep: `## Core` in identity.md
@@ -3925,14 +3937,14 @@ mod tests {
     #[test]
     fn a_hidden_character_is_redacted_and_restored() {
         let text = "# c\n# character = \"example\"\ndisplay = \"Mara\"\ncharacter  = \"theo\"  # portrait\n\n[tools]\ncharacter = \"not-root\"\n";
-        let shown = hide_character(text);
+        let shown = hide_keys(&["character"], text);
         assert!(!shown.contains("\"theo\""), "{shown}");
         assert!(shown.contains("# character = \"example\""), "comments stay");
         assert!(
             shown.contains("character = \"not-root\""),
             "only the root key"
         );
-        let back = restore_character(&shown, text);
+        let back = restore_keys(&["character"], &shown, text);
         let parsed: toml::Table = toml::from_str(&back).unwrap();
         assert_eq!(parsed["character"].as_str(), Some("theo"), "{back}");
         // Back as it was, comment and all, where it was.
@@ -3943,34 +3955,66 @@ mod tests {
             "display = \"Mara\"",
             "display = \"Mara\"\ncharacter = \"maya\"",
         );
-        assert_eq!(restore_character(&chosen, text), chosen);
+        assert_eq!(restore_keys(&["character"], &chosen, text), chosen);
         // A file with no tables, and one that does not parse, both work.
-        assert_eq!(hide_character("character = \"theo\"\n"), "");
+        assert_eq!(hide_keys(&["character"], "character = \"theo\"\n"), "");
         assert_eq!(
-            restore_character("", "character = \"theo\"\n"),
+            restore_keys(&["character"], "", "character = \"theo\"\n"),
             "character = \"theo\"\n"
         );
-        assert!(!hide_character("character = \"theo\"\ndisplay = ").contains("theo"));
+        assert!(!hide_keys(&["character"], "character = \"theo\"\ndisplay = ").contains("theo"));
         // A multi-line value goes whole, parsed or not, and comes back whole.
         let multi = "display = \"Mara\"\ncharacter = \"\"\"\ntheo\"\"\"\n\n[tools]\nallow = []\n";
-        let shown = hide_character(multi);
+        let shown = hide_keys(&["character"], multi);
         assert!(!shown.contains("theo"), "{shown}");
         assert!(toml::from_str::<toml::Table>(&shown).is_ok(), "{shown}");
-        assert_eq!(restore_character(&shown, multi), multi);
+        assert_eq!(restore_keys(&["character"], &shown, multi), multi);
         // The owner reformatted a value on the page so that it now spans the
         // hidden line's old number: the line goes back beside it, not in it.
         let disk = "# h\n\ncharacter = \"theo\"\ndisplay = \"Mara\"\n\n[tools]\nallow = []\n";
-        let client = hide_character(disk).replacen("\n\n", "\nmodel = \"\"\"\nlocal\n\"\"\"\n", 1);
-        let back = restore_character(&client, disk);
+        let client = hide_keys(&["character"], disk).replacen(
+            "\n\n",
+            "\nmodel = \"\"\"\nlocal\n\"\"\"\n",
+            1,
+        );
+        let back = restore_keys(&["character"], &client, disk);
         let parsed: toml::Table = toml::from_str(&back).expect(&back);
         assert_eq!(parsed["character"].as_str(), Some("theo"), "{back}");
         assert_eq!(parsed["model"].as_str(), Some("local\n"), "{back}");
         let broken = "character = '''\ntheo\n'''\ndisplay = ";
         assert!(
-            !hide_character(broken).contains("theo"),
+            !hide_keys(&["character"], broken).contains("theo"),
             "{}",
-            hide_character(broken)
+            hide_keys(&["character"], broken)
         );
+    }
+
+    /// A locked voice is hidden the way a locked portrait is, and both at
+    /// once come back as they were — each where it stood, each with its
+    /// comment.
+    #[test]
+    fn a_hidden_voice_and_character_are_redacted_and_restored_together() {
+        let both = ["character", "voice"];
+        let text = "display = \"Mara\"\ncharacter = \"theo\"\nvoice = \"ada\"  # warm\nvoice_speed = 1.1\n";
+        let shown = hide_keys(&both, text);
+        assert_eq!(shown, "display = \"Mara\"\nvoice_speed = 1.1\n");
+        assert_eq!(restore_keys(&both, &shown, text), text);
+        // Above the portrait on disk, the voice still goes back where it was.
+        let flipped = "display = \"Mara\"\nvoice = \"ada\"\ncharacter = \"theo\"\nmodel = \"x\"\n";
+        let flipped_shown = hide_keys(&both, flipped);
+        assert_eq!(restore_keys(&both, &flipped_shown, flipped), flipped);
+        // Only the voice hidden: the portrait stays on the page.
+        let voice_only = hide_keys(&["voice"], text);
+        assert!(voice_only.contains("theo") && !voice_only.contains("ada"));
+        assert!(
+            voice_only.contains("voice_speed"),
+            "a prefix is not the key"
+        );
+        assert_eq!(restore_keys(&["voice"], &voice_only, text), text);
+        // A voice the owner picked on the page stands.
+        let picked = shown.replace("display", "voice = \"bob\"\ndisplay");
+        assert!(restore_keys(&both, &picked, text).contains("bob"));
+        assert!(!restore_keys(&both, &picked, text).contains("ada"));
     }
 
     /// Every path the settings form declares is a key `Settings` carries: a
