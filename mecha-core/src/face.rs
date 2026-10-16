@@ -255,7 +255,7 @@ pub trait FaceAnchors: Send + Sync {
     }
 
     /// The anchor crop of any picture's largest face, not cached: a face
-    /// the owner dropped on a painted region (`IMAGE-DESIGN.md` §5.4).
+    /// the owner dropped on a painted region (`IMAGE-DESIGN.md` §5.3).
     fn crop(&self, _picture: &[u8]) -> Anchor {
         Anchor::Unavailable("no face detector here".into())
     }

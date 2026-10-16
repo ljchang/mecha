@@ -53,7 +53,9 @@ async function page({ mask, status = 200, regions = [], running = false, starts 
      const sent = [];
      const fetch = async (url, opts) => {
        uploads.push({ url, body: opts.body });
-       return { status, ok: status === 200, json: async () => ({ path: 'inbox/mask-pic-7.png' }), text: async () => 'no room' };
+       // One status for every upload, or one each in order.
+       const st = Array.isArray(status) ? (status[uploads.length - 1] ?? 200) : status;
+       return { status: st, ok: st === 200, json: async () => ({ path: 'inbox/mask-pic-7.png' }), text: async () => 'no room' };
      };
      const closeIncognito = () => {};
      const send = async (opts = {}) => {
@@ -143,10 +145,11 @@ async function page({ mask, status = 200, regions = [], running = false, starts 
   );
   const closed = await page({
     mask: 'INDEX-BLOB',
-    status: 410,
+    status: [200, 410],
     regions: [{ colour: 'magenta', words: 'her face', file: 'FACE-BLOB' }],
   });
-  is([closed.sent.length, closed.editing], [0, null], 'a chat closed under the upload sends nothing');
+  is(closed.uploads.map((u) => u.body), ['INDEX-BLOB', 'FACE-BLOB'], 'the index went up, then the picture met a closed chat');
+  is([closed.sent.length, closed.editing], [0, null], 'a chat closed under the picture upload sends nothing');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
