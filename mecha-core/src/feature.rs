@@ -36,6 +36,7 @@ use std::path::Path;
 #[serde(rename_all = "snake_case")]
 pub enum Feature {
     Web,
+    Incognito,
     Slack,
     Mail,
     Docs,
@@ -52,7 +53,6 @@ pub enum Feature {
     Dictate,
     Calls,
     Cloning,
-    Incognito,
     Frontdoor,
     Publishing,
     Messages,
@@ -64,6 +64,7 @@ pub enum Feature {
 impl Feature {
     pub const ALL: &'static [Feature] = &[
         Feature::Web,
+        Feature::Incognito,
         Feature::Slack,
         Feature::Mail,
         Feature::Docs,
@@ -80,7 +81,6 @@ impl Feature {
         Feature::Dictate,
         Feature::Calls,
         Feature::Cloning,
-        Feature::Incognito,
         Feature::Frontdoor,
         Feature::Publishing,
         Feature::Messages,
@@ -157,6 +157,9 @@ impl Feature {
             Feature::Library => Some(Feature::Image),
             Feature::Dictate | Feature::Calls | Feature::Cloning => Some(Feature::Voice),
             Feature::Publishing => Some(Feature::Frontdoor),
+            // The owner, 2026-10-14: no separate approval — a part of the web
+            // app, on wherever the chat model is local.
+            Feature::Incognito => Some(Feature::Web),
             _ => None,
         }
     }
@@ -172,9 +175,7 @@ impl Feature {
             // standalone loopback surface that reads nothing from `[web]`.
             // Its parts that live in `mecha serve` — the browser's dictation,
             // voice calls, cloning — are (found on review of #428).
-            Feature::Incognito | Feature::Dictate | Feature::Calls | Feature::Cloning => {
-                &[Feature::Web]
-            }
+            Feature::Dictate | Feature::Calls | Feature::Cloning => &[Feature::Web],
             _ => &[],
         }
     }
@@ -214,11 +215,11 @@ impl Feature {
             | Feature::Slack
             | Feature::Personas
             | Feature::Voice
-            | Feature::Incognito
             | Feature::Frontdoor
             | Feature::Messages
             | Feature::System => true,
-            Feature::Tasks
+            Feature::Incognito
+            | Feature::Tasks
             | Feature::Ocr
             | Feature::Layout
             | Feature::Library
@@ -260,14 +261,13 @@ impl Feature {
             | Feature::Search
             // The operator's machine, read through its own series.
             | Feature::System
-            // `default_provider` and `providers` are machine tables.
-            | Feature::Incognito
             // A manifest's `live_servers` can carry the operator's graph in,
             // and the row cannot tell that entry from a declared one;
             // `config_at` defaults this bool instead (FEATURES-DESIGN §5.1).
             | Feature::Graph => false,
             // Parts have no switch to set.
-            Feature::Tasks
+            Feature::Incognito
+            | Feature::Tasks
             | Feature::Ocr
             | Feature::Layout
             | Feature::Library
@@ -548,6 +548,12 @@ pub fn server_feature(server: &McpServerConfig) -> Option<Feature> {
     }
 }
 
+/// Switches this binary once had and folded into another: written by an
+/// older `enable`, read by nothing, and never reported as unknown — the
+/// owner did nothing wrong. `incognito` became part of `web` (the owner,
+/// 2026-10-14).
+pub const RETIRED_SWITCHES: &[&str] = &["incognito"];
+
 /// Keys in `[features]` this build does not know — a newer build's feature,
 /// or a typo. Ignored, never a load failure (see `config::FeaturesConfig`),
 /// and reported so a typo still shows as the feature it meant being off.
@@ -555,6 +561,7 @@ pub fn unknown_switches(cfg: &Config) -> Vec<String> {
     cfg.features
         .0
         .keys()
+        .filter(|k| !RETIRED_SWITCHES.contains(&k.as_str()))
         .filter(|k| Feature::parse(k).is_none_or(|f| !f.has_switch()))
         .cloned()
         .collect()
@@ -599,11 +606,16 @@ impl Facts {
         use crate::onboarding::{
             count_accounts, docs_store_dir, find_program, mail_store_dir, slack_linked,
         };
+        let current_on_path = |program: &str| {
+            find_program(program).is_some_and(|p| !crate::sidecar::stale_copy(program, &p))
+        };
         Facts {
-            has_mail_binary: find_program("mecha-mail").is_some(),
-            has_docs_binary: find_program("mecha-docs").is_some(),
-            // On the PATH, or mecha's own build in its tree (`graph_mcp`).
-            has_graph_binary: find_program("mecha-graph-mcp").is_some()
+            // On the PATH — unless a copy from another build, which is not
+            // the feature's server (§15; review of #699) — or mecha's own
+            // build in its tree.
+            has_mail_binary: current_on_path("mecha-mail") || crate::mail_mcp::installed(home),
+            has_docs_binary: current_on_path("mecha-docs") || crate::mail_mcp::installed(home),
+            has_graph_binary: current_on_path("mecha-graph-mcp")
                 || crate::graph_mcp::installed(home),
             has_factory_binary: find_program("factory-publish").is_some(),
             mail_accounts: mail_store_dir().and_then(|d| count_accounts(&d)),
@@ -825,8 +837,9 @@ fn evidence(facts: &Facts, f: Feature) -> bool {
         Feature::Personas => facts.personas_stored == Some(true),
         Feature::Voice => facts.voice_unit_installed,
         Feature::Frontdoor => facts.has_factory_binary,
-        Feature::Incognito | Feature::Messages | Feature::System => false,
-        Feature::Tasks
+        Feature::Messages | Feature::System => false,
+        Feature::Incognito
+        | Feature::Tasks
         | Feature::Ocr
         | Feature::Layout
         | Feature::Library
@@ -890,13 +903,23 @@ pub fn announcements(facts: &Facts) -> Vec<Announcement> {
 /// A part id is refused by name, pointing at its parent and the setting that
 /// turns it on. A feature whose `requires` is not already on and not in the
 /// same request is refused with the chained command, as Claude Code refuses a
-/// disable that would break another plugin — `enable incognito` alone would
-/// land in `Blocked`.
+/// disable that would break another plugin, rather than land in `Blocked`.
+/// (No feature with a switch has a `requires` edge since F15; the branch
+/// waits for the next one.)
 pub fn plan_enable(cfg: &Config, ids: &[String]) -> Result<Vec<Feature>, String> {
     let mut wanted = Vec::new();
     for id in ids {
         let f = Feature::parse(id)
             .ok_or_else(|| format!("`{id}` is not a feature — `mecha features` lists them"))?;
+        // Incognito had a switch until the owner folded it into the web app
+        // (2026-10-14); it has no setting to turn on, only the local model.
+        if f == Feature::Incognito {
+            return Err(
+                "`incognito` is part of `web` and has no switch of its own — enable `web`; an \
+                 incognito chat is offered wherever the chat model runs on this machine"
+                    .into(),
+            );
+        }
         if let Some(parent) = f.part_of() {
             return Err(format!(
                 "`{id}` is part of `{}` and has no switch of its own — enable `{}`, and \
@@ -946,7 +969,21 @@ pub struct McpWiring {
     pub install: &'static str,
     pub prefix_tools: bool,
     pub outbox: &'static [&'static str],
+    /// Environment a new entry carries: what the server must be told about
+    /// mecha's own servers, which its defaults do not know.
+    pub env: &'static [(&'static str, &'static str)],
 }
+
+/// The graph server's embedder: mecha's on-demand embeddings server and the
+/// model it serves. Without them the pinned server falls back to 768
+/// dimensions and refuses the 1024 harrier returns — every `kg_search` on a
+/// fresh install failed so (the owner's fresh Mac, 2026-10-15).
+/// `graph_embedder_is_mecha_s` holds each value to its source.
+pub const GRAPH_EMBED_ENV: &[(&str, &str)] = &[
+    ("MECHA_GRAPH_EMBED_URL", "http://127.0.0.1:8081"),
+    ("MECHA_GRAPH_EMBED_MODEL", crate::recommend::EMBED_ALIAS),
+    ("MECHA_GRAPH_EMBED_DIMS", crate::recommend::EMBED_DIMS),
+];
 
 impl McpWiring {
     /// The staged calls as an entry called `name` registers them: `outbox` is
@@ -977,8 +1014,10 @@ pub fn mcp_wiring(f: Feature) -> Option<McpWiring> {
         Feature::Mail => McpWiring {
             name: "mail",
             program: "mecha-mail",
-            install: "cargo install mecha-mail --locked",
+            // `enable` builds the matching servers (§15).
+            install: "mecha features enable mail",
             prefix_tools: true,
+            env: &[],
             outbox: &[
                 "mail__mail_send",
                 "mail__mail_reply",
@@ -990,8 +1029,9 @@ pub fn mcp_wiring(f: Feature) -> Option<McpWiring> {
         Feature::Docs => McpWiring {
             name: "docs",
             program: "mecha-docs",
-            install: "cargo install mecha-mail --locked",
+            install: "mecha features enable docs",
             prefix_tools: true,
+            env: &[],
             // Writing into a document a third party can read is a send
             // (`documents.md`): the three verbs that write into an existing
             // file stage for review (review of #669).
@@ -1009,6 +1049,7 @@ pub fn mcp_wiring(f: Feature) -> Option<McpWiring> {
             install: "mecha features enable graph",
             prefix_tools: false,
             outbox: &[],
+            env: GRAPH_EMBED_ENV,
         },
         _ => return None,
     })
@@ -1051,6 +1092,11 @@ pub struct McpWrite {
     /// An existing entry that does not force `untrusted_input = true`: never
     /// edited, named by the caller (review of #669).
     pub untrusted_missing: bool,
+    /// The variables of `McpWiring::env` an existing entry running the
+    /// program does not set: never edited — a graph store built at another
+    /// width would break under new ones — and said by the caller with the
+    /// lines to add (review of #698).
+    pub env_missing: Vec<(&'static str, &'static str)>,
     /// The command of an entry carrying the feature's name that runs some
     /// other program: left as it is, and no entry added beside it, so the
     /// caller names it (review of #669, pass 5).
@@ -1060,6 +1106,10 @@ pub struct McpWrite {
     /// is enabled, so the caller says so beside whatever was staged (review
     /// of #669, pass 9).
     pub disabled: Option<String>,
+    /// The command an existing entry ran — a copy of one of mecha's own
+    /// servers from another build — now pointed at mecha's matching one
+    /// (§15, the owner's ruling of 2026-10-15). Only `command` changes.
+    pub repointed: Option<String>,
 }
 
 /// Write one feature's wiring — [`write_mcp_entries`] with a single item and
@@ -1142,6 +1192,30 @@ pub fn write_mcp_entries(
         // reads as served only by an entry running the program
         // (`server_state`), so the caller says so rather than leaving a
         // silent "nothing written" (review of #669, pass 5).
+        // An entry running a stale copy of one of mecha's own servers is
+        // pointed at the matching build, `command` alone (§15): the owner
+        // ruled that mecha's own servers follow mecha.
+        let repointed = existing
+            .as_ref()
+            .filter(|t| runs(t))
+            .and_then(|t| t.get("command").and_then(|c| c.as_str()))
+            .filter(|old| {
+                Path::new(old) != *command
+                    && crate::sidecar::stale_copy(wiring.program, Path::new(old))
+            })
+            .map(str::to_string);
+        // Every entry running that copy, a disabled duplicate included: the
+        // copy is the stale thing, whichever entry names it.
+        if let Some(old) = &repointed {
+            if let Some(servers) = doc.get_mut("mcp").and_then(|m| m.as_array_of_tables_mut()) {
+                for t in servers.iter_mut() {
+                    if t.get("command").and_then(|c| c.as_str()) == Some(old.as_str()) {
+                        t.insert("command", toml_edit::value(command.display().to_string()));
+                        changed = true;
+                    }
+                }
+            }
+        }
         let disabled = existing.as_ref().filter(|t| runs(t) && !live(t)).map(|t| {
             t.get("name")
                 .and_then(|n| n.as_str())
@@ -1154,6 +1228,15 @@ pub fn write_mcp_entries(
                 .unwrap_or("")
                 .to_string()
         });
+        let env_missing: Vec<(&'static str, &'static str)> = match &existing {
+            Some(t) if runs(t) => wiring
+                .env
+                .iter()
+                .copied()
+                .filter(|(k, _)| t.get("env").and_then(|e| e.get(k)).is_none())
+                .collect(),
+            _ => Vec::new(),
+        };
         // An entry the owner wrote that does not force the capability: named,
         // never edited. It is the stronger gap — a mail read declares only
         // `readOnlyHint`, so without it a mail body never arms the untrusted
@@ -1183,6 +1266,13 @@ pub fn write_mcp_entries(
             entry.insert("command", toml_edit::value(command.display().to_string()));
             if !wiring.prefix_tools {
                 entry.insert("prefix_tools", toml_edit::value(false));
+            }
+            if !wiring.env.is_empty() {
+                let mut env = toml_edit::Table::new();
+                for (k, v) in wiring.env {
+                    env.insert(k, toml_edit::value(*v));
+                }
+                entry.insert("env", toml_edit::Item::Table(env));
             }
             let mut caps = toml_edit::Table::new();
             caps.insert("untrusted_input", toml_edit::value(true));
@@ -1214,8 +1304,10 @@ pub fn write_mcp_entries(
             wrote_outbox: false,
             outbox_missing: Vec::new(),
             untrusted_missing,
+            env_missing,
             runs_other,
             disabled,
+            repointed,
         });
     }
     if !outbox_existed {
@@ -1634,7 +1726,7 @@ fn own_state(facts: &Facts, f: Feature) -> State {
             true => on("`factory-publish` on PATH — its drain fills ~/.mecha/requests"),
             false => off(
                 "`factory-publish` is not installed",
-                "install factory-publish from the mecha-factory repository",
+                "cargo install mecha-factory-publish --locked",
             ),
         },
         // The model's half: publishing tools, from an `[[mcp]]` entry.
@@ -1643,7 +1735,7 @@ fn own_state(facts: &Facts, f: Feature) -> State {
             facts,
             "factory-publish",
             facts.has_factory_binary,
-            "install factory-publish from the mecha-factory repository",
+            "cargo install mecha-factory-publish --locked",
             None,
             "",
         ),
@@ -1662,6 +1754,96 @@ fn own_state(facts: &Facts, f: Feature) -> State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An entry running a copy of one of mecha's own servers from another
+    /// build is pointed at mecha's matching one, `command` alone; the
+    /// owner's own checkout build is left as it is (§15).
+    #[test]
+    fn a_stale_copy_s_entry_is_pointed_at_the_matching_build() {
+        let root = std::env::temp_dir().join(format!("mecha-mcp-r-{}", uuid::Uuid::new_v4()));
+        let cargo_root = root.join("cargo");
+        std::fs::create_dir_all(cargo_root.join("bin")).unwrap();
+        let old = cargo_root.join("bin/mecha-graph-mcp");
+        std::fs::write(&old, "").unwrap();
+        let record = |source: &str| {
+            std::fs::write(
+                cargo_root.join(".crates2.json"),
+                serde_json::json!({"installs": {
+                    format!("mecha-graph-mcp 0.1.5 ({source})"): {"bins": ["mecha-graph-mcp"]}
+                }})
+                .to_string(),
+            )
+            .unwrap();
+        };
+        let entry = format!(
+            "[[mcp]]\nname = \"graph\"\ncommand = \"{}\"\nprefix_tools = false\n\
+             [mcp.capabilities]\nuntrusted_input = true\n",
+            old.display()
+        );
+        let graph = mcp_wiring(Feature::Graph).unwrap();
+        let ours = root.join("sidecars/graph-mcp/bin/mecha-graph-mcp");
+        let cfg = root.join("config.toml");
+        // The published crate under the pin's commit: another build.
+        record("registry+https://github.com/rust-lang/crates.io-index");
+        std::fs::write(&cfg, &entry).unwrap();
+        let done = write_mcp_entries(&cfg, &[(&graph, ours.as_path())], &|_| false).unwrap();
+        assert_eq!(done[0].repointed.as_deref(), Some(old.to_str().unwrap()));
+        let text = std::fs::read_to_string(&cfg).unwrap();
+        assert!(text.contains(&ours.display().to_string()), "{text}");
+        assert!(text.contains("prefix_tools = false") && text.contains("untrusted_input = true"));
+        // The owner's checkout build: theirs, not touched.
+        record("path+file:///home/u/mecha-graph/mecha-graph-mcp");
+        std::fs::write(&cfg, &entry).unwrap();
+        let done = write_mcp_entries(&cfg, &[(&graph, ours.as_path())], &|_| false).unwrap();
+        assert!(done[0].repointed.is_none());
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), entry);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The graph's entry carries mecha's embedder; mail's carries no
+    /// environment (the owner's fresh Mac, 2026-10-15).
+    #[test]
+    fn the_graph_entry_names_mecha_s_embedder() {
+        let root = std::env::temp_dir().join(format!("mecha-mcp-g-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let p = root.join("config.toml");
+        let graph = mcp_wiring(Feature::Graph).unwrap();
+        let mail = mcp_wiring(Feature::Mail).unwrap();
+        write_mcp_entries(
+            &p,
+            &[
+                (&graph, Path::new("/b/mecha-graph-mcp")),
+                (&mail, Path::new("/b/mecha-mail")),
+            ],
+            &|_| false,
+        )
+        .unwrap();
+        let cfg: crate::config::Config =
+            toml::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        let entry = |n: &str| cfg.mcp.iter().find(|m| m.name == n).unwrap().clone();
+        let env = entry("graph").env;
+        assert_eq!(env["MECHA_GRAPH_EMBED_DIMS"], crate::recommend::EMBED_DIMS);
+        assert_eq!(env.len(), GRAPH_EMBED_ENV.len());
+        assert!(entry("mail").env.is_empty());
+        // An entry written before this, with no embedder, is never edited
+        // and is reported with what it lacks (review of #698).
+        let old = root.join("old.toml");
+        std::fs::write(
+            &old,
+            "[[mcp]]\nname = \"graph\"\ncommand = \"/b/mecha-graph-mcp\"\nprefix_tools = false\n\
+             [mcp.capabilities]\nuntrusted_input = true\n",
+        )
+        .unwrap();
+        let before = std::fs::read_to_string(&old).unwrap();
+        let done = write_mcp_entries(&old, &[(&graph, Path::new("/b/mecha-graph-mcp"))], &|_| {
+            false
+        })
+        .unwrap();
+        assert!(!done[0].wrote_entry);
+        assert_eq!(done[0].env_missing, GRAPH_EMBED_ENV);
+        assert_eq!(std::fs::read_to_string(&old).unwrap(), before);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// One command decides the outbox once: `enable mail docs` stages both
     /// features' calls in the `[outbox]` it writes, in either order, rather
@@ -2048,7 +2230,6 @@ mod tests {
             Feature::Image,
             Feature::Personas,
             Feature::Voice,
-            Feature::Incognito,
             Feature::Frontdoor,
             Feature::Messages,
             Feature::System,
@@ -2572,18 +2753,14 @@ mod tests {
         assert!(plan_enable(&cfg, &ids(&["nonsense"]))
             .unwrap_err()
             .contains("not a feature"));
+        // Incognito is part of the web app, with nothing of its own to enable.
         let err = plan_enable(&cfg, &ids(&["incognito"])).unwrap_err();
-        assert!(err.contains("mecha features enable web incognito"), "{err}");
-        assert_eq!(
-            plan_enable(&cfg, &ids(&["web", "incognito"])).unwrap(),
-            vec![Feature::Web, Feature::Incognito]
+        assert!(
+            err.contains("part of `web`") && err.contains("enable `web`"),
+            "{err}"
         );
-        let mut web_on = cfg.clone();
-        web_on.features.0.insert("web".into(), true);
-        assert_eq!(
-            plan_enable(&web_on, &ids(&["incognito"])).unwrap(),
-            vec![Feature::Incognito]
-        );
+        let err = plan_enable(&cfg, &ids(&["calls"])).unwrap_err();
+        assert!(err.contains("part of `voice`"), "{err}");
         // And every off row's own fix is a command `enable` accepts — the row
         // must not print one this binary refuses (review of #443).
         let facts = Facts {
@@ -2606,10 +2783,16 @@ mod tests {
     #[test]
     fn switched_on_and_its_command_follow_every_need() {
         let mut cfg = Config::default();
-        cfg.features.0.insert("incognito".into(), true);
+        // An older `enable`'s `incognito = false` is read by nothing: the
+        // web app's switch decides (the owner, 2026-10-14).
+        cfg.features.0.insert("incognito".into(), false);
         assert!(!switched_on(&cfg, Feature::Incognito), "web is not on");
         cfg.features.0.insert("web".into(), true);
         assert!(switched_on(&cfg, Feature::Incognito));
+        assert!(
+            unknown_switches(&cfg).is_empty(),
+            "a retired switch is not unknown"
+        );
         // A part: its parent's switch and its requirement's.
         assert!(!switched_on(&cfg, Feature::Dictate), "voice is not on");
         assert_eq!(

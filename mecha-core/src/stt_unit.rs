@@ -396,6 +396,26 @@ pub fn remove(m: &Machinery, naming: &Naming) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// The speech recogniser's revision is held to what its install writes:
+    /// the server, the unit, and the Mac agent made from it.
+    #[test]
+    fn the_stt_revision_is_held_to_what_it_writes() {
+        let n = Naming::shipped();
+        let unit = render(Path::new("/h/.mecha/sidecars/stt"), &n);
+        crate::user_service::assert_rev(
+            ID,
+            (
+                1,
+                "f86607044f51b989f92288a1aaa8d45a517594ab729c89b2c046eeb21238e0b7",
+            ),
+            &[
+                SERVER,
+                &unit,
+                &crate::user_service::test_agent_text(&n.unit, &unit),
+            ],
+        );
+    }
+
     use super::*;
 
     /// What runs is the script the hand install runs, byte for byte — so a

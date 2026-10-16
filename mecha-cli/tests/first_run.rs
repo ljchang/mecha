@@ -1191,7 +1191,6 @@ fn setup_offers_every_feature_and_minimal_declines_them_without_touching_config(
         "image",
         "personas",
         "voice",
-        "incognito",
         "frontdoor",
         "messages",
         "system",
@@ -1202,6 +1201,8 @@ fn setup_offers_every_feature_and_minimal_declines_them_without_touching_config(
         assert_eq!(s["status"], "missing", "{id}: {s}");
         assert_eq!(s["optional"], true, "{id}: {s}");
     }
+    // Incognito is the web app's, never a question of its own (F15).
+    assert!(plan.iter().all(|s| s["id"] != "incognito"), "{plan:#?}");
 
     let one = steps(&mecha(&home, &["setup", "ocr", "--json"]));
     assert_eq!(one.len(), 1, "{one:?}");
@@ -1288,7 +1289,6 @@ fn the_closing_note_names_each_way_back() {
         "image",
         "personas",
         "voice",
-        "incognito",
         "frontdoor",
         // Once a `false` here read as unanswered and stayed outstanding.
         "messages",

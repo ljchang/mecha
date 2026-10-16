@@ -699,14 +699,14 @@ pub async fn install(
         home,
         ID,
         &units.join(format!("{idle}.service")),
-        &idle_service,
+        &crate::user_service::stamp(ID, &idle_service),
         0o644,
     )?;
     write_owned(
         home,
         ID,
         &units.join(format!("{idle}.timer")),
-        &idle_timer,
+        &crate::user_service::stamp(ID, &idle_timer),
         0o644,
     )?;
     crate::engine_gate::systemctl("daemon-reload", &[])?;
@@ -1014,6 +1014,41 @@ pub fn remove(m: &Machinery, naming: &Naming) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// The image server's revision is held to what its install writes: the
+    /// unit, Linux's idle reset, and a Mac's on-demand launcher and agent.
+    #[test]
+    fn the_image_server_s_revision_is_held_to_what_it_writes() {
+        let n = Naming::shipped();
+        let dir = Path::new("/h/.mecha/sidecars/comfyui");
+        let unit = render(dir, &n);
+        let (idle_service, idle_timer) = render_idle(dir, &n);
+        let backend = render(
+            dir,
+            &Naming {
+                unit: n.unit.clone(),
+                port: mac_backend_port(n.port),
+            },
+        );
+        let launcher = dir.join("bin").join("comfyui-on-demand");
+        let mac = for_mac(&unit, Path::new("/u/.cargo/bin/mecha"), &launcher, n.port);
+        crate::user_service::assert_rev(
+            ID,
+            (
+                1,
+                "ac3352765c9ddd5cfbf0a1d1fa4821a08dfd4f981eea21513db8d5fd98ea2838",
+            ),
+            &[
+                &unit,
+                IDLE_RESET,
+                &idle_service,
+                &idle_timer,
+                &mac_launcher_text(&backend).unwrap(),
+                &mac,
+                &crate::user_service::test_agent_text(&n.unit, &mac),
+            ],
+        );
+    }
+
     use super::*;
 
     /// The file fetched on demand is the one a turbo picture loads, by

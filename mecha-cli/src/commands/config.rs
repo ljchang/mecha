@@ -105,7 +105,6 @@ pub const FEATURES_STARTER: &str = r#"
 # image = false      # image generation and the character library
 # personas = false   # characters you write and talk to
 # voice = false      # dictation and voice calls
-# incognito = false  # a web chat that leaves no trace
 # frontdoor = false  # inbound requests, polls and publishing
 # messages = false   # messages between sessions on this machine
 # system = false     # the assistant reads this machine's state (system_read)

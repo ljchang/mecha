@@ -77,12 +77,15 @@ because a person clicking "yes" is what an injection is trying to engineer.
 
 ```bash
 cargo install mecha-cli --locked          # installs the `mecha` binary
-cargo install mecha-mail --locked         # optional: mail + calendar MCP servers
 cargo install mecha-graph --locked        # optional: the graph's own CLI
 ```
 
-The knowledge graph's MCP server is built from a pinned commit by
-`mecha features enable graph`; it needs no `cargo install` of its own.
+mecha's own MCP servers need no `cargo install` of their own:
+`mecha features enable mail` (or `docs`) builds the mail and documents
+servers from the same source as your `mecha`, and `mecha features enable
+graph` builds the knowledge graph's server from its pinned commit. A copy on
+your `PATH` from another build is passed over; one you built from your own
+checkout is left as yours.
 
 Or from source:
 

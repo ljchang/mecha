@@ -15,8 +15,8 @@
 // pass — none does today, and adding one is the moment to extend this.
 //
 // **The one allowance, argued here rather than hidden.** `voice-core.js`
-// keeps the owner's voice preferences (a voice name, a speed, a cached voice
-// list) under its own keys — device settings, never conversation text, and
+// keeps the owner's voice preferences (a voice name, a speed, the worker's
+// speed range) under its own keys — device settings, never conversation text, and
 // voice is not offered in an incognito chat. A storage call is allowed there
 // only on a line that names one of those keys, so a remembered draft added
 // to the same module still fails.
