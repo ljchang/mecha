@@ -807,6 +807,14 @@ impl Executor {
         let (program, rest) = argv.split_first().expect("argv() is never empty");
         let program: PathBuf = if program == "mecha" {
             crate::exe::self_exe()
+        } else if mecha_core::mail_mcp::PROGRAMS.contains(&program.as_str()) {
+            // mecha's own servers: the matching build, never a stale copy —
+            // the sibling of this binary is exactly where one is left
+            // (review of #699).
+            match crate::commands::features::remedy_program(program) {
+                Ok(p) => p.into(),
+                Err(why) => return Some(why),
+            }
         } else if let Some(sibling) = std::env::current_exe()
             .ok()
             .and_then(|exe| Some(exe.parent()?.join(program)))

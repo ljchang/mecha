@@ -936,7 +936,7 @@ pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
 /// A stale copy with nothing matching installed is refused, never run as a
 /// fallback (review of #699): its `auth` is the one that took other
 /// arguments.
-pub(super) fn remedy_program(program: &str) -> Result<std::ffi::OsString, String> {
+pub(crate) fn remedy_program(program: &str) -> Result<std::ffi::OsString, String> {
     let own = mecha_core::mail_mcp::PROGRAMS.contains(&program)
         || program == mecha_core::graph_mcp::PROGRAM;
     if !own {
@@ -948,20 +948,40 @@ pub(super) fn remedy_program(program: &str) -> Result<std::ffi::OsString, String
         return Ok(found.into());
     }
     match on_path {
-        Some(p) if mecha_core::sidecar::stale_copy(program, &p) => Err(format!(
-            "the `{program}` on your PATH ({}) is another build's, and the matching one is not \
-             installed — `mecha features enable {}` builds it",
-            p.display(),
-            if program == mecha_core::graph_mcp::PROGRAM {
-                "graph"
-            } else if program == "mecha-docs" {
-                "docs"
+        Some(p) if mecha_core::sidecar::stale_copy(program, &p) => {
+            // The way to the matching build, asked rather than assumed: a
+            // build that cannot fetch its own source is told what can
+            // (review of #699).
+            let fits = if program == mecha_core::graph_mcp::PROGRAM {
+                mecha_core::graph_mcp::fits().map(|_| ())
             } else {
-                "mail"
-            }
-        )),
+                mecha_core::mail_mcp::fits().map(|_| ())
+            };
+            Err(stale_refusal(program, &p, fits.err()))
+        }
         _ => Ok(program.into()),
     }
+}
+
+/// What `remedy_program` says of a stale copy it will not run: the command
+/// that builds the matching one, or why that cannot run here.
+fn stale_refusal(program: &str, copy: &std::path::Path, unfit: Option<String>) -> String {
+    let feature = if program == mecha_core::graph_mcp::PROGRAM {
+        "graph"
+    } else if program == "mecha-docs" {
+        "docs"
+    } else {
+        "mail"
+    };
+    let way = match unfit {
+        None => format!("`mecha features enable {feature}` builds it"),
+        Some(why) => why,
+    };
+    format!(
+        "the `{program}` on your PATH ({}) is another build's, and the matching one is not \
+         installed — {way}",
+        copy.display()
+    )
 }
 
 fn mcp_command(
@@ -2011,6 +2031,34 @@ mod tests {
         assert!(left_blocked(&cfg, &[Feature::Voice]).is_empty());
         feature::set_switch(&mut cfg, Feature::Voice, false);
         assert!(left_blocked(&cfg, &[Feature::Web]).is_empty());
+    }
+
+    /// A stale copy is refused with the way to the matching build — or, where
+    /// that cannot run, why (review of #699).
+    #[test]
+    fn a_stale_copy_is_refused_with_what_can_fix_it() {
+        let copy = std::path::Path::new("/u/.cargo/bin/mecha-mail");
+        let s = stale_refusal("mecha-mail", copy, None);
+        assert!(
+            s.contains("another build's") && s.contains("`mecha features enable mail` builds it"),
+            "{s}"
+        );
+        let s = stale_refusal("mecha-docs", copy, None);
+        assert!(s.contains("enable docs"), "{s}");
+        let s = stale_refusal(
+            "mecha-mail",
+            copy,
+            Some("build from your checkout: `cargo install --path mecha-mail --locked`".into()),
+        );
+        assert!(
+            s.contains("cargo install --path") && !s.contains("enable mail"),
+            "{s}"
+        );
+        // Not one of mecha's own servers: run as named.
+        assert_eq!(
+            remedy_program("mecha").unwrap(),
+            std::ffi::OsString::from("mecha")
+        );
     }
 
     /// `--turbo` is the image model's, and fetches: both refusals come
