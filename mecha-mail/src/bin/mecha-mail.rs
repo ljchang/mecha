@@ -1209,6 +1209,10 @@ fn register_own_app(
     // that timed out after the wizard (Google waits two minutes, and its
     // "unverified app" screen is a pause) must not cost the five pages again,
     // nor hide the file it just downloaded (review of #663).
+    // A file refused here, by the owner or the parser, is not offered again
+    // by the reuse prompt's search, which reaches back further (review of
+    // #709).
+    let mut declined: Option<std::path::PathBuf> = None;
     if provider == Provider::Google {
         let recent = started.checked_sub(std::time::Duration::from_secs(24 * 3600));
         if let Some(path) =
@@ -1220,10 +1224,14 @@ fn register_own_app(
                 .starts_with('n')
             {
                 eprintln!("Registering a new one, then.");
+                declined = Some(path);
             } else {
                 match google_client_file(&path) {
                     Ok(client) => return Ok(client),
-                    Err(e) => eprintln!("{e:#} — registering a new one, then."),
+                    Err(e) => {
+                        eprintln!("{e:#} — registering a new one, then.");
+                        declined = Some(path);
+                    }
                 }
             }
         }
@@ -1266,13 +1274,15 @@ fn register_own_app(
                 "\nIts client file, then. If it is not to hand, open the Desktop client at {} \
                  and download its JSON; where Google shows the secret only once, Add secret \
                  makes a new one to download, and the old one keeps working where it is. If the \
-                 app is still in Testing, add this account under Audience, Test users.",
-                wizard::GOOGLE_CLIENTS
+                 app is still in Testing, add this account under Audience, Test users. An app \
+                 made for something else also needs, as the steps set it:\n  - {}",
+                wizard::GOOGLE_CLIENTS,
+                // Without it sign-in succeeds and the first read is a 403.
+                wizard::GOOGLE[1].what
             );
             // Downloads is searched from any day, so what it finds is asked
             // about, as the offer before the walk is: an old file from another
             // project fails at Google's sign-in, not here (review of #709).
-            let mut declined: Option<std::path::PathBuf> = None;
             loop {
                 let answer = line(
                     "Client file's path (drag it here), or Enter to take the newest in \
@@ -2159,6 +2169,15 @@ mod tests {
             std::time::SystemTime::now() + std::time::Duration::from_secs(25 * 3600),
             &open,
         );
+        // Declined at the offer before the walk, the same file is not
+        // offered again by the reuse prompt (its Enter says so).
+        let early = register_own_app(
+            &mut std::io::Cursor::new(format!("n\ny\n\n{}\n", file.display())),
+            Provider::Google,
+            Some(&downloads),
+            std::time::SystemTime::now(),
+            &open,
+        );
         let from_downloads = register_own_app(
             &mut std::io::Cursor::new(b"y\n\n\n".to_vec()),
             Provider::Google,
@@ -2180,6 +2199,7 @@ mod tests {
             "4-h.apps.googleusercontent.com"
         );
         assert_eq!(refused.unwrap().client_id, "4-h.apps.googleusercontent.com");
+        assert_eq!(early.unwrap().client_id, "4-h.apps.googleusercontent.com");
         let outlook = outlook.unwrap();
         assert_eq!(outlook.client_id, id);
         assert_eq!(outlook.tenant.as_deref(), Some("common"));

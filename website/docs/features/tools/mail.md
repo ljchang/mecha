@@ -801,7 +801,9 @@ press Enter to be offered the newest `client_secret_*.json` in your Downloads. I
 the file is not to hand, open the Desktop client on Google's
 [Clients](https://console.cloud.google.com/auth/clients) page and download its
 JSON. Where Google shows a client's secret only once, *Add secret* makes a new
-one to download, and the old one keeps working on the other machine. For
+one to download, and the old one keeps working on the other machine. An app
+made for something else also needs the Gmail and Calendar APIs enabled in its
+project; without them sign-in succeeds and the first read fails. For
 Outlook, paste the two ids from the app registration's Overview page; an app
 registered for something else also needs *Allow public client flows* set to Yes
 and the four permissions below, which `auth` lists when you answer yes. An app

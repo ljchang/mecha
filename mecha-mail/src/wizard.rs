@@ -187,6 +187,9 @@ mod tests {
         // the two settings an app registered for something else may lack.
         assert!(MICROSOFT[1].what.contains("Allow public client flows"));
         assert!(MICROSOFT[2].what.contains("API permissions"));
+        // And Google's step 2: the two APIs a project made for something
+        // else may not have on.
+        assert!(GOOGLE[1].what.contains("Gmail API") && GOOGLE[1].what.contains("Calendar"));
         assert!(GOOGLE
             .iter()
             .any(|s| s.url.contains("gmail.googleapis.com") && s.url.contains("calendar")));
