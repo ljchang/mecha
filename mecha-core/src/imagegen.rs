@@ -646,7 +646,7 @@ pub fn sam_graph(uploaded: &str, words: &str) -> Value {
 /// parts of `mask`, leaving out specks under a thousandth of the picture,
 /// which a refinement pass can strand at an edge. Said beside the edit,
 /// because a mask the model named is a guess (`docs/SEGMENTATION-DESIGN.md` S1).
-pub fn found_areas(mask: &image::GrayImage) -> usize {
+pub(crate) fn found_areas(mask: &image::GrayImage) -> usize {
     let (w, h) = mask.dimensions();
     let speck = (w as usize * h as usize) / 1000;
     let mut seen = vec![false; w as usize * h as usize];
@@ -839,6 +839,11 @@ pub fn min_available_mb_on(os: &str) -> u64 {
         20_480
     }
 }
+
+/// What every segmentation in one picture job shares, apart from the render's
+/// own timeout: a segmentation takes 1-5 s (`docs/SEGMENTATION-DESIGN.md`
+/// §3), so this is margin for a cold load, never a wait the owner sees.
+const SEGMENT_BUDGET: Duration = Duration::from_secs(120);
 
 /// Why [`ComfyUi::can_segment`] has no answer: the server could not be
 /// asked, which admission reads as unknown, never as "no SAM".
@@ -1573,6 +1578,16 @@ impl ComfyUi {
         std::result::Result<Option<image::GrayImage>, Failure>,
         Option<String>,
     ) {
+        // The job's segmentation budget is spent: nothing is uploaded.
+        if timeout.is_zero() {
+            return (
+                Err(Failure::Other(anyhow!(
+                    "segmentation ran past its {} s",
+                    SEGMENT_BUDGET.as_secs()
+                ))),
+                None,
+            );
+        }
         let mut held = Held::default();
         let got = async {
             self.await_server(cancel, SERVER_WAIT).await?;
@@ -2216,7 +2231,7 @@ const FACE_EDGE_FEATHER: f32 = 3.0;
 /// `soft`, so nothing outside the paint's own edge can change. `None` when
 /// the face found is not inside the face regions' paint (another face in the
 /// picture, or none): the paint is kept then, and said.
-pub fn edge_faces(
+pub(crate) fn edge_faces(
     soft: &image::GrayImage,
     others: Option<&image::GrayImage>,
     found: &image::GrayImage,
@@ -2289,7 +2304,7 @@ fn about_hair(words: &str) -> bool {
 
 /// The hard paint of `regions` in a region index, at the canvas's size, as
 /// [`prepare_mask`] reads the union. `None` for no regions.
-pub fn regions_hard(
+pub(crate) fn regions_hard(
     index: &[u8],
     regions: &[&crate::picture::Region],
     cw: u32,
@@ -5342,6 +5357,11 @@ impl Tool for ImageGenerate {
             me.generation.fetch_add(1, Ordering::SeqCst);
             let started = Instant::now();
             let timeout = Duration::from_secs(me.cfg.timeout_secs);
+            // Every segmentation in the job shares one budget, apart from the
+            // render's own timeout, so a wedged one holds the chat's job slot
+            // for at most that much more, never a second or third timeout
+            // (review of #710, pass 5; #624's shared deadline).
+            let seg_deadline = Instant::now() + SEGMENT_BUDGET.min(timeout);
             // The named area becomes the painted mask it names; anything that
             // keeps it from being one draws the whole picture, as the words
             // were before, and says so. Never a refusal, so every
@@ -5372,7 +5392,7 @@ impl Tool for ImageGenerate {
                                 &req.references[0],
                                 words,
                                 ctx.cancel.as_ref(),
-                                timeout,
+                                seg_deadline.saturating_duration_since(Instant::now()),
                                 ctx.image_trail.as_deref(),
                             )
                             .await;
@@ -5403,9 +5423,11 @@ impl Tool for ImageGenerate {
                     Ok(Some(mask)) => {
                         let canvas = req.references[0].bytes.clone();
                         let prepared = tokio::task::spawn_blocking(move || {
-                            let areas = found_areas(&mask).max(1);
                             let mask = png_bytes(&image::DynamicImage::ImageLuma8(mask).to_rgb8())?;
                             let plan = prepare_mask(&canvas, &mask, EDIT_REFERENCE_SIZE)?;
+                            // Counted on the mask the edit uses, after the
+                            // grow: two finds the grow joins are one area.
+                            let areas = found_areas(&plan.soft).max(1);
                             let picture = png_bytes(&plan.picture)?;
                             let soft = png_bytes(
                                 &image::DynamicImage::ImageLuma8(plan.soft.clone()).to_rgb8(),
@@ -5476,7 +5498,7 @@ impl Tool for ImageGenerate {
                                     &req.references[0],
                                     words,
                                     ctx.cancel.as_ref(),
-                                    timeout,
+                                    seg_deadline.saturating_duration_since(Instant::now()),
                                     ctx.image_trail.as_deref(),
                                 )
                                 .await;
@@ -6388,6 +6410,33 @@ mod tests {
         });
         let ready = server_at(addr).ready_to_segment(None).await;
         assert!(ready.is_ok(), "{ready:?}");
+    }
+
+    /// A job whose segmentation budget is spent segments nothing: no upload,
+    /// no graph, a failure the edit draws past (review of #710, pass 5).
+    #[tokio::test]
+    async fn a_spent_segmentation_budget_sends_nothing() {
+        let (url, seen) = fake_with(Fake {
+            sam: true,
+            ..Fake::default()
+        })
+        .await;
+        let t = tool(&url);
+        let picture = Reference {
+            path: "images/a.png".into(),
+            bytes: picture(8, [1, 2, 3]),
+            ext: "png",
+        };
+        let (got, _) = t
+            .backend
+            .segment(&t.cfg, &picture, "the sky", None, Duration::ZERO, None)
+            .await;
+        assert!(matches!(got, Err(Failure::Other(_))));
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "{:?}",
+            seen.lock().unwrap()
+        );
     }
 
     /// Admission charges SAM for a server it could not ask: unknown is
@@ -10082,16 +10131,33 @@ mod tests {
         assert_eq!(out.get_pixel(25, 25).0[0], 0, "the paint around it is not");
         assert_eq!(out.get_pixel(5, 5).0[0], 0, "nor anything past the paint");
         assert!(out.get_pixel(62, 50).0[0] > 0, "the face's edge, grown");
-        // A region with no face keeps its own softened paint.
-        let others = square(100, (86, 86, 94, 94));
+        // As the job builds it: the composite's soft mask is the union of
+        // every region's paint, grown and feathered, and the no-face region
+        // is part of that union. The result is never past it, at any pixel:
+        // not a restatement of the formula, since `kept` and `soft` are
+        // built separately here, as there.
+        let face_paint = square(100, (20, 20, 70, 70));
+        let others = square(100, (82, 82, 92, 92));
+        let union = image::GrayImage::from_fn(100, 100, |x, y| {
+            image::Luma([face_paint.get_pixel(x, y).0[0].max(others.get_pixel(x, y).0[0])])
+        });
+        let soft = feather_mask(&grow_mask(&union), &union);
         let out = edge_faces(&soft, Some(&others), &face).unwrap();
-        assert_eq!(out.get_pixel(90, 90).0[0], 255);
-        assert_eq!(out.get_pixel(25, 25).0[0], 0);
-        // Never past the paint, or the no-face regions' own soft edge.
-        let kept = feather_mask(&grow_mask(&others), &others);
+        assert_eq!(
+            out.get_pixel(87, 87).0[0],
+            255,
+            "the no-face region keeps its paint"
+        );
+        assert_eq!(
+            out.get_pixel(25, 25).0[0],
+            0,
+            "the face region's paint past the face"
+        );
         for (x, y, o) in out.enumerate_pixels() {
-            let bound = soft.get_pixel(x, y).0[0].max(kept.get_pixel(x, y).0[0]);
-            assert!(o.0[0] <= bound, "({x}, {y})");
+            assert!(
+                o.0[0] <= soft.get_pixel(x, y).0[0],
+                "({x}, {y}) is past the paint"
+            );
         }
     }
 

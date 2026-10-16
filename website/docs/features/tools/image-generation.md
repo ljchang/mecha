@@ -183,9 +183,14 @@ The same tool edits. Hand it a picture and say what to change:
   picture with a brush, a box and an eraser. Paint over (or box) the part to
   change and say what changes there ("make the dress green"): only the
   bright area is redrawn, and the dimmed part comes back exactly as it was.
-  Paint nothing and the words edit the whole picture. In a
-  persona chat you can paint up to four regions, each in its own colour with
-  its own words.
+  Paint nothing and the words edit the whole picture, unless they name one
+  thing in it ("make the sky orange"): then the model can name that thing,
+  the image server finds it, and only it is redrawn. The result says what
+  was found, and says so when nothing was. In a persona chat you can paint
+  up to four regions, each in its own colour with its own words. A face
+  dropped on a region goes in along the face's own edges rather than your
+  brush stroke, so the hairline and ears stay the photo's; say "face and
+  hair" to take the hair too.
 - **One of your own:** attach it with the paperclip, then say what to change.
 
 **Say only what changes.** There is no need to ask for the rest to stay as
@@ -200,8 +205,10 @@ sends decides how the picture changes:
 - **New clothes, an expression, someone added, or the words** edit the
   picture.
 - **One small change to the picture itself** — an object, a colour, a
-  detail — is a `retouch`, with the painted area as its `mask` when there is
-  one. A mask applies only to a retouch: when a call asks for a scene
+  detail — is a `retouch`, with its `mask` naming where: the painted area,
+  or a few words for the one thing to change ("the green jacket"), never a
+  person's name or a position. Finding a thing by its words needs SAM 3.1,
+  which installs with the image feature. A mask applies only to a retouch: when a call asks for a scene
   change and a mask together, mecha draws the scene change, ignores the
   mask, and reports that it did.
 

@@ -557,15 +557,14 @@ fn strip_leading_name(t: &str, who: &Who, me: &SelfNames) -> String {
     t.to_string()
 }
 
-/// A painted picture's workspace path: one plain path to an image file. A
-/// bare file name is one too, so `mask.png` is left out and said as a path
-/// the chat does not hold, never sent to segmentation as words (review of
-/// #710, pass 2).
+/// A painted picture's workspace path: anything ending in a picture's
+/// extension. A bare file name is one, so `mask.png` is left out and said as
+/// a path the chat does not hold (review of #710, pass 2), and so is a path
+/// with a space in it, which words naming an area never end like (pass 5).
 fn looks_like_a_picture_path(t: &str) -> bool {
     let t = t.trim();
     let lower = t.to_lowercase();
     t.chars().count() <= 200
-        && !t.contains(char::is_whitespace)
         && [".png", ".jpg", ".jpeg", ".webp"]
             .iter()
             .any(|e| lower.ends_with(e))
@@ -2508,9 +2507,11 @@ mod tests {
     /// (review of #710, pass 2).
     #[test]
     fn a_bare_file_name_in_mask_is_a_path() {
-        let c = call(json!({"picture": "images/a.png", "retouch": "x", "mask": "mask.png"}));
-        assert_eq!(c.mask.as_deref(), Some("mask.png"));
-        assert!(c.mask_words.is_none());
+        for path in ["mask.png", "inbox/My Photo.png"] {
+            let c = call(json!({"picture": "images/a.png", "retouch": "x", "mask": path}));
+            assert_eq!(c.mask.as_deref(), Some(path));
+            assert!(c.mask_words.is_none());
+        }
     }
 
     /// Words in `mask` are kept exactly when paint is: on the call that
