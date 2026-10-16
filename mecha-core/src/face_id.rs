@@ -395,7 +395,7 @@ impl Reader {
     pub fn read_bytes(&self, bytes: &[u8], what: &str) -> Result<Vec<(Face, Vec<f32>)>> {
         let img = crate::image::decode_upright(bytes, what)?.to_rgb8();
         let mut faces = self.read(&img)?;
-        faces.sort_by(|a, b| b.0.box_area().total_cmp(&a.0.box_area()));
+        faces.sort_by(|a, b| b.0.area().total_cmp(&a.0.area()));
         Ok(faces)
     }
 }
