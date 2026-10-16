@@ -63,7 +63,6 @@ something shipped.
 | [`MAIL-UX-RESEARCH.md`](MAIL-UX-RESEARCH.md) | What the field has converged on for agent-driven email |
 | [`MEMORY-RESEARCH.md`](MEMORY-RESEARCH.md) | Whether agent memory should accumulate or be curated, and what the evidence says |
 | [`MESSAGING-RESEARCH.md`](MESSAGING-RESEARCH.md) | How separate mecha sessions should message each other, and what travels with a message |
-| [`MESSAGING-TAILNET-DESIGN.md`](MESSAGING-TAILNET-DESIGN.md) | Messages between mecha on the owner's own machines over their tailnet: peers found automatically from the tailnet, each machine listing its agents, the one route, why a send to one is not egress. Not built; §6 holds the owner's rulings, §7 what is open |
 | [`PERSONA-MEMORY-TIMESCALES-RESEARCH.md`](PERSONA-MEMORY-TIMESCALES-RESEARCH.md) | What a persona's "fact" should be: lasting facts vs states vs episodes, whether memory should decay, and what the evidence says about each (2026-10-02) |
 | [`POLL-RESEARCH.md`](POLL-RESEARCH.md) | What polling products ship, and which parts are worth copying |
 | [`PRIOR-ART-RESEARCH.md`](PRIOR-ART-RESEARCH.md) | What openclaw, codex and the other harnesses do that this one does not |
@@ -101,6 +100,7 @@ something shipped.
 | [`LEARNING-AUTONOMY-DESIGN.md`](LEARNING-AUTONOMY-DESIGN.md) | Why learning is ungated per domain, what replaces the gate, and the cost in `behavior`. Read §3 before loosening anything |
 | [`LIVE-DASHBOARD-DESIGN.md`](LIVE-DASHBOARD-DESIGN.md) | Dashboards as a model-written spec, a Svelte renderer and loaders reviewed once: the owner's rulings, the Vega-Lite subset with no destinations, the tailnet rung, and the factory's dataset channel |
 | [`MAIL-UX-DESIGN.md`](MAIL-UX-DESIGN.md) | Mail as a surface you work: the phases, and what each settled |
+| [`MESSAGING-TAILNET-DESIGN.md`](MESSAGING-TAILNET-DESIGN.md) | Messages between mecha on the owner's own machines over their tailnet: peers found automatically from the tailnet, each machine listing its agents, the one route, why a send to one is not egress. Not built; §6 holds the owner's rulings, §7 what is open |
 | [`NOTES-GRAPH-DESIGN.md`](NOTES-GRAPH-DESIGN.md) | One web surface over the graph: capture, find, edit — the consolidation of the notes and graph tabs |
 | [`MEETING-POLL-UX-DESIGN.md`](MEETING-POLL-UX-DESIGN.md) | The meeting poll from the owner's chair: one call, one card, a deterministic sweep, and the stated decision policy. §6 holds the rulings the build waits on |
 | [`PERSONA-CONTEXT-DESIGN.md`](PERSONA-CONTEXT-DESIGN.md) | Why a persona follows its own past and the harness instead of the owner — the context it reads, measured — and the root fixes: run notes in core, factual tool results, history as what happened, pictures as jobs, edits only on the owner's initiative (2026-10-05) |

@@ -83,9 +83,14 @@ and its MagicDNS name:
 1. keep the nodes the owner's login owns, online and untagged;
 2. ask each for its agents (D7) at its MagicDNS name, through `tailscale
    serve` — the door the web app already uses;
-3. a node that answers, as the owner (D1), is a peer under its MagicDNS
-   short name (`spark` for `spark.tail1234.ts.net`). A node not running
-   `mecha serve` has no agents to offer and is no peer: nothing registers a
+3. a node that answers is a peer under its MagicDNS short name (`spark` for
+   `spark.tail1234.ts.net`). The *sender's* assurance that a peer is the
+   owner's machine is step 1 — tailscaled's node list, filtered by the
+   owner's user — reached over MagicDNS and the tailnet's TLS; D1's header
+   check protects the *receiver*, and tells the sender nothing. A node not running
+   `mecha serve` fronted by `tailscale serve` — the door, not merely the
+   process, since `mecha serve` binds loopback — has no agents to offer and
+   is no peer: nothing registers a
    machine, and nothing needs to. A node of the owner's that is offline, or
    answered within the last day and does not now, is listed as
    **unreachable** rather than dropped, so a peer that sleeps reads as one
@@ -146,18 +151,22 @@ is. That needs a change below the route: `MailboxStore::send` stamps
 `taint_recorded: true` on every message today, so a wire body with no taint
 would land recorded *clean*. The route must store a missing taint as
 `taint_recorded: false` — the flag the fail-closed rule keys on — through a
-send that takes it (review of #700). **A remote message is always
-untrusted on arrival**: the receiver takes the sender's taint and adds
-`untrusted`, so a peer can widen a message's taint but never narrow it. The
+send that takes it (review of #700). **A remote message arrives fully
+tainted**: the receiver takes the sender's taint and adds both `untrusted`
+and `private` — what `effective_taint()` already gives an unrecorded one —
+so a peer can widen a message's taint but never narrow either leg. Adding
+`untrusted` alone was not enough: the interlock arms on both legs, and a
+forged "nothing private" would have left `Chosen` egress open over a body
+that may be another machine's secrets (review of #700). The
 route accepts a `taint` field from anything that presents the owner's header —
 including an unconfined `shell` in an injected run on the owner's own machine
 — and the research keeps "trust asserted by a sender" deliberately absent;
 this is that rule, kept across the wire (review of #700). `from_machine`
 keeps a peer's message apart from the owner's own `mecha msg send` here.
 **The cost, stated with the rule:** taint lives on the conversation, so the
-first remote message a session reads arms `untrusted` there for good, and
-with private data already in it every `Egress::Chosen` tool is refused for
-the rest of that session. A laptop chat that reads the GB10's nightly brief
+first remote message a session reads arms the interlock there for good —
+both legs at once — and every `Egress::Chosen` tool is refused for the rest
+of that session. A laptop chat that reads the GB10's nightly brief
 can still reply by message (no egress class) but no longer reach a
 destination the model names, where the same brief sent one machine nearer
 would have cost nothing. That is the price of not believing a peer's word,
@@ -201,9 +210,19 @@ owner's own machines.
 taint, merged as for a local one (D4), so its content is governed whatever
 the transport. `message_agents`' listing from a peer is not marked
 `.from_outside()`: it is the owner's machines answering with producer names
-the owner configured, and it never carries a message body. A peer's error or
-reply text is shown to the sender as the tool's own failure, never as
-external content it must act on.
+the owner configured, and it never carries a message body. A peer's error is
+never shown as its text: the sending tool reports a typed reason of its own
+— unreachable, refused, full, or malformed — and drops whatever the peer
+wrote, so no network text enters the conversation unmarked (review of #700).
+
+**D9. Approval: `read_only` stays, on a reason restated.** `MessageSendTool`
+is `read_only()` — no approval, which unattended coordination needs — on the
+comment's premise that "nothing leaves the machine". A remote send does
+leave it, so the premise is restated in the source: the payload lands in an
+owner-only store on one of the owner's own machines (D3), the same reach the
+ruling extends, and the receiving side re-imposes every gate. The comment is
+edited in step 2, not left asserting what is no longer true (review of
+#700).
 
 ## 3. What a message still cannot do
 
@@ -277,11 +296,15 @@ everything it provokes.
   the wake is new work for local and remote alike — §7.
 - **Q2. One mailbox per machine.** A message lands on the machine it is
   addressed to (`chat@laptop`), and only there.
-
 - **Q3. Finding peers is automatic** — D3.
 
 ## 7. Open, and deferred
 
+- **`mecha forget` is per machine.** It purges this machine's mailbox; a
+  message already delivered to a peer's mailbox is that machine's to forget,
+  and `purge_mailbox` and its backstop assume a sent message's copy is local.
+  Forgetting across peers — a `DELETE` on the route, or forgetting on each —
+  is not designed.
 - **Whether a remote message should cost a session its `Chosen` egress**
   (D5's price). The alternative to always-untrusted is a narrower mark —
   untrusted for what the message carries, not for the session — which the
