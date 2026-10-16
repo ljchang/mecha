@@ -460,7 +460,7 @@ All of these were measured; none is built yet:
 
 - **Role nouns in the cutout and placing prompts** (mecha-a3's change 2): this build always says "the person".
 - **Reshaping a layered picture** (arm A): redraw one cutout and re-place it at the same placing seed. It landed 16 of 16.
-- **In-place per-person edits** (arm B): segmentation-backed. The segmentation service is the owner's open decision.
+- **In-place per-person edits** (arm B): segmentation-backed. The segmentation service is ruled in `SEGMENTATION-DESIGN.md` (owner, 2026-10-16); arm B itself is not yet designed.
 - **Reframing the finished picture to the people, and a face pass.**
   - The crop needs the people's boxes.
   - The face pass must be gated on head turn under about 45°. At profile it pasted a frontal face 4 of 8.
