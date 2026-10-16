@@ -301,6 +301,14 @@ pub const UNMASKED_EDIT_REFERENCE_SIZE: u32 = 512;
 /// 4:3 photo). Named explicitly now that the references go smaller, or the
 /// picture would come out at their size. `None` when the shape cannot be
 /// read; the edit then keeps 1024 references and names no size.
+/// Whether a painted region's words are about a face: the one place a
+/// library name in them takes that character's face (§5.3).
+fn about_a_face(words: &str) -> bool {
+    words
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|w| matches!(w.to_lowercase().as_str(), "face" | "faces"))
+}
+
 pub(crate) fn canvas_dims(bytes: &[u8]) -> Option<(u32, u32)> {
     // Upright, as every other reader of a reference: a phone photo stored
     // sideways under the fit threshold keeps its tag, and the server turns it
@@ -4690,23 +4698,25 @@ impl Tool for ImageGenerate {
                             }
                             crate::face::Anchor::NoFace => Some(whole(read)),
                             crate::face::Anchor::Unavailable(why) => {
-                                dropped.push(format!(
-                                    "No face could be taken from {path} ({why}), so the {} \
-                                     region was given the whole picture.",
-                                    r.colour
-                                ));
+                                dropped
+                                    .push(format!("No face could be taken from {path} ({why})."));
                                 Some(whole(read))
                             }
                         }
                     }
+                    // A name in a region's words takes that character's face
+                    // only when the words are about a face: "Maya's shirt in
+                    // red" is a shirt (review of #706).
                     None => match crate::imagelib::named_in(&lib, &r.words).as_slice() {
-                        [name] => {
+                        [name] if about_a_face(&r.words) => {
                             let entry = lib
                                 .get(crate::imagelib::Kind::Character, name)
                                 .filter(|e| e.status == crate::imagelib::Status::Approved)
                                 .cloned();
                             match entry {
                                 Some(entry) => {
+                                    let (entry_version, entry_portrait) =
+                                        (entry.version, entry.portrait.clone());
                                     let faces = Arc::clone(&self.faces);
                                     let for_faces = lib.clone();
                                     let anchor = tokio::task::spawn_blocking(move || {
@@ -4721,6 +4731,13 @@ impl Tool for ImageGenerate {
                                     let shown = capitalized(name);
                                     match anchor {
                                         crate::face::Anchor::Crop(crop) => {
+                                            used.push(crate::imagelib::Used {
+                                                kind: crate::imagelib::Kind::Character,
+                                                name: name.clone(),
+                                                version: entry_version,
+                                                portrait: entry_portrait.clone(),
+                                                full_body: None,
+                                            });
                                             Some((crop, "png", true, format!("{shown}'s face")))
                                         }
                                         crate::face::Anchor::NoFace => {
@@ -4786,7 +4803,12 @@ impl Tool for ImageGenerate {
                 // through the paint, and reads the change inside it.
                 req.mask = None;
                 req.size = canvas_dims(&req.references[0].bytes);
-                if req.size.is_some() {
+                // Small references only when every painted region takes
+                // its change from a reference of its own, as measured: a
+                // region with none is drawn from the canvas, which at 512
+                // lost identity (.66–.70 to .42–.53, #601), so it keeps the
+                // full canvas (review of #706).
+                if req.size.is_some() && lines.len() == call.regions.len() {
                     req.reference_size = UNMASKED_EDIT_REFERENCE_SIZE;
                 }
             }
@@ -8469,6 +8491,9 @@ mod tests {
             ),
             "{submitted}"
         );
+        // The cyan region has no reference of its own: the canvas is its
+        // source, so it stays at full size (review of #706).
+        assert!(submitted.contains("\"resolution\":1024"), "{submitted}");
         let png = picture_of(&out.content);
         let saved = image::load_from_memory(&std::fs::read(dir.join(png)).unwrap())
             .unwrap()
@@ -8481,6 +8506,71 @@ mod tests {
             canvas.picture.get_pixel(w / 2, h / 20)
         );
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A library name in a region's words takes that character's face only
+    /// when the words are about a face, and the character is recorded as
+    /// used; with every painted region holding a face, the references go
+    /// small (review of #706).
+    #[tokio::test]
+    async fn a_name_in_a_region_takes_a_face_only_when_the_words_are_about_one() {
+        for (words, wants_face) in [("Maya's shirt in red", false), ("Maya's face", true)] {
+            let red = image::RgbImage::from_pixel(64, 64, image::Rgb([200, 20, 20]));
+            let mut result = std::io::Cursor::new(Vec::new());
+            red.write_to(&mut result, image::ImageFormat::Png).unwrap();
+            let (url, seen) = fake_with(Fake {
+                history: vec![done()],
+                views: vec![result.into_inner()],
+                ..Fake::default()
+            })
+            .await;
+            let dir = tempdir();
+            let lib = library_with(&["maya"]);
+            std::fs::create_dir_all(dir.join("images")).unwrap();
+            std::fs::create_dir_all(dir.join("inbox")).unwrap();
+            std::fs::write(dir.join("images/orig.png"), picture(8, [240, 220, 40])).unwrap();
+            std::fs::write(
+                dir.join("inbox/regions.png"),
+                index_png(64, 64, &[([255, 0, 255], (0, 16, 16, 56))]),
+            )
+            .unwrap();
+            let faces = stub_faces(crate::face::Anchor::Crop(picture(4, [1, 2, 3])));
+            let out = tool(&url)
+                .with_library_dir(lib.clone())
+                .with_faces(faces.clone())
+                .call(
+                    json!({"picture": "images/orig.png", "mask": "inbox/regions.png",
+                           "regions": [{"colour": "magenta", "words": words}]}),
+                    &ctx(&dir),
+                )
+                .await
+                .unwrap();
+            assert!(!out.is_error, "{words}: {}", out.content);
+            let asked = faces.asked.load(Ordering::SeqCst);
+            let seen = seen.lock().unwrap().clone();
+            let submitted = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+            if wants_face {
+                assert_eq!(asked, 1, "{words}");
+                assert!(
+                    submitted.contains("facial identity from <image3>"),
+                    "{submitted}"
+                );
+                assert!(submitted.contains("\"resolution\":512"), "{submitted}");
+                assert!(
+                    out.content.contains("given the face from Maya's face"),
+                    "{}",
+                    out.content
+                );
+                let m = manifest_of(&dir, &out.content);
+                assert_eq!(m["cast"][0]["name"], "maya", "{m}");
+            } else {
+                assert_eq!(asked, 0, "{words}: a shirt is not a face");
+                assert!(!submitted.contains("facial identity"), "{submitted}");
+                assert!(submitted.contains("SetLatentNoiseMask"), "{submitted}");
+            }
+            std::fs::remove_dir_all(dir).ok();
+            std::fs::remove_dir_all(lib).ok();
+        }
     }
 
     #[tokio::test]
