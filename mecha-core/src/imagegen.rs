@@ -4658,8 +4658,13 @@ impl Tool for ImageGenerate {
         // references go at the unmasked size even for a person without a
         // crop: the canvas is nobody's identity source there.
         // Who the prompt reads as "the viewer": the plan's offstage people,
-        // and anyone a face region named whose face could not be sent.
+        // and anyone a face region named whose face could not be sent, but
+        // only on a picture whose people are known: on one with no record a
+        // name may be someone already in it, and the edit keeps their face
+        // from the canvas (`picture::plan`'s `checks_names`, mecha-a3's G1;
+        // review of #706, pass 5).
         let mut viewers = plan.offstage.clone();
+        let names_checked = plan.next.people_known;
         if mask_plan.is_some() && !call.regions.is_empty() {
             let mut lines: Vec<String> = Vec::new();
             for r in &call.regions {
@@ -4772,7 +4777,9 @@ impl Tool for ImageGenerate {
                                             Some((crop, "png", true, format!("{shown}'s face")))
                                         }
                                         crate::face::Anchor::NoFace => {
-                                            viewers.push(name.clone());
+                                            if names_checked {
+                                                viewers.push(name.clone());
+                                            }
                                             dropped.push(format!(
                                                 "No face was found in {shown}'s library \
                                                  picture, so the {} region was drawn from its \
@@ -4782,7 +4789,9 @@ impl Tool for ImageGenerate {
                                             None
                                         }
                                         crate::face::Anchor::Unavailable(why) => {
-                                            viewers.push(name.clone());
+                                            if names_checked {
+                                                viewers.push(name.clone());
+                                            }
                                             dropped.push(format!(
                                                 "{shown}'s face could not be taken from the \
                                                  library ({why}), so the {} region was drawn \
@@ -8542,20 +8551,23 @@ mod tests {
     }
 
     /// A face region whose character's face cannot be had puts no stranger
-    /// under the name: the prompt reads "the viewer" (review of #706, pass 4).
+    /// under the name on a picture whose people are known: the prompt reads
+    /// "the viewer". On a photo with no record the name may be someone
+    /// already in it, so it stays (G1; review of #706, passes 4 and 5).
     #[tokio::test]
-    async fn a_named_face_that_cannot_be_had_is_read_as_the_viewer() {
+    async fn a_named_face_that_cannot_be_had_is_the_viewer_only_where_names_are_checked() {
         let red = image::RgbImage::from_pixel(64, 64, image::Rgb([200, 20, 20]));
         let mut result = std::io::Cursor::new(Vec::new());
         red.write_to(&mut result, image::ImageFormat::Png).unwrap();
         let (url, seen) = fake_with(Fake {
-            history: vec![done()],
-            views: vec![result.into_inner()],
+            history: vec![done(); 3],
+            views: vec![result.into_inner(); 3],
             ..Fake::default()
         })
         .await;
         let dir = tempdir();
-        let lib = library_with(&["maya"]);
+        let store = tempdir();
+        let lib = library_with(&["maya", "john"]);
         std::fs::create_dir_all(dir.join("images")).unwrap();
         std::fs::create_dir_all(dir.join("inbox")).unwrap();
         std::fs::write(dir.join("images/orig.png"), picture(8, [240, 220, 40])).unwrap();
@@ -8565,27 +8577,58 @@ mod tests {
         )
         .unwrap();
         let faces = stub_faces(crate::face::Anchor::Unavailable("not installed".into()));
-        let out = tool(&url)
+        let t = tool(&url)
             .with_library_dir(lib.clone())
-            .with_faces(faces.clone())
-            .call(
-                json!({"picture": "images/orig.png", "mask": "inbox/regions.png",
-                       "regions": [{"colour": "magenta", "words": "Maya's face"}]}),
-                &ctx(&dir),
-            )
-            .await
-            .unwrap();
+            .with_faces(faces.clone());
+        let last_prompt = || {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|l| l.starts_with("POST /prompt"))
+                .unwrap()
+                .clone()
+        };
+        let region = |picture: &str| {
+            json!({"picture": picture, "mask": "inbox/regions.png",
+                   "regions": [{"colour": "magenta", "words": "Maya's face"}]})
+        };
+        // No record: the name stays.
+        let out = t.call(region("images/orig.png"), &ctx(&dir)).await.unwrap();
         assert!(!out.is_error, "{}", out.content);
-        let seen = seen.lock().unwrap().clone();
-        let submitted = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
-        assert!(!submitted.contains("Maya"), "{submitted}");
-        assert!(submitted.contains("the viewer"), "{submitted}");
+        let sent = last_prompt();
+        assert!(sent.contains("Maya"), "{sent}");
         assert!(
             out.content.contains("could not be taken from the library"),
             "{}",
             out.content
         );
+        // A recorded picture of John: Maya is not in it, so she is the viewer.
+        let c = scene_ctx(&dir, &store, "chat-a");
+        let john = t
+            .call(
+                json!({"scene": {"setting": "a study", "people": [
+                    {"who": "john", "wearing": "a coat", "doing": "reading"}]}}),
+                &c,
+            )
+            .await
+            .unwrap();
+        assert!(!john.is_error, "{}", john.content);
+        std::fs::write(
+            dir.join("inbox/regions.png"),
+            index_png(64, 64, &[([255, 0, 255], (0, 16, 16, 56))]),
+        )
+        .unwrap();
+        let out = t
+            .call(region(&picture_of(&john.content)), &c)
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let sent = last_prompt();
+        assert!(!sent.contains("Maya"), "{sent}");
+        assert!(sent.contains("the viewer"), "{sent}");
         std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
         std::fs::remove_dir_all(lib).ok();
     }
 
