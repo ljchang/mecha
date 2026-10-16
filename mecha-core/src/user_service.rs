@@ -14,6 +14,77 @@ use std::path::{Path, PathBuf};
 
 use crate::sidecar::Machinery;
 
+/// Each sidecar's service revision: the number its service definitions
+/// carry (`stamp`), raised whenever what an install writes for it changes.
+/// An installed sidecar whose definitions carry an older number — or none,
+/// as everything installed before the stamp does — is stale, and `enable` and
+/// `setup` offer to refresh it: its install run again, which fetches nothing
+/// that is current and rewrites and restarts its services (the owner's
+/// ruling, 2026-10-14; FEATURES-DESIGN §14). Each module's own test holds its
+/// number to a hash of what it renders, so a changed service fails the build
+/// until its number is raised.
+pub const REVS: &[(&str, u32)] = &[
+    ("router", 1),
+    ("embed-server", 1),
+    ("ocr-server", 1),
+    ("stt", 1),
+    ("voice-worker", 1),
+    ("speech", 1),
+    ("comfyui", 1),
+];
+
+/// A sidecar's current service revision, if it has services.
+pub fn rev(id: &str) -> Option<u32> {
+    REVS.iter().find(|(i, _)| *i == id).map(|(_, r)| *r)
+}
+
+/// The marker a service definition carries, as written into it.
+fn marker(id: &str, rev: u32) -> String {
+    format!("mecha-service-rev: {id} {rev}")
+}
+
+/// `text`, a systemd unit or a launchd plist, carrying `id`'s current
+/// revision: a comment on the unit's first line, or after the plist's XML
+/// declaration. A sidecar with no revision is written as it is.
+pub fn stamp(id: &str, text: &str) -> String {
+    let Some(rev) = rev(id) else {
+        return text.to_string();
+    };
+    let m = marker(id, rev);
+    if let Some(rest) = text.strip_prefix("<?xml") {
+        // After the declaration's line, which must stay first.
+        match rest.split_once('\n') {
+            Some((decl, body)) => format!("<?xml{decl}\n<!-- {m} -->\n{body}"),
+            None => format!("{text}\n<!-- {m} -->\n"),
+        }
+    } else {
+        format!("# {m}\n{text}")
+    }
+}
+
+/// The revision a written definition carries for `id`, if any.
+pub fn rev_of(text: &str, id: &str) -> Option<u32> {
+    let key = format!("mecha-service-rev: {id} ");
+    text.lines()
+        .find_map(|l| l.split_once(&key).map(|(_, r)| r))
+        .and_then(|r| {
+            r.trim_end_matches("-->")
+                .split_whitespace()
+                .next()?
+                .parse()
+                .ok()
+        })
+}
+
+/// Whether a file mecha wrote is one of a service's definitions — what
+/// carries the stamp.
+pub fn is_definition(path: &std::path::Path) -> bool {
+    matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some("service" | "socket" | "timer" | "plist")
+    )
+}
+
 /// The file a service is defined by here: `<stem>.service` in the user unit
 /// directory, or `ai.mecha-factory.<stem>.plist` in `~/Library/LaunchAgents`.
 pub fn file(m: &Machinery, stem: &str) -> Result<PathBuf> {
@@ -45,30 +116,44 @@ pub fn preflight(m: &Machinery) -> Result<()> {
     Ok(())
 }
 
+/// A unit as the launchd agent a Mac runs instead, its plist's text: the
+/// unit's command under the log cap, as the router and on-demand agents are
+/// (`log_cap.rs`) — launchd never rotates a log.
+fn agent_text(
+    stem: &str,
+    unit: &str,
+    home: &Path,
+    mecha_home: &Path,
+    mecha: &Path,
+) -> Result<String> {
+    let log = crate::launchd::log_path(home, stem);
+    let mut agent = crate::launchd::agent_from_unit(&crate::launchd::label(stem), unit, home, log)?;
+    agent.program = crate::log_cap::wrap(mecha, &agent.log, agent.program);
+    // The wrapper's own-program check resolves the mecha home from the
+    // environment: an agent carries it, or one under a MECHA_HOME other than
+    // ~/.mecha refuses its own program (review of #679).
+    agent
+        .env
+        .push(("MECHA_HOME".into(), mecha_home.display().to_string()));
+    Ok(crate::launchd::plist_text(&agent))
+}
+
 /// Write a service's definition from its rendered unit, recorded under `id`.
 pub fn write(m: &Machinery, id: &str, stem: &str, unit: &str) -> Result<()> {
     let path = file(m, stem)?;
-    let text = if cfg!(target_os = "macos") {
-        // Asked again here, the last door before a command line is split;
-        // the installs ask it first, before anything is fetched.
-        preflight(m)?;
-        let log = crate::launchd::log_path(&m.home, stem);
-        let mut agent =
-            crate::launchd::agent_from_unit(&crate::launchd::label(stem), unit, &m.home, log)?;
-        // Under the log cap, as the router and on-demand agents are
-        // (`log_cap.rs`): launchd never rotates a log.
-        let mecha = std::env::current_exe().context("finding the mecha binary for the agent")?;
-        agent.program = crate::log_cap::wrap(&mecha, &agent.log, agent.program);
-        // The wrapper's own-program check resolves the mecha home from the
-        // environment: an agent carries it, or one under a MECHA_HOME other
-        // than ~/.mecha refuses its own program (review of #679).
-        agent
-            .env
-            .push(("MECHA_HOME".into(), m.mecha_home.display().to_string()));
-        crate::launchd::plist_text(&agent)
-    } else {
-        unit.to_string()
-    };
+    let text = stamp(
+        id,
+        &if cfg!(target_os = "macos") {
+            // Asked again here, the last door before a command line is split;
+            // the installs ask it first, before anything is fetched.
+            preflight(m)?;
+            let mecha =
+                std::env::current_exe().context("finding the mecha binary for the agent")?;
+            agent_text(stem, unit, &m.home, &m.mecha_home, &mecha)?
+        } else {
+            unit.to_string()
+        },
+    );
     crate::llama_units::write_owned(&m.mecha_home, id, &path, &text, 0o644)
 }
 
@@ -175,6 +260,52 @@ pub fn logs_anywhere() -> &'static str {
     } else {
         "`journalctl --user -u <its unit>` says why"
     }
+}
+
+/// Holds a sidecar's revision to what its install writes: the hash of every
+/// rendered definition, launcher, drop-in and program file, pinned beside the
+/// number. A change to any of them fails here until the number in [`REVS`] is
+/// raised — so an installed service is never quietly older than the build
+/// that reads it. Not the dependency locks or the pinned commits — and
+/// nothing else detects a change there either: a lock or commit bump alone
+/// reaches no installed machine until its install is run again by hand
+/// (`enable --reinstall`). A known gap (review of #691, pass 7), not a
+/// handled case.
+#[cfg(test)]
+pub(crate) fn assert_rev(id: &str, pinned: (u32, &str), rendered: &[&str]) {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    for r in rendered {
+        h.update(r.as_bytes());
+        h.update([0u8]);
+    }
+    let got: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(
+        rev(id),
+        Some(pinned.0),
+        "{id}'s pinned revision is not user_service::REVS's: pin the number REVS has"
+    );
+    assert_eq!(
+        got,
+        pinned.1,
+        "what {id}'s install writes has changed: raise its number in user_service::REVS to {}, \
+         and pin ({}, \"{got}\") here",
+        pinned.0 + 1,
+        pinned.0 + 1
+    );
+}
+
+/// Fixed inputs for [`agent_text`] in the revision tests: a Mac's paths.
+#[cfg(test)]
+pub(crate) fn test_agent_text(stem: &str, unit: &str) -> String {
+    agent_text(
+        stem,
+        unit,
+        Path::new("/Users/a"),
+        Path::new("/Users/a/.mecha"),
+        Path::new("/Users/a/.cargo/bin/mecha"),
+    )
+    .unwrap()
 }
 
 #[cfg(test)]
@@ -353,5 +484,47 @@ mod tests {
         let a =
             crate::launchd::agent_from_unit("h", unit, "/Users/a".as_ref(), "/l".into()).unwrap();
         assert_eq!(a.program, ["/Users/a/bin/run", "--x"]);
+    }
+
+    /// Every sidecar whose evidence is a service definition has a revision,
+    /// and every revision names a sidecar: one missing from [`REVS`] is
+    /// stamped with nothing and read as current forever (review of #691,
+    /// pass 5).
+    #[test]
+    fn every_sidecar_with_services_has_a_revision() {
+        use crate::sidecar::{Evidence, SIDECARS};
+        for s in SIDECARS {
+            let services = s
+                .evidence
+                .iter()
+                .any(|e| matches!(e, Evidence::UserUnit(_)));
+            assert_eq!(
+                super::rev(s.id).is_some(),
+                services,
+                "{}: a sidecar with services needs a row in REVS, and only one",
+                s.id
+            );
+        }
+        for (id, _) in super::REVS {
+            assert!(SIDECARS.iter().any(|s| s.id == *id), "{id} is no sidecar");
+        }
+    }
+
+    /// A stamp goes where each format keeps a comment and reads back; a
+    /// definition with none, or another sidecar's, reads as none.
+    #[test]
+    fn a_stamp_reads_back_in_both_formats() {
+        let unit = super::stamp("stt", "[Unit]\nDescription=x\n");
+        assert!(unit.starts_with("# mecha-service-rev: stt "), "{unit}");
+        assert_eq!(super::rev_of(&unit, "stt"), super::rev("stt"));
+        let plist = super::stamp(
+            "comfyui",
+            "<?xml version=\"1.0\"?>\n<!DOCTYPE plist>\n<plist></plist>\n",
+        );
+        assert!(plist.starts_with("<?xml version=\"1.0\"?>\n<!-- mecha-service-rev: comfyui "));
+        assert_eq!(super::rev_of(&plist, "comfyui"), super::rev("comfyui"));
+        assert_eq!(super::rev_of("[Unit]\n", "stt"), None);
+        assert_eq!(super::rev_of(&unit, "comfyui"), None);
+        assert_eq!(super::stamp("layout", "x"), "x", "no services, no stamp");
     }
 }

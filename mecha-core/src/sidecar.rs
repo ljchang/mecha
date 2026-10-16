@@ -631,11 +631,19 @@ pub struct PlannedSidecar {
     pub id: &'static str,
     pub label: &'static str,
     pub state: SidecarState,
-    /// A copy of one of mecha's own servers found on this machine from
-    /// another build, and how (§15): passed over, so the row reads missing
-    /// and `enable` installs mecha's — said, so the owner knows why.
+    /// A copy of one of mecha's own servers that mecha did *not* install —
+    /// one on the PATH, from another build — and how it differs (§15). It is
+    /// passed over: the row reads missing, `enable` installs mecha's beside
+    /// it, and this is said so the owner knows why. Never set on a row mecha
+    /// installed; compare `stale`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub stale_copy: Option<String>,
+    pub passed_over: Option<String>,
+    /// mecha's *own* install, with service files an older build wrote (or
+    /// forced by `enable --reinstall`): `enable` and `setup` offer to refresh
+    /// it — its install run again, fetching nothing current (§14). Only on an
+    /// installed row; compare `passed_over`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub stale: bool,
     /// What installing it downloads, where that is known before the install
     /// (`install::price`): the engine's pinned archives for this machine.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -715,6 +723,52 @@ pub fn needed(named: Feature) -> impl Iterator<Item = &'static Sidecar> {
         .filter(move |s| s.needed_by.is_empty() || s.needed_by.iter().any(|f| within(named, *f)))
 }
 
+/// Whether any service definition mecha wrote for `id` carries a revision
+/// older than `rev`, or none — `Err` naming one that could not be read.
+fn stale_definitions(entry: Option<&Entry>, id: &str, rev: u32) -> Result<bool, String> {
+    let Some(entry) = entry else {
+        return Ok(false);
+    };
+    for path in entry
+        .wrote
+        .iter()
+        .filter(|p| crate::user_service::is_definition(p))
+    {
+        match std::fs::read_to_string(path) {
+            Ok(text) => {
+                if crate::user_service::rev_of(&text, id).is_none_or(|r| r < rev) {
+                    return Ok(true);
+                }
+            }
+            // Gone is the record's business (`Incomplete`), not this one's.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        }
+    }
+    Ok(false)
+}
+
+/// The sidecars mecha installed, finished, whose services an older build
+/// wrote — what `mecha setup` offers to refresh (`user_service::REVS`). A
+/// definition that cannot be read is an error naming it: unknown, never
+/// current.
+pub fn stale_services(mecha_home: &Path) -> Result<Vec<&'static Sidecar>> {
+    let manifest = Manifest::read(mecha_home)?;
+    let mut stale = Vec::new();
+    for s in SIDECARS {
+        let Some(rev) = crate::user_service::rev(s.id) else {
+            continue;
+        };
+        let Some(entry) = manifest.entry(s.id).filter(|e| !e.incomplete) else {
+            continue;
+        };
+        if stale_definitions(Some(entry), s.id, rev).map_err(anyhow::Error::msg)? {
+            stale.push(s);
+        }
+    }
+    Ok(stale)
+}
+
 /// The plan for a feature (a part resolves to its parent, as `mecha setup
 /// <part>` does): every sidecar it or its parts need, and every pinned model
 /// file the machine's rows name. The shared ones — the engine, the router,
@@ -736,7 +790,7 @@ pub fn plan(
         // settle it.
         // A copy of one of mecha's own servers from another build: not
         // provided, but in the way — said on the row (§15).
-        let stale_copy = std::cell::RefCell::new(None::<String>);
+        let passed_over = std::cell::RefCell::new(None::<String>);
         let from_evidence = || {
             let mut state = SidecarState::Missing { step: s.installer };
             for ev in s.evidence {
@@ -752,7 +806,7 @@ pub fn plan(
                                 if let crate::own_build::CopyState::Stale(why) =
                                     crate::own_build::copy_of(p, package, &want)
                                 {
-                                    *stale_copy.borrow_mut() =
+                                    *passed_over.borrow_mut() =
                                         Some(format!("{} is {why}", p.display()));
                                     continue;
                                 }
@@ -818,13 +872,26 @@ pub fn plan(
             }
             other => other,
         };
+        // Installed, and its services written by an older build: stale, so
+        // `enable` offers to refresh them (`user_service::REVS`). A
+        // definition that cannot be read is unknown, never current.
+        let (state, stale) = match (state, crate::user_service::rev(s.id)) {
+            (SidecarState::Installed, Some(rev)) => {
+                match stale_definitions(manifest.entry(s.id), s.id, rev) {
+                    Ok(stale) => (SidecarState::Installed, stale),
+                    Err(why) => (SidecarState::Unknown { why }, false),
+                }
+            }
+            (state, _) => (state, false),
+        };
         sidecars.push(PlannedSidecar {
             id: s.id,
             label: s.label,
             state,
             bytes: None,
             not_offered: None,
-            stale_copy: stale_copy.into_inner(),
+            passed_over: passed_over.into_inner(),
+            stale,
         });
     }
 
@@ -981,11 +1048,16 @@ pub fn plan(
             _ => 0,
         })
         .sum();
+    // A stale install is something to do: its refresh — except the
+    // router's, which is `mecha setup chat`'s and never a feature's plan's,
+    // or a machine chatting elsewhere would never read "nothing to do"
+    // (review of #691, pass 5).
     let nothing_to_do = sidecars.iter().all(|s| {
-        matches!(
-            s.state,
-            SidecarState::Provided { .. } | SidecarState::Installed
-        )
+        !(s.stale && s.id != crate::router_unit::ID)
+            && matches!(
+                s.state,
+                SidecarState::Provided { .. } | SidecarState::Installed
+            )
     }) && files.iter().all(|f| {
         matches!(
             f.state,
@@ -1007,6 +1079,45 @@ pub fn plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A finished install's services read stale when a definition carries
+    /// no stamp or an older number, and current when every one carries this
+    /// build's; a program file beside them is not a definition, and an
+    /// unfinished install is `enable`'s to resume, not to refresh.
+    #[test]
+    fn a_service_from_an_older_build_reads_stale() {
+        let home = std::env::temp_dir().join(format!("mecha-stale-{}", uuid::Uuid::new_v4()));
+        let unit = home.join("units/mecha-parakeet.service");
+        std::fs::create_dir_all(unit.parent().unwrap()).unwrap();
+        Manifest::begin(&home, "stt").unwrap();
+        let write = |text: &str| {
+            std::fs::write(&unit, text).unwrap();
+            Manifest::record(&home, "stt", &unit).unwrap();
+        };
+        let ids = |home: &Path| -> Vec<&str> {
+            stale_services(home).unwrap().iter().map(|s| s.id).collect()
+        };
+        write("[Unit]\n");
+        assert!(ids(&home).is_empty(), "an unfinished install is not stale");
+        Manifest::finish(&home, "stt").unwrap();
+        assert_eq!(ids(&home), ["stt"], "no stamp: written before the stamp");
+        write(&crate::user_service::stamp("stt", "[Unit]\n"));
+        assert!(ids(&home).is_empty(), "this build's stamp is current");
+        write("# mecha-service-rev: stt 0\n[Unit]\n");
+        assert_eq!(ids(&home), ["stt"], "an older number");
+        write(&crate::user_service::stamp("stt", "[Unit]\n"));
+        let script = home.join("stt/parakeet_server.py");
+        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+        std::fs::write(&script, "print()\n").unwrap();
+        Manifest::record(&home, "stt", &script).unwrap();
+        assert!(ids(&home).is_empty(), "a program file carries no stamp");
+        // A definition that cannot be read is unknown, never current: a
+        // directory where the unit should be cannot be read as text.
+        std::fs::remove_file(&unit).unwrap();
+        std::fs::create_dir(&unit).unwrap();
+        assert!(stale_services(&home).is_err());
+        let _ = std::fs::remove_dir_all(&home);
+    }
 
     /// An entry emptied by a removal is dropped; one still naming a path, or
     /// another sidecar's, is kept.
@@ -1513,7 +1624,7 @@ mod tests {
         let r = row(&m);
         assert!(matches!(r.state, SidecarState::Missing { .. }), "{r:?}");
         assert!(
-            r.stale_copy
+            r.passed_over
                 .as_deref()
                 .is_some_and(|c| c.contains("the published 0.1.5")),
             "{r:?}"

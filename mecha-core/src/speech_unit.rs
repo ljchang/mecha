@@ -289,6 +289,34 @@ pub fn fits(os: &str, nvidia: crate::engine::Nvidia) -> std::result::Result<Tool
     })
 }
 
+/// What brings a Mac the missing build tools, said after the refusal:
+/// Homebrew for the tools `engine::toolchain_parts` names by program, and
+/// Apple's command-line tools for the compiler. Empty for anything else.
+fn mac_fix(missing: &[String]) -> String {
+    let mut brew: Vec<&str> = Vec::new();
+    let mut xcode = false;
+    for m in missing {
+        match m.as_str() {
+            "git" | "cmake" => brew.push(m),
+            "ninja or make" => brew.push("ninja"),
+            m if m.starts_with("a C++ compiler") => xcode = true,
+            _ => {}
+        }
+    }
+    let mut fixes = Vec::new();
+    if xcode {
+        fixes.push("`xcode-select --install` for the compiler".to_string());
+    }
+    if !brew.is_empty() {
+        fixes.push(format!("`brew install {}`", brew.join(" ")));
+    }
+    if fixes.is_empty() {
+        String::new()
+    } else {
+        format!(" — {} brings it", fixes.join(" and "))
+    }
+}
+
 /// [`fits`] over what was read, so every row is a test.
 fn fits_with(
     os: &str,
@@ -300,10 +328,16 @@ fn fits_with(
     let missing = |missing: Vec<String>| {
         // In this module's own words: the engine has no releases, and the
         // pin that matters is the fork's commit, not llama.cpp's (review of
-        // #649).
+        // #649). On a Mac the fix is one Homebrew line, said rather than
+        // left to be found (the owner's fresh Mac, 2026-10-14).
+        let fix = if os == "macos" {
+            mac_fix(&missing)
+        } else {
+            String::new()
+        };
         format!(
             "the speech engine is built on this machine from its pinned commit ({}), and that \
-             needs {}, which this machine does not have",
+             needs {}, which this machine does not have{fix}",
             &COMMIT[..7],
             missing.join(", ")
         )
@@ -884,6 +918,37 @@ pub fn remove(m: &Machinery, naming: &Naming) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// The speech server's revision is held to what its install writes: the
+    /// adapter's files, both units, and the Mac agents made from them.
+    #[test]
+    fn the_speech_revision_is_held_to_what_it_writes() {
+        let n = Naming::shipped();
+        let r = |t: &str| {
+            render(
+                t,
+                Path::new("/h/.mecha/sidecars/speech"),
+                &n,
+                "model.gguf",
+                "codec.gguf",
+            )
+        };
+        let (engine, adapter) = (r(ENGINE_UNIT), r(ADAPTER_UNIT));
+        let agents = [
+            crate::user_service::test_agent_text(&n.engine_unit, &engine),
+            crate::user_service::test_agent_text(&n.adapter_unit, &adapter),
+        ];
+        let mut rendered: Vec<&str> = FILES.iter().flat_map(|(n, t)| [*n, *t]).collect();
+        rendered.extend([engine.as_str(), adapter.as_str(), &agents[0], &agents[1]]);
+        crate::user_service::assert_rev(
+            ID,
+            (
+                1,
+                "7b3bca200cae45b5ef5a53680ce48ab2df9255590b2f6750dd7b032661fbbb57",
+            ),
+            &rendered,
+        );
+    }
+
     use super::*;
 
     /// The installed adapter's voices directory is named where nothing names
@@ -1080,11 +1145,30 @@ mod tests {
         })
         .is_ok());
         assert_eq!(asked, Some(Target::BuiltCpu));
+        // A Mac is told the one line that fixes it (the owner's fresh Mac,
+        // 2026-10-14: the refusal named cmake and not how to get it).
+        let e = fits_with("macos", "aarch64", N::None, |_| Err(vec!["cmake".into()])).unwrap_err();
+        assert!(e.contains("`brew install cmake` brings it"), "{e}");
+        let e = fits_with("macos", "aarch64", N::None, |_| {
+            Err(vec![
+                "cmake".into(),
+                "a C++ compiler (g++ or clang++)".into(),
+                "ninja or make".into(),
+            ])
+        })
+        .unwrap_err();
         assert!(
-            fits_with("macos", "aarch64", N::None, |_| Err(vec!["cmake".into()]))
-                .unwrap_err()
-                .contains("cmake")
+            e.contains("`xcode-select --install` for the compiler and `brew install cmake ninja`"),
+            "{e}"
         );
+        // Linux keeps its own words: no Homebrew there — asked with a tool
+        // the Mac's line would name, so the guard is what is measured
+        // (review of #698).
+        let e = fits_with("linux", "aarch64", N::Driver(580, 0), |_| {
+            Err(vec!["cmake".into()])
+        })
+        .unwrap_err();
+        assert!(e.contains("cmake") && !e.contains("brew"), "{e}");
         assert!(fits_with("macos", "x86_64", N::None, tc)
             .unwrap_err()
             .contains("Intel"));
