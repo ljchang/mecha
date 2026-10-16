@@ -43,7 +43,11 @@ sending node's, so which of the owner's machines sent a message is the
 sender's claim. That is acceptable only because the ruling trusts every one of
 the owner's machines alike: the machine name is a label for addressing a
 reply, recorded as the sender's claim, and never an input to any trust
-decision (review of #700).
+decision (review of #700). **One link in this is assumed, not measured:** that `tailscale serve` strips
+a client-set `Tailscale-User-Login` before proxying, so the header the guard
+reads is the tailnet's word and not the caller's. No test in this repository
+can reach it; it is tailscale's documented behaviour, and the whole owner
+check rests on it (review of #704).
 
 **D2. Transport: the receiver's `mecha serve`, one owner-gated route.** `POST
 /api/messages` on the peer's `mecha serve`, behind the same owner guard as
@@ -55,11 +59,15 @@ whatever a sender says, so a body naming a taint is refused as malformed. The ro
 recipient lock. `from` stays a producer name (`work::valid_producer` refuses
 `@`). **Every sender-supplied field is validated at the route**, since on
 the wire none is harness-stamped any more: `from` by `valid_producer`,
-the sender's message id by the same form — kept only for D6's ledger:
-**the stored id stays `Session::new_id()`**, never the sender's, since
-`write_message` renames into place with no existence check and a
-peer-chosen id could overwrite another message — `from_session` by the session-id form (`serve::persona_chat::valid_session_id`,
-promoted to one shared check rather than a second copy), `from_machine` by the same character
+the sender's message id and `from_session` both by the session-id form
+(`serve::persona_chat::valid_session_id` — alphanumeric and `-`, at most 64 —
+promoted to one shared check rather than a second copy; not `valid_producer`,
+which refuses the uppercase `T` every `Session::new_id()` carries, and would
+reject every real send). The sender's id keys D6's ledger, so it still needs
+that bounded, path-safe form, though it never names a message file: **the
+stored id stays `Session::new_id()`**, never the sender's, since
+`write_message` renames into place with no existence check and a peer-chosen
+id could overwrite another message (review of #704); `from_machine` by the same character
 set as a producer; anything else refuses the message. `render_delivery`
 interpolates `from_session` raw into the `<untrusted-content source="…">`
 fence today — safe while the harness stamped it, a fence-breaker the moment a
@@ -263,7 +271,11 @@ agents on other machines arms `untrusted` on the conversation that asks, as
 reading any outside content does (`ToolOutput::external`); listing this
 machine's own does not. The declared capability is the tool's, not the
 call's — `capabilities()` sees no input — so any call to `message_agents`,
-local or not, arms the *turn's* gate for the rest of that batch. A peer's error is
+local or not, arms the *turn's* gate for that whole turn — calls ordered
+before it included, since the fold is one pass before dispatch, which is the
+point of declaring it. A subagent profile exposing `message_agents` carries
+the same declaration upward (`subagent.rs` unions `untrusted_input` across a
+profile's tools), so a parent turn holding that subagent is armed too. A peer's error is
 never shown as its text: the sending tool reports a typed reason of its own
 — unreachable, refused, full, or malformed — and drops whatever the peer
 wrote, so no network text enters the conversation unmarked (review of #700).
@@ -317,8 +329,7 @@ everything it provokes.
    absent `Tailscale-User-Login` (refused), another login (refused) — a
    forged header carrying the owner's login is indistinguishable here, and
    the protection is `tailscale serve` stripping client-set headers, which no
-   test in this repository can reach, so step 1's PR states it as assumed,
-   not measured — a missing
+   test in this repository can reach: assumed, not measured, as D1 says — a missing
    `x-mecha-request` (refused), the owner's well-formed `POST` (stored — the
    happy path, stored with both taint legs), a body naming a `taint`
    (refused as malformed), one message id sent twice (delivered once), two
