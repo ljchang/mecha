@@ -15,7 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with everything outside the paint left exactly as it was. A region whose
   words name a library character takes that character's face (its `face`
   reference when it has one). Measured on a full-body photo, the face landed
-  at ArcFace .79–.85 against the one wanted, up from .10–.25.
+  at ArcFace .79–.85 over six renders against the one wanted, up from
+  .10–.25.
 
 - **`mecha imagelib face`: check faces yourself.** `detect` lists the faces
   in a picture, `crop` cuts the tight face crop an edit is anchored to, and

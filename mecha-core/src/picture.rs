@@ -1330,6 +1330,16 @@ mod tests {
             bad(json!({"picture": "images/a.png", "mask": "inbox/r.png", "regions": five}))
                 .contains("at most 4")
         );
+        // A picture dropped on a region is its path in this chat, or refused
+        // by name, never dropped (review of #706).
+        let c = call(json!({"picture": "images/a.png", "mask": "inbox/r.png",
+            "regions": [{"colour": "magenta", "words": "her face", "reference": "inbox/f.png"},
+                        {"colour": "cyan", "words": "x"}]}));
+        assert_eq!(c.regions[0].reference.as_deref(), Some("inbox/f.png"));
+        assert_eq!(c.regions[1].reference, None);
+        assert!(bad(json!({"picture": "images/a.png", "mask": "inbox/r.png",
+            "regions": [{"colour": "magenta", "words": "x", "reference": "a stranger's face"}]}))
+        .contains("magenta region's `reference` is not a picture's path"));
     }
 
     /// The retired inputs are refused with what to do instead; nothing to
