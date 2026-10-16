@@ -363,7 +363,10 @@ Three things worth knowing before you start:
   with an open-source program can be copied by anyone, which turns it into a
   phishing kit under mecha's name. `mecha-mail auth` walks you through
   registering your own, opening each page of Google Cloud or Microsoft Entra in
-  turn (about five minutes), then signs you in. Google Docs needs none of this:
+  turn (about five minutes), then signs you in. Already registered one for
+  another machine? Answer yes when it asks, and give it Google's client file
+  or Outlook's two ids instead
+  ([how](/docs/features/tools/mail#signing-in)). Google Docs needs none of this:
   it signs in with mecha's own Drive app, which can only reach files mecha made
   or you pick.
 - **Mail and documents come from the `mecha-mail` crate**, which
