@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import {
   PANES, paneOf, entriesFor, counts, pendingLine, refApprovable, originLabel, listUrl, validName, tameName, voicesUrl, voiceLine,
-  sampleUrl, cloneUrl, chatVoices,
+  sampleUrl, cloneUrl, chatVoices, VOICE_ENDPOINTS,
   TEXT_MAX, fitWithin, formProblem, formBody, previewOf,
   REF_KINDS, REF_LIMIT, refNote, refAddable, refProblem, refBody, refRemoveBody, LABEL_MAX,
 } from '../src/lib/library.js';
@@ -41,6 +41,10 @@ assert.deepEqual(
   ['ada', 'fresh', 'justmade'],
 );
 assert.deepEqual(chatVoices(null), []);
+// Every URL the builders return is on the list check-demo reads.
+for (const url of [voicesUrl(null), voicesUrl('t'), sampleUrl('ada', 't'), cloneUrl('ada', true)]) {
+  assert.ok(VOICE_ENDPOINTS.includes(url.split('?')[0]), url);
+}
 // A voice's line: what it is, who speaks in it, and "not yet" only when the
 // server's list was read and lacks it.
 assert.equal(

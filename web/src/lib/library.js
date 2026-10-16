@@ -69,6 +69,15 @@ export function voicesUrl(token) {
   return token ? `/api/library/voices?unlock=${encodeURIComponent(token)}` : '/api/library/voices';
 }
 
+// The voice library's endpoints that this module builds rather than a page
+// names after `fetch(` — which `website/scripts/check-demo.mjs` reads off
+// this list, since it cannot see a URL a function returns (review of #701).
+export const VOICE_ENDPOINTS = [
+  '/api/library/voices',
+  '/api/library/voices/sample',
+  '/api/settings/voice/clone',
+];
+
 // A voice's spoken sample, with the unlock when there is one: a locked
 // voice plays only for the unlock that lists it.
 export function sampleUrl(name, token) {

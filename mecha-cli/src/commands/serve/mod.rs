@@ -3123,7 +3123,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    fn tiny_wav(rate: u32, seconds: f64) -> Vec<u8> {
+    pub(super) fn tiny_wav(rate: u32, seconds: f64) -> Vec<u8> {
         let byte_rate = rate * 2;
         let data_len = (f64::from(byte_rate) * seconds) as u32;
         let mut b = Vec::new();
