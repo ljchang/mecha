@@ -307,7 +307,11 @@ impl IdentityJudge {
             crops: Vec::new(),
             errors: Vec::new(),
         };
-        let img = match image::load_from_memory(bytes) {
+        // Upright, as `mecha imagelib face compare` reads a picture
+        // (`face_id::Reader::read_bytes`): a phone photo's EXIF turn read
+        // one way here and another there gave the same picture two numbers
+        // (review of #705, pass 4).
+        let img = match crate::image::decode_upright(bytes, "the picture") {
             Ok(i) => i.to_rgb8(),
             Err(e) => {
                 seen.errors.push(format!("the picture did not decode: {e}"));
