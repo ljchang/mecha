@@ -2108,7 +2108,8 @@ feature's enable, so there is one installer per feature.
   engine's builds are.
 - **One on the PATH is the owner's** (`Evidence::OnPath`): used as it is,
   never installed over. Mecha's build is on no PATH; the `[[mcp]]` entry names
-  it absolutely, so a unit or an agent with a short PATH finds it.
+  it absolutely, so a unit or an agent with a short PATH finds it. **Amended by §15** for mecha's own servers: a copy cargo recorded from
+  another build reads stale; the owner's own checkout build stays theirs.
 - **Priced as a build**, said as one before the yes: a few minutes, cargo and
   a C compiler (SQLCipher is built from source). No cargo: not offered, with
   why, and graph reads *switched on, but not working* until it is installed.
@@ -2184,4 +2185,47 @@ only when its model was gone.
   it), whose remedy enables each switched-on feature that needs one — the
   same offer `enable` makes. A stale service no switched-on feature needs is
   not listed: nothing would refresh it, and enabling the feature again does.
+
+## 15. mecha's own servers follow mecha
+
+**2026-10-15.** On the owner's fresh Mac, `enable mail`, `enable docs` and
+`enable graph` found `mecha-mail`, `mecha-docs` and `mecha-graph-mcp` left in
+`~/.cargo/bin` from an install three days older and wired them as the owner's
+(§13's rule: one on the PATH is used as it is). Each was wrong in a way no
+error named: mail and docs failed their handshake and took other `auth`
+arguments, and the graph server assumed another embedding width. On a truly
+clean machine nothing installed mail or docs at all.
+
+**The owner's ruling: match mecha's version.** `enable` installs the build of
+mecha's own servers that matches mecha, into `~/.mecha/sidecars/`, and a copy
+on the PATH from another build reads stale rather than provided: `enable`
+installs the matching one and points the entry at it. This amends §13's PATH
+rule for mecha's own servers.
+
+- **Which build mecha is** (`own_build.rs`, `mecha-core/build.rs`): a git
+  checkout records its commit (`git rev-parse HEAD`), a published crate its
+  version (it carries `.cargo_vcs_info.json`, no `.git`). `mecha --version`
+  says it: `0.1.24 (git 7d7f0fa05)`, so a git build and the release it
+  precedes can be told apart.
+- **What a copy is**, asked of cargo's own `.crates2.json` beside its `bin/`,
+  never by running it: a `git+…#<sha>` install is current at the wanted
+  commit; a `registry+…` install is current when a registry build of that
+  version is wanted; a **`path+file://…` install is the owner's own build
+  from a checkout, and never stale** — a development build is not replaced.
+  No record is a copy cargo did not install, also left alone.
+- **The mail servers** (`mail_mcp.rs`, sidecar `mail-mcp`, step 15): one
+  crate builds `mecha-mail` and `mecha-docs`, from mecha's commit
+  (`cargo install --git <repo> --rev <sha>`) or its version (`--version
+  =<v>`), into `~/.mecha/sidecars/mail-mcp/`. A mecha that cannot tell its
+  source is not offered them, with why — and nor is one built from a commit
+  no branch of mecha's repository holds (`local:`, the usual state of an
+  unpushed development checkout), which is told to build the servers from
+  that checkout (`cargo install --path mecha-mail --locked`), since `--rev`
+  could not fetch it. The graph server keeps its pin
+  (`graph_mcp::REV`), now with the same staleness rule.
+- **An existing entry running a stale copy is repointed**, `command` alone,
+  and said; nothing else in it changes. An entry running the owner's own
+  build is never touched.
+- **The plan says a passed-over copy**: the row reads missing, with "<path>
+  is <how it differs>, another build's, so it is not used".
 

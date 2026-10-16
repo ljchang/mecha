@@ -140,7 +140,9 @@ install current. And state a count only for a command you ran verbatim,
 or say present/absent — a peer will re-run it, and a wrong number makes a
 correct deploy look wrong.
 
-Verify: `mecha --version` matches mecha's workspace `Cargo.toml`, and the
+Verify: `mecha --version` names the commit you built — `mecha 0.1.24 (git
+<sha>)`, the sha `git rev-parse --short=9 HEAD` prints in the checkout you
+installed from (a version number alone cannot tell two builds apart) — and the
 graph server answers from the *installed* path:
 
 ```bash

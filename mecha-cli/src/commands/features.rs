@@ -406,6 +406,13 @@ pub(super) async fn enable_unwired(
                 todo.retain(|(id, ..)| *id != mecha_core::graph_mcp::ID);
             }
         }
+        // The mail servers likewise (§15).
+        if todo.iter().any(|(id, ..)| *id == mecha_core::mail_mcp::ID) {
+            if let Err(why) = mecha_core::mail_mcp::fits() {
+                println!("The mail and documents servers are not installed: {why}.");
+                todo.retain(|(id, ..)| *id != mecha_core::mail_mcp::ID);
+            }
+        }
         // Likewise the speech server: voice may be spoken by a server the
         // owner runs — Chatterbox, or Breeze by hand — so a machine that
         // cannot build the engine is not offered it, and keeps the switch.
@@ -603,6 +610,8 @@ pub(super) async fn enable_unwired(
                     &turbo_line
                 } else if *id == mecha_core::graph_mcp::ID {
                     ", built here with cargo from its pinned commit — a few minutes"
+                } else if *id == mecha_core::mail_mcp::ID {
+                    ", built here with cargo from this mecha's own source — a few minutes"
                 } else {
                     ""
                 };
@@ -735,6 +744,22 @@ pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
             Some(command) => items.push((*f, wiring, command)),
             // Where `enable` is the installer, the feature is said to be not
             // working rather than left as a footnote under "enabled" (§13).
+            // A copy from another build was passed over: said as that, not
+            // as "not installed" — it is installed, and an existing entry may
+            // still run it (review of #699).
+            None if wiring.install.starts_with("mecha features enable")
+                && mecha_core::onboarding::find_program(wiring.program)
+                    .is_some_and(|p| mecha_core::sidecar::stale_copy(wiring.program, &p)) =>
+            {
+                println!(
+                    "{} is switched on, but the `{}` on your PATH is another build's and the \
+                     matching one is not installed, so no [[mcp]] entry was written and none \
+                     was changed — `{}` builds it",
+                    f.id(),
+                    wiring.program,
+                    wiring.install
+                )
+            }
             None if wiring.install.starts_with("mecha features enable") => println!(
                 "{} is switched on, but not working: `{}` is not installed, so no [[mcp]] entry \
                  was written — `{}` installs it",
@@ -819,6 +844,14 @@ pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
                 unstaged.join(", ")
             );
         }
+        if let Some(old) = &done.repointed {
+            println!(
+                "  the [[mcp]] entry for {} ran {old}, another build's — it now runs {}, which \
+                 matches this mecha",
+                wiring.name,
+                command.display()
+            );
+        }
         if let Some(other) = &done.runs_other {
             println!(
                 "  the [[mcp]] entry called `{}` runs `{other}`, not {}, so it is left as it is \
@@ -893,21 +926,83 @@ pub(super) fn mcp_entries(features: &[Feature]) -> Result<()> {
     Ok(())
 }
 
-/// The program an `[[mcp]]` entry runs: the owner's own on the PATH first;
-/// else, for the graph, the build mecha installed into its own tree
-/// (`graph_mcp`), which no PATH names — by its absolute path either way.
+/// The program an `[[mcp]]` entry runs, by its absolute path: one on the
+/// PATH, unless it is one of mecha's own servers from another build (§15);
+/// else the build mecha installed into its own tree, which no PATH names.
+/// The program a remedy names, as setup runs it: for one of mecha's own
+/// servers, the build its `[[mcp]]` entry would run — so a sign-in after
+/// `enable` is the matching server's, never a stale copy on the PATH whose
+/// `auth` takes other arguments (review of #699). Anything else as named.
+/// A stale copy with nothing matching installed is refused, never run as a
+/// fallback (review of #699): its `auth` is the one that took other
+/// arguments.
+pub(crate) fn remedy_program(program: &str) -> Result<std::ffi::OsString, String> {
+    let own = mecha_core::mail_mcp::PROGRAMS.contains(&program)
+        || program == mecha_core::graph_mcp::PROGRAM;
+    if !own {
+        return Ok(program.into());
+    }
+    let home = mecha_core::work::mecha_home().ok();
+    let on_path = mecha_core::onboarding::find_program(program);
+    if let Some(found) = mcp_command(program, on_path.clone(), home.as_deref()) {
+        return Ok(found.into());
+    }
+    match on_path {
+        Some(p) if mecha_core::sidecar::stale_copy(program, &p) => {
+            // The way to the matching build, asked rather than assumed: a
+            // build that cannot fetch its own source is told what can
+            // (review of #699).
+            let fits = if program == mecha_core::graph_mcp::PROGRAM {
+                mecha_core::graph_mcp::fits().map(|_| ())
+            } else {
+                mecha_core::mail_mcp::fits().map(|_| ())
+            };
+            Err(stale_refusal(program, &p, fits.err()))
+        }
+        _ => Ok(program.into()),
+    }
+}
+
+/// What `remedy_program` says of a stale copy it will not run: the command
+/// that builds the matching one, or why that cannot run here.
+fn stale_refusal(program: &str, copy: &std::path::Path, unfit: Option<String>) -> String {
+    let feature = if program == mecha_core::graph_mcp::PROGRAM {
+        "graph"
+    } else if program == "mecha-docs" {
+        "docs"
+    } else {
+        "mail"
+    };
+    let way = match unfit {
+        None => format!("`mecha features enable {feature}` builds it"),
+        Some(why) => why,
+    };
+    format!(
+        "the `{program}` on your PATH ({}) is another build's, and the matching one is not \
+         installed — {way}",
+        copy.display()
+    )
+}
+
 fn mcp_command(
     program: &str,
     on_path: Option<std::path::PathBuf>,
     mecha_home: Option<&std::path::Path>,
 ) -> Option<std::path::PathBuf> {
-    on_path.or_else(|| {
-        mecha_home
-            .filter(|home| {
-                program == mecha_core::graph_mcp::PROGRAM && mecha_core::graph_mcp::installed(home)
-            })
-            .map(mecha_core::graph_mcp::binary)
-    })
+    let own = |home: &std::path::Path| -> Option<std::path::PathBuf> {
+        if program == mecha_core::graph_mcp::PROGRAM {
+            return mecha_core::graph_mcp::installed(home)
+                .then(|| mecha_core::graph_mcp::binary(home));
+        }
+        (mecha_core::mail_mcp::PROGRAMS.contains(&program) && mecha_core::mail_mcp::installed(home))
+            .then(|| mecha_core::mail_mcp::binary(home, program))
+    };
+    match on_path {
+        Some(p) if !mecha_core::sidecar::stale_copy(program, &p) => Some(p),
+        // A stale copy is never wired, even with nothing better here: the
+        // plan has said it is not used (review of #699).
+        _ => mecha_home.and_then(own),
+    }
 }
 
 /// What `enable` knows when it decides about the turbo model.
@@ -1476,6 +1571,11 @@ fn render_plan(p: &sidecar::Plan, chat_here: bool) -> String {
                  minutes; needs cargo and a C compiler)",
                 p.feature.id()
             ),
+            SidecarState::Missing { .. } if s.id == mecha_core::mail_mcp::ID => format!(
+                "not here — `mecha features enable {}` builds it from this mecha's own source \
+                 (a few minutes; needs cargo)",
+                p.feature.id()
+            ),
             SidecarState::Missing { .. } if mecha_core::install::installable(s.id) => format!(
                 "not here — `mecha features enable {}` installs it",
                 p.feature.id()
@@ -1487,6 +1587,12 @@ fn render_plan(p: &sidecar::Plan, chat_here: bool) -> String {
         };
         let state = match s.bytes {
             Some(b) => format!("{state} ({} to download)", bytes_text(b)),
+            None => state,
+        };
+        // A copy from another build, passed over: said, so the owner knows
+        // why one on their PATH is not used (§15).
+        let state = match &s.passed_over {
+            Some(copy) => format!("{state}; {copy}, another build's, so it is not used"),
             None => state,
         };
         out.push_str(&format!("  {:<32} {state}\n", s.label));
@@ -1927,6 +2033,34 @@ mod tests {
         assert!(left_blocked(&cfg, &[Feature::Web]).is_empty());
     }
 
+    /// A stale copy is refused with the way to the matching build — or, where
+    /// that cannot run, why (review of #699).
+    #[test]
+    fn a_stale_copy_is_refused_with_what_can_fix_it() {
+        let copy = std::path::Path::new("/u/.cargo/bin/mecha-mail");
+        let s = stale_refusal("mecha-mail", copy, None);
+        assert!(
+            s.contains("another build's") && s.contains("`mecha features enable mail` builds it"),
+            "{s}"
+        );
+        let s = stale_refusal("mecha-docs", copy, None);
+        assert!(s.contains("enable docs"), "{s}");
+        let s = stale_refusal(
+            "mecha-mail",
+            copy,
+            Some("build from your checkout: `cargo install --path mecha-mail --locked`".into()),
+        );
+        assert!(
+            s.contains("cargo install --path") && !s.contains("enable mail"),
+            "{s}"
+        );
+        // Not one of mecha's own servers: run as named.
+        assert_eq!(
+            remedy_program("mecha").unwrap(),
+            std::ffi::OsString::from("mecha")
+        );
+    }
+
     /// `--turbo` is the image model's, and fetches: both refusals come
     /// before the machine is read, and write nothing (review of #650).
     #[test]
@@ -2108,6 +2242,7 @@ mod tests {
                 state: SidecarState::Missing { step: "7c" },
                 bytes: None,
                 not_offered: None,
+                passed_over: None,
                 stale: false,
             }],
             // The chat model's files are named but not counted: the plan's
@@ -2148,6 +2283,7 @@ mod tests {
             bytes: None,
             not_offered: None,
             stale: true,
+            passed_over: None,
         };
         let p = Plan {
             feature: Feature::Image,
@@ -2189,6 +2325,7 @@ mod tests {
                     },
                     bytes: None,
                     not_offered: None,
+                    passed_over: None,
                     stale: false,
                 },
                 PlannedSidecar {
@@ -2199,6 +2336,7 @@ mod tests {
                     state: SidecarState::Missing { step: "7z" },
                     bytes: None,
                     not_offered: None,
+                    passed_over: None,
                     stale: false,
                 },
                 PlannedSidecar {
@@ -2209,6 +2347,7 @@ mod tests {
                     },
                     bytes: None,
                     not_offered: None,
+                    passed_over: None,
                     stale: false,
                 },
             ],
@@ -2307,6 +2446,25 @@ mod tests {
         let ours = mcp_command(PROGRAM, None, Some(&home)).unwrap();
         assert!(ours.is_absolute() && ours == binary(&home));
         assert_eq!(mcp_command("mecha-mail", None, Some(&home)), None);
+        // A copy on the PATH from another build is passed over for mecha's
+        // own; with none of mecha's here it is not wired either (review of
+        // #699).
+        let cargo = home.join("cargo");
+        std::fs::create_dir_all(cargo.join("bin")).unwrap();
+        std::fs::write(
+            cargo.join(".crates2.json"),
+            format!(
+                r#"{{"installs":{{"{PROGRAM} 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)":{{"bins":["{PROGRAM}"]}}}}}}"#
+            ),
+        )
+        .unwrap();
+        let stale = cargo.join("bin").join(PROGRAM);
+        assert_eq!(
+            mcp_command(PROGRAM, Some(stale.clone()), Some(&home)),
+            Some(binary(&home))
+        );
+        std::fs::remove_file(root(&home).join(".crates2.json")).unwrap();
+        assert_eq!(mcp_command(PROGRAM, Some(stale), Some(&home)), None);
         let _ = std::fs::remove_dir_all(&home);
     }
 }

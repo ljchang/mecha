@@ -124,9 +124,11 @@ server is not started however it is configured. `mecha features enable docs`
 writes the switch (or say yes when `mecha setup` offers it) and, where no
 entry runs `mecha-docs` or is called `docs`, the entry below, with the three
 write verbs in an `[outbox]` when you have none ([below](#four-capability-quadrants));
-an entry or `[outbox]` you wrote is never edited, only named. The binary
-(`cargo install mecha-mail --locked` installs `mecha-docs` with the mail
-servers) and `mecha-docs auth` stay yours.
+an entry or `[outbox]` you wrote is only named, never edited — except that one
+running a `mecha-docs` from another build has its `command` pointed at the
+matching one. It builds `mecha-docs` with the mail servers, from the same
+source as your `mecha`;
+`mecha-docs auth` stays yours.
 
 ```toml
 [[mcp]]

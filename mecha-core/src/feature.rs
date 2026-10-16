@@ -606,11 +606,16 @@ impl Facts {
         use crate::onboarding::{
             count_accounts, docs_store_dir, find_program, mail_store_dir, slack_linked,
         };
+        let current_on_path = |program: &str| {
+            find_program(program).is_some_and(|p| !crate::sidecar::stale_copy(program, &p))
+        };
         Facts {
-            has_mail_binary: find_program("mecha-mail").is_some(),
-            has_docs_binary: find_program("mecha-docs").is_some(),
-            // On the PATH, or mecha's own build in its tree (`graph_mcp`).
-            has_graph_binary: find_program("mecha-graph-mcp").is_some()
+            // On the PATH — unless a copy from another build, which is not
+            // the feature's server (§15; review of #699) — or mecha's own
+            // build in its tree.
+            has_mail_binary: current_on_path("mecha-mail") || crate::mail_mcp::installed(home),
+            has_docs_binary: current_on_path("mecha-docs") || crate::mail_mcp::installed(home),
+            has_graph_binary: current_on_path("mecha-graph-mcp")
                 || crate::graph_mcp::installed(home),
             has_factory_binary: find_program("factory-publish").is_some(),
             mail_accounts: mail_store_dir().and_then(|d| count_accounts(&d)),
@@ -1009,7 +1014,8 @@ pub fn mcp_wiring(f: Feature) -> Option<McpWiring> {
         Feature::Mail => McpWiring {
             name: "mail",
             program: "mecha-mail",
-            install: "cargo install mecha-mail --locked",
+            // `enable` builds the matching servers (§15).
+            install: "mecha features enable mail",
             prefix_tools: true,
             env: &[],
             outbox: &[
@@ -1023,7 +1029,7 @@ pub fn mcp_wiring(f: Feature) -> Option<McpWiring> {
         Feature::Docs => McpWiring {
             name: "docs",
             program: "mecha-docs",
-            install: "cargo install mecha-mail --locked",
+            install: "mecha features enable docs",
             prefix_tools: true,
             env: &[],
             // Writing into a document a third party can read is a send
@@ -1100,6 +1106,10 @@ pub struct McpWrite {
     /// is enabled, so the caller says so beside whatever was staged (review
     /// of #669, pass 9).
     pub disabled: Option<String>,
+    /// The command an existing entry ran — a copy of one of mecha's own
+    /// servers from another build — now pointed at mecha's matching one
+    /// (§15, the owner's ruling of 2026-10-15). Only `command` changes.
+    pub repointed: Option<String>,
 }
 
 /// Write one feature's wiring — [`write_mcp_entries`] with a single item and
@@ -1182,6 +1192,30 @@ pub fn write_mcp_entries(
         // reads as served only by an entry running the program
         // (`server_state`), so the caller says so rather than leaving a
         // silent "nothing written" (review of #669, pass 5).
+        // An entry running a stale copy of one of mecha's own servers is
+        // pointed at the matching build, `command` alone (§15): the owner
+        // ruled that mecha's own servers follow mecha.
+        let repointed = existing
+            .as_ref()
+            .filter(|t| runs(t))
+            .and_then(|t| t.get("command").and_then(|c| c.as_str()))
+            .filter(|old| {
+                Path::new(old) != *command
+                    && crate::sidecar::stale_copy(wiring.program, Path::new(old))
+            })
+            .map(str::to_string);
+        // Every entry running that copy, a disabled duplicate included: the
+        // copy is the stale thing, whichever entry names it.
+        if let Some(old) = &repointed {
+            if let Some(servers) = doc.get_mut("mcp").and_then(|m| m.as_array_of_tables_mut()) {
+                for t in servers.iter_mut() {
+                    if t.get("command").and_then(|c| c.as_str()) == Some(old.as_str()) {
+                        t.insert("command", toml_edit::value(command.display().to_string()));
+                        changed = true;
+                    }
+                }
+            }
+        }
         let disabled = existing.as_ref().filter(|t| runs(t) && !live(t)).map(|t| {
             t.get("name")
                 .and_then(|n| n.as_str())
@@ -1273,6 +1307,7 @@ pub fn write_mcp_entries(
             env_missing,
             runs_other,
             disabled,
+            repointed,
         });
     }
     if !outbox_existed {
@@ -1719,6 +1754,51 @@ fn own_state(facts: &Facts, f: Feature) -> State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An entry running a copy of one of mecha's own servers from another
+    /// build is pointed at mecha's matching one, `command` alone; the
+    /// owner's own checkout build is left as it is (§15).
+    #[test]
+    fn a_stale_copy_s_entry_is_pointed_at_the_matching_build() {
+        let root = std::env::temp_dir().join(format!("mecha-mcp-r-{}", uuid::Uuid::new_v4()));
+        let cargo_root = root.join("cargo");
+        std::fs::create_dir_all(cargo_root.join("bin")).unwrap();
+        let old = cargo_root.join("bin/mecha-graph-mcp");
+        std::fs::write(&old, "").unwrap();
+        let record = |source: &str| {
+            std::fs::write(
+                cargo_root.join(".crates2.json"),
+                serde_json::json!({"installs": {
+                    format!("mecha-graph-mcp 0.1.5 ({source})"): {"bins": ["mecha-graph-mcp"]}
+                }})
+                .to_string(),
+            )
+            .unwrap();
+        };
+        let entry = format!(
+            "[[mcp]]\nname = \"graph\"\ncommand = \"{}\"\nprefix_tools = false\n\
+             [mcp.capabilities]\nuntrusted_input = true\n",
+            old.display()
+        );
+        let graph = mcp_wiring(Feature::Graph).unwrap();
+        let ours = root.join("sidecars/graph-mcp/bin/mecha-graph-mcp");
+        let cfg = root.join("config.toml");
+        // The published crate under the pin's commit: another build.
+        record("registry+https://github.com/rust-lang/crates.io-index");
+        std::fs::write(&cfg, &entry).unwrap();
+        let done = write_mcp_entries(&cfg, &[(&graph, ours.as_path())], &|_| false).unwrap();
+        assert_eq!(done[0].repointed.as_deref(), Some(old.to_str().unwrap()));
+        let text = std::fs::read_to_string(&cfg).unwrap();
+        assert!(text.contains(&ours.display().to_string()), "{text}");
+        assert!(text.contains("prefix_tools = false") && text.contains("untrusted_input = true"));
+        // The owner's checkout build: theirs, not touched.
+        record("path+file:///home/u/mecha-graph/mecha-graph-mcp");
+        std::fs::write(&cfg, &entry).unwrap();
+        let done = write_mcp_entries(&cfg, &[(&graph, ours.as_path())], &|_| false).unwrap();
+        assert!(done[0].repointed.is_none());
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), entry);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// The graph's entry carries mecha's embedder; mail's carries no
     /// environment (the owner's fresh Mac, 2026-10-15).
