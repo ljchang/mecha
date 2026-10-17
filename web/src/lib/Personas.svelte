@@ -413,7 +413,7 @@
     } catch (err) {
       if (imageEdit === edit) {
         edit.busy = false;
-        edit.error = `The mask could not be uploaded: ${err?.message ?? err}. Nothing was sent.`;
+        edit.error = `The mask or a region's picture could not be uploaded: ${err?.message ?? err}. Nothing was sent.`;
       }
     }
   }

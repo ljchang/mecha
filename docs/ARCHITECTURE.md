@@ -749,8 +749,11 @@ The routes, in the result's own words and the manifest's `route`:
   - a relation naming one person, with nobody in `people`, is that person
     doing it;
   - an overlong `together` is clipped at a sentence;
-  - a `mask` that is not a painted picture's path, has no retouch, sits
-    beside a scene change, or is not in the chat is left out.
+  - a `mask` that is neither a painted picture's path nor words, has no
+    retouch, sits beside a scene change the call draws, or is not in the
+    chat is left out. Words in it are an area to find, not a path
+    (`docs/SEGMENTATION-DESIGN.md` S1, below); a path shape (no whitespace,
+    a picture's extension) is always a path.
   - a `picture` no file in the chat answers to (a made-up name) is left out
     beside a scene, which then draws as new; on its own it is refused saying
     where pictures come from. A bare "cannot open" was retried eleven times
@@ -1042,6 +1045,25 @@ loop is what stops a picture loop (`IMAGE-DESIGN.md` §5.5).
   Measured on same-class targets: the wrong target changed 0 of 12, against
   2 of 12 for one painted area with words, for about 15 s more than a plain
   masked edit. A Regenerate sent with a painted area is refused by name.
+- **Segmentation runs inside the picture job, on the image server**
+  (`docs/SEGMENTATION-DESIGN.md`; owner, 2026-10-16). SAM 3.1 is ComfyUI's
+  own node (`sam_graph`), installed with the image slot
+  (`recommend::SAM_SOURCE`), and runs only after the job is admitted and
+  only ahead of that job's render, so SAM never loads without the image
+  model the admission gauge assumes. A call that may segment asks for
+  `SEGMENT_NEED_MB` on top, where the server can segment (a Mac, which is
+  not asked, always). A call may segment when `mask` is words or a painted
+  region's words are about a face.
+  - **S1: words in `mask`** become the mask SAM finds for them, prepared as
+    paint is. Anything that keeps them from being one (not installed, an
+    error, nothing found, too small) draws the whole picture and says why;
+    never a refusal. A found mask is said with its count of areas, because
+    the model named it.
+  - **S2: a face region follows the face.** A region that takes a face is
+    laid back through `edge_faces`: inside the face regions, the paint ∩
+    SAM's face (and hair, when the words name it), so the photo keeps its
+    own hairline; other regions keep their own paint, and nothing goes past
+    the paint's edge. No face inside the paint keeps the paint, said.
 
 - **A touching scene is built in layers when the persona's switch says
   so** (IMAGE-DESIGN.md §15; owner, 2026-10-10). The switch is

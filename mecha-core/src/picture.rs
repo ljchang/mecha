@@ -54,6 +54,17 @@ pub struct Region {
     pub reference: Option<String>,
 }
 
+impl Call {
+    /// Whether this call may load SAM inside its job, and so is charged for
+    /// it at admission: words in `mask` (S1), or a painted region whose
+    /// words are about a face, the only regions that take one and so are
+    /// edged by segmentation (S2). A region edit with no face never is
+    /// (review of #710).
+    pub fn may_segment(&self) -> bool {
+        self.mask_words.is_some() || self.regions.iter().any(|r| about_a_face(&r.words))
+    }
+}
+
 /// Whether a painted region's words are about a face: the one place a
 /// library name in them takes that character's face, and the only words a
 /// dropped picture gives its face to rather than its look (§5.3).
@@ -94,6 +105,11 @@ pub struct Call {
     pub setting_photo: Option<String>,
     pub retouch: Option<String>,
     pub mask: Option<String>,
+    /// The area to change, named in words rather than painted ("the blue
+    /// scarf"): found by segmentation inside the picture job, and masked as
+    /// a painted area would be (`docs/SEGMENTATION-DESIGN.md` S1). Never
+    /// beside `mask` or `regions`.
+    pub mask_words: Option<String>,
     /// Coloured regions painted in `mask`, each with its own words (the
     /// owner's edit panel; IMAGE-REGION-EDIT-RESEARCH.md §7, M2). With
     /// them, `mask` is a region index and `retouch` is their legend.
@@ -165,13 +181,31 @@ pub fn parse(
     // A mask is a painted picture's path, from the owner's message. Anything
     // else in it (prose, a name, an object) is left out and said, never a
     // refusal (G1b: 3 of 65).
+    // Words and paths are told apart by shape (`looks_like_a_picture_path`),
+    // and a path-shaped one stays a path by design: one that does not
+    // resolve is left out and said, never read as words
+    // (`docs/SEGMENTATION-DESIGN.md` S1).
+    let mut mask_words: Option<String> = None;
     let mut mask = match obj.get("mask") {
         None | Some(Value::Null) => None,
         Some(Value::String(t)) if t.trim().is_empty() => None,
         Some(Value::String(t)) if looks_like_a_picture_path(t) => Some(t.trim().to_string()),
+        Some(Value::String(t)) => {
+            if t.trim().chars().count() > crate::imagegen::MASK_WORDS_CAP {
+                notes.push(format!(
+                    "The `mask` words were past {} characters, so they were left out.",
+                    crate::imagegen::MASK_WORDS_CAP
+                ));
+            } else {
+                mask_words = Some(t.trim().to_string());
+            }
+            None
+        }
         Some(_) => {
             notes.push(
-                "The `mask` given was not a painted picture's path, so it was left out.".into(),
+                "The `mask` given was neither a painted picture's path nor words, so it was left \
+                 out."
+                    .into(),
             );
             None
         }
@@ -225,6 +259,14 @@ pub fn parse(
         Some(_) => return Err("`regions` is a list of {colour, words, reference?}.".into()),
     }
     if !regions.is_empty() {
+        // Before the generic check: words in `mask` leave `mask` empty, and
+        // are refused by name (review of #710, pass 3).
+        if mask_words.is_some() {
+            return Err(
+                "Painted regions carry their own mask; a `mask` in words cannot go beside them."
+                    .into(),
+            );
+        }
         if mask.is_none() || picture.is_none() {
             return Err(
                 "Regions go with the `mask` they were painted in and the `picture` it was \
@@ -250,6 +292,14 @@ pub fn parse(
                 .into(),
         );
         mask = None;
+    }
+    if mask_words.is_some() && (retouch.is_none() || picture.is_none()) {
+        notes.push(
+            "The `mask` was left out: an area named in words goes with a `retouch` of the \
+             `picture` it is in."
+                .into(),
+        );
+        mask_words = None;
     }
     let seed = match obj.get("seed") {
         None | Some(Value::Null) => None,
@@ -424,6 +474,7 @@ pub fn parse(
         setting_photo,
         retouch,
         mask,
+        mask_words,
         regions,
         size,
         seed,
@@ -506,13 +557,14 @@ fn strip_leading_name(t: &str, who: &Who, me: &SelfNames) -> String {
     t.to_string()
 }
 
-/// A painted picture's workspace path: one plain path to an image file.
+/// A painted picture's workspace path: anything ending in a picture's
+/// extension. A bare file name is one, so `mask.png` is left out and said as
+/// a path the chat does not hold (review of #710, pass 2), and so is a path
+/// with a space in it, which words naming an area never end like (pass 5).
 fn looks_like_a_picture_path(t: &str) -> bool {
     let t = t.trim();
     let lower = t.to_lowercase();
     t.chars().count() <= 200
-        && t.contains('/')
-        && !t.contains(char::is_whitespace)
         && [".png", ".jpg", ".jpeg", ".webp"]
             .iter()
             .any(|e| lower.ends_with(e))
@@ -644,6 +696,8 @@ pub struct Plan {
     pub seed: Seed,
     pub size: Option<crate::imagegen::Size>,
     pub mask: Option<String>,
+    /// An area named in words, segmented in the job (`Call::mask_words`).
+    pub mask_words: Option<String>,
     /// The scene this render lands as.
     pub next: Scene,
     pub delta: Delta,
@@ -741,6 +795,18 @@ pub fn draw_named(
     ))
 }
 
+/// `d` without the scene fields a first naming call records but does not
+/// draw: setting, light, camera and relation.
+fn undrawn_scene(d: &crate::scene::Delta) -> crate::scene::Delta {
+    let mut d = d.clone();
+    d.setting = false;
+    d.light = false;
+    d.camera = false;
+    d.together = false;
+    d.together_cleared = false;
+    d
+}
+
 /// Plan a call against its picture's record (§5.2).
 ///
 /// `base` is the record of `call.picture` (`None`: a new picture, or a
@@ -793,12 +859,51 @@ pub fn plan(
     let (mut next, delta) = Scene::apply(base, &change, by, new_picture);
     let mut notes: Vec<String> = call.notes.clone();
     notes.extend(notes_ahead);
+    // On a picture whose people were not known before this call (a photo
+    // with no record), the people the call names are who is in it, not
+    // people to add (§5.1, N2: "once a call declares them, the record knows
+    // them"). Drawn as "Add Maya." on a photo of Maya, the edit draws her a
+    // second time; and their clothes are the photo's, so none are made up.
+    let identified: Vec<String> = if new_picture || known_before {
+        Vec::new()
+    } else {
+        delta.added.clone()
+    };
+    // Naming who is in such a photo, and saying nothing more about them,
+    // changes nothing in it. Their clothes, pose or expression, said, are a
+    // change to draw.
+    let only_identified = !identified.is_empty()
+        && {
+            // Naming them ends a recorded relation between unknown people
+            // (`together_cleared`), which draws nothing on its own.
+            let mut rest = undrawn_scene(&delta);
+            rest.added.clear();
+            rest.is_empty()
+        }
+        && next
+            .people
+            .iter()
+            .filter(|p| identified.contains(&p.who.key()))
+            .all(|p| {
+                p.wearing.trim().is_empty()
+                    && p.doing.trim().is_empty()
+                    && p.expression.trim().is_empty()
+                    && p.at.is_none()
+            });
+    let unchanged = (delta.is_empty() || only_identified) && unknown_removes.is_empty();
+    // What is drawn of the change: all of it, except on the call that first
+    // names a photo's people, whose setting, light, camera and relation are
+    // recorded but not drawn. On that call a restated-by-habit field cannot
+    // be told from an asked one, and drawn over the owner's photo it was the
+    // unasked change this rule exists to stop (review of #707, pass 6).
+    let drawn = if identified.is_empty() {
+        delta.clone()
+    } else {
+        undrawn_scene(&delta)
+    };
     // A painted area keeps everything outside it, so it cannot carry a
     // scene change: the change is drawn, and the mask left out and said.
-    let mask = call
-        .mask
-        .clone()
-        .filter(|_| delta.is_empty() && unknown_removes.is_empty());
+    let mask = call.mask.clone().filter(|_| unchanged);
     // Regions are the owner's words for places in this picture, and their
     // legend is already the retouch: with the mask dropped it would ride
     // into a redrawn picture's prompt describing outlines that are not there
@@ -815,6 +920,15 @@ pub fn plan(
             "The `mask` was left out: a scene change redraws more than a painted area.".into(),
         );
     }
+    // Words name an area exactly as paint does, and are kept exactly when
+    // paint is: no scene change beside them, but the call that first names a
+    // photo's people changes nothing drawn (review of #710).
+    let mask_words = call.mask_words.clone().filter(|_| unchanged);
+    if call.mask_words.is_some() && mask_words.is_none() {
+        notes.push(
+            "The `mask` was left out: a scene change redraws more than the area it names.".into(),
+        );
+    }
     // Someone the call introduces needs their clothes. Clothes left out are
     // what the chat's record has them in (`worn`), else, for a library
     // character, asked for (G1b: 8 of 65 shape refusals were a newcomer
@@ -824,6 +938,14 @@ pub fn plan(
     // could not be told from one the owner wrote, and came back beside a
     // later `together` (review of #608).
     let mut clothes_said: Vec<(String, String)> = Vec::new();
+    // Which identified people this call itself dressed: only those get a
+    // "Dress …" line. The others' clothes are the photo's.
+    let identified_dressed: Vec<String> = next
+        .people
+        .iter()
+        .filter(|p| identified.contains(&p.who.key()) && !p.wearing.trim().is_empty())
+        .map(|p| p.who.key())
+        .collect();
     for key in &delta.added {
         // Someone added past the scene's bound was cut from it (`apply`):
         // refused here, never drawn as a picture without them.
@@ -833,6 +955,16 @@ pub fn plan(
                 crate::scene::MAX_PEOPLE
             ));
         };
+        // An identified person's clothes are the photo's: nothing is drawn
+        // or said for them, but the record still holds clothes, or the next
+        // restage of this picture is refused for a blank `wearing`
+        // (`imagelib::compile_with`; review of #707, pass 4).
+        if identified.contains(key) {
+            if p.wearing.trim().is_empty() {
+                p.wearing = WEARING_UNSAID.into();
+            }
+            continue;
+        }
         if p.wearing.trim().is_empty() {
             match (worn(key), &p.who) {
                 (Some((w, from)), _) => {
@@ -990,6 +1122,7 @@ pub fn plan(
         seed: call.seed.map_or(Seed::Fresh, Seed::Given),
         size: call.size,
         mask,
+        mask_words,
         next,
         delta: delta.clone(),
         route: "new",
@@ -998,7 +1131,7 @@ pub fn plan(
         also: call
             .retouch
             .clone()
-            .filter(|_| call.picture.is_none() || !delta.is_empty() || !unknown_removes.is_empty()),
+            .filter(|_| call.picture.is_none() || !unchanged),
         offstage,
     };
     // A new picture: its setting is a photo (people placed in it), or words.
@@ -1024,12 +1157,80 @@ pub fn plan(
         }
         return Ok(out);
     };
+    // People identified on a photo are drawn from it on every route, not only
+    // the edit: they leave `added` (who the image tool would describe, with a
+    // library description and a default pose) and the crops before any route
+    // returns, and the result says how they were read, since naming someone
+    // here no longer adds them (review of #707, pass 3).
+    if !identified.is_empty() {
+        // A room photo given in the call that names them is refused by what it
+        // is, whatever else the call says about them: that restage drew them
+        // from the library onto the room and dropped the owner's photo, and an
+        // edit would record a room the picture was never drawn in (review of
+        // #707, pass 5).
+        if delta.setting && setting_photo.is_some() {
+            return Err(
+                "A picture whose people are not known yet cannot be moved into a room photo in \
+                 the same call that names them: name them first, then send the room."
+                    .into(),
+            );
+        }
+        out.delta.added.retain(|k| !identified.contains(k));
+        out.faces.retain(|k| !identified.contains(k));
+        // Nor recorded: the next call restaged from a setting the owner may
+        // never have asked for, and dropped the photo one call later (review
+        // of #707, pass 7). The record keeps what it held before; a call that
+        // gives them once the people are known restages as asked.
+        out.next.setting = base.and_then(|b| b.setting.clone());
+        out.next.light = base.and_then(|b| b.light.clone());
+        out.next.camera = base.and_then(|b| b.camera.clone());
+        out.next.together = base.and_then(|b| b.together.clone());
+        out.delta = undrawn_scene(&out.delta);
+        let shown_of = |keys: &[&String]| -> Vec<String> {
+            out.next
+                .people
+                .iter()
+                .filter(|p| keys.contains(&&p.who.key()))
+                .map(|p| shown(&p.who))
+                .collect()
+        };
+        let all: Vec<&String> = identified.iter().collect();
+        let bare: Vec<&String> = identified
+            .iter()
+            .filter(|k| !identified_dressed.contains(k))
+            .collect();
+        let names = shown_of(&all);
+        let undressed = shown_of(&bare);
+        let mut line = format!(
+            "This picture had no record of who is in it, so {} {} taken as already in it, not \
+             added. Its people are known now: later changes can add someone, and one that gives \
+             a setting can restage it.",
+            crate::imagelib::join_and(&names),
+            if names.len() == 1 { "is" } else { "are" }
+        );
+        // What the call gave that this edit of the photo does not draw, said,
+        // since the record now holds it for the next restage.
+        if delta.setting || delta.light || delta.camera || delta.together {
+            line.push_str(
+                " The setting, light, camera or relation given here were left out, neither \
+                 drawn nor recorded: this was an edit of the photo. Give them again to restage \
+                 it now that its people are known.",
+            );
+        }
+        if !undressed.is_empty() {
+            line.push_str(&format!(
+                " Until their clothes are said, a later redraw dresses {} in clothes that suit \
+                 the scene.",
+                crate::imagelib::join_and(&undressed)
+            ));
+        }
+        out.said = Some(match out.said.take() {
+            Some(said) => format!("{said} {line}"),
+            None => line,
+        });
+    }
     // A retouch: the one free-text change to the picture itself.
-    if let Some(r) = call
-        .retouch
-        .as_ref()
-        .filter(|_| delta.is_empty() && unknown_removes.is_empty())
-    {
+    if let Some(r) = call.retouch.as_ref().filter(|_| unchanged) {
         out.render = Render::Edit {
             canvas: Canvas::Picture(picture),
             camera_moves: false,
@@ -1041,8 +1242,16 @@ pub fn plan(
         return Ok(out);
     }
     // Nothing changed at all: draw the scene again at a new seed (§5.1, B4).
-    if delta.is_empty() && unknown_removes.is_empty() {
+    // Naming who is in a photo with no record is no change to it: drawn
+    // again as it is, and its record now knows its people.
+    if unchanged {
         out.route = "redrawn";
+        // Naming a photo's people is never a redraw from the record's words
+        // or room photo: the photo is what they are in (review of #707).
+        // Nor is any all-equal call on a picture whose people were not known:
+        // the record's setting has nobody in it to redraw.
+        let setting_photo = setting_photo.filter(|_| known_before);
+        let words_setting = words_setting && known_before;
         return Ok(match (setting_photo, base.is_some()) {
             (Some(photo), _) => Plan {
                 render: Render::Edit {
@@ -1072,7 +1281,12 @@ pub fn plan(
         });
     }
     let restage = delta.restages() || delta.style;
-    let known = out.next.people_known;
+    // Known before this call, not after it: the call that first declares a
+    // photo's people is an edit of the photo, and later ones may restage it
+    // (§5.1, N2). Read after, the first call naming the person on the
+    // owner's photo redrew it from words, clothes, hair and all
+    // (owner, 2026-10-16).
+    let known = known_before;
     if restage && known && (setting_photo.is_some() || words_setting) {
         out.route = "restaged";
         return Ok(match setting_photo {
@@ -1105,6 +1319,33 @@ pub fn plan(
     for p in &out.people {
         let key = p.who.key();
         let name = shown(&p.who);
+        if identified.contains(&key) {
+            // Already in the picture: only what the call says about them is
+            // drawn, from the photo itself (they left the crops above).
+            let before = lines.len();
+            if identified_dressed.contains(&key) {
+                lines.push(format!(
+                    "Dress {name} in {}.",
+                    p.wearing.trim_end_matches('.')
+                ));
+            }
+            if !p.expression.trim().is_empty() {
+                lines.push(format!(
+                    "Give {name} this expression: {}.",
+                    p.expression.trim_end_matches('.')
+                ));
+            }
+            let doing = p.doing.trim().trim_end_matches('.');
+            match (doing.is_empty(), p.at) {
+                (false, _) => lines.push(format!("Have {name} {doing}.")),
+                (true, Some(at)) => lines.push(format!("Place {name} {}.", at.name())),
+                (true, None) => {}
+            }
+            if lines.len() > before {
+                touched.push(key);
+            }
+            continue;
+        }
         if delta.added.contains(&key) {
             let at = p.at.map(|a| format!(" {}", a.name())).unwrap_or_default();
             lines.push(format!("Add {name}{at}."));
@@ -1167,22 +1408,22 @@ pub fn plan(
             lines.push(format!("{RENDERED}\"{}\" appear{at}{look}.", w.words));
         }
     }
-    if delta.camera {
+    if drawn.camera {
         if let Some(c) = &out.next.camera {
             lines.push(format!("{}.", c.value.trim_end_matches('.')));
         }
     }
-    if delta.setting {
+    if drawn.setting {
         if let Some(Setting::Words { text }) = out.next.setting.as_ref().map(|f| &f.value) {
             lines.push(format!("Set the scene in {}.", text.trim_end_matches('.')));
         }
     }
-    if delta.light {
+    if drawn.light {
         if let Some(l) = &out.next.light {
             lines.push(format!("Make the light {}.", l.value.trim_end_matches('.')));
         }
     }
-    if delta.together {
+    if drawn.together {
         if let Some(t) = &out.next.together {
             lines.push(format!("{}.", t.value.trim_end_matches('.')));
         }
@@ -1198,11 +1439,12 @@ pub fn plan(
         }
     }
     // Crops go to the people this edit changes, who must look like themselves
-    // after it; everyone else is on the canvas already.
+    // after it; everyone else is on the canvas already. (People identified on
+    // a photo left the crops and `added` before any route returned.)
     out.faces.retain(|k| touched.contains(k));
     out.render = Render::Edit {
         canvas: Canvas::Picture(picture),
-        camera_moves: delta.camera,
+        camera_moves: drawn.camera,
     };
     // An edit with no line would send the keep sentence alone, the shape
     // that returns the picture unchanged (#408): refused, saying what would
@@ -1221,7 +1463,7 @@ pub fn plan(
     let mut keep: Vec<&str> = Vec::new();
     if delta.style {
         keep.push("the people and what they are doing");
-    } else if delta.together {
+    } else if drawn.together {
         // A relation moves the people it names; only their clothes stay.
         keep.push("everyone's clothes");
     } else if touched.is_empty() && delta.removed.is_empty() && unknown_removes.is_empty() {
@@ -1229,13 +1471,13 @@ pub fn plan(
     } else {
         keep.push("everyone else as they are");
     }
-    if !delta.setting && !delta.style {
+    if !drawn.setting && !delta.style {
         keep.push("the room");
     }
-    if !delta.light && !delta.style {
+    if !drawn.light && !delta.style {
         keep.push("the light");
     }
-    if !delta.camera {
+    if !drawn.camera {
         keep.push("the camera");
     }
     out.keep = match keep.split_last() {
@@ -1244,7 +1486,8 @@ pub fn plan(
         None => String::new(),
     };
     out.route = "edited";
-    if restage && (!known || no_setting) {
+    // Said already for people identified on a photo (above).
+    if restage && (!known || no_setting) && (no_setting || identified.is_empty()) {
         let line = if no_setting {
             "The scene has no setting to redraw it from, so this was drawn as an edit of the \
              picture. Giving `scene.setting` lets later changes redraw it."
@@ -1326,6 +1569,11 @@ mod tests {
         assert!(bad(json!({"picture": "images/a.png",
             "regions": [{"colour": "magenta", "words": "x"}]}))
         .contains("go with the `mask`"));
+        // Words in `mask` beside regions are refused by name (review of
+        // #710, pass 3).
+        assert!(bad(json!({"picture": "images/a.png", "mask": "the sky",
+            "regions": [{"colour": "magenta", "words": "x"}]}))
+        .contains("a `mask` in words cannot go beside them"));
         assert!(bad(
             json!({"picture": "images/a.png", "mask": "inbox/r.png", "retouch": "y",
             "regions": [{"colour": "magenta", "words": "x"}]})
@@ -2002,11 +2250,9 @@ mod tests {
         let c = call(
             json!({"picture": "images/a.png", "retouch": "a hat", "mask": "the brass weathervane"}),
         );
-        assert!(
-            c.mask.is_none() && c.notes[0].contains("left out"),
-            "{:?}",
-            c.notes
-        );
+        // Words are kept as words (`docs/SEGMENTATION-DESIGN.md` S1).
+        assert!(c.mask.is_none() && c.notes.is_empty(), "{:?}", c.notes);
+        assert_eq!(c.mask_words.as_deref(), Some("the brass weathervane"));
         let c = call(json!({"picture": "images/a.png", "mask": "inbox/m.png",
             "scene": {"light": "dusk"}}));
         assert!(c.mask.is_none() && !c.notes.is_empty());
@@ -2157,6 +2403,299 @@ mod tests {
             }
         );
         assert_eq!(p.route, "restaged");
+    }
+
+    /// The first call to name a photo's people is an edit of the photo,
+    /// never a restage from words (§5.1, N2: the decision reads what was
+    /// known before the call). They are who is in it, not people to add:
+    /// only what the call says about them is drawn (owner, 2026-10-16: the
+    /// first call naming the person on a photo redrew it, clothes and all).
+    #[test]
+    fn a_photos_first_call_naming_its_people_edits_it_and_never_adds_them() {
+        let p = planned(
+            &call(json!({"picture": "inbox/her.jpg", "scene": {
+                "setting": "a narrow greenhouse", "camera": "from the doorway",
+                "people": [{"who": "maya", "wearing": "a mustard raincoat"}]}})),
+            None,
+        );
+        assert_eq!(p.route, "edited");
+        assert!(matches!(
+            p.render,
+            Render::Edit {
+                canvas: Canvas::Picture(_),
+                ..
+            }
+        ));
+        assert!(
+            p.instruction.contains("Dress Maya in a mustard raincoat."),
+            "{}",
+            p.instruction
+        );
+        assert!(!p.instruction.contains("Add Maya"), "{}", p.instruction);
+        // The restated setting and camera are recorded, not drawn, and the
+        // keep sentence keeps them (review of #707, pass 6).
+        assert!(
+            !p.instruction.contains("Set the scene"),
+            "{}",
+            p.instruction
+        );
+        assert!(
+            !p.instruction.contains("from the doorway"),
+            "{}",
+            p.instruction
+        );
+        assert!(
+            p.keep.contains("the room") && p.keep.contains("the camera"),
+            "{}",
+            p.keep
+        );
+        assert!(
+            p.faces.is_empty(),
+            "drawn from the photo, never a portrait's crop"
+        );
+        assert!(
+            p.delta.added.is_empty(),
+            "identified, not added: {:?}",
+            p.delta
+        );
+        assert!(
+            p.said.as_deref().unwrap_or_default().contains("known now"),
+            "{:?}",
+            p.said
+        );
+        assert!(p.next.people_known);
+        // What the edit did not draw is said, since the record holds it
+        // (review of #707, pass 5).
+        let said = p.said.as_deref().unwrap_or_default();
+        assert!(said.contains("neither drawn nor recorded"), "{said}");
+        assert!(
+            p.next.setting.is_none() && p.next.camera.is_none(),
+            "{:?}",
+            p.next
+        );
+        assert!(!said.contains("Until their clothes are said"), "{said}");
+        // Once known, a later change restages it as any recorded picture.
+        let base = landed(&p, 9);
+        let later = planned(
+            &call(
+                json!({"picture": "images/a.png", "scene": {"camera": "from the potting bench"}}),
+            ),
+            Some(&base),
+        );
+        // Nothing restaged from a setting that was never asked for: with none
+        // recorded, a camera change is an edit of the photo (review of #707,
+        // pass 7).
+        assert_eq!(later.route, "edited");
+    }
+
+    /// Only words in `mask` or a face region are charged for segmentation.
+    #[test]
+    fn a_call_may_segment_only_with_words_or_a_face_region() {
+        let words = call(json!({"picture": "images/a.png", "retouch": "x", "mask": "the sky"}));
+        assert!(words.may_segment());
+        let paint = call(json!({"picture": "images/a.png", "retouch": "x", "mask": "inbox/m.png"}));
+        assert!(!paint.may_segment());
+        let region = |w: &str| {
+            call(json!({"picture": "images/a.png", "mask": "inbox/r.png",
+                "regions": [{"colour": "magenta", "words": w}]}))
+        };
+        assert!(!region("make the shirt red").may_segment());
+        assert!(region("her face").may_segment());
+    }
+
+    /// A bare file name in `mask` is a path, never words for segmentation
+    /// (review of #710, pass 2).
+    #[test]
+    fn a_bare_file_name_in_mask_is_a_path() {
+        for path in ["mask.png", "inbox/My Photo.png"] {
+            let c = call(json!({"picture": "images/a.png", "retouch": "x", "mask": path}));
+            assert_eq!(c.mask.as_deref(), Some(path));
+            assert!(c.mask_words.is_none());
+        }
+    }
+
+    /// Words in `mask` are kept exactly when paint is: on the call that
+    /// first names a photo's people, which draws no scene change, the area
+    /// named is still the mask (review of #710).
+    #[test]
+    fn mask_words_survive_the_call_that_first_names_a_photos_people() {
+        let p = planned(
+            &call(
+                json!({"picture": "inbox/her.jpg", "retouch": "Make the scarf blue.",
+                "mask": "the scarf", "scene": {"people": [{"who": "maya"}]}}),
+            ),
+            None,
+        );
+        assert_eq!(p.mask_words.as_deref(), Some("the scarf"), "{:?}", p.said);
+        assert!(p.next.people_known);
+        // A scene change that is drawn still drops them.
+        let moved = planned(
+            &call(
+                json!({"picture": "inbox/her.jpg", "retouch": "Make the scarf blue.",
+                "mask": "the scarf", "scene": {"camera": "from below"}}),
+            ),
+            None,
+        );
+        assert!(moved.mask_words.is_none());
+    }
+
+    /// A photo whose record has a setting but whose people are still
+    /// unknown: naming them is an edit of the photo, never a redraw from the
+    /// record's words; a place said for them is drawn (review of #707).
+    #[test]
+    fn naming_a_photos_people_after_its_setting_keeps_the_photo() {
+        let first = planned(
+            &call(json!({"picture": "inbox/her.jpg", "scene": {
+                "setting": "a narrow greenhouse", "camera": "from the doorway"}})),
+            None,
+        );
+        assert!(first
+            .said
+            .as_deref()
+            .unwrap_or_default()
+            .contains("not known yet"));
+        let base = landed(&first, 9);
+        assert!(!base.people_known && base.setting.is_some());
+        let named = planned(
+            &call(json!({"picture": "images/a.png", "scene": {"people": [{"who": "maya"}]}})),
+            Some(&base),
+        );
+        assert!(
+            matches!(
+                named.render,
+                Render::Edit {
+                    canvas: Canvas::Picture(_),
+                    ..
+                }
+            ),
+            "{:?}",
+            named.render
+        );
+        assert!(named.next.people_known);
+        let placed = planned(
+            &call(json!({"picture": "images/a.png", "scene": {"people": [
+                {"who": "maya", "where": "left"}]}})),
+            Some(&base),
+        );
+        assert_eq!(placed.route, "edited");
+        assert!(
+            placed.instruction.contains("Place Maya on the left."),
+            "{}",
+            placed.instruction
+        );
+    }
+
+    /// A person named on a photo lands in the record with clothes, so the
+    /// next restage of that picture compiles rather than being refused for a
+    /// blank `wearing`; no clothes line was drawn for them (review of #707,
+    /// pass 4).
+    #[test]
+    fn a_photos_named_people_can_be_restaged_later() {
+        let first = planned(
+            &call(json!({"picture": "inbox/her.jpg", "scene": {
+                "setting": "a narrow greenhouse", "people": [{"who": "maya"}]}})),
+            None,
+        );
+        assert!(
+            !first.instruction.contains("Dress"),
+            "{}",
+            first.instruction
+        );
+        let base = landed(&first, 9);
+        assert!(
+            base.people.iter().all(|p| !p.wearing.trim().is_empty()),
+            "{:?}",
+            base.people
+        );
+        let later = planned(
+            &call(json!({"picture": "images/a.png", "scene": {
+                "setting": "a narrow greenhouse", "camera": "from the doorway"}})),
+            Some(&base),
+        );
+        assert_eq!(later.route, "restaged");
+    }
+
+    /// A room photo beside the call that first names a photo's people is
+    /// refused by what it is: that restage drew them from the library and
+    /// dropped the owner's photo. Named first, the room can follow.
+    #[test]
+    fn a_room_photo_beside_a_naming_is_refused_by_name() {
+        let refused = plan(
+            &call(json!({"picture": "inbox/her.jpg", "scene": {
+                "setting": {"photo": "inbox/room.png"}, "people": [{"who": "maya"}]}})),
+            None,
+            Some("h".repeat(64)),
+            Origin::Clean,
+            &lib,
+            &names,
+            &|_| None,
+        )
+        .unwrap_err();
+        assert!(
+            refused.contains("name them first, then send the room"),
+            "{refused}"
+        );
+        // Whatever else the call says about them (review of #707, pass 5).
+        let dressed = plan(
+            &call(json!({"picture": "inbox/her.jpg", "scene": {
+                "setting": {"photo": "inbox/room.png"},
+                "people": [{"who": "maya", "wearing": "a mustard raincoat"}]}})),
+            None,
+            Some("h".repeat(64)),
+            Origin::Clean,
+            &lib,
+            &names,
+            &|_| None,
+        )
+        .unwrap_err();
+        assert!(
+            dressed.contains("name them first, then send the room"),
+            "{dressed}"
+        );
+    }
+
+    /// Naming who is in a photo, and nothing else, changes nothing in it:
+    /// drawn again as it is, and the record learns its people. A retouch
+    /// beside the naming is the change, sent once, and its mask is kept.
+    #[test]
+    fn naming_who_is_in_a_photo_alone_changes_nothing_in_it() {
+        let named = json!([{"who": "maya"}]);
+        let p = planned(
+            &call(json!({"picture": "inbox/her.jpg", "scene": {"people": named}})),
+            None,
+        );
+        assert_eq!(p.route, "redrawn");
+        assert!(
+            p.instruction.starts_with("Draw this picture again"),
+            "{}",
+            p.instruction
+        );
+        assert!(p.faces.is_empty());
+        assert!(
+            p.delta.added.is_empty(),
+            "identified on every route: {:?}",
+            p.delta
+        );
+        assert!(
+            p.said
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Maya is taken as already in it"),
+            "{:?}",
+            p.said
+        );
+        assert!(p.next.people_known);
+        let p = planned(
+            &call(
+                json!({"picture": "inbox/her.jpg", "retouch": "Hang a brass lantern by the door.",
+                "mask": "inbox/m.png", "scene": {"people": named}}),
+            ),
+            None,
+        );
+        assert_eq!(p.route, "retouched");
+        assert_eq!(p.instruction, "Hang a brass lantern by the door.");
+        assert_eq!(p.also, None, "the retouch is sent once");
+        assert_eq!(p.mask.as_deref(), Some("inbox/m.png"));
     }
 
     /// A picture with no record: a retouch is a retouch; a pose change,
