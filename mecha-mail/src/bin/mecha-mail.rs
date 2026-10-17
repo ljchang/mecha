@@ -1167,9 +1167,11 @@ fn google_client_file(path: &std::path::Path) -> Result<ClientConfig> {
 
 /// Walk a person through registering their own sign-in app, one console page
 /// at a time, and come back with its client configuration: Google's from the
-/// JSON the last step downloads, Outlook's from the two ids pasted. `open`
-/// opens a page (the browser, or nothing in a test); a client file counts as
-/// downloaded when it was written at or after `started`.
+/// JSON the last step downloads, Outlook's from the two ids pasted. An app
+/// already registered skips the pages: Google's client file by path, or
+/// Outlook's ids straight away. `open` opens a page (the browser, or nothing
+/// in a test); a client file counts as downloaded when it was written at or
+/// after `started`.
 fn register_own_app(
     read: &mut impl std::io::BufRead,
     provider: Provider,
@@ -1207,6 +1209,10 @@ fn register_own_app(
     // that timed out after the wizard (Google waits two minutes, and its
     // "unverified app" screen is a pause) must not cost the five pages again,
     // nor hide the file it just downloaded (review of #663).
+    // A file refused here, by the owner or the parser, is not offered again
+    // by the reuse prompt's search, which reaches back further (review of
+    // #709).
+    let mut declined: Option<std::path::PathBuf> = None;
     if provider == Provider::Google {
         let recent = started.checked_sub(std::time::Duration::from_secs(24 * 3600));
         if let Some(path) =
@@ -1218,27 +1224,107 @@ fn register_own_app(
                 .starts_with('n')
             {
                 eprintln!("Registering a new one, then.");
+                declined = Some(path);
             } else {
                 match google_client_file(&path) {
                     Ok(client) => return Ok(client),
-                    Err(e) => eprintln!("{e:#} — registering a new one, then."),
+                    Err(e) => {
+                        eprintln!("{e:#} — registering a new one, then.");
+                        declined = Some(path);
+                    }
                 }
             }
         }
     }
-    eprintln!("\n{intro}\n");
-    let mut last_url = "";
-    for (i, step) in steps.iter().enumerate() {
-        eprintln!("{}. {}", i + 1, step.what);
-        // The same page twice is not opened twice.
-        if step.url != last_url {
-            eprintln!("   {}", step.url);
-            open(step.url);
-            last_url = step.url;
+    // An app already registered — the one another machine signs in with —
+    // skips the walk: it is the same app, and a second registration is five
+    // pages for nothing.
+    let have = match provider {
+        Provider::Google => {
+            "\nAlready have a Google sign-in app (a Desktop app client), from another machine \
+             say? [y/N] "
         }
-        line("   Enter when done (q to stop): ")?;
+        Provider::Outlook => {
+            "\nAlready have an Outlook sign-in app (an Entra app registration), from another \
+             machine say? [y/N] "
+        }
+    };
+    // Said before the question, so a first-time owner knows what an app is
+    // before being asked whether they have one (review of #709).
+    eprintln!("\n{intro}");
+    let reuse = line(have)?.to_ascii_lowercase().starts_with('y');
+    if !reuse {
+        eprintln!();
+        let mut last_url = "";
+        for (i, step) in steps.iter().enumerate() {
+            eprintln!("{}. {}", i + 1, step.what);
+            // The same page twice is not opened twice.
+            if step.url != last_url {
+                eprintln!("   {}", step.url);
+                open(step.url);
+                last_url = step.url;
+            }
+            line("   Enter when done (q to stop): ")?;
+        }
     }
+    let home = dirs::home_dir();
     match provider {
+        Provider::Google if reuse => {
+            eprintln!(
+                "\nIts client file, then. If it is not to hand, open the Desktop client at {} \
+                 and download its JSON; where Google shows the secret only once, Add secret \
+                 makes a new one to download, and the old one keeps working where it is. If the \
+                 app is still in Testing, add this account under Audience, Test users. An app \
+                 made for something else also needs, as the steps set it:\n  - {}",
+                wizard::GOOGLE_CLIENTS,
+                // Without it sign-in succeeds and the first read is a 403.
+                wizard::GOOGLE[1].what
+            );
+            // Downloads is searched from any day, so what it finds is asked
+            // about, as the offer before the walk is: an old file from another
+            // project fails at Google's sign-in, not here (review of #709).
+            loop {
+                let answer = line(
+                    "Client file's path (drag it here), or Enter to take the newest in \
+                     Downloads: ",
+                )?;
+                let path = if answer.is_empty() {
+                    match downloads.and_then(|d| wizard::find_client_json(d, std::time::UNIX_EPOCH))
+                    {
+                        Some(p) if declined.as_ref() == Some(&p) => {
+                            eprintln!("That is the newest there; drag the one you mean here");
+                            continue;
+                        }
+                        Some(p) => {
+                            eprintln!("Found {}", p.display());
+                            if line("Use it? [Y/n] ")?
+                                .to_ascii_lowercase()
+                                .starts_with('n')
+                            {
+                                declined = Some(p);
+                                continue;
+                            }
+                            p
+                        }
+                        None => {
+                            eprintln!("No client_secret_*.json in Downloads");
+                            continue;
+                        }
+                    }
+                } else {
+                    wizard::pasted_path(&answer, home.as_deref())
+                };
+                match google_client_file(&path) {
+                    Ok(client) => return Ok(client),
+                    // A file the parser refuses (a Web client, likeliest) is
+                    // not offered again either.
+                    Err(e) => {
+                        eprintln!("{e:#}");
+                        declined = Some(path);
+                    }
+                }
+            }
+        }
         Provider::Google => {
             // A file found and refused (a Web client, the likeliest mistake)
             // is said and waited past, never the end of the walk (review of
@@ -1270,7 +1356,7 @@ fn register_own_app(
                 };
                 let answer = line(prompt)?;
                 if !answer.is_empty() {
-                    match google_client_file(std::path::Path::new(&answer)) {
+                    match google_client_file(&wizard::pasted_path(&answer, home.as_deref())) {
                         Ok(client) => return Ok(client),
                         Err(e) => eprintln!("{e:#}"),
                     }
@@ -1278,6 +1364,18 @@ fn register_own_app(
             }
         }
         Provider::Outlook => {
+            if reuse {
+                // The two app-level settings a registration made for something
+                // else may lack, in the walk's own words: without them the
+                // device code fails at Entra, after the wizard (review of #709).
+                eprintln!(
+                    "\nBoth ids are on the app registration's Overview page. An app registered \
+                     for something else needs these two, as the steps set them:"
+                );
+                for step in &wizard::MICROSOFT[1..3] {
+                    eprintln!("  - {}", step.what);
+                }
+            }
             let client_id = loop {
                 let a = line("Application (client) ID: ")?;
                 match wizard::entra_id(&a, false) {
@@ -1875,7 +1973,7 @@ mod tests {
             r#"{"installed":{"client_id":"9-z.apps.googleusercontent.com","client_secret":"s"}}"#,
         )
         .unwrap();
-        let input = format!("{}\n{}\n", "\n".repeat(steps), file.display());
+        let input = format!("\n{}\n{}\n", "\n".repeat(steps), file.display());
         let empty_downloads = dir.join("dl");
         std::fs::create_dir_all(&empty_downloads).unwrap();
         let got = register_own_app(
@@ -1933,7 +2031,7 @@ mod tests {
         let steps = mecha_mail::wizard::GOOGLE.len();
         // Enter once past the refusal (the same file is not tried again),
         // then the good file's path.
-        let input = format!("{}\n{}\n", "\n".repeat(steps), good.display());
+        let input = format!("\n{}\n{}\n", "\n".repeat(steps), good.display());
         let got = register_own_app(
             &mut std::io::Cursor::new(input),
             Provider::Google,
@@ -1976,7 +2074,7 @@ mod tests {
     fn the_outlook_wizard_takes_two_ids() {
         let steps = mecha_mail::wizard::MICROSOFT.len();
         let id = "12345678-0000-4000-8000-0123456789ab";
-        let input = format!("{}not-an-id\n{id}\n\n", "\n".repeat(steps));
+        let input = format!("\n{}not-an-id\n{id}\n\n", "\n".repeat(steps));
         let got = register_own_app(
             &mut std::io::Cursor::new(input),
             Provider::Outlook,
@@ -1989,7 +2087,7 @@ mod tests {
         assert_eq!(got.tenant.as_deref(), Some("common"));
         // The four Entra steps share one page, which is opened once.
         let opened = std::cell::Cell::new(0);
-        let input = format!("{}{id}\n\n", "\n".repeat(steps));
+        let input = format!("\n{}{id}\n\n", "\n".repeat(steps));
         register_own_app(
             &mut std::io::Cursor::new(input),
             Provider::Outlook,
@@ -2000,5 +2098,111 @@ mod tests {
         .unwrap();
         assert_eq!(opened.get(), 1);
         assert!(got.client_secret.is_empty());
+    }
+
+    /// An app already registered skips every page: Google's client file by
+    /// a pasted path (quoted, as a drag-and-drop gives it, after a wrong one
+    /// is said and asked again) or by Enter from Downloads, however old,
+    /// once confirmed; Outlook's two ids straight away.
+    #[test]
+    fn a_sign_in_app_you_already_have_skips_the_walk() {
+        let dir = std::env::temp_dir().join(format!("mecha-wiz-h-{}", std::process::id()));
+        let downloads = dir.join("dl");
+        std::fs::create_dir_all(&downloads).unwrap();
+        let file = dir.join("my client.json");
+        std::fs::write(
+            &file,
+            r#"{"installed":{"client_id":"4-h.apps.googleusercontent.com","client_secret":"s"}}"#,
+        )
+        .unwrap();
+        let opened = std::cell::Cell::new(0);
+        let open = |_: &str| opened.set(opened.get() + 1);
+        let run = |input: String, provider| {
+            register_own_app(
+                &mut std::io::Cursor::new(input),
+                provider,
+                Some(&downloads),
+                std::time::SystemTime::now(),
+                &open,
+            )
+        };
+        // A path that is not there is said and asked again; then the file,
+        // quoted. Enter with nothing in Downloads is asked again too.
+        let pasted = format!(
+            "y\n{}\n\n'{}'\n",
+            dir.join("missing.json").display(),
+            file.display()
+        );
+        assert_eq!(
+            run(pasted, Provider::Google).unwrap().client_id,
+            "4-h.apps.googleusercontent.com"
+        );
+        // Enter offers the newest client file in Downloads, from any day,
+        // and Enter again takes it.
+        std::fs::write(
+            downloads.join("client_secret_5-d.apps.googleusercontent.com.json"),
+            r#"{"installed":{"client_id":"5-d.apps.googleusercontent.com","client_secret":"s"}}"#,
+        )
+        .unwrap();
+        // Declined, the same file is not offered again; Enter on the second
+        // ask is still that one refused, so the path is pasted.
+        let declined = register_own_app(
+            &mut std::io::Cursor::new(format!("y\n\nn\n\n{}\n", file.display())),
+            Provider::Google,
+            Some(&downloads),
+            std::time::SystemTime::now() + std::time::Duration::from_secs(25 * 3600),
+            &open,
+        );
+        // A Web client's file in Downloads, taken and refused, is not
+        // offered again: the next Enter says so, and a path is pasted.
+        let web = dir.join("web");
+        std::fs::create_dir_all(&web).unwrap();
+        std::fs::write(
+            web.join("client_secret_web.json"),
+            r#"{"web":{"client_id":"6-w.apps.googleusercontent.com"}}"#,
+        )
+        .unwrap();
+        let refused = register_own_app(
+            &mut std::io::Cursor::new(format!("y\n\n\n\n{}\n", file.display())),
+            Provider::Google,
+            Some(&web),
+            std::time::SystemTime::now() + std::time::Duration::from_secs(25 * 3600),
+            &open,
+        );
+        // Declined at the offer before the walk, the same file is not
+        // offered again by the reuse prompt (its Enter says so).
+        let early = register_own_app(
+            &mut std::io::Cursor::new(format!("n\ny\n\n{}\n", file.display())),
+            Provider::Google,
+            Some(&downloads),
+            std::time::SystemTime::now(),
+            &open,
+        );
+        let from_downloads = register_own_app(
+            &mut std::io::Cursor::new(b"y\n\n\n".to_vec()),
+            Provider::Google,
+            Some(&downloads),
+            // Started after the file was written: the recent-file offer
+            // does not see it, so the answer is the question's.
+            std::time::SystemTime::now() + std::time::Duration::from_secs(25 * 3600),
+            &open,
+        );
+        let id = "12345678-0000-4000-8000-0123456789ab";
+        let outlook = run(format!("y\n{id}\n\n"), Provider::Outlook);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            from_downloads.unwrap().client_id,
+            "5-d.apps.googleusercontent.com"
+        );
+        assert_eq!(
+            declined.unwrap().client_id,
+            "4-h.apps.googleusercontent.com"
+        );
+        assert_eq!(refused.unwrap().client_id, "4-h.apps.googleusercontent.com");
+        assert_eq!(early.unwrap().client_id, "4-h.apps.googleusercontent.com");
+        let outlook = outlook.unwrap();
+        assert_eq!(outlook.client_id, id);
+        assert_eq!(outlook.tenant.as_deref(), Some("common"));
+        assert_eq!(opened.get(), 0, "no page walked");
     }
 }
