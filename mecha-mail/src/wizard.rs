@@ -77,6 +77,39 @@ pub const MICROSOFT: &[Step] = &[
     },
 ];
 
+/// Where an app already registered — for another machine, say — gives its
+/// client file again: the Desktop client's page downloads it.
+pub const GOOGLE_CLIENTS: &str = "https://console.cloud.google.com/auth/clients";
+
+/// A path as pasted at a terminal: the quotes a copy or a drag-and-drop adds
+/// are dropped, outside quotes a backslash escapes the character after it
+/// (a drag escapes every shell metacharacter, so `\ ` and `\(1\)` both),
+/// and a leading `~/` is the home folder.
+pub fn pasted_path(text: &str, home: Option<&Path>) -> PathBuf {
+    let t = text.trim();
+    let quoted = ['"', '\'']
+        .iter()
+        .find_map(|q| t.strip_prefix(*q).and_then(|s| s.strip_suffix(*q)));
+    let t = match quoted {
+        Some(inner) => inner.to_string(),
+        None => {
+            let mut out = String::with_capacity(t.len());
+            let mut chars = t.chars();
+            while let Some(c) = chars.next() {
+                match c {
+                    '\\' => out.extend(chars.next()),
+                    c => out.push(c),
+                }
+            }
+            out
+        }
+    };
+    match (t.strip_prefix("~/"), home) {
+        (Some(rest), Some(home)) => home.join(rest),
+        _ => PathBuf::from(t),
+    }
+}
+
 /// Where a browser saves the downloaded client file.
 pub fn downloads_dir() -> Option<PathBuf> {
     dirs::download_dir().or_else(|| dirs::home_dir().map(|h| h.join("Downloads")))
@@ -150,6 +183,13 @@ mod tests {
             assert!(s.url.starts_with("https://"), "{s:?}");
         }
         assert!(GOOGLE.last().unwrap().what.contains("Download JSON"));
+        // `mecha-mail auth` prints steps 2 and 3 to an owner reusing an app:
+        // the two settings an app registered for something else may lack.
+        assert!(MICROSOFT[1].what.contains("Allow public client flows"));
+        assert!(MICROSOFT[2].what.contains("API permissions"));
+        // And Google's step 2: the two APIs a project made for something
+        // else may not have on.
+        assert!(GOOGLE[1].what.contains("Gmail API") && GOOGLE[1].what.contains("Calendar"));
         assert!(GOOGLE
             .iter()
             .any(|s| s.url.contains("gmail.googleapis.com") && s.url.contains("calendar")));
@@ -183,6 +223,32 @@ mod tests {
         let found = find_client_json(&dir, since);
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(found, Some(new));
+    }
+
+    /// A path dragged into a terminal or copied with quotes reads as the
+    /// file it names.
+    #[test]
+    fn a_pasted_path_is_the_file_it_names() {
+        let home = Path::new("/Users/sam");
+        let want = PathBuf::from("/Users/sam/Downloads/client secret.json");
+        for pasted in [
+            "/Users/sam/Downloads/client\\ secret.json ",
+            "'/Users/sam/Downloads/client secret.json'",
+            "\"/Users/sam/Downloads/client secret.json\"",
+            "~/Downloads/client secret.json",
+        ] {
+            assert_eq!(pasted_path(pasted, Some(home)), want, "{pasted}");
+        }
+        // A second download of one file, dragged in: its parens come escaped.
+        let want = PathBuf::from("/Users/sam/Downloads/client_secret_1 (1).json");
+        for pasted in [
+            "/Users/sam/Downloads/client_secret_1\\ \\(1\\).json",
+            "'/Users/sam/Downloads/client_secret_1 (1).json'",
+        ] {
+            assert_eq!(pasted_path(pasted, Some(home)), want, "{pasted}");
+        }
+        // Without a home folder, `~` is left as typed.
+        assert_eq!(pasted_path("~/x.json", None), PathBuf::from("~/x.json"));
     }
 
     #[test]

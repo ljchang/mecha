@@ -794,6 +794,22 @@ yet, `mecha-mail auth` walks you through registering your own:
   directory ids. A work or school directory may need an administrator to
   approve the permissions.
 
+**Already have one?** If you registered an app for another machine, use it
+again rather than registering a second: `auth` asks first, and on a yes skips
+the pages. For Google, give it the client file: drag it into the terminal, or
+press Enter to be offered the newest `client_secret_*.json` in your Downloads. If
+the file is not to hand, open the Desktop client on Google's
+[Clients](https://console.cloud.google.com/auth/clients) page and download its
+JSON. Where Google shows a client's secret only once, *Add secret* makes a new
+one to download, and the old one keeps working on the other machine. An app
+made for something else also needs the Gmail and Calendar APIs enabled in its
+project; without them sign-in succeeds and the first read fails. For
+Outlook, paste the two ids from the app registration's Overview page; an app
+registered for something else also needs *Allow public client flows* set to Yes
+and the four permissions below, which `auth` lists when you answer yes. An app
+still in *Testing* signs in only the accounts listed under its test users, so
+add this one there first.
+
 Every account you add after that reuses the same app. To name one directly,
 pass `--client-json` with Google's downloaded file, or `--client-id` and
 `--client-secret` (Google) or `--client-id` and `--tenant` (Outlook), or set

@@ -3286,7 +3286,11 @@ no stored login has one, `mecha-mail auth` runs `mecha_mail::wizard`: Google
 Cloud's five console pages opened in turn, ending at the `client_secret_*.json`
 it picks up from Downloads (or `--client-json`; a file from the last day is
 offered first, so a sign-in that timed out is not the walk again), or Entra's
-registration ending at two pasted ids. The steps are data and the checks are
+registration ending at two pasted ids. An owner who already has an app (from
+another machine) says so first and skips the pages: Google's client file by
+path or from Downloads, confirmed; Entra's two ids, with the app-level steps a
+registration made for something else may lack printed from the same data
+(`GOOGLE[1]`, `MICROSOFT[1..3]`). The steps are data and the checks are
 functions, so what a person is told is tested; `every_step_has_a_page` holds
 the Entra permission list to `microsoft::auth::SCOPES`. Every later account
 reuses the registration through the stored-login fallback.

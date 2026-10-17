@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`mecha-mail auth` takes a sign-in app you already have.** Before the
+  registration pages it asks whether you have one, from another machine for
+  instance. On a yes, Google wants only the client file (drag it in, or Enter
+  for the newest in Downloads) and Outlook its two ids; the pages are skipped.
+  `mecha setup` runs the same question when it signs you in to mail.
+
 - **Put a face on a painted region.** In the picture editor, each painted
   region now has a *Picture* button, and takes a picture dropped or pasted on
   its row: say "her face" and the region gets the face from that picture,

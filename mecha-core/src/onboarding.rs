@@ -983,8 +983,9 @@ fn with_next(mut step: Step, next: Option<&str>) -> Step {
                 // before any sign-in page.
                 ["mecha-mail", "auth"] => "Sign in to a mailbox — `mecha-mail auth` walks you \
                                            through registering your own sign-in app the first \
-                                           time (a few minutes, once), then opens the sign-in \
-                                           page in your browser."
+                                           time (a few minutes, once), or takes one you already \
+                                           have, then opens the sign-in page in your \
+                                           browser."
                     .to_string(),
                 ["mecha-docs", "auth"] => {
                     "Sign in — `mecha-docs auth` opens Google's sign-in page in your browser."
@@ -1747,6 +1748,7 @@ mod tests {
         };
         let mail = said("mecha-mail auth");
         assert!(mail.contains("registering your own sign-in app") && mail.contains("browser"));
+        assert!(mail.contains("one you already have"));
         assert!(said("mecha-docs auth").contains("browser"));
         assert_eq!(said("mecha slack auth"), "Run `mecha slack auth`.");
         assert_eq!(
