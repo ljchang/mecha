@@ -751,6 +751,9 @@ near-miss half.
   the error result.
 - When a result with `is_error` matches, the hint is carried as **its
   own non-external block beside the result**, never concatenated into it.
+  It rides in the message that carries the tool results, the slot steering
+  text already uses, so it adds no new message shape and every `tool_use`
+  id still gets exactly one result.
   - Concatenated into an `external: true` result, owner text would ride
     inside a block the conversation labels third-party. That is the
     inverse of the incident `CLAUDE.md` records, where a guard's refusal

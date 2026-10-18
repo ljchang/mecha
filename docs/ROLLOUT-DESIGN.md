@@ -63,7 +63,7 @@ The research behind this document is summarised in §9, with links.
 | `OnDivergence::Live` exists, but only in `mecha replay` | `commands/replay.rs` | All-or-nothing at the first divergence, against the real world: see §1.1 |
 | No "changes the world" axis | `Tool::read_only()` means "skip the approver", not "has no effects" | Eight tools that write claim it. In §3.2's terms: six `StoreWrite` tools, `image_generate` (`Render`) and `http_fetch` (`Irreversible`) |
 | Reads that write | Graph reads append `query_log` and `retrieval_touch` (`INCOGNITO-DESIGN.md` §3.3; the unrecorded-read mode in §5.2 is unbuilt); token refresh rewrites token files | A rollout's reads are not free |
-| Store roots outside `RunContext` | questions, hud, personas, imagelib, the forecast ledger and the shell registry resolve from `mecha_home()` | Two redirects exist, at different points. The outbox is per run (`RunContext::with_outbox`; `OutboxStore::open_like`, which Slack already uses per thread). `message_send` binds its route when the registry is built (`MessageSend::new(route)`), so a rollout's registry can bind a scratch `MailboxRoute`. The rest are per process only |
+| Store roots outside `RunContext` | questions, hud, personas, imagelib, the forecast ledger and the shell registry resolve from `mecha_home()` | Two redirects exist, at different points. The outbox is per run (`RunContext::with_outbox`; `OutboxStore::open_like`, which Slack already uses per thread). `message_send` binds its route when the registry is built (`MessageSendTool::new(route)`), so a rollout's registry can bind a scratch `MailboxRoute`. The rest are per process only |
 | No copy-on-write workspace | Branches use the recorded workspace; `mismatch::drive` stages an empty temp dir | Branch writes would land in the real workspace |
 | Uneven seats and voice-call checks | Ruminate's replay arms and `validate` take no seat (`permit::Permits`); only `replay_persona::wait_for_owner` checks for a live call | A night of rollouts could stutter a call |
 
@@ -164,11 +164,21 @@ A new axis, separate from `read_only()`.
 | `Irreversible` | The rollout **halts before the call**, and the halt is recorded with the tool's name. A halt is information, not a failure | `calendar_hold`, `mail_triage`, `docs_create`, `docs_trash`, graph writes, unconfined `shell`, any `Egress::Chosen` call (`http_fetch`) |
 | *(undeclared)* | Halts. Unknown is never safe | MCP tools without annotations |
 
-**Approval inside a rollout.** No human is present, so the `RolloutApprover`
-decides every call from this table alone. It never blocks and continues: a
-"blocked" result teaches the continuation something false about the world,
-so a call that cannot run halts the rollout. `consult` and `escalate` both
-halt.
+**Approval inside a rollout.** The dry world **narrows the run's
+configured guards; it never replaces them.** These are the losses §1.1
+exists to fix.
+- A rollout carries the operator's approval rules (`policy::ExecPolicy`)
+  and `pre_tool` hooks exactly as `setup` builds them for a real run, in the
+  same order.
+- A `forbid`, or a hook's denial, halts the rollout. This is `trial_env`'s
+  rule: an environment cannot lift a `forbid` any more than an arm can.
+- Only after those does the `RolloutApprover` apply this table, in place of
+  the absent human.
+- The table can only refuse more. It never permits what a rule or a hook
+  refused.
+- It never blocks and continues: a "blocked" result teaches the
+  continuation something false about the world, so a call that cannot run
+  halts the rollout. `consult` and `escalate` both halt.
 
 ### 3.3 Taint, locality, pacing
 
@@ -387,8 +397,18 @@ structural can tell which continuation was better.
    The literature's best simulators degrade past one step, and real
    execution is preferred over imagined execution (§9).
 3. **Choose by §5.2.**
-4. **The winner continues live.** The loser is summarised into the run's
-   appraisal ("the alternative … failed its check").
+4. **The live run commits only the winner's first action, then replans.**
+   - The live run re-issues the winner's first call, with the same tool and
+     arguments, through the normal path. A send stages into the owner's real
+     outbox there, exactly as if no preplay had happened.
+   - Nothing from the scratch world is adopted. Every rollout's scratch
+     draft, the winner's included, is scored and deleted with it (§5.3).
+     The live record is the live run's own, never a stitch of two worlds.
+   - "Execute the first predicted step, then replan" is also the
+     literature's horizon advice (§9).
+   - Cost: K rollouts plus the live run, which was going to run anyway.
+   - The loser is summarised into the run's appraisal ("the alternative …
+     failed its check").
 5. **Taint is the union** (§3.3).
 
 **Preplay never sends.** It can stage a better draft. The owner still
@@ -414,7 +434,7 @@ Each phase ships and is measured before the next starts.
 |---|---|---|
 | **0** | Fix §1.1: live replay keeps the outbox, hooks and approval rules, or refuses | A test that drives `--on-divergence live` past a divergence into a routed tool, and fails on today's code |
 | **1** | The effect axis (§3.2): a closed enum, declared in code for built-in and first-party tools, earned from the operator for third-party MCP tools, annotations caution-only, undeclared halts. Exact-argument recorded matching for rollouts | Every registered tool has a class. A test registers a third-party tool that claims `readOnlyHint` with no operator class, and sees a halt |
-| **2** | The dry world: scratch outbox, scratch workspace copy, store-write answers, halts, `RolloutApprover`, R29 in the engine, seat and voice gating | Integration test, in the confinement tests' style: a rollout that tries every effect class leaves the real outbox, stores and workspace byte-identical |
+| **2** | The dry world: scratch outbox, scratch workspace copy, store-write answers, halts, `RolloutApprover` behind the configured rules and hooks, R29 in the engine, seat and voice gating | Integration test, in the confinement tests' style: a rollout that tries every effect class leaves the real outbox, stores and workspace byte-identical. **And** a configured `forbid` rule and a denying `pre_tool` hook each halt a rollout at a call the effect table would have allowed. The byte-identical test cannot catch a dropped rule, because a scratch write leaves the real tree untouched either way |
 | **3** | `drive_rollout`, single-turn: restored anchor, `StopCause::Horizon`, two controls, the `ComparisonStore` schema | **Measure the control noise floor on the live corpus first.** If the controls disagree more than candidates plausibly could, stop and fix sampling (seeded, pinned serving) before building on it |
 | **4** | Offline wiring: harness candidates measured by comparisons; gain-gated points; verdict-free points | A behavioural candidate produces a measurement where today it produces "nothing measurable" |
 | **5** | The learning gate gains a continuation score (optional) | Measured against today's reproduction-only gate on the same probes |
