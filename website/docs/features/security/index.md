@@ -31,11 +31,13 @@ becomes a way out of it. Because a write targets a file that may not exist
 yet, `resolve` canonicalizes the nearest existing ancestor and re-appends the
 rest, then checks containment on that.
 
-There is exactly one sanctioned exception: the run's own spill directory,
+There is one sanctioned exception the harness makes on its own: the run's own spill directory,
 where an oversized tool result is saved in full so the model can read the
 rest back. Its contents are that context's own tool output, so nothing new
 becomes reachable — and each re-rooted context gets a fresh spill directory,
 so two eval cases cannot read each other's output through a shared one.
+The other exceptions are yours to make — see
+[Reaching a directory outside the workspace](#reaching-a-directory-outside-the-workspace).
 
 :::warning
 The convention for anyone adding a tool: **never call `fs::*` on a raw path
@@ -76,6 +78,60 @@ workspace is recoverable, under-refusing one is the bug.
 The capability interlock below is a backstop, but a backstop is not a
 boundary: a jail rooted where the secrets live is a sandbox that has silently
 stopped protecting anything.
+
+### Reaching a directory outside the workspace
+
+An assistant often needs your own files — a folder of papers, another
+checkout — and copying them into the workspace makes you the file clerk. A
+**grant** is a directory (or file) outside the workspace that a run may
+read, or read and write. Only a person makes one:
+
+- **Standing, in your global config.** A `[[grant]]` line in
+  `~/.mecha/config.toml` applies to every run:
+
+  ```toml
+  [[grant]]
+  path = "~/Documents/papers"        # access = "read" is the default
+
+  [[grant]]
+  path = "~/Github/notes"
+  access = "write"
+  ```
+
+  A project's `mecha.toml` cannot set one (it is stripped, with a warning),
+  and neither can an experiment environment: a cloned repository must not
+  bring its own way out of the jail.
+- **For one conversation, typed by you.** `/grant ~/Documents/papers` in the
+  TUI, `mecha chat` or the web chat (add `write` for read and write); `/grant`
+  alone lists what the conversation holds. In the web chat a grants chip
+  beside the mode chip shows how many it holds, and opens the list with a
+  revoke button on each one you made. `/revoke ~/Documents/papers` ends the ones at
+  or under that path, and `/clear` ends them all; either stays ended when
+  the conversation is resumed.
+- **For one conversation, asked for by the model.** Where a person can answer
+  — the web chat, Slack, and the TUI or `mecha chat` in `ask` mode (not under
+  `-y`) — the model has a `request_access` tool. The call is shown to you with the path, the access
+  and the model's stated reason, and nothing is reachable until you say yes.
+  It always asks: no permission mode, "always" answer or `--yes` can grant it,
+  and a headless run is refused.
+
+A live grant lasts as long as the conversation does — resuming keeps it, a
+new conversation starts without it, and a subagent inherits its parent's. To
+keep one, add a `[[grant]]` line.
+
+Whatever the source, some places are **never** granted: a path that
+contains or sits inside the mecha home, or a credential directory
+(`~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.config/gh`, browser profiles,
+`~/.claude` and the like). Granting `$HOME` is refused for that reason — it
+contains them. A recorded grant is re-checked on resume, so a path that
+would no longer be admitted is dropped.
+
+A grant widens what can be **read**, never where it can go: anything read
+through one arms `private_data` exactly as a workspace read does, so the
+[interlock](#the-lethal-trifecta-and-the-interlock) still stands between it and a
+destination the model names. A confined `shell` sees the same grants — read
+ones mounted read-only, write ones writable — and `--no-grants` runs with
+none (`mecha eval` forces it). An incognito chat never holds a grant.
 
 ## Capabilities
 

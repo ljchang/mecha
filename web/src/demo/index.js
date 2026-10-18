@@ -349,7 +349,7 @@ export const ROUTES = [
     new RegExp(
       '^/api/(' +
         [
-          'chat/[^/]+/(answer|upload)',
+          'chat/[^/]+/(answer|upload|grants)',
           'outbox/[^/]+/[^/]+',
           'workflows/[^/]+/[^/]+',
           'mail/(act|compose)',

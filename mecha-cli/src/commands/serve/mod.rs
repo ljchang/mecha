@@ -761,6 +761,11 @@ fn api() -> gate::Owned {
             axum::routing::post(chat::set_mode),
         )
         .at(
+            "/api/chat/{key}/grants",
+            Owner::ChatKey,
+            axum::routing::post(chat::set_grants),
+        )
+        .at(
             "/api/chat/{key}/upload",
             Owner::ChatKey,
             axum::routing::post(files::upload)
@@ -5180,6 +5185,126 @@ mod boundary_tests {
         assert!(!chat.sessions_dir().exists());
         assert!(!home.dir.join("work/web/unknown").exists());
         assert!(!home.dir.join("sessions").exists());
+    }
+
+    /// The owner's `/grant` and `/revoke` from the web: the response, every
+    /// later page read, and the transcript all agree, and a revoke is in the
+    /// file at once — before any run — so a restart of `serve` cannot bring
+    /// the grant back. A path `admit` refuses and an unknown access are 400s.
+    #[tokio::test]
+    async fn the_owner_grants_and_revokes_from_the_web_and_the_file_keeps_it() {
+        let _home = crate::testenv::HomeGuard::new("web-grants");
+        let chat = chat::test_chat();
+        let app = app(Arc::clone(&chat));
+        let papers = std::env::temp_dir().join(format!("mecha-web-grant-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&papers).unwrap();
+        let papers = papers.canonicalize().unwrap();
+        let change = |body: serde_json::Value| {
+            Request::builder()
+                .method("POST")
+                .uri("/api/chat/main/grants")
+                .header(TAILSCALE_LOGIN, "owner@example.com")
+                .header("x-mecha-request", "1")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap()
+        };
+        let read = || {
+            Request::builder()
+                .uri("/api/chat/main")
+                .header(TAILSCALE_LOGIN, "owner@example.com")
+                .body(Body::empty())
+                .unwrap()
+        };
+        let path = papers.display().to_string();
+
+        let granted = app
+            .clone()
+            .oneshot(change(
+                serde_json::json!({"action": "grant", "path": path, "access": "write"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(granted.status(), StatusCode::OK);
+        let granted = body(granted).await;
+        assert_eq!(granted["grants"][0]["path"], path.as_str());
+        assert_eq!(granted["grants"][0]["access"], "write");
+        assert_eq!(granted["grants"][0]["source"], "owner");
+        let page = body(app.clone().oneshot(read()).await.unwrap()).await;
+        assert_eq!(page["grants"].as_array().unwrap().len(), 1, "{page}");
+        let file = files_containing(chat.sessions_dir(), "\"record\":\"grants\"");
+        assert_eq!(file.len(), 1, "recorded at once, before any run");
+        assert_eq!(
+            mecha_core::session::Session::load(&file[0])
+                .unwrap()
+                .1
+                .grants
+                .len(),
+            1
+        );
+
+        let revoked = app
+            .clone()
+            .oneshot(change(
+                serde_json::json!({"action": "revoke", "path": path}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(revoked.status(), StatusCode::OK);
+        assert!(body(revoked).await["grants"].as_array().unwrap().is_empty());
+        let page = body(app.clone().oneshot(read()).await.unwrap()).await;
+        assert!(page["grants"].as_array().unwrap().is_empty(), "{page}");
+        assert!(
+            mecha_core::session::Session::load(&file[0])
+                .unwrap()
+                .1
+                .grants
+                .is_empty(),
+            "a revoke the file forgot comes back on resume"
+        );
+
+        for refused in [
+            serde_json::json!({"action": "grant", "path": "/"}),
+            serde_json::json!({"action": "grant", "path": path, "access": "admin"}),
+            serde_json::json!({"action": "revoke", "path": path}),
+        ] {
+            let response = app.clone().oneshot(change(refused.clone())).await.unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{refused}");
+        }
+        std::fs::remove_dir_all(&papers).ok();
+    }
+
+    /// An incognito chat never holds a grant, so its door refuses one.
+    #[tokio::test]
+    async fn an_incognito_chat_refuses_a_grant() {
+        let _home = crate::testenv::HomeGuard::new("incognito-grant");
+        let Some(_runtime) = RuntimeDir::new() else {
+            return;
+        };
+        // A runner that keeps no text: what an incognito door will open on.
+        let chat = chat::test_chat_answering("noted", true);
+        let app = app(Arc::clone(&chat));
+        let opened = app
+            .clone()
+            .oneshot(post("/api/incognito", ""))
+            .await
+            .unwrap();
+        assert_eq!(opened.status(), StatusCode::OK);
+        let key = body(opened).await["key"].as_str().unwrap().to_string();
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("/api/chat/{key}/grants"))
+            .header(TAILSCALE_LOGIN, "owner@example.com")
+            .header("x-mecha-request", "1")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"action": "grant", "path": std::env::temp_dir()}).to_string(),
+            ))
+            .unwrap();
+        assert_eq!(
+            app.oneshot(request).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
     }
 
     #[tokio::test]

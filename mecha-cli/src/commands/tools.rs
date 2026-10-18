@@ -214,7 +214,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // operator who thinks commands are confined when they aren't is the exact
     // failure this whole subsystem exists to prevent.
     if registry.get("shell").is_some() {
-        println!("\nshell {}", setup::sandbox_line(&prepared.sandbox));
+        println!(
+            "\nshell {}",
+            setup::sandbox_line(
+                &prepared.sandbox,
+                &setup::standing_grants(&prepared.config, global).0
+            )
+        );
         if !prepared.sandbox.is_enabled() {
             println!(
                 "  the path jail does not cover them. \

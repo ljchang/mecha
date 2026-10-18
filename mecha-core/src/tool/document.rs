@@ -70,7 +70,7 @@ impl Tool for DocumentRead {
         json!({
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Path of the PDF or image, relative to the workspace root or absolute inside it."},
+                "path": {"type": "string", "description": "Path of the PDF or image, relative to the workspace root, or absolute inside it or inside a directory the owner granted."},
                 "pages": {"type": "string", "description": "Which pages: \"all\", \"3\", \"2-5\", \"1,4,7-9\". Default \"1-5\"."},
                 "mode": {
                     "type": "string",
@@ -106,7 +106,7 @@ impl Tool for DocumentRead {
                 }
             },
         };
-        let path = ctx.resolve(raw)?;
+        let path = ctx.resolve_for(raw, crate::grant::Access::Read)?;
         let shown = ctx
             .workspace
             .canonicalize()
