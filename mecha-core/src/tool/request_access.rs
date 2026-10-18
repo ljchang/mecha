@@ -84,11 +84,15 @@ impl Tool for RequestAccess {
         })
     }
 
-    /// Not read-only: it widens what every later call in the conversation
-    /// can touch. The escalation is what gates it; this keeps it out of the
-    /// parallel read-only lane and out of a planning phase's reach.
+    /// Read-only, so a read-only chat can still put the question in front of
+    /// the owner: the web and Slack approvers refuse an escalation for a
+    /// tool that is not read-only under a read-only mode, which took the one
+    /// way to ask away in the mode a web chat opens in (2026-10-18). It is
+    /// safe there because the escalation, not the mode, is what gates it, and
+    /// its whole effect is that more can be *read*: a `write` grant made in a
+    /// read-only chat still writes nothing until the mode allows writes.
     fn read_only(&self) -> bool {
-        false
+        true
     }
 
     /// Reads nothing and sends nothing itself. What is read through the

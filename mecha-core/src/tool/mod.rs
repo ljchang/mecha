@@ -633,6 +633,15 @@ pub struct ToolCtx {
     /// [`ToolCtx::resolve_for`], so a caller that never opted in keeps the
     /// one-root jail ([`crate::grant`]).
     pub grants: crate::grant::Grants,
+    /// The front end's own name for the conversation this run belongs to,
+    /// where one agent serves many (the web chat's session key). Stamped by
+    /// the front end per turn, never by a model, and read by a tool that
+    /// answers back to a person, so `ask_user`'s question reaches the
+    /// conversation that asked. The workspace's directory name is not that
+    /// name: a resumed conversation keeps its recorded workspace under a new
+    /// key, and its questions went to the chat that directory was first
+    /// made for (2026-10-18). `None` where a front end serves one.
+    pub conversation: Option<String>,
     pub shell_timeout: std::time::Duration,
     pub security: SecurityConfig,
     /// The byte budget one *turn's* tool results share, divided equally
@@ -1028,6 +1037,7 @@ impl Default for ToolCtx {
             review_hint: None,
             workspace: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             grants: crate::grant::Grants::default(),
+            conversation: None,
             shell_timeout: std::time::Duration::from_secs(120),
             security: SecurityConfig::default(),
             output_budget_bytes: 24_000,

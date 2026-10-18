@@ -236,31 +236,38 @@ struct Live {
     grants: Vec<mecha_core::grant::Grant>,
 }
 
+/// The options the web door's one shared agent is built from — its own
+/// function so the registration gate is tested against the options this
+/// surface really passes (`setup::offers_request_access`), not a copy.
+pub(crate) fn web_agent_opts() -> Result<GlobalOpts> {
+    Ok(GlobalOpts {
+        // Global config only, like a trigger run and the Slack
+        // connector: a project's mecha.toml must not shape a run someone
+        // drives from their phone.
+        global_config_only: true,
+        // MCP servers are spawned once with the agent and cannot follow
+        // a per-session jail; rooting them at the producer directory
+        // means every session's jail is a subdirectory of where the
+        // servers already point (the limitation is real and written
+        // down in the Slack section of docs/ARCHITECTURE.md).
+        workspace: Some(producer_root()?),
+        // The registry belongs to the agent and one agent serves every
+        // session — a loaded skill would be shared state across them.
+        no_skills: true,
+        // The surface every session on this agent is matched as —
+        // the board's task door too, whose session is recorded as a
+        // task: the recorded key is the matched key.
+        surface: Some(mecha_core::session::SessionKind::Web),
+        ..GlobalOpts::default()
+    })
+}
+
 impl ChatState {
     /// Build the in-process agent. Fails loudly; the caller degrades the
     /// surface to dashboard-only and says so, rather than serving a chat
     /// door that silently cannot answer.
     pub async fn build() -> Result<Self> {
-        let opts = GlobalOpts {
-            // Global config only, like a trigger run and the Slack
-            // connector: a project's mecha.toml must not shape a run someone
-            // drives from their phone.
-            global_config_only: true,
-            // MCP servers are spawned once with the agent and cannot follow
-            // a per-session jail; rooting them at the producer directory
-            // means every session's jail is a subdirectory of where the
-            // servers already point (the limitation is real and written
-            // down in the Slack section of docs/ARCHITECTURE.md).
-            workspace: Some(producer_root()?),
-            // The registry belongs to the agent and one agent serves every
-            // session — a loaded skill would be shared state across them.
-            no_skills: true,
-            // The surface every session on this agent is matched as —
-            // the board's task door too, whose session is recorded as a
-            // task: the recorded key is the matched key.
-            surface: Some(mecha_core::session::SessionKind::Web),
-            ..GlobalOpts::default()
-        };
+        let opts = web_agent_opts()?;
         let routes: QuestionRoutes = Arc::default();
         // Not interactive: no terminal approver — and then `ask_user` IS
         // registered, against the Slack connector's precedent, because this
@@ -2908,6 +2915,10 @@ fn begin_turn(
         // And what it proposes is staged locked (the owner's ruling,
         // 2026-10-01: incognito proposals will mostly be locked profiles).
         stage_locked: ws.session.room().is_some(),
+        // The key the page knows this chat by, for the asker to route a
+        // question to — never derived from the workspace, which a resumed
+        // conversation shares with the chat it was recorded in.
+        conversation: Some(key.to_string()),
         ..match ws.session.room() {
             Some(room) => bound
                 .agent
@@ -4508,6 +4519,18 @@ pub async fn sessions(State(state): Chat) -> axum::response::Response {
 
 #[cfg(test)]
 mod tests {
+    /// The web door offers `request_access` with the options it really
+    /// builds. It sets `global_config_only`, and the first gate refused that
+    /// flag, so the web chat had no tool to ask with (2026-10-18).
+    #[test]
+    fn the_web_door_offers_a_jail_request() {
+        let _home = crate::testenv::HomeGuard::new("web-offers-request-access");
+        let opts = super::web_agent_opts().unwrap();
+        assert!(opts.global_config_only, "the premise: the web door sets it");
+        let cfg = mecha_core::config::Config::default();
+        assert!(crate::setup::offers_request_access(&opts, &cfg, false));
+    }
+
     #[test]
     fn a_hosted_spoken_turn_carries_the_streams_flag_to_its_prompt() {
         // Reads the source: the flag is one field among the turn's options,

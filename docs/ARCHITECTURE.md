@@ -2327,9 +2327,21 @@ first sketch would have widened the jail with nobody asked:
   can dispatch it (`Grants::requestable`, stamped by `run_in` from the run's
   own registry and withholding, never inherited — a subagent runs on its
   parent's context, review of #711). And it is registered only where its
-  `escalate` reaches a person (`setup::jail_requests_answered`): the web and
-  Slack cards, and a terminal with a person at it in `ask` mode — under `-y`
-  the approver is a `ModeApprover`, whose `escalate` is `Blocked`.
+  `escalate` reaches a person (`setup::offers_request_access`, tested against
+  the options the web and Slack doors really build): the web and Slack
+  cards, and a terminal with a person at it in `ask` mode — under `-y` the
+  approver is a `ModeApprover`, whose `escalate` is `Blocked`. Not keyed on
+  `global_config_only`, which both doors set; the first gate was, and the web
+  chat shipped without the tool (2026-10-18). `request_access` is
+  `read_only()`, so a read-only chat (the web's default) still puts the card
+  in front of the owner; a write grant made there writes nothing until the
+  mode allows writes. A confined `shell` says in its description that what
+  lies outside the workspace and the grants is hidden, not absent.
+- **A question reaches the conversation that asked.** `ToolCtx::conversation`
+  is the front end's key for the run's conversation, stamped per turn by
+  `serve` (`begin_turn`); the web asker routes by it, not by the workspace's
+  directory name, which a resumed conversation shares with the chat it was
+  recorded in (its `ask_user` cards landed in main, 2026-10-18).
 - **A live grant lasts for the conversation**, taint's unit. It lives on
   `Conversation::grants`. `run_in` mints a fresh cell per run
   (`Grants::for_run`, `compact_requested`'s discipline: one agent serves many

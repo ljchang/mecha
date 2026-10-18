@@ -333,7 +333,15 @@ impl Asker for WebAsker {
         options: &[String],
         goal: Option<&mecha_core::goal::GoalHypothesis>,
     ) -> Option<Reply> {
-        let key = ctx.workspace.file_name()?.to_str()?.to_string();
+        // The conversation the turn was stamped with. A resumed conversation
+        // keeps its recorded workspace under a new key, so the directory name
+        // routed its questions to the chat that directory was made for — the
+        // owner saw a resumed thread's card land in main (2026-10-18). The
+        // directory name stays only for a context nothing stamped.
+        let key = match &ctx.conversation {
+            Some(key) => key.clone(),
+            None => ctx.workspace.file_name()?.to_str()?.to_string(),
+        };
         let (questions, events, park) = (self.lookup)(&key)?;
 
         // Nobody is subscribed, so a card would be shown to an empty room for
@@ -517,6 +525,56 @@ mod tests {
         (WebAsker { lookup }, questions, events, ctx)
     }
 
+    /// A resumed conversation runs in the workspace of the chat it was
+    /// recorded in, under its own key. Its question reaches its own page,
+    /// never the chat that directory was first made for (2026-10-18: a
+    /// resumed thread's `ask_user` card landed in main).
+    #[tokio::test]
+    async fn a_question_reaches_the_chat_that_asked_not_the_one_its_directory_names() {
+        let mine = Questions::default();
+        let main = Questions::default();
+        let (mine_events, _) = tokio::sync::broadcast::channel(16);
+        let (main_events, _) = tokio::sync::broadcast::channel(16);
+        let mut rx = mine_events.subscribe();
+        let _main_rx = main_events.subscribe();
+        let (m, me, n, ne) = (
+            mine.clone(),
+            mine_events.clone(),
+            main.clone(),
+            main_events.clone(),
+        );
+        let lookup: SessionLookup = Arc::new(move |key: &str| match key {
+            "resumed-1" => Some((m.clone(), me.clone(), None)),
+            "main" => Some((n.clone(), ne.clone(), None)),
+            _ => None,
+        });
+        let web = WebAsker { lookup };
+        let ctx = ToolCtx {
+            workspace: std::path::PathBuf::from("/tmp/web/main"),
+            conversation: Some("resumed-1".into()),
+            ..ToolCtx::default()
+        };
+        let q2 = mine.clone();
+        tokio::spawn(async move {
+            while let Ok(event) = rx.recv().await {
+                if let WireEvent::Question { qid, .. } = event {
+                    q2.answer(qid, Answer::Text("here".into()));
+                    break;
+                }
+            }
+        });
+        // Bounded: misrouted, the question would wait on main's card.
+        let reply = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            web.ask_about(&ctx, "Which folder?", &[], None),
+        )
+        .await
+        .ok()
+        .flatten();
+        assert_eq!(reply, Some(Reply::Answered("here".into())));
+        assert!(main.cards().is_empty(), "the question went to main");
+    }
+
     fn scratch_park() -> Arc<mecha_core::questions::ParkingAsker> {
         let dir = std::env::temp_dir().join(format!(
             "mecha-webasker-test-{}-{}",
@@ -587,6 +645,36 @@ mod tests {
             matches!(decision, Decision::Blocked(_)),
             "a read-only run's refusal is machine policy, never a user's no"
         );
+    }
+
+    /// A read-only chat still asks the owner about `request_access`: the
+    /// web chat opens read-only, and refusing the escalation there took away
+    /// the only way the model had to ask (2026-10-18). The card carries the
+    /// reason, and the owner's yes is the answer.
+    #[tokio::test]
+    async fn a_read_only_chat_still_asks_the_owner_for_a_grant() {
+        use mecha_core::tool::Tool;
+        let (approver, questions) = approver(PermissionMode::ReadOnly, Duration::from_secs(5));
+        let mut rx = approver.events.subscribe();
+        let q2 = questions.clone();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let seen2 = std::sync::Arc::clone(&seen);
+        tokio::spawn(async move {
+            while let Ok(event) = rx.recv().await {
+                if let WireEvent::Question { qid, question, .. } = event {
+                    *seen2.lock().unwrap() = question;
+                    q2.answer(qid, Answer::Approve);
+                    break;
+                }
+            }
+        });
+        let tool = mecha_core::tool::request_access::RequestAccess;
+        let input = serde_json::json!({"path": "/srv/papers", "reason": "the review"});
+        let why = tool.needs_a_person(&input).unwrap();
+        let decision = approver.escalate(&tool, &input, &why).await;
+        assert!(matches!(decision, Decision::Allow), "{decision:?}");
+        let shown = seen.lock().unwrap().clone().unwrap_or_default();
+        assert!(shown.contains("outside its workspace"), "{shown}");
     }
 
     #[tokio::test]

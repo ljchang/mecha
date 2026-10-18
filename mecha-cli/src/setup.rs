@@ -139,6 +139,27 @@ pub fn posture_for(
     }
 }
 
+/// Whether `request_access` belongs on this registry: a person can answer it
+/// here ([`jail_requests_answered`]), no allowlist or `[tools]` list left it
+/// out, and grants are on. The whole gate, in one place, so it is tested
+/// against the options each surface really builds.
+///
+/// **Not `global_config_only`.** That flag means "no project layer", and the
+/// web and Slack doors set it as a trigger does, so a gate that also refused
+/// it took the tool away from exactly the two surfaces whose cards answer it
+/// (2026-10-18, found by the owner asking the web chat for a folder: the
+/// model had no `request_access` to call). Triggers are excluded by surface.
+pub fn offers_request_access(opts: &GlobalOpts, cfg: &Config, interactive: bool) -> bool {
+    let name = mecha_core::tool::request_access::NAME;
+    let allowed = opts.tools.is_empty() || opts.tools.iter().any(|t| t == name);
+    let disabled = cfg.tools.disabled.iter().any(|t| t == name)
+        || (!cfg.tools.enabled.is_empty() && !cfg.tools.enabled.iter().any(|t| t == name));
+    jail_requests_answered(opts.surface, interactive, cfg.tools.permission_mode)
+        && allowed
+        && !disabled
+        && !opts.no_grants
+}
+
 /// Whether a `request_access` call on this surface can reach a person — the
 /// registration gate in `prepare_tools`, whose comment has the reasons.
 pub fn jail_requests_answered(
@@ -1902,15 +1923,8 @@ async fn prepare_tools_carrying(
     // the tool list is the front of the cached prefix and does not toggle.
     // Filtered like `compact` too: an allowlist that does not name it has
     // said no.
-    {
-        let answered = jail_requests_answered(opts.surface, interactive, cfg.tools.permission_mode);
-        let name = mecha_core::tool::request_access::NAME;
-        let allowed = opts.tools.is_empty() || opts.tools.iter().any(|t| t == name);
-        let disabled = cfg.tools.disabled.iter().any(|t| t == name)
-            || (!cfg.tools.enabled.is_empty() && !cfg.tools.enabled.iter().any(|t| t == name));
-        if answered && allowed && !disabled && !opts.no_grants && !opts.global_config_only {
-            registry.insert(Arc::new(mecha_core::tool::request_access::RequestAccess));
-        }
+    if offers_request_access(opts, &cfg, interactive) {
+        registry.insert(Arc::new(mecha_core::tool::request_access::RequestAccess));
     }
 
     let approver: Arc<dyn Approver> =
@@ -2958,8 +2972,8 @@ mod tests {
 
     use super::{
         build_subagent, excluded_by_allowlist, fold_agent_switches, front_end_interactive,
-        jail_requests_answered, levers_off, pin_named_model, posture_for, sandbox_line,
-        step_escalation_enabled, step_escalation_slot,
+        jail_requests_answered, levers_off, offers_request_access, pin_named_model, posture_for,
+        sandbox_line, step_escalation_enabled, step_escalation_slot,
     };
     use crate::GlobalOpts;
 
@@ -3027,6 +3041,48 @@ mod tests {
         }]);
         let line = sandbox_line(&sandbox, &granted);
         assert!(line.ends_with("beyond the workspace"), "{line}");
+    }
+
+    /// The options the web and Slack doors really build offer the tool, and a
+    /// trigger's do not. Hand-written options are what let the first gate
+    /// refuse `global_config_only` — which both doors set — with every test
+    /// green (2026-10-18).
+    #[test]
+    fn the_web_and_slack_doors_offer_a_jail_request_and_a_trigger_does_not() {
+        use mecha_core::session::SessionKind;
+        let _home = crate::testenv::HomeGuard::new("offers-request-access");
+        let cfg = Config::default();
+        // The web door's own options are checked beside them, in
+        // `serve::chat` (its module is private to `serve`).
+        let slack = crate::slack::connector::agent_opts(
+            &GlobalOpts::default(),
+            &mecha_core::config::SlackConfig::default(),
+        )
+        .unwrap();
+        assert!(
+            slack.global_config_only,
+            "the premise: the Slack door sets it"
+        );
+        assert!(offers_request_access(&slack, &cfg, false), "slack");
+        let trigger = GlobalOpts {
+            global_config_only: true,
+            surface: Some(SessionKind::Trigger),
+            ..GlobalOpts::default()
+        };
+        assert!(!offers_request_access(&trigger, &cfg, false), "trigger");
+        let off = GlobalOpts {
+            no_grants: true,
+            ..slack.clone()
+        };
+        assert!(!offers_request_access(&off, &cfg, false), "--no-grants");
+        let narrowed = GlobalOpts {
+            tools: vec!["fs_read".into()],
+            ..slack
+        };
+        assert!(
+            !offers_request_access(&narrowed, &cfg, false),
+            "an allowlist without it"
+        );
     }
 
     /// `request_access` is registered only where its `escalate` reaches a
