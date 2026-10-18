@@ -2330,6 +2330,15 @@
             <span class="qkicker">mecha wants to run</span>
             <span class="qtool">{entry.tool}</span>
           </div>
+          {#if entry.question}
+            <!-- Why a person is being asked at all: an escalation (the
+                 interlock's `ask`, a `request_access`) or a `prompt` rule.
+                 The server always sent it (`WebApprover::ask`); the card
+                 dropped it, so the one sentence that says what a yes means
+                 — "for the rest of this conversation", "will be refused" —
+                 was the TUI's alone. -->
+            <p class="qwhy">{entry.question}</p>
+          {/if}
           {#if entry.draft}
             <!-- Essentials first, the whole call one tap away. A card that
                  leads with a JSON blob is one people learn to approve
@@ -3454,6 +3463,15 @@
   }
   .qfields dd {
     margin: 0;
+    overflow-wrap: anywhere;
+  }
+  .qwhy {
+    margin: 0;
+    padding-left: 10px;
+    border-left: 2px solid var(--accent-500);
+    font-size: 14px;
+    line-height: 1.45;
+    white-space: pre-line;
     overflow-wrap: anywhere;
   }
   .qbody {
