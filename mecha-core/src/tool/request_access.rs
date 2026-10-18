@@ -95,9 +95,9 @@ impl Tool for RequestAccess {
     /// **Read-only for the approver, not for the planning phase**, which keys
     /// on this flag too: `call` refuses in `Phase::Plan` itself, as
     /// `message_send` and `image_library_reference` do, because a grant made
-    /// while planning would outlive the plan (review of #714). The owner
-    /// still sees the card first — `needs_a_person` has no context to know
-    /// the phase — the ordering `message_send` accepts.
+    /// while planning would outlive the plan (review of #714). And no card is
+    /// raised there first: `needs_a_person` reads the phase and stays quiet,
+    /// so the owner is never asked a question whose yes is thrown away.
     fn read_only(&self) -> bool {
         true
     }
@@ -119,7 +119,12 @@ impl Tool for RequestAccess {
     /// No `grant` on the answer: `call` makes its own, re-admitting the
     /// path at execution, because the filesystem may change between the ask
     /// and the yes.
-    fn needs_a_person(&self, input: &Value, _ctx: &ToolCtx) -> Option<super::PersonAsk> {
+    fn needs_a_person(&self, input: &Value, ctx: &ToolCtx) -> Option<super::PersonAsk> {
+        // Planning: `call` refuses whatever the answer, so asking would cost
+        // the owner a click for nothing (review of #714, pass 3).
+        if ctx.phase == crate::agent::Phase::Plan {
+            return None;
+        }
         let ask = |why: String| Some(super::PersonAsk { why, grant: None });
         let Ok((raw, access, reason)) = parse(input) else {
             return ask(
@@ -209,6 +214,20 @@ mod tests {
     /// A grant made while planning would outlive the plan, so the planning
     /// phase refuses it even after a yes (review of #714: read-only for the
     /// approver let the phase gate offer it).
+    /// And the owner is not asked a question whose yes would be discarded.
+    #[test]
+    fn a_planning_run_raises_no_card() {
+        let planning = ToolCtx {
+            phase: crate::agent::Phase::Plan,
+            ..ToolCtx::default()
+        };
+        let input = json!({"path": "/srv/papers", "reason": "plan"});
+        assert!(RequestAccess.needs_a_person(&input, &planning).is_none());
+        assert!(RequestAccess
+            .needs_a_person(&input, &ToolCtx::default())
+            .is_some());
+    }
+
     #[tokio::test]
     async fn a_planning_run_grants_nothing() {
         let dir = std::env::temp_dir().join(format!("mecha-req-plan-{}", uuid::Uuid::new_v4()));

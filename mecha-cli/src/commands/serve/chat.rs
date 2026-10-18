@@ -2483,6 +2483,24 @@ mod narrowing_tests {
         assert!(!narrow_for_echo(off, Some(OFFER), "delete it").approve_all);
     }
 
+    #[test]
+    fn begin_turn_stamps_the_key_questions_route_by() {
+        // The live half of the routing fix: `WebAsker` routes by
+        // `ToolCtx::conversation` and declines without it, so a deleted stamp
+        // would make every web `ask_user` card decline with the whole suite
+        // green (review of #714, pass 3). Read the way the test below reads it.
+        let src = include_str!("chat.rs");
+        let body = src
+            .split("\nfn begin_turn(")
+            .nth(1)
+            .expect("begin_turn is still called that");
+        let body = &body[..body.find("\n}\n").unwrap_or(body.len())];
+        assert!(
+            body.contains("conversation: Some(key.to_string())"),
+            "begin_turn no longer stamps the chat key questions route by"
+        );
+    }
+
     /// And the narrowing is actually *reached*, which the cases above cannot
     /// say.
     ///
@@ -4426,13 +4444,10 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
                 .as_ref()
                 .is_some_and(|c| c.messages.is_empty())
     });
-    if squatter {
-        sessions.remove(&key);
-        if let Ok(mut routes) = chat.routes.lock() {
-            routes.remove(&key);
-        }
-    }
-    if !valid_key(&key) || sessions.contains_key(&key) {
+    // Not removed here: the insert below replaces it, map entry and route
+    // alike, so a failure in between (the config record) leaves the
+    // placeholder standing rather than the key holding nothing.
+    if !valid_key(&key) || (sessions.contains_key(&key) && !squatter) {
         return (
             StatusCode::CONFLICT,
             "could not mint a key for this session\n",
