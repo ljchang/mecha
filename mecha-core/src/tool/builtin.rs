@@ -524,8 +524,14 @@ impl Tool for Shell {
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let command = arg_str(&input, "command")?;
+        // Through the grants, like the file tools: the sandbox mounts every
+        // grant below, and a shell that could not `cd` into a directory the
+        // same call mounts would be the disagreement `with_grants` exists to
+        // end, reached from the other side (review of #711). Read is enough
+        // to stand in a directory; what the command may write there is the
+        // mount's to say.
         let cwd = match input.get("cwd").and_then(Value::as_str) {
-            Some(c) => ctx.resolve(c)?,
+            Some(c) => ctx.resolve_for(c, Access::Read)?,
             None => ctx.workspace.clone(),
         };
 
@@ -1103,6 +1109,46 @@ mod tests {
             network,
             ..SandboxConfig::default()
         })))
+    }
+
+    /// `shell` may stand in a granted directory, as the file tools may read
+    /// it: the call mounts the grant, and a `cwd` the same call refused
+    /// would leave the mount unreachable (review of #711). Without the grant
+    /// the jail still refuses it.
+    #[tokio::test]
+    async fn shell_may_stand_in_a_granted_directory_and_nowhere_else() {
+        use crate::grant::{Access, Grant, Grants, Source};
+        let ws = std::env::temp_dir().join(format!("mecha-cwd-ws-{}", uuid::Uuid::new_v4()));
+        let papers = std::env::temp_dir().join(format!("mecha-cwd-g-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::create_dir_all(&papers).unwrap();
+        let papers = papers.canonicalize().unwrap();
+        let shell = shell_with(Backend::None, false);
+        let input = json!({"command": "pwd", "cwd": papers.display().to_string()});
+        let jailed = ToolCtx {
+            workspace: ws.clone(),
+            shell_timeout: std::time::Duration::from_secs(5),
+            ..ToolCtx::default()
+        };
+        assert!(shell.call(input.clone(), &jailed).await.is_err());
+
+        let granted = ToolCtx {
+            grants: Grants::standing(vec![Grant {
+                path: papers.clone(),
+                access: Access::Read,
+                source: Source::Config,
+            }]),
+            ..jailed
+        };
+        let out = shell.call(input, &granted).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains(&papers.display().to_string()),
+            "{}",
+            out.content
+        );
+        std::fs::remove_dir_all(&ws).ok();
+        std::fs::remove_dir_all(&papers).ok();
     }
 
     /// The race `ToolCtx::resolve` cannot close on its own: a link that

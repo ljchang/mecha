@@ -2315,7 +2315,8 @@ first sketch would have widened the jail with nobody asked:
   Canonical on both sides, so a symlink is judged by where it lands; it must
   exist, and the filesystem root is refused. Every source passes it, and so
   does a recorded grant on resume (`grant::readmit`), against today's list
-  and filesystem.
+  and filesystem. When the mecha home cannot be named at all, `admit` fails
+  rather than checking against a set missing its most important member.
 - **The widening is opt-in per call site.** `ToolCtx::resolve` is unchanged
   (workspace and spill), and it has some seventy callers, most of them the
   harness's own stores. `resolve_for(raw, Access)` also consults the grants,
@@ -2342,7 +2343,15 @@ first sketch would have widened the jail with nobody asked:
 - **`shell` sees what the file tools see.** `Sandbox::with_grants` adds read
   grants to `readable` and write grants to `writable`, per call, since a live
   grant arrives mid-run. Every backend reads those lists, so it is one edit.
-  The shared base sandbox is never mutated.
+  The shared base sandbox is never mutated. `cwd` goes through `resolve_for`
+  too, or the call would mount a directory it could not stand in (review of
+  #711).
+- **The owner sees what the model sees.** The page draws only a
+  workspace-relative picture, through a download route jailed to the
+  workspace, so `image_view` of a granted file keeps a copy under
+  `images/granted/<hash>-<name>` and names that. The copy is content-named and
+  renamed into place, and the route stays as narrow as it was. A copy that
+  cannot be kept refuses the look rather than showing the model alone.
 - **A grant widens what is read, never where it goes.** Reads through one arm
   `private_data` as workspace reads do, so the interlock is untouched.
   `request_access` itself has no capabilities. A jail request nobody could

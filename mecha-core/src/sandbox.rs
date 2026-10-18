@@ -251,8 +251,9 @@ impl Sandbox {
 
     /// Build the process that will run `command`.
     ///
-    /// `workspace` is mounted writable; `cwd` must be inside it — the caller has
-    /// already proved that through `ToolCtx::resolve`.
+    /// `workspace` is mounted writable; `cwd` must be inside it, or inside a
+    /// grant this sandbox mounts ([`Sandbox::with_grants`]) — the caller has
+    /// already proved that through `ToolCtx::resolve_for`.
     pub fn command(
         &self,
         command: &str,
