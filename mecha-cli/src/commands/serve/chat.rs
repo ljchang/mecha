@@ -937,8 +937,8 @@ pub enum WireEvent {
         mode: String,
     },
     /// The grants this conversation holds, standing first, after an owner's
-    /// `/grant` or `/revoke` — the state every open page reconciles its
-    /// chip against, as `mode` is.
+    /// `/grant` or `/revoke` or a run's card-made grant — the state every
+    /// open page reconciles its chip against, as `mode` is.
     Grants {
         grants: Vec<GrantWire>,
     },
@@ -1076,6 +1076,11 @@ pub(super) fn wire_event(event: &AgentEvent, context_window: Option<u64>) -> Opt
             ..
         } => Some(WireEvent::Notice {
             text: format!("compacted {messages_before} messages to {messages_after}"),
+        }),
+        // The run's own set, standing first: what it holds is what the chip
+        // shows, so an incognito run (given none) can only ever send none.
+        AgentEvent::Grants(grants) => Some(WireEvent::Grants {
+            grants: grants.iter().map(GrantWire::of).collect(),
         }),
         _ => None,
     }
@@ -2343,7 +2348,9 @@ struct TurnOpts {
     /// transcript a turn lands in, not what a turn may do. Everything
     /// structural is untouched: the interlock sits ahead of the approver,
     /// sends still stage through the outbox, and taint now accumulates
-    /// across both doors instead of being reset by opening a call.
+    /// across both doors instead of being reset by opening a call. One
+    /// question is not the flag's: a grant outside the workspace still goes
+    /// to the page's card (`present::VoiceApprover`, owner 2026-10-18).
     approve_all: bool,
     /// The voice worker vouched that it keeps no text of this call
     /// (`X-Voice-Unlogged`, `INCOGNITO-DESIGN.md` §6.4): the one condition
@@ -2946,17 +2953,16 @@ fn begin_turn(
             None => bound.agent.ctx().for_session(ws.workspace.clone()),
         }
     });
+    let page = super::present::WebApprover {
+        mode: Arc::clone(&ws.mode),
+        questions: ws.questions.clone(),
+        events: ws.events.clone(),
+        timeout: super::present::APPROVAL_TIMEOUT,
+    };
     cx.approver = if opts.approve_all {
-        Arc::new(mecha_core::tool::ModeApprover {
-            mode: PermissionMode::Allow,
-        }) as Arc<dyn mecha_core::tool::Approver>
+        Arc::new(super::present::VoiceApprover { page }) as Arc<dyn mecha_core::tool::Approver>
     } else {
-        Arc::new(super::present::WebApprover {
-            mode: Arc::clone(&ws.mode),
-            questions: ws.questions.clone(),
-            events: ws.events.clone(),
-            timeout: super::present::APPROVAL_TIMEOUT,
-        })
+        Arc::new(page)
     };
     // **A delegation's ceiling, not a chat's.** These two numbers are the
     // only thing standing between a run and forever, and neither was chosen
@@ -4009,6 +4015,16 @@ pub struct GrantWire {
     pub source: &'static str,
 }
 
+impl GrantWire {
+    fn of(g: &mecha_core::grant::Grant) -> Self {
+        GrantWire {
+            path: g.path.display().to_string(),
+            access: g.access.as_str(),
+            source: g.source.as_str(),
+        }
+    }
+}
+
 /// The grants a web chat's runs reach: the standing ones and the
 /// conversation's own, standing first. None in an incognito chat, whose runs
 /// are given none (`ToolCtx::for_session_in`) — the page must not show a
@@ -4024,12 +4040,8 @@ fn grants_wire(
     standing
         .for_run(live)
         .all()
-        .into_iter()
-        .map(|g| GrantWire {
-            path: g.path.display().to_string(),
-            access: g.access.as_str(),
-            source: g.source.as_str(),
-        })
+        .iter()
+        .map(GrantWire::of)
         .collect()
 }
 
@@ -4978,6 +4990,31 @@ mod wire_tests {
         assert_eq!(
             wire_event(&AgentEvent::ThinkingDelta("secret".into()), None),
             None
+        );
+    }
+
+    /// A card-made grant reaches the chip mid-run, in the shape `/grant`'s
+    /// answer already has, so the page needs no second reader.
+    #[test]
+    fn a_runs_grants_reach_the_wire_as_the_chip_reads_them() {
+        use mecha_core::grant::{Access, Grant, Source};
+        let wire = wire_event(
+            &AgentEvent::Grants(vec![Grant {
+                path: std::path::PathBuf::from("/data/papers"),
+                access: Access::Read,
+                source: Source::Approved,
+            }]),
+            None,
+        );
+        assert_eq!(
+            wire,
+            Some(WireEvent::Grants {
+                grants: vec![GrantWire {
+                    path: "/data/papers".into(),
+                    access: "read",
+                    source: "approved",
+                }],
+            })
         );
     }
 

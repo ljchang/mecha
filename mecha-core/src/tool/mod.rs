@@ -1381,8 +1381,9 @@ impl ToolCtx {
         Some(PersonAsk {
             why: format!(
                 "`{tool}` wants to {} {}, which is outside its workspace. Saying yes lets \
-                 this conversation (and its subagents) {} {reach} from now on; `/revoke` \
-                 ends it.",
+                 this conversation (and its subagents) {} {reach} until the conversation \
+                 ends, or until `/revoke` where the chat offers one (the web chat, the TUI \
+                 and `mecha chat` do; Slack does not).",
                 access.as_str(),
                 resolved.display(),
                 access.describe(),
@@ -1691,6 +1692,23 @@ pub trait Approver: Send + Sync {
         ))
     }
 
+    /// A tool's own question for a person (`Tool::needs_a_person`): a path
+    /// outside the jail, and the grant a yes would make. Every such question
+    /// today is a grant, never a send.
+    ///
+    /// Separate from `escalate` so a surface can put *this* in front of
+    /// someone while it keeps refusing the interlock's ask. A voice call
+    /// runs with approvals off, so its escalations had nobody to reach and
+    /// a reach outside the workspace failed at once; the owner ruled
+    /// (2026-10-18) that a spoken turn shows the grant on the page's card,
+    /// and that sends stay refused there. The default is `escalate`, so an
+    /// approver that has not thought about grants keeps today's answer.
+    /// A wrapper that forwards `escalate` must forward this too, or the
+    /// inner approver's answer is skipped.
+    async fn escalate_access(&self, tool: &dyn Tool, input: &Value, why: &str) -> Decision {
+        self.escalate(tool, input, why).await
+    }
+
     /// An approval rule has said *a person must see this call*
     /// (`policy::RuleDecision::Prompt`), and `why` is the ruling's sentence.
     ///
@@ -1887,6 +1905,13 @@ impl Approver for FileDenyApprover {
         match self.scripted(tool, input) {
             Some(d) => d,
             None => self.inner.escalate(tool, input, why).await,
+        }
+    }
+
+    async fn escalate_access(&self, tool: &dyn Tool, input: &Value, why: &str) -> Decision {
+        match self.scripted(tool, input) {
+            Some(d) => d,
+            None => self.inner.escalate_access(tool, input, why).await,
         }
     }
 
