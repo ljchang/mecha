@@ -566,7 +566,9 @@ pub fn replay_registry_live(
     Ok((registry, probe))
 }
 
-/// [`replay_registry`], plus a handle on the divergence reason. See
+/// [`replay_registry`], plus a handle on the divergence reason. Refuses
+/// [`OnDivergence::Live`]: a live replay is built only by
+/// [`replay_registry_live`], which installs its gate. See
 /// [`build_replay_registry`] for the registry contract itself.
 ///
 /// A sibling rather than a changed signature: fifteen call sites want only
@@ -1367,54 +1369,184 @@ mod tests {
     fn every_read_only_tool_in_the_tree_is_classified() {
         const PURE: bool = false;
         const WRITES: bool = true;
-        const PINNED: &[(&str, &str, bool)] = &[
-            ("mecha-cli/src/slack/show.rs", "ShowFileTool", WRITES),
-            ("mecha-core/src/gossip.rs", "LensedSearch", PURE),
-            ("mecha-core/src/gossip.rs", "GraphTool", PURE),
-            ("mecha-core/src/imagegen.rs", "ImageGenerate", WRITES),
-            ("mecha-core/src/mailbox.rs", "MessageSendTool", WRITES),
-            ("mecha-core/src/persona/files.rs", "FileRead", PURE),
-            ("mecha-core/src/persona/memory_tools.rs", "MemoryRead", PURE),
+        // (file, implementing type, registered name if a literal, class)
+        const PINNED: &[(&str, &str, Option<&str>, bool)] = &[
+            (
+                "mecha-cli/src/slack/show.rs",
+                "ShowFileTool",
+                Some("show_file"),
+                WRITES,
+            ),
+            ("mecha-core/src/gossip.rs", "GraphTool", None, PURE),
+            (
+                "mecha-core/src/gossip.rs",
+                "LensedSearch",
+                Some("kg_search"),
+                PURE,
+            ),
+            (
+                "mecha-core/src/imagegen.rs",
+                "ImageGenerate",
+                Some("image_generate"),
+                WRITES,
+            ),
+            (
+                "mecha-core/src/mailbox.rs",
+                "MessageSendTool",
+                Some("message_send"),
+                WRITES,
+            ),
+            (
+                "mecha-core/src/persona/files.rs",
+                "FileRead",
+                Some("file_read"),
+                PURE,
+            ),
+            (
+                "mecha-core/src/persona/memory_tools.rs",
+                "MemoryRead",
+                Some("memory_read"),
+                PURE,
+            ),
             (
                 "mecha-core/src/persona/memory_tools.rs",
                 "MemorySearch",
+                Some("memory_search"),
                 PURE,
             ),
-            ("mecha-core/src/persona/search.rs", "FileSearch", PURE),
-            ("mecha-core/src/search.rs", "WebOpen", PURE),
-            ("mecha-core/src/search.rs", "WebSearch", PURE),
-            ("mecha-core/src/subagent.rs", "Subagent", PURE),
-            ("mecha-core/src/tool/ask.rs", "AskUserTool", WRITES),
-            ("mecha-core/src/tool/builtin.rs", "CompactTool", PURE),
-            ("mecha-core/src/tool/builtin.rs", "FsList", PURE),
-            ("mecha-core/src/tool/builtin.rs", "FsRead", PURE),
-            ("mecha-core/src/tool/builtin.rs", "HttpFetch", WRITES),
-            ("mecha-core/src/tool/document.rs", "DocumentRead", PURE),
-            ("mecha-core/src/tool/goal_context.rs", "GoalContext", PURE),
-            ("mecha-core/src/tool/hud.rs", "HudPreview", PURE),
-            ("mecha-core/src/tool/hud.rs", "HudPropose", WRITES),
-            ("mecha-core/src/tool/hud.rs", "HudSources", PURE),
-            ("mecha-core/src/tool/image_library.rs", "ImageLibrary", PURE),
+            (
+                "mecha-core/src/persona/search.rs",
+                "FileSearch",
+                Some("file_search"),
+                PURE,
+            ),
+            (
+                "mecha-core/src/search.rs",
+                "WebOpen",
+                Some("web_open"),
+                PURE,
+            ),
+            (
+                "mecha-core/src/search.rs",
+                "WebSearch",
+                Some("web_search"),
+                PURE,
+            ),
+            ("mecha-core/src/subagent.rs", "Subagent", None, PURE),
+            (
+                "mecha-core/src/tool/ask.rs",
+                "AskUserTool",
+                Some("ask_user"),
+                WRITES,
+            ),
+            (
+                "mecha-core/src/tool/builtin.rs",
+                "CompactTool",
+                Some("compact"),
+                PURE,
+            ),
+            (
+                "mecha-core/src/tool/builtin.rs",
+                "FsList",
+                Some("fs_list"),
+                PURE,
+            ),
+            (
+                "mecha-core/src/tool/builtin.rs",
+                "FsRead",
+                Some("fs_read"),
+                PURE,
+            ),
+            (
+                "mecha-core/src/tool/builtin.rs",
+                "HttpFetch",
+                Some("http_fetch"),
+                WRITES,
+            ),
+            (
+                "mecha-core/src/tool/document.rs",
+                "DocumentRead",
+                Some("document_read"),
+                PURE,
+            ),
+            (
+                "mecha-core/src/tool/goal_context.rs",
+                "GoalContext",
+                Some("goal_context"),
+                PURE,
+            ),
+            (
+                "mecha-core/src/tool/hud.rs",
+                "HudPreview",
+                Some("hud_preview"),
+                PURE,
+            ),
+            (
+                "mecha-core/src/tool/hud.rs",
+                "HudPropose",
+                Some("hud_propose"),
+                WRITES,
+            ),
+            (
+                "mecha-core/src/tool/hud.rs",
+                "HudSources",
+                Some("hud_sources"),
+                PURE,
+            ),
+            (
+                "mecha-core/src/tool/image_library.rs",
+                "ImageLibrary",
+                Some("image_library"),
+                PURE,
+            ),
             (
                 "mecha-core/src/tool/image_library.rs",
                 "ImageLibraryPropose",
+                Some("image_library_propose"),
                 WRITES,
             ),
             (
                 "mecha-core/src/tool/image_library.rs",
                 "ImageLibraryReference",
+                Some("image_library_reference"),
                 WRITES,
             ),
-            ("mecha-core/src/tool/image_view.rs", "ImageView", PURE),
+            (
+                "mecha-core/src/tool/image_view.rs",
+                "ImageView",
+                Some("image_view"),
+                PURE,
+            ),
             (
                 "mecha-core/src/tool/persona_propose.rs",
                 "PersonaPropose",
+                Some("persona_propose"),
                 WRITES,
             ),
-            ("mecha-core/src/tool/recall.rs", "Recall", PURE),
-            ("mecha-core/src/tool/skill.rs", "SkillTool", PURE),
-            ("mecha-core/src/tool/system_read.rs", "SystemRead", PURE),
-            ("mecha-core/src/tool/todo.rs", "TodoTool", PURE),
+            (
+                "mecha-core/src/tool/recall.rs",
+                "Recall",
+                Some("recall"),
+                PURE,
+            ),
+            (
+                "mecha-core/src/tool/skill.rs",
+                "SkillTool",
+                Some("skill"),
+                PURE,
+            ),
+            (
+                "mecha-core/src/tool/system_read.rs",
+                "SystemRead",
+                Some("system_read"),
+                PURE,
+            ),
+            (
+                "mecha-core/src/tool/todo.rs",
+                "TodoTool",
+                Some("todo"),
+                PURE,
+            ),
         ];
         const KEY: &str = "fn read_only(&self) -> bool {";
 
@@ -1446,10 +1578,31 @@ mod tests {
             }
             src
         }
-        // The type an `impl Tool for X` block names, from the nearest `impl`
-        // ahead of the method.
-        fn implementing_type(code: &str, at: usize) -> String {
-            let imp = code[..at].rfind("impl").expect("read_only outside an impl");
+        // The `impl … for X` header ahead of the method: the nearest *line*
+        // that starts with `impl` and names a `for`, so a doc comment that
+        // says "implementation" in between cannot be mistaken for it.
+        fn impl_start(code: &str, at: usize) -> usize {
+            let mut end = at;
+            loop {
+                let line_start = code[..end].rfind('\n').map_or(0, |i| i + 1);
+                let line = code[line_start..end].trim_start();
+                if line.starts_with("impl") && line.contains(" for ") {
+                    return line_start;
+                }
+                assert!(line_start > 0, "read_only outside an impl");
+                end = line_start - 1;
+            }
+        }
+        // The registered name, when `fn name` returns a literal; `None` for
+        // a name built at runtime (a subagent's profile, the graph's tools).
+        fn registered_name(code: &str, imp: usize) -> Option<String> {
+            const NAME: &str = "fn name(&self) -> &str {";
+            let at = imp + code[imp..].find(NAME)? + NAME.len();
+            let body = code[at..at + code[at..].find('}')?].trim();
+            (body.starts_with('"') && body.ends_with('"') && body.len() >= 2)
+                .then(|| body[1..body.len() - 1].to_string())
+        }
+        fn implementing_type(code: &str, imp: usize) -> String {
             let head = &code[imp..imp + code[imp..].find('{').unwrap()];
             let after = head.rsplit(" for ").next().unwrap().trim();
             after
@@ -1462,7 +1615,8 @@ mod tests {
         let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap();
-        let mut found = std::collections::BTreeSet::new();
+        let mut found: std::collections::BTreeSet<(String, String, Option<String>)> =
+            Default::default();
         for krate in ["mecha-core", "mecha-cli", "mecha-mail", "mecha-slack"] {
             let mut files = Vec::new();
             walk(&workspace.join(krate).join("src"), &mut files);
@@ -1481,18 +1635,20 @@ mod tests {
                         .collect();
                     if lines == ["true"] {
                         let rel = file.strip_prefix(workspace).unwrap();
+                        let imp = impl_start(code, at);
                         found.insert((
                             rel.to_string_lossy().replace('\\', "/"),
-                            implementing_type(code, at),
+                            implementing_type(code, imp),
+                            registered_name(code, imp),
                         ));
                     }
                     from = body_end;
                 }
             }
         }
-        let pinned: std::collections::BTreeSet<(String, String)> = PINNED
+        let pinned: std::collections::BTreeSet<(String, String, Option<String>)> = PINNED
             .iter()
-            .map(|(f, t, _)| (f.to_string(), t.to_string()))
+            .map(|(f, t, n, _)| (f.to_string(), t.to_string(), n.map(String::from)))
             .collect();
         let added: Vec<_> = found.difference(&pinned).collect();
         let gone: Vec<_> = pinned.difference(&found).collect();
@@ -1503,11 +1659,18 @@ mod tests {
              file, a job, a post); add a writer's name to READ_ONLY_WRITERS; then \
              update PINNED"
         );
-        let writers = PINNED.iter().filter(|(_, _, w)| *w).count();
+        // The join the gate depends on: a writer is refused by its registered
+        // *name*, so the WRITES entries' names must be exactly the list. A
+        // renamed writer changes `found` above and fails there.
+        let writer_names: std::collections::BTreeSet<&str> = PINNED
+            .iter()
+            .filter(|(_, _, _, w)| *w)
+            .map(|(_, t, n, _)| n.unwrap_or_else(|| panic!("writer {t} has no literal name")))
+            .collect();
+        let listed: std::collections::BTreeSet<&str> = READ_ONLY_WRITERS.iter().copied().collect();
         assert_eq!(
-            writers,
-            READ_ONLY_WRITERS.len(),
-            "every WRITES entry names one tool in READ_ONLY_WRITERS"
+            writer_names, listed,
+            "READ_ONLY_WRITERS must be exactly the registered names of the WRITES entries"
         );
     }
 
