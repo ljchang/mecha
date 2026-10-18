@@ -185,6 +185,11 @@ pub struct GlobalOpts {
     #[arg(long, global = true)]
     pub no_system_read: bool,
 
+    /// Don't apply `[[grant]]` or register `request_access`: jail the run
+    /// to its workspace alone. `mecha eval` forces it.
+    #[arg(long, global = true)]
+    pub no_grants: bool,
+
     /// Don't run configured [[hook]] commands.
     #[arg(long, global = true)]
     pub no_hooks: bool,

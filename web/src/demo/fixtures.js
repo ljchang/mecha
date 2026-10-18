@@ -1128,6 +1128,13 @@ export const transcript = {
   taint: { private: true, untrusted: true },
   task: null,
   todo: [],
+  // Two directories outside the workspace this chat may reach: one from the
+  // owner's config, one granted in the chat (`/grant`), so the docs show the
+  // grants chip and its list. The demo declines an actual grant or revoke.
+  grants: [
+    { path: '/home/you/Documents/papers', access: 'read', source: 'config' },
+    { path: '/home/you/Github/notes', access: 'write', source: 'owner' },
+  ],
   questions: [],
   usage: { prompt_tokens: 24118, context_window: 32768 },
   entries: [

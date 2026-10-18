@@ -222,6 +222,23 @@ pub enum Record {
     /// resuming a session that had read a hostile page would hand the model
     /// that page again with the interlock disarmed.
     Taint(Taint),
+    /// The jail exceptions the conversation holds by this point — the whole
+    /// set, so the last record is the answer.
+    ///
+    /// Recorded because a grant is a fact about the conversation that the
+    /// messages cannot reconstruct (an owner's `/grant` is not a message at
+    /// all). **`GoalAnchor`'s shape, not `Taint`'s**: written on every run,
+    /// empty included, and the last one *replaces* on read. Merging taint
+    /// fails closed (over-taint); merging grants fails open — a `/clear`
+    /// had no wire form, and a resume brought back what the owner had ended
+    /// (review of #711). Untouched by a rewrite — a compaction summarises
+    /// what was said, not what a person allowed — and re-proven on load
+    /// (`grant::readmit`), so a recorded path that would no longer be
+    /// admitted is dropped, not trusted.
+    Grants {
+        #[serde(default)]
+        grants: Vec<crate::grant::Grant>,
+    },
     /// Durable human-confirmed intent. Kept outside rewritten message history.
     GoalAnchor {
         #[serde(default, deserialize_with = "crate::goal::de_lenient")]
@@ -1800,8 +1817,23 @@ impl Session {
                 notes: convo.harness_notes.clone(),
             })?;
         }
+        // Unconditionally, like the anchor below: an empty set is how a
+        // `/clear` reaches the file.
+        self.append(&Record::Grants {
+            grants: convo.grants.clone(),
+        })?;
         self.append(&Record::GoalAnchor {
             goal: convo.goal_anchor.clone(),
+        })
+    }
+
+    /// Record the conversation's grants now, between runs — an owner's
+    /// `/grant` or `/revoke`. `Record::Grants` is last-wins, so this is the
+    /// set until the next one; without it a revoke followed by a quit came
+    /// back on resume, because only a run wrote the record.
+    pub fn record_grants(&self, grants: &[crate::grant::Grant]) -> Result<()> {
+        self.append(&Record::Grants {
+            grants: grants.to_vec(),
         })
     }
 
@@ -2023,6 +2055,7 @@ impl Session {
         let mut meta = None;
         let mut title = None;
         let mut goal_anchor = None;
+        let mut grants: Vec<crate::grant::Grant> = Vec::new();
         let mut anchors: Vec<(Option<usize>, Option<crate::goal::GoalRef>)> = Vec::new();
         let mut anchor_floor = 0usize;
         // Whether a `GoalAnchor` record has been written since the last
@@ -2222,6 +2255,8 @@ impl Session {
                     anchored_since_outcome = true;
                     goal_anchor = goal;
                 }
+                // The last word, not a union: each record is the whole set.
+                Ok(Record::Grants { grants: recorded }) => grants = recorded,
                 Ok(Record::Summary { .. }) => {}
                 // For the corpus, not the conversation: nothing to rebuild.
                 Ok(Record::SpokenDirection(_)) => {}
@@ -2266,6 +2301,7 @@ impl Session {
             notes,
             convo: Conversation {
                 goal_anchor,
+                grants: crate::grant::readmit(grants),
                 ..Conversation::resumed(messages, taint)
             },
             configs,
@@ -3433,6 +3469,78 @@ mod tests {
             serde_json::from_str(r#"{"record":"goal_anchor","goal":"future:unread"}"#).unwrap();
         session.append(&unknown).unwrap();
         assert_eq!(Session::load(&session.path).unwrap().1.goal_anchor, None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A live grant survives a rewrite and a resume — a compaction
+    /// summarises what was said, not what a person allowed — and a recorded
+    /// grant that would no longer be admitted (its directory gone) is
+    /// dropped on load rather than trusted.
+    #[test]
+    fn a_grant_survives_rewrite_and_resume_and_a_vanished_one_does_not() {
+        use crate::grant::{Access, Grant, Source};
+        let dir = tmpdir();
+        let papers = dir.join("papers");
+        let gone = dir.join("gone");
+        std::fs::create_dir_all(&papers).unwrap();
+        std::fs::create_dir_all(&gone).unwrap();
+        let grant = |p: &std::path::Path, access| Grant {
+            path: p.canonicalize().unwrap(),
+            access,
+            source: Source::Owner,
+        };
+        let session = Session::create(&dir, meta_with_id("grant-resume")).unwrap();
+        let mut convo = Conversation::user("original");
+        convo.grants = vec![grant(&papers, Access::Write), grant(&gone, Access::Read)];
+        session.record_run(&[], &convo).unwrap();
+        let before = convo.messages.clone();
+        convo.messages = vec![Message::user("compacted")];
+        session.record_run(&before, &convo).unwrap();
+        std::fs::remove_dir_all(&gone).unwrap();
+
+        let (_, resumed) = Session::load(&session.path).unwrap();
+        assert_eq!(resumed.grants, vec![grant(&papers, Access::Write)]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Ending the grants is a fact the file keeps: grant, run, `/clear`, run,
+    /// resume comes back with none. When records were unioned, an empty set
+    /// had no wire form and the resume brought the grant back with nobody
+    /// asked (review of #711).
+    #[test]
+    fn a_cleared_grant_stays_cleared_across_a_resume() {
+        use crate::grant::{Access, Grant, Source};
+        let dir = tmpdir();
+        let papers = dir.join("papers");
+        std::fs::create_dir_all(&papers).unwrap();
+        let session = Session::create(&dir, meta_with_id("grant-clear")).unwrap();
+        let mut convo = Conversation::user("open my papers");
+        convo.grants = vec![Grant {
+            path: papers.canonicalize().unwrap(),
+            access: Access::Write,
+            source: Source::Owner,
+        }];
+        session.record_run(&[], &convo).unwrap();
+        assert_eq!(Session::load(&session.path).unwrap().1.grants.len(), 1);
+
+        // What `/clear` leaves, and the run after it.
+        let before = convo.messages.clone();
+        let mut cleared = Conversation::user("something else");
+        session.record_run(&before, &cleared).unwrap();
+        assert!(Session::load(&session.path).unwrap().1.grants.is_empty());
+
+        // And a later grant is the set again, not added to a stale one.
+        cleared.grants = vec![Grant {
+            path: dir.canonicalize().unwrap(),
+            access: Access::Read,
+            source: Source::Owner,
+        }];
+        let before = cleared.messages.clone();
+        session.record_run(&before, &cleared).unwrap();
+        assert_eq!(
+            Session::load(&session.path).unwrap().1.grants,
+            cleared.grants
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -5,6 +5,7 @@
 //! likewise untrusted: they run under the approval gate, not around it.
 
 use super::{Capabilities, DenialCause, Egress, Tool, ToolCtx, ToolOutput};
+use crate::grant::Access;
 use crate::sandbox::Sandbox;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -68,7 +69,7 @@ impl Tool for FsRead {
         json!({
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Path relative to the workspace root, or absolute inside it."},
+                "path": {"type": "string", "description": "Path relative to the workspace root, or absolute inside it or inside a directory the owner granted."},
                 "offset": {"type": "integer", "description": "First line to return, 1-indexed."},
                 "limit": {"type": "integer", "description": "Maximum number of lines to return."}
             },
@@ -86,7 +87,7 @@ impl Tool for FsRead {
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
-        let path = ctx.resolve(arg_str(&input, "path")?)?;
+        let path = ctx.resolve_for(arg_str(&input, "path")?, Access::Read)?;
         let offset = input
             .get("offset")
             .and_then(Value::as_u64)
@@ -271,7 +272,7 @@ impl Tool for FsWrite {
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
-        let path = ctx.resolve(arg_str(&input, "path")?)?;
+        let path = ctx.resolve_for(arg_str(&input, "path")?, Access::Write)?;
         let content = arg_str(&input, "content")?;
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
@@ -320,7 +321,7 @@ impl Tool for FsEdit {
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
-        let path = ctx.resolve(arg_str(&input, "path")?)?;
+        let path = ctx.resolve_for(arg_str(&input, "path")?, Access::Write)?;
         let old = arg_str(&input, "old")?;
         let new = arg_str(&input, "new")?;
 
@@ -366,7 +367,7 @@ impl Tool for FsList {
         json!({
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Defaults to the workspace root."}
+                "path": {"type": "string", "description": "Defaults to the workspace root; absolute inside it or inside a directory the owner granted."}
             }
         })
     }
@@ -381,7 +382,7 @@ impl Tool for FsList {
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let raw = input.get("path").and_then(Value::as_str).unwrap_or(".");
-        let path = ctx.resolve(raw)?;
+        let path = ctx.resolve_for(raw, Access::Read)?;
         let mut entries = match tokio::fs::read_dir(&path).await {
             Ok(e) => e,
             Err(e) => {
@@ -523,8 +524,14 @@ impl Tool for Shell {
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let command = arg_str(&input, "command")?;
+        // Through the grants, like the file tools: the sandbox mounts every
+        // grant below, and a shell that could not `cd` into a directory the
+        // same call mounts would be the disagreement `with_grants` exists to
+        // end, reached from the other side (review of #711). Read is enough
+        // to stand in a directory; what the command may write there is the
+        // mount's to say.
         let cwd = match input.get("cwd").and_then(Value::as_str) {
-            Some(c) => ctx.resolve(c)?,
+            Some(c) => ctx.resolve_for(c, Access::Read)?,
             None => ctx.workspace.clone(),
         };
 
@@ -539,7 +546,16 @@ impl Tool for Shell {
             .run_posture
             .map(|p| p.as_str())
             .unwrap_or(crate::closure::RunPosture::UNKNOWN);
-        let mut command = match self.sandbox.command_with_env(
+        // The owner's grants, mounted for this call: a live one may have
+        // arrived since the last (`Sandbox::with_grants`).
+        let granted = ctx.grants.all();
+        let sandbox = if granted.is_empty() {
+            None
+        } else {
+            Some(self.sandbox.with_grants(&granted))
+        };
+        let sandbox = sandbox.as_ref().unwrap_or(&self.sandbox);
+        let mut command = match sandbox.command_with_env(
             command,
             &ctx.workspace,
             &cwd,
@@ -550,7 +566,7 @@ impl Tool for Shell {
                 return Ok(ToolOutput::err(format!(
                     "refusing to run: the {} sandbox could not be set up ({e:#}). \
                      Nothing was executed.",
-                    self.sandbox.backend().as_str()
+                    sandbox.backend().as_str()
                 )))
             }
         };
@@ -1093,6 +1109,46 @@ mod tests {
             network,
             ..SandboxConfig::default()
         })))
+    }
+
+    /// `shell` may stand in a granted directory, as the file tools may read
+    /// it: the call mounts the grant, and a `cwd` the same call refused
+    /// would leave the mount unreachable (review of #711). Without the grant
+    /// the jail still refuses it.
+    #[tokio::test]
+    async fn shell_may_stand_in_a_granted_directory_and_nowhere_else() {
+        use crate::grant::{Access, Grant, Grants, Source};
+        let ws = std::env::temp_dir().join(format!("mecha-cwd-ws-{}", uuid::Uuid::new_v4()));
+        let papers = std::env::temp_dir().join(format!("mecha-cwd-g-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::create_dir_all(&papers).unwrap();
+        let papers = papers.canonicalize().unwrap();
+        let shell = shell_with(Backend::None, false);
+        let input = json!({"command": "pwd", "cwd": papers.display().to_string()});
+        let jailed = ToolCtx {
+            workspace: ws.clone(),
+            shell_timeout: std::time::Duration::from_secs(5),
+            ..ToolCtx::default()
+        };
+        assert!(shell.call(input.clone(), &jailed).await.is_err());
+
+        let granted = ToolCtx {
+            grants: Grants::standing(vec![Grant {
+                path: papers.clone(),
+                access: Access::Read,
+                source: Source::Config,
+            }]),
+            ..jailed
+        };
+        let out = shell.call(input, &granted).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains(&papers.display().to_string()),
+            "{}",
+            out.content
+        );
+        std::fs::remove_dir_all(&ws).ok();
+        std::fs::remove_dir_all(&papers).ok();
     }
 
     /// The race `ToolCtx::resolve` cannot close on its own: a link that

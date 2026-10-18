@@ -229,6 +229,11 @@ struct Live {
     /// Taint only grows, so this is a floor; what the run adds arrives at
     /// `done`.
     taint: mecha_core::agent::Taint,
+    /// And the conversation's grants as the run took them, so the page's
+    /// grants chip does not go blank while a run holds the conversation.
+    /// What the run itself adds (`request_access`) arrives with the
+    /// conversation at `done`, when the page re-reads.
+    grants: Vec<mecha_core::grant::Grant>,
 }
 
 impl ChatState {
@@ -922,6 +927,12 @@ pub enum WireEvent {
     /// and a stale chip is a person believing a run is gated when it is not.
     Mode {
         mode: String,
+    },
+    /// The grants this conversation holds, standing first, after an owner's
+    /// `/grant` or `/revoke` — the state every open page reconciles its
+    /// chip against, as `mode` is.
+    Grants {
+        grants: Vec<GrantWire>,
     },
     Question {
         qid: u64,
@@ -1952,7 +1963,14 @@ pub async fn transcript(
     };
     let usage = ws.last_usage.lock().ok().and_then(|u| u.clone());
     let mode = ws.mode.lock().map(|m| mode_wire(*m)).unwrap_or("read_only");
+    let held: &[mecha_core::grant::Grant] = match (&ws.conversation, &ws.live) {
+        (Some(convo), _) => &convo.grants,
+        (None, Some(live)) => &live.grants,
+        (None, None) => &[],
+    };
+    let grants = grants_wire(&bound.agent.ctx().grants, held, ws.session.room().is_some());
     Json(serde_json::json!({
+        "grants": grants,
         "session": ws.session.id(),
         "incognito": ws.session.room().is_some(),
         "model": bound.model,
@@ -2801,6 +2819,7 @@ fn begin_turn(
         queued_ids: Arc::clone(&queued_ids),
         history: Arc::clone(&before),
         taint: history_taint,
+        grants: conversation.grants.clone(),
     });
 
     // What was already waiting, before this run staged anything. Taken here
@@ -3948,6 +3967,138 @@ pub async fn set_mode(
         text: format!("mode set to {}", mode_wire(mode)),
     });
     Json(serde_json::json!({ "ok": true })).into_response()
+}
+
+/// One grant as the page shows it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct GrantWire {
+    pub path: String,
+    pub access: &'static str,
+    /// `config`, `owner`, `approved` — and only the last two are the
+    /// conversation's to revoke; a `config` one is the global file's.
+    pub source: &'static str,
+}
+
+/// The grants a web chat's runs reach: the standing ones and the
+/// conversation's own, standing first. None in an incognito chat, whose runs
+/// are given none (`ToolCtx::for_session_in`) — the page must not show a
+/// grant the run does not hold.
+fn grants_wire(
+    standing: &mecha_core::grant::Grants,
+    live: &[mecha_core::grant::Grant],
+    incognito: bool,
+) -> Vec<GrantWire> {
+    if incognito {
+        return Vec::new();
+    }
+    standing
+        .for_run(live)
+        .all()
+        .into_iter()
+        .map(|g| GrantWire {
+            path: g.path.display().to_string(),
+            access: g.access.as_str(),
+            source: g.source.as_str(),
+        })
+        .collect()
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GrantAction {
+    Grant,
+    Revoke,
+}
+
+#[derive(serde::Deserialize)]
+pub struct GrantBody {
+    pub action: GrantAction,
+    pub path: String,
+    /// `read` (the default) or `write`; a grant's only.
+    #[serde(default)]
+    pub access: Option<String>,
+}
+
+/// POST /api/chat/{key}/grants — the owner's `/grant` and `/revoke` for one
+/// web chat (`mecha_core::grant`), the TUI's commands through the same two
+/// functions. The owner's door only (`Owner::ChatKey`), and never the
+/// model's: a model asks with `request_access`, whose answer is a card.
+///
+/// Refused while a run holds the conversation — what the run hands back
+/// replaces it whole, so a change made meanwhile would vanish without a word
+/// — and in an incognito chat, whose runs hold none. Recorded at once
+/// (`Record::Grants` is last-wins), so a revoke holds across a restart of
+/// `serve` before the next run; a record that could not be written is said,
+/// because a revoke the file forgot comes back on resume.
+pub async fn set_grants(
+    State(state): Chat,
+    axum::extract::Path(key): axum::extract::Path<String>,
+    Json(body): Json<GrantBody>,
+) -> axum::response::Response {
+    use mecha_core::grant;
+    if !valid_key(&key) {
+        return (StatusCode::BAD_REQUEST, "bad session key\n").into_response();
+    }
+    let chat = match chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let access = match body.access.as_deref().map(grant::Access::parse) {
+        None => grant::Access::Read,
+        Some(Some(a)) => a,
+        Some(None) => {
+            return (StatusCode::BAD_REQUEST, "access is read or write\n").into_response()
+        }
+    };
+    let bound = chat.followed_or_current().await;
+    let mut sessions = chat.sessions.lock().await;
+    if chat.stopping.is_cancelled() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "server is shutting down\n").into_response();
+    }
+    let ws = match ensure_session(chat, &bound, &mut sessions, &key) {
+        Ok(ws) => ws,
+        Err(e) => return (super::incognito::status_of(&e), format!("{e:#}\n")).into_response(),
+    };
+    if ws.session.room().is_some() {
+        return (
+            StatusCode::FORBIDDEN,
+            "an incognito chat never holds a grant — nothing it touches may outlive the room\n",
+        )
+            .into_response();
+    }
+    let Some(convo) = ws.conversation.as_mut() else {
+        return (
+            StatusCode::CONFLICT,
+            "a run is in flight — change grants when it finishes, so the change lands on \
+             the conversation it hands back\n",
+        )
+            .into_response();
+    };
+    let standing = &bound.agent.ctx().grants;
+    let done = match body.action {
+        GrantAction::Grant => grant::grant_owner(&body.path, access, standing, &mut convo.grants),
+        GrantAction::Revoke => grant::revoke_by_owner(&body.path, standing, &mut convo.grants),
+    };
+    let mut said = match done {
+        Ok(said) => said,
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("{e:#}\n")).into_response(),
+    };
+    if let Some(session) = ws.session.kept() {
+        if let Err(e) = session.append(&Record::Grants {
+            grants: convo.grants.clone(),
+        }) {
+            tracing::warn!("a grant change was not recorded: {e:#}");
+            said.push_str(&format!(
+                " (not written to the transcript: {e:#} — resuming may not reflect it)"
+            ));
+        }
+    }
+    let grants = grants_wire(standing, &convo.grants, false);
+    let _ = ws.events.send(WireEvent::Grants {
+        grants: grants.clone(),
+    });
+    let _ = ws.events.send(WireEvent::Notice { text: said.clone() });
+    Json(serde_json::json!({ "ok": true, "said": said, "grants": grants })).into_response()
 }
 
 /// The first user line of a transcript, for a history listing — the thing

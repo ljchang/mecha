@@ -14,6 +14,7 @@ pub mod image_view;
 pub mod persona_propose;
 pub mod profile;
 pub mod recall;
+pub mod request_access;
 pub mod skill;
 pub mod system_read;
 pub mod todo;
@@ -397,6 +398,29 @@ pub trait Tool: Send + Sync {
         input.clone()
     }
 
+    /// Why a person must see this call before it runs, whatever policy
+    /// would have said — or `None`, the default, for every tool whose calls
+    /// a permission mode may answer.
+    ///
+    /// `Some(why)` sends the call to [`Approver::escalate`], the door a
+    /// headless approver answers `Blocked` and an "always" list never
+    /// reaches. For a call whose *whole content* is a person's decision —
+    /// `request_access` widens the path jail — because `approve` is allowed
+    /// to answer from `--yes`, and a jail widened by a flag is a jail
+    /// widened by nobody. The family of [`denial_remedy`](Tool::denial_remedy):
+    /// the loop learns that a person is needed, never what kind of tool it
+    /// is talking to. An interlock escalation on the same call wins, since
+    /// it names the broader control.
+    ///
+    /// Handed the call **as the model sent it**, not the schema-filled one
+    /// the approver is then shown (`with_schema_defaults` runs later), so a
+    /// `why` that depends on a defaulted argument must apply the default
+    /// itself, as `request_access`'s `parse` does for `access`.
+    fn needs_a_person(&self, input: &Value) -> Option<String> {
+        let _ = input;
+        None
+    }
+
     /// The root this tool's relative paths actually resolve against, when the
     /// tool was constructed over a fixed directory rather than following the
     /// per-run [`ToolCtx`] workspace.
@@ -604,6 +628,11 @@ pub struct ToolCtx {
     pub review_hint: Option<String>,
     /// Filesystem tools refuse paths outside this root.
     pub workspace: PathBuf,
+    /// The owner's exceptions to that refusal — standing ones from
+    /// `[[grant]]`, live ones this conversation acquired. Consulted only by
+    /// [`ToolCtx::resolve_for`], so a caller that never opted in keeps the
+    /// one-root jail ([`crate::grant`]).
+    pub grants: crate::grant::Grants,
     pub shell_timeout: std::time::Duration,
     pub security: SecurityConfig,
     /// The byte budget one *turn's* tool results share, divided equally
@@ -998,6 +1027,7 @@ impl Default for ToolCtx {
             appraisal_evidence: None,
             review_hint: None,
             workspace: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            grants: crate::grant::Grants::default(),
             shell_timeout: std::time::Duration::from_secs(120),
             security: SecurityConfig::default(),
             output_budget_bytes: 24_000,
@@ -1176,10 +1206,16 @@ impl ToolCtx {
     /// the room. The caller owns keeping `spill` outside `workspace`: the
     /// jail's spill exception is only as safe as the model's inability to
     /// write there ([`session_spill_dir`]'s doc).
+    ///
+    /// **And with no grants.** The one caller is an incognito room, which
+    /// must account for every file a run touches; a grant — standing or
+    /// live — is a directory outside the room the run could read, or write
+    /// and leave something behind in.
     pub fn for_session_in(&self, workspace: PathBuf, spill: PathBuf) -> ToolCtx {
         ToolCtx {
             spill_dir: Some(spill),
             workspace,
+            grants: crate::grant::Grants::none(),
             ..self.clone()
         }
     }
@@ -1210,10 +1246,13 @@ impl ToolCtx {
     /// directory, for a run that ends. The spill directory is re-derived too:
     /// a re-rooted context is a new isolation domain, and inheriting the old
     /// one would let its runs read each other's spilled output.
+    /// Live grants do not carry either, for the same reason: they belong to
+    /// a conversation, and an eval case or batch item starts a fresh one.
     pub fn with_workspace(&self, workspace: impl Into<PathBuf>) -> Self {
         ToolCtx {
             workspace: workspace.into(),
             spill_dir: fresh_spill_dir(),
+            grants: self.grants.standing_only(),
             ..self.clone()
         }
     }
@@ -1222,6 +1261,74 @@ impl ToolCtx {
     /// inside. The path is untrusted input: `..`, symlinks, and absolute paths
     /// all have to be checked after canonicalization, not before.
     pub fn resolve(&self, raw: &str) -> Result<PathBuf> {
+        let resolved = self.canonical_candidate(raw)?;
+        if self.inside_jail(&resolved) {
+            return Ok(resolved);
+        }
+        anyhow::bail!(
+            "path {raw:?} resolves outside the workspace ({})",
+            self.workspace_root().display()
+        )
+    }
+
+    /// [`ToolCtx::resolve`], and then the owner's grants for `access`.
+    ///
+    /// Opt-in per call site on purpose: `resolve` has some seventy callers,
+    /// most of them the harness's own stores, and a widening that reached
+    /// them by default is a widening nobody reviewed. The model-facing file
+    /// tools call this; everything else keeps the one-root jail.
+    ///
+    /// A relative path still resolves against the workspace — a grant is a
+    /// place the model names in full, never a second current directory.
+    pub fn resolve_for(&self, raw: &str, access: crate::grant::Access) -> Result<PathBuf> {
+        let resolved = self.canonical_candidate(raw)?;
+        if self.inside_jail(&resolved) || self.grants.covering(&resolved, access).is_some() {
+            return Ok(resolved);
+        }
+        if let Some(g) = self.grants.read_only_at(&resolved) {
+            anyhow::bail!(
+                "path {raw:?} is inside {}, which the owner granted for reading only",
+                g.path.display()
+            );
+        }
+        let ask = if self.grants.requestable {
+            " If the task needs it, ask the owner with `request_access` (name the directory \
+             and why); they may also grant it with `/grant`."
+        } else {
+            ""
+        };
+        anyhow::bail!(
+            "path {raw:?} resolves outside the workspace ({}).{ask}",
+            self.workspace_root().display()
+        )
+    }
+
+    fn workspace_root(&self) -> PathBuf {
+        self.workspace
+            .canonicalize()
+            .unwrap_or_else(|_| self.workspace.clone())
+    }
+
+    /// The workspace, and the spill directory — the jail before any grant.
+    fn inside_jail(&self, resolved: &Path) -> bool {
+        if resolved.starts_with(self.workspace_root()) {
+            return true;
+        }
+        // The spill directory is the one sanctioned exception: oversized tool
+        // output is saved there, and the truncation marker tells the model to
+        // read the rest from exactly that path. Its contents are this
+        // context's own tool results, so nothing new becomes reachable.
+        self.spill_dir
+            .as_deref()
+            .and_then(real_spill_root)
+            .is_some_and(|spill_root| resolved.starts_with(spill_root))
+    }
+
+    /// The canonical form of a model-supplied path, without yet deciding
+    /// whether it is allowed. The path is untrusted input: `..`, symlinks,
+    /// and absolute paths all have to be checked after canonicalization,
+    /// not before.
+    fn canonical_candidate(&self, raw: &str) -> Result<PathBuf> {
         let candidate = {
             let p = Path::new(raw);
             if p.is_absolute() {
@@ -1270,26 +1377,7 @@ impl ToolCtx {
             }
         }
 
-        let root = self
-            .workspace
-            .canonicalize()
-            .unwrap_or_else(|_| self.workspace.clone());
-        if resolved.starts_with(&root) {
-            return Ok(resolved);
-        }
-        // The spill directory is the one sanctioned exception: oversized tool
-        // output is saved there, and the truncation marker tells the model to
-        // read the rest from exactly that path. Its contents are this
-        // context's own tool results, so nothing new becomes reachable.
-        if let Some(spill_root) = self.spill_dir.as_deref().and_then(real_spill_root) {
-            if resolved.starts_with(&spill_root) {
-                return Ok(resolved);
-            }
-        }
-        anyhow::bail!(
-            "path {raw:?} resolves outside the workspace ({})",
-            root.display()
-        )
+        Ok(resolved)
     }
 }
 
@@ -2727,6 +2815,71 @@ mod jail_tests {
 
         std::fs::remove_dir_all(&workspace).ok();
         std::fs::remove_dir_all(&outside).ok();
+    }
+
+    /// A grant opens `resolve_for` and nothing else: the strict `resolve`
+    /// every harness store calls is unchanged, a read grant refuses a write
+    /// by name, a relative path never resolves against a grant, and a
+    /// symlink inside a grant is judged by where it lands.
+    #[test]
+    fn a_grant_widens_resolve_for_only_and_only_as_far_as_it_says() {
+        use crate::grant::{Access, Grant, Grants, Source};
+        let workspace = scratch("ws");
+        let papers = scratch("papers").canonicalize().unwrap();
+        let elsewhere = scratch("elsewhere");
+        std::fs::write(papers.join("a.pdf"), "x").unwrap();
+        std::fs::write(elsewhere.join("secret"), "x").unwrap();
+        std::os::unix::fs::symlink(elsewhere.join("secret"), papers.join("escape")).unwrap();
+        let ctx = ToolCtx {
+            workspace: workspace.clone(),
+            grants: Grants::standing(vec![Grant {
+                path: papers.clone(),
+                access: Access::Read,
+                source: Source::Config,
+            }]),
+            ..ToolCtx::default()
+        };
+        let a = papers.join("a.pdf").display().to_string();
+
+        assert_eq!(
+            ctx.resolve_for(&a, Access::Read).unwrap(),
+            papers.join("a.pdf")
+        );
+        assert!(
+            ctx.resolve(&a).is_err(),
+            "the strict jail widened by default"
+        );
+        let write = ctx.resolve_for(&a, Access::Write).unwrap_err().to_string();
+        assert!(write.contains("reading only"), "{write}");
+        // Relative is the workspace's, granted or not: a new file there.
+        let relative = ctx.resolve_for("a.pdf", Access::Read).unwrap();
+        assert!(
+            relative.starts_with(workspace.canonicalize().unwrap()),
+            "{relative:?}"
+        );
+        let escape = papers.join("escape").display().to_string();
+        assert!(ctx.resolve_for(&escape, Access::Read).is_err());
+
+        // The refusal names `request_access` only where it is registered.
+        let outside = elsewhere.join("secret").display().to_string();
+        let quiet = ctx.resolve_for(&outside, Access::Read).unwrap_err();
+        assert!(!quiet.to_string().contains("request_access"), "{quiet}");
+        let mut grants = ctx.grants.clone();
+        grants.requestable = true;
+        let asking = ToolCtx {
+            grants,
+            ..ctx.clone()
+        };
+        let hint = asking.resolve_for(&outside, Access::Read).unwrap_err();
+        assert!(hint.to_string().contains("request_access"), "{hint}");
+
+        // An incognito room's context holds none, standing or live.
+        let room = ctx.for_session_in(workspace.clone(), scratch("spill"));
+        assert!(room.resolve_for(&a, Access::Read).is_err());
+
+        for d in [&workspace, &papers, &elsewhere] {
+            std::fs::remove_dir_all(d).ok();
+        }
     }
 
     /// §17.7 item 4's sensor cell: the anchor a caller seeds is carried

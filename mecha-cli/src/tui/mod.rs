@@ -927,7 +927,10 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
             .clone()
             .or_else(|| mecha_core::skill::SkillStore::default_dir().ok())
             .unwrap_or_default(),
-        sandbox_line: setup::sandbox_line(&prepared.sandbox),
+        sandbox_line: setup::sandbox_line(
+            &prepared.sandbox,
+            &setup::standing_grants(&prepared.config, global).0,
+        ),
         workspace: prepared.workspace.clone(),
         todo_visible: true,
         pending_editor: false,
@@ -3186,6 +3189,20 @@ fn record_config(session: Option<&Session>, live: &Live, mode: PermissionMode) -
 
 /// Carry out a slash command. Everything here is local to the session — none of
 /// it reaches the model.
+/// An owner's grant change, written to the transcript at once
+/// (`Session::record_grants`) — or the sentence saying it was not, since a
+/// revoke the file forgot comes back on resume.
+fn recorded(
+    said: String,
+    session: Option<&Session>,
+    grants: &[mecha_core::grant::Grant],
+) -> String {
+    match session.map(|s| s.record_grants(grants)) {
+        Some(Err(e)) => format!("{said} (not written to the transcript: {e:#})"),
+        _ => said,
+    }
+}
+
 fn run_command(
     app: &mut App,
     cmd: command::Command,
@@ -3489,6 +3506,61 @@ fn run_command(
                 "todo pane hidden".into()
             });
         }
+
+        Command::Grant(None) => {
+            let lines =
+                mecha_core::grant::listing(&agent.context().tools.grants, &app.convo.grants);
+            say(if lines.is_empty() {
+                "no grants: the run reaches its workspace only — `/grant <path> [write]` \
+                 opens a directory for this conversation"
+                    .to_string()
+            } else {
+                lines.join("\n")
+            });
+        }
+
+        // Refused mid-run rather than queued: the running task holds the
+        // conversation, and what it hands back replaces `app.convo` whole —
+        // a grant written to the placeholder would vanish without a word.
+        Command::Grant(Some(_)) if app.running.is_some() => app.transcript.push(Entry::Error(
+            "/grant: a run is in flight — grant when it finishes, so the grant lands on \
+             the conversation it hands back"
+                .into(),
+        )),
+
+        Command::Grant(Some(arg)) => match mecha_core::grant::grant_by_owner(
+            &arg,
+            &agent.context().tools.grants,
+            &mut app.convo.grants,
+        ) {
+            Ok(said) => say(recorded(said, session, &app.convo.grants)),
+            Err(e) => app
+                .transcript
+                .push(Entry::Error(format!("/grant {arg}: {e:#}"))),
+        },
+
+        Command::Revoke(None) => app.transcript.push(Entry::Error(
+            "/revoke needs a path — `/grant` lists what this conversation holds".into(),
+        )),
+
+        // Refused mid-run for `/grant`'s reason: the running task holds the
+        // conversation and replaces `app.convo` whole when it finishes.
+        Command::Revoke(Some(_)) if app.running.is_some() => app.transcript.push(Entry::Error(
+            "/revoke: a run is in flight — revoke when it finishes, so it lands on the \
+             conversation it hands back"
+                .into(),
+        )),
+
+        Command::Revoke(Some(arg)) => match mecha_core::grant::revoke_by_owner(
+            &arg,
+            &agent.context().tools.grants,
+            &mut app.convo.grants,
+        ) {
+            Ok(said) => say(recorded(said, session, &app.convo.grants)),
+            Err(e) => app
+                .transcript
+                .push(Entry::Error(format!("/revoke {arg}: {e:#}"))),
+        },
 
         Command::Send(None) => app.transcript.push(Entry::Error(
             "/send needs a path — try `/send report.png`".into(),

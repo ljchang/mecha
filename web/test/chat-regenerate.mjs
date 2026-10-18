@@ -7,6 +7,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseGrantCommand } from '../src/lib/grants.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const src = fs.readFileSync(path.join(here, '..', 'src', 'lib', 'Chat.svelte'), 'utf8');
@@ -18,6 +19,7 @@ const readOut = (marker) => {
 const fns = [
   '  async function send({ text: fixed = null, regenerate = null, regions = null } = {}) {',
   '  async function regenerate(root, picture) {',
+  '  async function grantCommand(command) {',
 ].map(readOut).join('\n');
 
 let passed = 0;
@@ -39,8 +41,10 @@ function page({ running = false, status = 200 } = {}) {
   return new Function(
     'running',
     'status',
+    'parseGrantCommand',
     `'use strict';
-     const bodies = [], notes = [];
+     const bodies = [], notes = [], urls = [];
+     let grants = [], grantsOpen = false;
      let key = 'chat-ab', draft = 'half a thought', attachments = ['inbox/notes.pdf'];
      let chosenVersion = new Map([['images/a.png', 'images/a.png']]);
      const withAttachments = (typed, files) => [typed, ...files].join(' ');
@@ -49,6 +53,7 @@ function page({ running = false, status = 200 } = {}) {
      const receiveInput = () => {};
      const pushEntry = (e) => notes.push(e.text);
      const fetch = async (url, opts) => {
+       urls.push(url);
        bodies.push(JSON.parse(opts.body));
        return {
          status,
@@ -61,9 +66,9 @@ function page({ running = false, status = 200 } = {}) {
      return {
        regen: () => regenerate('images/a.png', 'images/b.png'),
        typed: (t) => { draft = t; return send(); },
-       state: () => ({ bodies, notes, draft, attachments, chosen: [...chosenVersion.keys()] }),
+       state: () => ({ bodies, notes, urls, draft, attachments, grantsOpen, chosen: [...chosenVersion.keys()] }),
      };`,
-  )(running, status);
+  )(running, status, parseGrantCommand);
 }
 
 {
@@ -98,6 +103,21 @@ function page({ running = false, status = 200 } = {}) {
   const body = p.state().bodies[0];
   is('regenerate' in body, false, 'a typed turn sends no regenerate field');
   is('regions' in body, false, 'nor any regions');
+}
+
+{
+  // The owner's `/grant` is a command, not a turn: it goes to the grants
+  // endpoint, never to `/send` and so never to the model, and the files in
+  // the composer wait for the next message.
+  const p = page();
+  await p.typed('/grant /srv/papers write');
+  const s = p.state();
+  is(s.urls, ['/api/chat/chat-ab/grants'], 'a typed /grant reaches the grants endpoint only');
+  is(s.bodies[0], { action: 'grant', path: '/srv/papers', access: 'write' }, 'as the parsed request');
+  is([s.draft, s.attachments], ['', ['inbox/notes.pdf']], 'the line is taken, the files stay');
+  const list = page();
+  await list.typed('/grants');
+  is([list.state().urls, list.state().grantsOpen], [[], true], 'a bare /grants opens the list and sends nothing');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
