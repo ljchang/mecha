@@ -336,12 +336,13 @@ impl Asker for WebAsker {
         // The conversation the turn was stamped with. A resumed conversation
         // keeps its recorded workspace under a new key, so the directory name
         // routed its questions to the chat that directory was made for — the
-        // owner saw a resumed thread's card land in main (2026-10-18). The
-        // directory name stays only for a context nothing stamped.
-        let key = match &ctx.conversation {
-            Some(key) => key.clone(),
-            None => ctx.workspace.file_name()?.to_str()?.to_string(),
-        };
+        // owner saw a resumed thread's card land in main (2026-10-18).
+        // Nothing stamped it: no conversation to route to, so decline (the
+        // tool's measured ending, as for an unanswered card) rather than guess
+        // from the directory name — the routing that sent an incognito card to
+        // an ordinary chat (#321) and a resumed thread's card to main
+        // (2026-10-18; review of #714).
+        let key = ctx.conversation.clone()?;
         let (questions, events, park) = (self.lookup)(&key)?;
 
         // Nobody is subscribed, so a card would be shown to an empty room for
@@ -520,6 +521,7 @@ mod tests {
         });
         let ctx = ToolCtx {
             workspace: std::path::PathBuf::from("/tmp/sess-w"),
+            conversation: Some("sess-w".into()),
             ..ToolCtx::default()
         };
         (WebAsker { lookup }, questions, events, ctx)
@@ -573,6 +575,27 @@ mod tests {
         .flatten();
         assert_eq!(reply, Some(Reply::Answered("here".into())));
         assert!(main.cards().is_empty(), "the question went to main");
+    }
+
+    /// A context no front end stamped declines rather than guessing a chat
+    /// from its directory name, even when that name matches an open one
+    /// (review of #714): a misroute shows one conversation's question in
+    /// another.
+    #[tokio::test]
+    async fn an_unstamped_question_declines_instead_of_guessing() {
+        let (web, questions, _events, ctx) = asker(None);
+        let unstamped = ToolCtx {
+            conversation: None,
+            ..ctx
+        };
+        assert_eq!(
+            unstamped.workspace.file_name().unwrap(),
+            "sess-w",
+            "the premise"
+        );
+        let reply = web.ask_about(&unstamped, "Which?", &[], None).await;
+        assert_eq!(reply, None);
+        assert!(questions.cards().is_empty());
     }
 
     fn scratch_park() -> Arc<mecha_core::questions::ParkingAsker> {
@@ -670,7 +693,10 @@ mod tests {
         });
         let tool = mecha_core::tool::request_access::RequestAccess;
         let input = serde_json::json!({"path": "/srv/papers", "reason": "the review"});
-        let why = tool.needs_a_person(&input).unwrap();
+        let why = tool
+            .needs_a_person(&input, &mecha_core::tool::ToolCtx::default())
+            .unwrap()
+            .why;
         let decision = approver.escalate(&tool, &input, &why).await;
         assert!(matches!(decision, Decision::Allow), "{decision:?}");
         let shown = seen.lock().unwrap().clone().unwrap_or_default();

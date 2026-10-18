@@ -116,9 +116,13 @@ impl Tool for RequestAccess {
         Capabilities::default().destructive()
     }
 
-    fn needs_a_person(&self, input: &Value) -> Option<String> {
+    /// No `grant` on the answer: `call` makes its own, re-admitting the
+    /// path at execution, because the filesystem may change between the ask
+    /// and the yes.
+    fn needs_a_person(&self, input: &Value, _ctx: &ToolCtx) -> Option<super::PersonAsk> {
+        let ask = |why: String| Some(super::PersonAsk { why, grant: None });
         let Ok((raw, access, reason)) = parse(input) else {
-            return Some(
+            return ask(
                 "The model is asking for access outside its workspace with a malformed \
                  request; it will be refused whatever you answer."
                     .into(),
@@ -132,7 +136,7 @@ impl Tool for RequestAccess {
                 requested.display()
             ),
         };
-        Some(format!(
+        ask(format!(
             "The model asks to reach {shown}, outside its workspace, for the rest of this \
              conversation. Its reason, in its own words: \"{reason}\". Saying yes lets every \
              later call in this conversation (and its subagents) use that path."
@@ -194,7 +198,9 @@ mod tests {
             json!({"path": std::env::temp_dir(), "reason": "papers"}),
         ] {
             assert!(
-                RequestAccess.needs_a_person(&input).is_some(),
+                RequestAccess
+                    .needs_a_person(&input, &ToolCtx::default())
+                    .is_some(),
                 "{input} would run with nobody asked"
             );
         }
