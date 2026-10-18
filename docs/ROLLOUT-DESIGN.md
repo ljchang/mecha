@@ -164,7 +164,7 @@ A new axis, separate from `read_only()`.
   - Inside a rollout, the `RolloutApprover` decides from this table alone.
     A server's own `readOnlyHint` would therefore be the only thing between
     an unattended run and a real write.
-  - So an MCP tool is `Irreversible`, and halts, until the operator's
+  - So an MCP tool is *undeclared*, and halts, until the operator's
     `[[mcp]]` entry names its class. This is the rule `Egress::Blind`
     already follows: earned in code, never granted by the party it
     protects against.
@@ -192,13 +192,20 @@ Its rows overlap as written: `mail_send` is routed *and* declares
 1. **Routed by the operator's outbox: `Staged`.** A routed call never
    executes in any world. That is also why the loop skips the interlock for
    it today.
-2. Undeclared: halt.
-3. `Irreversible`, including any `Chosen` egress and any `destructive`
-   tool.
-4. `Render`.
-5. `StoreWrite`.
-6. `Workspace`.
-7. `Read`.
+2. **Undeclared: its own row, and it halts.**
+3. **Any `Chosen` egress: `Irreversible`.**
+4. **Jailed to the workspace: `Workspace`.** `fs_write`, `fs_edit` and
+   confined `shell` all declare `destructive`, and confinement narrows only
+   their egress. So this row must come **before** the destructive one, or
+   the scratch-workspace half of the design is unreachable.
+5. **Any other `destructive` tool: `Irreversible`.**
+6. `Render`.
+7. `StoreWrite`, by name. This includes `image_library_reference`, which
+   declares `destructive` but writes only to the library store.
+8. `ReadThatRecords`, by name (the graph's reads).
+9. `Read`.
+
+Eight classes, with `Irreversible` reached from two rules.
 
 **Approval inside a rollout.** The dry world **narrows the run's
 configured guards; it never replaces them.** These are the losses §1.1
@@ -361,7 +368,9 @@ N3's condition and `CLAUDE.md`'s hearsay rule.
    - deterministic checks: the recipient is on the thread, dates resolve,
      the reply goes to the right thread;
    - `forecast::base_rate` **ranks only and never decides alone**. The
-     forecast stays sealed: neither the acting model nor the owner sees it.
+     forecast stays sealed: neither the acting model nor the owner sees it at
+     decision time. `sessions appraise` reads the ledger back afterwards,
+     through `forecast::summarize`, as it does today.
 4. **Cost, as a guard:** `RunStats` costs (turns, tokens, compactions), the
    existing work floor and the regression ceiling (`candidate.rs`).
 5. **Valence:** `appraisal::live_readout`, negatives only. It has no

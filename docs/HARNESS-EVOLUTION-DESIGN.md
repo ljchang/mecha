@@ -852,7 +852,10 @@ below remain for tasks the owner's stores cannot host.
 - Harness²: re-running the same task is what makes a behavioural contrast
   visible at all.
 
-**Shape.**
+**Shape.** The primary world is the live dry world: comparisons at
+sampled points, built as [`ROLLOUT-DESIGN.md`](ROLLOUT-DESIGN.md)'s phases
+(R1). What follows is the **fixture-world variant**, for tasks the owner's
+stores cannot host.
 - A candidate the replay gate dropped as divergent becomes an `experiment`
   with two arms (current against candidate) in `trial_env` homes.
 - **Being free of side effects is a property of the manifest, not of the
@@ -971,9 +974,12 @@ covering what the diagnostician reads most.
     does not license this input.
   - The typed digest is inside §5's letter: closed-set names and counts
     are counters. **It needs no ruling.**
-  - The per-intervention withheld views carry no third-party text: the
-    owner's typed words and tool names. A clean transcript carries none by
-    definition. Both are outside §5's letter and inside its reason.
+  - The per-intervention withheld views carry the owner's typed words and
+    tool names, and **no third-party text except what the owner pasted into
+    a steer**. That is the reflector's bet today, taken at the same scale:
+    one moment the owner typed in order to intervene. A clean transcript
+    carries none by definition. Both are outside §5's letter and, with that
+    one bet named, inside its reason.
   - The outputs keep §5's protection where it matters. A config candidate
     is a number, and a prose or architecture candidate stages for the
     owner and never auto-accepts. **Both text halves wait on R6.**
