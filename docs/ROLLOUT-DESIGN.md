@@ -69,8 +69,8 @@ The research behind this document is summarised in §9, with links.
 
 ### 1.1 A defect found on the way, independent of this design
 
-> **Fix in flight:** branch `fix/live-replay-keeps-guards` (phase 0), opened
-> as its own PR, which `HANDOFF.md` will carry until it merges.
+> **Fix in flight:** PR #713 (branch `fix/live-replay-keeps-guards`), phase
+> 0. Its shape is the owner's ruling of 2026-10-18, below.
 
 `mecha replay --on-divergence live` builds its run with
 `RunContext::new(tool_ctx, approver)`: **no outbox route, no hooks, no
@@ -85,18 +85,31 @@ stages goes to the approver as an ordinary call instead.
 This is the silently-degrading-guard shape, and it is fixed ahead of
 everything else (phase 0, §8).
 
-**The fix is to build the run through the same `setup` path every
-front-end uses.** That carries the outbox route, the hooks and the approval
-rules together, and keeps carrying whatever the next lever adds. Refusing
-`live` while a route is configured would close the outbox half and leave
-the hooks and rules open.
+**The fix: live until the first consequential call** (owner's ruling,
+2026-10-18).
+- After the divergence, a live replay runs only **pure reads that nothing
+  configured guards**. It stops in front of the first call that is routed,
+  rule-gated, hook-watched or a write, and reports that call and its
+  arguments. Nothing is executed or staged.
+- The owner's reason: by the time a branch reaches a consequential action,
+  whether it is promising is already visible. The call is the result.
+- **The guards are asked as a gate inside the replay
+  (`replay_run::LiveGate`), not attached to the run.** Attached, they act
+  ahead of the tool. A recorded call they intercept *before* the divergence
+  then never reaches the recording's cursor, and the replay dies one call
+  later and runs the rest live. That was #713's first shape, and its review
+  caught it.
+- A live replay built without a gate executes nothing past its divergence.
+- This is the first slice of §3's dry world (live reads, halt at everything
+  else). Phases 1–2 add the scratch outbox and workspace on top of it.
 
 ---
 
 ## 2. The engine in one paragraph
 
 A **rollout** is five things:
-1. a **seed**: a recorded prefix, or a live conversation's current state;
+1. a **branch prefix**: a recorded prefix, or a live conversation's current
+   state. "Seed" is kept for the sampler's random seed throughout;
 2. a **world** that answers every call the recording cannot, without
    consequences (§3);
 3. a **driver** that keeps the agent going past the branch, across turns
@@ -105,10 +118,11 @@ A **rollout** is five things:
 5. a **scorer** that grades the outcome from structure and artifacts,
    never from a model's opinion of itself (§5).
 
-A **comparison** is always at least three rollouts from one seed, in one
+A **comparison** is always at least three rollouts from one branch prefix, in one
 world, at one time:
 - a **control** under the current harness;
-- a **second control** under the current harness with a different seed;
+- a **second control** under the current harness with a different sampling
+  seed;
 - one **arm per candidate**.
 
 The two controls give the noise floor. The **offline** schedule (§6) runs
@@ -122,7 +136,7 @@ clock.
 
 ### 3.1 The recorded world comes first, exactly
 
-- Before the branch, the seed is the recording, as `branch_at` builds it
+- Before the branch, the branch prefix is the recording, as `branch_at` builds it
   today.
 - After the branch, a call is answered from the recording only when **its
   name and its arguments both match** (`replay::same_arguments`) and the
@@ -155,9 +169,9 @@ A new axis, separate from `read_only()`.
 
 | Effect | What the dry world does | Examples today |
 |---|---|---|
-| `Read` | Executes for real | `fs_read`, `fs_list`, `document_read`, `mail_search`, `mail_get_thread`, `calendar_list_events`, `docs_read`, `web_search` (`Blind`) |
+| `Read` | Executes for real. **A rollout's path jail *is* its scratch workspace (`Workspace` below)**, so `fs_*` reads see the branch's own writes, never the pre-branch tree. "For real" means the world outside the workspace: mail, calendar, documents, search | `fs_read`, `fs_list`, `document_read`, `mail_search`, `mail_get_thread`, `calendar_list_events`, `docs_read`, `web_search` (`Blind`) |
 | `ReadThatRecords` | Executes in an **unrecorded** mode when the server has one; otherwise ruling **W1** decides | graph reads (`query_log`, `retrieval_touch`) |
-| `Staged` | Stages into a **scratch outbox** opened per rollout (`OutboxStore::open_like`). The model gets the same "Drafted, not sent" answer it gets live. The draft is kept for scoring and discarded with the rollout | `mail_send`, `mail_reply`, `calendar_*_event`, `docs_append`/`replace`, `sheets_write`, `factory__*` publishes |
+| `Staged` | Stages into a **scratch outbox** opened per rollout (`OutboxStore::open_like`). The model gets the same "Drafted, not sent" answer it gets live. The draft is kept for scoring and discarded with the rollout. A scratch outbox that cannot be opened halts the rollout: a staging failure never executes | `mail_send`, `mail_reply`, `calendar_*_event`, `docs_append`/`replace`, `sheets_write`, `factory__*` publishes |
 | `Workspace` | Executes against a **scratch copy** of the workspace taken at branch time. Shell runs sandboxed against the copy. The copy lives where run workspaces already live, under `~/.mecha/work/<producer>/` (`work.rs`). The rule it must obey is `work::ensure_outside_mecha_home`'s: a jail may never *contain* the mecha home. A root under it is the normal case | `fs_write`, `fs_edit`, confined `shell` |
 | `StoreWrite` | Not executed. Answered with a synthetic "recorded, not delivered" result and kept in the rollout record (ruling **W2**) | `message_send`, `ask_user` (headless), `hud_propose`, `persona_propose`, `image_library_propose`/`_reference` |
 | `Render` | Not executed: the rollout halts at the call (a render costs the GPU, and a fake picture misleads the continuation) | `image_generate`, video |
@@ -182,7 +196,7 @@ exists to fix.
 
 ### 3.3 Taint, locality, pacing
 
-- **Taint.** A rollout starts from the seed's taint, conservatively, as
+- **Taint.** A rollout starts from the branch prefix's taint, conservatively, as
   `drive_branch` already does (unknown provenance counts as external). The
   interlock runs unchanged inside it.
   - Online, the live conversation afterwards carries the **union** of every
@@ -243,11 +257,15 @@ It is unchanged.
 
 ## 4. The driver
 
-### 4.1 Seed
+### 4.1 Branch prefix
 
-- `branch_at`'s prefix, with **the goal anchor and harness notes restored**:
-  a new `Conversation::resumed_from` that carries what `resumed` drops
-  today.
+- `branch_at`'s prefix, with **the goal anchor, harness notes and path
+  grants restored**: a new `Conversation::resumed_from` that carries what
+  `resumed` drops today.
+  - Grants matter as much as the anchor. A branch from a run that held a
+    grant would otherwise depart on a jail refusal the recording never saw,
+    which is instrument noise charged to the candidate. The repair already
+    exists: `session::Transcript` re-admits grants with `grant::readmit`.
 - The branch point is any assistant boundary, the constraint
   `BRANCHING-DESIGN.md` set.
 
@@ -401,6 +419,10 @@ structural can tell which continuation was better.
    - The live run re-issues the winner's first call, with the same tool and
      arguments, through the normal path. A send stages into the owner's real
      outbox there, exactly as if no preplay had happened.
+   - The winner's first call therefore runs twice, once in the dry world
+     and once live. That is deliberate: a second real read is the price of
+     never stitching two worlds together. For a paid or rate-limited
+     backend, it is one extra call per preplay.
    - Nothing from the scratch world is adopted. Every rollout's scratch
      draft, the winner's included, is scored and deleted with it (§5.3).
      The live record is the live run's own, never a stitch of two worlds.
@@ -432,7 +454,7 @@ Each phase ships and is measured before the next starts.
 
 | Phase | What | Exit test |
 |---|---|---|
-| **0** | Fix §1.1: live replay keeps the outbox, hooks and approval rules, or refuses | A test that drives `--on-divergence live` past a divergence into a routed tool, and fails on today's code |
+| **0** | Fix §1.1: live until the first consequential call (`LiveGate`) | A routed call past the divergence stops the replay and executes nothing. A recording full of routed calls that the model reproduces replays to its end. A replay built without a gate executes nothing past its divergence |
 | **1** | The effect axis (§3.2): a closed enum, declared in code for built-in and first-party tools, earned from the operator for third-party MCP tools, annotations caution-only, undeclared halts. Exact-argument recorded matching for rollouts | Every registered tool has a class. A test registers a third-party tool that claims `readOnlyHint` with no operator class, and sees a halt |
 | **2** | The dry world: scratch outbox, scratch workspace copy, store-write answers, halts, `RolloutApprover` behind the configured rules and hooks, R29 in the engine, seat and voice gating | Integration test, in the confinement tests' style: a rollout that tries every effect class leaves the real outbox, stores and workspace byte-identical. **And** a configured `forbid` rule and a denying `pre_tool` hook each halt a rollout at a call the effect table would have allowed. The byte-identical test cannot catch a dropped rule, because a scratch write leaves the real tree untouched either way |
 | **3** | `drive_rollout`, single-turn: restored anchor, `StopCause::Horizon`, two controls, the `ComparisonStore` schema | **Measure the control noise floor on the live corpus first.** If the controls disagree more than candidates plausibly could, stop and fix sampling (seeded, pinned serving) before building on it |
