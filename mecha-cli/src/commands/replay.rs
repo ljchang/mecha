@@ -18,7 +18,9 @@ use anyhow::{bail, Context, Result};
 use mecha_core::agent::{Agent, RunContext};
 use mecha_core::config::PermissionMode;
 use mecha_core::replay::{extract, Divergence};
-use mecha_core::replay_run::{drive, replay_registry, OnDivergence};
+use mecha_core::replay_run::{
+    drive, replay_registry_live, replay_registry_reporting, LiveGate, OnDivergence,
+};
 use mecha_core::session::Session;
 use mecha_core::tool::ModeApprover;
 use std::path::PathBuf;
@@ -58,7 +60,11 @@ pub struct Args {
     /// `stop` ends the run there — after a divergence, every later recorded
     /// result answers a question nobody asked. `error` does the same and exits
     /// nonzero on *any* divergence, argument spellings included; use it in CI.
-    /// `live` abandons the recording and keeps going against the real tools.
+    /// `live` keeps going against the real tools, but only through unguarded
+    /// pure reads: it stops in front of the first call your outbox routes, an
+    /// approval rule or a `pre_tool` hook covers, or that writes, sends or
+    /// starts a subagent, and reports that call (`halted_before` in `--json`).
+    /// A stop there is the result, not a failure: the exit status is 0.
     #[arg(long, value_name = "stop|error|live", default_value = "stop")]
     pub on_divergence: String,
 
@@ -214,22 +220,41 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         .as_deref()
         .and_then(|h| mecha_core::surface::SurfaceStore::open_default()?.load(h))
         .unwrap_or_default();
-    let registry = replay_registry(
-        &recorded.tools,
-        prepared.agent.registry(),
-        // Ignored under `Live`, where a missing tool must stay fatal; consulted
-        // under both non-executing modes, `Stop` and `Error` alike — see
-        // `replay_registry`.
-        Some(&crate::setup::surface_only_registry()),
-        &recorded_specs,
-        trajectory.calls.clone(),
-        mode,
-        cancel.clone(),
-    )?;
+    // **Live runs only what a real run would run unguarded, and stops in
+    // front of the first call anything configured would intercept**
+    // (`docs/ARCHITECTURE.md` §Session records and replay). It used to run past a divergence with
+    // no outbox route, no rules and no hooks, so a routed send reached the
+    // approver as an ordinary call and executed under `allow`. The guards are
+    // asked as a gate inside the replay, not attached to the run: attached,
+    // they act ahead of the tool, and a recorded call they intercept before
+    // the divergence never reaches the recording's cursor.
+    let (registry, probe) = if mode.executes() {
+        replay_registry_live(
+            &recorded.tools,
+            prepared.agent.registry(),
+            &recorded_specs,
+            trajectory.calls.clone(),
+            live_gate(prepared.agent.context()),
+            cancel.clone(),
+        )?
+    } else {
+        replay_registry_reporting(
+            &recorded.tools,
+            prepared.agent.registry(),
+            // Consulted under both non-executing modes, `Stop` and `Error`
+            // alike — see `replay_registry`.
+            Some(&crate::setup::surface_only_registry()),
+            &recorded_specs,
+            trajectory.calls.clone(),
+            mode,
+            cancel.clone(),
+        )?
+    };
 
     // Nothing executes in stop/error mode, so nothing needs approving. Live
-    // mode falls back to the configured permission mode — real tools run after
-    // the divergence, and they deserve exactly the scrutiny they always get.
+    // keeps the configured permission mode for the calls the loop still
+    // approves; past the divergence only the gate's pure reads run, and a
+    // read-only tool skips the approver in a real run too.
     let approver: Arc<dyn mecha_core::tool::Approver> = match mode {
         OnDivergence::Live => Arc::new(ModeApprover {
             mode: prepared.config.tools.permission_mode,
@@ -299,6 +324,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
 
     // --- run and judge ---
     let report = drive(&agent, &cx, &trajectory).await?;
+    let halted = probe.halted();
 
     if args.json {
         println!(
@@ -315,11 +341,20 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 "turns": report.turns,
                 "stopped_early": report.stopped_early,
                 "divergences": report.divergences,
+                "halted_before": halted,
                 "final_text": report.final_text,
             })
         );
     } else {
         render_report(&report, &trajectory.final_text);
+        for h in &halted {
+            println!(
+                "stopped before `{}`, a consequential call past the divergence ({}); \
+                 that call was not executed",
+                h.tool, h.reason
+            );
+            println!("  arguments: {}", h.input);
+        }
     }
 
     if mode == OnDivergence::Error && !report.divergences.is_empty() {
@@ -329,6 +364,28 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// The gate a live replay runs past its divergence: the routed names, the
+/// approval rules and the hooks `setup` built for this run — the same ones
+/// every front-end's run carries.
+fn live_gate(configured: &RunContext) -> LiveGate {
+    let routed = configured
+        .outbox
+        .as_ref()
+        .map(|route| {
+            route
+                .routed()
+                .chain(route.publishes())
+                .map(String::from)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    LiveGate::new(
+        routed,
+        Arc::clone(&configured.policy),
+        Arc::clone(&configured.hooks),
+    )
 }
 
 fn render_report(report: &mecha_core::replay_run::ReplayReport, recorded_final: &str) {
@@ -404,4 +461,115 @@ fn resolve_session(arg: &str) -> Result<PathBuf> {
         return Ok(as_path);
     }
     Session::find(&Session::default_dir()?, arg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mecha_core::outbox::{OutboxRoute, OutboxStore};
+    use mecha_core::tool::{Tool, ToolCtx, ToolOutput};
+    use serde_json::{json, Value};
+
+    struct ReadNamed(&'static str);
+    #[async_trait::async_trait]
+    impl Tool for ReadNamed {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn description(&self) -> &str {
+            "test"
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        async fn call(&self, _input: Value, _ctx: &ToolCtx) -> anyhow::Result<ToolOutput> {
+            Ok(ToolOutput::ok("ran"))
+        }
+    }
+
+    /// The other two halves of the configured guards (review of #712): a gate
+    /// that dropped the run's approval rules or its `pre_tool` hooks would
+    /// pass the routed-names test above and fail open here.
+    #[test]
+    fn the_live_gate_carries_the_runs_rules_and_hooks() {
+        #[derive(serde::Deserialize)]
+        struct W {
+            rule: Vec<mecha_core::policy::RuleConfig>,
+        }
+        let w: W = toml::from_str(
+            r#"
+[[rule]]
+tool = "graph__kg_search"
+decision = "prompt"
+"#,
+        )
+        .unwrap();
+        let configured = RunContext::new(
+            ToolCtx::default(),
+            Arc::new(ModeApprover {
+                mode: PermissionMode::Allow,
+            }),
+        )
+        .with_policy(Arc::new(
+            mecha_core::policy::ExecPolicy::from_config(&w.rule, true).unwrap(),
+        ))
+        .with_hooks(Arc::new(
+            mecha_core::hooks::HookSet::from_config(&[mecha_core::config::HookConfig {
+                event: "pre_tool".into(),
+                command: "true".into(),
+                tools: vec!["fs_read".into()],
+                timeout_secs: None,
+            }])
+            .unwrap(),
+        ));
+        let gate = live_gate(&configured);
+        assert!(gate
+            .refuses(&ReadNamed("graph__kg_search"), &json!({}))
+            .unwrap()
+            .contains("approval rule"));
+        assert!(gate
+            .refuses(&ReadNamed("fs_read"), &json!({}))
+            .unwrap()
+            .contains("pre_tool hook"));
+        assert_eq!(gate.refuses(&ReadNamed("fs_list"), &json!({})), None);
+    }
+
+    /// The regression (`docs/ARCHITECTURE.md` §Session records and replay): a live replay ran past
+    /// its divergence with none of the guards the run was configured with.
+    /// The gate it now runs behind is built from them — the routed and the
+    /// publish names both — and leaves an unrouted read alone.
+    #[test]
+    fn the_live_gate_is_the_runs_configured_route_names() {
+        let root =
+            std::env::temp_dir().join(format!("mecha-replay-gate-test-{}", uuid::Uuid::new_v4()));
+        let configured = RunContext::new(
+            ToolCtx::default(),
+            Arc::new(ModeApprover {
+                mode: PermissionMode::Allow,
+            }),
+        )
+        .with_outbox(Arc::new(OutboxRoute::new(
+            OutboxStore::open(&root).unwrap(),
+            ["mail__mail_send".to_string()],
+            ["factory__bundle_publish".to_string()],
+        )));
+        let gate = live_gate(&configured);
+        // The store is only needed to build the route; gone before any assert
+        // can fail and leave it behind.
+        let _ = std::fs::remove_dir_all(&root);
+        for routed in ["mail__mail_send", "factory__bundle_publish"] {
+            assert_eq!(
+                gate.refuses(&ReadNamed(routed), &json!({})).as_deref(),
+                Some("the outbox routes it"),
+                "{routed} is routed and must stop the replay, not run"
+            );
+        }
+        assert_eq!(
+            gate.refuses(&ReadNamed("mail__mail_search"), &json!({})),
+            None
+        );
+    }
 }
