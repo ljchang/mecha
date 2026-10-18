@@ -416,8 +416,13 @@ pub trait Tool: Send + Sync {
     /// the approver is then shown (`with_schema_defaults` runs later), so a
     /// `why` that depends on a defaulted argument must apply the default
     /// itself, as `request_access`'s `parse` does for `access`.
-    fn needs_a_person(&self, input: &Value) -> Option<String> {
-        let _ = input;
+    ///
+    /// Handed the run's context too, so a file tool can tell a path outside
+    /// the jail from one inside it ([`ToolCtx::ask_for_path`]), and the
+    /// answer may carry the grant a yes creates ([`PersonAsk::grant`]), which
+    /// the loop adds before the call runs.
+    fn needs_a_person(&self, input: &Value, ctx: &ToolCtx) -> Option<PersonAsk> {
+        let _ = (input, ctx);
         None
     }
 
@@ -615,6 +620,18 @@ pub struct PersonaSelf {
     pub voice: Option<String>,
 }
 
+/// What [`Tool::needs_a_person`] puts in front of a person, and what a yes
+/// gives. `grant` is how a file tool asks the way Claude Code does — "allow
+/// reading this folder for the rest of the conversation" — without the
+/// model having to know `request_access` exists: on `Allow` the loop adds it
+/// to the run's grants before the call executes, and on anything else it is
+/// dropped. A grant here has already passed [`crate::grant::admit`].
+#[derive(Debug, Clone)]
+pub struct PersonAsk {
+    pub why: String,
+    pub grant: Option<crate::grant::Grant>,
+}
+
 /// What a tool is allowed to touch.
 #[derive(Debug, Clone)]
 pub struct ToolCtx {
@@ -633,6 +650,15 @@ pub struct ToolCtx {
     /// [`ToolCtx::resolve_for`], so a caller that never opted in keeps the
     /// one-root jail ([`crate::grant`]).
     pub grants: crate::grant::Grants,
+    /// The front end's own name for the conversation this run belongs to,
+    /// where one agent serves many (the web chat's session key). Stamped by
+    /// the front end per turn, never by a model, and read by a tool that
+    /// answers back to a person, so `ask_user`'s question reaches the
+    /// conversation that asked. The workspace's directory name is not that
+    /// name: a resumed conversation keeps its recorded workspace under a new
+    /// key, and its questions went to the chat that directory was first
+    /// made for (2026-10-18). `None` where a front end serves one.
+    pub conversation: Option<String>,
     pub shell_timeout: std::time::Duration,
     pub security: SecurityConfig,
     /// The byte budget one *turn's* tool results share, divided equally
@@ -1028,6 +1054,7 @@ impl Default for ToolCtx {
             review_hint: None,
             workspace: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             grants: crate::grant::Grants::default(),
+            conversation: None,
             shell_timeout: std::time::Duration::from_secs(120),
             security: SecurityConfig::default(),
             output_budget_bytes: 24_000,
@@ -1301,6 +1328,71 @@ impl ToolCtx {
             "path {raw:?} resolves outside the workspace ({}).{ask}",
             self.workspace_root().display()
         )
+    }
+
+    /// The question a file tool asks when the model reaches outside the
+    /// workspace, Claude Code's way: one card naming the path, and a yes that
+    /// opens its folder for the rest of the conversation. `None` — the call
+    /// goes ahead and `resolve_for` decides — when the path is already
+    /// reachable, when nobody here could answer (`Grants::requestable`, which
+    /// `run_in` sets only where `request_access` itself is dispatchable),
+    /// while planning (a grant would outlive the plan), and when nothing
+    /// about the path could be granted: the never-granted places are refused
+    /// before a person is asked, by the jail's own error.
+    ///
+    /// **It waits for an answer, as every approval card does.** `requestable`
+    /// says a person could answer on this surface, not that one is looking:
+    /// on a web chat whose page is open and unattended, a reach outside waits
+    /// the approval timeout (two minutes) and then ends `Blocked`, where it
+    /// used to fail at once. Deliberate — the owner coming back to the phone
+    /// is the case the card exists for, and Claude Code waits the same way —
+    /// and it fails closed (review of #714, pass 3).
+    ///
+    /// The folder, not the file, because a model listing or reading through
+    /// a directory would otherwise raise a card per file; the file alone only
+    /// when its folder cannot be granted (a file directly in `$HOME`, whose
+    /// folder holds the mecha home).
+    pub fn ask_for_path(
+        &self,
+        tool: &str,
+        raw: &str,
+        access: crate::grant::Access,
+    ) -> Option<PersonAsk> {
+        if !self.grants.requestable || self.phase == crate::agent::Phase::Plan {
+            return None;
+        }
+        let resolved = self.canonical_candidate(raw).ok()?;
+        if self.inside_jail(&resolved) || self.grants.covering(&resolved, access).is_some() {
+            return None;
+        }
+        let folder = if resolved.is_dir() {
+            Some(resolved.clone())
+        } else {
+            resolved.parent().map(Path::to_path_buf)
+        };
+        let root = folder
+            .and_then(|f| crate::grant::admit(&f).ok())
+            .or_else(|| crate::grant::admit(&resolved).ok())?;
+        let reach = if root == resolved {
+            "it".to_string()
+        } else {
+            format!("everything in {}", root.display())
+        };
+        Some(PersonAsk {
+            why: format!(
+                "`{tool}` wants to {} {}, which is outside its workspace. Saying yes lets \
+                 this conversation (and its subagents) {} {reach} from now on; `/revoke` \
+                 ends it.",
+                access.as_str(),
+                resolved.display(),
+                access.describe(),
+            ),
+            grant: Some(crate::grant::Grant {
+                path: root,
+                access,
+                source: crate::grant::Source::Approved,
+            }),
+        })
     }
 
     fn workspace_root(&self) -> PathBuf {
@@ -2815,6 +2907,74 @@ mod jail_tests {
 
         std::fs::remove_dir_all(&workspace).ok();
         std::fs::remove_dir_all(&outside).ok();
+    }
+
+    /// `ask_for_path` asks only when it should: not for a path already
+    /// reachable, not where nobody could answer, not while planning; and a
+    /// file's question offers its folder, a directory's itself.
+    #[test]
+    fn a_reach_outside_asks_for_the_folder_only_when_it_should() {
+        use crate::grant::{Access, Grant, Grants, Source};
+        let workspace = scratch("ask-ws");
+        let papers = scratch("ask-papers").canonicalize().unwrap();
+        std::fs::write(papers.join("a.pdf"), "x").unwrap();
+        std::fs::write(workspace.join("in.txt"), "x").unwrap();
+        let mut grants = Grants::default().for_run(&[]);
+        grants.requestable = true;
+        let ctx = ToolCtx {
+            workspace: workspace.clone(),
+            grants,
+            ..ToolCtx::default()
+        };
+        let file = papers.join("a.pdf").display().to_string();
+        let ask = ctx.ask_for_path("fs_read", &file, Access::Read).unwrap();
+        assert_eq!(ask.grant.unwrap().path, papers, "a file's folder");
+        let dir = papers.display().to_string();
+        let ask = ctx.ask_for_path("fs_list", &dir, Access::Read).unwrap();
+        assert_eq!(ask.grant.unwrap().path, papers, "a directory itself");
+        assert!(
+            ctx.ask_for_path("fs_read", "in.txt", Access::Read)
+                .is_none(),
+            "inside"
+        );
+
+        let planning = ToolCtx {
+            phase: crate::agent::Phase::Plan,
+            ..ctx.clone()
+        };
+        assert!(planning
+            .ask_for_path("fs_read", &file, Access::Read)
+            .is_none());
+        let mut quiet = ctx.grants.clone();
+        quiet.requestable = false;
+        let nobody = ToolCtx {
+            grants: quiet,
+            ..ctx.clone()
+        };
+        assert!(nobody
+            .ask_for_path("fs_read", &file, Access::Read)
+            .is_none());
+
+        ctx.grants
+            .add(Grant {
+                path: papers.clone(),
+                access: Access::Read,
+                source: Source::Owner,
+            })
+            .unwrap();
+        assert!(
+            ctx.ask_for_path("fs_read", &file, Access::Read).is_none(),
+            "covered"
+        );
+        let upgrade = ctx.ask_for_path("fs_write", &file, Access::Write).unwrap();
+        assert_eq!(
+            upgrade.grant.unwrap().access,
+            Access::Write,
+            "a read grant asks to write"
+        );
+        for d in [&workspace, &papers] {
+            std::fs::remove_dir_all(d).ok();
+        }
     }
 
     /// A grant opens `resolve_for` and nothing else: the strict `resolve`

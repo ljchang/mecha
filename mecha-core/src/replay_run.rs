@@ -331,8 +331,8 @@ impl Tool for ReplayTool {
     /// default `None` would be the silently wrong answer. Under `Live` the
     /// tool genuinely runs, and a call that is a person's decision
     /// (`request_access`) must still reach one — a replay is not a person.
-    fn needs_a_person(&self, input: &Value) -> Option<String> {
-        self.inner.needs_a_person(input)
+    fn needs_a_person(&self, input: &Value, ctx: &ToolCtx) -> Option<crate::tool::PersonAsk> {
+        self.inner.needs_a_person(input, ctx)
     }
 
     fn capabilities(&self) -> Capabilities {

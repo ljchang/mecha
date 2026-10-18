@@ -152,4 +152,29 @@ mod tests {
         assert!(registry.get("image_library_reference").is_none());
         assert!(registry.get("image_library_propose").is_some());
     }
+
+    /// Nor the one tool that widens the jail: read-only for the approver, so
+    /// only its `destructive` keeps it from reading as a public read in a
+    /// `research` or `coding` child (review of #714). `assistant` keeps every
+    /// read-only tool, private ones included, and keeping this one is the
+    /// point of that profile.
+    #[test]
+    fn only_the_assistant_profile_keeps_request_access() {
+        for (profile, kept) in [
+            (ToolProfile::Research, false),
+            (ToolProfile::Coding, false),
+            (ToolProfile::Assistant, true),
+        ] {
+            let mut registry = Registry::new();
+            registry.insert(std::sync::Arc::new(
+                crate::tool::request_access::RequestAccess,
+            ));
+            profile.narrow(&mut registry, &[]);
+            assert_eq!(
+                registry.get("request_access").is_some(),
+                kept,
+                "{profile:?}"
+            );
+        }
+    }
 }

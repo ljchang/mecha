@@ -355,7 +355,10 @@ async fn shutdown_signal() {
 /// cached prefix; the per-thread parts ride on `RunContext`. Built by a
 /// [`crate::follow::Follower`], so it follows the router's loaded model and a
 /// switch made anywhere reaches the next Slack run.
-fn agent_opts(global: &GlobalOpts, cfg: &mecha_core::config::SlackConfig) -> Result<GlobalOpts> {
+pub(crate) fn agent_opts(
+    global: &GlobalOpts,
+    cfg: &mecha_core::config::SlackConfig,
+) -> Result<GlobalOpts> {
     Ok(GlobalOpts {
         // Global config only, like a trigger run: a project's `mecha.toml`
         // arrives with a cloned repository and must not shape a run someone
