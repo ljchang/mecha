@@ -145,7 +145,9 @@ pub const READ_ONLY_WRITERS: &[&str] = &[
     "image_library_reference",
     "message_send",
     "persona_propose",
-    // Posts a file into a Slack thread.
+    // Posts a file into a Slack thread. Defined in mecha-cli: a name, not a
+    // dependency, and an accepted cost of the list being temporary. The
+    // effect class that replaces it is declared where each tool lives.
     "show_file",
 ];
 
@@ -1580,18 +1582,24 @@ mod tests {
                 }
             }
         }
-        // Everything ahead of the file's first test module. A `#[cfg(test)]`
-        // on a lone helper does not end the production code, so the cut is
-        // at a test *module*.
+        // Everything ahead of the file's first *inline* test module. A
+        // `#[cfg(test)]` on a lone helper does not end the production code,
+        // and neither does `#[cfg(test)] mod foo;`: that declares a sibling
+        // file, and treating it as the cut would hide the rest of the
+        // declaring file (`learning.rs` would end at line 57 of 8763).
         fn production(src: &str) -> &str {
             let mut from = 0;
             while let Some(at) = src[from..].find("#[cfg(test)]") {
                 let at = from + at;
                 let rest = src[at + "#[cfg(test)]".len()..].trim_start();
-                if rest.starts_with("mod ")
-                    || rest.starts_with("pub mod ")
-                    || rest.starts_with("pub(crate) mod ")
-                {
+                let inline_mod = ["mod ", "pub mod ", "pub(crate) mod "]
+                    .iter()
+                    .filter_map(|kw| rest.strip_prefix(kw))
+                    .any(|tail| {
+                        tail.split_once('{')
+                            .is_some_and(|(name, _)| !name.contains(';'))
+                    });
+                if inline_mod {
                     return &src[..at];
                 }
                 from = at + 1;
