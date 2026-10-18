@@ -1343,9 +1343,12 @@ impl ToolCtx {
     /// goes ahead and `resolve_for` decides — when the path is already
     /// reachable, when nobody here could answer (`Grants::requestable`, which
     /// `run_in` sets only where `request_access` itself is dispatchable),
-    /// while planning (a grant would outlive the plan), and when nothing
-    /// about the path could be granted: the never-granted places are refused
-    /// before a person is asked, by the jail's own error.
+    /// while planning (a grant would outlive the plan), when the run holds no
+    /// grants and can be given none (`Grants::is_off`: `--no-grants`, an
+    /// incognito room — independent of `requestable`, which `run_in` sets
+    /// after the off cell is minted), and when nothing about the path could
+    /// be granted: the never-granted places are refused before a person is
+    /// asked, by the jail's own error.
     ///
     /// **It waits for an answer, as every approval card does.** `requestable`
     /// says a person could answer on this surface, not that one is looking:
@@ -1365,7 +1368,10 @@ impl ToolCtx {
         raw: &str,
         access: crate::grant::Access,
     ) -> Option<PersonAsk> {
-        if !self.grants.requestable || self.phase == crate::agent::Phase::Plan {
+        if !self.grants.requestable
+            || self.grants.is_off()
+            || self.phase == crate::agent::Phase::Plan
+        {
             return None;
         }
         let resolved = self.canonical_candidate(raw).ok()?;
@@ -1388,8 +1394,9 @@ impl ToolCtx {
         Some(PersonAsk {
             why: format!(
                 "`{tool}` wants to {} {}, which is outside its workspace. Saying yes lets \
-                 this conversation (and its subagents) {} {reach} from now on; `/revoke` \
-                 ends it.",
+                 this conversation (and its subagents) {} {reach} until the conversation \
+                 ends, or until `/revoke` where the chat offers one (the web chat, the TUI \
+                 and `mecha chat` do; Slack does not).",
                 access.as_str(),
                 resolved.display(),
                 access.describe(),
@@ -1698,6 +1705,23 @@ pub trait Approver: Send + Sync {
         ))
     }
 
+    /// A tool's own question for a person (`Tool::needs_a_person`): a path
+    /// outside the jail, and the grant a yes would make. Every such question
+    /// today is a grant, never a send.
+    ///
+    /// Separate from `escalate` so a surface can put *this* in front of
+    /// someone while it keeps refusing the interlock's ask. A voice call
+    /// runs with approvals off, so its escalations had nobody to reach and
+    /// a reach outside the workspace failed at once; the owner ruled
+    /// (2026-10-18) that a spoken turn shows the grant on the page's card,
+    /// and that sends stay refused there. The default is `escalate`, so an
+    /// approver that has not thought about grants keeps today's answer.
+    /// A wrapper that forwards `escalate` must forward this too, or the
+    /// inner approver's answer is skipped.
+    async fn escalate_access(&self, tool: &dyn Tool, input: &Value, why: &str) -> Decision {
+        self.escalate(tool, input, why).await
+    }
+
     /// An approval rule has said *a person must see this call*
     /// (`policy::RuleDecision::Prompt`), and `why` is the ruling's sentence.
     ///
@@ -1894,6 +1918,13 @@ impl Approver for FileDenyApprover {
         match self.scripted(tool, input) {
             Some(d) => d,
             None => self.inner.escalate(tool, input, why).await,
+        }
+    }
+
+    async fn escalate_access(&self, tool: &dyn Tool, input: &Value, why: &str) -> Decision {
+        match self.scripted(tool, input) {
+            Some(d) => d,
+            None => self.inner.escalate_access(tool, input, why).await,
         }
     }
 
@@ -2238,8 +2269,38 @@ mod denial_tests {
             approver.escalate(&Echo, &rm, "why").await,
             Decision::Deny("not on my machine".into())
         );
+        assert_eq!(
+            approver.escalate_access(&Echo, &rm, "why").await,
+            Decision::Deny("not on my machine".into())
+        );
         let ls = serde_json::json!({"command": "ls"});
         assert_eq!(approver.approve(&Echo, &ls).await, Decision::Allow);
+        // The grant door falls through to the inner approver's *own* grant
+        // door, not its send door: they answer differently on a voice call,
+        // and without the forward the default would route the grant back
+        // through this wrapper's `escalate` (review of #716).
+        struct Doors;
+        #[async_trait]
+        impl Approver for Doors {
+            async fn approve(&self, _: &dyn Tool, _: &Value) -> Decision {
+                Decision::Allow
+            }
+            async fn escalate(&self, _: &dyn Tool, _: &Value, _: &str) -> Decision {
+                Decision::Blocked("sends are refused here".into())
+            }
+            async fn escalate_access(&self, _: &dyn Tool, _: &Value, _: &str) -> Decision {
+                Decision::Allow
+            }
+        }
+        let doors = FileDenyApprover::with_rules(Vec::new(), Arc::new(Doors));
+        assert_eq!(
+            doors.escalate_access(&Echo, &ls, "why").await,
+            Decision::Allow
+        );
+        assert!(matches!(
+            doors.escalate(&Echo, &ls, "why").await,
+            Decision::Blocked(_)
+        ));
         let any = serde_json::json!({"path": "/home/me/secrets.txt"});
         assert_eq!(
             approver.approve(&Echo, &any).await,

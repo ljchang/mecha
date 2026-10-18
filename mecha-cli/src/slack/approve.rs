@@ -448,7 +448,7 @@ mod tests {
             .unwrap()
             .why;
         assert!(matches!(
-            a.escalate(&tool, &input, &why).await,
+            a.escalate_access(&tool, &input, &why).await,
             Decision::Allow
         ));
         task.await.unwrap();

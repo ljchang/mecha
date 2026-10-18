@@ -1909,18 +1909,20 @@ async fn prepare_tools_carrying(
     };
 
     // `request_access` exists only where a person can answer it, on
-    // `compact`'s rule: every call goes to `Approver::escalate`, which a
-    // headless approver answers `Blocked`, so on a trigger or a piped `run`
+    // `compact`'s rule: every call goes to `Approver::escalate_access`, which
+    // a headless approver answers `Blocked`, so on a trigger or a piped `run`
     // it could only ever fail — and would cost a slot in every prompt to say
     // so. The web and Slack approvers put the call on the owner's card in
-    // `ask` and `allow` alike, and refuse it under `read-only` — a mode those
-    // surfaces switch per session at runtime, so they register it whatever
-    // the startup mode and leave the refusal to the approver. A terminal does only
+    // every mode (the tool is `read_only`, so a read-only chat asks too; a
+    // voice turn's approver does as well), and those surfaces switch modes
+    // per session at runtime, so they register it whatever the startup mode
+    // and leave the answer to the approver. A terminal does only
     // when a person is at it **and the mode is `ask`**: under `-y` or
     // `permission_mode = "allow"` its approver is a `ModeApprover`, whose
-    // `escalate` is `Blocked` (review of #711). A TUI started that way and
-    // switched to `/mode ask` later goes without the tool until restarted —
-    // the tool list is the front of the cached prefix and does not toggle.
+    // `escalate_access` is `Blocked` (review of #711). A TUI started that
+    // way and switched to `/mode ask` later goes without the tool until
+    // restarted — the tool list is the front of the cached prefix and does
+    // not toggle.
     // Filtered like `compact` too: an allowlist that does not name it has
     // said no.
     if offers_request_access(opts, &cfg, interactive) {
@@ -3085,8 +3087,8 @@ mod tests {
         );
     }
 
-    /// `request_access` is registered only where its `escalate` reaches a
-    /// person: never under `-y` on a terminal, never headless.
+    /// `request_access` is registered only where its `escalate_access`
+    /// reaches a person: never under `-y` on a terminal, never headless.
     #[test]
     fn a_jail_request_is_offered_only_where_a_person_can_answer_it() {
         use mecha_core::config::PermissionMode::{Allow, Ask, ReadOnly};

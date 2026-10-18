@@ -120,8 +120,15 @@ read, or read and write. Only a person makes one:
   It always asks: no permission mode, "always" answer or `--yes` can grant it,
   and a headless run is refused.
 
+On a voice call under `--voice-yes`, which otherwise runs with approvals off,
+a grant is the one thing still put to you — whether the model asked with
+`request_access` or a file tool reached outside the workspace: the card
+appears in the web chat hosting the call and the turn waits for your tap. A
+send the security interlock would ask about is refused on a call, as before.
+
 A live grant lasts as long as the conversation does — resuming keeps it, a
-new conversation starts without it, and a subagent inherits its parent's. To
+new conversation starts without it, and a subagent inherits its parent's.
+Slack has no `/revoke`, so a grant made there ends with the conversation. To
 keep one, add a `[[grant]]` line.
 
 Whatever the source, some places are **never** granted: a path that

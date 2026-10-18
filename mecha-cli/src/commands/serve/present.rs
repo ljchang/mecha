@@ -201,6 +201,61 @@ impl Approver for WebApprover {
     }
 }
 
+/// A spoken turn's approver under `--voice-yes`: every answer the flag owns
+/// is `ModeApprover { Allow }`'s, word for word, and one question still
+/// reaches the page — a grant (`Approver::escalate_access`), which a yes
+/// opens for the rest of the conversation and so is never the flag's to
+/// give. Owner, 2026-10-18: the card shows in the chat hosting the call and
+/// the turn waits for the tap; the interlock's `escalate` stays refused,
+/// as it was, because no card was ever the plan for a send mid-call.
+///
+/// The wait is bounded by [`APPROVAL_TIMEOUT`], and in practice sooner:
+/// with no page subscribed the card is only remembered for a reload, so an
+/// unanswered grant can hold the turn silent for that long before it ends
+/// `Blocked` — but the owner's next words barge in, and the cancel drains
+/// the pending card ("cancelled before anyone answered") rather than
+/// waiting it out.
+pub struct VoiceApprover {
+    pub page: WebApprover,
+}
+
+const VOICE_YES: ModeApprover = ModeApprover {
+    mode: PermissionMode::Allow,
+};
+
+#[async_trait]
+impl Approver for VoiceApprover {
+    async fn approve(&self, tool: &dyn Tool, input: &serde_json::Value) -> Decision {
+        VOICE_YES.approve(tool, input).await
+    }
+
+    async fn escalate(&self, tool: &dyn Tool, input: &serde_json::Value, why: &str) -> Decision {
+        VOICE_YES.escalate(tool, input, why).await
+    }
+
+    async fn escalate_access(
+        &self,
+        tool: &dyn Tool,
+        input: &serde_json::Value,
+        why: &str,
+    ) -> Decision {
+        // Straight to the card, past the page's mode: nothing else on this
+        // turn reads it (`approve` is the flag's), so a read-only page would
+        // refuse a write grant outside the workspace while the same write
+        // inside it ran unasked — and say "read-only" of a turn that is not
+        // (review of #716).
+        self.page.ask(tool, input, Some(why.to_string())).await
+    }
+
+    async fn consult(&self, tool: &dyn Tool, input: &serde_json::Value, why: &str) -> Decision {
+        VOICE_YES.consult(tool, input, why).await
+    }
+
+    async fn permit(&self, tool: &dyn Tool, input: &serde_json::Value) -> Decision {
+        VOICE_YES.permit(tool, input).await
+    }
+}
+
 /// What an approval card shows: the whole call, and the essentials a
 /// reviewer reads first. Both come from `Tool::review_input`, never the raw
 /// input — the page renders `draft` up front and hides `args` behind a
@@ -697,10 +752,58 @@ mod tests {
             .needs_a_person(&input, &mecha_core::tool::ToolCtx::default())
             .unwrap()
             .why;
-        let decision = approver.escalate(&tool, &input, &why).await;
+        let decision = approver.escalate_access(&tool, &input, &why).await;
         assert!(matches!(decision, Decision::Allow), "{decision:?}");
         let shown = seen.lock().unwrap().clone().unwrap_or_default();
         assert!(shown.contains("outside its workspace"), "{shown}");
+    }
+
+    /// A spoken turn under `--voice-yes` puts a grant on the page's card and
+    /// waits for the tap, while the flag still answers everything it owns
+    /// and the interlock's ask stays refused with no card (owner,
+    /// 2026-10-18). Before, the grant was refused at once like the send. A
+    /// write grant included, on a page left read-only (review of #716).
+    #[tokio::test]
+    async fn a_spoken_turn_asks_the_page_for_a_grant_and_still_refuses_a_send() {
+        // The page's default mode: a call ignores it, the grant door included.
+        let (page, questions) = approver(PermissionMode::ReadOnly, Duration::from_secs(5));
+        let mut rx = page.events.subscribe();
+        let voice = VoiceApprover { page };
+        let q2 = questions.clone();
+        tokio::spawn(async move {
+            while let Ok(event) = rx.recv().await {
+                if let WireEvent::Question { qid, .. } = event {
+                    q2.answer(qid, Answer::Approve);
+                    break;
+                }
+            }
+        });
+        // A write tool's grant, which a read-only page's `escalate` refuses.
+        let decision = voice
+            .escalate_access(
+                &FakeTool { read_only: false },
+                &serde_json::json!({"path": "/srv/papers/notes.md"}),
+                "outside its workspace",
+            )
+            .await;
+        assert!(matches!(decision, Decision::Allow), "{decision:?}");
+
+        let send = voice
+            .escalate(
+                &FakeTool { read_only: false },
+                &serde_json::json!({}),
+                "trifecta",
+            )
+            .await;
+        assert!(matches!(send, Decision::Blocked(_)), "{send:?}");
+        assert!(
+            questions.cards().is_empty(),
+            "a send's ask put a card up mid-call"
+        );
+        let write = voice
+            .approve(&FakeTool { read_only: false }, &serde_json::json!({}))
+            .await;
+        assert!(matches!(write, Decision::Allow), "the flag still answers");
     }
 
     #[tokio::test]

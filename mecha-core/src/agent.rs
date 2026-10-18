@@ -65,6 +65,12 @@ pub enum AgentEvent {
         messages_after: usize,
         prompt_tokens: u64,
     },
+    /// The grants this run reaches changed during a tool round — a card's
+    /// yes on a path outside the jail, or `request_access` — carrying the
+    /// whole set, standing first, as the run now holds it. A page showing the
+    /// conversation's grants reconciles against it mid-run, rather than at
+    /// its next reload (review of #714).
+    Grants(Vec<crate::grant::Grant>),
     Done(Box<RunOutcome>),
     /// Something happening inside a tool that contains a run of its own — a
     /// subagent's turn, seen from the parent. `tool` is the parent-visible
@@ -5004,6 +5010,10 @@ impl Agent {
         // their entries with the tool's actual per-call classification.
         let mut provenance: std::collections::BTreeMap<String, bool> =
             calls.iter().map(|(id, _, _)| (id.clone(), false)).collect();
+        // Both ways a round widens the jail — the loop adding a card's grant
+        // and `request_access` adding its own — land in this list, so one
+        // comparison at the end tells a page about either.
+        let grants_before = cx.tools.grants.live();
         let mut approved = Vec::new();
         let mut results: Vec<Option<Block>> = vec![None; calls.len()];
         // Every gate in this loop that settles a call this turn *without*
@@ -5505,9 +5515,11 @@ impl Agent {
                 }
             }
 
-            // A tool whose call is itself a person's decision says so, and
-            // takes the same door the interlock's `ask` does — `escalate`,
-            // which no permission mode answers (`Tool::needs_a_person`).
+            // A tool whose call is itself a person's decision says so
+            // (`Tool::needs_a_person`), and takes a door of its own —
+            // `escalate_access`, which no permission mode answers either, and
+            // which a surface may answer where it refuses the interlock's
+            // `escalate` (a voice call: the grant goes to the page's card).
             //
             // Remembered apart from the interlock's: `blocked_sends` counts
             // the sends the harness refused, and a jail request nobody was
@@ -5775,10 +5787,10 @@ impl Agent {
             // Whoever is asked sees the call *as it will execute*, defaults
             // and all — a card that omits a schema-defaulted argument is
             // asking for a decision about a call it is not showing. That is
-            // now **four** doors, not one: `escalate`, `consult`, `permit`
-            // and `approve` each put a call in front of somebody, and
-            // `escalate` and `consult` are the two that most need it, since
-            // each exists precisely to make a person look.
+            // now **five** doors, not one: `escalate`, `escalate_access`,
+            // `consult`, `permit` and `approve` each put a call in front of
+            // somebody, and the first three most need it, since each exists
+            // precisely to make a person look.
             //
             // `decide` reads the filled call too, and that is deliberate:
             // a rule is policy over the call **as it will execute**, so the
@@ -5838,7 +5850,14 @@ impl Agent {
                     tracing::info!(tool = %name, "forbidden by an approval rule");
                     Some(Decision::Blocked(reason))
                 }
-                (Some(why), _) => Some(cx.approver.escalate(tool.as_ref(), shown, why).await),
+                (Some(why), _) if send_escalation => {
+                    Some(cx.approver.escalate(tool.as_ref(), shown, why).await)
+                }
+                // The tool's own question — a grant — through its own door,
+                // which a surface may answer where it refuses sends.
+                (Some(why), _) => {
+                    Some(cx.approver.escalate_access(tool.as_ref(), shown, why).await)
+                }
                 (None, Some(RuleDecision::Prompt)) => {
                     // `consult`, not `approve`: a standing yes on the tool is
                     // exactly what a `prompt` rule must not be answered by.
@@ -6202,6 +6221,9 @@ impl Agent {
             });
         }
 
+        if cx.tools.grants.live() != grants_before {
+            emit(events, AgentEvent::Grants(cx.tools.grants.all()));
+        }
         let mut blocks: Vec<Block> = results.into_iter().flatten().collect();
         blocks.append(&mut pictures);
         (blocks, provenance)
@@ -11579,6 +11601,135 @@ mod tests {
         std::fs::remove_dir_all(&workspace).ok();
     }
 
+    /// A tool's own question takes `escalate_access`, never `escalate`: a
+    /// voice call answers the first on the page and refuses the second, so
+    /// the loop routing a grant through the send door would refuse it again
+    /// (owner, 2026-10-18).
+    #[tokio::test]
+    async fn a_grant_question_takes_its_own_door() {
+        struct GrantsOnly;
+        #[async_trait]
+        impl Approver for GrantsOnly {
+            async fn approve(&self, _tool: &dyn Tool, _input: &Value) -> Decision {
+                Decision::Allow
+            }
+            async fn escalate(&self, _tool: &dyn Tool, _input: &Value, _why: &str) -> Decision {
+                Decision::Blocked("sends are refused here".into())
+            }
+            async fn escalate_access(
+                &self,
+                _tool: &dyn Tool,
+                _input: &Value,
+                _why: &str,
+            ) -> Decision {
+                Decision::Allow
+            }
+        }
+        let dir = std::env::temp_dir().join(format!("mecha-grantdoor-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let calls = vec![
+            assistant(
+                vec![Block::ToolUse {
+                    id: "r".into(),
+                    name: "request_access".into(),
+                    input: json!({"path": dir.display().to_string(), "reason": "papers"}),
+                }],
+                StopReason::ToolUse,
+            ),
+            assistant(vec![Block::text("granted")], StopReason::EndTurn),
+        ];
+        let (mut agent, _) = agent_with(calls, PermissionMode::Ask);
+        agent
+            .registry
+            .insert(Arc::new(crate::tool::request_access::RequestAccess));
+        agent.set_approver(Arc::new(GrantsOnly));
+        let workspace =
+            std::env::temp_dir().join(format!("mecha-grantdws-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&workspace).unwrap();
+        agent.ctx_mut().workspace = workspace.clone();
+        let mut convo = Conversation::from(vec![Message::user("open my papers")]);
+        agent.run(&mut convo, None).await.unwrap();
+        assert_eq!(
+            convo.grants.len(),
+            1,
+            "the grant went through the send door"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&workspace).ok();
+    }
+
+    /// A grant made mid-run reaches a watching page as it happens — the web
+    /// chip reconciles against `AgentEvent::Grants` — and a round that adds
+    /// nothing says nothing (review of #714: the chip stayed stale until a
+    /// reload, and a first grant never showed the chip at all).
+    #[tokio::test]
+    async fn a_grant_made_in_a_round_is_announced_once() {
+        struct Yes;
+        #[async_trait]
+        impl Approver for Yes {
+            async fn approve(&self, _tool: &dyn Tool, _input: &Value) -> Decision {
+                panic!("a jail request must not be routed through approve");
+            }
+            async fn escalate(&self, _tool: &dyn Tool, _input: &Value, _why: &str) -> Decision {
+                Decision::Allow
+            }
+        }
+        let dir = std::env::temp_dir().join(format!("mecha-grantev-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ask = |id: &str| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: id.into(),
+                    name: "request_access".into(),
+                    input: json!({"path": dir.display().to_string(), "reason": "papers"}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let calls = vec![
+            ask("r1"),
+            assistant(vec![Block::text("granted")], StopReason::EndTurn),
+            ask("r2"),
+            assistant(vec![Block::text("already")], StopReason::EndTurn),
+        ];
+        let (mut agent, _) = agent_with(calls, PermissionMode::Ask);
+        agent
+            .registry
+            .insert(Arc::new(crate::tool::request_access::RequestAccess));
+        agent.set_approver(Arc::new(Yes));
+        let workspace =
+            std::env::temp_dir().join(format!("mecha-grantws-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&workspace).unwrap();
+        agent.ctx_mut().workspace = workspace.clone();
+
+        let announced = |rx: &mut tokio::sync::mpsc::UnboundedReceiver<AgentEvent>| {
+            let mut seen = Vec::new();
+            while let Ok(event) = rx.try_recv() {
+                if let AgentEvent::Grants(grants) = event {
+                    seen.push(grants);
+                }
+            }
+            seen
+        };
+        let mut convo = Conversation::from(vec![Message::user("open my papers")]);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        agent.run(&mut convo, Some(tx)).await.unwrap();
+        let seen = announced(&mut rx);
+        assert_eq!(seen.len(), 1, "one round widened the jail: {seen:?}");
+        assert_eq!(seen[0].len(), 1);
+        assert_eq!(seen[0][0].path, dir.canonicalize().unwrap());
+
+        convo.push(Message::user("again"));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        agent.run(&mut convo, Some(tx)).await.unwrap();
+        assert!(
+            announced(&mut rx).is_empty(),
+            "an already-held grant changed nothing"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&workspace).ok();
+    }
+
     /// Whether a refusal may name `request_access` is read off the run's own
     /// registry, never inherited: a subagent runs on its parent's context,
     /// and a parent holding the tool sent a child without it to a call that
@@ -11835,7 +11986,14 @@ mod tests {
                 agent.set_approver(Arc::new(Answer(decision, Arc::clone(&asked))));
                 agent.ctx_mut().workspace = workspace;
                 let mut convo = Conversation::from(vec![Message::user("read my notes")]);
-                agent.run(&mut convo, None).await.unwrap();
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+                agent.run(&mut convo, Some(tx)).await.unwrap();
+                let mut announced = Vec::new();
+                while let Ok(event) = rx.try_recv() {
+                    if let AgentEvent::Grants(grants) = event {
+                        announced.push(grants);
+                    }
+                }
                 let result = convo
                     .messages
                     .iter()
@@ -11846,11 +12004,17 @@ mod tests {
                     })
                     .unwrap();
                 let asked = asked.lock().unwrap().clone();
-                (result, convo.grants, asked)
+                (result, convo.grants, asked, announced)
             }
         };
 
-        let (read, grants, asked) = run(Decision::Allow, true).await;
+        let (read, grants, asked, announced) = run(Decision::Allow, true).await;
+        // The chip hears of a card's yes as it lands (review of #716).
+        assert_eq!(
+            announced,
+            vec![grants.clone()],
+            "one announcement, of the grant"
+        );
         assert!(read.contains("the lemon kayak"), "{read}");
         assert_eq!(asked.len(), 1, "one card");
         assert!(asked[0].contains("outside its workspace"), "{}", asked[0]);
@@ -11858,12 +12022,12 @@ mod tests {
         assert_eq!(grants[0].path, papers, "the folder, not the file");
         assert_eq!(grants[0].access, crate::grant::Access::Read);
 
-        let (refused, grants, _) = run(Decision::Deny("not that one".into()), true).await;
+        let (refused, grants, _, _) = run(Decision::Deny("not that one".into()), true).await;
         assert!(refused.starts_with("Denied by the user:"), "{refused}");
         assert!(grants.is_empty());
 
         // Nobody to answer (no `request_access` here): no card, the jail refuses.
-        let (refused, grants, asked) = run(Decision::Allow, false).await;
+        let (refused, grants, asked, _) = run(Decision::Allow, false).await;
         assert!(
             asked.is_empty(),
             "a card was raised where nobody could answer"
@@ -18809,7 +18973,7 @@ match = ["ls -la"]
     /// A rule judges the call **as it will execute**, pinned defaults and all.
     ///
     /// The machine judge and the human one read the same bytes, which is the
-    /// same rule the four doors rest on. Split, it would have been a
+    /// same rule the five doors rest on. Split, it would have been a
     /// reasoning trap rather than a live hole: a `forbid` keyed on a
     /// defaulted argument would not fire on the value the harness pins, while
     /// that value sat plainly in the arguments any reader can see.

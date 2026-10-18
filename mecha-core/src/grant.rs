@@ -11,10 +11,13 @@
 //! - **Only a person widens the jail.** A standing grant is a line in the
 //!   *global* config (`[[grant]]`, stripped from every other layer, because a
 //!   cloned repository must not bring its own jail with it) or an owner's
-//!   `/grant`. A model may only *ask*, through `request_access`, and the ask
-//!   goes to [`crate::tool::Approver::escalate`] — never `approve`, which a
+//!   `/grant`. A model may only *ask* — through `request_access`, or a file
+//!   tool reaching outside the workspace — and the ask goes to
+//!   [`crate::tool::Approver::escalate_access`], never `approve`, which a
 //!   permission mode, an "always" list or `--yes` may answer with nobody
-//!   consulted. Headless, the ask ends `Blocked`.
+//!   consulted. Headless, the ask ends `Blocked`. The one approver that
+//!   answers it while answering everything else from policy is a voice call's
+//!   (`--voice-yes`), and it answers by putting the card on the page.
 //! - **A live grant lasts for the conversation**, the same unit taint lives
 //!   on: resuming keeps it ([`crate::session::Record::Grants`]), a new
 //!   conversation starts without it, a subagent inherits its parent's.
@@ -95,7 +98,9 @@ pub enum Source {
     Config,
     /// The owner typed `/grant`.
     Owner,
-    /// The model asked (`request_access`) and a person said yes.
+    /// A person said yes on a card: to the model's `request_access`, or to
+    /// a file tool reaching outside the workspace (`ToolCtx::ask_for_path`,
+    /// which grants the folder the path sits in).
     Approved,
     #[serde(other)]
     Unknown,
@@ -367,10 +372,12 @@ impl Grants {
         }
     }
 
-    /// No grants at all — a room that must account for everything it
-    /// touches (an incognito chat).
+    /// No grants at all, and none to be made — a room that must account for
+    /// everything it touches (an incognito chat). Off, not merely empty: an
+    /// empty list takes a card's yes, and "none" then rested on the room's
+    /// tool allowlist keeping every way to ask out (review of #716).
     pub fn none() -> Self {
-        Grants::default()
+        Grants::off()
     }
 
     /// The live grants, to be carried back onto the conversation.
@@ -410,7 +417,10 @@ impl Grants {
     /// have been stored (review of #711).
     pub fn add(&self, grant: Grant) -> Result<bool> {
         if self.off {
-            bail!("grants are switched off for this run (--no-grants); nothing was granted");
+            bail!(
+                "grants are switched off for this run (--no-grants, or an incognito chat); \
+                 nothing was granted"
+            );
         }
         if self.covering(&grant.path, grant.access).is_some() {
             return Ok(false);
@@ -689,6 +699,42 @@ mod tests {
             ..g
         };
         assert!(w.covers(Path::new("/data/papers/a.pdf"), Access::Read));
+    }
+
+    /// An incognito room's "no grants" holds by type: a card's yes cannot
+    /// land in it, a run minted from it is off too, and a file tool raises no
+    /// card there even on a surface that could answer one (review of #716 —
+    /// "none" had been an empty list that took a grant).
+    #[test]
+    fn an_incognito_room_cannot_be_given_a_grant() {
+        let room = crate::tool::ToolCtx::default().for_session_in(
+            std::env::temp_dir().join("mecha-room-ws"),
+            std::env::temp_dir().join("mecha-room-spill"),
+        );
+        let outside = std::env::temp_dir().join(format!("mecha-room-out-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&outside).unwrap();
+        let grant = Grant {
+            path: outside.canonicalize().unwrap(),
+            access: Access::Read,
+            source: Source::Approved,
+        };
+        assert!(room.grants.add(grant.clone()).is_err());
+        let run = room.grants.for_run(&[grant]);
+        assert!(
+            run.is_off() && run.all().is_empty(),
+            "a recorded grant came back"
+        );
+        let mut asking = room.clone();
+        asking.grants.requestable = true;
+        let file = outside.join("a.txt");
+        std::fs::write(&file, "x").unwrap();
+        assert!(
+            asking
+                .ask_for_path("fs_read", &file.display().to_string(), Access::Read)
+                .is_none(),
+            "a card went up in an incognito room"
+        );
+        std::fs::remove_dir_all(&outside).ok();
     }
 
     #[test]

@@ -3,9 +3,10 @@
 //!
 //! The tool decides nothing. Its whole content is a person's yes, so it
 //! declares [`Tool::needs_a_person`] for **every** call and the loop sends it
-//! to [`super::Approver::escalate`] — the door a permission mode, an
+//! to [`super::Approver::escalate_access`] — the door a permission mode, an
 //! "always" list and `--yes` never answer, and a headless approver answers
-//! `Blocked`. Unconditionally, even for a path [`crate::grant::admit`] will
+//! `Blocked` (a voice call's `--voice-yes` approver puts it on the page's
+//! card instead). Unconditionally, even for a path [`crate::grant::admit`] will
 //! refuse: deciding "no person needed" from a check made before the batch
 //! executes is a race a sibling call in the same turn can win (a `shell`
 //! that creates the directory the check found missing), and the grant would
