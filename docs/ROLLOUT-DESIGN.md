@@ -69,6 +69,9 @@ The research behind this document is summarised in §9, with links.
 
 ### 1.1 A defect found on the way, independent of this design
 
+> **Fix in flight:** branch `fix/live-replay-keeps-guards` (phase 0), opened
+> as its own PR, which `HANDOFF.md` will carry until it merges.
+
 `mecha replay --on-divergence live` builds its run with
 `RunContext::new(tool_ctx, approver)`: **no outbox route, no hooks, no
 approval rules.** After a divergence, a tool `[outbox] tools` normally
@@ -175,8 +178,25 @@ halt.
   - Online, the live conversation afterwards carries the **union** of every
     rollout's taint, because the chooser saw them all
     (`APPRAISAL-INVENTORY-RESEARCH.md` §10).
-  - A rollout's transcript is never learnable evidence. Its `Origin` is
-    `Derived` at best, and `learn` and rumination never mine it.
+  - **A rollout is never evidence for learning or for the run-quality
+    corpus, and that is enforced by structure, not by label.**
+    `Origin::Derived` alone would not do: it is a label that a later
+    grader could promote.
+    - An offline rollout writes **no session file**, as probe arms do
+      today. Its only record is the comparison (§5.3), which no miner
+      reads.
+    - Online, the losing branches are never appended to the live session.
+      The appraisal note about a loser is templated from its structural
+      fields ("the alternative failed its check"), never from its text.
+    - The winner's continuation *is* the live run, and is recorded as
+      that run.
+    - The live run's `RunStats` absorbs the winner only, never the losers'
+      costs. Those stay in the comparison record.
+    - Any future driver that does record a rollout session uses a new
+      `SessionKind::Rollout`. Every corpus readout, `reflect`, `learn` and
+      `harness ruminate` exclude it by kind, as they exclude `Test` (the
+      46-of-143 incident). It is a closed enum in an append-only store, so
+      an older build reads it as unknown, and therefore excluded.
 - **Locality.** Rollouts drive only a loopback provider.
   `pointwise::on_this_machine` (R29) moves from the per-pass check into the
   engine, so no caller can forget it.
@@ -294,6 +314,9 @@ N3's condition and `CLAUDE.md`'s hearsay rule.
 - Closed sets only, no text: the comparison store's existing rule.
 - Drafts from the scratch outbox are scored, then deleted with the rollout.
   Whether one may ever be shown to the owner is ruling **W5**.
+- **Nothing here enters the run-quality corpus** (§3.3). A night of
+  rollouts would otherwise land in the very counters that propose the next
+  candidate.
 
 ---
 
@@ -466,7 +489,8 @@ Each phase ships and is measured before the next starts.
   reading, and never decide.
 - **Executing an `Irreversible` or `Chosen` call in any rollout, for any
   reason.**
-- **Learning from rollout transcripts.** They are `Derived`, never clean.
+- **Learning from rollout transcripts.** They are excluded by structure
+  (no session record, losers never appended; §3.3), not merely labelled.
 - **Preplay in interactive chats in v1.**
 
 ---

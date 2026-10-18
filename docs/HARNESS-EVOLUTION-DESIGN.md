@@ -1099,14 +1099,22 @@ If the edit surface ever grows past four knobs and learned rules:
 
 ### 7.1 Ruled, 2026-10-18
 
-- **R1 (P8): yes.** Behaviour-changing harness candidates may be measured
-  on live paired arms in fixture worlds. This also answers
-  `HARNESS-RESEARCH.md` §9's recommendation.
+- **R1 (P8): yes.** Behaviour-changing harness candidates are measured on
+  continued branches. The primary world is the **live dry world** of
+  `ROLLOUT-DESIGN.md`: live reads, sunk writes.
+  - The owner chose live in so many words: "In a sandbox or live. Not sure
+    why we wouldn't want live as every important thing always needs to be
+    approved."
+  - Fixture-world arms remain only for tasks the owner's stores cannot host.
+  - This also answers `HARNESS-RESEARCH.md` §9's recommendation, in part
+    (§0).
   - The owner asked whether this is needed given replay. P8's table answers
-    it: replay scores cost-only changes, and live arms score multi-step
-    effects.
+    it: replay scores cost-only changes, and continued branches score
+    multi-step effects.
   - The verdict-free branch points come first, and need no ruling.
-  - Still open: where the tasks come from, given §14.7.
+  - §14.7's question, where the tasks come from, is answered by the live
+    world: they are the owner's own recorded moments. What the live world
+    still owes is `ROLLOUT-DESIGN.md` §11's W1–W5.
 - **R7 (P10): yes.** An owner-reviewed skill drafted from a measured
   diagnosis is allowed. Unreviewed model-authored skills stay refused, and
   no drafted skill carries an executable script (P10).
