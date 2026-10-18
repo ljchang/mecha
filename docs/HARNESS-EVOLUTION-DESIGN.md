@@ -2,8 +2,8 @@
 
 2026-10-18. Which mechanisms from per-task harness evolution and
 self-improving agents mecha adopts, in what shape, and under which of its
-existing rules. **Status: proposal. Nothing here is built, and §7 lists the
-rulings the build waits on.**
+existing rules. **Status: proposal. Nothing here is built. R1 and R7 were ruled on
+2026-10-18 (§7.1); §7.2 lists the rulings the build still waits on.**
 
 **The problem this answers:** no change that harness rumination has proposed
 has ever been accepted. The learning loop works and is not the subject,
@@ -866,10 +866,41 @@ The branch `fix/selection-slice-power` is unmerged.
   ("the agent can already do it"). This hands the diagnostician that signal
   as a number, never as transcript text.
 
-**The conflict to rule on (R1).** §14.7 says fitness is the owner's own
-usage. Fixture worlds are not that usage. Re-hosting real recorded tasks in
-a fixture world is a private-data question. The local model's throughput
-also bounds how many pairs fit in a night.
+**Is this needed when replay exists?** Yes, for one class of change. Mecha
+has three instruments, and each sees a different kind of change:
+
+| Instrument | What it can score | Measured so far |
+|---|---|---|
+| **Whole-run replay** (the numeric gate) | A change that leaves the agent's *actions* as recorded and alters only their cost: fewer compactions, fewer tokens | 17 candidates and never 8 pairs. The newest diverged 16 times on *each* arm, because the local sampler does not reproduce its own recording |
+| **Branch at a recorded point** (`pointwise_pass`, R26/R36; the learn gate's counterfactual) | A change whose effect shows in the **next action** at a moment where a verdict exists | It is why learning works: a steer says what the next action should have been. In the harness gate it has decided **one point in total** (candidate `…bd65`). It needs an owner verdict at the point, and those are scarce |
+| **Live paired arms** (this proposal) | A change whose effect shows **many turns later**: `max_turns`, `compact_at_tokens`, a skill, a subagent | Not built |
+
+Replay cannot supply a tool result the recording never had, and a
+behaviour change makes exactly those calls. That is structural, not a
+tuning problem. So replay stays: as the cheap first screen, and as the
+right instrument for cost-only changes. Live arms are needed only for
+multi-step effects.
+
+**The cheap middle step, before live arms: verdict-free branch points.**
+- The branch instrument is starved because its points need an owner
+  verdict. One class of point needs none: **a recorded failed call that the
+  agent then repeated identically**, same call and same result, which is
+  `compact::target_of`'s test, the one boredom already uses.
+- At such a point, the recording already says what the repeat returns.
+  Branch there under each arm. The candidate wins the point if its next
+  action is not the known-futile repeat, and loses if it is.
+- This judges a narrow thing (avoiding a known dead end), but it judges it
+  without anyone's verdict, at a supply the corpus already holds. It fits
+  exactly the changes Tier 1 aims at first: tool guidance, error hints
+  (P5), `effort`.
+- It needs no ruling: it is the existing point-wise pass with a second
+  point source.
+
+**What R1's yes still leaves open.**
+- §14.7 says fitness is the owner's own usage, and fixture worlds are not
+  that usage. Re-hosting real recorded tasks in a fixture world is a
+  private-data question.
+- The local model's throughput bounds how many pairs fit in a night.
 
 ### P9. The diagnostician sees failures, not only counts of them — M
 
@@ -968,15 +999,20 @@ covering what the diagnostician reads most.
   3. subagent profiles;
   4. skills.
 
-  The first three are owner-reviewed text. **Skills are the one that
-  touches a standing ruling:**
-  - `SKILLS-RESEARCH.md` §9 refuses model-authored skills.
-  - The evidence on both sides is now measured. Self-generated skills come
-    out ≈0 on average (SkillsBench). Curated skills give +16.2 pp. Harness²
-    skills drafted by an editor and *selected* give the largest single
-    component effect.
-  - An owner-reviewed skill drafted from a diagnosis falls between those.
-    Whether it stays refused is **R7**.
+  All four are owner-reviewed text. **Skills were the one that touched a
+  standing ruling, and R7 settled it** (owner, 2026-10-18):
+  - A skill *drafted* by the diagnostician from a measured diagnosis, then
+    reviewed and accepted by the owner, is allowed.
+  - `SKILLS-RESEARCH.md` §9's refusal of *unreviewed* model-authored skills
+    stands. No skill is written into the store by a model.
+  - The evidence behind the line: self-generated skills come out ≈0 on
+    average (SkillsBench), curated skills give +16.2 pp, and Harness²'s
+    editor-drafted, *selected* skills give the largest single component
+    effect. Owner review is the selection.
+  - A drafted skill is prose plus, at most, references. **An executable
+    `scripts/` file is not drafted.** The script-bundling skills in the
+    31k-skill audit were about twice as likely to be vulnerable, and a
+    script is code, not prose a reviewer reads once.
 
 **Rules kept.**
 - No lane promotes itself: the owner accepts every structural change.
@@ -1035,12 +1071,23 @@ If the edit surface ever grows past four knobs and learned rules:
 
 ---
 
-## 7. Rulings owed
+## 7. Rulings
 
-- **R1 (P8).** May behaviour-changing harness candidates be measured on live
-  paired arms in fixture worlds? This is the same question as
-  `HARNESS-RESEARCH.md` §9. If yes: where do the tasks come from, given
-  §14.7?
+### 7.1 Ruled, 2026-10-18
+
+- **R1 (P8): yes.** Behaviour-changing harness candidates may be measured
+  on live paired arms in fixture worlds. This also answers
+  `HARNESS-RESEARCH.md` §9's recommendation.
+  - The owner asked whether this is needed given replay. P8's table answers
+    it: replay scores cost-only changes, and live arms score multi-step
+    effects.
+  - The verdict-free branch points come first, and need no ruling.
+  - Still open: where the tasks come from, given §14.7.
+- **R7 (P10): yes.** An owner-reviewed skill drafted from a measured
+  diagnosis is allowed. Unreviewed model-authored skills stay refused, and
+  no drafted skill carries an executable script (P10).
+
+### 7.2 Owed
 - **R2 (P4).** Should the learner reply in deltas (structural, larger), or
   should convictions be carried by normalised text (narrow, a day's work)?
 - **R3 (P5).** Who writes hint text: only the owner, or also counter-templated
@@ -1051,15 +1098,73 @@ If the edit surface ever grows past four knobs and learned rules:
 - **R5 (P6).** How many distinct sessions take a new rule off probation:
   two, or more? Rare corrections learn more slowly the higher this is set.
 
-- **R6 (P9).** Should the diagnostician's brief include clean transcripts
-  in full, and may it see the per-intervention withheld views of armed
-  sessions? Both relax `SELF-IMPROVEMENT-RESEARCH.md` §5's letter (P9 argues
-  it from §5's reason). The typed digest needs neither. A whole-session
-  withheld view of an armed session is not proposed.
-- **R7 (P10).** Does `SKILLS-RESEARCH.md` §9 still refuse an owner-reviewed
-  skill drafted from a measured diagnosis, or only an unreviewed
-  model-authored one? Nothing in Tier 1 needs this answered first, because
-  skills come last in P10's order.
+- **R6 (P9).** What may the diagnostician read beyond the typed digest?
+  Its options are set out in §7.3.
+
+### 7.3 R6: the options, side by side
+
+Two facts frame this:
+- **The diagnostician is the local model.** Every one of the 17 candidates
+  records `qwen3.6-35b-a3b`, so nothing below leaves the machine. Its cost
+  is context, not privacy: it is a mixture-of-experts model with about 3B
+  active parameters.
+- **Most sessions arm early.** `PROVENANCE-DESIGN.md` counted 15 of 18 on
+  message 1 or 2, so "clean" is a minority.
+
+**A. Typed digest only.** Tool names, `is_error`, `external`, the stop
+cause, the turn of each intervention, and seed divergence.
+- *For:*
+  - inside §5's letter, with no text at all, so attacker-free;
+  - covers every session, armed or clean;
+  - small enough for a 3B-active model;
+  - needs no ruling.
+- *Against:*
+  - it shows *where* things went wrong and never *what*;
+  - the diagnostician still infers the cause, which is how the
+    reverse-engineered mechanism in §5.0 happened.
+
+**B. A, plus the per-intervention withheld views.** The owner's typed words
+at each steer, denial or follow-up, with tool names before and after.
+- *For:*
+  - these are the moments where something is *known* to have gone wrong,
+    stated in the owner's own words;
+  - it is the exact input the reflector already handles every night, in
+    the loop that works;
+  - it covers armed sessions, which is most of them;
+  - the volume is small: 3–6 reflections a week in `learning-report`.
+- *Against:*
+  - crosses §5's letter;
+  - an owner's steer can contain pasted third-party text, which is the
+    reflector's exposure today too;
+  - the diagnostician and the learner would act on the same signal, so the
+    brief must show which rules were already learned from those
+    interventions, or both fix the same thing twice.
+
+**C. A, plus clean transcripts in full.**
+- *For:*
+  - the richest evidence: what Harness² and AHE feed their editors;
+  - it shows error text from mecha's own tools, the arguments, and the
+    model's reasoning;
+  - "clean" is the same fail-closed classification that gates learning.
+- *Against:*
+  - thin, and **unrepresentative**: sessions that never touched mail, the
+    graph or the web are not the owner's typical work, which pulls against
+    §14.7;
+  - full transcripts are heavy context for a 3B-active model, so it needs
+    the Harness² file-and-pointer layout and file tools;
+  - crosses §5's letter widest;
+  - a single misclassified session would put third-party text on the
+    longest half-life path;
+  - `lifted` must be extended to cover all of it.
+
+**D. B and C together.** The most evidence, and the sum of both costs.
+
+**Recommendation: B.**
+- It adds the highest-value evidence, the moments the owner said were
+  wrong, at the lowest new exposure.
+- It reuses an input the learning loop has already proven.
+- Revisit C only if the digest-plus-B diagnoses are still blind on the
+  evidence P1 and P8 produce.
 
 **Suggested build order** — Tier 1 first, because that is where nothing has
 worked:
@@ -1068,8 +1173,10 @@ worked:
 2. P9's typed digest: inside §5's letter, so it needs no ruling. It is the
    cheapest change that could stop the blind proposals. The withheld views
    and clean transcripts follow after R6.
-3. P8, after R1.
-4. P10, after P8, starting with tool descriptions.
+3. P8: verdict-free branch points first (no ruling), then live arms (R1
+   ruled yes).
+4. P10, after P8, starting with tool descriptions. Skills come last, as
+   drafts the owner reviews (R7).
 5. Tier 2 alongside, smallest first: P7, P3, P6, then P4 (after R2) and
    P5 (after R3).
 

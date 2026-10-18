@@ -397,6 +397,10 @@ them separate is what lets skills be liberal and rules stay strict.
 - **An install command, a marketplace, or a registry client.** §5.
 - **Project-layer skills.** §0, §7.
 - **Model-authored skills**, including "promote this reflection to a skill".
+  *Narrowed 2026-10-18 (owner, R7 in `HARNESS-EVOLUTION-DESIGN.md` §7.1): a
+  skill drafted from a measured diagnosis and accepted by the owner is
+  allowed, with no executable script. An unreviewed model-written skill is
+  still refused.*
 - **Remote bodies or runtime-fetched instructions.**
 - **A new file format.** §4.
 - **A skill that can widen the tool surface**, add a capability, or relax the
