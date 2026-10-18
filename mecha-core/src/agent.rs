@@ -18973,7 +18973,7 @@ match = ["ls -la"]
     /// A rule judges the call **as it will execute**, pinned defaults and all.
     ///
     /// The machine judge and the human one read the same bytes, which is the
-    /// same rule the four doors rest on. Split, it would have been a
+    /// same rule the five doors rest on. Split, it would have been a
     /// reasoning trap rather than a live hole: a `forbid` keyed on a
     /// defaulted argument would not fire on the value the harness pins, while
     /// that value sat plainly in the arguments any reader can see.

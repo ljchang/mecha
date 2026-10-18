@@ -2316,7 +2316,8 @@ first sketch would have widened the jail with nobody asked:
   failed at once). The card goes up past the page's mode, which nothing else
   on a spoken turn reads: through the page's `escalate`, a read-only page
   refused a write grant while the same write inside the workspace ran
-  unasked (review of #716). An approver wrapper forwards both (`FileDenyApprover`).
+  unasked (review of #716). An approver wrapper forwards both
+  (`FileDenyApprover`).
 - **Some places are never grantable** (`grant::admit`). A root that contains
   or sits inside the mecha home (both spellings, `MECHA_HOME` and the
   password database's) or a credential directory is refused, in both
@@ -2340,9 +2341,9 @@ first sketch would have widened the jail with nobody asked:
   `escalate_access` reaches a person (`setup::offers_request_access`, tested
   against the options the web and Slack doors really build): the web and
   Slack cards, and a terminal with a person at it in `ask` mode — under `-y`
-  the approver is a `ModeApprover`, whose `escalate_access` is `Blocked`. Not keyed on
-  `global_config_only`, which both doors set; the first gate was, and the web
-  chat shipped without the tool (2026-10-18). `request_access` is
+  the approver is a `ModeApprover`, whose `escalate_access` is `Blocked`.
+  Not keyed on `global_config_only`, which both doors set; the first gate
+  was, and the web chat shipped without the tool (2026-10-18). `request_access` is
   `read_only()`, so a read-only chat (the web's default) still puts the card
   in front of the owner; a write grant made there writes nothing until the
   mode allows writes. Read-only for the approver only: `call` refuses in
