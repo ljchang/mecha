@@ -41,6 +41,17 @@ impl Tool for DocumentRead {
         "document_read"
     }
 
+    /// A path outside the workspace asks the owner, Claude Code's way
+    /// ([`ToolCtx::ask_for_path`]); a yes opens its folder for the rest of
+    /// the conversation before this call runs.
+    fn needs_a_person(&self, input: &Value, ctx: &ToolCtx) -> Option<super::PersonAsk> {
+        ctx.ask_for_path(
+            self.name(),
+            input.get("path")?.as_str()?,
+            crate::grant::Access::Read,
+        )
+    }
+
     /// Eligible for a persona (`docs/PERSONA-DESIGN.md` §3.3; the owner's
     /// ruling of 2026-09-30): it reads a document in the chat's own
     /// workspace, reaches only the loopback OCR server, and sends nothing.
