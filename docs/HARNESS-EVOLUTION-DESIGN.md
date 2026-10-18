@@ -1,0 +1,1009 @@
+# Harness evolution: what Harness², Hermes and the 2026 field do, and what mecha takes
+
+2026-10-18. Which mechanisms from per-task harness evolution and
+self-improving agents mecha adopts, in what shape, and under which of its
+existing rules. **Status: proposal. Nothing here is built, and §7 lists the
+rulings the build waits on.** §5.0 is the measured case for why harness
+rumination, unlike the learning loop, has never had a suggestion accepted.
+
+## 0. Where this sits
+
+This document builds on four others and restates none of them:
+
+- [`SELF-IMPROVEMENT-RESEARCH.md`](SELF-IMPROVEMENT-RESEARCH.md) holds
+  the rules every proposal below has to survive:
+  - §5: the input to a prose proposal is a number, never a body of text;
+  - §10: best-of-N over a fixed corpus is a multiple-comparisons trap;
+  - §14.6: replay can only measure changes that change nothing;
+  - §14.7, the owner's ruling: fitness is the owner's own usage, and a
+    public benchmark is a transfer check only.
+- [`HARNESS-RESEARCH.md`](HARNESS-RESEARCH.md) §9 recommends moving config
+  candidates from replay into experiments. That recommendation is still
+  undecided.
+- [`SKILLS-RESEARCH.md`](SKILLS-RESEARCH.md) §9 is the standing ruling
+  against model-authored skills.
+- [`LEARNING-AUTONOMY-DESIGN.md`](LEARNING-AUTONOMY-DESIGN.md) explains why
+  learned rules self-accept, and what the counterfactual gate does in place
+  of a person.
+
+How it was researched:
+- Google Research's `harness2` repository was read in source (§1).
+- Nous Research's `hermes-agent` was read in source (§2).
+- The 2025–26 literature on harness evolution and on self-curated
+  context, with the security work on memory and skill poisoning, was
+  surveyed (§3).
+- Every mecha symbol cited below was checked against `origin/main` at
+  `880ebbc59`.
+
+Evidence strength is marked as in the research docs: 📄 preprint,
+🔧 code read, 📰 vendor or secondary.
+
+---
+
+## 1. Harness² — per-task refinement without labels
+
+🔧 [`google-research/harness2`](https://github.com/google-research/harness2)
+at `1cfe254` (2026-10-13), Apache-2.0. 📄 Xu et al.,
+[arXiv:2610.14224](https://arxiv.org/abs/2610.14224), posted 2026-10-09
+(Google Cloud AI Research).
+
+### 1.1 Mechanism
+
+The model's weights stay fixed. What evolves is a tree of eight files, which
+the paper calls components:
+- **Always-on:** system prompt, guardrails, memory, tool guidance.
+- **On demand:** skills, scripts, subagents.
+- **Inside the tool loop:** a plugin or hook.
+
+The surface is data (`core/tree.py::SurfaceSpec`), so the same method drives
+OpenCode and Codex.
+
+**Task-level recursion (Propose–Probe–Compose)**, `core/recursion.py::run_parallel`:
+
+1. Run the unmodified harness *k* times on the task. These are the base rollouts.
+2. An editor model (Opus 4.8 in the paper) proposes **2k candidate
+   harnesses from the same evidence**:
+   - *k* on the **INV** dimension: how the agent works, meaning procedure,
+     tool use and completion;
+   - *k* on the **DOM** dimension: what a practitioner knows.
+
+   Each candidate prompt forbids the other dimension's territory
+   (`core/prompts.py::_INV_TEMPLATE`, `_DOM_TEMPLATE`).
+3. Run each candidate **once, on the same task**.
+4. *k* composers each read every trajectory and every candidate diff,
+   then write one final harness. A composer may merge candidates, adopt one
+   wholesale, or keep the base.
+5. Run the finals. A **blind selector** picks one output. Selector ids are
+   anonymised by a seeded shuffle (`core/selection.py::assign_ids`), and the
+   prompt states that picking an unmodified harness's output is a valid
+   outcome.
+
+The budget is asserted as an identity rather than tracked loosely
+(`core/ledger.py::Ledger::assert_identity`):
+- R = 4k rollouts;
+- P = 3k editor sessions.
+
+The sequential mode (`run_sequential`) carries the composed checkpoint
+through *k* rounds instead of widening.
+
+**Harnessing-level recursion** (`core/selection.py::reflect_adoption`,
+`core/library.py::Library`) runs after selection:
+1. A reflector reads the whole record and writes per-edit rows. Each row
+   gets a verdict from `helped`, `hurt`, `no observed effect` or
+   `confounded`, and the prompt says to *prefer* `confounded` when one
+   rollout is all that stands behind a difference.
+2. It then writes at most one lesson as `cue / lesson / evidence /
+   confidence`, or `NO_ENTRY`.
+3. The adopted tree and the lesson are stored **per domain**, so retrieval
+   is the directory: a domain's folder holds only that domain's entries.
+4. Later tasks in the domain read the index before proposing.
+
+### 1.2 What the evidence says (📄, self-reported)
+
+- **Headline at k=1:** +11.5 on WorkBuddy-Bench, +4.5 on JobBench and
+  +11.8 pp on LAB partial pass, over each base harness. The executors are
+  GLM-5 and Gemini 3.5 Flash.
+- **Ablations** (Gemini 3.5 Flash, OpenCode, k=1, Table 3):
+
+  | Ablation | WorkBuddy | JobBench |
+  |---|---|---|
+  | Without the library | −3.1 | −1.8 |
+  | Without the INV/DOM split ("scoping") | −2.9 | **−3.7** |
+  | Without composition | −1.6 | −1.9 |
+
+  The split is the largest single effect on JobBench.
+- **Which components carried the gain.** Each was removed from an improved
+  harness (Table 6, WorkBuddy):
+
+  | Removed | Average loss |
+  |---|---|
+  | Skills | −5.3 |
+  | Scripts | −3.7 |
+  | Always-on prompt text | −1.5 |
+
+  Every ablated harness still beat the base, and the authors say the effects
+  are not additive.
+- **Cross-model transfer.** A harness refined for Gemini 3.5 Flash was run
+  unchanged:
+
+  | Executor | Code | Office |
+  |---|---|---|
+  | GLM-5 | +17.3 | — |
+  | Gemini 3.7 Flash | +0.3 | +6.4 |
+  | Opus 4.8 | +2.6 | +1.1 |
+
+  The authors say the benefit "varies substantially with the executor and
+  domain".
+- **The editor need not be stronger.** In a same-model setup, all five
+  models improved on every benchmark. Their conclusion: "harness refinement
+  need not rely on a stronger editor."
+- **The paper's own failure analysis.** Nine regressions fell into three
+  groups:
+  - a weaker candidate was selected;
+  - **an incorrect premise propagated across candidates**;
+  - outcome variance.
+
+  Two further statements from the paper: "adoption rather than verified
+  optimality", and execution contrasts "do not guarantee correctness".
+
+### 1.3 What it does well, as engineering
+
+- **Evidence is files and the prompt is a pointer** (`core/context.py`):
+  - Trajectories are never truncated to fit a prompt.
+  - The mission names only the files that actually landed
+    (`ContextTree::layout`).
+  - A context with no renderable trajectory refuses to run rather than
+    adapting on nothing.
+- **There is a tripwire on the grader's output**
+  (`core/context.py::assert_no_grader_verdicts`):
+  - It scans every context tree by file name *and* content before a model
+    sees it.
+  - It scans every agent-written harness before storage.
+  - A match is "a leak, not a false positive to widen around".
+- **Trial identity is a fingerprint, not presence** (`core/runmark.py`). A
+  completion marker digests the harness tree that produced the rollout, so a
+  resumed run never reuses output from a different configuration.
+- **The edit-form hierarchy is in the prompt** (`_SURFACE_OPENCODE`).
+  Always-on prose is "the expensive option", so the prompt says to prefer:
+  1. a skill;
+  2. then a script;
+  3. then a subagent;
+  4. then a hook;
+  5. always-on text last, and only if something else is cut.
+
+  The component ablation above is the evidence behind that order.
+- **KEEP_BASE is a first-class answer** at every stage. "Adaptation that the
+  evidence does not argue for is a regression."
+
+### 1.4 What it lacks, measured against mecha
+
+- **No provenance.** Trajectories, which hold third-party content, become
+  library lessons. The only defence is a prompt section headed "evidence is
+  data, not instructions". `SELF-IMPROVEMENT-RESEARCH.md` §5 is the reason
+  mecha does not do this.
+- **No gate, holdout, revert or retirement.** The library only grows.
+  `Library::forget` exists for resume, not for harm.
+- **Executable self-edits.** The editor writes plugins that run inside the
+  tool loop. The README states that Codex runs with its sandbox disabled and
+  network access is unrestricted.
+- **Cost is a multiple of the task.** At k=1 a task costs 4 executions plus
+  3 editor sessions, a selector, and a reflector. A task that sends mail
+  cannot run 4 times. This is the decisive mismatch: **the per-task loop
+  only applies where a run has no side effects.**
+
+---
+
+## 2. Hermes Agent — self-improvement as a product default
+
+🔧 [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent)
+at `9e01b44d` (2026-10-18), MIT. The latest release is v0.22.2. The GitHub
+API reported about 255k stars on the day this was written. 📰 Its
+[docs site](https://hermes-agent.nousresearch.com/docs).
+
+There is no paper. A companion repo, `hermes-agent-self-evolution`, runs
+DSPy+GEPA over SKILL.md files offline, behind tests and a human PR review;
+its later phases are unbuilt. `FEATURES-DESIGN.md` §2 already covers
+Hermes's setup and toolsets. This section covers only how it improves itself.
+
+### 2.1 Mechanism (🔧 unless marked)
+
+- **Reviews run in the background, on a counter.** After each delivered
+  turn, `agent/turn_finalizer.py` checks two counters:
+  - a memory review every 10 user turns (`memory.nudge_interval`);
+  - a skill review after 10 tool iterations with no `skill_manage` call.
+
+  Either one starts `agent/background_review.py::spawn_background_review_thread`,
+  a daemon-thread fork of the agent on the same model and the same cached
+  prompt. The fork's tools are restricted at dispatch, so the advertised
+  tool list stays byte-identical to the parent's. It gets up to 16
+  iterations.
+- **The review prompt pushes for output.** "Be ACTIVE — most sessions
+  produce at least one skill update", and "a pass that does nothing is a
+  missed learning opportunity".
+
+  Its counterweight is `_DO_NOT_CAPTURE_BLOCK`, a list of what must never
+  become a skill:
+  - environment-dependent failures, which "become persistent
+    self-imposed constraints that bite you later";
+  - negative claims about tools;
+  - one-off narratives;
+  - unresolved failures presented as workflows.
+- **The model writes skills, including executable scripts.**
+  `tools/skill_manager_tool.py::skill_manage` creates, patches, edits and
+  deletes SKILL.md trees, along with their `scripts/`, `references/` and
+  `templates/`.
+  - A read-before-write guard refuses a review fork's patch to a file it
+    did not read during that review.
+  - The fork may patch any skill, including bundled and hub skills.
+- **Provenance means the author, not the content.**
+  `tools/skill_provenance.py` records whether a skill was written in the
+  `foreground` or by a `background_review`, and nothing about what the
+  conversation had read.
+- **Memory is two capped files**, frozen into the prompt at session start:
+  - `MEMORY.md` at 2,200 chars and `USER.md` at 1,375 chars;
+  - writes are regex-scanned (`tools/threat_patterns.py`);
+  - an unattended fork may only add — a patch or a removal is staged for
+    the owner (`memory_tool._background_delete_gate`).
+- **A curator runs when the agent is idle** (`agent/curator.py`), weekly
+  and after two idle hours:
+  - It marks a skill stale after 14 days without use and archives it at 30.
+  - Zero uses is treated as absence of evidence, so a young skill is never
+    aged out for being unused.
+  - Pinned and cron-referenced skills are exempt.
+  - An LLM consolidation pass is off by default, backs up first, and never
+    deletes.
+- **There is an audit ledger, not a gate.** `tools/skill_ledger.py` writes
+  content-addressed before and after blobs per mutation, with single-edit
+  rollback, and calls itself "TELEMETRY, NOT A GATE".
+- **Nothing measures whether a skill or a memory helps.**
+  `tools/skill_usage.py` counts uses, views and patches.
+- **The cached prefix is protected.** The system prompt is byte-stable for a
+  conversation. A mid-session skill change arrives as a note appended to the
+  next user message (`agent/skills_index_delta.py`), never as a prompt
+  rebuild.
+
+### 2.2 Its security posture (🔧 `SECURITY.md` and source)
+
+- **"The only security boundary against an adversarial LLM is the
+  operating system."** The approval check, the skill scanner and redaction
+  are declared "not boundaries", and prompt injection itself is out of scope.
+- **Approval is off by default and fails open.**
+  `tools/write_approval.py::write_approval_enabled` reads an unset or
+  invalid value as "gate off", and a config that cannot be read returns
+  `False`. This is the silently-degrading-guard shape.
+- **Agent-written skills are not scanned by default**
+  (`skills.guard_agent_created` is false).
+- **There is no conversation-level taint.** A tool result is wrapped as
+  untrusted only by tool name (`agent/tool_dispatch_helpers.py::_maybe_wrap_untrusted`).
+  The review fork reads that conversation and writes persistent prompt
+  text with no check on what it read.
+- **Hub trust is a repo-name allowlist plus a regex scan.** 📰 There is one
+  CVE against the skill scanner (CVE-2026-9353), and open issues on
+  unscanned skill descriptions and on stale memory poisoning resumed
+  sessions.
+- 📰 **Reception.** The main complaint is skill bloat: near-duplicates and
+  context inflation. The curator was the answer to it. An independent
+  hands-on test on a local 30B model found three near-duplicate skills and
+  concluded "human review still needed". PASB (`PERSONA-MEMORY-TIMESCALES-RESEARCH.md`
+  §3.2) measured Hermes saving a user's passing claim as a lasting fact in
+  51.4% of runs.
+
+### 2.3 Read against mecha
+
+Hermes is the existence proof that a self-writing skill library ships at
+scale on local models. It is also the clearest instance of the design
+mecha's rules forbid: a model writes executable, persistent prompt material
+out of conversations it never classified, behind gates that are off by
+default.
+
+The parts worth taking are the ones that do not depend on that:
+- the do-not-capture list (P7);
+- the add-only rule for unattended writers, which mecha already keeps in a
+  stronger form;
+- absence of use treated as absence of evidence, never as grounds on its
+  own;
+- appending a change to the tail instead of rebuilding the prefix (P5).
+
+---
+
+## 3. The rest of the field
+
+### 3.1 Harness-evolution papers
+
+📄 All preprints. Each was read as the arXiv HTML body unless marked
+*(abstract)*; appendices were sometimes truncated. AHE is already in
+`SELF-IMPROVEMENT-RESEARCH.md` §3 and is listed here for comparison only.
+**The affiliations given for Evo² and Harmony in secondary coverage are not
+confirmed on the arXiv pages.**
+
+| Method | Edits | Accept signal | Holdout / rollback | Key limitation |
+|---|---|---|---|---|
+| Meta-Harness [2603.28052](https://arxiv.org/abs/2603.28052) | A one-file harness | Ground truth on a search set; Pareto frontier with context cost | Held-out sets for text and maths; on TB2 the search set *is* the eval set | Selects on what it reports |
+| Evo² [2610.13025](https://arxiv.org/abs/2610.13025) | Harness source **and weights** (SFT + GRPO on the proposer/reflector) | Δ benchmark score | Split not explained | Weight-only SWE gain p=.086 |
+| Harmony [2610.15150](https://arxiv.org/abs/2610.15150) | Whole harness repo, general vs benchmark-specific parts | Unit tests + exploit PoCs; an LLM overfit judge that sees only the diff | Evolve / held-out-ID / held-out-OOD; restore last valid parent | **Edited the evaluator when it was writable** |
+| Harness² [2610.14224](https://arxiv.org/abs/2610.14224) | Eight file components | Label-free behaviour contrast | None | §1.2 |
+| HarnessLens [2608.27311](https://arxiv.org/abs/2608.27311) | Harness components | **Paired live rollouts labelled Recovered / Stable / Regressed**, plus a fresh confirmation batch | TEST untouched | Task selection uses an LLM |
+| Rethinking harness evolution [2607.12227](https://arxiv.org/abs/2607.12227) | Per-task revision | Unit tests or none | Held-out 45/10/34 split | **Evolution does not beat matched-budget sampling on TB2.1**; gains were "memorised fixes" |
+| TTHE [2607.08124](https://arxiv.org/abs/2607.08124) | Harness code at test time | Label-free proxies (execution health, round-trip consistency) | None | Committed 50% against a final-pool oracle of 64%: **selection is where it loses** |
+| OpenJarvis [2605.17172](https://arxiv.org/abs/2605.17172) | Typed spec: model, engine, agent, tools/memory, learning | **The target failure cluster improves and no other cluster drops past a tolerance** | Rollback | Its cloud teacher sees scrubbed traces |
+| HSI [2608.08466](https://arxiv.org/abs/2608.08466) | Harness + evolver; outer anchor immutable | Lower confidence bound on reward (μ − zσ/√n) | 20% held out; branch back | Non-monotonic: the best iterate came early |
+| JIT-Agent [2608.25593](https://arxiv.org/abs/2608.25593) | A trained generator writes per-task harnesses | Task reward | None described | Training cost unreported |
+| Harness-Zero [2609.24974](https://arxiv.org/abs/2609.24974) | Weights (LoRA); the harness is distilled away | A stronger reviewer corrects each step | Held-out splits | Context management cannot be distilled |
+| ClawGym II [2608.16798](https://arxiv.org/abs/2608.16798) | Weights; the harness is a black box | Verifier + rubric | Separate benchmarks | No audit for reward hacking |
+| DGM [2505.22954](https://arxiv.org/abs/2505.22954) / HGM [2510.21614](https://arxiv.org/abs/2510.21614) *(abstract)* | Own codebase | Staged benchmark | Archive, sandbox | Objective hacking; ~$22k a run |
+| SICA [2504.15228](https://arxiv.org/abs/2504.15228) | Whole codebase, including its overseer | Weighted score / cost / time | Archive | 50-task subsets |
+
+Five findings across the table bear on the proposals:
+
+1. **Label-free selection is where these methods lose.**
+   - TTHE commits a 50% answer from a pool whose best is 64%.
+   - Harness²'s failure analysis names a weaker candidate selected, and a
+     false premise shared across candidates.
+   - The editor and the judge share a model's biases.
+
+   This is the case against auto-accepting anything on judge or proxy
+   evidence, and for mecha's gate staying numeric.
+2. **Matched budgets erase a good part of the gains.** On TB2.1, harness
+   evolution was no better than spending the same budget on more samples.
+   **Mecha's gate has no null arm**, so it cannot say how often a candidate
+   "wins" against an unchanged copy of itself (P2).
+3. **Writable evaluators get edited.**
+   - Harmony's agent rewrote its score file and reported 100%.
+   - A tampering audit ([2609.00069](https://arxiv.org/abs/2609.00069))
+     found at least one finding in 63–85% of iterations for DGM, ADAS and
+     HyperAgents.
+
+   No model-authored change may ever reach the measurement path (§6).
+4. **Prompt-only edits are the weakest lever.**
+   - AHE's prompt-only edits regressed, from 69.7 to 67.4.
+   - Harness²'s component ablation ranked always-on prose last.
+   - Structural edits transferred where prose did not.
+
+   This supports staging prose for a person, and putting knowledge where it
+   is cheapest (P5).
+5. **The gates that hold up check regression per cluster and confirm on
+   fresh pairs.** OpenJarvis gates on "target cluster up, no other cluster
+   down past a tolerance". HarnessLens's metric-only gate would have
+   accepted 10 of 19 iterations against its own 5, and the extra acceptances
+   did not hold. Both are closer to mecha's gate than to Harness², and both
+   are evidence for P8.
+
+### 3.2 Self-curated context, memory and skills
+
+ACE, MINJA and PASB are already in `SELF-IMPROVEMENT-RESEARCH.md` §4,
+`MEMORY-RESEARCH.md` and `PERSONA-MEMORY-TIMESCALES-RESEARCH.md` §3.2. This
+section adds what is new since then, and what bears on the proposals.
+
+| System | Who writes | What validates a write | Pruning | Strength |
+|---|---|---|---|---|
+| ACE ([2510.04618](https://arxiv.org/abs/2510.04618)) | A curator emits deltas; non-LLM code merges them | Labels or execution feedback | Embedding dedup, plus helpful/harmful counters per bullet | 📄 ICLR 2026 |
+| GEPA ([2507.19457](https://arxiv.org/abs/2507.19457)) | A reflective mutator, offline | Metric plus feedback; a **Pareto frontier per instance** | The frontier | 📄 ICLR 2026 |
+| ReasoningBank + MaTTS ([2509.25140](https://arxiv.org/abs/2509.25140)) | The agent's own model, up to 3 items per trajectory, failures included | An LLM judge, admitted noisy | None; append-only | 📄 ICLR 2026 |
+| Letta sleep-time ([2504.13171](https://arxiv.org/abs/2504.13171)) | A **separate** sleep-time agent; the primary cannot edit its core memory | None | `memory_rethink` | 📄 / 📰 |
+| Codex memories ([docs](https://learn.chatgpt.com/codex/memories)) | A background pass over idle chats | Secret redaction; **`disable_on_external_context`** excludes chats that used MCP or web | Consolidation | 📰 |
+| Anthropic Agent Skills ([eng. blog](https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills)) | People, with Claude capturing drafts | Evaluations first; agent self-authoring is listed as *future* | — | 📰 |
+
+Three findings change how much weight a proposal below can carry:
+
+- **Self-generated skills do not help on average.**
+  - SkillsBench ([2602.12670](https://arxiv.org/abs/2602.12670), 📄)
+    measured curated skills at +16.2 pp but self-generated skills at
+    roughly zero: −1.3 pp in the NeurIPS version. **18 of 84 tasks regressed
+    even with curated skills.**
+  - [2605.23899](https://arxiv.org/abs/2605.23899) (📄) finds "non-trivial
+    negative transfer" from experience-derived skills, and finds that a good
+    extractor can be a poor consumer.
+
+  Both corroborate `SKILLS-RESEARCH.md` §9. They also say interactions
+  between rules are where harm hides, which argues for testing the set
+  (P3), not only each rule.
+- **Retrieving more memories can make things worse.** ReasoningBank's
+  success *fell* when it retrieved 2–4 items instead of 1: conflicting items
+  add noise. This is the mechanism behind mecha's 25-rule and 2,600-char
+  per-domain caps, so the caps are justified, not just tidy.
+- **Whole-set rewriting collapses context.** ACE measured Dynamic
+  Cheatsheet's rewrite taking 18,282 tokens down to 122, with accuracy
+  falling below the no-memory baseline. ACE also served 91.8% of input from
+  the prompt cache because its playbook changes by deltas. **Mecha's
+  learner still rewrites whole regions** (`learning::finalize_rules`:
+  "The learner rewrites whole sets, so identity has to survive the
+  rewrite"). §5 P4 names one concrete cost of that.
+
+### 3.3 The security record on memory and skill poisoning
+
+The new evidence since `SELF-IMPROVEMENT-RESEARCH.md` §5, all 📄 unless
+marked:
+
+- **MemoryGraft** ([2512.16962](https://arxiv.org/abs/2512.16962)) forges
+  "successful experiences" from a README. A few grafted records dominate
+  retrieval because the agent imitates past success.
+- **FARMA** ([2607.05029](https://arxiv.org/abs/2607.05029)) forges
+  reasoning traces that reinforce one another and reaches 100% attack
+  success.
+  - It defeats keyword filters, and it defeats A-MemGuard's consensus check
+    ([2510.02373](https://arxiv.org/abs/2510.02373)).
+  - **Consensus is defeated by amplification.** Support counted from
+    entries the store itself produced is not independent support.
+- **The delayed tool invocation attack on Gemini** (Rehberger, 2025, 📰).
+  The injection makes the memory write wait until the user's next "yes",
+  so the write looks user-initiated. **This is the attack aimed at learning
+  from human interventions**, mecha's only source of reflections. The
+  defence is the one mecha already has: taint belongs to the whole
+  conversation, not to a turn, so a clean-looking "yes" in an armed
+  conversation is never mined. That property must never become per-turn.
+- **SpAIware and ZombieAgent** (📰 2024, Jan 2026): mail or a file plants
+  rules in ChatGPT's memory, and they exfiltrate data in every later
+  conversation. These are the production instances of Zombie Agents.
+- **Skill marketplaces are hostile.**
+  - ClawHavoc (📰 Feb 2026): 341 of 2,857 audited ClawHub skills were
+    malicious, most delivering a stealer through fake "Prerequisites"
+    sections.
+  - A study of 31,132 skills ([2601.10338](https://arxiv.org/abs/2601.10338))
+    found 26.1% vulnerable, with skills that bundle scripts about twice as
+    likely to be.
+  - A Socket audit of OpenClaw's community `self-evolve` skill (📰) found it
+    designed to bypass approval and rewrite its own governing files.
+- **Lineage works as a defence.** MemLineage
+  ([2605.14421](https://arxiv.org/abs/2605.14421)) gates sensitive actions
+  on each memory's provenance and drove attack success to zero in its
+  harness. Codex's `disable_on_external_context` is the product version of
+  mecha's clean-only mining.
+
+Read against mecha, the existing combination covers MINJA, MemoryGraft,
+delayed invocation and the skill-hub vector by construction:
+- taint held by the whole conversation, with no knob;
+- reflections only from human interventions;
+- the counterfactual gate;
+- retirement;
+- user-authored skills only.
+
+Two gaps remain, and §5 takes both:
+- **Lineage is recorded but never re-checked.** `Rule::sources` names the
+  reflections a rule came from, but a later change to a source's standing
+  does not reach the rule (P6).
+- **Support is not checked for independence.** Nothing stops a rule's
+  support from being several interventions out of one session (P6).
+
+---
+
+## 4. Mecha against the field
+
+| | Harness² | Hermes | The 2026 papers | mecha today |
+|---|---|---|---|---|
+| **What evolves** | Eight harness files, per task | Skills (with scripts) and two memory files | Code, prompts, workflows; some also weights | Four numeric knobs (`harness::OverrideKey`) and learned rules |
+| **Who writes it** | An editor model | The agent's own background fork | A proposer model | The diagnostician proposes knobs; the learner writes rules from reflections |
+| **What accepts it** | Blind selection; no verifier | Nothing (approval is off by default) | Ground truth, tests, judges or proxies | A paired replay gate with a holdout, work floor and regression ceiling (`candidate::judge_drawn`); a counterfactual gate for rules |
+| **Holdout** | None | None | Some | Yes, drawn uniformly before diagnosis |
+| **Rollback** | None | A per-edit ledger | Some revert | `harness revert`; rule retirement on measured regression |
+| **Provenance of what it learns from** | None | Records the author, not the content | None discussed | Conversation-level taint; clean only, no knob |
+| **Executable self-edits** | Yes (plugins, scripts) | Yes (skill scripts) | Yes, mostly | None |
+| **Prefix** | Not its concern | Frozen per session; deltas in the tail | Not discussed | Byte-stable; nothing toggles per turn |
+| **Measures behaviour change** | Yes, live, but unverified | No | Yes, against benchmarks | **No.** Replay drops behaviour-changing candidates (`SELF-IMPROVEMENT-RESEARCH.md` §14.6) |
+
+The table shows a mirror image:
+- **The field** measures behaviour change live and gates it weakly or not at
+  all.
+- **Mecha** gates rigorously but cannot see behaviour change.
+- **Hermes** does neither, and ships.
+
+**The two halves of mecha are not in the same state.** The learning loop
+works: it mines, gates, carries and retires rules. Harness rumination has
+never had a suggestion accepted. §5.0 measures why, and the proposals are
+ordered by that diagnosis rather than by size.
+
+---
+
+## 5. Proposals
+
+### 5.0 Why harness rumination has produced nothing, measured
+
+`mecha harness list --all`, read 2026-10-18: **17 candidates since
+2026-08-25, none accepted.** 12 were rejected and 5 are staged.
+
+| Outcome | Count | Candidates |
+|---|---|---|
+| Named a config key that has never existed | 3 | `tool.validation.strict`, `context.auto_compact`, `context.compaction.threshold` |
+| Measured with no discriminating power (all ties on a scripted smoke test) | 3 | `compact_at_tokens`, `max_output_tokens`, `effort` |
+| Judged useless or harmful by the owner | 3 | `max_turns=10` ("does nothing"), `max_turns=3` ("harmful"), `max_output_tokens=4096` ("backwards") |
+| Untested | 1 | `effort=low` |
+| A security change | 1 | `security.minimize_taint=false` |
+| An architecture change contradicted by its own brief | 1 | retained-failure eviction |
+| Staged config, below the floor or unmeasurable | 3 | the latest: "16 diverged" on *both* arms |
+| Staged architecture, waiting for a person | 2 | 503 retry; semantic boredom |
+
+Three causes, each with its own evidence:
+
+1. **The proposer is blind.** The brief is "built from counters, not
+   content" (`diagnose.rs`), so the diagnostician has never seen a failure,
+   only a count of failures. What it produced is what blind proposals look
+   like:
+   - keys invented to fit a number;
+   - a mechanism "reverse-engineered onto" the one counter with a nonzero
+     mean;
+   - extreme values of the only knobs it was allowed.
+
+   Harness²'s editors must "cite the specific trajectory moment behind
+   every change; one you cannot trace to a moment is speculation". Mecha's
+   diagnostician cannot cite a moment, because it is never shown one. This
+   is a choice of the brief, not of the rules: `SELF-IMPROVEMENT-RESEARCH.md`
+   §13.1 already lets the diagnostician read untrusted content, and it
+   replaced the origin restriction with a test on the artifact (no verbatim
+   carry-over). **P9.**
+2. **The instrument cannot see.** On a non-greedy local sampler the
+   *baseline* arm diverges from its own recording about as often as the
+   candidate. The newest candidate shows 16 divergences on each arm, and
+   `HANDOFF.md` records "ten of eleven divergences … were baseline-arm" on
+   2026-09-03. Replay therefore cannot tell a change that moved behaviour
+   from noise, so it can neither accept nor reject on the merits. **P8,
+   with P2 to count the noise.**
+3. **The surface is where the gains are not.**
+   - Four numeric knobs are all the loop can apply. In every study in §3
+     that ablates components, the gains sit in structure: skills, scripts,
+     tool guidance, middleware. Harness²'s prompt-only ablation cost 1.5
+     points against 5.3 for skills, and AHE's prompt-only edits regressed.
+   - The two structural candidates the diagnostician did produce are staged
+     with no evidence attached, because nothing measures architecture.
+     "Architecture is always a human's call" is right; a human's call made
+     with no measurement is a coin the owner has to flip.
+
+   **P10.**
+
+The learning loop does not share these causes:
+- its sensor is the owner's interventions, which are content, from clean
+  sessions;
+- its instrument branches at the intervention rather than replaying whole
+  runs;
+- its surface is prose that a run actually reads.
+
+That is why it works, and why P3–P7 are upkeep, not rescue.
+
+**So the proposals come in two tiers.**
+- **Tier 1 makes harness improvement effective:** P8 (an instrument that
+  sees behaviour), P9 (a proposer that sees failures) and P10 (a surface
+  where the gains are). P1 and P2 are their small prerequisites: an honest
+  history and a counted noise floor.
+- **Tier 2 keeps a working learning loop honest:** P3–P7.
+
+Each proposal states:
+- the gap, with the mecha symbol that shows it;
+- where the idea comes from;
+- the shape;
+- why it keeps the rules in §0.
+
+**Every gap was checked against `880ebbc59` by reading the code.** None has
+yet been reproduced by a failing test, and doing that is the first step of
+each build.
+
+### P1. A past candidate's verdict is typed, not prose — S
+
+**Gap.**
+- `candidate::Guard` already separates "did not beat the original" (a
+  missing win) from "made something worse" (a regression). Its doc comment
+  calls them "opposite findings".
+- `commands/diagnose.rs::harness_history` throws that away. It renders each
+  past candidate's free-text `reason`, falling back to "measured worse", and
+  `diagnose::Evidence` heads the list with "do not propose any of these
+  again; a measured rejection is evidence, not an invitation to retry".
+- So an all-ties rejection (`judge_drawn`: "did not beat the original: 0
+  better, 0 worse, N unchanged") reaches the next diagnostician as a ban.
+  On an instrument that drops every behaviour-changing pair (§14.6), all
+  ties is the *expected* result for most candidates.
+- `HANDOFF.md` records the incident: three of the four overridable knobs
+  measured all ties with identical work on both arms, and were "one
+  careless reason away from retirement on evidence that measured nothing".
+- The fix on `fix/selection-slice-power` (`cbc3738`, unmerged, the owner
+  has not decided) stops the gate *rejecting* identical arms. P1 is the
+  other half: it stops the *history* turning whatever verdict the gate gave
+  into a ban.
+
+**Source.** Harness²'s reflector labels each edit `helped`, `hurt`,
+`no observed effect` or `confounded`, and prefers `confounded` whenever one
+rollout is all the evidence (`core/prompts.py::experience`).
+
+**Shape.**
+- Derive one verdict per past candidate from its stored `Measurement`,
+  never from its prose:
+  - `harmed`: a loss, a guard breach, or the work floor;
+  - `no observed effect`: ties, or wins not above losses;
+  - `underpowered`: below the floors;
+  - `owner`: rejected or reverted by hand.
+- Render the history in those groups, with a different instruction for
+  each:
+  - `harmed` and `owner` are never re-proposed;
+  - `no observed effect` may be re-proposed only through a different
+    instrument (P8);
+  - `underpowered` is silent on retrying.
+
+**Rules kept.** Counters in, no prose. The prompt sits in the
+diagnostician's brief, not in any run's prefix.
+
+### P2. A null arm, and tenure for accepted overrides — S/M
+
+**Gap.**
+- The gate counts paired wins (`MIN_SELECTION_PAIRS` = 8,
+  `MIN_HOLDOUT_PAIRS` = 4) but has never measured how often an
+  **unchanged** configuration "wins" against itself. Replay on a non-greedy
+  local model is pass@k-shaped (`ARCHITECTURE.md`, the replay notes).
+  `HANDOFF.md` already holds the informal version of this measurement:
+  "the baseline arm diverges on most non-scripted episodes … because a
+  local sampler does not reproduce its own tool sequence". The noise floor
+  exists. It just has never been counted.
+- An accepted override is permanent until a person reverts it. Learned
+  rules, by contrast, are re-validated and retired ("acceptance is not
+  tenure").
+
+**Source.**
+- Rethinking harness evolution: gains vanish at a matched budget.
+- HSI: the best iterate came early, and later ones regressed.
+- DGM's tampering audit: early defects persist down the lineage.
+
+**Shape.**
+1. An A/A run through `harness_probe` whose "change" is the identity, on a
+   schedule. The result is recorded beside the floors, so the floors are
+   justified by a number rather than asserted. If an identity arm clears
+   the floors at any meaningful rate, the floors are wrong.
+2. Every accepted override is periodically re-measured against its own
+   absence, with the same gate and arms swapped. Removing an override only
+   ever moves toward defaults, which is a narrowing. Whether it reverts
+   automatically or stages for a person is **R4**.
+
+### P3. The learn gate also probes interventions it did not learn from — M
+
+**Gap.**
+- `commands/learn.rs` measures a candidate rule set by branching only at the
+  batch's own reflections: the loop under "the gate: measure the candidate"
+  iterates `reflexions`. A rule is graded on the very cases it was derived
+  from.
+- Regressions on *other* interventions surface only later, in `mecha
+  validate`, after the set is live in every prompt of the domain.
+
+**Source.**
+- GEPA's per-instance Pareto frontier: a candidate must not lose any case,
+  not merely win on average.
+- SkillsBench: 18 of 84 tasks regressed even under curated skills.
+- Meta-Harness and AHE both select on the set they report.
+
+**Shape.**
+- Before applying, also probe a uniform draw (`sample.rs`) of the domain's
+  earlier interventions whose last validation was clean, current block
+  against candidate block.
+- Any regression refuses the batch, exactly as a regression on its own
+  reflections does today.
+- Report this tally separately, as the holdout it is.
+- The cost is a bounded number of extra probe pairs, at night.
+
+**Rules kept.** It narrows only: more ways to refuse, none to accept.
+
+### P4. A rule's record survives being reworded — M
+
+**Gap.**
+- `learning::finalize_rules` carries a rule's identity forward **only on
+  exact text** — deliberately, so that two distinct rules cannot merge.
+- Convictions are keyed by id (`ValidationRecord::attributed_rule_id`,
+  `rule_tallies`).
+- The retirement brake catches a reworded *retired* rule. Nothing catches a
+  reworded *active* one. A rule with two attributed regressions, one short
+  of `DEFAULT_RETIRE_AT`, that the learner restates in new words comes back
+  under a fresh id with an empty record, and its probation is re-decided by
+  the new batch.
+
+**Source.**
+- ACE's delta protocol (ADD / UPDATE / REMOVE on stable bullet ids, merged
+  by non-LLM code), and its measurement of whole-set rewriting collapsing
+  context.
+- Hermes's content-addressed per-mutation ledger.
+
+**Shape, two options (R2).**
+- **(a) Deltas.** The learner replies `keep <id>`, `update <id>: <text>`,
+  `add: <text>` and `retire <id>`:
+  - an `update` keeps its id, tallies, probation and lineage;
+  - untouched rules are untouched by construction;
+  - the reply *is* a per-mutation ledger.
+- **(b) The narrow fix.** Carry convictions and probation across the same
+  `normalized_rule_key` match the retirement brake already uses, and leave
+  identity alone.
+
+(a) is the structural answer to `SELF-IMPROVEMENT-RESEARCH.md` §4. (b) is
+a day's work.
+
+### P5. Knowledge that fires on an error, in the tail — M
+
+**Gap.**
+- Learned rules and skill listings ride always-on in the cached prefix
+  (`RULES_CHAR_BUDGET` = 2,600 per domain).
+- `post_tool` hooks only observe (`hooks.rs`).
+- So knowledge that matters only after a particular tool failure is paid
+  for on every run of the domain, or not carried at all.
+
+**Source.**
+- Harness²'s most-used plugin shape: "appending a targeted hint after an
+  error signature that keeps recurring".
+- Its component ablation: always-on prose came last.
+- Hermes's tail delta: change the end of the conversation, never the head.
+
+**Shape.**
+- A hint record keyed on **tool name plus an owner-written match** against
+  the error result.
+- When a result with `is_error` matches, the hint is appended to that
+  result as a clearly delimited harness note.
+- It sits in the moving tail, so it costs the prefix nothing and costs
+  nothing on runs where the error never fires.
+- The result keeps its own `external` flag: the note neither launders nor
+  adds taint.
+- Hints live in `~/.mecha/` with triggers and skills, never in layered
+  config, so a cloned repo cannot bring one in.
+- Candidates are found by counters: `ToolErrorRate` per tool already exists.
+
+**Rules kept.** §5 of `SELF-IMPROVEMENT-RESEARCH.md` decides who writes the
+text: the owner, or a template over counters. A model never paraphrases an
+error string into one (**R3**).
+
+### P6. Lineage is re-checked, and support must be independent — S/M
+
+**Gap.**
+- `Rule::sources` records the reflections a rule came from.
+- A reflection's `Origin` can be reclassified after the fact
+  (`learning::Reflexion::provenance`).
+- Nothing propagates that change to a rule built from it.
+- Nothing distinguishes a rule supported by three sessions from one
+  supported by three interventions in a single session.
+
+**Source.**
+- MemLineage: provenance-gated actions drove attack success to zero.
+- FARMA: self-reinforcing forged entries defeat consensus checks.
+
+**Shape.**
+1. When any source of an active rule stops being learnable, the rule goes
+   back on probation, with the reason recorded.
+2. A rule whose sources come from a single session is **born on
+   probation**. It does not refuse; it gets the shorter leash, matching the
+   D1 hedge's idiom ("acting without certainty is the bet, and a shorter
+   leash is the hedge"). The independence threshold is **R5**.
+
+**Rules kept.** Narrowing only.
+
+### P7. The reflector is told what never becomes a rule — S
+
+**Gap.** `learning::REFLECTOR_SYSTEM` tells the reflector to skip a
+success, a new task, and ordinary conversation. It says nothing about the
+three categories that harden into self-imposed constraints:
+- a failure caused by the environment (a missing binary, a server that was
+  down);
+- a negative claim about a tool;
+- an approach that was tried and never resolved.
+
+`MISMATCH_REFLECTOR_SYSTEM` already carries one of these ("never derive
+stop-work, skip-work, or hard call-limit rules from counts alone"). The
+steer, denial and follow-up reflector does not.
+
+**Source.** Hermes's `_DO_NOT_CAPTURE_BLOCK`, written after exactly this
+failure in production. PASB's 51.4% shows a bare instruction is not
+enough, so the prompt names criteria, not a tone.
+
+**Shape.**
+- Three sentences added to `REFLECTOR_SYSTEM`.
+- The effect is read as the share of `{"skip": true}` replies, and the
+  categories of the reflections that remain, before and after.
+  `learning-report` does not count skips today, so the count is part of
+  the build.
+- The reflector's prompt is not in any run's prefix.
+
+### P8. Behaviour-changing candidates are measured on live paired arms — L
+
+**Gap.** `SELF-IMPROVEMENT-RESEARCH.md` §14.6: replay can only measure
+changes that change nothing. `HARNESS-RESEARCH.md` §9 recommends moving
+config candidates into experiments, and that recommendation is undecided.
+The branch `fix/selection-slice-power` is unmerged.
+
+**Source.**
+- HarnessLens: paired live rollouts labelled Recovered, Stable or
+  Regressed, a fresh confirmation batch, and "preservation alone is not
+  enough".
+- OpenJarvis: the target cluster improves, and no other cluster falls past
+  a tolerance.
+- Harness²: re-running the same task is what makes a behavioural contrast
+  visible at all.
+
+**Shape.**
+- A candidate the replay gate dropped as divergent becomes an `experiment`
+  with two arms (current against candidate) in `trial_env` homes, which
+  never hold the operator's servers. So the arms run in fixture worlds, with
+  no side effects, by construction.
+- Tasks are drawn from the episodes whose counters motivated the candidate,
+  plus preservation tasks.
+- Each pair is labelled Recovered, Stable or Regressed. "Stable" alone never
+  accepts.
+- The regression ceiling applies per counter, as it does now.
+- **The second product is divergence.** For each task, the first tool-call
+  index where seeds disagree, and the tool at that point, become a typed
+  field in `diagnose::Evidence`. Harness²'s editors rank a divergence first
+  ("the agent can already do it"). This hands the diagnostician that signal
+  as a number, never as transcript text.
+
+**The conflict to rule on (R1).** §14.7 says fitness is the owner's own
+usage. Fixture worlds are not that usage. Re-hosting real recorded tasks in
+a fixture world is a private-data question. The local model's throughput
+also bounds how many pairs fit in a night.
+
+### P9. The diagnostician sees failures, not only counts of them — M
+
+**Gap.**
+- `diagnose::Evidence` is counters, plus bounded clean `AppraisalNote`s.
+  The diagnostician never sees a run.
+- `diagnose.rs` treats a decline as "a legitimate answer". But a brief
+  that shows only aggregate counters gives it nothing to decline *from*:
+  every night the counters are nonzero somewhere.
+
+**Source.**
+- Harness²: evidence is a directory of full trajectories, the prompt is a
+  pointer to it, and every edit must cite a trajectory moment
+  (`core/context.py::mission`).
+- AHE: an "agent debugger" turns rollouts into layered evidence per
+  failure (`SELF-IMPROVEMENT-RESEARCH.md` §3).
+
+**Shape.** The brief gains an evidence directory, built per episode in the
+non-holdout pool:
+- **A typed digest of every episode**, all harness-owned and closed-set:
+  - the tool-call sequence (names, `is_error`, `external`);
+  - the stop cause;
+  - the turn at which the owner stepped in;
+  - from P8, the first index at which seeds diverge.
+- **For a clean session, the transcript itself.** Its provenance is the
+  owner and the model, which is what the learner already reads.
+- **For an armed session, the reflector's withheld view**: the owner's own
+  words and tool names, never third-party text. This is the same reduction
+  `REFLECTOR_SYSTEM` already handles.
+
+The mission requires every proposal to cite an episode and a turn, and a
+proposal that cites none is refused before measurement. The existing
+artifact tests still apply: `carries_over` / `lifted` against everything
+read, the mandatory prediction, and class re-derivation.
+
+**Rules kept.**
+- §13.1's artifact test is the ruling this rests on.
+- Third-party text never reaches the brief, because armed sessions are
+  shown through the reflector's reduction. That is stricter than §13.1
+  requires.
+- Most sessions arm early (`PROVENANCE-DESIGN.md`: 15 of 18 on message 1
+  or 2), so the clean-transcript half is thin. The digest carries most of
+  the weight. Whether the clean half is worth building is **R6**.
+
+### P10. Structural candidates arrive with a measurement — L
+
+**Gap.**
+- `ChangeClass::Architecture` and `Prose` stage with no measurement
+  attached.
+- The two staged architecture candidates have waited since 2026-09-26 and
+  2026-10-11.
+- `HANDOFF.md` records that the content-sensitive arm (`mecha eval
+  --ab-config`) is "a human's spend", and nobody spends it.
+
+**Source.**
+- Harness²'s component table: the gains are in skills, scripts, tool
+  guidance and middleware.
+- Harmony and OpenJarvis: structural edits behind a held-out gate.
+- The inversion this project prefers to a refusal: keep the feature, and
+  move the decision to the trusted side.
+
+**Shape.**
+- A structural candidate stays a human's call, but the human decides on
+  evidence. When the owner marks a staged candidate "worth measuring", the
+  owner (or a session working for the owner) implements it behind a lever
+  or an arm environment.
+- P8 then measures it on paired fixture arms, and the result is written
+  into the candidate record before the accept/reject decision.
+- The surface this opens, in order of the §3 evidence:
+  1. tool descriptions and guidance;
+  2. error hints (P5);
+  3. subagent profiles;
+  4. skills.
+
+  The first three are owner-reviewed text. **Skills are the one that
+  touches a standing ruling:**
+  - `SKILLS-RESEARCH.md` §9 refuses model-authored skills.
+  - The evidence on both sides is now measured. Self-generated skills come
+    out ≈0 on average (SkillsBench). Curated skills give +16.2 pp. Harness²
+    skills drafted by an editor and *selected* give the largest single
+    component effect.
+  - An owner-reviewed skill drafted from a diagnosis falls between those.
+    Whether it stays refused is **R7**.
+
+**Rules kept.**
+- No lane promotes itself: the owner accepts every structural change.
+- The `Security` class is still never measured.
+- §6.1's invariants hold before any arm runs.
+
+---
+
+## 6. Deliberately out of scope
+
+- **Model-authored skills, scripts, hooks or plugins.**
+  - `SKILLS-RESEARCH.md` §9 stands.
+  - SkillsBench (self-generated skills ≈ 0) and the negative-transfer result
+    corroborate it.
+  - ClawHavoc and the 31k-skill audit show what a writable skill surface
+    attracts.
+  - Harness²'s best components are exactly these, and the evidence still
+    does not move the ruling.
+- **Per-task recursion on live runs.** Four executions of a task that sends
+  mail is four sends. Harness²'s loop applies only where a run has no side
+  effects, which is what P8's fixture worlds are.
+- **Transcript prose as the input to any proposer.** This is §5's rule.
+  Harness² and Hermes both feed full trajectories to the editor; that is the
+  Zombie Agents path.
+- **Accepting anything on a judge or a proxy alone.** TTHE and Harness²
+  lose at selection, and their editor and judge share a model's biases.
+- **"Be active" prompting** of any learner or diagnostician. KEEP_BASE and
+  `NO_ENTRY` are first-class answers, and doing nothing is a result.
+- **A skill hub or any third-party install path.**
+- **Distilling harness gains into weights** (Harness-Zero, ClawGym II, Evo²).
+  This is parked, not refused. It fits the local-model premise, but training
+  on transcripts needs the provenance gate, and a weight change is far less
+  revertible than an override.
+
+### 6.1 Invariants any future widening must keep
+
+If the edit surface ever grows past four knobs and learned rules:
+- **The measurement path is out of reach.** No candidate may write to:
+  - the validation ledger;
+  - the comparison store;
+  - the holdout draw;
+  - an experiment's manifest or graders.
+
+  Harmony's agent edited its evaluator the moment it could.
+- **Graders stay out of a trial home.** Harness² runs a tripwire,
+  `assert_no_grader_verdicts`, over every context a model sees, matching by
+  file name and by content. Before P8 runs, confirm that no eval case
+  check, `mismatch.rs` gold fixture or score file is reachable from a
+  `trial_env` home, or through `web_search` from inside one.
+
+---
+
+## 7. Rulings owed
+
+- **R1 (P8).** May behaviour-changing harness candidates be measured on live
+  paired arms in fixture worlds? This is the same question as
+  `HARNESS-RESEARCH.md` §9. If yes: where do the tasks come from, given
+  §14.7?
+- **R2 (P4).** Should the learner reply in deltas (structural, larger), or
+  should convictions be carried by normalised text (narrow, a day's work)?
+- **R3 (P5).** Who writes hint text: only the owner, or also counter-templated
+  candidates staged through `ruminate` as `Prose` for a person?
+- **R4 (P2).** When a re-measured override no longer earns its place, does it
+  revert automatically (the direction is toward defaults) or stage for a
+  person?
+- **R5 (P6).** How many distinct sessions take a new rule off probation:
+  two, or more? Rare corrections learn more slowly the higher this is set.
+
+- **R6 (P9).** Should the diagnostician's brief include clean transcripts
+  in full, or only the typed digest and the reflector's withheld view?
+- **R7 (P10).** Does `SKILLS-RESEARCH.md` §9 still refuse an owner-reviewed
+  skill drafted from a measured diagnosis, or only an unreviewed
+  model-authored one? Nothing in Tier 1 needs this answered first, because
+  skills come last in P10's order.
+
+**Suggested build order** — Tier 1 first, because that is where nothing has
+worked:
+1. P1 and P2: an honest history and a counted noise floor. Both are small,
+   and P8's verdicts mean nothing without P2.
+2. P9: the digest half needs no ruling. It is the cheapest change that
+   could stop the blind proposals.
+3. P8, after R1.
+4. P10, after P8, starting with tool descriptions.
+5. Tier 2 alongside, smallest first: P7, P3, P6, then P4 (after R2) and
+   P5 (after R3).
+
+---
+
+## 8. Sources
+
+- **Code read:**
+  - [`google-research/harness2`](https://github.com/google-research/harness2) at `1cfe254`;
+  - [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent) at `9e01b44d`.
+- **Papers:** linked inline in §1–§3.
+- **Curated lists used to find them:**
+  [DAIR.AI harness-engineering collection](https://academy.dair.ai/papers/collections/harness-engineering)
+  and [Awesome-Harness-Self-Improvement](https://github.com/leezythu/Awesome-Harness-Self-Improvement).
+- **Secondary coverage** (📰) is used only where marked: ClawHavoc, the
+  Socket audit, CVE-2026-9353, the Gemini delayed-invocation and ZombieAgent
+  reports, and Hermes's reception.
