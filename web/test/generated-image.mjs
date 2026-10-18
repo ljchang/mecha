@@ -80,6 +80,35 @@ for (const bad of [
 }
 is(generatedImage(done('x', { name: 'constructor' })), null, 'a prototype key is no tool');
 
+// A tool that defers (an MCP server's picture tool) shows its picture as a
+// clip plays: only on a row the server marked, held to `image_generate`'s path.
+const mcp = (preview, extra = {}) => done(preview, { name: 'moss_draw', deferred: true, ...extra });
+const mossLine = 'image: images/moss-20261018-183730-5.png\nA new picture';
+is(generatedImage(mcp(mossLine)), 'images/moss-20261018-183730-5.png', 'a deferred tool shows its picture');
+is(generatedImage(mcp(mossLine, { deferred: undefined })), null, 'not on a row the server did not mark');
+is(generatedImage(mcp(mossLine, { kind: 'assistant' })), null, 'only on a tool row');
+is(generatedImage(mcp(mossLine, { pending: true })), null, 'not while it is being made');
+is(generatedImage(mcp(mossLine, { is_error: true })), null, 'not on a failed call');
+for (const bad of [
+  'image: inbox/x.png',
+  'image: images/../x.png',
+  'image: images/sub/x.png',
+  'image: /etc/passwd.png',
+  'image: images/x.jpg',
+]) {
+  is(generatedImage(mcp(bad)), null, `a deferred tool refuses ${bad}`);
+}
+{
+  // The settled result in the transcript is wrapped in the loop's envelope
+  // (`jobs::settle`), so a reload reads the line inside it, as `clipOf` does.
+  const { readFileSync } = await import('node:fs');
+  const cases = JSON.parse(readFileSync(new URL('./deferred-clip-cases.json', import.meta.url), 'utf8'));
+  const wrapped = cases.wrapped.replace(cases.result, mossLine);
+  is(wrapped !== cases.wrapped, true, 'the envelope case holds the result verbatim');
+  is(generatedImage(mcp(wrapped)), 'images/moss-20261018-183730-5.png', 'the settled, wrapped result shows as the live one did');
+  is(generatedImage(done(wrapped)), null, "image_generate's own result is never unwrapped");
+}
+
 // A picture drawn once is not drawn inline again: the `image_view` of the file
 // `image_generate` just saved keeps its row, with the picture behind the tap.
 const indices = (entries) => JSON.stringify([...repeatedPictures(entries)]);

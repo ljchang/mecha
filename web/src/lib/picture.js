@@ -17,6 +17,12 @@
 // `images/<name>.png`; `image_view` reports a workspace-relative path of
 // plain segments, none starting with a dot. A refusal or failure has no
 // picture.
+//
+// A tool that defers (an MCP server's picture tool, BACKGROUND-JOBS-DESIGN.md
+// §8) is held as a clip is (`clipOf`): only on a row the server marked
+// `deferred`, its first line read inside the settled result's envelope, and
+// the path held to `image_generate`'s own `images/<name>.png`. Any other
+// tool's text is still never a picture.
 
 import { saveBlob } from './reply-export.js';
 const PICTURE = {
@@ -24,11 +30,14 @@ const PICTURE = {
   image_view: /^image: ((?:[A-Za-z0-9_-][A-Za-z0-9._ -]*\/)*[A-Za-z0-9_-][A-Za-z0-9._ -]*\.(?:png|jpe?g|gif|webp))$/i,
 };
 export function pictureOf(entry) {
-  const pattern = Object.hasOwn(PICTURE, entry.name) ? PICTURE[entry.name] : null;
+  const named = Object.hasOwn(PICTURE, entry.name) ? PICTURE[entry.name] : null;
+  const deferred = !named && entry.kind === 'tool' && entry.deferred === true;
+  const pattern = named ?? (deferred ? PICTURE.image_generate : null);
   if (!pattern || entry.pending || entry.is_error || entry.blocked) {
     return null;
   }
-  const first = (entry.preview ?? '').split('\n', 1)[0];
+  const text = String(entry.preview ?? '');
+  const first = (deferred ? text.replace(ENVELOPE, '') : text).split('\n', 1)[0];
   const m = pattern.exec(first);
   return m ? m[1] : null;
 }
