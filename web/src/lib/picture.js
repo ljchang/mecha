@@ -75,6 +75,27 @@ export function repeatedClips(entries) {
 }
 
 // Every picture the tool rows drew, in order, each once.
+// Whether a Regenerate means what its title says on this row's picture.
+// Drawing a picture again at a new seed goes through `image_generate`, so a
+// picture a deferring tool made (an MCP server's, `pictureOf`) is not offered
+// it: the redraw would come from a different model, landing as a version of a
+// picture it never drew (review of #715). Edit, Download and Save act on any
+// picture as what it is, so they stay.
+export function redrawable(entry) {
+  return entry?.kind === 'tool' && Object.hasOwn(PICTURE, entry.name ?? '');
+}
+
+// The pictures in `entries` a Regenerate may be offered on (`redrawable`), for
+// the call screen, which knows a picture only by its path.
+export function redrawablePictures(entries) {
+  const out = new Set();
+  for (const entry of entries) {
+    const picture = redrawable(entry) ? pictureOf(entry) : null;
+    if (picture) out.add(picture);
+  }
+  return out;
+}
+
 export function picturesIn(entries) {
   const out = [];
   for (const entry of entries) {

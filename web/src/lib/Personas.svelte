@@ -19,7 +19,7 @@
     maskName,
     uploadRegionReferences,
   } from './image-edit.js';
-  import { pictureOf, clipOf, stillOut, waitingPictures, repeatedPictures, turnsWithoutPicture, downloadPicture, picturesIn, picturesSince, pictureVersions, shownVersion, makingText, slotText, repeatedClips } from './picture.js';
+  import { pictureOf, redrawable, redrawablePictures, clipOf, stillOut, waitingPictures, repeatedPictures, turnsWithoutPicture, downloadPicture, picturesIn, picturesSince, pictureVersions, shownVersion, makingText, slotText, repeatedClips } from './picture.js';
   import ClipPlayer from './ClipPlayer.svelte';
   import { carriesFiles, droppedFiles, withAttachments } from './attach.js';
   import { watchIdle, idleSpan } from './autolock.js';
@@ -175,6 +175,7 @@
   const cites = $derived(citeEntries(run.entries, run.citations));
   const pictureUrl = (path) => fileUrl(key, path, chosen?.locked ? token : null);
   const callPictures = $derived(callBefore ? picturesSince(run.entries, callBefore) : []);
+  const callRedrawable = $derived(redrawablePictures(run.entries));
   // The call screen shows the chat's own transcript, which the call's turns
   // join as they happen (the owner's ask, 2026-10-05): one conversation, read
   // from one place, so a re-read can never draw a line twice.
@@ -2055,7 +2056,7 @@
                 </span>
               {/if}
               <button class="genedit" onclick={() => editImage(shown)}>Edit</button>
-              <button class="genedit" disabled={run.running} title={run.running ? `${chosen.display} is answering` : 'Draw this picture again at a new seed'} onclick={() => regenerate(picture, shown)}>Regenerate</button>
+              {#if redrawable(entry)}<button class="genedit" disabled={run.running} title={run.running ? `${chosen.display} is answering` : 'Draw this picture again at a new seed'} onclick={() => regenerate(picture, shown)}>Regenerate</button>{/if}
               <button class="genedit" onclick={() => savePicture(shown)}>Download</button>
               {#if pictureNote?.path === shown}<span class="genfail">not downloaded: {pictureNote.why}</span>{/if}
             {:else if picture && fold}
@@ -2286,6 +2287,7 @@
       display={chosen.display}
       face={callFace}
       pictures={callPictures}
+      redrawable={callRedrawable}
       transcript={callTranscript}
       streaming={run.streaming}
       resources={safety?.resources && (crisisShown || callEntries.some((e) => e.kind === 'crisis')) ? safety.resources : null}

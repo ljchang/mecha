@@ -46,6 +46,10 @@
     // redraw and says its line into the call, so the persona answers
     // aloud; owner, 2026-10-10). Null hides the button.
     onregenerate = null,
+    // The pictures Regenerate may be offered on (`picture.js`
+    // `redrawablePictures`): a deferring tool's picture is not. Null offers
+    // it on every picture, as before.
+    redrawable = null,
     // The chat's own transcript (`call-lines.js` `historyLines`), which the
     // call's turns join as they happen, and the reply streaming in: the
     // conversation as the chat shows it (the owner's ask, 2026-10-05).
@@ -475,7 +479,7 @@
           <!-- An edit is a call turn: offered only while there is a line to
                carry it, as the call's own typing box is (review of #552). -->
           {#if onedit}<button class="viewbtn" onclick={edit} disabled={!linked}>Edit</button>{/if}
-          {#if onregenerate}<button class="viewbtn" onclick={regenerate} disabled={!linked}>Regenerate</button>{/if}
+          {#if onregenerate && (!redrawable || redrawable.has(viewing))}<button class="viewbtn" onclick={regenerate} disabled={!linked}>Regenerate</button>{/if}
           {#if ondownload}<button class="viewbtn" onclick={download}>Download</button>{/if}
           <button class="viewbtn" bind:this={backButton} onclick={() => (viewing = null)}>Back to the call</button>
           <!-- The hang-up stays one tap away while a picture is open. -->
