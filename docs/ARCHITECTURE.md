@@ -2337,8 +2337,11 @@ first sketch would have widened the jail with nobody asked:
   inherits its parent's through `Arc::new(ctx.clone())`, and from the
   conversation's. It copies the cell back beside `goal_anchor`, before the
   `?`, because the yes was given whether or not the run finished.
-  `Record::Grants` is cumulative, merged on read and never cleared by a
-  rewrite. `with_workspace` (an eval case, a batch item) keeps the standing
+  `Record::Grants` has `GoalAnchor`'s shape, not `Taint`'s: it is written on
+  every run, empty included, and on read the last one *replaces* rather than
+  merges. Merging taint fails closed; merging grants fails open, and a
+  `/clear` followed by a run and a resume brought the grant back with nobody
+  asked (review of #711). A rewrite leaves it alone. `with_workspace` (an eval case, a batch item) keeps the standing
   grants only; `for_session_in` (incognito) keeps none.
 - **`shell` sees what the file tools see.** `Sandbox::with_grants` adds read
   grants to `readable` and write grants to `writable`, per call, since a live
@@ -2357,9 +2360,12 @@ first sketch would have widened the jail with nobody asked:
   `request_access` itself has no capabilities. A jail request nobody could
   answer is not a refused send, so `blocked_sends` counts only the
   interlock's escalations (`send_escalation`).
-- **`Lever::Grants` / `--no-grants`** applies no `[[grant]]` and registers no
-  `request_access`; `mecha eval` forces it, since which directories this
-  owner opened is this machine's fact. Personas report it off: a persona is
+- **`Lever::Grants` / `--no-grants`** applies no `[[grant]]`, registers no
+  `request_access` and refuses `/grant`; `mecha eval` forces it, since which
+  directories this owner opened is this machine's fact. It is `Grants::off`,
+  carried through `for_run`, so a resumed conversation's recorded grants are
+  not reachable either. An off run leaves them on the conversation rather
+  than carrying back none: not using a grant is not ending it. Personas report it off: a persona is
   never given the owner's directories.
 
 Not built: revoking one live grant short of `/clear`, a web `/grant`, and an

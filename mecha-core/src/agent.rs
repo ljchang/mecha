@@ -2710,8 +2710,11 @@ impl Agent {
         // A human answer remains a fact even if the provider fails afterwards.
         convo.goal_anchor = cx.tools.goal_track.as_ref().and_then(|t| t.anchor());
         // And so does a person's grant: the yes was given whether or not the
-        // run that asked for it finished.
-        convo.grants = cx.tools.grants.live();
+        // run that asked for it finished. Not when grants were off for this
+        // run: it saw none, and not using them is not ending them.
+        if !cx.tools.grants.is_off() {
+            convo.grants = cx.tools.grants.live();
+        }
         let mut outcome = ran?;
         outcome.duration_secs = Some(started.elapsed().as_secs_f64());
         outcome.context_overflows = context_overflows;
@@ -11628,6 +11631,83 @@ mod tests {
         assert!(!child.contains("request_access"), "{child}");
         let narrowed = refusal(true, true).await;
         assert!(!narrowed.contains("request_access"), "{narrowed}");
+    }
+
+    /// `--no-grants` holds for a resumed conversation too: its recorded
+    /// grants are not reachable in an `off` run (the record says the lever
+    /// is off), and they are not erased by it either — not using a grant is
+    /// not ending it (review of #711).
+    #[tokio::test]
+    async fn grants_off_hides_a_resumed_conversations_grants_without_ending_them() {
+        struct Probe;
+        #[async_trait]
+        impl Tool for Probe {
+            fn name(&self) -> &str {
+                "probe"
+            }
+            fn description(&self) -> &str {
+                "Can this run read the path?"
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                true
+            }
+            async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
+                let raw = input["path"].as_str().unwrap_or_default();
+                Ok(match ctx.resolve_for(raw, crate::grant::Access::Read) {
+                    Ok(_) => ToolOutput::ok("reachable"),
+                    Err(e) => ToolOutput::err(format!("{e:#}")),
+                })
+            }
+        }
+        let papers = std::env::temp_dir().join(format!("mecha-off-g-{}", uuid::Uuid::new_v4()));
+        let workspace = std::env::temp_dir().join(format!("mecha-off-ws-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&papers).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        let papers = papers.canonicalize().unwrap();
+        let calls = vec![
+            assistant(
+                vec![Block::ToolUse {
+                    id: "p".into(),
+                    name: "probe".into(),
+                    input: json!({"path": papers.display().to_string()}),
+                }],
+                StopReason::ToolUse,
+            ),
+            assistant(vec![Block::text("ok")], StopReason::EndTurn),
+        ];
+        let (mut agent, _) = agent_with(calls, PermissionMode::Ask);
+        agent.registry.insert(Arc::new(Probe));
+        agent.ctx_mut().workspace = workspace.clone();
+        agent.ctx_mut().grants = crate::grant::Grants::off();
+
+        let held = vec![crate::grant::Grant {
+            path: papers.clone(),
+            access: crate::grant::Access::Read,
+            source: crate::grant::Source::Owner,
+        }];
+        let mut convo = Conversation::from(vec![Message::user("read it")]);
+        convo.grants = held.clone();
+        agent.run(&mut convo, None).await.unwrap();
+
+        let result = convo
+            .messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .find_map(|b| match b {
+                Block::ToolResult { content, .. } => Some(content.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(result.contains("outside the workspace"), "{result}");
+        assert_eq!(
+            convo.grants, held,
+            "an off run ended the conversation's grants"
+        );
+        std::fs::remove_dir_all(&papers).ok();
+        std::fs::remove_dir_all(&workspace).ok();
     }
 
     /// The **escalation** door shows the call as it will execute too.
