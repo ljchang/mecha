@@ -580,6 +580,12 @@ or reach getting any trust they do not already have?
   and a clip can be tens of megabytes. It comes through the chat's files route as a blob and
   plays from an object URL, revoked when the row unmounts or the clip changes. `files.rs` keeps
   "only images render inline", and no Range support is needed for the phone.
+- **A picture shows where the call is, as a clip plays (2026-10-18).** `pictureOf` reads a
+  deferring tool's first line, `image: images/<name>.png`, held to `image_generate`'s own
+  pattern and read inside the settled result's envelope as `clipOf` reads it. It is only ever
+  a row the server marked `deferred`; any other tool's text is still never a picture. The
+  first such tool is an experimental MOSS-Image server, tried from the chats before anything
+  of it is built into mecha.
 - **Incognito is unchanged.** MCP tools are withheld there (`ALLOWED_BUILTINS`), so no MCP job
   reaches a RAM room.
 
