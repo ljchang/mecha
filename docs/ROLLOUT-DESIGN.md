@@ -63,7 +63,7 @@ The research behind this document is summarised in §9, with links.
 | `OnDivergence::Live` exists, but only in `mecha replay` | `commands/replay.rs` | All-or-nothing at the first divergence, against the real world: see §1.1 |
 | No "changes the world" axis | `Tool::read_only()` means "skip the approver", not "has no effects" | Eight tools that write claim it. In §3.2's terms: six `StoreWrite` tools, `image_generate` (`Render`) and `http_fetch` (`Irreversible`) |
 | Reads that write | Graph reads append `query_log` and `retrieval_touch` (`INCOGNITO-DESIGN.md` §3.3; the unrecorded-read mode in §5.2 is unbuilt); token refresh rewrites token files | A rollout's reads are not free |
-| Store roots outside `RunContext` | questions, hud, personas, imagelib, the forecast ledger and the shell registry resolve from `mecha_home()` | Only the outbox can be redirected per run (`OutboxStore::open_like`, which Slack already uses per thread) |
+| Store roots outside `RunContext` | questions, hud, personas, imagelib, the forecast ledger and the shell registry resolve from `mecha_home()` | Two redirects exist, at different points. The outbox is per run (`RunContext::with_outbox`; `OutboxStore::open_like`, which Slack already uses per thread). `message_send` binds its route when the registry is built (`MessageSend::new(route)`), so a rollout's registry can bind a scratch `MailboxRoute`. The rest are per process only |
 | No copy-on-write workspace | Branches use the recorded workspace; `mismatch::drive` stages an empty temp dir | Branch writes would land in the real workspace |
 | Uneven seats and voice-call checks | Ruminate's replay arms and `validate` take no seat (`permit::Permits`); only `replay_persona::wait_for_owner` checks for a live call | A night of rollouts could stutter a call |
 
@@ -158,7 +158,7 @@ A new axis, separate from `read_only()`.
 | `Read` | Executes for real | `fs_read`, `fs_list`, `document_read`, `mail_search`, `mail_get_thread`, `calendar_list_events`, `docs_read`, `web_search` (`Blind`) |
 | `ReadThatRecords` | Executes in an **unrecorded** mode when the server has one; otherwise ruling **W1** decides | graph reads (`query_log`, `retrieval_touch`) |
 | `Staged` | Stages into a **scratch outbox** opened per rollout (`OutboxStore::open_like`). The model gets the same "Drafted, not sent" answer it gets live. The draft is kept for scoring and discarded with the rollout | `mail_send`, `mail_reply`, `calendar_*_event`, `docs_append`/`replace`, `sheets_write`, `factory__*` publishes |
-| `Workspace` | Executes against a **scratch copy** of the workspace taken at branch time. Shell runs sandboxed against the copy. The copy's root obeys `setup`'s rule that a jail may never contain the mecha home: a scratch root under `~/.mecha/` would be the silently-degrading-sandbox shape again | `fs_write`, `fs_edit`, confined `shell` |
+| `Workspace` | Executes against a **scratch copy** of the workspace taken at branch time. Shell runs sandboxed against the copy. The copy lives where run workspaces already live, under `~/.mecha/work/<producer>/` (`work.rs`). The rule it must obey is `work::ensure_outside_mecha_home`'s: a jail may never *contain* the mecha home. A root under it is the normal case | `fs_write`, `fs_edit`, confined `shell` |
 | `StoreWrite` | Not executed. Answered with a synthetic "recorded, not delivered" result and kept in the rollout record (ruling **W2**) | `message_send`, `ask_user` (headless), `hud_propose`, `persona_propose`, `image_library_propose`/`_reference` |
 | `Render` | Not executed: the rollout halts at the call (a render costs the GPU, and a fake picture misleads the continuation) | `image_generate`, video |
 | `Irreversible` | The rollout **halts before the call**, and the halt is recorded with the tool's name. A halt is information, not a failure | `calendar_hold`, `mail_triage`, `docs_create`, `docs_trash`, graph writes, unconfined `shell`, any `Egress::Chosen` call (`http_fetch`) |
@@ -192,11 +192,15 @@ halt.
       that run.
     - The live run's `RunStats` absorbs the winner only, never the losers'
       costs. Those stay in the comparison record.
-    - Any future driver that does record a rollout session uses a new
-      `SessionKind::Rollout`. Every corpus readout, `reflect`, `learn` and
-      `harness ruminate` exclude it by kind, as they exclude `Test` (the
-      46-of-143 incident). It is a closed enum in an append-only store, so
-      an older build reads it as unknown, and therefore excluded.
+    - **A kind tag alone would not hold.** `runlog::Scan::admits` drops
+      only `Some(Test)` and `Some(Experiment)`. An unknown variant reads as
+      `None`, and `None` is *admitted*, so an older build would count a new
+      `SessionKind::Rollout` in the corpus.
+    - Any future driver that does record a rollout session therefore does
+      what experiments do: it writes into a **separate home** (an isolated
+      `MECHA_HOME` with its `HOME_MARKER`) that no corpus readout of the
+      owner's home ever walks. It tags the kind as well, as a second line.
+      The 46-of-143 incident is the reason.
 - **Locality.** Rollouts drive only a loopback provider.
   `pointwise::on_this_machine` (R29) moves from the per-pass check into the
   engine, so no caller can forget it.
@@ -507,7 +511,10 @@ Each phase ships and is measured before the next starts.
 - **W2, store writes that claim to be read-only.** Should they get a
   synthetic "recorded, not delivered" answer (the rollout continues, and the
   model may believe a message was sent), or halt the rollout (honest, and
-  shorter rollouts)?
+  shorter rollouts)? `message_send` has a third answer that needs no
+  ruling: a rollout registry binds it to a scratch `MailboxRoute`, so it
+  really is delivered, into a store nobody reads. W2 then covers only the
+  remaining `StoreWrite` tools.
 - **W3, interactive preplay.** Is preplay in a live chat ever wanted, at
   the latency it costs? v1 says no.
 - **W4, point age.** How old may an offline point be before drift makes it
