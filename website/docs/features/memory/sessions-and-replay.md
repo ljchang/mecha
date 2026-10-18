@@ -326,11 +326,20 @@ judgment to the reviewer; an argument mismatch is not proof of equivalence.
 |---|---|
 | `stop` (default) | end the run there — after a divergence, every later recorded result answers a question nobody asked |
 | `error` | the same, and exit non-zero on *any* divergence, argument spellings included |
-| `live` | abandon the recording and continue against the real tools |
+| `live` | continue past the divergence through unguarded pure reads only, and stop in front of the first consequential call |
 
 Underlying tool calls do not execute in `stop` or `error` mode. `live`
-falls back to the configured permission mode: real tools run after the
-divergence and deserve exactly the scrutiny they always get.
+runs a call past the divergence only if nothing configured would intercept
+it in a real run. It stops in front of, and does not execute, a call that:
+
+- your `[outbox] tools` route;
+- an approval rule covers;
+- a `pre_tool` hook watches;
+- writes, sends, or starts a subagent.
+
+The report names that call and its arguments (`halted_before` in
+`--json`). Stopping there is the mode working, not failing, so the exit
+status is 0. Where a branch was about to act is what a live replay is for.
 
 ### A replayed episode comes back gradeable
 
