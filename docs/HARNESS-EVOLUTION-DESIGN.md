@@ -200,7 +200,8 @@ through *k* rounds instead of widening.
 
 🔧 [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent)
 at `9e01b44d` (2026-10-18), MIT. The latest release is v0.22.2. The GitHub
-API reported about 255k stars on the day this was written. 📰 Its
+API returned `stargazers_count` 254,853 on 2026-10-18; the figure carries
+nothing below. 📰 Its
 [docs site](https://hermes-agent.nousresearch.com/docs).
 
 There is no paper. A companion repo, `hermes-agent-self-evolution`, runs
@@ -506,7 +507,7 @@ ordered by that diagnosis rather than by size.
 | Outcome | Count | Candidates |
 |---|---|---|
 | Named a setting outside the closed set: three invented keys, one security switch (all before the late-August fixes) | 4 | `tool.validation.strict`, `context.auto_compact`, `context.compaction.threshold`, `security.minimize_taint` |
-| Measured with no discriminating power (all ties on a scripted smoke test) | 3 | `compact_at_tokens`, `max_output_tokens`, `effort` |
+| Measured with no discriminating power (all ties on a scripted smoke test). The gate staged them below the floor; the owner rejected them by hand with "NOT a verdict on the knob … worth re-proposing" | 3 | `compact_at_tokens`, `max_output_tokens`, `effort` |
 | Judged useless or harmful by the owner | 3 | `max_turns=10` ("does nothing"), `max_turns=3` ("harmful"), `max_output_tokens=4096` ("backwards") |
 | Untested | 1 | `effort=low` |
 | An architecture change contradicted by its own brief | 1 | retained-failure eviction |
@@ -611,12 +612,22 @@ rollout is all the evidence (`core/prompts.py::experience`).
   - `no observed effect`: ties, or wins not above losses;
   - `underpowered`: below the floors;
   - `owner`: rejected or reverted by hand.
+- **The owner's verdict is typed too.** `mecha harness reject` takes one
+  of `harmful`, `no-effect` or `unmeasured` beside its free-text reason, and
+  the owner group renders by that verdict. The three all-ties knobs in
+  §5.0 are why: the owner rejected them while writing that they were "NOT
+  a verdict on the knob", and an "owner rejections are never re-proposed"
+  rule would contradict the owner's own reason.
 - Render the history in those groups, with a different instruction for
   each:
-  - `harmed` and `owner` are never re-proposed;
-  - `no observed effect` may be re-proposed only through a different
-    instrument (P8);
-  - `underpowered` is silent on retrying.
+  - `harmed`, and an owner verdict of `harmful`, are never re-proposed;
+  - `no observed effect` may be re-proposed once the instrument or the
+    corpus has changed since it was measured. The brief states which,
+    if either, has changed (a new replay corpus window; P8, once it
+    exists). Until then the instruction says plainly that nothing has
+    changed, so it is never a promise P8 has not kept yet;
+  - `underpowered`, and an owner verdict of `unmeasured`, are silent on
+    retrying.
 
 **Rules kept.** Counters in, no prose. The prompt sits in the
 diagnostician's brief, not in any run's prefix.
@@ -728,12 +739,21 @@ a day's work.
 **Shape.**
 - A hint record keyed on **tool name plus an owner-written match** against
   the error result.
-- When a result with `is_error` matches, the hint is appended to that
-  result as a clearly delimited harness note.
+- When a result with `is_error` matches, the hint is carried as **its
+  own non-external block beside the result**, never concatenated into it.
+  - Concatenated into an `external: true` result, owner text would ride
+    inside a block the conversation labels third-party. That is the
+    inverse of the incident `CLAUDE.md` records, where a guard's refusal
+    was labelled third-party.
+  - A delimiter inside the result would be the same prompt-level defence
+    §1.4 faults Harness² for.
+  - A separate block keeps each label honest. It is also why R3 should
+    land on owner-written text only: a counter-templated hint would sit in
+    the identical position an injection would.
 - It sits in the moving tail, so it costs the prefix nothing and costs
   nothing on runs where the error never fires.
-- The result keeps its own `external` flag: the note neither launders nor
-  adds taint.
+- The result keeps its own `external` flag, and the note's block is
+  harness-origin: the note neither launders nor adds taint.
 - Hints live in `~/.mecha/` with triggers and skills, never in layered
   config, so a cloned repo cannot bring one in.
 - Candidates are found by counters. `ToolErrorRate` is a whole-run share
@@ -869,9 +889,17 @@ non-holdout pool:
   though, sees an intervention excerpt, not a whole transcript, so this
   half is a wider read than anything the loop does today. That is why it is
   a ruling (R6) and not part of the digest.
-- **For an armed session, the reflector's withheld view**: the owner's own
-  words and tool names, never third-party text. This is the same reduction
-  `REFLECTOR_SYSTEM` already handles.
+- **For an armed session, the per-intervention withheld views of that
+  episode, concatenated.**
+  - `Intervention::user_evidence_only` reduces one moment: the owner's typed
+    text and the tool names before and after it. P9 uses exactly that,
+    once per intervention, and nothing between interventions.
+  - This is deliberately narrower than a whole-session withheld view. A
+    user turn in an armed session can itself hold pasted third-party text.
+    That is tolerable over a moment the owner typed in order to intervene,
+    and a different bet over every user turn in the session.
+  - At intervention scale it needs no ruling. A whole-session view would
+    be a second widening, and R6 would have to name it.
 
 The mission requires every proposal to cite an episode and a turn, and a
 proposal that cites none is refused before measurement. The existing
@@ -954,7 +982,7 @@ covering what the diagnostician reads most.
   both feed full trajectories, third-party content included, to the editor.
   That is the Zombie Agents path that `SELF-IMPROVEMENT-RESEARCH.md` §5
   exists to close. P9 never shows an armed session's third-party text: it
-  shows the reflector's withheld view. Showing a *clean* transcript whole is
+  shows the per-intervention withheld views. Showing a *clean* transcript whole is
   the one widening P9 asks for, and it waits on R6.
 - **Accepting anything on a judge or a proxy alone.** TTHE and Harness²
   lose at selection, and their editor and judge share a model's biases.
@@ -1001,7 +1029,9 @@ If the edit surface ever grows past four knobs and learned rules:
   two, or more? Rare corrections learn more slowly the higher this is set.
 
 - **R6 (P9).** Should the diagnostician's brief include clean transcripts
-  in full, or only the typed digest and the reflector's withheld view?
+  in full, or only the typed digest and the per-intervention withheld
+  views? (A whole-session withheld view of an armed session is not
+  proposed.)
 - **R7 (P10).** Does `SKILLS-RESEARCH.md` §9 still refuse an owner-reviewed
   skill drafted from a measured diagnosis, or only an unreviewed
   model-authored one? Nothing in Tier 1 needs this answered first, because
