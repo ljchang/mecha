@@ -22,7 +22,8 @@
 //! are harness differences, not evidence of model regression;
 //! `mecha replay` discloses them in its note and JSON report. Both comparison
 //! arms must replay under the same policy. Never mark unknown results clean to
-//! improve fidelity: live divergence can execute real tools.
+//! improve fidelity: past a divergence, live mode executes the unguarded
+//! pure reads its [`LiveGate`] admits, and stops in front of anything else.
 
 use crate::agent::{Agent, Conversation, RunContext, ToolCallTrace};
 use crate::message::Message;
@@ -45,9 +46,11 @@ pub enum OnDivergence {
     /// behaves exactly like [`OnDivergence::Stop`]; the difference is policy
     /// the caller applies to the report.
     Error,
-    /// Abandon the recording and fall through to the live tools. The
-    /// comparison is over at that point; what remains is a fresh run seeded
-    /// with the recorded prefix.
+    /// Leave the recording and keep going against the live tools — but only
+    /// as far as a [`LiveGate`] allows: unguarded pure reads run, and the run
+    /// stops in front of the first call anything configured would intercept,
+    /// recording it ([`DivergenceProbe::halted`]). Built only through
+    /// [`replay_registry_live`]. The comparison is over at the divergence.
     Live,
 }
 
@@ -95,6 +98,135 @@ struct ReplayState {
     /// difference between "the replay is unreliable" and "the change did
     /// something", and those want opposite responses.
     divergence: Option<String>,
+    /// What may still run once the recording is left. Read only under
+    /// [`OnDivergence::Live`]; `None` there refuses every live call, so a
+    /// live replay built without one executes nothing past the divergence.
+    gate: Option<Arc<LiveGate>>,
+    /// Every call a live replay stopped in front of, in the order they were
+    /// refused. A vector rather than one slot so that no refusal that reaches
+    /// the gate is dropped; whether a batch sibling still reaches it after the
+    /// first refusal cancels the run depends on where dispatch reads
+    /// cancellation, so a batch may report one refusal or more.
+    halted: Vec<Halted>,
+}
+
+/// What a live replay may still execute once it has left the recording:
+/// **pure reads that nothing the operator configured guards** — and at the
+/// first call that is anything else, it stops in front of it
+/// (`docs/ARCHITECTURE.md` §Session records and replay).
+///
+/// The guards themselves cannot ride on the run: staging, an approval rule
+/// and a `pre_tool` hook all act in the loop *ahead of* the tool, so a
+/// recorded call they intercept before the divergence never reaches
+/// [`ReplayTool`], is never consumed, and the replay dies one call later for
+/// a harness reason graded as the model's (the shape
+/// [`ReplayTool::capabilities`] documents for the interlock). So they are
+/// asked here instead, and only of calls that would genuinely run.
+///
+/// Stopping rather than staging is the point, not a shortcut: the first
+/// consequential call is where a branch's direction is already visible, and
+/// the call and its arguments are the result.
+pub struct LiveGate {
+    routed: std::collections::BTreeSet<String>,
+    policy: Arc<crate::policy::ExecPolicy>,
+    hooks: Arc<crate::hooks::HookSet>,
+}
+
+/// Built-in tools that write while answering `read_only()`, which skips the
+/// approver in a real run. Named here until the effect class of
+/// branch-continuation design replaces the list (`docs/ARCHITECTURE.md`
+/// §Session records and replay).
+pub const READ_ONLY_WRITERS: &[&str] = &[
+    "ask_user",
+    "http_fetch",
+    "hud_propose",
+    "image_generate",
+    "image_library_propose",
+    "image_library_reference",
+    "message_send",
+    "persona_propose",
+    // Posts a file into a Slack thread. Defined in mecha-cli: a name, not a
+    // dependency, and an accepted cost of the list being temporary. The
+    // effect class that replaces it is declared where each tool lives.
+    "show_file",
+];
+
+impl LiveGate {
+    /// `routed` is the operator's `[outbox] tools` and `publish_tools`; the
+    /// policy and hooks are the ones `setup` built for the run.
+    pub fn new(
+        routed: impl IntoIterator<Item = String>,
+        policy: Arc<crate::policy::ExecPolicy>,
+        hooks: Arc<crate::hooks::HookSet>,
+    ) -> Self {
+        LiveGate {
+            routed: routed.into_iter().collect(),
+            policy,
+            hooks,
+        }
+    }
+
+    /// Pure reads through, nothing configured: the gate with no operator.
+    /// Test-only: a production gate is always built from a run's configured
+    /// route, rules and hooks (`LiveGate::new`), and a public operator-free
+    /// gate would satisfy `replay_registry_live` while ignoring all three.
+    #[cfg(test)]
+    pub(crate) fn reads_only() -> Self {
+        Self::new(
+            Vec::new(),
+            Arc::new(crate::policy::ExecPolicy::empty()),
+            Arc::new(crate::hooks::HookSet::default()),
+        )
+    }
+
+    /// Why `tool` may not run past the divergence, or `None` when it is a
+    /// pure read nothing configured guards.
+    ///
+    /// Trusts `read_only()` and the declared capabilities exactly as far as
+    /// a real run does — the approver skips a read-only tool there too — so
+    /// a live replay past this gate is never less guarded than the run it
+    /// replays, and stops before anything that run would have staged, asked
+    /// about, or written.
+    pub fn refuses(&self, tool: &dyn Tool, input: &Value) -> Option<String> {
+        let name = tool.name();
+        if self.routed.contains(name) {
+            return Some("the outbox routes it".into());
+        }
+        if READ_ONLY_WRITERS.contains(&name) {
+            return Some("it writes, although it reports itself read-only".into());
+        }
+        // A subagent reports `read_only()` and derives no `destructive` from
+        // its child, so its legs below could read as a pure read while the
+        // child it starts writes live. Delegating must not be the way around
+        // this gate, any more than around the parent's hooks or outbox.
+        if tool.runs_a_fresh_conversation() {
+            return Some("it starts a child run whose tools this gate cannot see".into());
+        }
+        let caps = tool.capabilities();
+        if !tool.read_only() || caps.destructive {
+            return Some("it writes".into());
+        }
+        if caps.egress != Egress::None {
+            return Some("it can send to a destination".into());
+        }
+        if let Some(rule) = self.policy.decide(name, input) {
+            if rule.decision != crate::policy::RuleDecision::Allow {
+                return Some(format!("an approval rule covers it: {}", rule.reason));
+            }
+        }
+        if self.hooks.guards_tool(name) {
+            return Some("a pre_tool hook watches it".into());
+        }
+        None
+    }
+}
+
+/// The call a live replay stopped in front of, and why.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct Halted {
+    pub tool: String,
+    pub input: Value,
+    pub reason: String,
 }
 
 /// What one call decided to do, resolved under the lock and acted on after it.
@@ -308,6 +440,13 @@ impl Tool for ReplayTool {
     fn read_only(&self) -> bool {
         self.inner.read_only()
     }
+
+    /// Delegated with the rest of the family: `LiveGate` refuses a tool that
+    /// starts a child run, and boredom looks for one. The wrapper answering
+    /// `false` for a subagent would be the silently wrong default.
+    fn runs_a_fresh_conversation(&self) -> bool {
+        self.inner.runs_a_fresh_conversation()
+    }
     /// The live tool's capabilities, minus `external_send` in the modes where
     /// nothing executes — the sandbox's rule in the other direction. A
     /// replayed "send" sends nothing: its answer comes from the recording, so
@@ -362,7 +501,30 @@ impl Tool for ReplayTool {
                 image: None,
             }),
             Action::Refuse(msg) => Ok(ToolOutput::err(msg)),
-            Action::Live => self.inner.call(input, ctx).await,
+            Action::Live => {
+                let refused = {
+                    let state = self.state.lock().unwrap();
+                    match &state.gate {
+                        Some(gate) => gate.refuses(self.inner.as_ref(), &input),
+                        None => Some("no live gate was given".into()),
+                    }
+                };
+                let Some(reason) = refused else {
+                    return self.inner.call(input, ctx).await;
+                };
+                let tool = self.inner.name().to_string();
+                let msg = format!(
+                    "replay: stopped before `{tool}`, a consequential call past the \
+                     divergence ({reason}); this call was not executed"
+                );
+                self.state.lock().unwrap().halted.push(Halted {
+                    tool,
+                    input,
+                    reason,
+                });
+                self.cancel.cancel();
+                Ok(ToolOutput::err(msg))
+            }
         }
     }
 }
@@ -380,9 +542,46 @@ impl DivergenceProbe {
     pub fn reason(&self) -> Option<String> {
         self.0.lock().unwrap().divergence.clone()
     }
+
+    /// Every call a live replay stopped in front of, empty if it never
+    /// stopped.
+    pub fn halted(&self) -> Vec<Halted> {
+        self.0.lock().unwrap().halted.clone()
+    }
 }
 
-/// [`replay_registry`], plus a handle on the divergence reason. See
+/// [`replay_registry_reporting`] under [`OnDivergence::Live`], with the
+/// [`LiveGate`] that decides what may run once the recording is left.
+///
+/// The only way to give a live replay a gate. One built through the other
+/// constructors has none, and so executes nothing past its divergence —
+/// fail closed, the way a configured guard that cannot run must.
+pub fn replay_registry_live(
+    recorded_tools: &[String],
+    live: &Registry,
+    recorded_specs: &[crate::message::ToolSpec],
+    calls: Vec<RecordedCall>,
+    gate: LiveGate,
+    cancel: CancellationToken,
+) -> Result<(Registry, DivergenceProbe)> {
+    // No surface-only stand-ins: under `Live` a recorded tool nothing can
+    // construct stays fatal (`build_replay_registry`).
+    let (registry, probe) = registry_with_state(
+        recorded_tools,
+        live,
+        None,
+        recorded_specs,
+        calls,
+        OnDivergence::Live,
+        cancel,
+    )?;
+    probe.0.lock().unwrap().gate = Some(Arc::new(gate));
+    Ok((registry, probe))
+}
+
+/// [`replay_registry`], plus a handle on the divergence reason. Refuses
+/// [`OnDivergence::Live`]: a live replay is built only by
+/// [`replay_registry_live`], which installs its gate. See
 /// [`build_replay_registry`] for the registry contract itself.
 ///
 /// A sibling rather than a changed signature: fifteen call sites want only
@@ -397,12 +596,41 @@ pub fn replay_registry_reporting(
     mode: OnDivergence,
     cancel: CancellationToken,
 ) -> Result<(Registry, DivergenceProbe)> {
+    // A live replay without its gate is a programming error, not a run
+    // outcome: refused here, where the caller is, rather than reported later
+    // as though the branch had stopped at a consequential call.
+    anyhow::ensure!(
+        !mode.executes(),
+        "a live replay needs a gate: build it with `replay_registry_live`"
+    );
+    registry_with_state(
+        recorded_tools,
+        live,
+        surface_only,
+        recorded_specs,
+        calls,
+        mode,
+        cancel,
+    )
+}
+
+fn registry_with_state(
+    recorded_tools: &[String],
+    live: &Registry,
+    surface_only: Option<&Registry>,
+    recorded_specs: &[crate::message::ToolSpec],
+    calls: Vec<RecordedCall>,
+    mode: OnDivergence,
+    cancel: CancellationToken,
+) -> Result<(Registry, DivergenceProbe)> {
     let state = Arc::new(Mutex::new(ReplayState {
         consumed: vec![false; calls.len()],
         calls,
         cursor: 0,
         dead: false,
         divergence: None,
+        gate: None,
+        halted: Vec::new(),
     }));
     let probe = DivergenceProbe(Arc::clone(&state));
     let registry = build_replay_registry(
@@ -423,6 +651,8 @@ pub fn replay_registry_reporting(
 ///
 /// Use [`replay_registry_reporting`] instead where the caller needs to know
 /// *why* a replay diverged rather than only that it did.
+/// Refuses [`OnDivergence::Live`], through [`replay_registry_reporting`]:
+/// build a live replay with [`replay_registry_live`].
 pub fn replay_registry(
     recorded_tools: &[String],
     live: &Registry,
@@ -940,17 +1170,19 @@ mod tests {
         .is_ok());
 
         // Under the one mode that actually executes, a stand-in would run
-        // nothing where the recording ran something. Still fatal.
-        assert!(replay_registry(
+        // nothing where the recording ran something. Still fatal: the live
+        // constructor offers no stand-ins at all.
+        let err = replay_registry_live(
             &recorded,
             &live,
-            Some(&fallback),
             &[],
             Vec::new(),
-            OnDivergence::Live,
+            LiveGate::reads_only(),
             CancellationToken::new(),
         )
-        .is_err());
+        .err()
+        .expect("a stand-in must not satisfy a live replay");
+        assert!(!err.to_string().contains("needs a gate"), "{err}");
 
         // And with no fallback offered it is fatal even under Stop — the
         // behaviour every existing caller had, unchanged.
@@ -1105,6 +1337,633 @@ mod tests {
             batch: Some(batch),
             ..recorded(name, input, output)
         }
+    }
+
+    fn live_reg(
+        calls: Vec<RecordedCall>,
+        gate: LiveGate,
+        cancel: &CancellationToken,
+    ) -> (Registry, DivergenceProbe) {
+        replay_registry_live(
+            &["echo".to_string(), "other".to_string()],
+            &live_registry(),
+            &[],
+            calls,
+            gate,
+            cancel.clone(),
+        )
+        .unwrap()
+    }
+
+    /// A gate that guards `echo` the way an operator's config would.
+    fn gate_routing(names: &[&str]) -> LiveGate {
+        LiveGate::new(
+            names.iter().map(|n| n.to_string()),
+            Arc::new(crate::policy::ExecPolicy::empty()),
+            Arc::new(crate::hooks::HookSet::default()),
+        )
+    }
+
+    /// Review of #713: `READ_ONLY_WRITERS` is the gate's one hand-maintained
+    /// fact, and `Tool::read_only` defaults to `false`, so the gate's safety
+    /// rests on "every built-in answering read-only is either a pure read or
+    /// in that list". This pins every non-test `read_only()` whose body is
+    /// literally `true`, by file **and implementing type**, each with its
+    /// classification. Adding, renaming, moving or swapping one fails here
+    /// until its author decides which it is (a count per file would let a
+    /// writer replace a read in the same file unnoticed).
+    ///
+    /// Not covered: a `read_only()` that *computes* its answer. The gate
+    /// trusts it as a real run's approver does; ROLLOUT's closed effect class
+    /// is what replaces this list and this test.
+    ///
+    /// `PURE` entries are refused anyway when their capabilities say so:
+    /// `WebSearch`/`WebOpen` for egress, `Subagent` for starting a child run,
+    /// `RequestAccess` for declaring `destructive` (a yes widens the jail).
+    /// `WRITES` entries must name a tool in `READ_ONLY_WRITERS`.
+    #[test]
+    fn every_read_only_tool_in_the_tree_is_classified() {
+        const PURE: bool = false;
+        const WRITES: bool = true;
+        // (file, implementing type, registered name if a literal, class)
+        const PINNED: &[(&str, &str, Option<&str>, bool)] = &[
+            (
+                "mecha-core/src/tool/request_access.rs",
+                "RequestAccess",
+                None,
+                PURE,
+            ),
+            (
+                "mecha-cli/src/slack/show.rs",
+                "ShowFileTool",
+                Some("show_file"),
+                WRITES,
+            ),
+            ("mecha-core/src/gossip.rs", "GraphTool", None, PURE),
+            (
+                "mecha-core/src/gossip.rs",
+                "LensedSearch",
+                Some("kg_search"),
+                PURE,
+            ),
+            (
+                "mecha-core/src/imagegen.rs",
+                "ImageGenerate",
+                Some("image_generate"),
+                WRITES,
+            ),
+            (
+                "mecha-core/src/mailbox.rs",
+                "MessageSendTool",
+                Some("message_send"),
+                WRITES,
+            ),
+            (
+                "mecha-core/src/persona/files.rs",
+                "FileRead",
+                Some("file_read"),
+                PURE,
+            ),
+            (
+                "mecha-core/src/persona/memory_tools.rs",
+                "MemoryRead",
+                Some("memory_read"),
+                PURE,
+            ),
+            (
+                "mecha-core/src/persona/memory_tools.rs",
+                "MemorySearch",
+                Some("memory_search"),
+                PURE,
+            ),
+            (
+                "mecha-core/src/persona/search.rs",
+                "FileSearch",
+                Some("file_search"),
+                PURE,
+            ),
+            (
+                "mecha-core/src/search.rs",
+                "WebOpen",
+                Some("web_open"),
+                PURE,
+            ),
+            (
+                "mecha-core/src/search.rs",
+                "WebSearch",
+                Some("web_search"),
+                PURE,
+            ),
+            ("mecha-core/src/subagent.rs", "Subagent", None, PURE),
+            (
+                "mecha-core/src/tool/ask.rs",
+                "AskUserTool",
+                Some("ask_user"),
+                WRITES,
+            ),
+            (
+                "mecha-core/src/tool/builtin.rs",
+                "CompactTool",
+                Some("compact"),
+                PURE,
+            ),
+            (
+                "mecha-core/src/tool/builtin.rs",
+                "FsList",
+                Some("fs_list"),
+                PURE,
+            ),
+            (
+                "mecha-core/src/tool/builtin.rs",
+                "FsRead",
+                Some("fs_read"),
+                PURE,
+            ),
+            (
+                "mecha-core/src/tool/builtin.rs",
+                "HttpFetch",
+                Some("http_fetch"),
+                WRITES,
+            ),
+            (
+                "mecha-core/src/tool/document.rs",
+                "DocumentRead",
+                Some("document_read"),
+                PURE,
+            ),
+            (
+                "mecha-core/src/tool/goal_context.rs",
+                "GoalContext",
+                Some("goal_context"),
+                PURE,
+            ),
+            (
+                "mecha-core/src/tool/hud.rs",
+                "HudPreview",
+                Some("hud_preview"),
+                PURE,
+            ),
+            (
+                "mecha-core/src/tool/hud.rs",
+                "HudPropose",
+                Some("hud_propose"),
+                WRITES,
+            ),
+            (
+                "mecha-core/src/tool/hud.rs",
+                "HudSources",
+                Some("hud_sources"),
+                PURE,
+            ),
+            (
+                "mecha-core/src/tool/image_library.rs",
+                "ImageLibrary",
+                Some("image_library"),
+                PURE,
+            ),
+            (
+                "mecha-core/src/tool/image_library.rs",
+                "ImageLibraryPropose",
+                Some("image_library_propose"),
+                WRITES,
+            ),
+            (
+                "mecha-core/src/tool/image_library.rs",
+                "ImageLibraryReference",
+                Some("image_library_reference"),
+                WRITES,
+            ),
+            (
+                "mecha-core/src/tool/image_view.rs",
+                "ImageView",
+                Some("image_view"),
+                PURE,
+            ),
+            (
+                "mecha-core/src/tool/persona_propose.rs",
+                "PersonaPropose",
+                Some("persona_propose"),
+                WRITES,
+            ),
+            (
+                "mecha-core/src/tool/recall.rs",
+                "Recall",
+                Some("recall"),
+                PURE,
+            ),
+            (
+                "mecha-core/src/tool/skill.rs",
+                "SkillTool",
+                Some("skill"),
+                PURE,
+            ),
+            (
+                "mecha-core/src/tool/system_read.rs",
+                "SystemRead",
+                Some("system_read"),
+                PURE,
+            ),
+            (
+                "mecha-core/src/tool/todo.rs",
+                "TodoTool",
+                Some("todo"),
+                PURE,
+            ),
+        ];
+        const KEY: &str = "fn read_only(&self) -> bool {";
+
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        // Everything ahead of the file's first *inline* test module. A
+        // `#[cfg(test)]` on a lone helper does not end the production code,
+        // and neither does `#[cfg(test)] mod foo;`: that declares a sibling
+        // file, and treating it as the cut would hide the rest of the
+        // declaring file (`learning.rs` would end at line 57 of 8763).
+        fn production(src: &str) -> &str {
+            let mut from = 0;
+            while let Some(at) = src[from..].find("#[cfg(test)]") {
+                let at = from + at;
+                let rest = src[at + "#[cfg(test)]".len()..].trim_start();
+                let inline_mod = ["mod ", "pub mod ", "pub(crate) mod "]
+                    .iter()
+                    .filter_map(|kw| rest.strip_prefix(kw))
+                    .any(|tail| {
+                        tail.split_once('{')
+                            .is_some_and(|(name, _)| !name.contains(';'))
+                    });
+                if inline_mod {
+                    return &src[..at];
+                }
+                from = at + 1;
+            }
+            src
+        }
+        // The `impl … for X` header ahead of the method: the nearest *line*
+        // that starts with `impl` and names a `for`, so a doc comment that
+        // says "implementation" in between cannot be mistaken for it.
+        fn impl_start(code: &str, at: usize) -> usize {
+            let mut end = at;
+            loop {
+                let line_start = code[..end].rfind('\n').map_or(0, |i| i + 1);
+                let line = code[line_start..end].trim_start();
+                if line.starts_with("impl") && line.contains(" for ") {
+                    return line_start;
+                }
+                assert!(line_start > 0, "read_only outside an impl");
+                end = line_start - 1;
+            }
+        }
+        // The registered name, when `fn name` returns a literal; `None` for
+        // a name built at runtime (a subagent's profile, the graph's tools).
+        fn registered_name(code: &str, imp: usize) -> Option<String> {
+            const NAME: &str = "fn name(&self) -> &str {";
+            let at = imp + code[imp..].find(NAME)? + NAME.len();
+            let body = code[at..at + code[at..].find('}')?].trim();
+            (body.starts_with('"') && body.ends_with('"') && body.len() >= 2)
+                .then(|| body[1..body.len() - 1].to_string())
+        }
+        fn implementing_type(code: &str, imp: usize) -> String {
+            let head = &code[imp..imp + code[imp..].find('{').unwrap()];
+            let after = head.rsplit(" for ").next().unwrap().trim();
+            after
+                .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .next()
+                .unwrap()
+                .to_string()
+        }
+
+        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap();
+        let mut found: std::collections::BTreeSet<(String, String, Option<String>)> =
+            Default::default();
+        for krate in ["mecha-core", "mecha-cli", "mecha-mail", "mecha-slack"] {
+            let mut files = Vec::new();
+            walk(&workspace.join(krate).join("src"), &mut files);
+            for file in files {
+                let text = std::fs::read_to_string(&file).unwrap();
+                let code = production(&text);
+                let mut from = 0;
+                while let Some(at) = code[from..].find(KEY) {
+                    let at = from + at;
+                    let body_start = at + KEY.len();
+                    let body_end = body_start + code[body_start..].find('}').unwrap();
+                    let lines: Vec<&str> = code[body_start..body_end]
+                        .lines()
+                        .map(str::trim)
+                        .filter(|l| !l.is_empty() && !l.starts_with("//"))
+                        .collect();
+                    if lines == ["true"] {
+                        let rel = file.strip_prefix(workspace).unwrap();
+                        let imp = impl_start(code, at);
+                        found.insert((
+                            rel.to_string_lossy().replace('\\', "/"),
+                            implementing_type(code, imp),
+                            registered_name(code, imp),
+                        ));
+                    }
+                    from = body_end;
+                }
+            }
+        }
+        let pinned: std::collections::BTreeSet<(String, String, Option<String>)> = PINNED
+            .iter()
+            .map(|(f, t, n, _)| (f.to_string(), t.to_string(), n.map(String::from)))
+            .collect();
+        let added: Vec<_> = found.difference(&pinned).collect();
+        let gone: Vec<_> = pinned.difference(&found).collect();
+        assert!(
+            added.is_empty() && gone.is_empty(),
+            "read_only() -> true changed: added {added:?}, gone {gone:?}. Decide \
+             whether each added tool is a pure read or writes something (a store, a \
+             file, a job, a post); add a writer's name to READ_ONLY_WRITERS; then \
+             update PINNED"
+        );
+        // The join the gate depends on: a writer is refused by its registered
+        // *name*, so the WRITES entries' names must be exactly the list. A
+        // renamed writer changes `found` above and fails there.
+        let writer_names: std::collections::BTreeSet<&str> = PINNED
+            .iter()
+            .filter(|(_, _, _, w)| *w)
+            .map(|(_, t, n, _)| n.unwrap_or_else(|| panic!("writer {t} has no literal name")))
+            .collect();
+        let listed: std::collections::BTreeSet<&str> = READ_ONLY_WRITERS.iter().copied().collect();
+        assert_eq!(
+            writer_names, listed,
+            "READ_ONLY_WRITERS must be exactly the registered names of the WRITES entries"
+        );
+
+        // The one PURE entry with a runtime name and no second net
+        // (`Subagent` has `runs_a_fresh_conversation`): `GraphTool`'s name is
+        // a private field its public constructors fix. Pin those literals, so
+        // a constructor added for a graph *write* fails here.
+        let gossip = std::fs::read_to_string(workspace.join("mecha-core/src/gossip.rs")).unwrap();
+        let block_start = gossip.find("\nimpl GraphTool {").expect("impl GraphTool");
+        let block = &gossip[block_start..];
+        let block = &block[..block.find("\n}\n").unwrap()];
+        let graph_names: std::collections::BTreeSet<&str> = block
+            .match_indices("name: \"")
+            .map(|(at, m)| {
+                let rest = &block[at + m.len()..];
+                &rest[..rest.find('"').unwrap()]
+            })
+            .collect();
+        assert_eq!(
+            graph_names,
+            ["kg_entity", "kg_search", "kg_verify"]
+                .into_iter()
+                .collect(),
+            "GraphTool answers read_only() for every name it is built with; a new \
+             constructor must be a read, or GraphTool must stop answering read-only"
+        );
+    }
+
+    /// Review of #713: a live replay without a gate is refused where it is
+    /// built, so a missing gate can never be reported as the branch's own
+    /// first consequential call.
+    #[test]
+    fn a_live_replay_cannot_be_built_without_a_gate() {
+        let err = replay_registry_reporting(
+            &["echo".to_string(), "other".to_string()],
+            &live_registry(),
+            None,
+            &[],
+            vec![recorded("echo", json!({}), "recorded")],
+            OnDivergence::Live,
+            CancellationToken::new(),
+        )
+        .err()
+        .expect("an ungated live replay must not build");
+        assert!(err.to_string().contains("needs a gate"), "{err}");
+    }
+
+    /// The defect `docs/ARCHITECTURE.md` §Session records and replay names: past the divergence a
+    /// routed call ran. It now stops in front of it, records which call and
+    /// why, and executes nothing.
+    #[tokio::test]
+    async fn the_gate_stops_before_a_routed_call_and_names_it() {
+        let cancel = CancellationToken::new();
+        let (reg, probe) = live_reg(
+            vec![recorded("echo", json!({}), "recorded")],
+            gate_routing(&["other"]),
+            &cancel,
+        );
+        let out = reg
+            .get("other")
+            .unwrap()
+            .call(json!({"to": "someone"}), &ToolCtx::default())
+            .await
+            .unwrap();
+        assert!(out.is_error);
+        assert!(
+            out.content.contains("stopped before `other`"),
+            "{}",
+            out.content
+        );
+        assert!(
+            cancel.is_cancelled(),
+            "the run ends at the first consequential call"
+        );
+        assert_eq!(
+            probe.halted(),
+            vec![Halted {
+                tool: "other".into(),
+                input: json!({"to": "someone"}),
+                reason: "the outbox routes it".into(),
+            }]
+        );
+    }
+
+    /// What the gate refuses, one reason each: a write, a send, a known
+    /// read-only writer, an approval rule, a `pre_tool` hook. A pure read with
+    /// nothing configured runs.
+    #[test]
+    fn the_gate_refuses_everything_but_an_unguarded_pure_read() {
+        struct Named(&'static str, bool, Egress);
+        #[async_trait]
+        impl Tool for Named {
+            fn name(&self) -> &str {
+                self.0
+            }
+            fn description(&self) -> &str {
+                "test"
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                self.1
+            }
+            fn capabilities(&self) -> Capabilities {
+                Capabilities {
+                    egress: self.2,
+                    ..Default::default()
+                }
+            }
+            async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::ok("ran"))
+            }
+        }
+        let open = LiveGate::reads_only();
+        let read = Named("fs_read", true, Egress::None);
+        assert_eq!(open.refuses(&read, &json!({})), None);
+
+        // Review of #713: a subagent reports read-only with no egress when
+        // its child cannot send, and still writes through the child.
+        struct Delegates;
+        #[async_trait]
+        impl Tool for Delegates {
+            fn name(&self) -> &str {
+                "editor"
+            }
+            fn description(&self) -> &str {
+                "test"
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                true
+            }
+            fn runs_a_fresh_conversation(&self) -> bool {
+                true
+            }
+            async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::ok("ran"))
+            }
+        }
+        assert!(open
+            .refuses(&Delegates, &json!({}))
+            .unwrap()
+            .contains("child run"));
+        assert!(open
+            .refuses(&Named("fs_write", false, Egress::None), &json!({}))
+            .unwrap()
+            .contains("writes"));
+        assert!(open
+            .refuses(&Named("web_search", true, Egress::Blind), &json!({}))
+            .unwrap()
+            .contains("send"));
+        assert!(open
+            .refuses(&Named("message_send", true, Egress::None), &json!({}))
+            .unwrap()
+            .contains("reports itself read-only"));
+
+        let hooked = LiveGate::new(
+            Vec::new(),
+            Arc::new(crate::policy::ExecPolicy::empty()),
+            Arc::new(
+                crate::hooks::HookSet::from_config(&[crate::config::HookConfig {
+                    event: "pre_tool".into(),
+                    command: "true".into(),
+                    tools: vec!["fs_read".into()],
+                    timeout_secs: None,
+                }])
+                .unwrap(),
+            ),
+        );
+        assert!(hooked
+            .refuses(&read, &json!({}))
+            .unwrap()
+            .contains("pre_tool hook"));
+        let observed = LiveGate::new(
+            Vec::new(),
+            Arc::new(crate::policy::ExecPolicy::empty()),
+            Arc::new(
+                crate::hooks::HookSet::from_config(&[crate::config::HookConfig {
+                    event: "post_tool".into(),
+                    command: "true".into(),
+                    tools: vec!["fs_read".into()],
+                    timeout_secs: None,
+                }])
+                .unwrap(),
+            ),
+        );
+        assert_eq!(
+            observed.refuses(&read, &json!({})),
+            None,
+            "an observer guards nothing"
+        );
+
+        #[derive(serde::Deserialize)]
+        struct W {
+            rule: Vec<crate::policy::RuleConfig>,
+        }
+        let w: W = toml::from_str(
+            r#"
+[[rule]]
+tool = "fs_read"
+decision = "prompt"
+"#,
+        )
+        .unwrap();
+        let ruled = LiveGate::new(
+            Vec::new(),
+            Arc::new(crate::policy::ExecPolicy::from_config(&w.rule, true).unwrap()),
+            Arc::new(crate::hooks::HookSet::default()),
+        );
+        assert!(ruled
+            .refuses(&read, &json!({}))
+            .unwrap()
+            .contains("approval rule"));
+    }
+
+    /// Review of #713's first shape, which put the operator's outbox route on
+    /// the run: staging acts ahead of the tool, so a routed call replayed
+    /// *before* the divergence never reached the cursor, and the replay died
+    /// one call later and ran the rest live. The gate is asked only of calls
+    /// that would genuinely run, so a recording full of routed calls that the
+    /// model reproduces replays to its end and stops in front of nothing.
+    #[tokio::test]
+    async fn routed_calls_before_the_divergence_still_replay_from_the_recording() {
+        let calls = vec![
+            batched(0, "echo", json!({"value": "a"}), "a"),
+            batched(1, "echo", json!({"value": "b"}), "b"),
+        ];
+        let trajectory = Trajectory {
+            turns: vec!["both calls".into()],
+            calls: calls.clone(),
+            ..Default::default()
+        };
+        let cancel = CancellationToken::new();
+        let (registry, probe) = live_reg(calls, gate_routing(&["echo"]), &cancel);
+        let approver = Arc::new(ModeApprover {
+            mode: PermissionMode::Allow,
+        });
+        let agent = Agent::new(
+            Box::new(Scripted(Mutex::new(vec![
+                assistant(
+                    vec![tool_use("a", "echo", json!({"value": "a"}))],
+                    StopReason::ToolUse,
+                ),
+                assistant(
+                    vec![tool_use("b", "echo", json!({"value": "b"}))],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ]))),
+            registry,
+            approver.clone(),
+            ToolCtx::default(),
+            AgentConfig::default(),
+            None,
+        )
+        .unwrap();
+        let cx = RunContext::new(ToolCtx::default(), approver)
+            .with_cancel(cancel)
+            .with_budget(Budget::turns(8));
+        let report = drive(&agent, &cx, &trajectory).await.unwrap();
+        assert!(report.divergences.is_empty(), "{:?}", report.divergences);
+        assert!(probe.halted().is_empty());
+        assert_eq!(probe.reason(), None);
     }
 
     fn replay_reg(
@@ -1270,11 +2129,12 @@ mod tests {
     #[tokio::test]
     async fn live_mode_falls_through_to_the_real_tool_on_divergence() {
         let cancel = CancellationToken::new();
-        let reg = replay_reg(
+        let reg = live_reg(
             vec![recorded("echo", json!({}), "recorded")],
-            OnDivergence::Live,
+            LiveGate::reads_only(),
             &cancel,
-        );
+        )
+        .0;
         let ctx = ToolCtx::default();
 
         let out = reg
@@ -1335,17 +2195,30 @@ mod tests {
 
         let mut live = Registry::new();
         live.insert(Arc::new(Sender));
-        let caps_under = |mode| {
-            let reg = replay_registry(
-                &["mail_send".to_string()],
-                &live,
-                None,
-                &[],
-                Vec::new(),
-                mode,
-                CancellationToken::new(),
-            )
-            .unwrap();
+        let caps_under = |mode: OnDivergence| {
+            let reg = if mode.executes() {
+                replay_registry_live(
+                    &["mail_send".to_string()],
+                    &live,
+                    &[],
+                    Vec::new(),
+                    LiveGate::reads_only(),
+                    CancellationToken::new(),
+                )
+                .unwrap()
+                .0
+            } else {
+                replay_registry(
+                    &["mail_send".to_string()],
+                    &live,
+                    None,
+                    &[],
+                    Vec::new(),
+                    mode,
+                    CancellationToken::new(),
+                )
+                .unwrap()
+            };
             reg.get("mail_send").unwrap().capabilities()
         };
 
@@ -1413,16 +2286,17 @@ mod tests {
         assert_eq!(out.content, "the recorded entity");
 
         // Live mode executes, and a spec cannot: still fatal.
-        assert!(replay_registry(
+        let err = replay_registry_live(
             &names,
             &Registry::new(),
-            None,
             &specs,
             Vec::new(),
-            OnDivergence::Live,
+            LiveGate::reads_only(),
             CancellationToken::new(),
         )
-        .is_err());
+        .err()
+        .expect("a spec alone must not satisfy a live replay");
+        assert!(!err.to_string().contains("needs a gate"), "{err}");
     }
 
     /// Re-describe is the drift that happens constantly, and tools render at
@@ -1466,13 +2340,12 @@ mod tests {
             "the rebuilt surface is byte-faithful to the recording"
         );
 
-        let live = replay_registry(
+        let (live, _) = replay_registry_live(
             &names,
             &live_registry(),
-            None,
             &specs,
             Vec::new(),
-            OnDivergence::Live,
+            LiveGate::reads_only(),
             CancellationToken::new(),
         )
         .unwrap();
@@ -1705,13 +2578,14 @@ mod tests {
             external: false,
         }));
         let cancel = CancellationToken::new();
-        let registry = replay_registry(
+        // A reads-only gate lets `fetch` run; `send` is refused by the
+        // interlock in the loop, ahead of the gate, which never sees it.
+        let (registry, _) = replay_registry_live(
             &["fetch".into(), "send".into()],
             &live,
-            None,
             &[],
             vec![],
-            OnDivergence::Live,
+            LiveGate::reads_only(),
             cancel.clone(),
         )
         .unwrap();
@@ -2213,16 +3087,30 @@ mod surface_loss_tests {
                     mode,
                 )
                 .is_empty();
-                let build_failed = replay_registry(
-                    &recorded,
-                    &live,
-                    Some(&surface_only),
-                    &specs,
-                    Vec::new(),
-                    mode,
-                    CancellationToken::new(),
-                )
-                .is_err();
+                // Live builds only through its gated constructor, which
+                // offers no stand-ins: the same answer the preflight gives.
+                let build_failed = if mode.executes() {
+                    replay_registry_live(
+                        &recorded,
+                        &live,
+                        &specs,
+                        Vec::new(),
+                        LiveGate::reads_only(),
+                        CancellationToken::new(),
+                    )
+                    .is_err()
+                } else {
+                    replay_registry(
+                        &recorded,
+                        &live,
+                        Some(&surface_only),
+                        &specs,
+                        Vec::new(),
+                        mode,
+                        CancellationToken::new(),
+                    )
+                    .is_err()
+                };
                 assert_eq!(
                     preflight_says_lost, build_failed,
                     "disagreement on `{name}` under {mode:?}"

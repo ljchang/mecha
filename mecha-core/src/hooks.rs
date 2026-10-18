@@ -111,6 +111,14 @@ impl HookSet {
         self.hooks.is_empty()
     }
 
+    /// Whether a `pre_tool` hook would run for `tool` — and so could deny it.
+    /// Observers (`post_tool`) do not guard anything and are not counted.
+    pub fn guards_tool(&self, tool: &str) -> bool {
+        self.hooks
+            .iter()
+            .any(|h| h.event == Event::PreTool && h.matches_tool(tool))
+    }
+
     /// True when any `pre_tool` or `post_tool` hook exists — lets the dispatch
     /// path skip payload construction entirely in the common empty case.
     pub fn watches_tools(&self) -> bool {

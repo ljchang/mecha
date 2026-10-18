@@ -6449,6 +6449,35 @@ was ever deployed.
   recording every interaction, a full `load` per file re-read the whole store to
   print one line each. A file whose first record is not `Meta` is skipped, as
   `load` skips it.
+- **A live replay runs only unguarded pure reads past its divergence, and
+  stops in front of the first consequential call** (`replay_run::LiveGate`).
+  - Past the divergence it refuses:
+    - anything the operator's outbox routes;
+    - anything an approval rule covers with other than `allow`;
+    - anything a `pre_tool` hook watches;
+    - a write, any egress, a subagent;
+    - the built-ins that write while answering `read_only()`
+      (`READ_ONLY_WRITERS`, pinned by
+      `every_read_only_tool_in_the_tree_is_classified`).
+  - The refused call and its arguments are the result, reported in the text
+    and as `halted_before`. The run exits 0: stopping there is the mode
+    working, not failing.
+  - One case never reaches the gate. A send to a destination the model
+    chooses, in a conversation that already holds private and untrusted
+    content, is refused by the trifecta interlock in the loop first. Nothing
+    executes, but the run continues and `halted_before` stays empty.
+  - **The guards are asked inside the replay, never attached to the run.**
+    Staging, a rule and a hook act in the loop ahead of the tool, so a
+    recorded call they intercept *before* the divergence never reaches the
+    recording's cursor. The replay then died one call later, ran the rest
+    live, and blamed the model (#713's first shape).
+  - It used to run past a divergence with no route, no rules and no hooks,
+    so a routed send executed under `permission_mode = "allow"`.
+  - A live registry without a gate refuses to build
+    (`replay_registry_reporting` under `Live`); `replay_registry_live` is the
+    only way to make one.
+  - The hand-maintained list is temporary. The branch-continuation design
+    gives every tool a closed effect class, which replaces it.
 - **`Divergence::Arguments` is reported apart from `Divergence::Tool`, and does
   not stop a replay.** A model reading the same file by another path spelling
   has not regressed, and grading it as though it had makes replay useless
