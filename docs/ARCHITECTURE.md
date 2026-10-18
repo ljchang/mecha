@@ -2313,7 +2313,10 @@ first sketch would have widened the jail with nobody asked:
   `ModeApprover { Allow }` for everything the flag owns, puts a grant on the
   page's card and waits for the tap, and leaves the interlock's `escalate`
   refused (owner, 2026-10-18; before, a spoken reach outside the workspace
-  failed at once). An approver wrapper forwards both (`FileDenyApprover`).
+  failed at once). The card goes up past the page's mode, which nothing else
+  on a spoken turn reads: through the page's `escalate`, a read-only page
+  refused a write grant while the same write inside the workspace ran
+  unasked (review of #716). An approver wrapper forwards both (`FileDenyApprover`).
 - **Some places are never grantable** (`grant::admit`). A root that contains
   or sits inside the mecha home (both spellings, `MECHA_HOME` and the
   password database's) or a credential directory is refused, in both
@@ -2377,7 +2380,10 @@ first sketch would have widened the jail with nobody asked:
   merges. Merging taint fails closed; merging grants fails open, and a
   `/clear` followed by a run and a resume brought the grant back with nobody
   asked (review of #711). A rewrite leaves it alone. `with_workspace` (an eval case, a batch item) keeps the standing
-  grants only; `for_session_in` (incognito) keeps none.
+  grants only; `for_session_in` (incognito) has them off (`Grants::none` is
+  `off`, not an empty list: an empty list takes a card's yes, and "none"
+  rested on the room's allowlist keeping every way to ask out, review of
+  #716).
 - **`shell` sees what the file tools see.** `Sandbox::with_grants` adds read
   grants to `readable` and write grants to `writable`, per call, since a live
   grant arrives mid-run. Every backend reads those lists, so it is one edit.

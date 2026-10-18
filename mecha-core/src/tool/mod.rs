@@ -1358,7 +1358,10 @@ impl ToolCtx {
         raw: &str,
         access: crate::grant::Access,
     ) -> Option<PersonAsk> {
-        if !self.grants.requestable || self.phase == crate::agent::Phase::Plan {
+        if !self.grants.requestable
+            || self.grants.is_off()
+            || self.phase == crate::agent::Phase::Plan
+        {
             return None;
         }
         let resolved = self.canonical_candidate(raw).ok()?;

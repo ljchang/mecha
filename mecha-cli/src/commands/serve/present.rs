@@ -232,7 +232,12 @@ impl Approver for VoiceApprover {
         input: &serde_json::Value,
         why: &str,
     ) -> Decision {
-        self.page.escalate_access(tool, input, why).await
+        // Straight to the card, past the page's mode: nothing else on this
+        // turn reads it (`approve` is the flag's), so a read-only page would
+        // refuse a write grant outside the workspace while the same write
+        // inside it ran unasked — and say "read-only" of a turn that is not
+        // (review of #716).
+        self.page.ask(tool, input, Some(why.to_string())).await
     }
 
     async fn consult(&self, tool: &dyn Tool, input: &serde_json::Value, why: &str) -> Decision {
@@ -740,7 +745,7 @@ mod tests {
             .needs_a_person(&input, &mecha_core::tool::ToolCtx::default())
             .unwrap()
             .why;
-        let decision = approver.escalate(&tool, &input, &why).await;
+        let decision = approver.escalate_access(&tool, &input, &why).await;
         assert!(matches!(decision, Decision::Allow), "{decision:?}");
         let shown = seen.lock().unwrap().clone().unwrap_or_default();
         assert!(shown.contains("outside its workspace"), "{shown}");
@@ -749,10 +754,12 @@ mod tests {
     /// A spoken turn under `--voice-yes` puts a grant on the page's card and
     /// waits for the tap, while the flag still answers everything it owns
     /// and the interlock's ask stays refused with no card (owner,
-    /// 2026-10-18). Before, the grant was refused at once like the send.
+    /// 2026-10-18). Before, the grant was refused at once like the send. A
+    /// write grant included, on a page left read-only (review of #716).
     #[tokio::test]
     async fn a_spoken_turn_asks_the_page_for_a_grant_and_still_refuses_a_send() {
-        let (page, questions) = approver(PermissionMode::Ask, Duration::from_secs(5));
+        // The page's default mode: a call ignores it, the grant door included.
+        let (page, questions) = approver(PermissionMode::ReadOnly, Duration::from_secs(5));
         let mut rx = page.events.subscribe();
         let voice = VoiceApprover { page };
         let q2 = questions.clone();
@@ -764,10 +771,13 @@ mod tests {
                 }
             }
         });
-        let tool = mecha_core::tool::request_access::RequestAccess;
-        let input = serde_json::json!({"path": "/srv/papers", "reason": "the review"});
+        // A write tool's grant, which a read-only page's `escalate` refuses.
         let decision = voice
-            .escalate_access(&tool, &input, "outside its workspace")
+            .escalate_access(
+                &FakeTool { read_only: false },
+                &serde_json::json!({"path": "/srv/papers/notes.md"}),
+                "outside its workspace",
+            )
             .await;
         assert!(matches!(decision, Decision::Allow), "{decision:?}");
 
