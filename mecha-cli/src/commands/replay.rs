@@ -218,7 +218,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         .unwrap_or_default();
     // **Live runs only what a real run would run unguarded, and stops in
     // front of the first call anything configured would intercept**
-    // (`docs/ROLLOUT-DESIGN.md` §1.1). It used to run past a divergence with
+    // (`docs/ARCHITECTURE.md` §Session records and replay). It used to run past a divergence with
     // no outbox route, no rules and no hooks, so a routed send reached the
     // approver as an ordinary call and executed under `allow`. The guards are
     // asked as a gate inside the replay, not attached to the run: attached,
@@ -343,10 +343,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         );
     } else {
         render_report(&report, &trajectory.final_text);
-        if let Some(h) = &halted {
+        for h in &halted {
             println!(
-                "stopped before `{}`, the first consequential call past the divergence ({}); \
-                 nothing was executed",
+                "stopped before `{}`, a consequential call past the divergence ({}); \
+                 that call was not executed",
                 h.tool, h.reason
             );
             println!("  arguments: {}", h.input);
@@ -533,7 +533,7 @@ decision = "prompt"
         assert_eq!(gate.refuses(&ReadNamed("fs_list"), &json!({})), None);
     }
 
-    /// The regression (`docs/ROLLOUT-DESIGN.md` §1.1): a live replay ran past
+    /// The regression (`docs/ARCHITECTURE.md` §Session records and replay): a live replay ran past
     /// its divergence with none of the guards the run was configured with.
     /// The gate it now runs behind is built from them — the routed and the
     /// publish names both — and leaves an unrouted read alone.

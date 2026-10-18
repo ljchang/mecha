@@ -99,14 +99,16 @@ struct ReplayState {
     /// [`OnDivergence::Live`]; `None` there refuses every live call, so a
     /// live replay built without one executes nothing past the divergence.
     gate: Option<Arc<LiveGate>>,
-    /// The call a live replay stopped in front of, set once.
-    halted: Option<Halted>,
+    /// Every call a live replay stopped in front of, in the order they were
+    /// refused. Calls in one batch run concurrently, so a batch holding two
+    /// consequential calls records both rather than whichever won the race.
+    halted: Vec<Halted>,
 }
 
 /// What a live replay may still execute once it has left the recording:
 /// **pure reads that nothing the operator configured guards** — and at the
 /// first call that is anything else, it stops in front of it
-/// (`docs/ROLLOUT-DESIGN.md` §1.1, phase 0).
+/// (`docs/ARCHITECTURE.md` §Session records and replay).
 ///
 /// The guards themselves cannot ride on the run: staging, an approval rule
 /// and a `pre_tool` hook all act in the loop *ahead of* the tool, so a
@@ -127,7 +129,8 @@ pub struct LiveGate {
 
 /// Built-in tools that write while answering `read_only()`, which skips the
 /// approver in a real run. Named here until the effect class of
-/// `docs/ROLLOUT-DESIGN.md` §3.2 replaces the list.
+/// branch-continuation design replaces the list (`docs/ARCHITECTURE.md`
+/// §Session records and replay).
 pub const READ_ONLY_WRITERS: &[&str] = &[
     "ask_user",
     "http_fetch",
@@ -137,6 +140,8 @@ pub const READ_ONLY_WRITERS: &[&str] = &[
     "image_library_reference",
     "message_send",
     "persona_propose",
+    // Posts a file into a Slack thread.
+    "show_file",
 ];
 
 impl LiveGate {
@@ -491,10 +496,10 @@ impl Tool for ReplayTool {
                 };
                 let tool = self.inner.name().to_string();
                 let msg = format!(
-                    "replay: stopped before `{tool}`, the first consequential call past \
-                     the divergence ({reason}); nothing was executed"
+                    "replay: stopped before `{tool}`, a consequential call past the \
+                     divergence ({reason}); this call was not executed"
                 );
-                self.state.lock().unwrap().halted.get_or_insert(Halted {
+                self.state.lock().unwrap().halted.push(Halted {
                     tool,
                     input,
                     reason,
@@ -520,8 +525,9 @@ impl DivergenceProbe {
         self.0.lock().unwrap().divergence.clone()
     }
 
-    /// The call a live replay stopped in front of, if it stopped.
-    pub fn halted(&self) -> Option<Halted> {
+    /// Every call a live replay stopped in front of, empty if it never
+    /// stopped.
+    pub fn halted(&self) -> Vec<Halted> {
         self.0.lock().unwrap().halted.clone()
     }
 }
@@ -542,7 +548,7 @@ pub fn replay_registry_live(
 ) -> Result<(Registry, DivergenceProbe)> {
     // No surface-only stand-ins: under `Live` a recorded tool nothing can
     // construct stays fatal (`build_replay_registry`).
-    let (registry, probe) = replay_registry_reporting(
+    let (registry, probe) = registry_with_state(
         recorded_tools,
         live,
         None,
@@ -570,6 +576,33 @@ pub fn replay_registry_reporting(
     mode: OnDivergence,
     cancel: CancellationToken,
 ) -> Result<(Registry, DivergenceProbe)> {
+    // A live replay without its gate is a programming error, not a run
+    // outcome: refused here, where the caller is, rather than reported later
+    // as though the branch had stopped at a consequential call.
+    anyhow::ensure!(
+        !mode.executes(),
+        "a live replay needs a gate: build it with `replay_registry_live`"
+    );
+    registry_with_state(
+        recorded_tools,
+        live,
+        surface_only,
+        recorded_specs,
+        calls,
+        mode,
+        cancel,
+    )
+}
+
+fn registry_with_state(
+    recorded_tools: &[String],
+    live: &Registry,
+    surface_only: Option<&Registry>,
+    recorded_specs: &[crate::message::ToolSpec],
+    calls: Vec<RecordedCall>,
+    mode: OnDivergence,
+    cancel: CancellationToken,
+) -> Result<(Registry, DivergenceProbe)> {
     let state = Arc::new(Mutex::new(ReplayState {
         consumed: vec![false; calls.len()],
         calls,
@@ -577,7 +610,7 @@ pub fn replay_registry_reporting(
         dead: false,
         divergence: None,
         gate: None,
-        halted: None,
+        halted: Vec::new(),
     }));
     let probe = DivergenceProbe(Arc::clone(&state));
     let registry = build_replay_registry(
@@ -1115,17 +1148,19 @@ mod tests {
         .is_ok());
 
         // Under the one mode that actually executes, a stand-in would run
-        // nothing where the recording ran something. Still fatal.
-        assert!(replay_registry(
+        // nothing where the recording ran something. Still fatal: the live
+        // constructor offers no stand-ins at all.
+        let err = replay_registry_live(
             &recorded,
             &live,
-            Some(&fallback),
             &[],
             Vec::new(),
-            OnDivergence::Live,
+            LiveGate::reads_only(),
             CancellationToken::new(),
         )
-        .is_err());
+        .err()
+        .expect("a stand-in must not satisfy a live replay");
+        assert!(!err.to_string().contains("needs a gate"), "{err}");
 
         // And with no fallback offered it is fatal even under Stop — the
         // behaviour every existing caller had, unchanged.
@@ -1307,34 +1342,144 @@ mod tests {
         )
     }
 
-    /// Past the divergence, without a gate, nothing runs: a live replay built
-    /// through the ungated constructors fails closed.
-    #[tokio::test]
-    async fn a_live_replay_without_a_gate_executes_nothing_past_the_divergence() {
-        let cancel = CancellationToken::new();
-        let (reg, probe) = replay_registry_reporting(
+    /// Review of #713: `READ_ONLY_WRITERS` is the gate's one hand-maintained
+    /// fact, and `Tool::read_only` defaults to `false`, so the gate's safety
+    /// rests on "every built-in answering read-only is either a pure read or
+    /// in that list". Nothing found a new one. This pins every non-test
+    /// `read_only() -> true` in the tree, by file: adding, moving or removing
+    /// one fails here until its author decides which it is.
+    ///
+    /// Pure reads: `kg_search` and the graph's read tools (gossip), the
+    /// persona's file and memory reads, `web_search`/`web_open` (refused
+    /// anyway for egress), `fs_read`, `fs_list`, `compact` and `todo` (the
+    /// run's own head), `document_read`, `goal_context`, `hud_sources`,
+    /// `hud_preview`, `image_library`, `image_view`, `recall`, `skill`,
+    /// `system_read`, and the subagent (refused for starting a child run).
+    /// Writers, in `READ_ONLY_WRITERS`: everything else counted below.
+    #[test]
+    fn every_read_only_tool_in_the_tree_is_classified() {
+        const PINNED: &[(&str, usize)] = &[
+            ("mecha-cli/src/slack/show.rs", 1),
+            ("mecha-core/src/gossip.rs", 2),
+            ("mecha-core/src/imagegen.rs", 1),
+            ("mecha-core/src/mailbox.rs", 1),
+            ("mecha-core/src/persona/files.rs", 1),
+            ("mecha-core/src/persona/memory_tools.rs", 2),
+            ("mecha-core/src/persona/search.rs", 1),
+            ("mecha-core/src/search.rs", 2),
+            ("mecha-core/src/subagent.rs", 1),
+            ("mecha-core/src/tool/ask.rs", 1),
+            ("mecha-core/src/tool/builtin.rs", 4),
+            ("mecha-core/src/tool/document.rs", 1),
+            ("mecha-core/src/tool/goal_context.rs", 1),
+            ("mecha-core/src/tool/hud.rs", 3),
+            ("mecha-core/src/tool/image_library.rs", 3),
+            ("mecha-core/src/tool/image_view.rs", 1),
+            ("mecha-core/src/tool/persona_propose.rs", 1),
+            ("mecha-core/src/tool/recall.rs", 1),
+            ("mecha-core/src/tool/skill.rs", 1),
+            ("mecha-core/src/tool/system_read.rs", 1),
+            ("mecha-core/src/tool/todo.rs", 1),
+        ];
+        const KEY: &str = "fn read_only(&self) -> bool {";
+
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        // Everything ahead of the file's first test module. A `#[cfg(test)]`
+        // on a lone helper does not end the production code, so the cut is
+        // at a test *module*.
+        fn production(src: &str) -> &str {
+            let mut end = src.len();
+            let mut from = 0;
+            while let Some(at) = src[from..].find("#[cfg(test)]") {
+                let at = from + at;
+                let rest = src[at + "#[cfg(test)]".len()..].trim_start();
+                if rest.starts_with("mod ")
+                    || rest.starts_with("pub mod ")
+                    || rest.starts_with("pub(crate) mod ")
+                {
+                    end = at;
+                    break;
+                }
+                from = at + 1;
+            }
+            &src[..end]
+        }
+
+        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap();
+        let mut found: std::collections::BTreeMap<String, usize> = Default::default();
+        for krate in ["mecha-core", "mecha-cli", "mecha-mail", "mecha-slack"] {
+            let src_dir = workspace.join(krate).join("src");
+            if !src_dir.is_dir() {
+                continue;
+            }
+            let mut files = Vec::new();
+            walk(&src_dir, &mut files);
+            for file in files {
+                let text = std::fs::read_to_string(&file).unwrap();
+                let code = production(&text);
+                let mut n = 0;
+                let mut from = 0;
+                while let Some(at) = code[from..].find(KEY) {
+                    let body_start = from + at + KEY.len();
+                    let body_end = body_start + code[body_start..].find('}').unwrap();
+                    let lines: Vec<&str> = code[body_start..body_end]
+                        .lines()
+                        .map(str::trim)
+                        .filter(|l| !l.is_empty() && !l.starts_with("//"))
+                        .collect();
+                    if lines == ["true"] {
+                        n += 1;
+                    }
+                    from = body_end;
+                }
+                if n > 0 {
+                    let rel = file.strip_prefix(workspace).unwrap();
+                    found.insert(rel.to_string_lossy().replace('\\', "/"), n);
+                }
+            }
+        }
+        let pinned: std::collections::BTreeMap<String, usize> =
+            PINNED.iter().map(|(f, n)| (f.to_string(), *n)).collect();
+        assert_eq!(
+            found, pinned,
+            "a tool answering `read_only() -> true` was added, moved or removed. \
+             Decide whether it is a pure read or writes something (a store, a \
+             file, a job, a post), add it to `READ_ONLY_WRITERS` if it writes, \
+             and update PINNED"
+        );
+    }
+
+    /// Review of #713: a live replay without a gate is refused where it is
+    /// built, so a missing gate can never be reported as the branch's own
+    /// first consequential call.
+    #[test]
+    fn a_live_replay_cannot_be_built_without_a_gate() {
+        let err = replay_registry_reporting(
             &["echo".to_string(), "other".to_string()],
             &live_registry(),
             None,
             &[],
             vec![recorded("echo", json!({}), "recorded")],
             OnDivergence::Live,
-            cancel.clone(),
+            CancellationToken::new(),
         )
-        .unwrap();
-        let out = reg
-            .get("other")
-            .unwrap()
-            .call(json!({}), &ToolCtx::default())
-            .await
-            .unwrap();
-        assert!(out.is_error);
-        assert_ne!(out.content, "live: other");
-        assert!(cancel.is_cancelled());
-        assert_eq!(probe.halted().unwrap().tool, "other");
+        .err()
+        .expect("an ungated live replay must not build");
+        assert!(err.to_string().contains("needs a gate"), "{err}");
     }
 
-    /// The defect `docs/ROLLOUT-DESIGN.md` §1.1 names: past the divergence a
+    /// The defect `docs/ARCHITECTURE.md` §Session records and replay names: past the divergence a
     /// routed call ran. It now stops in front of it, records which call and
     /// why, and executes nothing.
     #[tokio::test]
@@ -1363,11 +1508,11 @@ mod tests {
         );
         assert_eq!(
             probe.halted(),
-            Some(Halted {
+            vec![Halted {
                 tool: "other".into(),
                 input: json!({"to": "someone"}),
                 reason: "the outbox routes it".into(),
-            })
+            }]
         );
     }
 
@@ -1551,7 +1696,7 @@ decision = "prompt"
             .with_budget(Budget::turns(8));
         let report = drive(&agent, &cx, &trajectory).await.unwrap();
         assert!(report.divergences.is_empty(), "{:?}", report.divergences);
-        assert_eq!(probe.halted(), None);
+        assert!(probe.halted().is_empty());
         assert_eq!(probe.reason(), None);
     }
 
@@ -1784,17 +1929,30 @@ decision = "prompt"
 
         let mut live = Registry::new();
         live.insert(Arc::new(Sender));
-        let caps_under = |mode| {
-            let reg = replay_registry(
-                &["mail_send".to_string()],
-                &live,
-                None,
-                &[],
-                Vec::new(),
-                mode,
-                CancellationToken::new(),
-            )
-            .unwrap();
+        let caps_under = |mode: OnDivergence| {
+            let reg = if mode.executes() {
+                replay_registry_live(
+                    &["mail_send".to_string()],
+                    &live,
+                    &[],
+                    Vec::new(),
+                    LiveGate::reads_only(),
+                    CancellationToken::new(),
+                )
+                .unwrap()
+                .0
+            } else {
+                replay_registry(
+                    &["mail_send".to_string()],
+                    &live,
+                    None,
+                    &[],
+                    Vec::new(),
+                    mode,
+                    CancellationToken::new(),
+                )
+                .unwrap()
+            };
             reg.get("mail_send").unwrap().capabilities()
         };
 
@@ -1862,16 +2020,17 @@ decision = "prompt"
         assert_eq!(out.content, "the recorded entity");
 
         // Live mode executes, and a spec cannot: still fatal.
-        assert!(replay_registry(
+        let err = replay_registry_live(
             &names,
             &Registry::new(),
-            None,
             &specs,
             Vec::new(),
-            OnDivergence::Live,
+            LiveGate::reads_only(),
             CancellationToken::new(),
         )
-        .is_err());
+        .err()
+        .expect("a spec alone must not satisfy a live replay");
+        assert!(!err.to_string().contains("needs a gate"), "{err}");
     }
 
     /// Re-describe is the drift that happens constantly, and tools render at
@@ -1915,13 +2074,12 @@ decision = "prompt"
             "the rebuilt surface is byte-faithful to the recording"
         );
 
-        let live = replay_registry(
+        let (live, _) = replay_registry_live(
             &names,
             &live_registry(),
-            None,
             &specs,
             Vec::new(),
-            OnDivergence::Live,
+            LiveGate::reads_only(),
             CancellationToken::new(),
         )
         .unwrap();
