@@ -11,10 +11,13 @@
 //! - **Only a person widens the jail.** A standing grant is a line in the
 //!   *global* config (`[[grant]]`, stripped from every other layer, because a
 //!   cloned repository must not bring its own jail with it) or an owner's
-//!   `/grant`. A model may only *ask*, through `request_access`, and the ask
-//!   goes to [`crate::tool::Approver::escalate`] — never `approve`, which a
+//!   `/grant`. A model may only *ask* — through `request_access`, or a file
+//!   tool reaching outside the workspace — and the ask goes to
+//!   [`crate::tool::Approver::escalate_access`], never `approve`, which a
 //!   permission mode, an "always" list or `--yes` may answer with nobody
-//!   consulted. Headless, the ask ends `Blocked`.
+//!   consulted. Headless, the ask ends `Blocked`. The one approver that
+//!   answers it while answering everything else from policy is a voice call's
+//!   (`--voice-yes`), and it answers by putting the card on the page.
 //! - **A live grant lasts for the conversation**, the same unit taint lives
 //!   on: resuming keeps it ([`crate::session::Record::Grants`]), a new
 //!   conversation starts without it, a subagent inherits its parent's.

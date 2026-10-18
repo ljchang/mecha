@@ -11984,7 +11984,14 @@ mod tests {
                 agent.set_approver(Arc::new(Answer(decision, Arc::clone(&asked))));
                 agent.ctx_mut().workspace = workspace;
                 let mut convo = Conversation::from(vec![Message::user("read my notes")]);
-                agent.run(&mut convo, None).await.unwrap();
+                let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+                agent.run(&mut convo, Some(tx)).await.unwrap();
+                let mut announced = Vec::new();
+                while let Ok(event) = rx.try_recv() {
+                    if let AgentEvent::Grants(grants) = event {
+                        announced.push(grants);
+                    }
+                }
                 let result = convo
                     .messages
                     .iter()
@@ -11995,11 +12002,17 @@ mod tests {
                     })
                     .unwrap();
                 let asked = asked.lock().unwrap().clone();
-                (result, convo.grants, asked)
+                (result, convo.grants, asked, announced)
             }
         };
 
-        let (read, grants, asked) = run(Decision::Allow, true).await;
+        let (read, grants, asked, announced) = run(Decision::Allow, true).await;
+        // The chip hears of a card's yes as it lands (review of #716).
+        assert_eq!(
+            announced,
+            vec![grants.clone()],
+            "one announcement, of the grant"
+        );
         assert!(read.contains("the lemon kayak"), "{read}");
         assert_eq!(asked.len(), 1, "one card");
         assert!(asked[0].contains("outside its workspace"), "{}", asked[0]);
@@ -12007,12 +12020,12 @@ mod tests {
         assert_eq!(grants[0].path, papers, "the folder, not the file");
         assert_eq!(grants[0].access, crate::grant::Access::Read);
 
-        let (refused, grants, _) = run(Decision::Deny("not that one".into()), true).await;
+        let (refused, grants, _, _) = run(Decision::Deny("not that one".into()), true).await;
         assert!(refused.starts_with("Denied by the user:"), "{refused}");
         assert!(grants.is_empty());
 
         // Nobody to answer (no `request_access` here): no card, the jail refuses.
-        let (refused, grants, asked) = run(Decision::Allow, false).await;
+        let (refused, grants, asked, _) = run(Decision::Allow, false).await;
         assert!(
             asked.is_empty(),
             "a card was raised where nobody could answer"

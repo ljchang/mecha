@@ -2303,17 +2303,17 @@ first sketch would have widened the jail with nobody asked:
   into the interlock's `escalation` slot, so it reaches
   `Approver::escalate_access` and never `approve`. That is the door `--yes`,
   an "always" list, eval and replay cannot answer; headless, it ends
-  `Blocked`. It defaults to `escalate` and is a door of its own so one
-  surface can answer it while refusing a send: a voice turn under
-  `--voice-yes` runs on `serve::present::VoiceApprover`, which is
+  `Blocked`. It is unconditional even for a path `admit` will refuse:
+  deciding "no person needed" before the batch executes is a race a sibling
+  `shell` that creates the directory can win. Wrappers must forward it
+  (`replay_run`, `closure_guard`); a default `None` on a wrapper is a grant
+  with nobody asked. `escalate_access` defaults to `escalate` and is a door
+  of its own so one surface can answer it while refusing a send: a voice
+  turn under `--voice-yes` runs on `serve::present::VoiceApprover`, which is
   `ModeApprover { Allow }` for everything the flag owns, puts a grant on the
   page's card and waits for the tap, and leaves the interlock's `escalate`
   refused (owner, 2026-10-18; before, a spoken reach outside the workspace
-  failed at once). A wrapper forwards both (`FileDenyApprover`). It is unconditional
-  even for a path `admit` will refuse: deciding "no person needed" before the
-  batch executes is a race a sibling `shell` that creates the directory can
-  win. Wrappers must forward it (`replay_run`, `closure_guard`); a default
-  `None` on a wrapper is a grant with nobody asked.
+  failed at once). An approver wrapper forwards both (`FileDenyApprover`).
 - **Some places are never grantable** (`grant::admit`). A root that contains
   or sits inside the mecha home (both spellings, `MECHA_HOME` and the
   password database's) or a credential directory is refused, in both
@@ -2334,10 +2334,10 @@ first sketch would have widened the jail with nobody asked:
   can dispatch it (`Grants::requestable`, stamped by `run_in` from the run's
   own registry and withholding, never inherited — a subagent runs on its
   parent's context, review of #711). And it is registered only where its
-  `escalate` reaches a person (`setup::offers_request_access`, tested against
-  the options the web and Slack doors really build): the web and Slack
-  cards, and a terminal with a person at it in `ask` mode — under `-y` the
-  approver is a `ModeApprover`, whose `escalate` is `Blocked`. Not keyed on
+  `escalate_access` reaches a person (`setup::offers_request_access`, tested
+  against the options the web and Slack doors really build): the web and
+  Slack cards, and a terminal with a person at it in `ask` mode — under `-y`
+  the approver is a `ModeApprover`, whose `escalate_access` is `Blocked`. Not keyed on
   `global_config_only`, which both doors set; the first gate was, and the web
   chat shipped without the tool (2026-10-18). `request_access` is
   `read_only()`, so a read-only chat (the web's default) still puts the card
