@@ -13,6 +13,20 @@
 //! `role: "tool"` message cannot carry one — and only for a model that can
 //! see. The file is read through the path jail, so this is `fs_read` for
 //! pictures and declares what `fs_read` declares.
+//!
+//! **A picture from outside the workspace is kept inside it.** One the owner
+//! granted (`crate::grant`) reaches the model by its pixels, and the owner's
+//! page draws only a workspace-relative path through a download route jailed
+//! to the workspace — so a look through a grant would show the model what the
+//! owner cannot see (review of #711). The look keeps a copy under
+//! [`GRANTED_DIR`], named by its content, and names that copy; the route stays
+//! as narrow as it was. Only for a path a grant covers — the spill directory
+//! is outside the workspace too, and a look there is named as it was.
+//!
+//! The copy is the harness keeping what the owner must see, not the model
+//! writing, so it is made under a read-only permission mode as well: that
+//! mode governs what the model's calls change, the way the spill directory
+//! keeps a long result whatever the mode (review of #711).
 
 use super::{Capabilities, Tool, ToolCtx, ToolOutput};
 use anyhow::Result;
@@ -24,6 +38,57 @@ use std::sync::Arc;
 /// by `image::rendered_block` either way, and decoding a hundred-megabyte
 /// file to throw most of it away is a cost with nothing to show for it.
 const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
+
+/// Where a picture looked at through a grant is kept, workspace-relative.
+pub const GRANTED_DIR: &str = "images/granted";
+
+/// Keep a copy of a picture from outside the workspace where the owner's page
+/// can draw it, and return its workspace-relative name.
+///
+/// Named by the bytes' hash and the file's own name reduced to the segments
+/// the page accepts, so a second look at the same picture is the same file
+/// and no two pictures share a name. Written beside it and renamed into
+/// place, so two looks in one batch (the read-only lane is parallel) never
+/// leave a half-written file for the page to fetch.
+async fn keep_for_the_owner(ctx: &ToolCtx, path: &std::path::Path, bytes: &[u8]) -> Result<String> {
+    let name: String = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+        .chars()
+        .map(|c| match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '.' | '_' | '-' | ' ' => c,
+            _ => '_',
+        })
+        .collect();
+    let name = name.trim_start_matches('.').trim();
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let name = if name.to_ascii_lowercase().ends_with(&format!(".{ext}")) {
+        name.to_string()
+    } else {
+        format!("picture.{ext}")
+    };
+    let hash = crate::document::sha256_hex(bytes);
+    let rel = format!("{GRANTED_DIR}/{}-{name}", &hash[..12]);
+    // The strict jail: this writes, and only ever into the workspace.
+    let dest = ctx.resolve(&rel)?;
+    if tokio::fs::try_exists(&dest).await.unwrap_or(false) {
+        return Ok(rel);
+    }
+    if let Some(parent) = dest.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let partial = dest.with_extension(format!("part-{}", uuid::Uuid::new_v4()));
+    tokio::fs::write(&partial, bytes).await?;
+    if let Err(e) = tokio::fs::rename(&partial, &dest).await {
+        let _ = tokio::fs::remove_file(&partial).await;
+        return Err(e.into());
+    }
+    Ok(rel)
+}
 
 pub struct ImageView;
 
@@ -51,7 +116,7 @@ impl Tool for ImageView {
         json!({
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Path relative to the workspace root, or absolute inside it."}
+                "path": {"type": "string", "description": "Path relative to the workspace root, or absolute inside it or inside a directory the owner granted."}
             },
             "required": ["path"]
         })
@@ -72,17 +137,18 @@ impl Tool for ImageView {
         let Some(raw) = input.get("path").and_then(Value::as_str) else {
             return Ok(ToolOutput::err("missing required string argument `path`"));
         };
-        let path = ctx.resolve(raw)?;
+        let path = ctx.resolve_for(raw, crate::grant::Access::Read)?;
         // Named by where it is, not by how the model spelled it: the result's
         // first line is what the web chat reads to draw the picture for the
         // owner, and `./images/a.png` or an absolute path would not match.
-        let shown = ctx
+        // `None` outside the workspace — a grant, or the spill directory —
+        // which is named once a copy is kept, below.
+        let inside = ctx
             .workspace
             .canonicalize()
             .ok()
             .and_then(|root| path.strip_prefix(root).ok().map(|p| p.to_path_buf()))
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|| raw.to_string());
+            .map(|p| p.to_string_lossy().into_owned());
         if crate::message::image_media_type(&path).is_none() {
             return Ok(ToolOutput::err(format!(
                 "{raw} is not an image this can show — PNG, JPEG, GIF and WebP only."
@@ -125,6 +191,28 @@ impl Tool for ImageView {
                 return Ok(ToolOutput::err(format!("cannot read {raw}: {e}")));
             }
         }
+        let shown = match inside {
+            Some(shown) => shown,
+            // Refused rather than shown to the model alone: the owner seeing
+            // what the model is describing is the point of the copy.
+            None if ctx
+                .grants
+                .covering(&path, crate::grant::Access::Read)
+                .is_some() =>
+            {
+                match keep_for_the_owner(ctx, &path, &bytes).await {
+                    Ok(kept) => kept,
+                    Err(e) => {
+                        return Ok(ToolOutput::err(format!(
+                            "{raw} could not be shown: keeping a copy where the owner can see \
+                             it failed ({e:#})"
+                        )))
+                    }
+                }
+            }
+            // The spill directory: the run's own output, named as it was.
+            None => raw.to_string(),
+        };
         let name = shown.clone();
         let block =
             tokio::task::spawn_blocking(move || crate::image::rendered_block(&bytes, Some(name)))
@@ -177,6 +265,46 @@ mod tests {
         };
         assert_eq!(source.as_deref(), Some("images/a.png"));
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A picture reached through a grant is named by a copy kept in the
+    /// workspace — the line the owner's page draws from — and a second look
+    /// at it is the same file (review of #711: an absolute path drew nothing).
+    #[tokio::test]
+    async fn a_granted_picture_is_kept_where_the_owner_can_see_it() {
+        use crate::grant::{Access, Grant, Grants, Source};
+        let dir = scratch("granted-ws");
+        let outside = scratch("granted-src").canonicalize().unwrap();
+        let mut png = Vec::new();
+        image::RgbImage::from_pixel(16, 16, image::Rgb([20, 200, 30]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        std::fs::write(outside.join("Holiday (1).png"), &png).unwrap();
+        let ctx = ToolCtx {
+            grants: Grants::standing(vec![Grant {
+                path: outside.clone(),
+                access: Access::Read,
+                source: Source::Config,
+            }]),
+            ..ctx(&dir)
+        };
+        let raw = outside.join("Holiday (1).png").display().to_string();
+        let out = ImageView.call(json!({"path": raw}), &ctx).await.unwrap();
+        assert!(!out.is_error && out.image.is_some(), "{}", out.content);
+        let kept = out.content.strip_prefix("image: ").unwrap().to_string();
+        assert!(
+            kept.starts_with("images/granted/") && kept.ends_with("-Holiday _1_.png"),
+            "{kept}"
+        );
+        assert_eq!(std::fs::read(dir.join(&kept)).unwrap(), png);
+        // The line the page's pattern accepts: relative, plain segments.
+        assert!(!kept.starts_with('/') && !kept.contains(".."), "{kept}");
+
+        let again = ImageView.call(json!({"path": raw}), &ctx).await.unwrap();
+        assert_eq!(again.content, out.content);
+        assert_eq!(std::fs::read_dir(dir.join(GRANTED_DIR)).unwrap().count(), 1);
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&outside).ok();
     }
 
     /// Recoverable failures say what is wrong and carry no pixels.

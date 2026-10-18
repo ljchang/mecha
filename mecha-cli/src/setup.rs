@@ -139,6 +139,21 @@ pub fn posture_for(
     }
 }
 
+/// Whether a `request_access` call on this surface can reach a person — the
+/// registration gate in `prepare_tools`, whose comment has the reasons.
+pub fn jail_requests_answered(
+    surface: Option<mecha_core::session::SessionKind>,
+    interactive: bool,
+    mode: PermissionMode,
+) -> bool {
+    use mecha_core::session::SessionKind as K;
+    match surface {
+        Some(K::Web | K::Slack) => true,
+        Some(K::Chat | K::Tui | K::Run) => interactive && mode == PermissionMode::Ask,
+        _ => false,
+    }
+}
+
 /// Whether a front end has a person at it, for its posture: its stdin is a
 /// terminal **and** no run's `shell` started it. A `mecha chat` piped from a
 /// delegated run's shell would otherwise read its approvals from the pipe
@@ -376,8 +391,16 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         provider = Box::new(mecha_core::provider::Failover::new(provider, fallbacks));
     }
 
+    // The standing grants, each through `grant::admit`. A refused line is
+    // skipped — a narrowing, so failing closed — and said aloud on every
+    // start, so it never looks applied.
+    let (grants, refused) = standing_grants(&cfg, opts);
+    for line in refused {
+        eprintln!("mecha: {line} — not granted");
+    }
     let mut ctx = ToolCtx {
         workspace: tools.workspace.clone(),
+        grants,
         shell_timeout: std::time::Duration::from_secs(cfg.tools.shell_timeout_secs),
         security: cfg.security.clone(),
         // Resolved against the *primary* provider's window; a turn served by
@@ -958,6 +981,7 @@ pub fn levers_off(opts: &GlobalOpts, cfg: &Config) -> Vec<Lever> {
                 opts.no_system_read
                     || !mecha_core::feature::switched_on(cfg, mecha_core::feature::Feature::System)
             }
+            Lever::Grants => opts.no_grants,
         })
         .collect()
 }
@@ -979,6 +1003,7 @@ pub fn switch_off(opts: &mut GlobalOpts, lever: Lever) {
         Lever::Charter => opts.no_charter = true,
         Lever::CompactTool => opts.no_compact_tool = true,
         Lever::SystemRead => opts.no_system_read = true,
+        Lever::Grants => opts.no_grants = true,
         Lever::StepEscalation => opts.no_step_escalation = true,
         Lever::StepChecks => opts.no_step_checks = true,
         Lever::GoalGuidance => opts.no_goal_guidance = true,
@@ -1009,10 +1034,32 @@ fn excluded_by_allowlist<'a>(wanted: &'a [String], allowlist: &[String]) -> Vec<
         .collect()
 }
 
+/// The standing grants a run on these options holds, and the `[[grant]]`
+/// lines refused on the way — one computation for the context `build`
+/// stamps and the lines that describe it, so they cannot disagree.
+/// `--no-grants` is `Grants::off`, which no later step can widen.
+pub fn standing_grants(
+    cfg: &Config,
+    opts: &GlobalOpts,
+) -> (mecha_core::grant::Grants, Vec<String>) {
+    if opts.no_grants {
+        (mecha_core::grant::Grants::off(), Vec::new())
+    } else {
+        mecha_core::grant::Grants::from_config(&cfg.grants)
+    }
+}
+
 /// One line saying what `shell` actually is right now. Shared between
 /// `mecha tools` and the TUI's /tools modal, so the two cannot disagree about
-/// the fact an operator most needs.
-pub fn sandbox_line(sandbox: &mecha_core::sandbox::Sandbox) -> String {
+/// the fact an operator most needs. Read off the sandbox as a call mounts it
+/// — with the standing grants (`Sandbox::with_grants`) — or it said
+/// "the workspace only" while every `shell` call mounted a granted directory
+/// (review of #711). A conversation's own grants are `/grant`'s to list.
+pub fn sandbox_line(
+    sandbox: &mecha_core::sandbox::Sandbox,
+    grants: &mecha_core::grant::Grants,
+) -> String {
+    let sandbox = &sandbox.with_grants(&grants.all());
     if sandbox.is_enabled() {
         format!(
             "sandbox: {} · network {} · reads {}",
@@ -1840,6 +1887,32 @@ async fn prepare_tools_carrying(
         None
     };
 
+    // `request_access` exists only where a person can answer it, on
+    // `compact`'s rule: every call goes to `Approver::escalate`, which a
+    // headless approver answers `Blocked`, so on a trigger or a piped `run`
+    // it could only ever fail — and would cost a slot in every prompt to say
+    // so. The web and Slack approvers put the call on the owner's card in
+    // `ask` and `allow` alike, and refuse it under `read-only` — a mode those
+    // surfaces switch per session at runtime, so they register it whatever
+    // the startup mode and leave the refusal to the approver. A terminal does only
+    // when a person is at it **and the mode is `ask`**: under `-y` or
+    // `permission_mode = "allow"` its approver is a `ModeApprover`, whose
+    // `escalate` is `Blocked` (review of #711). A TUI started that way and
+    // switched to `/mode ask` later goes without the tool until restarted —
+    // the tool list is the front of the cached prefix and does not toggle.
+    // Filtered like `compact` too: an allowlist that does not name it has
+    // said no.
+    {
+        let answered = jail_requests_answered(opts.surface, interactive, cfg.tools.permission_mode);
+        let name = mecha_core::tool::request_access::NAME;
+        let allowed = opts.tools.is_empty() || opts.tools.iter().any(|t| t == name);
+        let disabled = cfg.tools.disabled.iter().any(|t| t == name)
+            || (!cfg.tools.enabled.is_empty() && !cfg.tools.enabled.iter().any(|t| t == name));
+        if answered && allowed && !disabled && !opts.no_grants && !opts.global_config_only {
+            registry.insert(Arc::new(mecha_core::tool::request_access::RequestAccess));
+        }
+    }
+
     let approver: Arc<dyn Approver> =
         if interactive && cfg.tools.permission_mode == PermissionMode::Ask {
             Arc::new(TerminalApprover::default())
@@ -2042,6 +2115,10 @@ fn build_subagent(
         child_approver,
         ToolCtx {
             workspace: ctx.workspace.clone(),
+            // The parent's standing grants. A dispatched child runs on its
+            // caller's context, live grants and all (`Subagent::call`); this
+            // is the context it would run on alone.
+            grants: ctx.grants.standing_only(),
             shell_timeout: ctx.shell_timeout,
             security: ctx.security.clone(),
             output_budget_bytes: ctx.output_budget_bytes,
@@ -2881,7 +2958,8 @@ mod tests {
 
     use super::{
         build_subagent, excluded_by_allowlist, fold_agent_switches, front_end_interactive,
-        levers_off, pin_named_model, posture_for, step_escalation_enabled, step_escalation_slot,
+        jail_requests_answered, levers_off, pin_named_model, posture_for, sandbox_line,
+        step_escalation_enabled, step_escalation_slot,
     };
     use crate::GlobalOpts;
 
@@ -2929,6 +3007,51 @@ mod tests {
         };
         pin_named_model(&mut cfg, &named);
         assert_eq!(followed(&cfg, "local", &seen), None);
+    }
+
+    /// The `shell` line describes the sandbox a call actually gets: a
+    /// standing grant is mounted, so "the workspace only" would be false.
+    #[test]
+    fn the_sandbox_line_counts_the_grants_shell_mounts() {
+        use mecha_core::grant::{Access, Grant, Grants, Source};
+        use mecha_core::sandbox::{Backend, Sandbox, SandboxConfig};
+        let sandbox = Sandbox::new(SandboxConfig {
+            kind: Backend::Bwrap,
+            ..SandboxConfig::default()
+        });
+        assert!(sandbox_line(&sandbox, &Grants::default()).ends_with("the workspace only"));
+        let granted = Grants::standing(vec![Grant {
+            path: std::path::PathBuf::from("/srv/papers"),
+            access: Access::Read,
+            source: Source::Config,
+        }]);
+        let line = sandbox_line(&sandbox, &granted);
+        assert!(line.ends_with("beyond the workspace"), "{line}");
+    }
+
+    /// `request_access` is registered only where its `escalate` reaches a
+    /// person: never under `-y` on a terminal, never headless.
+    #[test]
+    fn a_jail_request_is_offered_only_where_a_person_can_answer_it() {
+        use mecha_core::config::PermissionMode::{Allow, Ask, ReadOnly};
+        use mecha_core::session::SessionKind as K;
+        // A terminal with a person at it, asking.
+        for s in [K::Chat, K::Tui, K::Run] {
+            assert!(jail_requests_answered(Some(s), true, Ask), "{s:?}");
+            // `-y` / `permission_mode = "allow"`: a `ModeApprover`, whose
+            // `escalate` is `Blocked` (review of #711), and read-only.
+            assert!(!jail_requests_answered(Some(s), true, Allow), "{s:?} -y");
+            assert!(!jail_requests_answered(Some(s), true, ReadOnly), "{s:?}");
+            assert!(!jail_requests_answered(Some(s), false, Ask), "{s:?} piped");
+        }
+        // The owner's card, whatever the startup mode.
+        assert!(jail_requests_answered(Some(K::Web), false, Allow));
+        assert!(jail_requests_answered(Some(K::Slack), false, Ask));
+        // Nobody to ask.
+        for s in [K::Trigger, K::Task, K::Frontdoor, K::Mail, K::Voice] {
+            assert!(!jail_requests_answered(Some(s), true, Ask), "{s:?}");
+        }
+        assert!(!jail_requests_answered(None, true, Ask));
     }
 
     /// A front end is a person only with a terminal and no run's shell above

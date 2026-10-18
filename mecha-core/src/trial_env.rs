@@ -248,6 +248,17 @@ impl Environment {
                 path.display()
             );
         }
+        // Neither a machine fact the trial is handed nor an operator table it
+        // is denied a copy of: a grant names a directory on this machine the
+        // owner opened for their own runs, and a trial home gets none —
+        // from the environment or from the operator (`merge_file` strips it
+        // too; this refuses rather than warns, the #441 rule).
+        anyhow::ensure!(
+            !table.contains_key("grant"),
+            "{}: `[[grant]]` opens a directory outside the workspace, which an experiment \
+             environment may not do — a trial reaches only its own world",
+            path.display()
+        );
         for key in OPERATOR_ONLY_TABLES {
             anyhow::ensure!(
                 !table.contains_key(key),
@@ -1189,6 +1200,11 @@ env = { MECHA_GRAPH_DB = "${STORE}/graph.db" }
             let err = env.base_config(&operator(), tmp.path()).unwrap_err();
             assert!(format!("{err:#}").contains("checkout"), "{body}: {err:#}");
         }
+        // And a way out of the jail, refused rather than stripped.
+        let tmp = Scratch::new();
+        let env = env_at(tmp.path(), "[[grant]]\npath = \"/srv\"");
+        let err = env.base_config(&operator(), tmp.path()).unwrap_err();
+        assert!(format!("{err:#}").contains("[[grant]]"), "{err:#}");
     }
 
     /// `[features]` in an environment may turn anything off and switch on
