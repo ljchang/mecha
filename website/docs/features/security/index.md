@@ -105,8 +105,8 @@ read, or read and write. Only a person makes one:
   TUI or `mecha chat` (add `write` for read and write); `/grant` alone lists
   what the conversation holds. `/clear` ends them.
 - **For one conversation, asked for by the model.** Where a person can answer
-  — the TUI, `mecha chat`, the web chat, Slack — the model has a
-  `request_access` tool. The call is shown to you with the path, the access
+  — the web chat, Slack, and the TUI or `mecha chat` in `ask` mode (not under
+  `-y`) — the model has a `request_access` tool. The call is shown to you with the path, the access
   and the model's stated reason, and nothing is reachable until you say yes.
   It always asks: no permission mode, "always" answer or `--yes` can grant it,
   and a headless run is refused.

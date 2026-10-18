@@ -2666,6 +2666,18 @@ impl Agent {
             // held live — a subagent's context is its parent's — and what this
             // conversation carries.
             tools.grants = tools.grants.for_run(&convo.grants);
+            // Whether a jail refusal may name `request_access` is a fact
+            // about *this* run's surface, so it is read here, from the
+            // registry this run dispatches from and the same test dispatch
+            // applies — never inherited. A subagent runs on its parent's
+            // context, and a parent that has the tool would otherwise send
+            // a child without it to a call that can only fail (review of
+            // #711).
+            tools.grants.requestable = self
+                .registry
+                .available(crate::tool::request_access::NAME)
+                .is_some()
+                && !cx.is_withheld(crate::tool::request_access::NAME);
             run_scoped = RunContext {
                 tools: Arc::new(tools),
                 ..cx.clone()
@@ -11544,6 +11556,78 @@ mod tests {
         assert!(fresh.grants.is_empty());
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&workspace).ok();
+    }
+
+    /// Whether a refusal may name `request_access` is read off the run's own
+    /// registry, never inherited: a subagent runs on its parent's context,
+    /// and a parent holding the tool sent a child without it to a call that
+    /// could only fail (review of #711). Withholding counts as absence.
+    #[tokio::test]
+    async fn a_refusal_names_request_access_only_where_this_run_can_call_it() {
+        struct Probe;
+        #[async_trait]
+        impl Tool for Probe {
+            fn name(&self) -> &str {
+                "probe"
+            }
+            fn description(&self) -> &str {
+                "Resolve a path outside the jail."
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                true
+            }
+            async fn call(&self, _input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
+                let err = ctx
+                    .resolve_for("/definitely/outside/x", crate::grant::Access::Read)
+                    .unwrap_err();
+                Ok(ToolOutput::err(format!("{err:#}")))
+            }
+        }
+        let refusal = |with_tool: bool, withheld: bool| async move {
+            let calls = vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "p".into(),
+                        name: "probe".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("ok")], StopReason::EndTurn),
+            ];
+            let (mut agent, _) = agent_with(calls, PermissionMode::Ask);
+            agent.registry.insert(Arc::new(Probe));
+            if with_tool {
+                agent
+                    .registry
+                    .insert(Arc::new(crate::tool::request_access::RequestAccess));
+            }
+            // What a parent's context carries into its child.
+            agent.ctx_mut().grants.requestable = true;
+            let mut cx = (**agent.context()).clone();
+            if withheld {
+                cx.withheld = Arc::from(vec![crate::tool::request_access::NAME.to_string()]);
+            }
+            let mut convo = Conversation::from(vec![Message::user("go")]);
+            agent.run_in(&cx, &mut convo, None).await.unwrap();
+            convo
+                .messages
+                .iter()
+                .flat_map(|m| m.content.iter())
+                .find_map(|b| match b {
+                    Block::ToolResult { content, .. } => Some(content.clone()),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert!(refusal(true, false).await.contains("request_access"));
+        let child = refusal(false, false).await;
+        assert!(!child.contains("request_access"), "{child}");
+        let narrowed = refusal(true, true).await;
+        assert!(!narrowed.contains("request_access"), "{narrowed}");
     }
 
     /// The **escalation** door shows the call as it will execute too.

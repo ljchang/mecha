@@ -139,6 +139,21 @@ pub fn posture_for(
     }
 }
 
+/// Whether a `request_access` call on this surface can reach a person — the
+/// registration gate in `prepare_tools`, whose comment has the reasons.
+pub fn jail_requests_answered(
+    surface: Option<mecha_core::session::SessionKind>,
+    interactive: bool,
+    mode: PermissionMode,
+) -> bool {
+    use mecha_core::session::SessionKind as K;
+    match surface {
+        Some(K::Web | K::Slack) => true,
+        Some(K::Chat | K::Tui | K::Run) => interactive && mode == PermissionMode::Ask,
+        _ => false,
+    }
+}
+
 /// Whether a front end has a person at it, for its posture: its stdin is a
 /// terminal **and** no run's `shell` started it. A `mecha chat` piped from a
 /// delegated run's shell would otherwise read its approvals from the pipe
@@ -379,7 +394,7 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     // The standing grants, each through `grant::admit`. A refused line is
     // skipped — a narrowing, so failing closed — and said aloud on every
     // start, so it never looks applied.
-    let mut grants = if opts.no_grants {
+    let grants = if opts.no_grants {
         mecha_core::grant::Grants::default()
     } else {
         let (grants, refused) = mecha_core::grant::Grants::from_config(&cfg.grants);
@@ -388,7 +403,6 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         }
         grants
     };
-    grants.requestable = tools.registry.get("request_access").is_some();
     let mut ctx = ToolCtx {
         workspace: tools.workspace.clone(),
         grants,
@@ -1860,14 +1874,18 @@ async fn prepare_tools_carrying(
     // `compact`'s rule: every call goes to `Approver::escalate`, which a
     // headless approver answers `Blocked`, so on a trigger or a piped `run`
     // it could only ever fail — and would cost a slot in every prompt to say
-    // so. The web and Slack approvers put the call on the owner's card; a
-    // terminal does when a person is at it. Filtered like `compact` too: an
-    // allowlist that does not name it has said no.
+    // so. The web and Slack approvers put the call on the owner's card
+    // whatever a session's mode, short of read-only. A terminal does only
+    // when a person is at it **and the mode is `ask`**: under `-y` or
+    // `permission_mode = "allow"` its approver is a `ModeApprover`, whose
+    // `escalate` is `Blocked` (review of #711). A TUI started that way and
+    // switched to `/mode ask` later goes without the tool until restarted —
+    // the tool list is the front of the cached prefix and does not toggle.
+    // Filtered like `compact` too: an allowlist that does not name it has
+    // said no.
     {
-        use mecha_core::session::SessionKind as K;
-        let answered = matches!(opts.surface, Some(K::Web | K::Slack))
-            || (interactive && matches!(opts.surface, Some(K::Chat | K::Tui | K::Run)));
-        let name = "request_access";
+        let answered = jail_requests_answered(opts.surface, interactive, cfg.tools.permission_mode);
+        let name = mecha_core::tool::request_access::NAME;
         let allowed = opts.tools.is_empty() || opts.tools.iter().any(|t| t == name);
         let disabled = cfg.tools.disabled.iter().any(|t| t == name)
             || (!cfg.tools.enabled.is_empty() && !cfg.tools.enabled.iter().any(|t| t == name));
@@ -2921,7 +2939,8 @@ mod tests {
 
     use super::{
         build_subagent, excluded_by_allowlist, fold_agent_switches, front_end_interactive,
-        levers_off, pin_named_model, posture_for, step_escalation_enabled, step_escalation_slot,
+        jail_requests_answered, levers_off, pin_named_model, posture_for, step_escalation_enabled,
+        step_escalation_slot,
     };
     use crate::GlobalOpts;
 
@@ -2969,6 +2988,31 @@ mod tests {
         };
         pin_named_model(&mut cfg, &named);
         assert_eq!(followed(&cfg, "local", &seen), None);
+    }
+
+    /// `request_access` is registered only where its `escalate` reaches a
+    /// person: never under `-y` on a terminal, never headless.
+    #[test]
+    fn a_jail_request_is_offered_only_where_a_person_can_answer_it() {
+        use mecha_core::config::PermissionMode::{Allow, Ask, ReadOnly};
+        use mecha_core::session::SessionKind as K;
+        // A terminal with a person at it, asking.
+        for s in [K::Chat, K::Tui, K::Run] {
+            assert!(jail_requests_answered(Some(s), true, Ask), "{s:?}");
+            // `-y` / `permission_mode = "allow"`: a `ModeApprover`, whose
+            // `escalate` is `Blocked` (review of #711), and read-only.
+            assert!(!jail_requests_answered(Some(s), true, Allow), "{s:?} -y");
+            assert!(!jail_requests_answered(Some(s), true, ReadOnly), "{s:?}");
+            assert!(!jail_requests_answered(Some(s), false, Ask), "{s:?} piped");
+        }
+        // The owner's card, whatever the startup mode.
+        assert!(jail_requests_answered(Some(K::Web), false, Allow));
+        assert!(jail_requests_answered(Some(K::Slack), false, Ask));
+        // Nobody to ask.
+        for s in [K::Trigger, K::Task, K::Frontdoor, K::Mail, K::Voice] {
+            assert!(!jail_requests_answered(Some(s), true, Ask), "{s:?}");
+        }
+        assert!(!jail_requests_answered(None, true, Ask));
     }
 
     /// A front end is a person only with a terminal and no run's shell above

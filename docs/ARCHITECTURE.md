@@ -2322,8 +2322,13 @@ first sketch would have widened the jail with nobody asked:
   and only the model-facing file tools call it: `fs_read`/`fs_list`/
   `image_view`/`document_read` read, `fs_write`/`fs_edit` write. A relative
   path still resolves against the workspace; a grant is never a second
-  current directory. The refusal names `request_access` only where it is
-  registered (`Grants::requestable`).
+  current directory. The refusal names `request_access` only where this run
+  can dispatch it (`Grants::requestable`, stamped by `run_in` from the run's
+  own registry and withholding, never inherited — a subagent runs on its
+  parent's context, review of #711). And it is registered only where its
+  `escalate` reaches a person (`setup::jail_requests_answered`): the web and
+  Slack cards, and a terminal with a person at it in `ask` mode — under `-y`
+  the approver is a `ModeApprover`, whose `escalate` is `Blocked`.
 - **A live grant lasts for the conversation**, taint's unit. It lives on
   `Conversation::grants`. `run_in` mints a fresh cell per run
   (`Grants::for_run`, `compact_requested`'s discipline: one agent serves many
