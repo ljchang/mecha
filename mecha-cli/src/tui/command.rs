@@ -67,6 +67,9 @@ pub enum Command {
     /// their Slack DM. `None` is the argument-less form, which is a mistake
     /// rather than a default: there is no sensible file to guess.
     Send(Option<String>),
+    /// The owner's jail exceptions (`mecha_core::grant`): `None` lists what
+    /// this conversation holds, `Some("<path> [read|write]")` adds one.
+    Grant(Option<String>),
     /// Mirror this session into a named Slack thread, or stop.
     RemoteControl(Remote),
     Quit,
@@ -170,6 +173,9 @@ pub fn parse(line: &str) -> Option<Command> {
         // A caption would have to be split off somehow, and the file's own
         // name is already the caption Slack shows.
         "send" => Command::Send(arg.map(str::to_string)),
+        // Bare, the list; with a path, a grant (`mecha_core::grant`). The
+        // plural lists too, because it is what a person asking types.
+        "grant" | "grants" => Command::Grant(arg.map(str::to_string)),
         // `remote` and `rc` because nobody types eighteen characters twice.
         "remote-control" | "remote" | "rc" => Command::RemoteControl(match arg {
             None => Remote::Show,
@@ -317,7 +323,7 @@ pub fn path_candidates(partial: &str, workspace: &std::path::Path) -> Vec<String
 /// One list, so completion and `HELP` cannot drift apart — there is a test that
 /// every name here parses, and another that everything `HELP` advertises is
 /// here.
-pub const NAMES: [&str; 28] = [
+pub const NAMES: [&str; 29] = [
     "help",
     "tools",
     "skills",
@@ -345,6 +351,7 @@ pub const NAMES: [&str; 28] = [
     "session",
     "todo",
     "send",
+    "grant",
     "remote-control",
 ];
 
@@ -429,6 +436,7 @@ pub const HELP: &str = "\
   /session               where the transcript is being written
   /todo                  show or hide the live task pane
   /send <path>           send a file to your Slack DM, to look at elsewhere
+  /grant [path [write]]  list, or let this conversation reach a directory outside the workspace
   /remote-control [name|off]    mirror this session into a named Slack thread
   /exit                  quit";
 

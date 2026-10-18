@@ -213,6 +213,13 @@ pub enum Lever {
     /// `mecha eval` forces it off: its readings are this machine's, and a
     /// scorecard must not vary with the box that produced it.
     SystemRead,
+    /// `--no-grants`: the `[[grant]]` lines are not applied and
+    /// `request_access` is not registered — the run is jailed to its
+    /// workspace alone ([`crate::grant`]). A lever so `mecha eval` forces it
+    /// off: which directories this owner opened is this machine's fact, and
+    /// a scorecard must not read files the fixture never held. An empty
+    /// `[[grant]]` list leaves it on — a list's emptiness is not a switch.
+    Grants,
 }
 
 impl Lever {
@@ -226,7 +233,7 @@ impl Lever {
     /// on review). The test `all_names_every_variant_serde_knows` closes
     /// it from the derive: serde's unknown-variant error lists every
     /// variant, and the test asserts this array covers that list.
-    pub const ALL: [Lever; 21] = [
+    pub const ALL: [Lever; 22] = [
         Lever::Mcp,
         Lever::LearnedRules,
         Lever::Hooks,
@@ -248,6 +255,7 @@ impl Lever {
         Lever::PastAppraisals,
         Lever::SuccessExamples,
         Lever::SystemRead,
+        Lever::Grants,
     ];
 
     pub fn parse(name: &str) -> Option<Lever> {
@@ -277,6 +285,7 @@ impl Lever {
             Lever::PastAppraisals => "past_appraisals",
             Lever::SuccessExamples => "success_examples",
             Lever::SystemRead => "system_read",
+            Lever::Grants => "grants",
         }
     }
 
@@ -1221,7 +1230,8 @@ mod tests {
                 | Lever::SituationBrief
                 | Lever::PastAppraisals
                 | Lever::SuccessExamples
-                | Lever::SystemRead => {}
+                | Lever::SystemRead
+                | Lever::Grants => {}
             }
         }
         let mut seen = std::collections::BTreeSet::new();

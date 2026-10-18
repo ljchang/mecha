@@ -376,8 +376,22 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
         provider = Box::new(mecha_core::provider::Failover::new(provider, fallbacks));
     }
 
+    // The standing grants, each through `grant::admit`. A refused line is
+    // skipped — a narrowing, so failing closed — and said aloud on every
+    // start, so it never looks applied.
+    let mut grants = if opts.no_grants {
+        mecha_core::grant::Grants::default()
+    } else {
+        let (grants, refused) = mecha_core::grant::Grants::from_config(&cfg.grants);
+        for line in refused {
+            eprintln!("mecha: {line} — not granted");
+        }
+        grants
+    };
+    grants.requestable = tools.registry.get("request_access").is_some();
     let mut ctx = ToolCtx {
         workspace: tools.workspace.clone(),
+        grants,
         shell_timeout: std::time::Duration::from_secs(cfg.tools.shell_timeout_secs),
         security: cfg.security.clone(),
         // Resolved against the *primary* provider's window; a turn served by
@@ -958,6 +972,7 @@ pub fn levers_off(opts: &GlobalOpts, cfg: &Config) -> Vec<Lever> {
                 opts.no_system_read
                     || !mecha_core::feature::switched_on(cfg, mecha_core::feature::Feature::System)
             }
+            Lever::Grants => opts.no_grants,
         })
         .collect()
 }
@@ -979,6 +994,7 @@ pub fn switch_off(opts: &mut GlobalOpts, lever: Lever) {
         Lever::Charter => opts.no_charter = true,
         Lever::CompactTool => opts.no_compact_tool = true,
         Lever::SystemRead => opts.no_system_read = true,
+        Lever::Grants => opts.no_grants = true,
         Lever::StepEscalation => opts.no_step_escalation = true,
         Lever::StepChecks => opts.no_step_checks = true,
         Lever::GoalGuidance => opts.no_goal_guidance = true,
@@ -1840,6 +1856,26 @@ async fn prepare_tools_carrying(
         None
     };
 
+    // `request_access` exists only where a person can answer it, on
+    // `compact`'s rule: every call goes to `Approver::escalate`, which a
+    // headless approver answers `Blocked`, so on a trigger or a piped `run`
+    // it could only ever fail — and would cost a slot in every prompt to say
+    // so. The web and Slack approvers put the call on the owner's card; a
+    // terminal does when a person is at it. Filtered like `compact` too: an
+    // allowlist that does not name it has said no.
+    {
+        use mecha_core::session::SessionKind as K;
+        let answered = matches!(opts.surface, Some(K::Web | K::Slack))
+            || (interactive && matches!(opts.surface, Some(K::Chat | K::Tui | K::Run)));
+        let name = "request_access";
+        let allowed = opts.tools.is_empty() || opts.tools.iter().any(|t| t == name);
+        let disabled = cfg.tools.disabled.iter().any(|t| t == name)
+            || (!cfg.tools.enabled.is_empty() && !cfg.tools.enabled.iter().any(|t| t == name));
+        if answered && allowed && !disabled && !opts.no_grants && !opts.global_config_only {
+            registry.insert(Arc::new(mecha_core::tool::request_access::RequestAccess));
+        }
+    }
+
     let approver: Arc<dyn Approver> =
         if interactive && cfg.tools.permission_mode == PermissionMode::Ask {
             Arc::new(TerminalApprover::default())
@@ -2042,6 +2078,10 @@ fn build_subagent(
         child_approver,
         ToolCtx {
             workspace: ctx.workspace.clone(),
+            // The parent's standing grants. A dispatched child runs on its
+            // caller's context, live grants and all (`Subagent::call`); this
+            // is the context it would run on alone.
+            grants: ctx.grants.standing_only(),
             shell_timeout: ctx.shell_timeout,
             security: ctx.security.clone(),
             output_budget_bytes: ctx.output_budget_bytes,

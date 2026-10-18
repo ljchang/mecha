@@ -3490,6 +3490,38 @@ fn run_command(
             });
         }
 
+        Command::Grant(None) => {
+            let lines =
+                mecha_core::grant::listing(&agent.context().tools.grants, &app.convo.grants);
+            say(if lines.is_empty() {
+                "no grants: the run reaches its workspace only — `/grant <path> [write]` \
+                 opens a directory for this conversation"
+                    .to_string()
+            } else {
+                lines.join("\n")
+            });
+        }
+
+        // Refused mid-run rather than queued: the running task holds the
+        // conversation, and what it hands back replaces `app.convo` whole —
+        // a grant written to the placeholder would vanish without a word.
+        Command::Grant(Some(_)) if app.running.is_some() => app.transcript.push(Entry::Error(
+            "/grant: a run is in flight — grant when it finishes, so the grant lands on \
+             the conversation it hands back"
+                .into(),
+        )),
+
+        Command::Grant(Some(arg)) => match mecha_core::grant::grant_by_owner(
+            &arg,
+            &agent.context().tools.grants,
+            &mut app.convo.grants,
+        ) {
+            Ok(said) => say(said),
+            Err(e) => app
+                .transcript
+                .push(Entry::Error(format!("/grant {arg}: {e:#}"))),
+        },
+
         Command::Send(None) => app.transcript.push(Entry::Error(
             "/send needs a path — try `/send report.png`".into(),
         )),
