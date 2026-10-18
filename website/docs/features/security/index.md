@@ -108,6 +108,11 @@ read, or read and write. Only a person makes one:
   revoke button on each one you made. `/revoke ~/Documents/papers` ends the ones at
   or under that path, and `/clear` ends them all; either stays ended when
   the conversation is resumed.
+- **For one conversation, when the model reaches for a file.** Where a person
+  can answer, the file tools ask by themselves, as Claude Code does: reading,
+  listing, viewing or writing a path outside the workspace shows you one card
+  naming it, and yes opens that file's folder (for reading, or for writing
+  when it was a write) for the rest of the conversation.
 - **For one conversation, asked for by the model.** Where a person can answer
   — the web chat, Slack, and the TUI or `mecha chat` in `ask` mode (not under
   `-y`) — the model has a `request_access` tool. The call is shown to you with the path, the access

@@ -424,6 +424,36 @@ mod tests {
         assert!(rx.try_recv().is_err());
     }
 
+    /// A Slack thread opens read-only too, and still asks the owner about
+    /// `request_access` — the twin of the web door's
+    /// `a_read_only_chat_still_asks_the_owner_for_a_grant` (review of #714).
+    #[tokio::test]
+    async fn a_read_only_thread_still_asks_the_owner_for_a_grant() {
+        use mecha_core::tool::Tool;
+        let (a, mut rx) = approver(Mode::ReadOnly, Duration::from_secs(5));
+        let task = tokio::spawn(async move {
+            let req = rx.recv().await.expect("a card for the owner");
+            assert_eq!(req.tool, "request_access");
+            assert!(
+                req.summary.contains("outside its workspace"),
+                "{}",
+                req.summary
+            );
+            req.reply.send(Answer::Approve).ok();
+        });
+        let tool = mecha_core::tool::request_access::RequestAccess;
+        let input = json!({"path": "/srv/papers", "reason": "the review"});
+        let why = tool
+            .needs_a_person(&input, &ToolCtx::default())
+            .unwrap()
+            .why;
+        assert!(matches!(
+            a.escalate(&tool, &input, &why).await,
+            Decision::Allow
+        ));
+        task.await.unwrap();
+    }
+
     #[tokio::test]
     async fn a_human_rejection_is_a_denial_and_carries_the_reason() {
         // The one refusal that *is* a correction, and the only one the

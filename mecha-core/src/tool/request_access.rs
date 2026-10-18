@@ -84,22 +84,50 @@ impl Tool for RequestAccess {
         })
     }
 
-    /// Not read-only: it widens what every later call in the conversation
-    /// can touch. The escalation is what gates it; this keeps it out of the
-    /// parallel read-only lane and out of a planning phase's reach.
+    /// Read-only, so a read-only chat can still put the question in front of
+    /// the owner: the web and Slack approvers refuse an escalation for a
+    /// tool that is not read-only under a read-only mode, which took the one
+    /// way to ask away in the mode a web chat opens in (2026-10-18). It is
+    /// safe there because the escalation, not the mode, is what gates it, and
+    /// its whole effect is that more can be *read*: a `write` grant made in a
+    /// read-only chat still writes nothing until the mode allows writes.
+    ///
+    /// **Read-only for the approver, not for the planning phase**, which keys
+    /// on this flag too: `call` refuses in `Phase::Plan` itself, as
+    /// `message_send` and `image_library_reference` do, because a grant made
+    /// while planning would outlive the plan (review of #714). And no card is
+    /// raised there first: `needs_a_person` reads the phase and stays quiet,
+    /// so the owner is never asked a question whose yes is thrown away.
     fn read_only(&self) -> bool {
-        false
+        true
     }
 
     /// Reads nothing and sends nothing itself. What is read through the
     /// grant arms `private_data` on the tool that reads it.
+    ///
+    /// `destructive`, though it deletes nothing, for `image_library_reference`'s
+    /// reason: a tool profile keeps any read-only tool that is neither private
+    /// nor destructive as a public read, and a `research` or `coding` child
+    /// was keeping the one tool that widens the jail once this became
+    /// read-only (review of #714). `assistant` keeps it, as it keeps every
+    /// read-only tool. The flag is how a profile is told; nothing
+    /// in the loop or the interlock reads it.
     fn capabilities(&self) -> Capabilities {
-        Capabilities::default()
+        Capabilities::default().destructive()
     }
 
-    fn needs_a_person(&self, input: &Value) -> Option<String> {
+    /// No `grant` on the answer: `call` makes its own, re-admitting the
+    /// path at execution, because the filesystem may change between the ask
+    /// and the yes.
+    fn needs_a_person(&self, input: &Value, ctx: &ToolCtx) -> Option<super::PersonAsk> {
+        // Planning: `call` refuses whatever the answer, so asking would cost
+        // the owner a click for nothing (review of #714, pass 3).
+        if ctx.phase == crate::agent::Phase::Plan {
+            return None;
+        }
+        let ask = |why: String| Some(super::PersonAsk { why, grant: None });
         let Ok((raw, access, reason)) = parse(input) else {
-            return Some(
+            return ask(
                 "The model is asking for access outside its workspace with a malformed \
                  request; it will be refused whatever you answer."
                     .into(),
@@ -113,7 +141,7 @@ impl Tool for RequestAccess {
                 requested.display()
             ),
         };
-        Some(format!(
+        ask(format!(
             "The model asks to reach {shown}, outside its workspace, for the rest of this \
              conversation. Its reason, in its own words: \"{reason}\". Saying yes lets every \
              later call in this conversation (and its subagents) use that path."
@@ -121,6 +149,13 @@ impl Tool for RequestAccess {
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
+        if ctx.phase == crate::agent::Phase::Plan {
+            return Ok(ToolOutput::err(
+                "request_access is not available while planning: a grant widens what every \
+                 later call in this conversation can touch. Nothing was granted; ask again \
+                 once the plan is accepted.",
+            ));
+        }
         let (raw, access, _reason) = match parse(&input) {
             Ok(p) => p,
             Err(e) => return Ok(ToolOutput::err(e)),
@@ -168,10 +203,50 @@ mod tests {
             json!({"path": std::env::temp_dir(), "reason": "papers"}),
         ] {
             assert!(
-                RequestAccess.needs_a_person(&input).is_some(),
+                RequestAccess
+                    .needs_a_person(&input, &ToolCtx::default())
+                    .is_some(),
                 "{input} would run with nobody asked"
             );
         }
+    }
+
+    /// A grant made while planning would outlive the plan, so the planning
+    /// phase refuses it even after a yes (review of #714: read-only for the
+    /// approver let the phase gate offer it).
+    /// And the owner is not asked a question whose yes would be discarded.
+    #[test]
+    fn a_planning_run_raises_no_card() {
+        let planning = ToolCtx {
+            phase: crate::agent::Phase::Plan,
+            ..ToolCtx::default()
+        };
+        let input = json!({"path": "/srv/papers", "reason": "plan"});
+        assert!(RequestAccess.needs_a_person(&input, &planning).is_none());
+        assert!(RequestAccess
+            .needs_a_person(&input, &ToolCtx::default())
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn a_planning_run_grants_nothing() {
+        let dir = std::env::temp_dir().join(format!("mecha-req-plan-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ctx = ToolCtx {
+            grants: crate::grant::Grants::default().for_run(&[]),
+            phase: crate::agent::Phase::Plan,
+            ..ToolCtx::default()
+        };
+        let out = RequestAccess
+            .call(
+                json!({"path": dir.display().to_string(), "reason": "plan"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(ctx.grants.live().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
