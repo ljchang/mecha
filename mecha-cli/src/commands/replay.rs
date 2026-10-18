@@ -284,9 +284,30 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // than the recording diffs the calendar instead of the change under test.
     .with_clock(mecha_core::clock::for_replay(recorded.clock));
 
+    // **Live executes, so it carries the guards every front-end's run does**
+    // (`docs/ROLLOUT-DESIGN.md` §1.1). It used to run with none: no
+    // outbox route, no hooks, no approval rules, default security — so past
+    // a divergence a tool `[outbox] tools` routes reached the approver as an
+    // ordinary call, and executed under `permission_mode = "allow"`.
+    let scratch_outbox = (mode == OnDivergence::Live).then(|| {
+        std::env::temp_dir().join(format!(
+            "mecha-replay-outbox-{}-{}",
+            meta.id,
+            std::process::id()
+        ))
+    });
+    if mode == OnDivergence::Live {
+        tool_ctx.security = prepared.config.security.clone();
+        tool_ctx.shell_timeout =
+            std::time::Duration::from_secs(prepared.config.tools.shell_timeout_secs);
+    }
     let cx = RunContext::new(tool_ctx, approver)
         .with_cancel(cancel)
         .with_compact_at(recorded.compact_at_tokens);
+    let cx = match &scratch_outbox {
+        Some(root) => with_live_guards(cx, prepared.agent.context(), root)?,
+        None => cx,
+    };
 
     eprintln!(
         "replaying {} · {} turns, {} recorded calls · {} ({})",
@@ -322,6 +343,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         render_report(&report, &trajectory.final_text);
     }
 
+    if let Some(root) = &scratch_outbox {
+        report_scratch_outbox(root);
+    }
+
     if mode == OnDivergence::Error && !report.divergences.is_empty() {
         bail!(
             "replay diverged: {} difference(s)",
@@ -329,6 +354,61 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// The guards a replay that executes must carry: the operator's hooks and
+/// approval rules exactly as `setup` built them for every front-end, and the
+/// outbox route — **pointed at a scratch store**, never the owner's.
+///
+/// Scratch, because staging happens at dispatch, ahead of the tool: with the
+/// owner's route attached, every routed call the replay re-issues *before*
+/// the divergence (answered from the recording a moment later) would be
+/// staged again as a duplicate draft in the real queue. The routed names are
+/// the operator's, so what stages live stages here; nothing here reaches a
+/// person, and the report says where it went.
+fn with_live_guards(
+    cx: RunContext,
+    configured: &RunContext,
+    scratch_root: &std::path::Path,
+) -> Result<RunContext> {
+    let cx = cx
+        .with_hooks(Arc::clone(&configured.hooks))
+        .with_policy(Arc::clone(&configured.policy));
+    let Some(route) = &configured.outbox else {
+        return Ok(cx);
+    };
+    let store = mecha_core::outbox::OutboxStore::open(scratch_root).with_context(|| {
+        format!(
+            "opening the scratch outbox {} for --on-divergence live",
+            scratch_root.display()
+        )
+    })?;
+    Ok(
+        cx.with_outbox(Arc::new(mecha_core::outbox::OutboxRoute::new(
+            store,
+            route.routed().map(String::from).collect::<Vec<_>>(),
+            route.publishes().map(String::from).collect::<Vec<_>>(),
+        ))),
+    )
+}
+
+/// Say what a live replay staged, and that the owner's outbox was not touched.
+fn report_scratch_outbox(root: &std::path::Path) {
+    let staged = mecha_core::outbox::OutboxStore::open(root)
+        .and_then(|store| store.items())
+        .map(|items| items.len());
+    match staged {
+        Ok(0) => {}
+        Ok(n) => eprintln!(
+            "note: {n} call(s) staged into the scratch outbox {} — the owner's \
+             outbox was not touched, and nothing there will be sent",
+            root.display()
+        ),
+        Err(e) => eprintln!(
+            "note: could not read the scratch outbox {}: {e}",
+            root.display()
+        ),
+    }
 }
 
 fn render_report(report: &mecha_core::replay_run::ReplayReport, recorded_final: &str) {
@@ -404,4 +484,73 @@ fn resolve_session(arg: &str) -> Result<PathBuf> {
         return Ok(as_path);
     }
     Session::find(&Session::default_dir()?, arg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mecha_core::outbox::{OutboxRoute, OutboxStore};
+    use mecha_core::tool::ToolCtx;
+
+    fn scratch(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("mecha-replay-{tag}-{}", uuid::Uuid::new_v4()))
+    }
+
+    fn bare() -> RunContext {
+        RunContext::new(
+            ToolCtx::default(),
+            Arc::new(ModeApprover {
+                mode: PermissionMode::Allow,
+            }),
+        )
+    }
+
+    /// The regression (`docs/ROLLOUT-DESIGN.md` §1.1): a live replay ran with
+    /// no outbox route, no hooks and no approval rules. It now carries the
+    /// operator's hooks and rules as configured, and the operator's routed
+    /// names — staging into a scratch store, never the owner's.
+    #[test]
+    fn a_live_replay_carries_the_configured_guards_and_stages_to_scratch() {
+        let real = scratch("real-outbox");
+        let configured = bare()
+            .with_hooks(Arc::new(mecha_core::hooks::HookSet::default()))
+            .with_policy(Arc::new(mecha_core::policy::ExecPolicy::empty()))
+            .with_outbox(Arc::new(OutboxRoute::new(
+                OutboxStore::open(&real).unwrap(),
+                ["mail__mail_send".to_string()],
+                ["factory__bundle_publish".to_string()],
+            )));
+        let elsewhere = scratch("scratch-outbox");
+
+        let cx = with_live_guards(bare(), &configured, &elsewhere).unwrap();
+
+        assert!(Arc::ptr_eq(&cx.hooks, &configured.hooks));
+        assert!(Arc::ptr_eq(&cx.policy, &configured.policy));
+        let route = cx
+            .outbox
+            .as_ref()
+            .expect("a routed send must stage, not execute");
+        assert!(route.routes("mail__mail_send"));
+        assert!(route.publishes().any(|t| t == "factory__bundle_publish"));
+        assert_eq!(route.store.root(), elsewhere.as_path());
+        assert_ne!(
+            route.store.root(),
+            real.as_path(),
+            "the owner's outbox would collect a duplicate of every routed call \
+             replayed before the divergence"
+        );
+
+        let _ = std::fs::remove_dir_all(&real);
+        let _ = std::fs::remove_dir_all(&elsewhere);
+    }
+
+    /// No route configured, none invented: the scratch store is opened only
+    /// for an operator who routes something.
+    #[test]
+    fn no_configured_route_means_no_scratch_outbox() {
+        let elsewhere = scratch("unused-outbox");
+        let cx = with_live_guards(bare(), &bare(), &elsewhere).unwrap();
+        assert!(cx.outbox.is_none());
+        assert!(!elsewhere.exists());
+    }
 }
