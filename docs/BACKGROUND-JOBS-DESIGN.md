@@ -586,6 +586,15 @@ or reach getting any trust they do not already have?
   a row the server marked `deferred`; any other tool's text is still never a picture. The
   first such tool is an experimental MOSS-Image server, tried from the chats before anything
   of it is built into mecha.
+  - **The mark is the server's own claim**, as a clip's is: `McpTool::background` comes from
+    its `tools/list` entry, and no owner list stands behind it. That is enough because of what
+    it buys. A configured server can get the page to show a `images/*.png` from the chat
+    folder it already writes into, same-origin and PNG only, under its own row. It cannot
+    reach outside that folder: the pattern has no slash and the file route jails the path again.
+  - **Regenerate is offered only on the chat's own image tools' pictures** (`redrawable`), on
+    the card and on the call screen. It draws again through `image_generate`, so on another
+    tool's picture it would redraw with a different model. Edit, Download and Save act on any
+    picture as what it is.
 - **Incognito is unchanged.** MCP tools are withheld there (`ALLOWED_BUILTINS`), so no MCP job
   reaches a RAM room.
 

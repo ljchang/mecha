@@ -107,6 +107,33 @@ for (const bad of [
   is(wrapped !== cases.wrapped, true, 'the envelope case holds the result verbatim');
   is(generatedImage(mcp(wrapped)), 'images/moss-20261018-183730-5.png', 'the settled, wrapped result shows as the live one did');
   is(generatedImage(done(wrapped)), null, "image_generate's own result is never unwrapped");
+  is(generatedImage(mcp(wrapped, { name: 'shell', deferred: undefined })), null, 'the unwrap is reached only through the deferred mark');
+}
+is(generatedImage(mcp(mossLine, { blocked: true })), null, 'nor on a refused deferred call');
+
+// Regenerate draws again through `image_generate`, so it is offered only on
+// the chat's own image tools' pictures, never on a deferring tool's (review of
+// #715): the redraw would come from a different model.
+{
+  const { redrawable, redrawablePictures } = await import('../src/lib/picture.js');
+  is(redrawable(done(ok)), true, "image_generate's picture can be drawn again");
+  is(redrawable(viewed('image: images/a.png')), true, 'as can a look, as before');
+  is(redrawable(mcp(mossLine)), false, "a deferring tool's picture cannot");
+  is(redrawable({ kind: 'assistant', name: 'image_generate' }), false, 'only a tool row');
+  is(
+    JSON.stringify([...redrawablePictures([done(ok), mcp(mossLine)])]),
+    '["images/20260925-153000-7.png"]',
+    'the call screen is offered only the redrawable ones'
+  );
+  const { readFileSync } = await import('node:fs');
+  const src = (f) => readFileSync(new URL(`../src/lib/${f}`, import.meta.url), 'utf8');
+  for (const f of ['Chat.svelte', 'Personas.svelte']) {
+    const s = src(f);
+    is(/\{#if redrawable\(entry\)\}<button class="genedit"[^\n]*>Regenerate<\/button>\{\/if\}/.test(s), true, `${f}: the card's Regenerate is gated`);
+    is((s.match(/>Regenerate<\/button>/g) ?? []).length, 1, `${f}: no other Regenerate button on a card`);
+  }
+  is(/\{#if onregenerate && \(!redrawable \|\| redrawable\.has\(viewing\)\)\}/.test(src('PersonaCall.svelte')), true, "the call screen's Regenerate is gated");
+  is(/redrawable=\{callRedrawable\}/.test(src('Personas.svelte')), true, 'and the persona chat hands it the set');
 }
 
 // A picture drawn once is not drawn inline again: the `image_view` of the file
