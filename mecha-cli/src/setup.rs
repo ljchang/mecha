@@ -395,7 +395,7 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     // skipped — a narrowing, so failing closed — and said aloud on every
     // start, so it never looks applied.
     let grants = if opts.no_grants {
-        mecha_core::grant::Grants::default()
+        mecha_core::grant::Grants::off()
     } else {
         let (grants, refused) = mecha_core::grant::Grants::from_config(&cfg.grants);
         for line in refused {

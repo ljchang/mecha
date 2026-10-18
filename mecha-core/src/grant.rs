@@ -268,6 +268,12 @@ pub struct Grants {
     /// route. Stamped by `Agent::run_in` from the run's own registry; off
     /// everywhere else.
     pub requestable: bool,
+    /// `--no-grants` (`Lever::Grants`): this run reaches no grant, standing
+    /// or the conversation's, and can add none. Carried through every
+    /// derivation so a resumed conversation's recorded grants cannot come
+    /// back in through `for_run` while the record says the lever is off
+    /// (review of #711).
+    off: bool,
 }
 
 impl Grants {
@@ -298,10 +304,28 @@ impl Grants {
         (Grants::standing(ok), refused)
     }
 
+    /// Grants switched off for every run on this context (`--no-grants`).
+    pub fn off() -> Self {
+        Grants {
+            off: true,
+            ..Grants::default()
+        }
+    }
+
+    /// Whether grants are switched off here. A run that is off leaves the
+    /// conversation's grants as they were rather than carrying back none:
+    /// not using a grant is not ending it.
+    pub fn is_off(&self) -> bool {
+        self.off
+    }
+
     /// A fresh live cell for one run, holding what this context already had
     /// live (a parent's grants, for a subagent) and what the conversation
-    /// carries.
+    /// carries — nothing at all when grants are off.
     pub fn for_run(&self, conversation: &[Grant]) -> Self {
+        if self.off {
+            return Grants::off();
+        }
         let mut live = self.live();
         for g in conversation {
             if !live.contains(g) {
@@ -312,6 +336,7 @@ impl Grants {
             standing: self.standing.clone(),
             live: Arc::new(Mutex::new(live)),
             requestable: self.requestable,
+            off: false,
         }
     }
 
@@ -322,6 +347,7 @@ impl Grants {
             standing: self.standing.clone(),
             live: Arc::default(),
             requestable: self.requestable,
+            off: self.off,
         }
     }
 
@@ -367,6 +393,9 @@ impl Grants {
     /// — the caller renders `false` as "already granted", and nothing would
     /// have been stored (review of #711).
     pub fn add(&self, grant: Grant) -> Result<bool> {
+        if self.off {
+            bail!("grants are switched off for this run (--no-grants); nothing was granted");
+        }
         if self.covering(&grant.path, grant.access).is_some() {
             return Ok(false);
         }
@@ -386,6 +415,9 @@ impl Grants {
 /// one, and everything before it is the path, so a name with spaces works.
 /// Returns what to say.
 pub fn grant_by_owner(arg: &str, standing: &Grants, live: &mut Vec<Grant>) -> Result<String> {
+    if standing.is_off() {
+        bail!("grants are switched off for this session (--no-grants)");
+    }
     let arg = arg.trim();
     let (raw, access) = match arg.rsplit_once(char::is_whitespace) {
         Some((path, word)) if Access::parse(word).is_some() => {
