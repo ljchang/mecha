@@ -2349,6 +2349,16 @@ first sketch would have widened the jail with nobody asked:
   The shared base sandbox is never mutated. `cwd` goes through `resolve_for`
   too, or the call would mount a directory it could not stand in (review of
   #711).
+- **The model is told what it may reach.** A grant nothing names goes
+  unused: every file tool's schema said "inside the workspace", so a trigger
+  holding a `[[grant]]` reported it had no access (review of #711).
+  `grant::note` puts one line of the run's grants, sorted, in the request's
+  head notes beside the calendar reference (`Agent::request_notes_for`). It
+  is sent and never stored, and it stays inside the cached prefix until the
+  set changes, which takes a `/grant`, a `/revoke` or a yes, never a turn.
+  The path descriptions now say "or inside a directory the owner granted",
+  and `setup::sandbox_line` describes `shell` with the standing grants
+  mounted (`setup::standing_grants`, the one computation `build` uses too).
 - **The owner sees what the model sees.** The page draws only a
   workspace-relative picture, through a download route jailed to the
   workspace, so `image_view` of a granted file keeps a copy under
@@ -2368,14 +2378,24 @@ first sketch would have widened the jail with nobody asked:
   than carrying back none: not using a grant is not ending it. Personas report it off: a persona is
   never given the owner's directories.
 
-**`/revoke <path>`** (`grant::revoke_by_owner`, TUI and `mecha chat`) drops
+**`/revoke <path>`** (`grant::revoke_by_owner`, TUI, `mecha chat` and the web)
+drops
 the conversation's live grants at or under a path. It matches the canonical
 spelling and the typed one, so a directory since removed is still revocable,
 and it names a standing grant rather than touching config. It only narrows, so
 nobody is asked, and the last-wins `Record::Grants` makes it durable on the
-next run. It is refused mid-run for `/grant`'s reason.
+next run. It is refused mid-run for `/grant`'s reason. **Every owner change
+is recorded at once** (`Session::record_grants`), not only by the next run,
+so a revoke followed by a quit or a restart of `serve` stays revoked.
 
-Not built: a web `/grant` or `/revoke`, and an `untrusted = true` grant (a downloads folder is third-party content). Today
+**The web chat** offers both through `POST /api/chat/{key}/grants`
+(`chat::set_grants`, the owner's door only), the same two functions behind
+typed `/grant`/`/revoke` (`web/src/lib/grants.js`) and a grants chip whose
+list revokes. It is refused in an incognito chat (403) and while a run holds
+the conversation (409). A `grants` event reconciles every open page, as
+`mode` does, and a run's `Live` snapshot keeps the chip honest mid-run.
+
+Not built: an `untrusted = true` grant (a downloads folder is third-party content). Today
 a grant reads with the workspace's stance.
 
 **The trifecta interlock.** Taint is a property of the **conversation**, not of

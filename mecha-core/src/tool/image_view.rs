@@ -110,7 +110,7 @@ impl Tool for ImageView {
         json!({
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Path relative to the workspace root, or absolute inside it."}
+                "path": {"type": "string", "description": "Path relative to the workspace root, or absolute inside it or inside a directory the owner granted."}
             },
             "required": ["path"]
         })

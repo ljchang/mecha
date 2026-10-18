@@ -69,7 +69,7 @@ impl Tool for FsRead {
         json!({
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Path relative to the workspace root, or absolute inside it."},
+                "path": {"type": "string", "description": "Path relative to the workspace root, or absolute inside it or inside a directory the owner granted."},
                 "offset": {"type": "integer", "description": "First line to return, 1-indexed."},
                 "limit": {"type": "integer", "description": "Maximum number of lines to return."}
             },
@@ -367,7 +367,7 @@ impl Tool for FsList {
         json!({
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Defaults to the workspace root."}
+                "path": {"type": "string", "description": "Defaults to the workspace root; absolute inside it or inside a directory the owner granted."}
             }
         })
     }

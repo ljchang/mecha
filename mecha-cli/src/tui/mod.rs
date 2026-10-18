@@ -927,7 +927,10 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
             .clone()
             .or_else(|| mecha_core::skill::SkillStore::default_dir().ok())
             .unwrap_or_default(),
-        sandbox_line: setup::sandbox_line(&prepared.sandbox),
+        sandbox_line: setup::sandbox_line(
+            &prepared.sandbox,
+            &setup::standing_grants(&prepared.config, global).0,
+        ),
         workspace: prepared.workspace.clone(),
         todo_visible: true,
         pending_editor: false,
@@ -3186,6 +3189,20 @@ fn record_config(session: Option<&Session>, live: &Live, mode: PermissionMode) -
 
 /// Carry out a slash command. Everything here is local to the session — none of
 /// it reaches the model.
+/// An owner's grant change, written to the transcript at once
+/// (`Session::record_grants`) — or the sentence saying it was not, since a
+/// revoke the file forgot comes back on resume.
+fn recorded(
+    said: String,
+    session: Option<&Session>,
+    grants: &[mecha_core::grant::Grant],
+) -> String {
+    match session.map(|s| s.record_grants(grants)) {
+        Some(Err(e)) => format!("{said} (not written to the transcript: {e:#})"),
+        _ => said,
+    }
+}
+
 fn run_command(
     app: &mut App,
     cmd: command::Command,
@@ -3516,7 +3533,7 @@ fn run_command(
             &agent.context().tools.grants,
             &mut app.convo.grants,
         ) {
-            Ok(said) => say(said),
+            Ok(said) => say(recorded(said, session, &app.convo.grants)),
             Err(e) => app
                 .transcript
                 .push(Entry::Error(format!("/grant {arg}: {e:#}"))),
@@ -3539,7 +3556,7 @@ fn run_command(
             &agent.context().tools.grants,
             &mut app.convo.grants,
         ) {
-            Ok(said) => say(said),
+            Ok(said) => say(recorded(said, session, &app.convo.grants)),
             Err(e) => app
                 .transcript
                 .push(Entry::Error(format!("/revoke {arg}: {e:#}"))),

@@ -2223,8 +2223,12 @@ impl Agent {
         if let Some(c) = closing {
             tail.push(c.line.to_string());
         }
+        // The grants line rides beside the calendar reference: what this run
+        // may reach beyond its workspace, read off the run's own context, so
+        // an approval mid-run is named from the next request on.
+        let granted = crate::grant::note(&cx.tools.grants.all());
         RequestNotes {
-            head: self.calendar_note().into_iter().collect(),
+            head: self.calendar_note().into_iter().chain(granted).collect(),
             tail,
         }
     }
@@ -11708,6 +11712,58 @@ mod tests {
         );
         std::fs::remove_dir_all(&papers).ok();
         std::fs::remove_dir_all(&workspace).ok();
+    }
+
+    /// The model is told what it may reach: a run holding a grant carries
+    /// the grants note on its request, beside the history and not in it, and
+    /// a run holding none carries no such note. Without it a standing
+    /// `[[grant]]` worked and went unused (review of #711).
+    #[tokio::test]
+    async fn a_run_holding_a_grant_is_told_so_and_one_without_is_not() {
+        let text_of = |req: &CompletionRequest| -> String {
+            req.messages
+                .iter()
+                .flat_map(|m| m.content.iter())
+                .filter_map(|b| match b {
+                    Block::Text { text, .. } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let ask = |granted: bool| async move {
+            let (mut agent, provider) = agent_with(
+                vec![assistant(vec![Block::text("ok")], StopReason::EndTurn)],
+                PermissionMode::Ask,
+            );
+            if granted {
+                agent.ctx_mut().grants =
+                    crate::grant::Grants::standing(vec![crate::grant::Grant {
+                        path: std::path::PathBuf::from("/srv/papers"),
+                        access: crate::grant::Access::Read,
+                        source: crate::grant::Source::Config,
+                    }]);
+            }
+            let mut convo = Conversation::from(vec![Message::user("summarise my papers")]);
+            agent.run(&mut convo, None).await.unwrap();
+            let sent = text_of(&provider.seen.lock().unwrap()[0]);
+            let stored = text_of(&CompletionRequest {
+                messages: convo.messages.clone(),
+                ..provider.seen.lock().unwrap()[0].clone()
+            });
+            (sent, stored)
+        };
+        let (sent, stored) = ask(true).await;
+        assert!(
+            sent.contains("Granted directories") && sent.contains("/srv/papers (read)"),
+            "{sent}"
+        );
+        assert!(
+            !stored.contains("Granted directories"),
+            "the note is sent, never stored"
+        );
+        let (sent, _) = ask(false).await;
+        assert!(!sent.contains("Granted directories"), "{sent}");
     }
 
     /// The **escalation** door shows the call as it will execute too.

@@ -394,15 +394,10 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     // The standing grants, each through `grant::admit`. A refused line is
     // skipped — a narrowing, so failing closed — and said aloud on every
     // start, so it never looks applied.
-    let grants = if opts.no_grants {
-        mecha_core::grant::Grants::off()
-    } else {
-        let (grants, refused) = mecha_core::grant::Grants::from_config(&cfg.grants);
-        for line in refused {
-            eprintln!("mecha: {line} — not granted");
-        }
-        grants
-    };
+    let (grants, refused) = standing_grants(&cfg, opts);
+    for line in refused {
+        eprintln!("mecha: {line} — not granted");
+    }
     let mut ctx = ToolCtx {
         workspace: tools.workspace.clone(),
         grants,
@@ -1039,10 +1034,32 @@ fn excluded_by_allowlist<'a>(wanted: &'a [String], allowlist: &[String]) -> Vec<
         .collect()
 }
 
+/// The standing grants a run on these options holds, and the `[[grant]]`
+/// lines refused on the way — one computation for the context `build`
+/// stamps and the lines that describe it, so they cannot disagree.
+/// `--no-grants` is `Grants::off`, which no later step can widen.
+pub fn standing_grants(
+    cfg: &Config,
+    opts: &GlobalOpts,
+) -> (mecha_core::grant::Grants, Vec<String>) {
+    if opts.no_grants {
+        (mecha_core::grant::Grants::off(), Vec::new())
+    } else {
+        mecha_core::grant::Grants::from_config(&cfg.grants)
+    }
+}
+
 /// One line saying what `shell` actually is right now. Shared between
 /// `mecha tools` and the TUI's /tools modal, so the two cannot disagree about
-/// the fact an operator most needs.
-pub fn sandbox_line(sandbox: &mecha_core::sandbox::Sandbox) -> String {
+/// the fact an operator most needs. Read off the sandbox as a call mounts it
+/// — with the standing grants (`Sandbox::with_grants`) — or it said
+/// "the workspace only" while every `shell` call mounted a granted directory
+/// (review of #711). A conversation's own grants are `/grant`'s to list.
+pub fn sandbox_line(
+    sandbox: &mecha_core::sandbox::Sandbox,
+    grants: &mecha_core::grant::Grants,
+) -> String {
+    let sandbox = &sandbox.with_grants(&grants.all());
     if sandbox.is_enabled() {
         format!(
             "sandbox: {} · network {} · reads {}",
@@ -2941,8 +2958,8 @@ mod tests {
 
     use super::{
         build_subagent, excluded_by_allowlist, fold_agent_switches, front_end_interactive,
-        jail_requests_answered, levers_off, pin_named_model, posture_for, step_escalation_enabled,
-        step_escalation_slot,
+        jail_requests_answered, levers_off, pin_named_model, posture_for, sandbox_line,
+        step_escalation_enabled, step_escalation_slot,
     };
     use crate::GlobalOpts;
 
@@ -2990,6 +3007,26 @@ mod tests {
         };
         pin_named_model(&mut cfg, &named);
         assert_eq!(followed(&cfg, "local", &seen), None);
+    }
+
+    /// The `shell` line describes the sandbox a call actually gets: a
+    /// standing grant is mounted, so "the workspace only" would be false.
+    #[test]
+    fn the_sandbox_line_counts_the_grants_shell_mounts() {
+        use mecha_core::grant::{Access, Grant, Grants, Source};
+        use mecha_core::sandbox::{Backend, Sandbox, SandboxConfig};
+        let sandbox = Sandbox::new(SandboxConfig {
+            kind: Backend::Bwrap,
+            ..SandboxConfig::default()
+        });
+        assert!(sandbox_line(&sandbox, &Grants::default()).ends_with("the workspace only"));
+        let granted = Grants::standing(vec![Grant {
+            path: std::path::PathBuf::from("/srv/papers"),
+            access: Access::Read,
+            source: Source::Config,
+        }]);
+        let line = sandbox_line(&sandbox, &granted);
+        assert!(line.ends_with("beyond the workspace"), "{line}");
     }
 
     /// `request_access` is registered only where its `escalate` reaches a

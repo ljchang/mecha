@@ -1827,6 +1827,16 @@ impl Session {
         })
     }
 
+    /// Record the conversation's grants now, between runs — an owner's
+    /// `/grant` or `/revoke`. `Record::Grants` is last-wins, so this is the
+    /// set until the next one; without it a revoke followed by a quit came
+    /// back on resume, because only a run wrote the record.
+    pub fn record_grants(&self, grants: &[crate::grant::Grant]) -> Result<()> {
+        self.append(&Record::Grants {
+            grants: grants.to_vec(),
+        })
+    }
+
     /// Record how the run went, beside what it said.
     ///
     /// Separate from [`record_run`] rather than folded into it, because the

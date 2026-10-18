@@ -284,6 +284,20 @@ enum Flow {
     Quit,
 }
 
+/// An owner's grant change, written to the transcript at once — the TUI's
+/// `recorded`, for the same reason: a revoke the file forgot comes back on
+/// resume.
+fn recorded(
+    said: String,
+    session: Option<&Session>,
+    grants: &[mecha_core::grant::Grant],
+) -> String {
+    match session.map(|s| s.record_grants(grants)) {
+        Some(Err(e)) => format!("{said} (not written to the transcript: {e:#})"),
+        _ => said,
+    }
+}
+
 fn handle_command(
     command: &str,
     prepared: &setup::Prepared,
@@ -347,7 +361,7 @@ fn handle_command(
                 }
             } else {
                 match mecha_core::grant::grant_by_owner(rest, standing, &mut convo.grants) {
-                    Ok(said) => println!("  {said}"),
+                    Ok(said) => println!("  {}", recorded(said, session, &convo.grants)),
                     Err(e) => println!("  /grant {}: {e:#}", rest.trim()),
                 }
             }
@@ -356,7 +370,7 @@ fn handle_command(
         "revoke" => {
             let standing = &prepared.agent.context().tools.grants;
             match mecha_core::grant::revoke_by_owner(rest, standing, &mut convo.grants) {
-                Ok(said) => println!("  {said}"),
+                Ok(said) => println!("  {}", recorded(said, session, &convo.grants)),
                 Err(e) => println!("  /revoke {}: {e:#}", rest.trim()),
             }
         }
