@@ -272,8 +272,9 @@ impl ChatState {
         // Not interactive: no terminal approver — and then `ask_user` IS
         // registered, against the Slack connector's precedent, because this
         // front-end can do what that one could not: route the question to
-        // the human who owns the run that asked (the jail's directory name
-        // is the session key; see `present::WebAsker`). An unanswered card
+        // the human who owns the run that asked (by the key each turn is
+        // stamped with, `ToolCtx::conversation`; see `present::WebAsker`).
+        // An unanswered card
         // resolves as the tool's measured decline, never a guess.
         // Registered by the follower on every build, so an agent rebuilt for
         // a switch is never missing it.
@@ -4319,7 +4320,7 @@ pub struct ResumeBody {
 
 /// A live key for a resumed transcript: the id's unique tail, which is
 /// already lowercase hex and therefore already a valid key.
-fn resume_key(id: &str) -> String {
+pub(super) fn resume_key(id: &str) -> String {
     let tail: String = id
         .chars()
         .rev()
@@ -4408,6 +4409,29 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
         }
     }
     let key = resume_key(&meta.id);
+    // **A placeholder squatting on the key gives way.** After a restart the
+    // map is empty, and a page still open on a resumed chat reconnects
+    // under its key before the owner picks the conversation again; any
+    // first touch (`mode`, `grants`, a send) then creates a fresh, empty
+    // session there, and every resume after it was a 409 — the owner's
+    // conversation unreachable behind a session holding nothing (2026-10-18,
+    // `resume failed: could not mint a key for this session`). Only an
+    // untouched recorded chat gives way: no message, no run in flight. One
+    // holding anything is a real conversation and still refuses.
+    let squatter = sessions.get(&key).is_some_and(|ws| {
+        ws.live.is_none()
+            && ws.session.kept().is_some()
+            && ws
+                .conversation
+                .as_ref()
+                .is_some_and(|c| c.messages.is_empty())
+    });
+    if squatter {
+        sessions.remove(&key);
+        if let Ok(mut routes) = chat.routes.lock() {
+            routes.remove(&key);
+        }
+    }
     if !valid_key(&key) || sessions.contains_key(&key) {
         return (
             StatusCode::CONFLICT,
