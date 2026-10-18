@@ -5307,6 +5307,71 @@ mod boundary_tests {
         );
     }
 
+    /// After a restart, a page still open on a resumed chat reconnects under
+    /// its key and its first touch creates an empty session there. Picking
+    /// the conversation from history must still bring it back under that key,
+    /// not answer 409 forever (2026-10-18: "resume failed: could not mint a
+    /// key for this session").
+    #[tokio::test]
+    async fn resuming_takes_its_key_back_from_an_empty_placeholder() {
+        let home = crate::testenv::HomeGuard::new("web-resume-squatter");
+        let _graph = NoGraph::under(&home.dir);
+        let chat = chat::test_chat_answering("noted", false);
+        let app = app(Arc::clone(&chat));
+        converse(&app, "chat-orig", "hello there").await;
+        let rail = body(app.clone().oneshot(get("/api/sessions")).await.unwrap()).await;
+        let id = rail["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["key"] == "chat-orig")
+            .and_then(|r| r["id"].as_str())
+            .unwrap()
+            .to_string();
+        // Let it go, as a restart does.
+        let r = app
+            .clone()
+            .oneshot(post(&format!("/api/sessions/{id}/archive"), ""))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::NO_CONTENT);
+        // The reconnecting page's first touch under the resume key.
+        let key = chat::resume_key(&id);
+        let r = app
+            .clone()
+            .oneshot(json_post(
+                &format!("/api/chat/{key}/mode"),
+                serde_json::json!({ "mode": "ask" }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK, "the placeholder is created");
+
+        let r = app
+            .clone()
+            .oneshot(json_post(
+                "/api/resume",
+                serde_json::json!({ "id": id }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(body(r).await["key"], key.as_str());
+        let page = body(
+            app.clone()
+                .oneshot(get(&format!("/api/chat/{key}")))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            page["session"],
+            id.as_str(),
+            "the conversation, not the placeholder"
+        );
+        assert!(!page["entries"].as_array().unwrap().is_empty());
+    }
+
     #[tokio::test]
     async fn chat_mode_rejects_a_decoded_path_escape_before_creating_state() {
         let home = crate::testenv::HomeGuard::new("web-mode-path");
