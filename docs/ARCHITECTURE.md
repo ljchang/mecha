@@ -2343,8 +2343,8 @@ first sketch would have widened the jail with nobody asked:
   Slack cards, and a terminal with a person at it in `ask` mode — under `-y`
   the approver is a `ModeApprover`, whose `escalate_access` is `Blocked`.
   Not keyed on `global_config_only`, which both doors set; the first gate
-  was, and the web chat shipped without the tool (2026-10-18). `request_access` is
-  `read_only()`, so a read-only chat (the web's default) still puts the card
+  was, and the web chat shipped without the tool (2026-10-18).
+  `request_access` is `read_only()`, so a read-only chat (the web's default) still puts the card
   in front of the owner; a write grant made there writes nothing until the
   mode allows writes. Read-only for the approver only: `call` refuses in
   `Phase::Plan`, as `message_send` does, and it declares `destructive` so a
