@@ -1078,7 +1078,8 @@ pub(super) fn wire_event(event: &AgentEvent, context_window: Option<u64>) -> Opt
             text: format!("compacted {messages_before} messages to {messages_after}"),
         }),
         // The run's own set, standing first: what it holds is what the chip
-        // shows, so an incognito run (given none) can only ever send none.
+        // shows. An incognito run's grants are off (`Grants::none`), so no
+        // round of one can change them and this never fires there.
         AgentEvent::Grants(grants) => Some(WireEvent::Grants {
             grants: grants.iter().map(GrantWire::of).collect(),
         }),
