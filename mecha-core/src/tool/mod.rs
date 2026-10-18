@@ -1336,9 +1336,12 @@ impl ToolCtx {
     /// goes ahead and `resolve_for` decides — when the path is already
     /// reachable, when nobody here could answer (`Grants::requestable`, which
     /// `run_in` sets only where `request_access` itself is dispatchable),
-    /// while planning (a grant would outlive the plan), and when nothing
-    /// about the path could be granted: the never-granted places are refused
-    /// before a person is asked, by the jail's own error.
+    /// while planning (a grant would outlive the plan), when the run holds no
+    /// grants and can be given none (`Grants::is_off`: `--no-grants`, an
+    /// incognito room — independent of `requestable`, which `run_in` sets
+    /// after the off cell is minted), and when nothing about the path could
+    /// be granted: the never-granted places are refused before a person is
+    /// asked, by the jail's own error.
     ///
     /// **It waits for an answer, as every approval card does.** `requestable`
     /// says a person could answer on this surface, not that one is looking:

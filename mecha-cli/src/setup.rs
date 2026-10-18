@@ -1919,9 +1919,10 @@ async fn prepare_tools_carrying(
     // and leave the answer to the approver. A terminal does only
     // when a person is at it **and the mode is `ask`**: under `-y` or
     // `permission_mode = "allow"` its approver is a `ModeApprover`, whose
-    // `escalate_access` is `Blocked` (review of #711). A TUI started that way and
-    // switched to `/mode ask` later goes without the tool until restarted —
-    // the tool list is the front of the cached prefix and does not toggle.
+    // `escalate_access` is `Blocked` (review of #711). A TUI started that
+    // way and switched to `/mode ask` later goes without the tool until
+    // restarted — the tool list is the front of the cached prefix and does
+    // not toggle.
     // Filtered like `compact` too: an allowlist that does not name it has
     // said no.
     if offers_request_access(opts, &cfg, interactive) {
