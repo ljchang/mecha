@@ -2727,9 +2727,9 @@ impl mecha_core::tool::ask::Asker for NoOneToAsk {
 /// a real transcript path here reads to the next person as though the tool
 /// were live, and invites them to rely on it.
 ///
-/// Not `Live`: there the replay abandons the recording and continues as a
-/// genuine fresh run, and a fresh run holding a permanently-erroring tool is
-/// not one — its divergence would read as a finding about the model when it is
+/// Not `Live`: there the replay leaves the recording and executes the reads
+/// its gate admits for real, and a run holding a permanently-erroring tool is
+/// not that — its divergence would read as a finding about the model when it is
 /// a finding about the harness. That is a measurement-validity argument rather
 /// than a fail-fast preference, and it is why the gate is on what a mode
 /// *does* and never on its name.

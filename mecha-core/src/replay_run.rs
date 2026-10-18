@@ -22,7 +22,8 @@
 //! are harness differences, not evidence of model regression;
 //! `mecha replay` discloses them in its note and JSON report. Both comparison
 //! arms must replay under the same policy. Never mark unknown results clean to
-//! improve fidelity: live divergence can execute real tools.
+//! improve fidelity: past a divergence, live mode executes the unguarded
+//! pure reads its [`LiveGate`] admits, and stops in front of anything else.
 
 use crate::agent::{Agent, Conversation, RunContext, ToolCallTrace};
 use crate::message::Message;
@@ -45,9 +46,11 @@ pub enum OnDivergence {
     /// behaves exactly like [`OnDivergence::Stop`]; the difference is policy
     /// the caller applies to the report.
     Error,
-    /// Abandon the recording and fall through to the live tools. The
-    /// comparison is over at that point; what remains is a fresh run seeded
-    /// with the recorded prefix.
+    /// Leave the recording and keep going against the live tools — but only
+    /// as far as a [`LiveGate`] allows: unguarded pure reads run, and the run
+    /// stops in front of the first call anything configured would intercept,
+    /// recording it ([`DivergenceProbe::halted`]). Built only through
+    /// [`replay_registry_live`]. The comparison is over at the divergence.
     Live,
 }
 
@@ -100,8 +103,10 @@ struct ReplayState {
     /// live replay built without one executes nothing past the divergence.
     gate: Option<Arc<LiveGate>>,
     /// Every call a live replay stopped in front of, in the order they were
-    /// refused. Calls in one batch run concurrently, so a batch holding two
-    /// consequential calls records both rather than whichever won the race.
+    /// refused. A vector rather than one slot so that no refusal that reaches
+    /// the gate is dropped; whether a batch sibling still reaches it after the
+    /// first refusal cancels the run depends on where dispatch reads
+    /// cancellation, so a batch may report one refusal or more.
     halted: Vec<Halted>,
 }
 
@@ -1345,41 +1350,71 @@ mod tests {
     /// Review of #713: `READ_ONLY_WRITERS` is the gate's one hand-maintained
     /// fact, and `Tool::read_only` defaults to `false`, so the gate's safety
     /// rests on "every built-in answering read-only is either a pure read or
-    /// in that list". Nothing found a new one. This pins every non-test
-    /// `read_only() -> true` in the tree, by file: adding, moving or removing
-    /// one fails here until its author decides which it is.
+    /// in that list". This pins every non-test `read_only()` whose body is
+    /// literally `true`, by file **and implementing type**, each with its
+    /// classification. Adding, renaming, moving or swapping one fails here
+    /// until its author decides which it is (a count per file would let a
+    /// writer replace a read in the same file unnoticed).
     ///
-    /// Pure reads: `kg_search` and the graph's read tools (gossip), the
-    /// persona's file and memory reads, `web_search`/`web_open` (refused
-    /// anyway for egress), `fs_read`, `fs_list`, `compact` and `todo` (the
-    /// run's own head), `document_read`, `goal_context`, `hud_sources`,
-    /// `hud_preview`, `image_library`, `image_view`, `recall`, `skill`,
-    /// `system_read`, and the subagent (refused for starting a child run).
-    /// Writers, in `READ_ONLY_WRITERS`: everything else counted below.
+    /// Not covered: a `read_only()` that *computes* its answer. The gate
+    /// trusts it as a real run's approver does; ROLLOUT's closed effect class
+    /// is what replaces this list and this test.
+    ///
+    /// `PURE` entries are refused anyway when their capabilities say so:
+    /// `WebSearch`/`WebOpen` for egress, `Subagent` for starting a child run.
+    /// `WRITES` entries must name a tool in `READ_ONLY_WRITERS`.
     #[test]
     fn every_read_only_tool_in_the_tree_is_classified() {
-        const PINNED: &[(&str, usize)] = &[
-            ("mecha-cli/src/slack/show.rs", 1),
-            ("mecha-core/src/gossip.rs", 2),
-            ("mecha-core/src/imagegen.rs", 1),
-            ("mecha-core/src/mailbox.rs", 1),
-            ("mecha-core/src/persona/files.rs", 1),
-            ("mecha-core/src/persona/memory_tools.rs", 2),
-            ("mecha-core/src/persona/search.rs", 1),
-            ("mecha-core/src/search.rs", 2),
-            ("mecha-core/src/subagent.rs", 1),
-            ("mecha-core/src/tool/ask.rs", 1),
-            ("mecha-core/src/tool/builtin.rs", 4),
-            ("mecha-core/src/tool/document.rs", 1),
-            ("mecha-core/src/tool/goal_context.rs", 1),
-            ("mecha-core/src/tool/hud.rs", 3),
-            ("mecha-core/src/tool/image_library.rs", 3),
-            ("mecha-core/src/tool/image_view.rs", 1),
-            ("mecha-core/src/tool/persona_propose.rs", 1),
-            ("mecha-core/src/tool/recall.rs", 1),
-            ("mecha-core/src/tool/skill.rs", 1),
-            ("mecha-core/src/tool/system_read.rs", 1),
-            ("mecha-core/src/tool/todo.rs", 1),
+        const PURE: bool = false;
+        const WRITES: bool = true;
+        const PINNED: &[(&str, &str, bool)] = &[
+            ("mecha-cli/src/slack/show.rs", "ShowFileTool", WRITES),
+            ("mecha-core/src/gossip.rs", "LensedSearch", PURE),
+            ("mecha-core/src/gossip.rs", "GraphTool", PURE),
+            ("mecha-core/src/imagegen.rs", "ImageGenerate", WRITES),
+            ("mecha-core/src/mailbox.rs", "MessageSendTool", WRITES),
+            ("mecha-core/src/persona/files.rs", "FileRead", PURE),
+            ("mecha-core/src/persona/memory_tools.rs", "MemoryRead", PURE),
+            (
+                "mecha-core/src/persona/memory_tools.rs",
+                "MemorySearch",
+                PURE,
+            ),
+            ("mecha-core/src/persona/search.rs", "FileSearch", PURE),
+            ("mecha-core/src/search.rs", "WebOpen", PURE),
+            ("mecha-core/src/search.rs", "WebSearch", PURE),
+            ("mecha-core/src/subagent.rs", "Subagent", PURE),
+            ("mecha-core/src/tool/ask.rs", "AskUserTool", WRITES),
+            ("mecha-core/src/tool/builtin.rs", "CompactTool", PURE),
+            ("mecha-core/src/tool/builtin.rs", "FsList", PURE),
+            ("mecha-core/src/tool/builtin.rs", "FsRead", PURE),
+            ("mecha-core/src/tool/builtin.rs", "HttpFetch", WRITES),
+            ("mecha-core/src/tool/document.rs", "DocumentRead", PURE),
+            ("mecha-core/src/tool/goal_context.rs", "GoalContext", PURE),
+            ("mecha-core/src/tool/hud.rs", "HudPreview", PURE),
+            ("mecha-core/src/tool/hud.rs", "HudPropose", WRITES),
+            ("mecha-core/src/tool/hud.rs", "HudSources", PURE),
+            ("mecha-core/src/tool/image_library.rs", "ImageLibrary", PURE),
+            (
+                "mecha-core/src/tool/image_library.rs",
+                "ImageLibraryPropose",
+                WRITES,
+            ),
+            (
+                "mecha-core/src/tool/image_library.rs",
+                "ImageLibraryReference",
+                WRITES,
+            ),
+            ("mecha-core/src/tool/image_view.rs", "ImageView", PURE),
+            (
+                "mecha-core/src/tool/persona_propose.rs",
+                "PersonaPropose",
+                WRITES,
+            ),
+            ("mecha-core/src/tool/recall.rs", "Recall", PURE),
+            ("mecha-core/src/tool/skill.rs", "SkillTool", PURE),
+            ("mecha-core/src/tool/system_read.rs", "SystemRead", PURE),
+            ("mecha-core/src/tool/todo.rs", "TodoTool", PURE),
         ];
         const KEY: &str = "fn read_only(&self) -> bool {";
 
@@ -1397,7 +1432,6 @@ mod tests {
         // on a lone helper does not end the production code, so the cut is
         // at a test *module*.
         fn production(src: &str) -> &str {
-            let mut end = src.len();
             let mut from = 0;
             while let Some(at) = src[from..].find("#[cfg(test)]") {
                 let at = from + at;
@@ -1406,32 +1440,39 @@ mod tests {
                     || rest.starts_with("pub mod ")
                     || rest.starts_with("pub(crate) mod ")
                 {
-                    end = at;
-                    break;
+                    return &src[..at];
                 }
                 from = at + 1;
             }
-            &src[..end]
+            src
+        }
+        // The type an `impl Tool for X` block names, from the nearest `impl`
+        // ahead of the method.
+        fn implementing_type(code: &str, at: usize) -> String {
+            let imp = code[..at].rfind("impl").expect("read_only outside an impl");
+            let head = &code[imp..imp + code[imp..].find('{').unwrap()];
+            let after = head.rsplit(" for ").next().unwrap().trim();
+            after
+                .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .next()
+                .unwrap()
+                .to_string()
         }
 
         let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap();
-        let mut found: std::collections::BTreeMap<String, usize> = Default::default();
+        let mut found = std::collections::BTreeSet::new();
         for krate in ["mecha-core", "mecha-cli", "mecha-mail", "mecha-slack"] {
-            let src_dir = workspace.join(krate).join("src");
-            if !src_dir.is_dir() {
-                continue;
-            }
             let mut files = Vec::new();
-            walk(&src_dir, &mut files);
+            walk(&workspace.join(krate).join("src"), &mut files);
             for file in files {
                 let text = std::fs::read_to_string(&file).unwrap();
                 let code = production(&text);
-                let mut n = 0;
                 let mut from = 0;
                 while let Some(at) = code[from..].find(KEY) {
-                    let body_start = from + at + KEY.len();
+                    let at = from + at;
+                    let body_start = at + KEY.len();
                     let body_end = body_start + code[body_start..].find('}').unwrap();
                     let lines: Vec<&str> = code[body_start..body_end]
                         .lines()
@@ -1439,24 +1480,34 @@ mod tests {
                         .filter(|l| !l.is_empty() && !l.starts_with("//"))
                         .collect();
                     if lines == ["true"] {
-                        n += 1;
+                        let rel = file.strip_prefix(workspace).unwrap();
+                        found.insert((
+                            rel.to_string_lossy().replace('\\', "/"),
+                            implementing_type(code, at),
+                        ));
                     }
                     from = body_end;
                 }
-                if n > 0 {
-                    let rel = file.strip_prefix(workspace).unwrap();
-                    found.insert(rel.to_string_lossy().replace('\\', "/"), n);
-                }
             }
         }
-        let pinned: std::collections::BTreeMap<String, usize> =
-            PINNED.iter().map(|(f, n)| (f.to_string(), *n)).collect();
+        let pinned: std::collections::BTreeSet<(String, String)> = PINNED
+            .iter()
+            .map(|(f, t, _)| (f.to_string(), t.to_string()))
+            .collect();
+        let added: Vec<_> = found.difference(&pinned).collect();
+        let gone: Vec<_> = pinned.difference(&found).collect();
+        assert!(
+            added.is_empty() && gone.is_empty(),
+            "read_only() -> true changed: added {added:?}, gone {gone:?}. Decide \
+             whether each added tool is a pure read or writes something (a store, a \
+             file, a job, a post); add a writer's name to READ_ONLY_WRITERS; then \
+             update PINNED"
+        );
+        let writers = PINNED.iter().filter(|(_, _, w)| *w).count();
         assert_eq!(
-            found, pinned,
-            "a tool answering `read_only() -> true` was added, moved or removed. \
-             Decide whether it is a pure read or writes something (a store, a \
-             file, a job, a post), add it to `READ_ONLY_WRITERS` if it writes, \
-             and update PINNED"
+            writers,
+            READ_ONLY_WRITERS.len(),
+            "every WRITES entry names one tool in READ_ONLY_WRITERS"
         );
     }
 

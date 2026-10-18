@@ -60,7 +60,11 @@ pub struct Args {
     /// `stop` ends the run there — after a divergence, every later recorded
     /// result answers a question nobody asked. `error` does the same and exits
     /// nonzero on *any* divergence, argument spellings included; use it in CI.
-    /// `live` abandons the recording and keeps going against the real tools.
+    /// `live` keeps going against the real tools, but only through unguarded
+    /// pure reads: it stops in front of the first call your outbox routes, an
+    /// approval rule or a `pre_tool` hook covers, or that writes, sends or
+    /// starts a subagent, and reports that call (`halted_before` in `--json`).
+    /// A stop there is the result, not a failure: the exit status is 0.
     #[arg(long, value_name = "stop|error|live", default_value = "stop")]
     pub on_divergence: String,
 
