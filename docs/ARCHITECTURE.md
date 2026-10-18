@@ -6417,6 +6417,10 @@ was ever deployed.
   - The refused call and its arguments are the result, reported in the text
     and as `halted_before`. The run exits 0: stopping there is the mode
     working, not failing.
+  - One case never reaches the gate. A send to a destination the model
+    chooses, in a conversation that already holds private and untrusted
+    content, is refused by the trifecta interlock in the loop first. Nothing
+    executes, but the run continues and `halted_before` stays empty.
   - **The guards are asked inside the replay, never attached to the run.**
     Staging, a rule and a hook act in the loop ahead of the tool, so a
     recorded call they intercept *before* the divergence never reaches the

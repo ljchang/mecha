@@ -165,7 +165,11 @@ impl LiveGate {
     }
 
     /// Pure reads through, nothing configured: the gate with no operator.
-    pub fn reads_only() -> Self {
+    /// Test-only: a production gate is always built from a run's configured
+    /// route, rules and hooks (`LiveGate::new`), and a public operator-free
+    /// gate would satisfy `replay_registry_live` while ignoring all three.
+    #[cfg(test)]
+    pub(crate) fn reads_only() -> Self {
         Self::new(
             Vec::new(),
             Arc::new(crate::policy::ExecPolicy::empty()),
@@ -434,6 +438,13 @@ impl Tool for ReplayTool {
     fn read_only(&self) -> bool {
         self.inner.read_only()
     }
+
+    /// Delegated with the rest of the family: `LiveGate` refuses a tool that
+    /// starts a child run, and boredom looks for one. The wrapper answering
+    /// `false` for a subagent would be the silently wrong default.
+    fn runs_a_fresh_conversation(&self) -> bool {
+        self.inner.runs_a_fresh_conversation()
+    }
     /// The live tool's capabilities, minus `external_send` in the modes where
     /// nothing executes — the sandbox's rule in the other direction. A
     /// replayed "send" sends nothing: its answer comes from the recording, so
@@ -638,6 +649,8 @@ fn registry_with_state(
 ///
 /// Use [`replay_registry_reporting`] instead where the caller needs to know
 /// *why* a replay diverged rather than only that it did.
+/// Refuses [`OnDivergence::Live`], through [`replay_registry_reporting`]:
+/// build a live replay with [`replay_registry_live`].
 pub fn replay_registry(
     recorded_tools: &[String],
     live: &Registry,
@@ -1671,6 +1684,30 @@ mod tests {
         assert_eq!(
             writer_names, listed,
             "READ_ONLY_WRITERS must be exactly the registered names of the WRITES entries"
+        );
+
+        // The one PURE entry with a runtime name and no second net
+        // (`Subagent` has `runs_a_fresh_conversation`): `GraphTool`'s name is
+        // a private field its public constructors fix. Pin those literals, so
+        // a constructor added for a graph *write* fails here.
+        let gossip = std::fs::read_to_string(workspace.join("mecha-core/src/gossip.rs")).unwrap();
+        let block_start = gossip.find("\nimpl GraphTool {").expect("impl GraphTool");
+        let block = &gossip[block_start..];
+        let block = &block[..block.find("\n}\n").unwrap()];
+        let graph_names: std::collections::BTreeSet<&str> = block
+            .match_indices("name: \"")
+            .map(|(at, m)| {
+                let rest = &block[at + m.len()..];
+                &rest[..rest.find('"').unwrap()]
+            })
+            .collect();
+        assert_eq!(
+            graph_names,
+            ["kg_entity", "kg_search", "kg_verify"]
+                .into_iter()
+                .collect(),
+            "GraphTool answers read_only() for every name it is built with; a new \
+             constructor must be a read, or GraphTool must stop answering read-only"
         );
     }
 
