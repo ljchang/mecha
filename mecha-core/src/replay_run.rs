@@ -1376,7 +1376,8 @@ mod tests {
     /// is what replaces this list and this test.
     ///
     /// `PURE` entries are refused anyway when their capabilities say so:
-    /// `WebSearch`/`WebOpen` for egress, `Subagent` for starting a child run.
+    /// `WebSearch`/`WebOpen` for egress, `Subagent` for starting a child run,
+    /// `RequestAccess` for declaring `destructive` (a yes widens the jail).
     /// `WRITES` entries must name a tool in `READ_ONLY_WRITERS`.
     #[test]
     fn every_read_only_tool_in_the_tree_is_classified() {
@@ -1384,6 +1385,12 @@ mod tests {
         const WRITES: bool = true;
         // (file, implementing type, registered name if a literal, class)
         const PINNED: &[(&str, &str, Option<&str>, bool)] = &[
+            (
+                "mecha-core/src/tool/request_access.rs",
+                "RequestAccess",
+                None,
+                PURE,
+            ),
             (
                 "mecha-cli/src/slack/show.rs",
                 "ShowFileTool",
