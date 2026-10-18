@@ -447,6 +447,56 @@ pub fn grant_by_owner(arg: &str, standing: &Grants, live: &mut Vec<Grant>) -> Re
     ))
 }
 
+/// The owner's `/revoke <path>`: drop this conversation's live grants at or
+/// under `path`. It only narrows, so nothing is asked; and since the session
+/// file's last `Record::Grants` is the set, the next run makes it durable
+/// across a resume. The path need not exist any more — a grant on a
+/// directory since removed is still revocable by the name it was granted
+/// under. A standing grant is config, so it is named, not touched.
+pub fn revoke_by_owner(arg: &str, standing: &Grants, live: &mut Vec<Grant>) -> Result<String> {
+    let raw = expand(arg);
+    if !raw.is_absolute() {
+        bail!("name the directory in full (or from `~/`)");
+    }
+    // Both spellings: the canonical one grants are stored under, and the one
+    // typed, for a directory that no longer canonicalizes.
+    let canonical = raw.canonicalize().ok();
+    let under =
+        |p: &Path| p.starts_with(&raw) || canonical.as_ref().is_some_and(|c| p.starts_with(c));
+    let before = live.len();
+    let mut ended = Vec::new();
+    live.retain(|g| {
+        let hit = under(&g.path);
+        if hit {
+            ended.push(format!("{} ({})", g.path.display(), g.access.describe()));
+        }
+        !hit
+    });
+    if live.len() < before {
+        return Ok(format!(
+            "revoked for this conversation: {}",
+            ended.join(", ")
+        ));
+    }
+    let standing_hit: Vec<String> = standing
+        .standing
+        .iter()
+        .filter(|g| under(&g.path) || canonical.as_ref().is_some_and(|c| c.starts_with(&g.path)))
+        .map(|g| g.path.display().to_string())
+        .collect();
+    if !standing_hit.is_empty() {
+        bail!(
+            "{} is granted by your config ([[grant]] {}) — remove that line to end it",
+            raw.display(),
+            standing_hit.join(", ")
+        );
+    }
+    bail!(
+        "this conversation holds no grant at or under {}",
+        raw.display()
+    )
+}
+
 /// One line per grant a conversation holds, standing first.
 pub fn listing(standing: &Grants, live: &[Grant]) -> Vec<String> {
     standing
@@ -623,6 +673,45 @@ mod tests {
             source: Source::Approved,
         });
         assert!(added.is_err(), "{added:?}");
+    }
+
+    /// `/revoke` drops what is at or under the path and nothing beside it,
+    /// works on a directory since removed, and leaves a standing grant to
+    /// the config that made it.
+    #[test]
+    fn revoke_ends_live_grants_under_a_path_and_names_standing_ones() {
+        let d = dir();
+        let root = d.path().canonicalize().unwrap();
+        let (papers, notes, gone) = (root.join("papers"), root.join("notes"), root.join("gone"));
+        let g = |p: &Path| Grant {
+            path: p.to_path_buf(),
+            access: Access::Read,
+            source: Source::Owner,
+        };
+        let mut live = vec![g(&papers.join("2024")), g(&papers), g(&notes), g(&gone)];
+        let none = Grants::default();
+
+        let said = revoke_by_owner(&papers.display().to_string(), &none, &mut live).unwrap();
+        assert!(said.contains("2024"), "{said}");
+        assert_eq!(live, vec![g(&notes), g(&gone)], "only at or under the path");
+        // `gone` never existed on disk: revoked by the name it was given.
+        revoke_by_owner(&gone.display().to_string(), &none, &mut live).unwrap();
+        assert_eq!(live, vec![g(&notes)]);
+        assert!(revoke_by_owner(&papers.display().to_string(), &none, &mut live).is_err());
+        assert!(
+            revoke_by_owner("notes", &none, &mut live).is_err(),
+            "relative"
+        );
+
+        let standing = Grants::standing(vec![Grant {
+            source: Source::Config,
+            ..g(&papers)
+        }]);
+        let err = revoke_by_owner(&papers.display().to_string(), &standing, &mut live)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("[[grant]]"), "{err}");
+        assert_eq!(live, vec![g(&notes)]);
     }
 
     #[test]

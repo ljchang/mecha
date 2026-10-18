@@ -3522,6 +3522,29 @@ fn run_command(
                 .push(Entry::Error(format!("/grant {arg}: {e:#}"))),
         },
 
+        Command::Revoke(None) => app.transcript.push(Entry::Error(
+            "/revoke needs a path — `/grant` lists what this conversation holds".into(),
+        )),
+
+        // Refused mid-run for `/grant`'s reason: the running task holds the
+        // conversation and replaces `app.convo` whole when it finishes.
+        Command::Revoke(Some(_)) if app.running.is_some() => app.transcript.push(Entry::Error(
+            "/revoke: a run is in flight — revoke when it finishes, so it lands on the \
+             conversation it hands back"
+                .into(),
+        )),
+
+        Command::Revoke(Some(arg)) => match mecha_core::grant::revoke_by_owner(
+            &arg,
+            &agent.context().tools.grants,
+            &mut app.convo.grants,
+        ) {
+            Ok(said) => say(said),
+            Err(e) => app
+                .transcript
+                .push(Entry::Error(format!("/revoke {arg}: {e:#}"))),
+        },
+
         Command::Send(None) => app.transcript.push(Entry::Error(
             "/send needs a path — try `/send report.png`".into(),
         )),

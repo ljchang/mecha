@@ -103,7 +103,9 @@ read, or read and write. Only a person makes one:
   bring its own way out of the jail.
 - **For one conversation, typed by you.** `/grant ~/Documents/papers` in the
   TUI or `mecha chat` (add `write` for read and write); `/grant` alone lists
-  what the conversation holds. `/clear` ends them.
+  what the conversation holds. `/revoke ~/Documents/papers` ends the ones at
+  or under that path, and `/clear` ends them all; either stays ended when
+  the conversation is resumed.
 - **For one conversation, asked for by the model.** Where a person can answer
   — the web chat, Slack, and the TUI or `mecha chat` in `ask` mode (not under
   `-y`) — the model has a `request_access` tool. The call is shown to you with the path, the access
