@@ -430,9 +430,24 @@ impl Tool for Shell {
         "shell"
     }
 
+    /// Confined, it says what it cannot see. A model reading an empty `ls ~`
+    /// from inside the sandbox concluded the owner's folders did not exist,
+    /// searched `/` for them and told the owner so (2026-10-18). Chosen once
+    /// from the sandbox the tool was built with, so the bytes are stable for
+    /// the life of the agent and the cached prefix is untouched turn to turn.
     fn description(&self) -> &str {
-        "Run a shell command in the workspace and return its combined stdout and stderr. \
-         The command runs to completion; long-running or interactive commands will time out."
+        if self.sandbox.is_enabled() {
+            "Run a shell command in the workspace and return its combined stdout and stderr. \
+             The command runs to completion; long-running or interactive commands will time \
+             out. It runs confined: it sees the workspace, any directory the owner granted, \
+             and a read-only system. Everything else, the owner's home included, is hidden \
+             from it, not absent, so an empty `ls` or a fruitless `find` outside the \
+             workspace means nothing. To reach a directory there, ask the owner with \
+             `request_access` if you have it."
+        } else {
+            "Run a shell command in the workspace and return its combined stdout and stderr. \
+             The command runs to completion; long-running or interactive commands will time out."
+        }
     }
 
     fn input_schema(&self) -> Value {
