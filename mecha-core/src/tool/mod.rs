@@ -411,6 +411,11 @@ pub trait Tool: Send + Sync {
     /// the loop learns that a person is needed, never what kind of tool it
     /// is talking to. An interlock escalation on the same call wins, since
     /// it names the broader control.
+    ///
+    /// Handed the call **as the model sent it**, not the schema-filled one
+    /// the approver is then shown (`with_schema_defaults` runs later), so a
+    /// `why` that depends on a defaulted argument must apply the default
+    /// itself, as `request_access`'s `parse` does for `access`.
     fn needs_a_person(&self, input: &Value) -> Option<String> {
         let _ = input;
         None

@@ -20,7 +20,13 @@
 //! to the workspace — so a look through a grant would show the model what the
 //! owner cannot see (review of #711). The look keeps a copy under
 //! [`GRANTED_DIR`], named by its content, and names that copy; the route stays
-//! as narrow as it was.
+//! as narrow as it was. Only for a path a grant covers — the spill directory
+//! is outside the workspace too, and a look there is named as it was.
+//!
+//! The copy is the harness keeping what the owner must see, not the model
+//! writing, so it is made under a read-only permission mode as well: that
+//! mode governs what the model's calls change, the way the spill directory
+//! keeps a long result whatever the mode (review of #711).
 
 use super::{Capabilities, Tool, ToolCtx, ToolOutput};
 use anyhow::Result;
@@ -189,15 +195,23 @@ impl Tool for ImageView {
             Some(shown) => shown,
             // Refused rather than shown to the model alone: the owner seeing
             // what the model is describing is the point of the copy.
-            None => match keep_for_the_owner(ctx, &path, &bytes).await {
-                Ok(kept) => kept,
-                Err(e) => {
-                    return Ok(ToolOutput::err(format!(
-                        "{raw} could not be shown: keeping a copy where the owner can see it \
-                         failed ({e:#})"
-                    )))
+            None if ctx
+                .grants
+                .covering(&path, crate::grant::Access::Read)
+                .is_some() =>
+            {
+                match keep_for_the_owner(ctx, &path, &bytes).await {
+                    Ok(kept) => kept,
+                    Err(e) => {
+                        return Ok(ToolOutput::err(format!(
+                            "{raw} could not be shown: keeping a copy where the owner can see \
+                             it failed ({e:#})"
+                        )))
+                    }
                 }
-            },
+            }
+            // The spill directory: the run's own output, named as it was.
+            None => raw.to_string(),
         };
         let name = shown.clone();
         let block =
