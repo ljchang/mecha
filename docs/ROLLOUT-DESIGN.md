@@ -61,7 +61,7 @@ The research behind this document is summarised in §9, with links.
 | `Conversation::resumed` drops the goal anchor and harness notes | `agent.rs` | A branch runs without the recorded goal |
 | Sessions with step checks are refused | `replay::ensure_replayable` | Exactly the sessions with the best scoring evidence are excluded |
 | `OnDivergence::Live` exists, but only in `mecha replay` | `commands/replay.rs` | All-or-nothing at the first divergence, against the real world: see §1.1 |
-| No "changes the world" axis | `Tool::read_only()` means "skip the approver", not "has no effects" | Eight tools that write claim it (§3.2) |
+| No "changes the world" axis | `Tool::read_only()` means "skip the approver", not "has no effects" | Eight tools that write claim it. In §3.2's terms: six `StoreWrite` tools, `image_generate` (`Render`) and `http_fetch` (`Irreversible`) |
 | Reads that write | Graph reads append `query_log` and `retrieval_touch` (`INCOGNITO-DESIGN.md` §3.3; the unrecorded-read mode in §5.2 is unbuilt); token refresh rewrites token files | A rollout's reads are not free |
 | Store roots outside `RunContext` | questions, hud, personas, imagelib, the forecast ledger and the shell registry resolve from `mecha_home()` | Only the outbox can be redirected per run (`OutboxStore::open_like`, which Slack already uses per thread) |
 | No copy-on-write workspace | Branches use the recorded workspace; `mismatch::drive` stages an empty temp dir | Branch writes would land in the real workspace |
@@ -80,9 +80,13 @@ stages goes to the approver as an ordinary call instead.
   approver and execute either way.
 
 This is the silently-degrading-guard shape, and it is fixed ahead of
-everything else (phase 0, §8). The fix is either to refuse `live` while any
-outbox route is configured, or to build the run through the same `setup`
-path every front-end uses.
+everything else (phase 0, §8).
+
+**The fix is to build the run through the same `setup` path every
+front-end uses.** That carries the outbox route, the hooks and the approval
+rules together, and keeps carrying whatever the next lever adds. Refusing
+`live` while a route is configured would close the outbox half and leave
+the hooks and rules open.
 
 ---
 
@@ -128,19 +132,30 @@ clock.
 
 ### 3.2 A closed effect class per tool
 
-A new axis, separate from `read_only()`. It is declared on every built-in
-tool, derived for MCP tools from their annotations
-(`readOnlyHint`/`destructiveHint`; `idempotentHint` is read for the first
-time), and overridable by the operator **only toward a more cautious
-class**, the same direction `[[mcp]] capabilities` overrides already
-take (they can only widen what a tool is assumed to do).
+A new axis, separate from `read_only()`.
+
+- **Built-in tools and first-party servers declare it in mecha's code.**
+  That covers `mecha-mail`, `mecha-docs` and the graph's pinned revision.
+- **For a third-party MCP tool it is earned from the operator, never
+  claimed by the server.**
+  - Inside a rollout, the `RolloutApprover` decides from this table alone.
+    A server's own `readOnlyHint` would therefore be the only thing between
+    an unattended run and a real write.
+  - So an MCP tool is `Irreversible`, and halts, until the operator's
+    `[[mcp]]` entry names its class. This is the rule `Egress::Blind`
+    already follows: earned in code, never granted by the party it
+    protects against.
+- **A server's annotations may only move a tool toward caution.**
+  `destructiveHint` makes it `Irreversible`, and `readOnlyHint` never
+  promotes it. An operator's class may likewise be overridden only toward
+  caution.
 
 | Effect | What the dry world does | Examples today |
 |---|---|---|
 | `Read` | Executes for real | `fs_read`, `fs_list`, `document_read`, `mail_search`, `mail_get_thread`, `calendar_list_events`, `docs_read`, `web_search` (`Blind`) |
 | `ReadThatRecords` | Executes in an **unrecorded** mode when the server has one; otherwise ruling **W1** decides | graph reads (`query_log`, `retrieval_touch`) |
 | `Staged` | Stages into a **scratch outbox** opened per rollout (`OutboxStore::open_like`). The model gets the same "Drafted, not sent" answer it gets live. The draft is kept for scoring and discarded with the rollout | `mail_send`, `mail_reply`, `calendar_*_event`, `docs_append`/`replace`, `sheets_write`, `factory__*` publishes |
-| `Workspace` | Executes against a **scratch copy** of the workspace taken at branch time. Shell runs sandboxed against the copy | `fs_write`, `fs_edit`, confined `shell` |
+| `Workspace` | Executes against a **scratch copy** of the workspace taken at branch time. Shell runs sandboxed against the copy. The copy's root obeys `setup`'s rule that a jail may never contain the mecha home: a scratch root under `~/.mecha/` would be the silently-degrading-sandbox shape again | `fs_write`, `fs_edit`, confined `shell` |
 | `StoreWrite` | Not executed. Answered with a synthetic "recorded, not delivered" result and kept in the rollout record (ruling **W2**) | `message_send`, `ask_user` (headless), `hud_propose`, `persona_propose`, `image_library_propose`/`_reference` |
 | `Render` | Not executed: the rollout halts at the call (a render costs the GPU, and a fake picture misleads the continuation) | `image_generate`, video |
 | `Irreversible` | The rollout **halts before the call**, and the halt is recorded with the tool's name. A halt is information, not a failure | `calendar_hold`, `mail_triage`, `docs_create`, `docs_trash`, graph writes, unconfined `shell`, any `Egress::Chosen` call (`http_fetch`) |
@@ -371,7 +386,7 @@ Each phase ships and is measured before the next starts.
 | Phase | What | Exit test |
 |---|---|---|
 | **0** | Fix §1.1: live replay keeps the outbox, hooks and approval rules, or refuses | A test that drives `--on-divergence live` past a divergence into a routed tool, and fails on today's code |
-| **1** | The effect axis (§3.2): a closed enum, declared per built-in tool, derived for MCP, cautious-only overrides, undeclared halts. Exact-argument recorded matching for rollouts | Every registered tool has a class; a test registers an undeclared tool and sees a halt |
+| **1** | The effect axis (§3.2): a closed enum, declared in code for built-in and first-party tools, earned from the operator for third-party MCP tools, annotations caution-only, undeclared halts. Exact-argument recorded matching for rollouts | Every registered tool has a class. A test registers a third-party tool that claims `readOnlyHint` with no operator class, and sees a halt |
 | **2** | The dry world: scratch outbox, scratch workspace copy, store-write answers, halts, `RolloutApprover`, R29 in the engine, seat and voice gating | Integration test, in the confinement tests' style: a rollout that tries every effect class leaves the real outbox, stores and workspace byte-identical |
 | **3** | `drive_rollout`, single-turn: restored anchor, `StopCause::Horizon`, two controls, the `ComparisonStore` schema | **Measure the control noise floor on the live corpus first.** If the controls disagree more than candidates plausibly could, stop and fix sampling (seeded, pinned serving) before building on it |
 | **4** | Offline wiring: harness candidates measured by comparisons; gain-gated points; verdict-free points | A behavioural candidate produces a measurement where today it produces "nothing measurable" |
