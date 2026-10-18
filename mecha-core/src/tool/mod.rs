@@ -1340,6 +1340,14 @@ impl ToolCtx {
     /// about the path could be granted: the never-granted places are refused
     /// before a person is asked, by the jail's own error.
     ///
+    /// **It waits for an answer, as every approval card does.** `requestable`
+    /// says a person could answer on this surface, not that one is looking:
+    /// on a web chat whose page is open and unattended, a reach outside waits
+    /// the approval timeout (two minutes) and then ends `Blocked`, where it
+    /// used to fail at once. Deliberate — the owner coming back to the phone
+    /// is the case the card exists for, and Claude Code waits the same way —
+    /// and it fails closed (review of #714, pass 3).
+    ///
     /// The folder, not the file, because a model listing or reading through
     /// a directory would otherwise raise a card per file; the file alone only
     /// when its folder cannot be granted (a file directly in `$HOME`, whose
