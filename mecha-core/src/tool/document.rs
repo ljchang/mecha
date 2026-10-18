@@ -106,7 +106,7 @@ impl Tool for DocumentRead {
                 }
             },
         };
-        let path = ctx.resolve(raw)?;
+        let path = ctx.resolve_for(raw, crate::grant::Access::Read)?;
         let shown = ctx
             .workspace
             .canonicalize()

@@ -330,6 +330,9 @@ pub fn levers_off(
             // Not on a persona's tool list (`SYSTEM-STATE-DESIGN.md` R3):
             // personas have no use for the machine's state.
             Lever::SystemRead => true,
+            // A persona is a character, not the assistant: it is never given
+            // the owner's directories, standing or asked for.
+            Lever::Grants => true,
             Lever::StepEscalation => !cfg.step_escalation,
             Lever::StepChecks => !cfg.step_checks,
             Lever::GoalGuidance => !cfg.goal_guidance,

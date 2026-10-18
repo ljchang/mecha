@@ -72,7 +72,7 @@ impl Tool for ImageView {
         let Some(raw) = input.get("path").and_then(Value::as_str) else {
             return Ok(ToolOutput::err("missing required string argument `path`"));
         };
-        let path = ctx.resolve(raw)?;
+        let path = ctx.resolve_for(raw, crate::grant::Access::Read)?;
         // Named by where it is, not by how the model spelled it: the result's
         // first line is what the web chat reads to draw the picture for the
         // owner, and `./images/a.png` or an absolute path would not match.

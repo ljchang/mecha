@@ -170,6 +170,8 @@ forecast.rs  the harness's sealed forecast of the owner's act on a staged draft
 questions.rs the outbox's inbound twin: a delegated run's question, and the resume
 mailbox.rs   inter-agent messages between sessions; taint travels with them
 sandbox.rs   bwrap/docker confinement for shell and MCP servers
+grant.rs     the jail's owner-made exceptions: config, /grant, or a request_access a
+             person answered through escalate — never the mecha home, never a key dir
 compact.rs   the cut, the rebuild, and the state carried across one
 pressure.rs  how big the *next* request will be, from what the last one cost
 step.rs      what a finished plan step actually did, from the run's own trace
@@ -360,7 +362,8 @@ Two things are enforced structurally rather than by prompting:
 
 **The path jail.** Every model-supplied path goes through `ToolCtx::resolve`,
 which canonicalizes and proves containment in the workspace. Never call
-`fs::*` on a raw path from tool input. And a jail must be rooted somewhere
+`fs::*` on a raw path from tool input. The only owner-made exceptions are
+grants (`resolve_for`, opt-in per call site; `ARCHITECTURE.md` §grants). And a jail must be rooted somewhere
 harmless: `setup` refuses any workspace that *contains* the mecha home,
 because a jail rooted over `~/.mecha/` (OAuth tokens, transcripts, the
 learning store) is the silently-degrading-sandbox pattern — which is exactly

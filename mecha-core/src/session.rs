@@ -222,6 +222,19 @@ pub enum Record {
     /// resuming a session that had read a hostile page would hand the model
     /// that page again with the interlock disarmed.
     Taint(Taint),
+    /// The jail exceptions the conversation holds by this point — every
+    /// live grant, cumulatively, so the last record is the whole set.
+    ///
+    /// Recorded for `Taint`'s reason: a grant is a fact about the
+    /// conversation that the messages cannot reconstruct (an owner's
+    /// `/grant` is not a message at all). Merged on read, never cleared by a
+    /// rewrite — a compaction summarises what was said, not what a person
+    /// allowed — and re-proven on load (`grant::readmit`), so a recorded
+    /// path that would no longer be admitted is dropped, not trusted.
+    Grants {
+        #[serde(default)]
+        grants: Vec<crate::grant::Grant>,
+    },
     /// Durable human-confirmed intent. Kept outside rewritten message history.
     GoalAnchor {
         #[serde(default, deserialize_with = "crate::goal::de_lenient")]
@@ -1800,6 +1813,11 @@ impl Session {
                 notes: convo.harness_notes.clone(),
             })?;
         }
+        if !convo.grants.is_empty() {
+            self.append(&Record::Grants {
+                grants: convo.grants.clone(),
+            })?;
+        }
         self.append(&Record::GoalAnchor {
             goal: convo.goal_anchor.clone(),
         })
@@ -2023,6 +2041,7 @@ impl Session {
         let mut meta = None;
         let mut title = None;
         let mut goal_anchor = None;
+        let mut grants: Vec<crate::grant::Grant> = Vec::new();
         let mut anchors: Vec<(Option<usize>, Option<crate::goal::GoalRef>)> = Vec::new();
         let mut anchor_floor = 0usize;
         // Whether a `GoalAnchor` record has been written since the last
@@ -2222,6 +2241,13 @@ impl Session {
                     anchored_since_outcome = true;
                     goal_anchor = goal;
                 }
+                Ok(Record::Grants { grants: recorded }) => {
+                    for g in recorded {
+                        if !grants.contains(&g) {
+                            grants.push(g);
+                        }
+                    }
+                }
                 Ok(Record::Summary { .. }) => {}
                 // For the corpus, not the conversation: nothing to rebuild.
                 Ok(Record::SpokenDirection(_)) => {}
@@ -2266,6 +2292,7 @@ impl Session {
             notes,
             convo: Conversation {
                 goal_anchor,
+                grants: crate::grant::readmit(grants),
                 ..Conversation::resumed(messages, taint)
             },
             configs,
@@ -3433,6 +3460,37 @@ mod tests {
             serde_json::from_str(r#"{"record":"goal_anchor","goal":"future:unread"}"#).unwrap();
         session.append(&unknown).unwrap();
         assert_eq!(Session::load(&session.path).unwrap().1.goal_anchor, None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A live grant survives a rewrite and a resume — a compaction
+    /// summarises what was said, not what a person allowed — and a recorded
+    /// grant that would no longer be admitted (its directory gone) is
+    /// dropped on load rather than trusted.
+    #[test]
+    fn a_grant_survives_rewrite_and_resume_and_a_vanished_one_does_not() {
+        use crate::grant::{Access, Grant, Source};
+        let dir = tmpdir();
+        let papers = dir.join("papers");
+        let gone = dir.join("gone");
+        std::fs::create_dir_all(&papers).unwrap();
+        std::fs::create_dir_all(&gone).unwrap();
+        let grant = |p: &std::path::Path, access| Grant {
+            path: p.canonicalize().unwrap(),
+            access,
+            source: Source::Owner,
+        };
+        let session = Session::create(&dir, meta_with_id("grant-resume")).unwrap();
+        let mut convo = Conversation::user("original");
+        convo.grants = vec![grant(&papers, Access::Write), grant(&gone, Access::Read)];
+        session.record_run(&[], &convo).unwrap();
+        let before = convo.messages.clone();
+        convo.messages = vec![Message::user("compacted")];
+        session.record_run(&before, &convo).unwrap();
+        std::fs::remove_dir_all(&gone).unwrap();
+
+        let (_, resumed) = Session::load(&session.path).unwrap();
+        assert_eq!(resumed.grants, vec![grant(&papers, Access::Write)]);
         std::fs::remove_dir_all(&dir).ok();
     }
 

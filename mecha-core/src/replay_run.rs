@@ -327,6 +327,14 @@ impl Tool for ReplayTool {
         self.inner.defers()
     }
 
+    /// Delegated whatever the mode, and the reason is `defers`' own: the
+    /// default `None` would be the silently wrong answer. Under `Live` the
+    /// tool genuinely runs, and a call that is a person's decision
+    /// (`request_access`) must still reach one — a replay is not a person.
+    fn needs_a_person(&self, input: &Value) -> Option<String> {
+        self.inner.needs_a_person(input)
+    }
+
     fn capabilities(&self) -> Capabilities {
         let caps = self.inner.capabilities();
         match self.mode {

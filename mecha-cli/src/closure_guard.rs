@@ -201,6 +201,9 @@ impl Tool for ClosedStatusGuard {
     fn denial_remedy(&self, cause: DenialCause) -> Option<String> {
         self.inner.denial_remedy(cause)
     }
+    fn needs_a_person(&self, input: &Value) -> Option<String> {
+        self.inner.needs_a_person(input)
+    }
     fn fixed_workspace(&self) -> Option<PathBuf> {
         self.inner.fixed_workspace()
     }

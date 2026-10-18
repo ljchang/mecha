@@ -5,6 +5,7 @@
 //! likewise untrusted: they run under the approval gate, not around it.
 
 use super::{Capabilities, DenialCause, Egress, Tool, ToolCtx, ToolOutput};
+use crate::grant::Access;
 use crate::sandbox::Sandbox;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -86,7 +87,7 @@ impl Tool for FsRead {
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
-        let path = ctx.resolve(arg_str(&input, "path")?)?;
+        let path = ctx.resolve_for(arg_str(&input, "path")?, Access::Read)?;
         let offset = input
             .get("offset")
             .and_then(Value::as_u64)
@@ -271,7 +272,7 @@ impl Tool for FsWrite {
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
-        let path = ctx.resolve(arg_str(&input, "path")?)?;
+        let path = ctx.resolve_for(arg_str(&input, "path")?, Access::Write)?;
         let content = arg_str(&input, "content")?;
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
@@ -320,7 +321,7 @@ impl Tool for FsEdit {
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
-        let path = ctx.resolve(arg_str(&input, "path")?)?;
+        let path = ctx.resolve_for(arg_str(&input, "path")?, Access::Write)?;
         let old = arg_str(&input, "old")?;
         let new = arg_str(&input, "new")?;
 
@@ -381,7 +382,7 @@ impl Tool for FsList {
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let raw = input.get("path").and_then(Value::as_str).unwrap_or(".");
-        let path = ctx.resolve(raw)?;
+        let path = ctx.resolve_for(raw, Access::Read)?;
         let mut entries = match tokio::fs::read_dir(&path).await {
             Ok(e) => e,
             Err(e) => {
@@ -539,7 +540,16 @@ impl Tool for Shell {
             .run_posture
             .map(|p| p.as_str())
             .unwrap_or(crate::closure::RunPosture::UNKNOWN);
-        let mut command = match self.sandbox.command_with_env(
+        // The owner's grants, mounted for this call: a live one may have
+        // arrived since the last (`Sandbox::with_grants`).
+        let granted = ctx.grants.all();
+        let sandbox = if granted.is_empty() {
+            None
+        } else {
+            Some(self.sandbox.with_grants(&granted))
+        };
+        let sandbox = sandbox.as_ref().unwrap_or(&self.sandbox);
+        let mut command = match sandbox.command_with_env(
             command,
             &ctx.workspace,
             &cwd,
@@ -550,7 +560,7 @@ impl Tool for Shell {
                 return Ok(ToolOutput::err(format!(
                     "refusing to run: the {} sandbox could not be set up ({e:#}). \
                      Nothing was executed.",
-                    self.sandbox.backend().as_str()
+                    sandbox.backend().as_str()
                 )))
             }
         };

@@ -2287,6 +2287,71 @@ home sits under. The interlock remained a backstop throughout, but a backstop is
 not a boundary, and a jail rooted where the secrets live is the
 silently-degrading-sandbox pattern.
 
+**Grants are the jail's only owner-made exceptions** (`grant.rs`, owner's
+rulings 2026-10-18). A personal assistant needs the owner's own files, and
+`!cp`-ing them in made the owner the file clerk. Each rule below is a way the
+first sketch would have widened the jail with nobody asked:
+
+- **Only a person widens it.** Three sources, one gate. A `[[grant]]` line is
+  global-file only, stripped from a project layer and from an experiment
+  environment (`trust != Global`, the `trust_result_claims` rule) and refused
+  outright in `trial_env` (the #441 rule). The owner's `/grant`
+  (`grant::grant_by_owner`, shared by the TUI and `mecha chat`) is refused
+  mid-run, because the running task holds the conversation and what it hands
+  back replaces `app.convo` whole. A model may only ask: `request_access`
+  declares `Tool::needs_a_person` on **every** call, and the loop feeds it
+  into the interlock's `escalation` slot, so it reaches `Approver::escalate`
+  and never `approve`. That is the door `--yes`, an "always" list, eval and
+  replay cannot answer; headless, it ends `Blocked`. It is unconditional
+  even for a path `admit` will refuse: deciding "no person needed" before the
+  batch executes is a race a sibling `shell` that creates the directory can
+  win. Wrappers must forward it (`replay_run`, `closure_guard`); a default
+  `None` on a wrapper is a grant with nobody asked.
+- **Some places are never grantable** (`grant::admit`). A root that contains
+  or sits inside the mecha home (both spellings, `MECHA_HOME` and the
+  password database's) or a credential directory is refused, in both
+  directions. That is stricter than `ensure_outside_mecha_home`, because a
+  workspace inside the home is harness-made and a grant can point anywhere.
+  Canonical on both sides, so a symlink is judged by where it lands; it must
+  exist, and the filesystem root is refused. Every source passes it, and so
+  does a recorded grant on resume (`grant::readmit`), against today's list
+  and filesystem.
+- **The widening is opt-in per call site.** `ToolCtx::resolve` is unchanged
+  (workspace and spill), and it has some seventy callers, most of them the
+  harness's own stores. `resolve_for(raw, Access)` also consults the grants,
+  and only the model-facing file tools call it: `fs_read`/`fs_list`/
+  `image_view`/`document_read` read, `fs_write`/`fs_edit` write. A relative
+  path still resolves against the workspace; a grant is never a second
+  current directory. The refusal names `request_access` only where it is
+  registered (`Grants::requestable`).
+- **A live grant lasts for the conversation**, taint's unit. It lives on
+  `Conversation::grants`. `run_in` mints a fresh cell per run
+  (`Grants::for_run`, `compact_requested`'s discipline: one agent serves many
+  conversations), seeded from the context's live grants, so a subagent
+  inherits its parent's through `Arc::new(ctx.clone())`, and from the
+  conversation's. It copies the cell back beside `goal_anchor`, before the
+  `?`, because the yes was given whether or not the run finished.
+  `Record::Grants` is cumulative, merged on read and never cleared by a
+  rewrite. `with_workspace` (an eval case, a batch item) keeps the standing
+  grants only; `for_session_in` (incognito) keeps none.
+- **`shell` sees what the file tools see.** `Sandbox::with_grants` adds read
+  grants to `readable` and write grants to `writable`, per call, since a live
+  grant arrives mid-run. Every backend reads those lists, so it is one edit.
+  The shared base sandbox is never mutated.
+- **A grant widens what is read, never where it goes.** Reads through one arm
+  `private_data` as workspace reads do, so the interlock is untouched.
+  `request_access` itself has no capabilities. A jail request nobody could
+  answer is not a refused send, so `blocked_sends` counts only the
+  interlock's escalations (`send_escalation`).
+- **`Lever::Grants` / `--no-grants`** applies no `[[grant]]` and registers no
+  `request_access`; `mecha eval` forces it, since which directories this
+  owner opened is this machine's fact. Personas report it off: a persona is
+  never given the owner's directories.
+
+Not built: revoking one live grant short of `/clear`, a web `/grant`, and an
+`untrusted = true` grant (a downloads folder is third-party content). Today
+a grant reads with the workspace's stance.
+
 **The trifecta interlock.** Taint is a property of the **conversation**, not of
 one run — it lives on `agent::Conversation` alongside the messages, and the
 session file records it so resuming does not launder it. It used to be created
