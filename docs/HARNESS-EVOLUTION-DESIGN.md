@@ -3,8 +3,11 @@
 2026-10-18. Which mechanisms from per-task harness evolution and
 self-improving agents mecha adopts, in what shape, and under which of its
 existing rules. **Status: proposal. Nothing here is built, and §7 lists the
-rulings the build waits on.** §5.0 is the measured case for why harness
-rumination, unlike the learning loop, has never had a suggestion accepted.
+rulings the build waits on.**
+
+**The problem this answers:** no change that harness rumination has proposed
+has ever been accepted. The learning loop works and is not the subject,
+except where §5's Tier 2 keeps it honest. §5.0 is the measured case.
 
 ## 0. Where this sits
 
@@ -405,9 +408,9 @@ Three findings change how much weight a proposal below can carry:
   Cheatsheet's rewrite taking 18,282 tokens down to 122, with accuracy
   falling below the no-memory baseline. ACE also served 91.8% of input from
   the prompt cache because its playbook changes by deltas. **Mecha's
-  learner still rewrites whole regions** (`learning::finalize_rules`:
-  "The learner rewrites whole sets, so identity has to survive the
-  rewrite"). §5 P4 names one concrete cost of that.
+  learner still rewrites whole regions**. In `learning.rs`, the doc comment
+  that opens "Mint identity for a freshly learned rule set" says: "The
+  learner rewrites whole sets, so identity has to survive the rewrite". §5 P4 names one concrete cost of that.
 
 ### 3.3 The security record on memory and skill poisoning
 
@@ -470,7 +473,7 @@ Two gaps remain, and §5 takes both:
 
 | | Harness² | Hermes | The 2026 papers | mecha today |
 |---|---|---|---|---|
-| **What evolves** | Eight harness files, per task | Skills (with scripts) and two memory files | Code, prompts, workflows; some also weights | Four numeric knobs (`harness::OverrideKey`) and learned rules |
+| **What evolves** | Eight harness files, per task | Skills (with scripts) and two memory files | Code, prompts, workflows; some also weights | Four knobs (`harness::OverrideKey`: three numbers and `effort`) and learned rules |
 | **Who writes it** | An editor model | The agent's own background fork | A proposer model | The diagnostician proposes knobs; the learner writes rules from reflections |
 | **What accepts it** | Blind selection; no verifier | Nothing (approval is off by default) | Ground truth, tests, judges or proxies | A paired replay gate with a holdout, work floor and regression ceiling (`candidate::judge_drawn`); a counterfactual gate for rules |
 | **Holdout** | None | None | Some | Yes, drawn uniformly before diagnosis |
@@ -502,11 +505,10 @@ ordered by that diagnosis rather than by size.
 
 | Outcome | Count | Candidates |
 |---|---|---|
-| Named a config key that has never existed | 3 | `tool.validation.strict`, `context.auto_compact`, `context.compaction.threshold` |
+| Named a setting outside the closed set: three invented keys, one security switch (all before the late-August fixes) | 4 | `tool.validation.strict`, `context.auto_compact`, `context.compaction.threshold`, `security.minimize_taint` |
 | Measured with no discriminating power (all ties on a scripted smoke test) | 3 | `compact_at_tokens`, `max_output_tokens`, `effort` |
 | Judged useless or harmful by the owner | 3 | `max_turns=10` ("does nothing"), `max_turns=3` ("harmful"), `max_output_tokens=4096` ("backwards") |
 | Untested | 1 | `effort=low` |
-| A security change | 1 | `security.minimize_taint=false` |
 | An architecture change contradicted by its own brief | 1 | retained-failure eviction |
 | Staged config, below the floor or unmeasurable | 3 | the latest: "16 diverged" on *both* arms |
 | Staged architecture, waiting for a person | 2 | 503 retry; semantic boredom |
@@ -517,7 +519,9 @@ Three causes, each with its own evidence:
    content" (`diagnose.rs`), so the diagnostician has never seen a failure,
    only a count of failures. What it produced is what blind proposals look
    like:
-   - keys invented to fit a number;
+   - keys invented to fit a number. This one is fixed: `DIAGNOSE_INSTRUCTION`
+     now names the closed set, `OverrideKey::parse` refuses a key outside it,
+     and `diagnose::names_guarded_setting` catches a security key. The 13 candidates since are the current evidence;
    - a mechanism "reverse-engineered onto" the one counter with a nonzero
      mean;
    - extreme values of the only knobs it was allowed.
@@ -537,7 +541,7 @@ Three causes, each with its own evidence:
    from noise, so it can neither accept nor reject on the merits. **P8,
    with P2 to count the noise.**
 3. **The surface is where the gains are not.**
-   - Four numeric knobs are all the loop can apply. In every study in §3
+   - Four knobs (three numbers and `effort`) are all the loop can apply. In every study in §3
      that ablates components, the gains sit in structure: skills, scripts,
      tool guidance, middleware. Harness²'s prompt-only ablation cost 1.5
      points against 5.3 for skills, and AHE's prompt-only edits regressed.
@@ -732,7 +736,9 @@ a day's work.
   adds taint.
 - Hints live in `~/.mecha/` with triggers and skills, never in layered
   config, so a cloned repo cannot bring one in.
-- Candidates are found by counters: `ToolErrorRate` per tool already exists.
+- Candidates are found by counters. `ToolErrorRate` is a whole-run share
+  today, with no per-tool breakdown anywhere, so the per-tool count is part
+  of this build.
 
 **Rules kept.** §5 of `SELF-IMPROVEMENT-RESEARCH.md` decides who writes the
 text: the owner, or a template over counters. A model never paraphrases an
@@ -784,8 +790,8 @@ enough, so the prompt names criteria, not a tone.
 - Three sentences added to `REFLECTOR_SYSTEM`.
 - The effect is read as the share of `{"skip": true}` replies, and the
   categories of the reflections that remain, before and after.
-  `learning-report` does not count skips today, so the count is part of
-  the build.
+  A skip is discarded today (the reply handler drops it and records
+  nothing), so recording skips is part of the build.
 - The reflector's prompt is not in any run's prefix.
 
 ### P8. Behaviour-changing candidates are measured on live paired arms — L
@@ -806,9 +812,19 @@ The branch `fix/selection-slice-power` is unmerged.
 
 **Shape.**
 - A candidate the replay gate dropped as divergent becomes an `experiment`
-  with two arms (current against candidate) in `trial_env` homes, which
-  never hold the operator's servers. So the arms run in fixture worlds, with
-  no side effects, by construction.
+  with two arms (current against candidate) in `trial_env` homes.
+- **Being free of side effects is a property of the manifest, not of the
+  home.**
+  - A manifest's `live_servers` can carry the operator's real servers in by
+    name.
+  - `MACHINE_TABLES` hands every trial the operator's `[[search]]`
+    backends.
+
+  So the manifests P8 generates must name no `live_servers`, and only
+  fixture stores (`stores/<server>/`) may appear in their environments. A
+  check that refuses any other P8 manifest is part of the build. Search
+  stays the operator's: it is `Blind` egress, read-only, but its queries do
+  leave the machine.
 - Tasks are drawn from the episodes whose counters motivated the candidate,
   plus preservation tasks.
 - Each pair is labelled Recovered, Stable or Regressed. "Stable" alone never
@@ -849,15 +865,21 @@ non-holdout pool:
   - the turn at which the owner stepped in;
   - from P8, the first index at which seeds diverge.
 - **For a clean session, the transcript itself.** Its provenance is the
-  owner and the model, which is what the learner already reads.
+  owner and the model: the same class the reflector accepts. The reflector,
+  though, sees an intervention excerpt, not a whole transcript, so this
+  half is a wider read than anything the loop does today. That is why it is
+  a ruling (R6) and not part of the digest.
 - **For an armed session, the reflector's withheld view**: the owner's own
   words and tool names, never third-party text. This is the same reduction
   `REFLECTOR_SYSTEM` already handles.
 
 The mission requires every proposal to cite an episode and a turn, and a
 proposal that cites none is refused before measurement. The existing
-artifact tests still apply: `carries_over` / `lifted` against everything
-read, the mandatory prediction, and class re-derivation.
+artifact tests still apply: the mandatory prediction, class re-derivation,
+and `lifted`. Today `lifted` checks against the tool results and appraisal
+notes the diagnostician read; extending its source list to the new evidence
+directory is part of this build, or the no-verbatim test silently stops
+covering what the diagnostician reads most.
 
 **Rules kept.**
 - §13.1's artifact test is the ruling this rests on.
@@ -876,7 +898,7 @@ read, the mandatory prediction, and class re-derivation.
 - The two staged architecture candidates have waited since 2026-09-26 and
   2026-10-11.
 - `HANDOFF.md` records that the content-sensitive arm (`mecha eval
-  --ab-config`) is "a human's spend", and nobody spends it.
+  --ab-config`) "is still a human spend", and nobody spends it.
 
 **Source.**
 - Harness²'s component table: the gains are in skills, scripts, tool
@@ -928,9 +950,12 @@ read, the mandatory prediction, and class re-derivation.
 - **Per-task recursion on live runs.** Four executions of a task that sends
   mail is four sends. Harness²'s loop applies only where a run has no side
   effects, which is what P8's fixture worlds are.
-- **Transcript prose as the input to any proposer.** This is §5's rule.
-  Harness² and Hermes both feed full trajectories to the editor; that is the
-  Zombie Agents path.
+- **Third-party text as the input to any proposer.** Harness² and Hermes
+  both feed full trajectories, third-party content included, to the editor.
+  That is the Zombie Agents path that `SELF-IMPROVEMENT-RESEARCH.md` §5
+  exists to close. P9 never shows an armed session's third-party text: it
+  shows the reflector's withheld view. Showing a *clean* transcript whole is
+  the one widening P9 asks for, and it waits on R6.
 - **Accepting anything on a judge or a proxy alone.** TTHE and Harness²
   lose at selection, and their editor and judge share a model's biases.
 - **"Be active" prompting** of any learner or diagnostician. KEEP_BASE and
