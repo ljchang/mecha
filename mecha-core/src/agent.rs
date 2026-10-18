@@ -5515,9 +5515,11 @@ impl Agent {
                 }
             }
 
-            // A tool whose call is itself a person's decision says so, and
-            // takes the same door the interlock's `ask` does — `escalate`,
-            // which no permission mode answers (`Tool::needs_a_person`).
+            // A tool whose call is itself a person's decision says so
+            // (`Tool::needs_a_person`), and takes a door of its own —
+            // `escalate_access`, which no permission mode answers either, and
+            // which a surface may answer where it refuses the interlock's
+            // `escalate` (a voice call: the grant goes to the page's card).
             //
             // Remembered apart from the interlock's: `blocked_sends` counts
             // the sends the harness refused, and a jail request nobody was
@@ -5785,10 +5787,10 @@ impl Agent {
             // Whoever is asked sees the call *as it will execute*, defaults
             // and all — a card that omits a schema-defaulted argument is
             // asking for a decision about a call it is not showing. That is
-            // now **four** doors, not one: `escalate`, `consult`, `permit`
-            // and `approve` each put a call in front of somebody, and
-            // `escalate` and `consult` are the two that most need it, since
-            // each exists precisely to make a person look.
+            // now **five** doors, not one: `escalate`, `escalate_access`,
+            // `consult`, `permit` and `approve` each put a call in front of
+            // somebody, and the first three most need it, since each exists
+            // precisely to make a person look.
             //
             // `decide` reads the filled call too, and that is deliberate:
             // a rule is policy over the call **as it will execute**, so the
