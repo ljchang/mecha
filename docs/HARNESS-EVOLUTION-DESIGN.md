@@ -21,8 +21,10 @@ This document builds on four others and restates none of them:
   - §14.7, the owner's ruling: fitness is the owner's own usage, and a
     public benchmark is a transfer check only.
 - [`HARNESS-RESEARCH.md`](HARNESS-RESEARCH.md) §9 recommends moving config
-  candidates from replay into experiments. That recommendation is still
-  undecided.
+  candidates from replay into experiments. R1 (§7.1) answers it in part.
+  Behaviour-changing candidates move to measured continuations, but replay
+  stays, as the screen for cost-only changes, so §9's "replay was the wrong
+  instrument" is adopted only for that class.
 - [`SKILLS-RESEARCH.md`](SKILLS-RESEARCH.md) §9 is the standing ruling
   against model-authored skills.
 - [`LEARNING-AUTONOMY-DESIGN.md`](LEARNING-AUTONOMY-DESIGN.md) explains why
@@ -530,10 +532,10 @@ Three causes, each with its own evidence:
    Harness²'s editors must "cite the specific trajectory moment behind
    every change; one you cannot trace to a moment is speculation". Mecha's
    diagnostician cannot cite a moment, because it is never shown one. This
-   is a choice of the brief, not of the rules: `SELF-IMPROVEMENT-RESEARCH.md`
-   §13.1 already lets the diagnostician read untrusted content, and it
-   replaced the origin restriction with a test on the artifact (no verbatim
-   carry-over). **P9.**
+   is a choice of the brief. Whether reading more is allowed is P9's
+   question: `SELF-IMPROVEMENT-RESEARCH.md` §13.1 lets the diagnostician
+   read *web pages* under an artifact test, but transcripts fall under §5's
+   input rule, which P9 argues from and R6 decides. **P9.**
 2. **The instrument cannot see.** On a non-greedy local sampler the
    *baseline* arm diverges from its own recording about as often as the
    candidate. The newest candidate shows 16 divergences on each arm, and
@@ -564,9 +566,10 @@ That is why it works, and why P3–P7 are upkeep, not rescue.
 
 **So the proposals come in two tiers.**
 - **Tier 1 makes harness improvement effective:** P8 (an instrument that
-  sees behaviour), P9 (a proposer that sees failures) and P10 (a surface
-  where the gains are). P1 and P2 are their small prerequisites: an honest
-  history and a counted noise floor.
+  sees behaviour, built as `ROLLOUT-DESIGN.md`'s continued branches), P9 (a
+  proposer that sees failures) and P10 (a surface where the gains are). P1
+  and P2 are their small prerequisites: an honest history and a counted
+  noise floor. P11, preplay, is the same engine run online.
 - **Tier 2 keeps a working learning loop honest:** P3–P7.
 
 Each proposal states:
@@ -824,12 +827,18 @@ enough, so the prompt names criteria, not a tone.
   nothing), so recording skips is part of the build.
 - The reflector's prompt is not in any run's prefix.
 
-### P8. Behaviour-changing candidates are measured on live paired arms — L
+### P8. Behaviour-changing candidates are measured on continued branches — L
 
 **Gap.** `SELF-IMPROVEMENT-RESEARCH.md` §14.6: replay can only measure
-changes that change nothing. `HARNESS-RESEARCH.md` §9 recommends moving
-config candidates into experiments, and that recommendation is undecided.
-The branch `fix/selection-slice-power` is unmerged.
+changes that change nothing. `HARNESS-RESEARCH.md` §9 recommended moving
+config candidates into experiments, and R1 answers it in part (§0). The
+branch `fix/selection-slice-power` is unmerged. The deeper gap, found after
+R1 was ruled: **every branch instrument mecha has stops at the first call
+the recording cannot answer, and grades reproduction of the recording**, so
+none can follow a better path. **[`ROLLOUT-DESIGN.md`](ROLLOUT-DESIGN.md) is
+the engine that closes it.** Its comparisons (live reads, sunk writes, two
+controls, structural scoring) are how P8 is built. The fixture-world arms
+below remain for tasks the owner's stores cannot host.
 
 **Source.**
 - HarnessLens: paired live rollouts labelled Recovered, Stable or
@@ -1019,6 +1028,20 @@ covering what the diagnostician reads most.
 - The `Security` class is still never measured.
 - §6.1's invariants hold before any arm runs.
 
+### P11. Preplay: the same engine, online — L
+
+**The owner's framing:** preplay is replay "just running online in parallel
+instead of replayed after the session is over". At a live decision point,
+roll out two alternatives a short way in the dry world, score them
+structurally, and continue with the better one.
+
+**Shape:** [`ROLLOUT-DESIGN.md`](ROLLOUT-DESIGN.md) §7.
+- It runs only at decisions with a structural validator. That is
+  `APPRAISAL-WIRING-DESIGN.md` N3's condition, kept.
+- It runs on background and delegated runs first.
+- It is off by default until it beats matched-compute sampling.
+- It never sends.
+
 ---
 
 ## 6. Deliberately out of scope
@@ -1038,8 +1061,9 @@ covering what the diagnostician reads most.
   both feed full trajectories, third-party content included, to the editor.
   That is the Zombie Agents path that `SELF-IMPROVEMENT-RESEARCH.md` §5
   exists to close. P9 never shows an armed session's third-party text: it
-  shows the per-intervention withheld views. Showing a *clean* transcript whole is
-  the one widening P9 asks for, and it waits on R6.
+  shows, after R6, per-intervention withheld views. P9 asks for two
+  widenings beyond the typed digest: those withheld views and whole clean
+  transcripts, §7.3's options B and C. Both wait on R6.
 - **Accepting anything on a judge or a proxy alone.** TTHE and Harness²
   lose at selection, and their editor and judge share a model's biases.
 - **"Be active" prompting** of any learner or diagnostician. KEEP_BASE and
@@ -1166,15 +1190,17 @@ at each steer, denial or follow-up, with tool names before and after.
 - Revisit C only if the digest-plus-B diagnoses are still blind on the
   evidence P1 and P8 produce.
 
-**Suggested build order** — Tier 1 first, because that is where nothing has
-worked:
+### 7.4 Suggested build order
+
+Tier 1 first, because that is where nothing has worked:
 1. P1 and P2: an honest history and a counted noise floor. Both are small,
    and P8's verdicts mean nothing without P2.
 2. P9's typed digest: inside §5's letter, so it needs no ruling. It is the
    cheapest change that could stop the blind proposals. The withheld views
    and clean transcripts follow after R6.
-3. P8: verdict-free branch points first (no ruling), then live arms (R1
-   ruled yes).
+3. P8: verdict-free branch points first (no ruling), then continued
+   branches, in `ROLLOUT-DESIGN.md`'s phases. Its phase 0 is a defect fix
+   that does not wait on anything.
 4. P10, after P8, starting with tool descriptions. Skills come last, as
    drafts the owner reviews (R7).
 5. Tier 2 alongside, smallest first: P7, P3, P6, then P4 (after R2) and
