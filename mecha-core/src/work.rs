@@ -83,6 +83,22 @@ pub fn owner_mecha_home() -> Option<PathBuf> {
     }
 }
 
+/// The owner's home directory as the password database names it — the
+/// source of [`owner_mecha_home`], for a caller that needs the home itself
+/// (`grant::admit`'s credential directories, which `$HOME` alone would let
+/// a command line move). `None` under test, as there.
+pub fn owner_home() -> Option<PathBuf> {
+    #[cfg(test)]
+    {
+        None
+    }
+    #[cfg(not(test))]
+    {
+        // SAFETY: `getuid` cannot fail and has no preconditions.
+        passwd_home(unsafe { libc::getuid() })
+    }
+}
+
 /// The home directory the password database records for `uid`.
 #[cfg(not(test))]
 fn passwd_home(uid: libc::uid_t) -> Option<PathBuf> {

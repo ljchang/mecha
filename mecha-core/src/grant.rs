@@ -182,9 +182,25 @@ fn protected() -> Result<Vec<PathBuf>> {
     if let Some(h) = crate::work::owner_mecha_home() {
         out.push(canon(h));
     }
-    if let Some(home) = dirs::home_dir() {
+    // Both spellings of the home too, for the same reason, and an error when
+    // neither can be named: the credential list is the half of this set a
+    // grant of `~/.ssh` meets, and dropping it silently would admit one
+    // (review of #711).
+    let homes: Vec<PathBuf> = [dirs::home_dir(), crate::work::owner_home()]
+        .into_iter()
+        .flatten()
+        .collect();
+    anyhow::ensure!(
+        !homes.is_empty(),
+        "cannot tell where the home directory is, so no grant can be checked against \
+         the credential directories in it"
+    );
+    for home in homes {
         for rel in NEVER_GRANTED_UNDER_HOME {
-            out.push(canon(home.join(rel)));
+            let p = canon(home.join(rel));
+            if !out.contains(&p) {
+                out.push(p);
+            }
         }
     }
     Ok(out)
@@ -490,6 +506,24 @@ pub fn revoke_by_owner(arg: &str, standing: &Grants, live: &mut Vec<Grant>) -> R
             ended.join(", ")
         ));
     }
+    // A path inside a broader live grant is still reachable, so "no grant
+    // here" would be the one wrong answer a narrowing command can give
+    // (review of #711): name the grant that covers it.
+    let enclosing: Vec<String> = live
+        .iter()
+        .filter(|g| {
+            raw.starts_with(&g.path) || canonical.as_ref().is_some_and(|c| c.starts_with(&g.path))
+        })
+        .map(|g| g.path.display().to_string())
+        .collect();
+    if !enclosing.is_empty() {
+        bail!(
+            "{} is inside this conversation's grant on {} \u{2014} /revoke that to end it; \
+             a grant cannot be narrowed to leave out a subdirectory",
+            raw.display(),
+            enclosing.join(", ")
+        );
+    }
     let standing_hit: Vec<String> = standing
         .standing
         .iter()
@@ -534,7 +568,8 @@ pub fn listing(standing: &Grants, live: &[Grant]) -> Vec<String> {
 /// the grant (review of #711).
 ///
 /// A head note beside the calendar reference (`Agent::request_notes_for`):
-/// sent with every request, never stored in the history, on the first
+/// sent with every request, never in the history (recorded with the run as
+/// `Record::Notes`, as the calendar reference is), on the first
 /// message so it stays inside the cached prefix until the set changes —
 /// which is an owner's `/grant` or `/revoke` or a yes, never a turn.
 /// Sorted, so the same set is the same bytes.
@@ -744,6 +779,15 @@ mod tests {
             revoke_by_owner("notes", &none, &mut live).is_err(),
             "relative"
         );
+        // Inside a broader live grant: still reachable, so not "no grant".
+        let inside = revoke_by_owner(&notes.join("2024").display().to_string(), &none, &mut live)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            inside.contains("inside this conversation's grant"),
+            "{inside}"
+        );
+        assert_eq!(live, vec![g(&notes)], "and nothing was dropped");
 
         let standing = Grants::standing(vec![Grant {
             source: Source::Config,

@@ -2354,8 +2354,10 @@ first sketch would have widened the jail with nobody asked:
   holding a `[[grant]]` reported it had no access (review of #711).
   `grant::note` puts one line of the run's grants, sorted, in the request's
   head notes beside the calendar reference (`Agent::request_notes_for`). It
-  is sent and never stored, and it stays inside the cached prefix until the
-  set changes, which takes a `/grant`, a `/revoke` or a yes, never a turn.
+  rides beside the history, never in it (it is recorded with the run as
+  `Record::Notes`, as the calendar reference is), and it stays inside the
+  cached prefix until the set changes, which takes a `/grant`, a `/revoke` or
+  a yes, never a turn.
   The path descriptions now say "or inside a directory the owner granted",
   and `setup::sandbox_line` describes `shell` with the standing grants
   mounted (`setup::standing_grants`, the one computation `build` uses too).
