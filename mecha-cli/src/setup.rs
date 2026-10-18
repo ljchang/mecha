@@ -1874,8 +1874,10 @@ async fn prepare_tools_carrying(
     // `compact`'s rule: every call goes to `Approver::escalate`, which a
     // headless approver answers `Blocked`, so on a trigger or a piped `run`
     // it could only ever fail — and would cost a slot in every prompt to say
-    // so. The web and Slack approvers put the call on the owner's card
-    // whatever a session's mode, short of read-only. A terminal does only
+    // so. The web and Slack approvers put the call on the owner's card in
+    // `ask` and `allow` alike, and refuse it under `read-only` — a mode those
+    // surfaces switch per session at runtime, so they register it whatever
+    // the startup mode and leave the refusal to the approver. A terminal does only
     // when a person is at it **and the mode is `ask`**: under `-y` or
     // `permission_mode = "allow"` its approver is a `ModeApprover`, whose
     // `escalate` is `Blocked` (review of #711). A TUI started that way and

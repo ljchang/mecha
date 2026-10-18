@@ -167,14 +167,18 @@ const NEVER_GRANTED_UNDER_HOME: &[&str] = &[
 ];
 
 /// The places [`admit`] refuses to overlap, canonical where they exist.
-fn protected() -> Vec<PathBuf> {
+///
+/// An error when the mecha home cannot be named at all: a set that silently
+/// lost its most important member would admit a grant over it, so no grant
+/// is admitted until it can be (review of #711).
+fn protected() -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     let canon = |p: PathBuf| p.canonicalize().unwrap_or(p);
     // Both spellings of the mecha home: `MECHA_HOME` is settable by any
     // command line, the password database's is not (`owner_mecha_home`).
-    if let Ok(h) = crate::work::mecha_home() {
-        out.push(canon(h));
-    }
+    let home = crate::work::mecha_home()
+        .context("cannot tell where the mecha home is, so no grant can be checked against it")?;
+    out.push(canon(home));
     if let Some(h) = crate::work::owner_mecha_home() {
         out.push(canon(h));
     }
@@ -183,7 +187,7 @@ fn protected() -> Vec<PathBuf> {
             out.push(canon(home.join(rel)));
         }
     }
-    out
+    Ok(out)
 }
 
 /// Expand a leading `~` the way config paths are expanded.
@@ -209,7 +213,7 @@ pub fn expand(raw: &str) -> PathBuf {
 /// - the filesystem root, and any root that contains or sits inside the
 ///   mecha home or a credential directory ([`NEVER_GRANTED_UNDER_HOME`]).
 pub fn admit(path: &Path) -> Result<PathBuf> {
-    admit_against(path, &protected())
+    admit_against(path, &protected()?)
 }
 
 fn admit_against(path: &Path, protected: &[PathBuf]) -> Result<PathBuf> {
@@ -358,17 +362,20 @@ impl Grants {
     }
 
     /// Add a live grant. An existing grant at least as wide over the same or
-    /// an enclosing root makes this a no-op; returns whether it was new.
-    pub fn add(&self, grant: Grant) -> bool {
+    /// an enclosing root makes this a no-op: `Ok(true)` is new, `Ok(false)`
+    /// already held. A list that cannot be read is an error, never `false`
+    /// — the caller renders `false` as "already granted", and nothing would
+    /// have been stored (review of #711).
+    pub fn add(&self, grant: Grant) -> Result<bool> {
         if self.covering(&grant.path, grant.access).is_some() {
-            return false;
+            return Ok(false);
         }
         match self.live.lock() {
             Ok(mut live) => {
                 live.push(grant);
-                true
+                Ok(true)
             }
-            Err(_) => false,
+            Err(_) => bail!("the conversation's grant list could not be read; nothing was granted"),
         }
     }
 }
@@ -534,7 +541,8 @@ mod tests {
             path: PathBuf::from("/data/a"),
             access: Access::Read,
             source: Source::Approved,
-        });
+        })
+        .unwrap();
         assert_eq!(a.live().len(), 1);
         assert!(b.live().is_empty(), "a grant leaked into another run");
         assert!(
@@ -554,13 +562,35 @@ mod tests {
             access: Access::Write,
             source: Source::Owner,
         };
-        assert!(g.add(wide));
-        assert!(!g.add(Grant {
-            path: PathBuf::from("/data/papers"),
+        assert!(g.add(wide).unwrap());
+        assert!(!g
+            .add(Grant {
+                path: PathBuf::from("/data/papers"),
+                access: Access::Read,
+                source: Source::Approved,
+            })
+            .unwrap());
+        assert_eq!(g.live().len(), 1);
+    }
+
+    /// A list that cannot be read is an error, never "already granted":
+    /// `request_access` renders `Ok(false)` as success, and nothing would
+    /// have been stored (review of #711).
+    #[test]
+    fn a_poisoned_list_is_an_error_not_already_granted() {
+        let g = Grants::default().for_run(&[]);
+        let live = Arc::clone(&g.live);
+        let _ = std::thread::spawn(move || {
+            let _held = live.lock().unwrap();
+            panic!("poison the list");
+        })
+        .join();
+        let added = g.add(Grant {
+            path: PathBuf::from("/data"),
             access: Access::Read,
             source: Source::Approved,
-        }));
-        assert_eq!(g.live().len(), 1);
+        });
+        assert!(added.is_err(), "{added:?}");
     }
 
     #[test]

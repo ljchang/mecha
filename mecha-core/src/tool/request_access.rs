@@ -131,11 +131,14 @@ impl Tool for RequestAccess {
             Ok(p) => p,
             Err(e) => return Ok(ToolOutput::err(format!("not granted: {e:#}"))),
         };
-        let new = ctx.grants.add(Grant {
+        let new = match ctx.grants.add(Grant {
             path: path.clone(),
             access,
             source: Source::Approved,
-        });
+        }) {
+            Ok(new) => new,
+            Err(e) => return Ok(ToolOutput::err(format!("not granted: {e:#}"))),
+        };
         let what = access.describe();
         Ok(ToolOutput::ok(if new {
             format!(
