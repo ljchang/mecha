@@ -2333,24 +2333,24 @@ first sketch would have widened the jail with nobody asked:
   harness's own stores. `resolve_for(raw, Access)` also consults the grants,
   and only the model-facing file tools call it: `fs_read`/`fs_list`/
   `image_view`/`document_read` read, `fs_write`/`fs_edit` write. A relative
-  path still resolves against the workspace; a grant is never a second
-  current directory. The refusal names `request_access` only where this run
-  can dispatch it (`Grants::requestable`, stamped by `run_in` from the run's
-  own registry and withholding, never inherited — a subagent runs on its
-  parent's context, review of #711). And it is registered only where its
+  path still resolves against the workspace; a grant is never a second current
+  directory. The refusal names `request_access` only where this run can
+  dispatch it (`Grants::requestable`, stamped by `run_in` from the run's own
+  registry and withholding, never inherited — a subagent runs on its parent's
+  context, review of #711). And it is registered only where its
   `escalate_access` reaches a person (`setup::offers_request_access`, tested
-  against the options the web and Slack doors really build): the web and
-  Slack cards, and a terminal with a person at it in `ask` mode — under `-y`
-  the approver is a `ModeApprover`, whose `escalate_access` is `Blocked`.
-  Not keyed on `global_config_only`, which both doors set; the first gate
-  was, and the web chat shipped without the tool (2026-10-18).
-  `request_access` is `read_only()`, so a read-only chat (the web's default) still puts the card
+  against the options the web and Slack doors really build): the web and Slack
+  cards, and a terminal with a person at it in `ask` mode — under `-y` the
+  approver is a `ModeApprover`, whose `escalate_access` is `Blocked`. Not
+  keyed on `global_config_only`, which both doors set; the first gate was, and
+  the web chat shipped without the tool (2026-10-18). `request_access` is
+  `read_only()`, so a read-only chat (the web's default) still puts the card
   in front of the owner; a write grant made there writes nothing until the
   mode allows writes. Read-only for the approver only: `call` refuses in
   `Phase::Plan`, as `message_send` does, and it declares `destructive` so a
-  `research` or `coding` profile does not keep it as a public read
-  (review of #714). A confined `shell` says in its description that what
-  lies outside the workspace and the grants is hidden, not absent.
+  `research` or `coding` profile does not keep it as a public read (review of
+  #714). A confined `shell` says in its description that what lies outside the
+  workspace and the grants is hidden, not absent.
 - **The file tools ask by themselves, Claude Code's way** (the owner's
   ruling, 2026-10-18). `fs_read`, `fs_list`, `fs_write`, `fs_edit`,
   `image_view` and `document_read` override `Tool::needs_a_person` with
