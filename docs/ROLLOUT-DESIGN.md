@@ -118,12 +118,18 @@ A **rollout** is five things:
 5. a **scorer** that grades the outcome from structure and artifacts,
    never from a model's opinion of itself (§5).
 
-A **comparison** is always at least three rollouts from one branch prefix, in one
-world, at one time:
+A **comparison** of a harness *change* is always at least three rollouts
+from one branch prefix, in one world, at one time:
 - a **control** under the current harness;
 - a **second control** under the current harness with a different sampling
   seed;
 - one **arm per candidate**.
+
+Online preplay (§7) is a different question: it chooses between *actions*
+under one harness, not between harnesses. Its arms are two samples of the
+current harness, and their disagreement is the thing it exploits, not
+noise to subtract. The gain test (they agree, so nothing is rolled out)
+does the control's job there, and §7.1's structural validator decides.
 
 The two controls give the noise floor. The **offline** schedule (§6) runs
 comparisons over recorded points at night. The **online** schedule (§7) runs
@@ -178,6 +184,22 @@ A new axis, separate from `read_only()`.
 | `Irreversible` | The rollout **halts before the call**, and the halt is recorded with the tool's name. A halt is information, not a failure | `calendar_hold`, `mail_triage`, `docs_create`, `docs_trash`, graph writes, unconfined `shell`, any `Egress::Chosen` call (`http_fetch`) |
 | *(undeclared)* | Halts. Unknown is never safe | MCP tools without annotations |
 
+**One class per tool, decided in this order, first match wins.** The table
+must be a partition, because it is the `RolloutApprover`'s only authority.
+Its rows overlap as written: `mail_send` is routed *and* declares
+`openWorldHint` (so `Chosen`), and `calendar_delete_event` is routed *and*
+`destructiveHint`.
+1. **Routed by the operator's outbox: `Staged`.** A routed call never
+   executes in any world. That is also why the loop skips the interlock for
+   it today.
+2. Undeclared: halt.
+3. `Irreversible`, including any `Chosen` egress and any `destructive`
+   tool.
+4. `Render`.
+5. `StoreWrite`.
+6. `Workspace`.
+7. `Read`.
+
 **Approval inside a rollout.** The dry world **narrows the run's
 configured guards; it never replaces them.** These are the losses §1.1
 exists to fix.
@@ -215,7 +237,11 @@ exists to fix.
     - The winner's continuation *is* the live run, and is recorded as
       that run.
     - The live run's `RunStats` absorbs the winner only, never the losers'
-      costs. Those stay in the comparison record.
+      costs. Those stay in the comparison record, **and** the run records
+      its preplay spend as its own counter (rollouts, tokens, seat-seconds).
+      Otherwise a preplay-on run would look exactly as cheap as a
+      preplay-off one in every corpus readout, including the counters that
+      propose the next candidate.
     - **A kind tag alone would not hold.** `runlog::Scan::admits` drops
       only `Some(Test)` and `Some(Experiment)`. An unknown variant reads as
       `None`, and `None` is *admitted*, so an older build would count a new
@@ -266,6 +292,13 @@ It is unchanged.
     grant would otherwise depart on a jail refusal the recording never saw,
     which is instrument noise charged to the candidate. The repair already
     exists: `session::Transcript` re-admits grants with `grant::readmit`.
+  - **A restored grant is read-only in a rollout.** A grant points outside
+    the scratch workspace by construction: `fs_write`/`fs_edit` resolve a
+    granted path with `Access::Write`, and confined `shell` mounts it. So a
+    write grant restored as-is would let an unattended branch write the
+    owner's real tree. Write grants are restored as read grants, and a
+    write to a granted path is `Irreversible`: it halts. Phase 2's exit test
+    includes a branch prefix that holds a write grant.
 - The branch point is any assistant boundary, the constraint
   `BRANCHING-DESIGN.md` set.
 
@@ -421,8 +454,12 @@ structural can tell which continuation was better.
      outbox there, exactly as if no preplay had happened.
    - The winner's first call therefore runs twice, once in the dry world
      and once live. That is deliberate: a second real read is the price of
-     never stitching two worlds together. For a paid or rate-limited
-     backend, it is one extra call per preplay.
+     never stitching two worlds together. Counted honestly, a preplay
+     with K arms costs K real `Read`-class calls per step plus the live
+     re-issue. That is nothing for a loopback model, and a real cost for a
+     metered `[[search]]` backend. Preplay therefore counts a metered
+     backend's calls against its budget, and stops rolling out when the
+     budget is spent.
    - Nothing from the scratch world is adopted. Every rollout's scratch
      draft, the winner's included, is scored and deleted with it (§5.3).
      The live record is the live run's own, never a stitch of two worlds.

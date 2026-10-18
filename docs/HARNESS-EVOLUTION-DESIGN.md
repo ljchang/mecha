@@ -1095,6 +1095,15 @@ If the edit surface ever grows past four knobs and learned rules:
   type to check is `fixture_check::FixtureCheck`: its expected values
   (`equals`, `contains`, `count`) live in the manifest, and its `file`
   resolves inside the trial's own `fixtures/` directory.
+  - **The live dry world too.** R1 made it the primary world, so it needs
+    the same check. A rollout's `fs_*` tools are jailed to a scratch copy
+    of the recorded workspace, unconfined `shell` halts, and the ledgers
+    live outside any workspace. So the exposure is the workspace itself:
+    a session recorded *in this repository* carries `eval/cases.jsonl` and
+    the `mismatch` fixtures into its scratch copy.
+  - Before P8 measures a candidate on such a session, its scratch copy
+    leaves out the eval and fixture trees, or the session is not offered as
+    a point.
 
 ---
 
@@ -1173,7 +1182,13 @@ at each steer, denial or follow-up, with tool names before and after.
     reflector's exposure today too;
   - the diagnostician and the learner would act on the same signal, so the
     brief must show which rules were already learned from those
-    interventions, or both fix the same thing twice.
+    interventions, or both fix the same thing twice;
+  - **a different kind of protection from learning's.** Today a non-clean
+    reflection is kept from becoming a rule *structurally*, at the learn
+    step. Under B, an armed session's withheld view reaches the
+    diagnostician, and the protection is the output form only: a number, or
+    a prose candidate staged for the owner. That may be the right trade,
+    but it is a different trade, and R6 should be decided knowing it.
 
 **C. A, plus clean transcripts in full.**
 - *For:*
