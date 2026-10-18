@@ -303,6 +303,7 @@ fn handle_command(
                  \x20 /clear          forget the conversation so far\n\
                  \x20 /session        show the transcript path\n\
                  \x20 /grant [path [write]]  list, or let this conversation reach a directory\n\
+                 \x20 /revoke <path>  end this conversation's grants at or under a path\n\
                  \x20 /exit           quit"
             );
         }
@@ -349,6 +350,14 @@ fn handle_command(
                     Ok(said) => println!("  {said}"),
                     Err(e) => println!("  /grant {}: {e:#}", rest.trim()),
                 }
+            }
+        }
+
+        "revoke" => {
+            let standing = &prepared.agent.context().tools.grants;
+            match mecha_core::grant::revoke_by_owner(rest, standing, &mut convo.grants) {
+                Ok(said) => println!("  {said}"),
+                Err(e) => println!("  /revoke {}: {e:#}", rest.trim()),
             }
         }
 

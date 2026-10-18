@@ -2368,8 +2368,14 @@ first sketch would have widened the jail with nobody asked:
   than carrying back none: not using a grant is not ending it. Personas report it off: a persona is
   never given the owner's directories.
 
-Not built: revoking one live grant short of `/clear`, a web `/grant`, and an
-`untrusted = true` grant (a downloads folder is third-party content). Today
+**`/revoke <path>`** (`grant::revoke_by_owner`, TUI and `mecha chat`) drops
+the conversation's live grants at or under a path. It matches the canonical
+spelling and the typed one, so a directory since removed is still revocable,
+and it names a standing grant rather than touching config. It only narrows, so
+nobody is asked, and the last-wins `Record::Grants` makes it durable on the
+next run. It is refused mid-run for `/grant`'s reason.
+
+Not built: a web `/grant` or `/revoke`, and an `untrusted = true` grant (a downloads folder is third-party content). Today
 a grant reads with the workspace's stance.
 
 **The trifecta interlock.** Taint is a property of the **conversation**, not of
