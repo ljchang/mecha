@@ -2821,16 +2821,30 @@ mod surface_loss_tests {
                     mode,
                 )
                 .is_empty();
-                let build_failed = replay_registry(
-                    &recorded,
-                    &live,
-                    Some(&surface_only),
-                    &specs,
-                    Vec::new(),
-                    mode,
-                    CancellationToken::new(),
-                )
-                .is_err();
+                // Live builds only through its gated constructor, which
+                // offers no stand-ins: the same answer the preflight gives.
+                let build_failed = if mode.executes() {
+                    replay_registry_live(
+                        &recorded,
+                        &live,
+                        &specs,
+                        Vec::new(),
+                        LiveGate::reads_only(),
+                        CancellationToken::new(),
+                    )
+                    .is_err()
+                } else {
+                    replay_registry(
+                        &recorded,
+                        &live,
+                        Some(&surface_only),
+                        &specs,
+                        Vec::new(),
+                        mode,
+                        CancellationToken::new(),
+                    )
+                    .is_err()
+                };
                 assert_eq!(
                     preflight_says_lost, build_failed,
                     "disagreement on `{name}` under {mode:?}"
