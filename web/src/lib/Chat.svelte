@@ -14,7 +14,7 @@
     maskName,
     uploadRegionReferences,
   } from './image-edit.js';
-  import { pictureOf, clipOf, stillOut, waitingPictures, repeatedPictures, downloadPicture, pictureVersions, shownVersion, makingText, repeatedClips, jobStarts } from './picture.js';
+  import { pictureOf, redrawable, clipOf, stillOut, waitingPictures, repeatedPictures, downloadPicture, pictureVersions, shownVersion, makingText, repeatedClips, jobStarts } from './picture.js';
   import { clockOf } from './persona.js';
   import ClipPlayer from './ClipPlayer.svelte';
   import { carriesFiles, droppedFiles, withAttachments } from './attach.js';
@@ -2310,7 +2310,7 @@
             </span>
           {/if}
           <button class="genedit" onclick={() => editImage(shown)}>Edit</button>
-          <button class="genedit" disabled={running} title={running ? 'A reply is running' : 'Draw this picture again at a new seed'} onclick={() => regenerate(picture, shown)}>Regenerate</button>
+          {#if redrawable(entry)}<button class="genedit" disabled={running} title={running ? 'A reply is running' : 'Draw this picture again at a new seed'} onclick={() => regenerate(picture, shown)}>Regenerate</button>{/if}
           <button class="genedit" onclick={() => savePicture(shown)}>Download</button>
           {#if pictureNote?.path === shown}<span class="genfail">not downloaded: {pictureNote.why}</span>{/if}
           <!-- In an incognito chat too, where the save is always locked
