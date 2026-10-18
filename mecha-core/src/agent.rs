@@ -1237,6 +1237,17 @@ pub struct Conversation {
     ///
     /// [`Session::record_run`]: crate::session::Session::record_run
     pub harness_notes: Vec<String>,
+    /// The jail exceptions this conversation acquired — an owner's `/grant`,
+    /// an approved `request_access` ([`crate::grant`]). Never the standing
+    /// `[[grant]]` lines, which are config and arrive on the context.
+    ///
+    /// On the conversation for `taint`'s reason, which is also the owner's
+    /// ruling on their lifetime: a turn boundary is not where an approval
+    /// ends, so a live grant lasts as long as the history does. `run_in`
+    /// mints a fresh cell from this at run start and copies it back at run
+    /// end; the session file records it (`Record::Grants`) and resuming
+    /// re-proves each one (`grant::readmit`).
+    pub grants: Vec<crate::grant::Grant>,
 }
 
 impl Conversation {
@@ -1253,6 +1264,7 @@ impl Conversation {
             pressure: crate::pressure::ContextTracker::default(),
             goal_anchor: None,
             harness_notes: Vec::new(),
+            grants: Vec::new(),
         }
     }
 
@@ -1269,6 +1281,7 @@ impl Conversation {
             pressure: crate::pressure::ContextTracker::default(),
             goal_anchor: None,
             harness_notes: Vec::new(),
+            grants: Vec::new(),
         }
     }
 
@@ -1427,6 +1440,7 @@ impl From<Vec<Message>> for Conversation {
             pressure: crate::pressure::ContextTracker::default(),
             goal_anchor: None,
             harness_notes: Vec::new(),
+            grants: Vec::new(),
         }
     }
 }
@@ -2209,8 +2223,12 @@ impl Agent {
         if let Some(c) = closing {
             tail.push(c.line.to_string());
         }
+        // The grants line rides beside the calendar reference: what this run
+        // may reach beyond its workspace, read off the run's own context, so
+        // an approval mid-run is named from the next request on.
+        let granted = crate::grant::note(&cx.tools.grants.all());
         RequestNotes {
-            head: self.calendar_note().into_iter().collect(),
+            head: self.calendar_note().into_iter().chain(granted).collect(),
             tail,
         }
     }
@@ -2646,6 +2664,24 @@ impl Agent {
                     .and_then(|t| t.anchor())
                     .or_else(|| convo.goal_anchor.clone()),
             )));
+            // A fresh cell per run, for `compact_requested`'s reason: an
+            // approval granted in one conversation must never land in another
+            // served by the same agent. Seeded from what the context already
+            // held live — a subagent's context is its parent's — and what this
+            // conversation carries.
+            tools.grants = tools.grants.for_run(&convo.grants);
+            // Whether a jail refusal may name `request_access` is a fact
+            // about *this* run's surface, so it is read here, from the
+            // registry this run dispatches from and the same test dispatch
+            // applies — never inherited. A subagent runs on its parent's
+            // context, and a parent that has the tool would otherwise send
+            // a child without it to a call that can only fail (review of
+            // #711).
+            tools.grants.requestable = self
+                .registry
+                .available(crate::tool::request_access::NAME)
+                .is_some()
+                && !cx.is_withheld(crate::tool::request_access::NAME);
             run_scoped = RunContext {
                 tools: Arc::new(tools),
                 ..cx.clone()
@@ -2677,6 +2713,12 @@ impl Agent {
         convo.pressure = pressure.clone();
         // A human answer remains a fact even if the provider fails afterwards.
         convo.goal_anchor = cx.tools.goal_track.as_ref().and_then(|t| t.anchor());
+        // And so does a person's grant: the yes was given whether or not the
+        // run that asked for it finished. Not when grants were off for this
+        // run: it saw none, and not using them is not ending them.
+        if !cx.tools.grants.is_off() {
+            convo.grants = cx.tools.grants.live();
+        }
         let mut outcome = ran?;
         outcome.duration_secs = Some(started.elapsed().as_secs_f64());
         outcome.context_overflows = context_overflows;
@@ -5463,6 +5505,18 @@ impl Agent {
                 }
             }
 
+            // A tool whose call is itself a person's decision says so, and
+            // takes the same door the interlock's `ask` does — `escalate`,
+            // which no permission mode answers (`Tool::needs_a_person`).
+            //
+            // Remembered apart from the interlock's: `blocked_sends` counts
+            // the sends the harness refused, and a jail request nobody was
+            // there to answer is not one.
+            let send_escalation = escalation.is_some();
+            if escalation.is_none() {
+                escalation = tool.needs_a_person(input);
+            }
+
             // What a *staged* call will really execute, computed here rather
             // than at the staging site thirty lines below, so the hook and the
             // store are handed the same object.
@@ -5812,7 +5866,7 @@ impl Agent {
                     // so — and `RunStats`/`runlog` read `blocked_sends` as the
                     // whole count of those. A person's `Deny` is not counted:
                     // that is a correction, and the trace's `denied` has it.
-                    if escalation.is_some() && matches!(decision, Decision::Blocked(_)) {
+                    if send_escalation && matches!(decision, Decision::Blocked(_)) {
                         *blocked_sends += 1;
                     }
                     emit(
@@ -11353,6 +11407,363 @@ mod tests {
             why.contains("private data") && why.contains("third-party"),
             "the person is told why: {why}"
         );
+    }
+
+    /// `request_access` is a person's decision, so it takes `escalate` —
+    /// and under an approver that answers from policy (`--yes`, eval,
+    /// replay: `ModeApprover { Allow }`) it is `Blocked`, never granted.
+    /// Before `Tool::needs_a_person` it was an ordinary non-read-only call,
+    /// which `approve` answered yes with nobody consulted. And a refusal of
+    /// it is not a refused *send*: `blocked_sends` stays the interlock's.
+    #[tokio::test]
+    async fn a_jail_request_is_never_answered_by_a_permission_mode() {
+        let dir = std::env::temp_dir().join(format!("mecha-reqloop-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let calls = vec![
+            assistant(
+                vec![Block::ToolUse {
+                    id: "r".into(),
+                    name: "request_access".into(),
+                    input: json!({"path": dir.display().to_string(), "reason": "papers"}),
+                }],
+                StopReason::ToolUse,
+            ),
+            assistant(vec![Block::text("done")], StopReason::EndTurn),
+        ];
+        let (mut agent, _) = agent_with(calls, PermissionMode::Allow);
+        agent
+            .registry
+            .insert(Arc::new(crate::tool::request_access::RequestAccess));
+        let mut convo = Conversation::from(vec![Message::user("read my papers")]);
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+
+        let result = convo
+            .messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .find_map(|b| match b {
+                Block::ToolResult { content, .. } => Some(content.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(result.starts_with("Blocked by policy:"), "{result}");
+        assert!(convo.grants.is_empty(), "a flag widened the jail");
+        assert_eq!(outcome.blocked_sends, 0, "a jail request is not a send");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A yes from a person lands on the conversation and outlives the run
+    /// that asked: the next run on the same conversation reaches the path,
+    /// and a fresh conversation on the same agent does not.
+    #[tokio::test]
+    async fn an_approved_grant_lasts_for_the_conversation_and_no_further() {
+        struct Yes;
+        #[async_trait]
+        impl Approver for Yes {
+            async fn approve(&self, _tool: &dyn Tool, _input: &Value) -> Decision {
+                panic!("a jail request must not be routed through approve");
+            }
+            async fn escalate(&self, _tool: &dyn Tool, _input: &Value, why: &str) -> Decision {
+                assert!(why.contains("outside its workspace"), "{why}");
+                Decision::Allow
+            }
+        }
+        /// Reports whether its context reaches the path, through the grants.
+        struct Probe;
+        #[async_trait]
+        impl Tool for Probe {
+            fn name(&self) -> &str {
+                "probe"
+            }
+            fn description(&self) -> &str {
+                "Can this run read the path?"
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                true
+            }
+            async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
+                let raw = input["path"].as_str().unwrap_or_default();
+                Ok(match ctx.resolve_for(raw, crate::grant::Access::Read) {
+                    Ok(_) => ToolOutput::ok("reachable"),
+                    Err(e) => ToolOutput::err(format!("{e:#}")),
+                })
+            }
+        }
+
+        let dir = std::env::temp_dir().join(format!("mecha-reqlife-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.txt");
+        std::fs::write(&file, "x").unwrap();
+        let probe = |id: &str| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: id.into(),
+                    name: "probe".into(),
+                    input: json!({"path": file.display().to_string()}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let calls = vec![
+            assistant(
+                vec![Block::ToolUse {
+                    id: "r".into(),
+                    name: "request_access".into(),
+                    input: json!({"path": dir.display().to_string(), "reason": "papers"}),
+                }],
+                StopReason::ToolUse,
+            ),
+            assistant(vec![Block::text("granted")], StopReason::EndTurn),
+            // Run two, same conversation.
+            probe("p1"),
+            assistant(vec![Block::text("read")], StopReason::EndTurn),
+            // Run three, a fresh conversation on the same agent.
+            probe("p2"),
+            assistant(vec![Block::text("refused")], StopReason::EndTurn),
+        ];
+        let (mut agent, _) = agent_with(calls, PermissionMode::Ask);
+        agent
+            .registry
+            .insert(Arc::new(crate::tool::request_access::RequestAccess));
+        agent.registry.insert(Arc::new(Probe));
+        agent.set_approver(Arc::new(Yes));
+        // Its own workspace: the fixture's is `temp_dir()`, which contains
+        // `dir`, and every half of this test would then pass vacuously.
+        let workspace = std::env::temp_dir().join(format!("mecha-reqws-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&workspace).unwrap();
+        agent.ctx_mut().workspace = workspace.clone();
+
+        let mut convo = Conversation::from(vec![Message::user("open my papers")]);
+        agent.run(&mut convo, None).await.unwrap();
+        assert_eq!(convo.grants.len(), 1, "the yes reached the conversation");
+        assert_eq!(convo.grants[0].source, crate::grant::Source::Approved);
+
+        let last_result = |c: &Conversation| {
+            c.messages
+                .iter()
+                .flat_map(|m| m.content.iter())
+                .filter_map(|b| match b {
+                    Block::ToolResult { content, .. } => Some(content.clone()),
+                    _ => None,
+                })
+                .next_back()
+                .unwrap()
+        };
+        convo.push(Message::user("now read it"));
+        agent.run(&mut convo, None).await.unwrap();
+        assert_eq!(last_result(&convo), "reachable");
+
+        let mut fresh = Conversation::from(vec![Message::user("read it")]);
+        agent.run(&mut fresh, None).await.unwrap();
+        let refused = last_result(&fresh);
+        assert!(refused.contains("outside the workspace"), "{refused}");
+        assert!(fresh.grants.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&workspace).ok();
+    }
+
+    /// Whether a refusal may name `request_access` is read off the run's own
+    /// registry, never inherited: a subagent runs on its parent's context,
+    /// and a parent holding the tool sent a child without it to a call that
+    /// could only fail (review of #711). Withholding counts as absence.
+    #[tokio::test]
+    async fn a_refusal_names_request_access_only_where_this_run_can_call_it() {
+        struct Probe;
+        #[async_trait]
+        impl Tool for Probe {
+            fn name(&self) -> &str {
+                "probe"
+            }
+            fn description(&self) -> &str {
+                "Resolve a path outside the jail."
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                true
+            }
+            async fn call(&self, _input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
+                let err = ctx
+                    .resolve_for("/definitely/outside/x", crate::grant::Access::Read)
+                    .unwrap_err();
+                Ok(ToolOutput::err(format!("{err:#}")))
+            }
+        }
+        let refusal = |with_tool: bool, withheld: bool| async move {
+            let calls = vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "p".into(),
+                        name: "probe".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("ok")], StopReason::EndTurn),
+            ];
+            let (mut agent, _) = agent_with(calls, PermissionMode::Ask);
+            agent.registry.insert(Arc::new(Probe));
+            if with_tool {
+                agent
+                    .registry
+                    .insert(Arc::new(crate::tool::request_access::RequestAccess));
+            }
+            // What a parent's context carries into its child.
+            agent.ctx_mut().grants.requestable = true;
+            let mut cx = (**agent.context()).clone();
+            if withheld {
+                cx.withheld = Arc::from(vec![crate::tool::request_access::NAME.to_string()]);
+            }
+            let mut convo = Conversation::from(vec![Message::user("go")]);
+            agent.run_in(&cx, &mut convo, None).await.unwrap();
+            convo
+                .messages
+                .iter()
+                .flat_map(|m| m.content.iter())
+                .find_map(|b| match b {
+                    Block::ToolResult { content, .. } => Some(content.clone()),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert!(refusal(true, false).await.contains("request_access"));
+        let child = refusal(false, false).await;
+        assert!(!child.contains("request_access"), "{child}");
+        let narrowed = refusal(true, true).await;
+        assert!(!narrowed.contains("request_access"), "{narrowed}");
+    }
+
+    /// `--no-grants` holds for a resumed conversation too: its recorded
+    /// grants are not reachable in an `off` run (the record says the lever
+    /// is off), and they are not erased by it either — not using a grant is
+    /// not ending it (review of #711).
+    #[tokio::test]
+    async fn grants_off_hides_a_resumed_conversations_grants_without_ending_them() {
+        struct Probe;
+        #[async_trait]
+        impl Tool for Probe {
+            fn name(&self) -> &str {
+                "probe"
+            }
+            fn description(&self) -> &str {
+                "Can this run read the path?"
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                true
+            }
+            async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
+                let raw = input["path"].as_str().unwrap_or_default();
+                Ok(match ctx.resolve_for(raw, crate::grant::Access::Read) {
+                    Ok(_) => ToolOutput::ok("reachable"),
+                    Err(e) => ToolOutput::err(format!("{e:#}")),
+                })
+            }
+        }
+        let papers = std::env::temp_dir().join(format!("mecha-off-g-{}", uuid::Uuid::new_v4()));
+        let workspace = std::env::temp_dir().join(format!("mecha-off-ws-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&papers).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        let papers = papers.canonicalize().unwrap();
+        let calls = vec![
+            assistant(
+                vec![Block::ToolUse {
+                    id: "p".into(),
+                    name: "probe".into(),
+                    input: json!({"path": papers.display().to_string()}),
+                }],
+                StopReason::ToolUse,
+            ),
+            assistant(vec![Block::text("ok")], StopReason::EndTurn),
+        ];
+        let (mut agent, _) = agent_with(calls, PermissionMode::Ask);
+        agent.registry.insert(Arc::new(Probe));
+        agent.ctx_mut().workspace = workspace.clone();
+        agent.ctx_mut().grants = crate::grant::Grants::off();
+
+        let held = vec![crate::grant::Grant {
+            path: papers.clone(),
+            access: crate::grant::Access::Read,
+            source: crate::grant::Source::Owner,
+        }];
+        let mut convo = Conversation::from(vec![Message::user("read it")]);
+        convo.grants = held.clone();
+        agent.run(&mut convo, None).await.unwrap();
+
+        let result = convo
+            .messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .find_map(|b| match b {
+                Block::ToolResult { content, .. } => Some(content.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(result.contains("outside the workspace"), "{result}");
+        assert_eq!(
+            convo.grants, held,
+            "an off run ended the conversation's grants"
+        );
+        std::fs::remove_dir_all(&papers).ok();
+        std::fs::remove_dir_all(&workspace).ok();
+    }
+
+    /// The model is told what it may reach: a run holding a grant carries
+    /// the grants note on its request, beside the history and not in it, and
+    /// a run holding none carries no such note. Without it a standing
+    /// `[[grant]]` worked and went unused (review of #711).
+    #[tokio::test]
+    async fn a_run_holding_a_grant_is_told_so_and_one_without_is_not() {
+        let text_of = |req: &CompletionRequest| -> String {
+            req.messages
+                .iter()
+                .flat_map(|m| m.content.iter())
+                .filter_map(|b| match b {
+                    Block::Text { text, .. } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let ask = |granted: bool| async move {
+            let (mut agent, provider) = agent_with(
+                vec![assistant(vec![Block::text("ok")], StopReason::EndTurn)],
+                PermissionMode::Ask,
+            );
+            if granted {
+                agent.ctx_mut().grants =
+                    crate::grant::Grants::standing(vec![crate::grant::Grant {
+                        path: std::path::PathBuf::from("/srv/papers"),
+                        access: crate::grant::Access::Read,
+                        source: crate::grant::Source::Config,
+                    }]);
+            }
+            let mut convo = Conversation::from(vec![Message::user("summarise my papers")]);
+            agent.run(&mut convo, None).await.unwrap();
+            let sent = text_of(&provider.seen.lock().unwrap()[0]);
+            let stored = text_of(&CompletionRequest {
+                messages: convo.messages.clone(),
+                ..provider.seen.lock().unwrap()[0].clone()
+            });
+            (sent, stored)
+        };
+        let (sent, stored) = ask(true).await;
+        assert!(
+            sent.contains("Granted directories") && sent.contains("/srv/papers (read)"),
+            "{sent}"
+        );
+        assert!(
+            !stored.contains("Granted directories"),
+            "the note is sent, never stored"
+        );
+        let (sent, _) = ask(false).await;
+        assert!(!sent.contains("Granted directories"), "{sent}");
     }
 
     /// The **escalation** door shows the call as it will execute too.

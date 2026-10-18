@@ -49,6 +49,12 @@ pub struct Config {
     /// file only.
     #[serde(rename = "rule")]
     pub rules: Vec<crate::policy::RuleConfig>,
+    /// Directories outside the workspace the owner lets every run reach,
+    /// `access = "read"` (the default) or `"write"`. See [`crate::grant`].
+    /// Global file only, enforced in `merge_file`: a cloned repository must
+    /// not bring its own way out of the jail.
+    #[serde(rename = "grant")]
+    pub grants: Vec<crate::grant::GrantConfig>,
     /// How the rules are applied. Global file only.
     pub approval: ApprovalConfig,
     /// Outbound tools staged for user review instead of executed. See
@@ -422,6 +428,7 @@ impl Default for Config {
             documents: None,
             hooks: Vec::new(),
             rules: Vec::new(),
+            grants: Vec::new(),
             approval: ApprovalConfig::default(),
             outbox: OutboxConfig::default(),
             work: WorkConfig::default(),
@@ -1246,6 +1253,9 @@ impl ConfigLayer {
         if let Some(t) = self.tools.as_mut() {
             opt(&mut t.workspace);
         }
+        for g in self.grants.iter_mut().flatten() {
+            g.path = expand_home(&g.path);
+        }
         if let Some(sb) = self.sandbox.as_mut() {
             for list in [sb.writable.as_mut(), sb.readable.as_mut()]
                 .into_iter()
@@ -1524,6 +1534,17 @@ impl Config {
                     );
                 }
             }
+        }
+        // `[[grant]]` is the jail's way out, and only the operator's own
+        // file may open one — the `trust_result_claims` rule, `!= Global`, so
+        // an experiment environment cannot either: a trial's home is built
+        // from its own world, and a grant names a directory on this one.
+        if trust != LayerTrust::Global && layer.grants.take().is_some() {
+            tracing::warn!(
+                "[[grant]] in {} is ignored — access outside the workspace is granted \
+                 from the global config only",
+                path.display()
+            );
         }
         // `[messages]` is receiver-side admission policy, and a project file
         // arrives with a cloned repository — it must not be able to switch a
@@ -2094,6 +2115,8 @@ struct ConfigLayer {
     hooks: Option<Vec<HookConfig>>,
     #[serde(rename = "rule")]
     rules: Option<Vec<crate::policy::RuleConfig>>,
+    #[serde(rename = "grant")]
+    grants: Option<Vec<crate::grant::GrantConfig>>,
     approval: Option<ApprovalLayer>,
     sandbox: Option<SandboxLayer>,
     outbox: Option<OutboxLayer>,
@@ -2453,6 +2476,11 @@ impl ConfigLayer {
         // matching rule wins at decision time, whichever layer wrote it.
         if let Some(v) = self.rules {
             cfg.rules.extend(v);
+        }
+        // Replaced, like hooks: only the global file may set it, so there is
+        // one writer and nothing to merge.
+        if let Some(v) = self.grants {
+            cfg.grants = v;
         }
         if let Some(x) = self.approval {
             if let Some(v) = x.strict_inline_eval {
@@ -3073,6 +3101,42 @@ mod tests {
             Some("attacker@example.com")
         );
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// `[[grant]]` is the jail's way out, so only the operator's own file
+    /// may open one: a project layer (a cloned repository) and an
+    /// experiment environment are both stripped, and the global file's paths
+    /// are `~`-expanded like every other path a config names. A typo'd
+    /// access is a parse error, never a quietly narrower grant.
+    #[test]
+    fn grants_load_from_the_global_file_only() {
+        let dir = std::env::temp_dir().join(format!("mecha-grant-scope-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("layer.toml");
+        std::fs::write(
+            &path,
+            "[[grant]]\npath = \"~/papers\"\n\n[[grant]]\npath = \"/srv/data\"\naccess = \"write\"\n",
+        )
+        .unwrap();
+        for trust in [LayerTrust::Project, LayerTrust::Environment] {
+            let mut cfg = Config::default();
+            cfg.merge_file(&path, trust).unwrap();
+            assert!(cfg.grants.is_empty(), "{trust:?} opened the jail");
+        }
+        let mut global = Config::default();
+        global.merge_file(&path, LayerTrust::Global).unwrap();
+        assert_eq!(global.grants.len(), 2);
+        if let Some(home) = dirs::home_dir() {
+            assert_eq!(global.grants[0].path, home.join("papers"));
+        }
+        assert_eq!(global.grants[0].access, crate::grant::Access::Read);
+        assert_eq!(global.grants[1].access, crate::grant::Access::Write);
+
+        std::fs::write(&path, "[[grant]]\npath = \"/srv\"\naccess = \"wrtie\"\n").unwrap();
+        assert!(Config::default()
+            .merge_file(&path, LayerTrust::Global)
+            .is_err());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

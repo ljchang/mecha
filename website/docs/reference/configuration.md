@@ -43,6 +43,7 @@ they exist; `mecha config show` prints the merged result.
 | `[agent]`, `[tools]`, `[security]`, `[sandbox]` | Merged field by field. Naming one key leaves the rest alone. |
 | `[[rule]]` | Appended. Project rules may add `prompt` and `forbid`; project `allow` rules are ignored. |
 | `[outbox]` | Project routes add to inherited routes; inherited publish classification stays. `dir` is global-only. |
+| `[[grant]]` | Global file only; stripped from a project layer and refused in an experiment environment. |
 | `[[mcp]]`, `[[hook]]`, `[[subagent]]`, `[[search]]` | Replaced wholesale. Merging lists by name would make it impossible for a project to turn a global entry off. |
 
 ### Where the project layer is not read
@@ -56,6 +57,9 @@ scheduled run firing at 03:00 with nobody watching.
 
 Eleven tables are stripped out of a project layer for the same reason, wherever the
 run happens: `[messages]`, `[slack]`, `[web]`, `[system]`, `[harness]`, `[image]`, `[documents]`, `[voice]`, `[personas]`, `[features]` and `[approval]`.
+`[[grant]]` is stripped too, and refused outright from an experiment
+environment: it opens a directory outside the workspace, and a cloned
+repository must not bring its own way out of the jail.
 `[approval]` controls whether inline code needs an explicit decision; `[messages]` is
 receiver-side admission policy, so a cloned repository must not be able to set
 `inbound = "accept"` on your sessions; `[slack]` is the remote control, and a
@@ -303,6 +307,29 @@ Project rules append to global rules; a project cannot replace your restrictions
 Outbox staging happens before approval rules. A global `allow` or `prompt` rule
 on an actively routed tool is a startup error: review that action in the outbox.
 A `forbid` may remain as protection when routing is explicitly disabled.
+
+## `[[grant]]`
+
+Directories (or files) outside the workspace every run may reach. Global file
+only. See [Reaching a directory outside the workspace](/docs/features/security#reaching-a-directory-outside-the-workspace).
+
+```toml
+[[grant]]
+path = "~/Documents/papers"
+
+[[grant]]
+path = "~/Github/notes"
+access = "write"
+```
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `path` | path | required | Absolute or `~/`. Must exist. Never one that contains or sits inside the mecha home or a credential directory. |
+| `access` | string | `"read"` | `read`, or `write` (which includes read). Anything else is a parse error. |
+
+A line that cannot be granted is skipped and named on every start
+(`mecha: [[grant]] … — not granted`). `--no-grants` ignores every line and
+leaves out `request_access`; `mecha eval` forces it.
 
 ## `[security]`
 

@@ -162,6 +162,29 @@ impl Sandbox {
         Sandbox { cfg }
     }
 
+    /// This sandbox with the owner's grants mounted beside the workspace —
+    /// a read grant read-only, a write grant writable — so a confined
+    /// `shell` reaches exactly what `fs_read` and `fs_write` do. Without
+    /// it the two would disagree: the file tools reading a granted
+    /// directory the shell cannot see, which a model resolves by guessing.
+    ///
+    /// Per call, never at construction: a live grant arrives mid-run. Every
+    /// backend reads `readable`/`writable`, so this is the one edit; an
+    /// unconfined shell already reaches everything and is unchanged.
+    pub fn with_grants(&self, grants: &[crate::grant::Grant]) -> Sandbox {
+        let mut cfg = self.cfg.clone();
+        for g in grants {
+            let list = match g.access {
+                crate::grant::Access::Read => &mut cfg.readable,
+                crate::grant::Access::Write => &mut cfg.writable,
+            };
+            if !list.contains(&g.path) {
+                list.push(g.path.clone());
+            }
+        }
+        Sandbox { cfg }
+    }
+
     pub fn backend(&self) -> Backend {
         self.cfg.kind
     }
@@ -228,8 +251,9 @@ impl Sandbox {
 
     /// Build the process that will run `command`.
     ///
-    /// `workspace` is mounted writable; `cwd` must be inside it — the caller has
-    /// already proved that through `ToolCtx::resolve`.
+    /// `workspace` is mounted writable; `cwd` must be inside it, or inside a
+    /// grant this sandbox mounts ([`Sandbox::with_grants`]) — the caller has
+    /// already proved that through `ToolCtx::resolve_for`.
     pub fn command(
         &self,
         command: &str,
@@ -1240,6 +1264,41 @@ mod tests {
         assert!(
             format!("{err:#}").contains("landlock cannot apply"),
             "{err:#}"
+        );
+    }
+
+    /// A confined shell sees exactly what the file tools do: a read grant
+    /// mounted read-only, a write grant writable, and the base sandbox (the
+    /// one built at startup and shared) untouched by either.
+    #[test]
+    fn grants_mount_beside_the_workspace_with_their_access() {
+        use crate::grant::{Access, Grant, Source};
+        let workspace = std::env::temp_dir();
+        let base = Sandbox::new(cfg(Backend::Bwrap));
+        let grant = |p: &str, access| Grant {
+            path: PathBuf::from(p),
+            access,
+            source: Source::Approved,
+        };
+        let granted = base.with_grants(&[
+            grant("/srv/papers", Access::Read),
+            grant("/srv/drafts", Access::Write),
+        ]);
+        let args = granted.bwrap_args(&workspace, &workspace).unwrap();
+        let after = |flag: &str| -> Vec<String> {
+            args.iter()
+                .enumerate()
+                .filter(|(_, a)| *a == flag)
+                .map(|(i, _)| args[i + 1].clone())
+                .collect()
+        };
+        assert!(after("--ro-bind-try").contains(&"/srv/papers".to_string()));
+        assert!(!after("--ro-bind-try").contains(&"/srv/drafts".to_string()));
+        assert_eq!(after("--bind-try"), vec!["/srv/drafts".to_string()]);
+        assert!(!granted.writes_stay_in_workspace());
+        assert!(
+            base.writes_stay_in_workspace(),
+            "the shared sandbox was widened"
         );
     }
 

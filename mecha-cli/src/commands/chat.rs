@@ -284,6 +284,20 @@ enum Flow {
     Quit,
 }
 
+/// An owner's grant change, written to the transcript at once — the TUI's
+/// `recorded`, for the same reason: a revoke the file forgot comes back on
+/// resume.
+fn recorded(
+    said: String,
+    session: Option<&Session>,
+    grants: &[mecha_core::grant::Grant],
+) -> String {
+    match session.map(|s| s.record_grants(grants)) {
+        Some(Err(e)) => format!("{said} (not written to the transcript: {e:#})"),
+        _ => said,
+    }
+}
+
 fn handle_command(
     command: &str,
     prepared: &setup::Prepared,
@@ -291,7 +305,7 @@ fn handle_command(
     total: &Usage,
     session: Option<&Session>,
 ) -> Flow {
-    let (name, _rest) = command.split_once(' ').unwrap_or((command, ""));
+    let (name, rest) = command.split_once(' ').unwrap_or((command, ""));
     match name {
         "exit" | "quit" | "q" => return Flow::Quit,
 
@@ -302,6 +316,8 @@ fn handle_command(
                  \x20 /usage          tokens used this session\n\
                  \x20 /clear          forget the conversation so far\n\
                  \x20 /session        show the transcript path\n\
+                 \x20 /grant [path [write]]  list, or let this conversation reach a directory\n\
+                 \x20 /revoke <path>  end this conversation's grants at or under a path\n\
                  \x20 /exit           quit"
             );
         }
@@ -329,6 +345,34 @@ fn handle_command(
             // not this one's (review of #543).
             prepared.agent.registry().forget_conversation_state();
             println!("  conversation cleared");
+        }
+
+        // The TUI's `/grant`, through the same function. No mid-run case:
+        // this loop reads the next line only after the run returns.
+        "grant" | "grants" => {
+            let standing = &prepared.agent.context().tools.grants;
+            if rest.trim().is_empty() {
+                let lines = mecha_core::grant::listing(standing, &convo.grants);
+                if lines.is_empty() {
+                    println!("  no grants: the run reaches its workspace only");
+                }
+                for line in lines {
+                    println!("  {line}");
+                }
+            } else {
+                match mecha_core::grant::grant_by_owner(rest, standing, &mut convo.grants) {
+                    Ok(said) => println!("  {}", recorded(said, session, &convo.grants)),
+                    Err(e) => println!("  /grant {}: {e:#}", rest.trim()),
+                }
+            }
+        }
+
+        "revoke" => {
+            let standing = &prepared.agent.context().tools.grants;
+            match mecha_core::grant::revoke_by_owner(rest, standing, &mut convo.grants) {
+                Ok(said) => println!("  {}", recorded(said, session, &convo.grants)),
+                Err(e) => println!("  /revoke {}: {e:#}", rest.trim()),
+            }
         }
 
         "session" => match session {

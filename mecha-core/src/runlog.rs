@@ -862,7 +862,8 @@ fn exhaustive(record: &Record) {
         | Record::Outcome(_)
         | Record::LateResult { .. }
         | Record::PendingNote { .. }
-        | Record::GoalAnchor { .. } => {}
+        | Record::GoalAnchor { .. }
+        | Record::Grants { .. } => {}
         // Not ignored: `Session::outcomes_attributed`, which the scan reads,
         // adds it to its run's tool errors.
         Record::LateFailure { .. } => {}
