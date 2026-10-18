@@ -248,8 +248,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     };
 
     // Nothing executes in stop/error mode, so nothing needs approving. Live
-    // mode falls back to the configured permission mode — real tools run after
-    // the divergence, and they deserve exactly the scrutiny they always get.
+    // keeps the configured permission mode for the calls the loop still
+    // approves; past the divergence only the gate's pure reads run, and a
+    // read-only tool skips the approver in a real run too.
     let approver: Arc<dyn mecha_core::tool::Approver> = match mode {
         OnDivergence::Live => Arc::new(ModeApprover {
             mode: prepared.config.tools.permission_mode,
@@ -505,6 +506,9 @@ mod tests {
             ["factory__bundle_publish".to_string()],
         )));
         let gate = live_gate(&configured);
+        // The store is only needed to build the route; gone before any assert
+        // can fail and leave it behind.
+        let _ = std::fs::remove_dir_all(&root);
         for routed in ["mail__mail_send", "factory__bundle_publish"] {
             assert_eq!(
                 gate.refuses(&ReadNamed(routed), &json!({})).as_deref(),
@@ -516,6 +520,5 @@ mod tests {
             gate.refuses(&ReadNamed("mail__mail_search"), &json!({})),
             None
         );
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

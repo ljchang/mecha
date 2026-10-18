@@ -179,6 +179,13 @@ impl LiveGate {
         if READ_ONLY_WRITERS.contains(&name) {
             return Some("it writes, although it reports itself read-only".into());
         }
+        // A subagent reports `read_only()` and derives no `destructive` from
+        // its child, so its legs below could read as a pure read while the
+        // child it starts writes live. Delegating must not be the way around
+        // this gate, any more than around the parent's hooks or outbox.
+        if tool.runs_a_fresh_conversation() {
+            return Some("it starts a child run whose tools this gate cannot see".into());
+        }
         let caps = tool.capabilities();
         if !tool.read_only() || caps.destructive {
             return Some("it writes".into());
@@ -1397,6 +1404,35 @@ mod tests {
         let open = LiveGate::reads_only();
         let read = Named("fs_read", true, Egress::None);
         assert_eq!(open.refuses(&read, &json!({})), None);
+
+        // Review of #713: a subagent reports read-only with no egress when
+        // its child cannot send, and still writes through the child.
+        struct Delegates;
+        #[async_trait]
+        impl Tool for Delegates {
+            fn name(&self) -> &str {
+                "editor"
+            }
+            fn description(&self) -> &str {
+                "test"
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                true
+            }
+            fn runs_a_fresh_conversation(&self) -> bool {
+                true
+            }
+            async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::ok("ran"))
+            }
+        }
+        assert!(open
+            .refuses(&Delegates, &json!({}))
+            .unwrap()
+            .contains("child run"));
         assert!(open
             .refuses(&Named("fs_write", false, Egress::None), &json!({}))
             .unwrap()
