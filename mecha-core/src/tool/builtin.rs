@@ -60,6 +60,13 @@ impl Tool for FsRead {
         "fs_read"
     }
 
+    /// A path outside the workspace asks the owner, Claude Code's way
+    /// ([`ToolCtx::ask_for_path`]); a yes opens its folder for the rest of
+    /// the conversation before this call runs.
+    fn needs_a_person(&self, input: &Value, ctx: &ToolCtx) -> Option<super::PersonAsk> {
+        ctx.ask_for_path(self.name(), input.get("path")?.as_str()?, Access::Read)
+    }
+
     fn description(&self) -> &str {
         "Read a UTF-8 text file from the workspace. Use `offset` and `limit` (1-indexed lines) \
          to read part of a large file."
@@ -251,6 +258,13 @@ impl Tool for FsWrite {
         "fs_write"
     }
 
+    /// A path outside the workspace asks the owner, Claude Code's way
+    /// ([`ToolCtx::ask_for_path`]); a yes opens its folder for the rest of
+    /// the conversation before this call runs.
+    fn needs_a_person(&self, input: &Value, ctx: &ToolCtx) -> Option<super::PersonAsk> {
+        ctx.ask_for_path(self.name(), input.get("path")?.as_str()?, Access::Write)
+    }
+
     fn description(&self) -> &str {
         "Create a file or replace its entire contents. To change part of an existing file, \
          prefer fs_edit."
@@ -297,6 +311,13 @@ pub struct FsEdit;
 impl Tool for FsEdit {
     fn name(&self) -> &str {
         "fs_edit"
+    }
+
+    /// A path outside the workspace asks the owner, Claude Code's way
+    /// ([`ToolCtx::ask_for_path`]); a yes opens its folder for the rest of
+    /// the conversation before this call runs.
+    fn needs_a_person(&self, input: &Value, ctx: &ToolCtx) -> Option<super::PersonAsk> {
+        ctx.ask_for_path(self.name(), input.get("path")?.as_str()?, Access::Write)
     }
 
     fn description(&self) -> &str {
@@ -357,6 +378,13 @@ pub struct FsList;
 impl Tool for FsList {
     fn name(&self) -> &str {
         "fs_list"
+    }
+
+    /// A path outside the workspace asks the owner, Claude Code's way
+    /// ([`ToolCtx::ask_for_path`]); a yes opens its folder for the rest of
+    /// the conversation before this call runs.
+    fn needs_a_person(&self, input: &Value, ctx: &ToolCtx) -> Option<super::PersonAsk> {
+        ctx.ask_for_path(self.name(), input.get("path")?.as_str()?, Access::Read)
     }
 
     fn description(&self) -> &str {

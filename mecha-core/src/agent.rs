@@ -5513,8 +5513,15 @@ impl Agent {
             // the sends the harness refused, and a jail request nobody was
             // there to answer is not one.
             let send_escalation = escalation.is_some();
+            // The grant a yes creates, when the question is a file tool's
+            // "may I reach this folder" (`ToolCtx::ask_for_path`): added below,
+            // on `Allow` only, before the call runs.
+            let mut on_yes: Option<crate::grant::Grant> = None;
             if escalation.is_none() {
-                escalation = tool.needs_a_person(input);
+                if let Some(ask) = tool.needs_a_person(input, &cx.tools) {
+                    escalation = Some(ask.why);
+                    on_yes = ask.grant;
+                }
             }
 
             // What a *staged* call will really execute, computed here rather
@@ -5847,6 +5854,13 @@ impl Agent {
                 }
                 (None, None) => None,
             };
+            if let (Some(Decision::Allow), Some(grant)) = (&decision, on_yes.take()) {
+                // A grant the list cannot take is a call that will be refused
+                // by the jail it was meant to open — said there, not here.
+                if let Err(e) = cx.tools.grants.add(grant) {
+                    tracing::warn!(tool = %name, "an approved grant was not added: {e:#}");
+                }
+            }
             if let Some(decision) = decision {
                 // The prefix is chosen by *who* refused, never by the approver:
                 // an approver that could pick its own label could label machine
@@ -11764,6 +11778,101 @@ mod tests {
         );
         let (sent, _) = ask(false).await;
         assert!(!sent.contains("Granted directories"), "{sent}");
+    }
+
+    /// The file tools ask by themselves, Claude Code's way: reading a file
+    /// outside the workspace puts one card in front of the owner, a yes opens
+    /// its folder for the conversation and the read goes ahead, a no grants
+    /// nothing, and where nobody could answer no card is raised at all (the
+    /// owner's ruling, 2026-10-18: "keep it similar to Claude Code").
+    #[tokio::test]
+    async fn a_file_tool_asks_for_the_folder_it_reaches_into() {
+        struct Answer(Decision, Arc<Mutex<Vec<String>>>);
+        #[async_trait]
+        impl Approver for Answer {
+            async fn approve(&self, _t: &dyn Tool, _i: &Value) -> Decision {
+                panic!("a reach outside the workspace must not be routed through approve");
+            }
+            async fn escalate(&self, _t: &dyn Tool, _i: &Value, why: &str) -> Decision {
+                self.1.lock().unwrap().push(why.to_string());
+                self.0.clone()
+            }
+        }
+        let papers =
+            std::env::temp_dir().join(format!("mecha-ask-folder-{}", uuid::Uuid::new_v4()));
+        let workspace = std::env::temp_dir().join(format!("mecha-ask-ws-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&papers).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        let papers = papers.canonicalize().unwrap();
+        std::fs::write(papers.join("notes.txt"), "the lemon kayak").unwrap();
+        let file = papers.join("notes.txt").display().to_string();
+
+        let run = |decision: Decision, offered: bool| {
+            let file = file.clone();
+            let workspace = workspace.clone();
+            async move {
+                let calls = vec![
+                    assistant(
+                        vec![Block::ToolUse {
+                            id: "r".into(),
+                            name: "fs_read".into(),
+                            input: json!({ "path": file }),
+                        }],
+                        StopReason::ToolUse,
+                    ),
+                    assistant(vec![Block::text("done")], StopReason::EndTurn),
+                ];
+                let (mut agent, _) = agent_with(calls, PermissionMode::Ask);
+                agent
+                    .registry
+                    .insert(Arc::new(crate::tool::builtin::FsRead));
+                if offered {
+                    agent
+                        .registry
+                        .insert(Arc::new(crate::tool::request_access::RequestAccess));
+                }
+                let asked = Arc::new(Mutex::new(Vec::new()));
+                agent.set_approver(Arc::new(Answer(decision, Arc::clone(&asked))));
+                agent.ctx_mut().workspace = workspace;
+                let mut convo = Conversation::from(vec![Message::user("read my notes")]);
+                agent.run(&mut convo, None).await.unwrap();
+                let result = convo
+                    .messages
+                    .iter()
+                    .flat_map(|m| m.content.iter())
+                    .find_map(|b| match b {
+                        Block::ToolResult { content, .. } => Some(content.clone()),
+                        _ => None,
+                    })
+                    .unwrap();
+                let asked = asked.lock().unwrap().clone();
+                (result, convo.grants, asked)
+            }
+        };
+
+        let (read, grants, asked) = run(Decision::Allow, true).await;
+        assert!(read.contains("the lemon kayak"), "{read}");
+        assert_eq!(asked.len(), 1, "one card");
+        assert!(asked[0].contains("outside its workspace"), "{}", asked[0]);
+        assert_eq!(grants.len(), 1);
+        assert_eq!(grants[0].path, papers, "the folder, not the file");
+        assert_eq!(grants[0].access, crate::grant::Access::Read);
+
+        let (refused, grants, _) = run(Decision::Deny("not that one".into()), true).await;
+        assert!(refused.starts_with("Denied by the user:"), "{refused}");
+        assert!(grants.is_empty());
+
+        // Nobody to answer (no `request_access` here): no card, the jail refuses.
+        let (refused, grants, asked) = run(Decision::Allow, false).await;
+        assert!(
+            asked.is_empty(),
+            "a card was raised where nobody could answer"
+        );
+        assert!(refused.contains("outside the workspace"), "{refused}");
+        assert!(grants.is_empty());
+
+        std::fs::remove_dir_all(&papers).ok();
+        std::fs::remove_dir_all(&workspace).ok();
     }
 
     /// The **escalation** door shows the call as it will execute too.
