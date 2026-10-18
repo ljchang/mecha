@@ -486,6 +486,53 @@ mod tests {
         }
     }
 
+    /// The other two halves of the configured guards (review of #712): a gate
+    /// that dropped the run's approval rules or its `pre_tool` hooks would
+    /// pass the routed-names test above and fail open here.
+    #[test]
+    fn the_live_gate_carries_the_runs_rules_and_hooks() {
+        #[derive(serde::Deserialize)]
+        struct W {
+            rule: Vec<mecha_core::policy::RuleConfig>,
+        }
+        let w: W = toml::from_str(
+            r#"
+[[rule]]
+tool = "graph__kg_search"
+decision = "prompt"
+"#,
+        )
+        .unwrap();
+        let configured = RunContext::new(
+            ToolCtx::default(),
+            Arc::new(ModeApprover {
+                mode: PermissionMode::Allow,
+            }),
+        )
+        .with_policy(Arc::new(
+            mecha_core::policy::ExecPolicy::from_config(&w.rule, true).unwrap(),
+        ))
+        .with_hooks(Arc::new(
+            mecha_core::hooks::HookSet::from_config(&[mecha_core::config::HookConfig {
+                event: "pre_tool".into(),
+                command: "true".into(),
+                tools: vec!["fs_read".into()],
+                timeout_secs: None,
+            }])
+            .unwrap(),
+        ));
+        let gate = live_gate(&configured);
+        assert!(gate
+            .refuses(&ReadNamed("graph__kg_search"), &json!({}))
+            .unwrap()
+            .contains("approval rule"));
+        assert!(gate
+            .refuses(&ReadNamed("fs_read"), &json!({}))
+            .unwrap()
+            .contains("pre_tool hook"));
+        assert_eq!(gate.refuses(&ReadNamed("fs_list"), &json!({})), None);
+    }
+
     /// The regression (`docs/ROLLOUT-DESIGN.md` §1.1): a live replay ran past
     /// its divergence with none of the guards the run was configured with.
     /// The gate it now runs behind is built from them — the routed and the
