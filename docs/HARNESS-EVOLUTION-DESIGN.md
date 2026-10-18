@@ -754,6 +754,11 @@ near-miss half.
   It rides in the message that carries the tool results, the slot steering
   text already uses, so it adds no new message shape and every `tool_use`
   id still gets exactly one result.
+  - "Beside" is not literal. A turn's `tool_result` blocks come first (the
+    loop already appends tool pictures after every result for this
+    reason), so in a batch the hints follow all the results.
+  - Each hint therefore carries a caption naming the call it explains,
+    the way the picture path captions its images.
   - Concatenated into an `external: true` result, owner text would ride
     inside a block the conversation labels third-party. That is the
     inverse of the incident `CLAUDE.md` records, where a guard's refusal
@@ -1031,6 +1036,19 @@ covering what the diagnostician reads most.
     `scripts/` file is not drafted.** The script-bundling skills in the
     31k-skill audit were about twice as likely to be vulnerable, and a
     script is code, not prose a reviewer reads once.
+  - **A drafted skill carries learning's provenance condition.** Its body
+    rides every future run's cached prefix, which is the same half-life as a
+    learned rule. A learned rule is gated *structurally* on clean
+    provenance, with deliberately no knob.
+    - So a diagnosis may draft a skill only if everything it read was of
+      clean origin: the typed digest, and clean transcripts if R6 admits
+      them.
+    - A diagnosis that read any armed session's withheld view (§7.3's
+      option B) may still propose a config or an architecture change, but
+      it does not draft a skill.
+    - Owner review stays the selection, not the only gate.
+    - This narrows R7 as ruled. It is proposed here so the owner can
+      confirm it rather than discover it.
 
 **Rules kept.**
 - No lane promotes itself: the owner accepts every structural change.
@@ -1136,6 +1154,9 @@ If the edit surface ever grows past four knobs and learned rules:
 - **R7 (P10): yes.** An owner-reviewed skill drafted from a measured
   diagnosis is allowed. Unreviewed model-authored skills stay refused, and
   no drafted skill carries an executable script (P10).
+  - *Proposed narrowing, awaiting the owner's word:* a skill may be
+    drafted only from clean-provenance evidence, learning's condition (P10).
+    Review of #712 found that R7 as ruled did not carry it.
 
 ### 7.2 Owed
 - **R2 (P4).** Should the learner reply in deltas (structural, larger), or

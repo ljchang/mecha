@@ -476,7 +476,17 @@ structural can tell which continuation was better.
 2. **Roll out each** for a horizon of at most two steps, in the dry world.
    The literature's best simulators degrade past one step, and real
    execution is preferred over imagined execution (§9).
-3. **Choose by §5.2.**
+3. **Choose by §5.2, with a halted arm ranked explicitly.** A halt is
+   information, but it is not a score: nothing was measured about what came
+   after it. The order is:
+   - an arm whose structural validator passed;
+   - then a halted arm;
+   - then an arm whose validator failed.
+
+   If no arm scored at all, preplay changes nothing: the live run takes its
+   own next step, as if preplay had not run. A natural implementation that
+   ranked a halted arm by its missing score would prefer exactly the
+   continuation nothing was measured about.
 4. **The live run commits only the winner's first action, then replans.**
    - The live run re-issues the winner's first call, with the same tool and
      arguments, through the normal path. A send stages into the owner's real
@@ -520,7 +530,7 @@ Each phase ships and is measured before the next starts.
 
 | Phase | What | Exit test |
 |---|---|---|
-| **0** | Fix §1.1: live until the first consequential call (`LiveGate`) | A routed call past the divergence stops the replay and executes nothing. A recording full of routed calls that the model reproduces replays to its end. A replay built without a gate executes nothing past its divergence |
+| **0** | Fix §1.1: live until the first consequential call (`LiveGate`) | A routed call past the divergence stops the replay and executes nothing. **So do a rule-gated call and a hook-watched call**: the gate is tested as built from the run's configured route, rules *and* hooks, so one that dropped any of them fails. A recording full of routed calls that the model reproduces replays to its end. A replay built without a gate executes nothing past its divergence |
 | **1** | The effect axis (§3.2): a closed enum, declared in code for built-in and first-party tools, earned from the operator for third-party MCP tools, annotations caution-only, undeclared halts. Exact-argument recorded matching for rollouts | Every registered tool has a class. A test registers a third-party tool that claims `readOnlyHint` with no operator class, and sees a halt |
 | **2** | The dry world: scratch outbox, scratch workspace copy, store-write answers, halts, `RolloutApprover` behind the configured rules and hooks, R29 in the engine, seat and voice gating | Integration test, in the confinement tests' style: a rollout that tries every effect class leaves the real outbox, stores and workspace byte-identical. **And** a configured `forbid` rule and a denying `pre_tool` hook each halt a rollout at a call the effect table would have allowed. The byte-identical test cannot catch a dropped rule, because a scratch write leaves the real tree untouched either way |
 | **3** | `drive_rollout`, single-turn: restored anchor, `StopCause::Horizon`, two controls, the `ComparisonStore` schema | **Measure the control noise floor on the live corpus first.** If the controls disagree more than candidates plausibly could, stop and fix sampling (seeded, pinned serving) before building on it |
