@@ -258,9 +258,11 @@ fn admit_against(path: &Path, protected: &[PathBuf]) -> Result<PathBuf> {
 pub struct Grants {
     standing: Arc<[Grant]>,
     live: Arc<Mutex<Vec<Grant>>>,
-    /// Whether `request_access` is registered where this context runs, so a
-    /// refusal can name it truthfully. A name in a refusal for a tool that
-    /// is not there is a dead end dressed as a route.
+    /// Whether `request_access` is dispatchable in the run this context
+    /// belongs to, so a refusal can name it truthfully — a name in a
+    /// refusal for a tool that is not there is a dead end dressed as a
+    /// route. Stamped by `Agent::run_in` from the run's own registry; off
+    /// everywhere else.
     pub requestable: bool,
 }
 

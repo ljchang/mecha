@@ -24,6 +24,9 @@ use serde_json::{json, Value};
 
 pub struct RequestAccess;
 
+/// The registered name, for the places that ask whether it is reachable.
+pub const NAME: &str = "request_access";
+
 fn parse(input: &Value) -> std::result::Result<(String, Access, String), String> {
     let path = input
         .get("path")
@@ -47,7 +50,7 @@ fn parse(input: &Value) -> std::result::Result<(String, Access, String), String>
 #[async_trait]
 impl Tool for RequestAccess {
     fn name(&self) -> &str {
-        "request_access"
+        NAME
     }
 
     fn description(&self) -> &str {
