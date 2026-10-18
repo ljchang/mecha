@@ -583,8 +583,8 @@ each build.
 
 **Gap.**
 - `candidate::Guard` already separates "did not beat the original" (a
-  missing win) from "made something worse" (a regression). Its doc comment
-  calls them "opposite findings".
+  missing win) from "made something worse" (a regression). The
+  `Judgement::guard` field's doc comment calls them "opposite findings".
 - `commands/diagnose.rs::harness_history` throws that away. It renders each
   past candidate's free-text `reason`, falling back to "measured worse", and
   `diagnose::Evidence` heads the list with "do not propose any of these
@@ -645,7 +645,8 @@ diagnostician's brief, not in any run's prefix.
   exists. It just has never been counted.
 - An accepted override is permanent until a person reverts it. Learned
   rules, by contrast, are re-validated and retired ("acceptance is not
-  tenure").
+  tenure"). `tenure.rs` is a different mechanism: a rule's promotion-only
+  standing with the owner. Retirement is what carries the contrast.
 
 **Source.**
 - Rethinking harness evolution: gains vanish at a matched budget.
@@ -696,11 +697,15 @@ diagnostician's brief, not in any run's prefix.
   exact text** — deliberately, so that two distinct rules cannot merge.
 - Convictions are keyed by id (`ValidationRecord::attributed_rule_id`,
   `rule_tallies`).
-- The retirement brake catches a reworded *retired* rule. Nothing catches a
-  reworded *active* one. A rule with two attributed regressions, one short
-  of `DEFAULT_RETIRE_AT`, that the learner restates in new words comes back
-  under a fresh id with an empty record, and its probation is re-decided by
-  the new batch.
+- The retirement brake catches a reworded *retired* rule. For an *active*
+  one, `learning::near_restatements` **detects** a near miss: the same text
+  once case, punctuation and the `-ise`/`-ize` spelling are normalised.
+  `commands/learn.rs` warns on it ("restates … but not word for word"),
+  and carries nothing, by design: "Reported, never merged".
+- A genuine paraphrase in new words is not detected at all.
+- Either way, a rule with two attributed regressions, one short of
+  `DEFAULT_RETIRE_AT`, comes back under a fresh id with an empty record,
+  and its probation is re-decided by the new batch.
 
 **Source.**
 - ACE's delta protocol (ADD / UPDATE / REMOVE on stable bullet ids, merged
@@ -714,12 +719,14 @@ diagnostician's brief, not in any run's prefix.
   - an `update` keeps its id, tallies, probation and lineage;
   - untouched rules are untouched by construction;
   - the reply *is* a per-mutation ledger.
-- **(b) The narrow fix.** Carry convictions and probation across the same
-  `normalized_rule_key` match the retirement brake already uses, and leave
-  identity alone.
+- **(b) The narrow fix.** Where `near_restatements` already pairs a new rule
+  with an active one, carry the old rule's convictions and probation to the
+  new id, and leave identity alone. The detection exists, so this is the
+  carry only. It covers near misses and no paraphrase.
 
-(a) is the structural answer to `SELF-IMPROVEMENT-RESEARCH.md` §4. (b) is
-a day's work.
+(a) is the structural answer to `SELF-IMPROVEMENT-RESEARCH.md` §4, and the
+only option that covers a paraphrase. (b) is a day's work and closes the
+near-miss half.
 
 ### P5. Knowledge that fires on an error, in the tail — M
 
@@ -801,6 +808,9 @@ three categories that harden into self-imposed constraints:
 `MISMATCH_REFLECTOR_SYSTEM` already carries one of these ("never derive
 stop-work, skip-work, or hard call-limit rules from counts alone"). The
 steer, denial and follow-up reflector does not.
+`WRITING_REFLECTOR_SYSTEM` (`Trigger::Edit`) is left alone: the three
+categories are shaped by tools and environment, and a draft edit is
+neither.
 
 **Source.** Hermes's `_DO_NOT_CAPTURE_BLOCK`, written after exactly this
 failure in production. PASB's 51.4% shows a bare instruction is not
@@ -890,7 +900,7 @@ non-holdout pool:
   half is a wider read than anything the loop does today. That is why it is
   a ruling (R6) and not part of the digest.
 - **For an armed session, the per-intervention withheld views of that
-  episode, concatenated.**
+  episode, concatenated (after R6).**
   - `Intervention::user_evidence_only` reduces one moment: the owner's typed
     text and the tool names before and after it. P9 uses exactly that,
     once per intervention, and nothing between interventions.
@@ -898,8 +908,8 @@ non-holdout pool:
     user turn in an armed session can itself hold pasted third-party text.
     That is tolerable over a moment the owner typed in order to intervene,
     and a different bet over every user turn in the session.
-  - At intervention scale it needs no ruling. A whole-session view would
-    be a second widening, and R6 would have to name it.
+  - A whole-session view would be a further widening, and is not
+    proposed.
 
 The mission requires every proposal to cite an episode and a turn, and a
 proposal that cites none is refused before measurement. The existing
@@ -910,10 +920,20 @@ directory is part of this build, or the no-verbatim test silently stops
 covering what the diagnostician reads most.
 
 **Rules kept.**
-- §13.1's artifact test is the ruling this rests on.
-- Third-party text never reaches the brief, because armed sessions are
-  shown through the reflector's reduction. That is stricter than §13.1
-  requires.
+- **P9 crosses §5's letter, and argues it from §5's reason.**
+  - `SELF-IMPROVEMENT-RESEARCH.md` §5 says "the input to a prose proposal
+    must be a number, never a body of text". Its reason is that "a
+    transcript excerpt is third-party text on the longest half-life path".
+  - §13.1 relaxed only the *output* form of a web-informed diagnosis. It
+    does not license this input.
+  - The typed digest is inside §5's letter: closed-set names and counts
+    are counters. **It needs no ruling.**
+  - The per-intervention withheld views carry no third-party text: the
+    owner's typed words and tool names. A clean transcript carries none by
+    definition. Both are outside §5's letter and inside its reason.
+  - The outputs keep §5's protection where it matters. A config candidate
+    is a number, and a prose or architecture candidate stages for the
+    owner and never auto-accepts. **Both text halves wait on R6.**
 - Most sessions arm early (`PROVENANCE-DESIGN.md`: 15 of 18 on message 1
   or 2), so the clean-transcript half is thin. The digest carries most of
   the weight. Whether the clean half is worth building is **R6**.
@@ -1008,7 +1028,10 @@ If the edit surface ever grows past four knobs and learned rules:
   `assert_no_grader_verdicts`, over every context a model sees, matching by
   file name and by content. Before P8 runs, confirm that no eval case
   check, `mismatch.rs` gold fixture or score file is reachable from a
-  `trial_env` home, or through `web_search` from inside one.
+  `trial_env` home, or through `web_search` from inside one. The concrete
+  type to check is `fixture_check::FixtureCheck`: its expected values
+  (`equals`, `contains`, `count`) live in the manifest, and its `file`
+  resolves inside the trial's own `fixtures/` directory.
 
 ---
 
@@ -1029,9 +1052,10 @@ If the edit surface ever grows past four knobs and learned rules:
   two, or more? Rare corrections learn more slowly the higher this is set.
 
 - **R6 (P9).** Should the diagnostician's brief include clean transcripts
-  in full, or only the typed digest and the per-intervention withheld
-  views? (A whole-session withheld view of an armed session is not
-  proposed.)
+  in full, and may it see the per-intervention withheld views of armed
+  sessions? Both relax `SELF-IMPROVEMENT-RESEARCH.md` §5's letter (P9 argues
+  it from §5's reason). The typed digest needs neither. A whole-session
+  withheld view of an armed session is not proposed.
 - **R7 (P10).** Does `SKILLS-RESEARCH.md` §9 still refuse an owner-reviewed
   skill drafted from a measured diagnosis, or only an unreviewed
   model-authored one? Nothing in Tier 1 needs this answered first, because
@@ -1041,8 +1065,9 @@ If the edit surface ever grows past four knobs and learned rules:
 worked:
 1. P1 and P2: an honest history and a counted noise floor. Both are small,
    and P8's verdicts mean nothing without P2.
-2. P9: the digest half needs no ruling. It is the cheapest change that
-   could stop the blind proposals.
+2. P9's typed digest: inside §5's letter, so it needs no ruling. It is the
+   cheapest change that could stop the blind proposals. The withheld views
+   and clean transcripts follow after R6.
 3. P8, after R1.
 4. P10, after P8, starting with tool descriptions.
 5. Tier 2 alongside, smallest first: P7, P3, P6, then P4 (after R2) and
