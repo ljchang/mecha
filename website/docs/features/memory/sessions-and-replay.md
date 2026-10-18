@@ -341,6 +341,11 @@ The report names that call and its arguments (`halted_before` in
 `--json`). Stopping there is the mode working, not failing, so the exit
 status is 0. Where a branch was about to act is what a live replay is for.
 
+One case is refused earlier. A send to a destination the model chooses,
+in a conversation that already holds private and untrusted content, is
+blocked by the trifecta interlock before the gate sees it. Nothing runs,
+the replay continues, and `halted_before` stays empty for that call.
+
 ### A replayed episode comes back gradeable
 
 The report carries the replayed episode's outcome counters — the same
