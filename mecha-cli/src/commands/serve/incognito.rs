@@ -338,11 +338,13 @@ impl Room {
     /// Open a room for `key` under `rooms`, owner-only.
     pub fn open(rooms: &Path, key: &str) -> Result<Room> {
         let root = rooms.join(key);
-        // The jail is named for the key: `present::WebAsker` routes an
-        // `ask_user` card by the jail's directory name, which for every web
-        // session is its key. A jail called `workspace` sent an incognito
-        // question nowhere — or to an ordinary chat of that name, carrying
-        // this conversation's words with it (found on review of #321).
+        // The jail is named for the key. `present::WebAsker` routes an
+        // `ask_user` card by the turn's stamped key (`ToolCtx::conversation`)
+        // and falls back to the jail's directory name only when nothing
+        // stamped one; the name keeps that fallback right for a room too. A
+        // jail called `workspace` once sent an incognito question nowhere — or
+        // to an ordinary chat of that name, carrying this conversation's
+        // words with it (found on review of #321).
         let workspace = root.join(key);
         let spill = root.join("spill");
         for dir in [rooms, root.as_path()] {
@@ -691,7 +693,8 @@ mod tests {
         let key = new_key();
         let room = Room::open(&rooms, &key).unwrap();
         assert!(room.workspace.is_dir() && room.spill.is_dir());
-        // `WebAsker` routes by the jail's directory name; it must be the key.
+        // `WebAsker`'s fallback route is the jail's directory name; it must
+        // be the key (the stamped `ToolCtx::conversation` is the main route).
         assert_eq!(
             room.workspace.file_name().unwrap().to_str(),
             Some(key.as_str())

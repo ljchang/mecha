@@ -2335,7 +2335,10 @@ first sketch would have widened the jail with nobody asked:
   chat shipped without the tool (2026-10-18). `request_access` is
   `read_only()`, so a read-only chat (the web's default) still puts the card
   in front of the owner; a write grant made there writes nothing until the
-  mode allows writes. A confined `shell` says in its description that what
+  mode allows writes. Read-only for the approver only: `call` refuses in
+  `Phase::Plan`, as `message_send` does, and it declares `destructive` so a
+  `research` or `coding` profile does not keep it as a public read
+  (review of #714). A confined `shell` says in its description that what
   lies outside the workspace and the grants is hidden, not absent.
 - **A question reaches the conversation that asked.** `ToolCtx::conversation`
   is the front end's key for the run's conversation, stamped per turn by
