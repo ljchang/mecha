@@ -275,10 +275,16 @@ neutralises drift instead of pretending it away:
 - **Rollouts are compared with each other, never with the recording.** Every
   arm of a comparison runs in the same present world at the same time, so
   drift is common to all arms and cancels in the difference.
-- **Drift is measured where the evidence exists.** When a rollout re-issues,
-  before departing, a read the recording made with identical arguments, the
-  live answer is compared with the recorded one. A difference sets
-  `drifted`, and the comparison records it.
+- **Drift is measured by a shadow read.** §3.1 answers an identical re-read
+  from the recording, so the drift check has to be a deliberate extra call.
+  - At most once per rollout, at the first re-read of a `Read`-class call
+    with identical arguments before departure, the dry world also issues
+    that call live.
+  - It compares the live answer with the recorded one, and sets `drifted`
+    when they differ.
+  - The model is still handed the recorded answer, so the shadow read never
+    changes the continuation.
+  - One real read per rollout is the price, counted like any other.
 - **Point age is capped** (ruling **W4**). A point whose world has moved too
   far is not offered.
 
@@ -303,9 +309,16 @@ It is unchanged.
     the scratch workspace by construction: `fs_write`/`fs_edit` resolve a
     granted path with `Access::Write`, and confined `shell` mounts it. So a
     write grant restored as-is would let an unattended branch write the
-    owner's real tree. Write grants are restored as read grants, and a
-    write to a granted path is `Irreversible`: it halts. Phase 2's exit test
-    includes a branch prefix that holds a write grant.
+    owner's real tree. Write grants are restored as read grants. That
+    downgrade is the protection: a write to a granted path then comes back
+    as the jail's ordinary refusal (`resolve_for` with `Access::Write`), an
+    error result the model sees. It is not a halt, because the per-tool
+    effect table cannot tell a granted path from a workspace path.
+  - The comparison records a write refused this way as `grant_refused`, so
+    it reads as instrument noise and not as the candidate's failure.
+  - Phase 2's exit test holds a write grant in its branch prefix, attempts
+    the write, and checks two things: the real tree is byte-identical, and
+    the call's result is the jail's refusal.
 - The branch point is any assistant boundary, the constraint
   `BRANCHING-DESIGN.md` set.
 
@@ -430,6 +443,13 @@ Mattar & Daw's rule for which memories to replay maps onto this directly
 - **Seat cost** is K arms (three or more) × horizon per point, on one
   background seat at about 45 tok/s. The nightly point count is set from
   that, not the other way round.
+- **Coverage depends on the operator's outbox.** `Staged` exists only for
+  tools `[outbox] tools` names (§3.2, ordering rule 1). On a machine that
+  routes little, a send or a calendar change falls through to
+  `Irreversible` and halts the branch at that call. That is the safe
+  direction, but it shortens branches. The nightly readout should report
+  how many rollouts halted at an unrouted write, so thin routing shows up
+  as a number and not as mysteriously short rollouts.
 - **A candidate must beat what more sampling buys.** Its gain counts only
   if it exceeds what a third control sample buys at the same seat time. The
   field's expected null is that matched-budget sampling erases harness
