@@ -1564,6 +1564,74 @@ mod tests {
         drive(&agent, &cx, trajectory).await.unwrap()
     }
 
+    /// What `mecha replay --on-divergence live` relies on
+    /// (`docs/ROLLOUT-DESIGN.md` §1.1): past the divergence, a call the run's
+    /// outbox route names is **staged, not executed** — and only when the run
+    /// carries a route. The CLI built its live run with none, so the same
+    /// call reached the real tool.
+    #[tokio::test]
+    async fn live_replay_stages_a_routed_call_past_the_divergence_only_with_a_route() {
+        async fn run(route: Option<Arc<crate::outbox::OutboxRoute>>) -> ReplayReport {
+            let calls = vec![recorded("echo", json!({}), "recorded")];
+            let trajectory = Trajectory {
+                turns: vec!["go".into()],
+                calls: calls.clone(),
+                ..Default::default()
+            };
+            let cancel = CancellationToken::new();
+            let approver = Arc::new(ModeApprover {
+                mode: PermissionMode::Allow,
+            });
+            let agent = Agent::new(
+                Box::new(Scripted(Mutex::new(vec![
+                    // `other` where the recording has `echo`: the divergence.
+                    assistant(vec![tool_use("a", "other", json!({}))], StopReason::ToolUse),
+                    assistant(vec![Block::text("done")], StopReason::EndTurn),
+                ]))),
+                replay_reg(calls, OnDivergence::Live, &cancel),
+                approver.clone(),
+                ToolCtx::default(),
+                AgentConfig::default(),
+                None,
+            )
+            .unwrap();
+            let mut cx = RunContext::new(ToolCtx::default(), approver)
+                .with_cancel(cancel)
+                .with_budget(Budget::turns(8));
+            if let Some(route) = route {
+                cx = cx.with_outbox(route);
+            }
+            drive(&agent, &cx, &trajectory).await.unwrap()
+        }
+
+        let root =
+            std::env::temp_dir().join(format!("mecha-replay-route-test-{}", uuid::Uuid::new_v4()));
+        let route = Arc::new(crate::outbox::OutboxRoute::new(
+            crate::outbox::OutboxStore::open(&root).unwrap(),
+            ["other".to_string()],
+            Vec::<String>::new(),
+        ));
+
+        let routed = run(Some(Arc::clone(&route))).await;
+        let call = routed
+            .replayed_calls
+            .iter()
+            .find(|c| c.name == "other")
+            .unwrap();
+        assert!(call.staged, "with a route, the divergent call is staged");
+        assert_eq!(route.store.items().unwrap().len(), 1);
+
+        let bare = run(None).await;
+        let call = bare
+            .replayed_calls
+            .iter()
+            .find(|c| c.name == "other")
+            .unwrap();
+        assert!(!call.staged, "without one it reaches the live tool");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[tokio::test]
     async fn a_missing_tail_is_unmeasurable_without_cursor_cancellation() {
         let calls = vec![
