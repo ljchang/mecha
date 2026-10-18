@@ -566,8 +566,12 @@ mecha replay [OPTIONS] <SESSION>
 
 `stop` ends the run at the divergence, because after one every later recorded result
 answers a question nobody asked. `error` does the same and exits non-zero on *any*
-divergence, argument spellings included — use it in CI. `live` abandons the recording
-and keeps going against the real tools.
+divergence, argument spellings included — use it in CI. `live` keeps going against the
+real tools, but only through unguarded pure reads. It stops in front of the first call
+that your outbox routes, that an approval rule or a `pre_tool` hook covers, or that
+writes, sends or starts a subagent, and reports that call and its arguments
+(`halted_before` in `--json`). Nothing it stops in front of is executed, and a stop
+there exits 0: the call is the result.
 
 ```bash
 mecha replay 20260805T091500
