@@ -4299,6 +4299,31 @@ mod boundary_tests {
             v["taint"].is_object(),
             "a mid-run read dropped the taint: {v}"
         );
+        assert_eq!(v["grants"], serde_json::json!([]), "{v}");
+        // And with a grant the run announced since it began: a page that
+        // reloads mid-run must not get the pre-run set back and lose the
+        // grant it was just shown (review of #716).
+        chat.announce_for_test(
+            key,
+            vec![chat::GrantWire {
+                path: "/data/papers".into(),
+                access: "read",
+                source: "approved",
+            }],
+        )
+        .await;
+        let v = body(
+            app.clone()
+                .oneshot(get(&format!("/api/chat/{key}")))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            v["grants"],
+            serde_json::json!([{"path": "/data/papers", "access": "read", "source": "approved"}]),
+            "a mid-run read served the grants as the run took them: {v}"
+        );
 
         // Released until drained: the first turn's title generation waits on
         // the same provider, and either may take a single permit.

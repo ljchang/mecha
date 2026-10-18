@@ -2259,8 +2259,38 @@ mod denial_tests {
             approver.escalate(&Echo, &rm, "why").await,
             Decision::Deny("not on my machine".into())
         );
+        assert_eq!(
+            approver.escalate_access(&Echo, &rm, "why").await,
+            Decision::Deny("not on my machine".into())
+        );
         let ls = serde_json::json!({"command": "ls"});
         assert_eq!(approver.approve(&Echo, &ls).await, Decision::Allow);
+        // The grant door falls through to the inner approver's *own* grant
+        // door, not its send door: they answer differently on a voice call,
+        // and without the forward the default would route the grant back
+        // through this wrapper's `escalate` (review of #716).
+        struct Doors;
+        #[async_trait]
+        impl Approver for Doors {
+            async fn approve(&self, _: &dyn Tool, _: &Value) -> Decision {
+                Decision::Allow
+            }
+            async fn escalate(&self, _: &dyn Tool, _: &Value, _: &str) -> Decision {
+                Decision::Blocked("sends are refused here".into())
+            }
+            async fn escalate_access(&self, _: &dyn Tool, _: &Value, _: &str) -> Decision {
+                Decision::Allow
+            }
+        }
+        let doors = FileDenyApprover::with_rules(Vec::new(), Arc::new(Doors));
+        assert_eq!(
+            doors.escalate_access(&Echo, &ls, "why").await,
+            Decision::Allow
+        );
+        assert!(matches!(
+            doors.escalate(&Echo, &ls, "why").await,
+            Decision::Blocked(_)
+        ));
         let any = serde_json::json!({"path": "/home/me/secrets.txt"});
         assert_eq!(
             approver.approve(&Echo, &any).await,
