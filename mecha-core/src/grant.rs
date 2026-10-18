@@ -95,7 +95,9 @@ pub enum Source {
     Config,
     /// The owner typed `/grant`.
     Owner,
-    /// The model asked (`request_access`) and a person said yes.
+    /// A person said yes on a card: to the model's `request_access`, or to
+    /// a file tool reaching outside the workspace (`ToolCtx::ask_for_path`,
+    /// which grants the folder the path sits in).
     Approved,
     #[serde(other)]
     Unknown,

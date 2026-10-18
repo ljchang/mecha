@@ -2300,9 +2300,16 @@ first sketch would have widened the jail with nobody asked:
   mid-run, because the running task holds the conversation and what it hands
   back replaces `app.convo` whole. A model may only ask: `request_access`
   declares `Tool::needs_a_person` on **every** call, and the loop feeds it
-  into the interlock's `escalation` slot, so it reaches `Approver::escalate`
-  and never `approve`. That is the door `--yes`, an "always" list, eval and
-  replay cannot answer; headless, it ends `Blocked`. It is unconditional
+  into the interlock's `escalation` slot, so it reaches
+  `Approver::escalate_access` and never `approve`. That is the door `--yes`,
+  an "always" list, eval and replay cannot answer; headless, it ends
+  `Blocked`. It defaults to `escalate` and is a door of its own so one
+  surface can answer it while refusing a send: a voice turn under
+  `--voice-yes` runs on `serve::present::VoiceApprover`, which is
+  `ModeApprover { Allow }` for everything the flag owns, puts a grant on the
+  page's card and waits for the tap, and leaves the interlock's `escalate`
+  refused (owner, 2026-10-18; before, a spoken reach outside the workspace
+  failed at once). A wrapper forwards both (`FileDenyApprover`). It is unconditional
   even for a path `admit` will refuse: deciding "no person needed" before the
   batch executes is a race a sibling `shell` that creates the directory can
   win. Wrappers must forward it (`replay_run`, `closure_guard`); a default
@@ -2385,7 +2392,10 @@ first sketch would have widened the jail with nobody asked:
   rides beside the history, never in it (it is recorded with the run as
   `Record::Notes`, as the calendar reference is), and it stays inside the
   cached prefix until the set changes, which takes a `/grant`, a `/revoke` or
-  a yes, never a turn.
+  a yes, never a turn. A yes mid-run is announced as it lands:
+  `Agent::dispatch` compares the live grants across a tool round and emits
+  `AgentEvent::Grants` with the run's whole set, which the web chat's chip
+  reconciles against (it stayed stale until a reload, review of #714).
   The path descriptions now say "or inside a directory the owner granted",
   and `setup::sandbox_line` describes `shell` with the standing grants
   mounted (`setup::standing_grants`, the one computation `build` uses too).
