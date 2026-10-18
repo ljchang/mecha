@@ -2300,13 +2300,24 @@ first sketch would have widened the jail with nobody asked:
   mid-run, because the running task holds the conversation and what it hands
   back replaces `app.convo` whole. A model may only ask: `request_access`
   declares `Tool::needs_a_person` on **every** call, and the loop feeds it
-  into the interlock's `escalation` slot, so it reaches `Approver::escalate`
-  and never `approve`. That is the door `--yes`, an "always" list, eval and
-  replay cannot answer; headless, it ends `Blocked`. It is unconditional
-  even for a path `admit` will refuse: deciding "no person needed" before the
-  batch executes is a race a sibling `shell` that creates the directory can
-  win. Wrappers must forward it (`replay_run`, `closure_guard`); a default
-  `None` on a wrapper is a grant with nobody asked.
+  into the interlock's `escalation` slot, so it reaches
+  `Approver::escalate_access` and never `approve`. That is the door `--yes`,
+  an "always" list, eval and replay cannot answer; headless, it ends
+  `Blocked`. It is unconditional even for a path `admit` will refuse:
+  deciding "no person needed" before the batch executes is a race a sibling
+  `shell` that creates the directory can win. Wrappers must forward it
+  (`replay_run`, `closure_guard`); a default `None` on a wrapper is a grant
+  with nobody asked. `escalate_access` defaults to `escalate` and is a door
+  of its own so one surface can answer it while refusing a send: a voice
+  turn under `--voice-yes` runs on `serve::present::VoiceApprover`, which is
+  `ModeApprover { Allow }` for everything the flag owns, puts a grant on the
+  page's card and waits for the tap, and leaves the interlock's `escalate`
+  refused (owner, 2026-10-18; before, a spoken reach outside the workspace
+  failed at once). The card goes up past the page's mode, which nothing else
+  on a spoken turn reads: through the page's `escalate`, a read-only page
+  refused a write grant while the same write inside the workspace ran
+  unasked (review of #716). An approver wrapper forwards both
+  (`FileDenyApprover`).
 - **Some places are never grantable** (`grant::admit`). A root that contains
   or sits inside the mecha home (both spellings, `MECHA_HOME` and the
   password database's) or a credential directory is refused, in both
@@ -2322,24 +2333,24 @@ first sketch would have widened the jail with nobody asked:
   harness's own stores. `resolve_for(raw, Access)` also consults the grants,
   and only the model-facing file tools call it: `fs_read`/`fs_list`/
   `image_view`/`document_read` read, `fs_write`/`fs_edit` write. A relative
-  path still resolves against the workspace; a grant is never a second
-  current directory. The refusal names `request_access` only where this run
-  can dispatch it (`Grants::requestable`, stamped by `run_in` from the run's
-  own registry and withholding, never inherited — a subagent runs on its
-  parent's context, review of #711). And it is registered only where its
-  `escalate` reaches a person (`setup::offers_request_access`, tested against
-  the options the web and Slack doors really build): the web and Slack
+  path still resolves against the workspace; a grant is never a second current
+  directory. The refusal names `request_access` only where this run can
+  dispatch it (`Grants::requestable`, stamped by `run_in` from the run's own
+  registry and withholding, never inherited — a subagent runs on its parent's
+  context, review of #711). And it is registered only where its
+  `escalate_access` reaches a person (`setup::offers_request_access`, tested
+  against the options the web and Slack doors really build): the web and Slack
   cards, and a terminal with a person at it in `ask` mode — under `-y` the
-  approver is a `ModeApprover`, whose `escalate` is `Blocked`. Not keyed on
-  `global_config_only`, which both doors set; the first gate was, and the web
-  chat shipped without the tool (2026-10-18). `request_access` is
+  approver is a `ModeApprover`, whose `escalate_access` is `Blocked`. Not
+  keyed on `global_config_only`, which both doors set; the first gate was, and
+  the web chat shipped without the tool (2026-10-18). `request_access` is
   `read_only()`, so a read-only chat (the web's default) still puts the card
   in front of the owner; a write grant made there writes nothing until the
   mode allows writes. Read-only for the approver only: `call` refuses in
   `Phase::Plan`, as `message_send` does, and it declares `destructive` so a
-  `research` or `coding` profile does not keep it as a public read
-  (review of #714). A confined `shell` says in its description that what
-  lies outside the workspace and the grants is hidden, not absent.
+  `research` or `coding` profile does not keep it as a public read (review of
+  #714). A confined `shell` says in its description that what lies outside the
+  workspace and the grants is hidden, not absent.
 - **The file tools ask by themselves, Claude Code's way** (the owner's
   ruling, 2026-10-18). `fs_read`, `fs_list`, `fs_write`, `fs_edit`,
   `image_view` and `document_read` override `Tool::needs_a_person` with
@@ -2370,7 +2381,10 @@ first sketch would have widened the jail with nobody asked:
   merges. Merging taint fails closed; merging grants fails open, and a
   `/clear` followed by a run and a resume brought the grant back with nobody
   asked (review of #711). A rewrite leaves it alone. `with_workspace` (an eval case, a batch item) keeps the standing
-  grants only; `for_session_in` (incognito) keeps none.
+  grants only; `for_session_in` (incognito) has them off (`Grants::none` is
+  `off`, not an empty list: an empty list takes a card's yes, and "none"
+  rested on the room's allowlist keeping every way to ask out, review of
+  #716).
 - **`shell` sees what the file tools see.** `Sandbox::with_grants` adds read
   grants to `readable` and write grants to `writable`, per call, since a live
   grant arrives mid-run. Every backend reads those lists, so it is one edit.
@@ -2385,7 +2399,10 @@ first sketch would have widened the jail with nobody asked:
   rides beside the history, never in it (it is recorded with the run as
   `Record::Notes`, as the calendar reference is), and it stays inside the
   cached prefix until the set changes, which takes a `/grant`, a `/revoke` or
-  a yes, never a turn.
+  a yes, never a turn. A yes mid-run is announced as it lands:
+  `Agent::dispatch` compares the live grants across a tool round and emits
+  `AgentEvent::Grants` with the run's whole set, which the web chat's chip
+  reconciles against (it stayed stale until a reload, review of #714).
   The path descriptions now say "or inside a directory the owner granted",
   and `setup::sandbox_line` describes `shell` with the standing grants
   mounted (`setup::standing_grants`, the one computation `build` uses too).
