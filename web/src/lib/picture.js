@@ -74,7 +74,6 @@ export function repeatedClips(entries) {
   return again;
 }
 
-// Every picture the tool rows drew, in order, each once.
 // Whether a Regenerate means what its title says on this row's picture.
 // Drawing a picture again at a new seed goes through `image_generate`, so a
 // picture a deferring tool made (an MCP server's, `pictureOf`) is not offered
@@ -96,6 +95,7 @@ export function redrawablePictures(entries) {
   return out;
 }
 
+// Every picture the tool rows drew, in order, each once.
 export function picturesIn(entries) {
   const out = [];
   for (const entry of entries) {
