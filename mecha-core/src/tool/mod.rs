@@ -522,10 +522,17 @@ pub trait Tool: Send + Sync {
     /// tool that happens to read the web. Naming one from the loop by string
     /// is the alternative, and is what this family exists to avoid.
     ///
-    /// Not a security property and must never become one. It says where the
-    /// work happens, not that anything is safer for happening there — the
-    /// child's own taint, jail and approver decide that, and they are the
-    /// parent's rules inherited rather than relaxed.
+    /// Not a security property *in the direction of trust*, and must never
+    /// become one: it says where the work happens, not that anything is safer
+    /// for happening there — the child's own taint, jail and approver decide
+    /// that, and they are the parent's rules inherited rather than relaxed.
+    ///
+    /// **It is load-bearing in the other direction.** A second caller,
+    /// `replay_run::LiveGate`, *refuses* a tool that answers `true`, because a
+    /// subagent reports `read_only()` and derives no `destructive` from its
+    /// child, so its capability legs would read as a pure read while the child
+    /// writes. A new tool that starts a child run must therefore override
+    /// this, or a live replay will treat it as a read.
     fn runs_a_fresh_conversation(&self) -> bool {
         false
     }

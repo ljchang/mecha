@@ -228,7 +228,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // asked as a gate inside the replay, not attached to the run: attached,
     // they act ahead of the tool, and a recorded call they intercept before
     // the divergence never reaches the recording's cursor.
-    let (registry, probe) = if mode == OnDivergence::Live {
+    let (registry, probe) = if mode.executes() {
         replay_registry_live(
             &recorded.tools,
             prepared.agent.registry(),
