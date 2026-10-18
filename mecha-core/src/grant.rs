@@ -415,9 +415,6 @@ impl Grants {
 /// one, and everything before it is the path, so a name with spaces works.
 /// Returns what to say.
 pub fn grant_by_owner(arg: &str, standing: &Grants, live: &mut Vec<Grant>) -> Result<String> {
-    if standing.is_off() {
-        bail!("grants are switched off for this session (--no-grants)");
-    }
     let arg = arg.trim();
     let (raw, access) = match arg.rsplit_once(char::is_whitespace) {
         Some((path, word)) if Access::parse(word).is_some() => {
@@ -425,6 +422,21 @@ pub fn grant_by_owner(arg: &str, standing: &Grants, live: &mut Vec<Grant>) -> Re
         }
         _ => (arg, Access::Read),
     };
+    grant_owner(raw, access, standing, live)
+}
+
+/// [`grant_by_owner`] with the path and access already apart — what a form
+/// sends (the web chat's grants panel), where a path ending in the word
+/// `write` must stay a path.
+pub fn grant_owner(
+    raw: &str,
+    access: Access,
+    standing: &Grants,
+    live: &mut Vec<Grant>,
+) -> Result<String> {
+    if standing.is_off() {
+        bail!("grants are switched off for this session (--no-grants)");
+    }
     let path = admit(&expand(raw))?;
     let held = standing.for_run(live);
     if let Some(g) = held.covering(&path, access) {
@@ -512,6 +524,36 @@ pub fn listing(standing: &Grants, live: &[Grant]) -> Vec<String> {
             )
         })
         .collect()
+}
+
+/// The line that tells the model what it may reach beyond its workspace —
+/// standing grants and the conversation's alike — or `None` when there is
+/// none. Without it a `[[grant]]` worked and went unused: nothing named it,
+/// and every file tool's schema said "inside the workspace", so a trigger
+/// asked about the papers folder reported it had no access while holding
+/// the grant (review of #711).
+///
+/// A head note beside the calendar reference (`Agent::request_notes_for`):
+/// sent with every request, never stored in the history, on the first
+/// message so it stays inside the cached prefix until the set changes —
+/// which is an owner's `/grant` or `/revoke` or a yes, never a turn.
+/// Sorted, so the same set is the same bytes.
+pub fn note(grants: &[Grant]) -> Option<String> {
+    if grants.is_empty() {
+        return None;
+    }
+    let mut rows: Vec<String> = grants
+        .iter()
+        .map(|g| format!("{} ({})", g.path.display(), g.access.describe()))
+        .collect();
+    rows.sort();
+    rows.dedup();
+    Some(format!(
+        "Granted directories (set by the owner, from the harness): beyond your workspace \
+         you may also use these, by their full paths, with the file tools and the shell — \
+         {}. Anywhere else outside the workspace is refused.",
+        rows.join("; ")
+    ))
 }
 
 /// Fold recorded live grants back through [`admit`] on resume, dropping any
@@ -712,6 +754,22 @@ mod tests {
             .to_string();
         assert!(err.contains("[[grant]]"), "{err}");
         assert_eq!(live, vec![g(&notes)]);
+    }
+
+    /// No grant, no note; and the same set is the same bytes whatever order
+    /// it was granted in, so a note does not re-pay the cached prefix.
+    #[test]
+    fn the_note_names_each_grant_once_in_a_stable_order() {
+        let g = |p: &str, access| Grant {
+            path: PathBuf::from(p),
+            access,
+            source: Source::Owner,
+        };
+        assert_eq!(note(&[]), None);
+        let a = note(&[g("/srv/b", Access::Write), g("/srv/a", Access::Read)]).unwrap();
+        let b = note(&[g("/srv/a", Access::Read), g("/srv/b", Access::Write)]).unwrap();
+        assert_eq!(a, b);
+        assert!(a.contains("/srv/a (read); /srv/b (read and write)"), "{a}");
     }
 
     #[test]

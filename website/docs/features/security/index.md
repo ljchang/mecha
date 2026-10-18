@@ -102,8 +102,10 @@ read, or read and write. Only a person makes one:
   and neither can an experiment environment: a cloned repository must not
   bring its own way out of the jail.
 - **For one conversation, typed by you.** `/grant ~/Documents/papers` in the
-  TUI or `mecha chat` (add `write` for read and write); `/grant` alone lists
-  what the conversation holds. `/revoke ~/Documents/papers` ends the ones at
+  TUI, `mecha chat` or the web chat (add `write` for read and write); `/grant`
+  alone lists what the conversation holds. In the web chat a grants chip
+  beside the mode chip shows how many it holds, and opens the list with a
+  revoke button on each one you made. `/revoke ~/Documents/papers` ends the ones at
   or under that path, and `/clear` ends them all; either stays ended when
   the conversation is resumed.
 - **For one conversation, asked for by the model.** Where a person can answer

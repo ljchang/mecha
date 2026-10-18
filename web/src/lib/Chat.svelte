@@ -18,6 +18,7 @@
   import { clockOf } from './persona.js';
   import ClipPlayer from './ClipPlayer.svelte';
   import { carriesFiles, droppedFiles, withAttachments } from './attach.js';
+  import { parseGrantCommand, revocable } from './grants.js';
   import { rowSummary, ROUTING_KEYS } from './outbox-view.js';
   import { features } from './features.svelte.js';
   import { isShown } from './features.js';
@@ -36,6 +37,11 @@
 
   let key = $state('main');
   let mode = $state('read_only');
+  // The directories outside the workspace this chat's runs may reach —
+  // standing ones first — as the server last said (`grants` events, the
+  // transcript read). `grantsOpen` is the panel the chip and `/grant` open.
+  let grants = $state([]);
+  let grantsOpen = $state(false);
   let rail = $state([]);
   let entries = $state([]);
   let streaming = $state('');
@@ -391,6 +397,7 @@
       taint = data.taint;
       model = data.model;
       mode = data.mode ?? 'read_only';
+      grants = data.grants ?? [];
       for (const q of data.questions ?? []) {
         if (!entries.some((e) => e.kind === 'question' && e.qid === q.qid)) {
           entries.push({
@@ -553,6 +560,11 @@
           // same session, and a POST whose response was lost must not leave
           // the chip describing a run that is no longer gated that way.
           mode = ev.mode;
+          break;
+        case 'grants':
+          // The server's word, like `mode`: a grant made on the phone reaches
+          // the laptop watching the same chat.
+          grants = ev.grants ?? [];
           break;
         case 'question':
           pushEntry({
@@ -1320,6 +1332,14 @@
   // started the turn.
   async function send({ text: fixed = null, regenerate = null, regions = null } = {}) {
     const own = fixed === null;
+    // The owner's `/grant` and `/revoke` go to the grants endpoint, never to
+    // the model; attachments wait for the next message.
+    const command = own ? parseGrantCommand(draft) : null;
+    if (command) {
+      draft = '';
+      await grantCommand(command);
+      return false;
+    }
     // Named in the text and listed beside it (`withAttachments`).
     const attached = own ? [...attachments] : [];
     const text = own ? withAttachments(draft.trim(), attached) : fixed;
@@ -1752,6 +1772,35 @@
     }
   }
 
+  // A grant, a revoke, or the list. The server's `notice` event says what
+  // changed and its `grants` event updates every open page; the response
+  // settles this one even if its stream is reconnecting. A refusal (a path
+  // that is never granted, a run in flight, an incognito chat) is said here.
+  async function grantCommand(command) {
+    if (command.error) {
+      pushEntry({ kind: 'notice', text: command.error });
+      return;
+    }
+    if (command.list) {
+      grantsOpen = true;
+      return;
+    }
+    try {
+      const res = await fetch(`/api/chat/${key}/grants`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(command),
+      });
+      if (!res.ok) {
+        pushEntry({ kind: 'notice', text: (await res.text()).trim() });
+        return;
+      }
+      grants = (await res.json()).grants ?? [];
+    } catch (e) {
+      pushEntry({ kind: 'notice', text: String(e?.message ?? e) });
+    }
+  }
+
   async function cancel() {
     try {
       await fetch(`/api/chat/${key}/cancel`, { method: 'POST' });
@@ -1876,6 +1925,14 @@
           {taint.private ? 'private' : ''}{taint.private && taint.untrusted ? ' + ' : ''}{taint.untrusted ? 'untrusted' : ''}
         </span>
       {/if}
+      {#if grants.length}
+        <button
+          class="chip grantchip"
+          class:open={grantsOpen}
+          onclick={() => (grantsOpen = !grantsOpen)}
+          title="directories outside the workspace this chat's runs may reach — tap to see or revoke"
+        >{grants.length} {grants.length === 1 ? 'grant' : 'grants'}</button>
+      {/if}
       <button
         class="chip modechip"
         class:ask={mode === 'ask'}
@@ -1889,6 +1946,33 @@
       {/if}
     </div>
   </header>
+
+  {#if grantsOpen}
+    <section class="grants" aria-label="grants">
+      {#if grants.length === 0}
+        <p class="ghint">
+          No grants: this chat's runs reach its workspace only. <code>/grant ~/path</code>
+          opens a directory for this chat (add <code>write</code> to let it write there).
+        </p>
+      {:else}
+        <ul>
+          {#each grants as g (g.source + g.path)}
+            <li>
+              <span class="gaccess">{g.access}</span>
+              <span class="gpath">{g.path}</span>
+              {#if revocable(g)}
+                <button class="grevoke" onclick={() => grantCommand({ action: 'revoke', path: g.path })}
+                  title="end this grant for this chat">revoke</button>
+              {:else}
+                <span class="gsrc" title="from your config's [[grant]] — remove the line to end it">config</span>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
+      <button class="gclose" onclick={() => (grantsOpen = false)}>close</button>
+    </section>
+  {/if}
 
   {#if incognito && !gone}
     <!-- Does not scroll away (design §7), and carries §5.3's notice: shown
@@ -2695,6 +2779,76 @@
   }
   .chip.taint {
     color: var(--hazard);
+  }
+  /* A widened jail, so the accent of a card that asks, not hazard amber:
+     a grant is the owner's own choice, not something the chat touched. */
+  .chip.grantchip {
+    color: var(--accent-400);
+  }
+  .chip.grantchip.open {
+    border-color: var(--accent-500);
+  }
+  .grants {
+    margin: 8px var(--gutter) 0;
+    padding: 10px 12px;
+    background: var(--surface);
+    border: 1px solid var(--accent-700);
+    border-radius: var(--radius);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    font-size: 13px;
+  }
+  .grants ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .grants li {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+  }
+  .gaccess,
+  .gsrc {
+    font-family: var(--mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    flex: none;
+  }
+  .gpath {
+    font-family: var(--mono);
+    color: var(--text);
+    overflow-wrap: anywhere;
+    flex: 1;
+    min-width: 0;
+  }
+  .grevoke,
+  .gclose {
+    flex: none;
+    background: none;
+    border: 1px solid var(--accent-700);
+    border-radius: var(--radius-chip);
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+    padding: 2px 10px;
+    cursor: pointer;
+  }
+  .gclose {
+    align-self: flex-end;
+    color: var(--text-muted);
+  }
+  .ghint {
+    margin: 0;
+    color: var(--text-muted);
+    line-height: 1.45;
   }
   /* Deliberately NOT hazard amber — found on review: this chip sits in the
      same row as the taint chip, and two amber chips side by side make "this
