@@ -208,6 +208,13 @@ impl Approver for WebApprover {
 /// give. Owner, 2026-10-18: the card shows in the chat hosting the call and
 /// the turn waits for the tap; the interlock's `escalate` stays refused,
 /// as it was, because no card was ever the plan for a send mid-call.
+///
+/// The wait is bounded by [`APPROVAL_TIMEOUT`], and in practice sooner:
+/// with no page subscribed the card is only remembered for a reload, so an
+/// unanswered grant can hold the turn silent for that long before it ends
+/// `Blocked` — but the owner's next words barge in, and the cancel drains
+/// the pending card ("cancelled before anyone answered") rather than
+/// waiting it out.
 pub struct VoiceApprover {
     pub page: WebApprover,
 }

@@ -229,11 +229,13 @@ struct Live {
     /// Taint only grows, so this is a floor; what the run adds arrives at
     /// `done`.
     taint: mecha_core::agent::Taint,
-    /// And the conversation's grants as the run took them, so the page's
-    /// grants chip does not go blank while a run holds the conversation.
-    /// What the run itself adds (`request_access`) arrives with the
-    /// conversation at `done`, when the page re-reads.
-    grants: Vec<mecha_core::grant::Grant>,
+    /// And the grants the chip shows while a run holds the conversation, so
+    /// it does not go blank: the set as the run took it, replaced by each
+    /// `grants` event the run announces (a card's yes, `request_access`). A
+    /// page that reloads mid-run would otherwise get the pre-run set back
+    /// and lose a grant it had just been shown, until `done` (review of
+    /// #716) — the locked phone on a call, most of all.
+    grants: Arc<StdMutex<Vec<GrantWire>>>,
 }
 
 /// The options the web door's one shared agent is built from — its own
@@ -1977,12 +1979,19 @@ pub async fn transcript(
     };
     let usage = ws.last_usage.lock().ok().and_then(|u| u.clone());
     let mode = ws.mode.lock().map(|m| mode_wire(*m)).unwrap_or("read_only");
-    let held: &[mecha_core::grant::Grant] = match (&ws.conversation, &ws.live) {
-        (Some(convo), _) => &convo.grants,
-        (None, Some(live)) => &live.grants,
-        (None, None) => &[],
+    let standing = &bound.agent.ctx().grants;
+    let incognito = ws.session.room().is_some();
+    let grants = match (&ws.conversation, &ws.live) {
+        (Some(convo), _) => grants_wire(standing, &convo.grants, incognito),
+        // Read through a poisoned lock: the list is whole either way, and an
+        // empty chip would say a held grant is not.
+        (None, Some(live)) => live
+            .grants
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone(),
+        (None, None) => grants_wire(standing, &[], incognito),
     };
-    let grants = grants_wire(&bound.agent.ctx().grants, held, ws.session.room().is_some());
     Json(serde_json::json!({
         "grants": grants,
         "session": ws.session.id(),
@@ -2847,13 +2856,18 @@ fn begin_turn(
     let before: Arc<[Message]> = before.into();
     let mut history_taint = conversation.taint;
     history_taint.arm_for_content(&before);
+    let live_grants = Arc::new(StdMutex::new(grants_wire(
+        &bound.agent.ctx().grants,
+        &conversation.grants,
+        ws.session.room().is_some(),
+    )));
     ws.live = Some(Live {
         cancel: cancel.clone(),
         queue: Arc::clone(&queue),
         queued_ids: Arc::clone(&queued_ids),
         history: Arc::clone(&before),
         taint: history_taint,
-        grants: conversation.grants.clone(),
+        grants: Arc::clone(&live_grants),
     });
 
     // What was already waiting, before this run staged anything. Taken here
@@ -3134,6 +3148,7 @@ fn begin_turn(
             let last_usage = Arc::clone(&last_usage);
             let queued_ids = Arc::clone(&queued_ids);
             let run_defers = Arc::clone(&run_defers);
+            let live_grants = Arc::clone(&live_grants);
             tokio::spawn(async move {
                 while let Some(event) = rx.recv().await {
                     // Core drains steering in FIFO order. The ids are appended
@@ -3155,6 +3170,9 @@ fn begin_turn(
                     // of its own (the voice facade, answering the worker).
                     let _ = tap_tx.send(event.clone());
                     if let Some(mut wire) = wire_event(&event, context_window) {
+                        // What a mid-run transcript read serves, before the
+                        // event goes out, so a page cannot read it older.
+                        keep_announced_grants(&live_grants, &wire);
                         mark_deferred(&mut wire, &|name| run_defers.contains(name));
                         let _ = bcast.send(wire);
                     }
@@ -4023,6 +4041,28 @@ impl GrantWire {
             access: g.access.as_str(),
             source: g.source.as_str(),
         }
+    }
+}
+
+/// A run's `grants` event, kept where a mid-run transcript read finds it
+/// (`Live::grants`). Every other event leaves the cell alone.
+fn keep_announced_grants(cell: &StdMutex<Vec<GrantWire>>, wire: &WireEvent) {
+    if let WireEvent::Grants { grants } = wire {
+        *cell.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = grants.clone();
+    }
+}
+
+impl ChatState {
+    /// The forwarder's step for a `grants` event, on the run holding `key` —
+    /// for a test that cannot script a card's yes through the provider.
+    #[cfg(test)]
+    pub(super) async fn announce_for_test(&self, key: &str, grants: Vec<GrantWire>) {
+        let sessions = self.sessions.lock().await;
+        let live = sessions
+            .get(key)
+            .and_then(|ws| ws.live.as_ref())
+            .expect("a run holds the conversation");
+        keep_announced_grants(&live.grants, &WireEvent::Grants { grants });
     }
 }
 

@@ -251,9 +251,12 @@ pub trait SessionHost: Send + Sync {
     ///
     /// `approve_all` is `--voice-yes` travelling with the turn rather than
     /// with the conversation: the owner is present and speaking, and an
-    /// approval card cannot be tapped mid-sentence. It is deliberately not
-    /// the host's posture to decide, and deliberately not sticky — a typed
-    /// turn in the same conversation still runs at whatever the page says.
+    /// approval card cannot be tapped mid-sentence. One card still goes up,
+    /// a grant outside the workspace, and the turn waits for its tap
+    /// (`serve::present::VoiceApprover`, which says why and how long). It
+    /// is deliberately not the host's posture to decide, and deliberately
+    /// not sticky — a typed turn in the same conversation still runs at
+    /// whatever the page says.
     ///
     /// `unlogged` is the worker's `X-Voice-Unlogged`: it keeps no text of
     /// this call. The host alone decides what that admits — today, a spoken
