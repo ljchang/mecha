@@ -254,7 +254,13 @@ corpus `Scan` excludes it as it excludes `Test` and `Experiment` — the
 variant alone is not enough, since `Scan::admits` admits every kind it does
 not name. Their location (outside `$MECHA_HOME/sessions`, which the corpus
 reads without recursing) is the second guard, not the only one, so a
-recursive reader added later still cannot mine strangers' conversations. Retention of these records is the
+recursive reader added later still cannot mine strangers' conversations.
+The repo's own guard must see them too: `scripts/check-private.py` refuses
+a commit that quotes a conversation, but it reads explicit, non-recursive
+globs (`personas/*/sessions`, `sessions`), so a seat's
+`hyperstudy/seats/*/home/sessions/*.jsonl` would be invisible to it — and
+participants' words, held under someone else's consent and kept in full,
+are the case the guard exists for. Step 2 adds the seat glob. Retention of these records is the
 owner's (S2 hands participants' consent to the study); nothing here deletes
 them on a clock. mecha declares to HyperStudy that the engine keeps
 transcripts (`hs.retention`), so a study can tell its participants.
@@ -291,8 +297,9 @@ HyperStudy's to define):
 
 - **Session.** Accept `session.update`; map `turn_detection` (below);
   `instructions` to the system prompt (§3); `tools` to ClientTools;
-  `audio.output.voice` ignored, since the named persona supplies the voice
-  (`preset: null`). A field mecha does not support is **refused, not ignored** —
+  `audio.output.voice` accepted only as null (`preset: null`, since the
+  named persona supplies the voice) and refused otherwise. A field mecha
+  does not support is **refused, not ignored** —
   HyperStudy's conformance asks for exactly that.
 - **Silent forced answers.** HyperStudy asks an on-screen question with a
   `response.create` that is text-only and forces one named tool
@@ -575,13 +582,23 @@ mecha provides; the study decides:
   safety.jsonl`, which under the guest home would hide every study trip
   from the owner's host report, so the wiring writes a seat's records to the
   owner's store — they carry no words by construction — with the surface
-  named `hyperstudy` rather than today's literal `web`. In a
+  named `hyperstudy` rather than today's literal `web`. Its neighbour does
+  not travel: `record_dose`, the owner-facing usage measure written beside
+  `record_crisis` in the same handler, is never written for a seat — a
+  stranger's turns counted as the owner's, under the voice's persona name,
+  would be the instrument measuring someone else. In a
   seat it keeps the actions it takes today: on a trip the harness steps out
   of character with `SAFE_MESSAGE` and pauses the persona for
   `CRISIS_COOLDOWN`, and mecha raises HRP's `hs.flag`. Two seat-specific
   differences. The crisis resources come from the study when the session
   supplies them, since a participant may be anywhere and `SAFE_MESSAGE`'s
-  numbers are US ones; the default text stands otherwise. And the handover
+  numbers are US ones. That field is a second trusted slot, and it speaks in
+  the one utterance that is deliberately the harness and not the persona,
+  so it is held to more than `instructions` is: experimenter-authored only
+  under the same contract (§3), plain text within a length bound, and it
+  supplies only the resources — mecha's own out-of-character sentence
+  frames them. Absent, or failing the bound, the shipped `SAFE_MESSAGE`
+  stands. And the handover
   is spoken or typed into the session, so until HyperStudy reads `hs.flag`
   the trip is still visible to the study in its own record of the
   conversation. Whether a study may turn the handover off is owed (§9).
@@ -628,7 +645,9 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    writes nothing under the operator's home outside its own seat directory,
    and the wiring's writes there are a closed list of two — the router hold
    (§5) and the crisis record (§7); a seat's session carries its own
-   `SessionKind` and the corpus scan excludes it; the `[security]` floor
+   `SessionKind` and the corpus scan excludes it; `check-private.py` reads the seat
+   transcripts; no dose record is written for a seat; a study's crisis
+   resources that fail their bound fall back to `SAFE_MESSAGE`; the `[security]` floor
    holds against an owner config with `trifecta = "allow"`; the system
    prompt is the study's `instructions` byte for byte, with no `BASE`, card,
    `SINCERE` or `DISCLOSED` even with the persona's `disclosure` on; a closed seat's
