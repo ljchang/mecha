@@ -123,17 +123,17 @@ The rules, each a measurement:
   (E2, E9: every slot tends to become a person). *(Ruled 2026-10-13, to be
   built: §9.4 adds two images per person, all or nothing, since E9b
   passed.)* One person is "the person in the image"; two or more are
-  `<image1>…<imageN>` in `cast` order, "from left to right", and "each of
-  the N people from the images appears exactly once; anyone else the scene
-  describes is a new person". No total: a total with
-  no extras erased a waiter the prose described, and without it four cast
-  still drew exactly four (E12). With `extras`, a total that counts them.
-  *(Ruled 2026-10-19: without extras, every cast is counted closed in the
-  foreground, by name: "Exactly two people are in the foreground, Maya and
-  Jo, each exactly once; anyone in the background is a stranger, not from
-  any image". The open wording drew a touching pair three or four times
-  (E14), and "no one else is in it" would empty a busy setting as it erased
-  E12's waiter.)*
+  `<image1>…<imageN>` in `cast` order, "from left to right". Without
+  `extras`, every cast is counted closed in the foreground, by name:
+  "Exactly two people are in the foreground, Maya and Jo, each exactly
+  once; anyone in the background is a stranger, not from any image" (ruled
+  2026-10-19, E14). With `extras`, a total that counts them (E11).
+  *(Before 2026-10-19 the cast was counted open, "each of the N people from
+  the images appears exactly once; anyone else the scene describes is a new
+  person", with no total: a total with no extras erased a waiter the prose
+  described (E12). The open wording drew a touching pair three or four
+  times (E14), and "no one else is in it" would empty a busy setting as it
+  erased E12's waiter.)*
 - **`wearing` and `doing` are required** (E3, E8: a reference supplies its own
   outfit, pose and stare when the scene is silent; stated, they land), except
   that `doing` is left empty when the scene's `together` says what its people
@@ -720,10 +720,10 @@ kind is derived from its directory (`Entry.kind`).
     described person, a place they can't split), the single pass is the
     picture and is compiled again with the bodies (review of #685).
 - **Pictures with two images per person need new wording.** §3's grammar
-  ("each of the N people from the images appears exactly once") assumes one
-  image per person. The compiled prompt binds them, naming what each image
-  is. For pictures the first is the whole portrait (§9.3),
-  so: "`<image1>` and `<image2>` show one person, Maya: `<image1>` is her
+  of the time ("each of the N people from the images appears exactly
+  once", open until 2026-10-19) assumes one image per person. The compiled
+  prompt binds them, naming what each image is. For pictures the first is
+  the whole portrait (§9.3), so: "`<image1>` and `<image2>` show one person, Maya: `<image1>` is her
   portrait, `<image2>` her full figure". Naming how each person is shown is
   what E9 found prevents duplicates (review of #680, pass 17). It counts
   people, not images. E9b's bound arm ran with exactly that wording, on a
