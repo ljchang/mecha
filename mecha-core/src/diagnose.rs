@@ -43,7 +43,10 @@
 //! at its position. No argument, result or word, by construction: its one
 //! constructor walks typed blocks, and a name that is not a plain identifier
 //! is withheld. A brief carrying digests opens private, as one carrying an
-//! appraisal does, and requires the proposal to cite one of them by episode
+//! appraisal does — and untrusted as well, because an MCP server chooses its
+//! tools' names and an identifier check is not provenance (`DIGEST_STEM`
+//! arms both off a transcript too). It requires the proposal to cite one of
+//! them by episode
 //! and call ([`Evidence::check_citation`]); an uncited proposal is refused
 //! before it is measured. `lifted` does not read digests: there is no prose
 //! in one to lift.
@@ -290,6 +293,10 @@ pub struct Evidence {
     pub digests: Vec<EpisodeDigest>,
     /// Remainder episodes with a digest the bound left out.
     pub digests_not_shown: usize,
+    /// How many of those had signal — a failed call, an intervention or an
+    /// incomplete run. Counted apart: the bound fills with signal first, so
+    /// past it the cut ones are often not the quiet ones.
+    pub digests_not_shown_with_signal: usize,
 }
 
 // ─── Episode digests (P9) ───────────────────────────────────────────────────
@@ -310,9 +317,24 @@ pub struct Evidence {
 // name that is not a plain identifier is withheld rather than trusted, since
 // an MCP server names its own tools. The owner's words at each intervention
 // are the other half of P9 and wait on R6.
+//
+// **Shape is not provenance, so a digest arms untrusted too** (found on
+// review of #719). An MCP tool's local name is the server's own string,
+// verbatim, and underscore-joined English passes any identifier check —
+// `closed_name` stops punctuation and length, not a sentence. Nothing at
+// digest time can tell a name mecha defined from one a server chose, so the
+// brief is treated as third-party content as well as the owner's: unknown
+// taint classifies untrusted. The cost is the diagnostician's model-chosen
+// fetch on a night with digests; its blind search is untouched.
 
 /// The most episodes the brief carries a digest of.
 pub const MAX_DIGESTS: usize = 12;
+
+/// The digest section's opening words, which `Taint::arm_for_content` reads
+/// off a transcript — so a conversation holding digests is armed however it
+/// was built or resumed, not only by the one call site that remembers to
+/// (the #329 defect `APPRAISAL_STEM` exists for).
+pub const DIGEST_STEM: &str = "episodes this measurement draws from, one line each";
 /// The most rendered steps one digest lists before it says how many it left.
 const MAX_STEPS: usize = 40;
 
@@ -499,11 +521,27 @@ impl std::fmt::Display for Citation {
     }
 }
 
-/// `<episode> #<n>`. Anything else is no citation.
+/// `<episode> #<n>`, tolerating a note after the number — `ep-1 #3 (the
+/// mail_search call)` is the citation it looks like, not a missing one. The
+/// episode is everything before the first `#` that a digit follows.
 fn parse_citation(text: &str) -> Option<Citation> {
-    let (episode, n) = text.trim().rsplit_once('#')?;
-    let episode = episode.trim().trim_matches('`').trim();
-    let call = n.trim().trim_matches('`').parse().ok()?;
+    let text = text.trim();
+    let at = text
+        .char_indices()
+        .find(|(i, c)| {
+            *c == '#'
+                && text[i + 1..]
+                    .trim_start_matches('`')
+                    .starts_with(|d: char| d.is_ascii_digit())
+        })?
+        .0;
+    let episode = text[..at].trim().trim_matches('`').trim();
+    let digits: String = text[at + 1..]
+        .trim_start_matches('`')
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    let call = digits.parse().ok()?;
     (!episode.is_empty()).then(|| Citation {
         episode: episode.to_string(),
         call,
@@ -512,10 +550,15 @@ fn parse_citation(text: &str) -> Option<Citation> {
 
 /// Appended to the instruction when the brief carries digests: the one extra
 /// field, and what happens without it.
-pub const CITE_INSTRUCTION: &str =
-    "The brief shows episodes. Add one more line to the block, after `rationale`:
-cites: <episode id> #<call number>
-— the moment, in one episode shown above, that your change addresses. The \
+/// The template's last line, and the same with the citation after it.
+const RATIONALE_LINE: &str = "rationale: <one line: what is wrong, and why this addresses it>\n";
+const CITED_RATIONALE_LINES: &str =
+    "rationale: <one line: what is wrong, and why this addresses it>\n\
+cites: <episode id> #<call number>\n";
+
+pub const CITE_INSTRUCTION: &str = "\
+The brief shows episodes, so the block carries `cites`: the moment, in one \
+episode shown above, that your change addresses. The \
 number after an episode's last call means the end of that run. A proposal that \
 cites no episode shown above, or a call that episode does not have, is refused \
 before it is measured.";
@@ -767,10 +810,15 @@ impl Evidence {
     pub fn conversation(&self, rest: &str) -> crate::agent::Conversation {
         let mut convo = crate::agent::Conversation::user(format!("{}\n---\n{rest}", self.brief()));
         // A digest names which of the owner's tools ran, in which session —
-        // closed-set, and still about the owner's activity, so it arms the
-        // conversation exactly as an appraisal does.
+        // about the owner's activity, so private as an appraisal is; and its
+        // tool names may be a server's own words, so untrusted as well (see
+        // the digest block comment). `arm_for_content` reads the same off
+        // the transcript through `DIGEST_STEM`.
         if !self.appraisals.is_empty() || !self.digests.is_empty() {
             convo.taint.private = true;
+        }
+        if !self.digests.is_empty() {
+            convo.taint.untrusted = true;
         }
         convo
     }
@@ -782,21 +830,28 @@ impl Evidence {
     pub fn with_digests(mut self, all: Vec<EpisodeDigest>) -> Evidence {
         let total = all.len();
         let (mut shown, quiet): (Vec<_>, Vec<_>) = all.into_iter().partition(|d| d.has_signal());
+        let loud = shown.len();
         shown.extend(quiet);
         shown.truncate(MAX_DIGESTS);
         self.digests_not_shown = total - shown.len();
+        self.digests_not_shown_with_signal = loud.saturating_sub(MAX_DIGESTS);
         self.digests = shown;
         self
     }
 
-    /// The instruction's extra line when the brief carries digests, or
-    /// nothing.
-    pub fn cite_instruction(&self) -> &'static str {
+    /// The instruction for this brief: [`DIAGNOSE_INSTRUCTION`], and when
+    /// digests ride, `cites:` written **into the block template** as well as
+    /// explained after it — "a block in exactly this form" over four fields,
+    /// followed by a fifth that is required, invites a literal model to
+    /// leave it out and lose the night (found on review of #719).
+    pub fn instruction(&self) -> String {
         if self.digests.is_empty() {
-            ""
-        } else {
-            CITE_INSTRUCTION
+            return DIAGNOSE_INSTRUCTION.to_string();
         }
+        format!(
+            "{}\n\n{CITE_INSTRUCTION}",
+            DIAGNOSE_INSTRUCTION.replacen(RATIONALE_LINE, CITED_RATIONALE_LINES, 1)
+        )
     }
 
     /// Whether a proposal cites a moment the brief showed. Required only when
@@ -830,20 +885,23 @@ impl Evidence {
         if self.digests.is_empty() {
             return String::new();
         }
-        let mut out = String::from(
-            "\nepisodes this measurement draws from, one line each: tool calls by number, \
-             FAILED where a call failed, ext where its result came from outside (ext? where \
-             that was not recorded), and [owner: …] where the owner stepped in. These are \
-             names and flags only — no arguments, results or words:\n",
+        let mut out = format!(
+            "\n{DIGEST_STEM}: tool calls by number, FAILED where a call failed, ext where its \
+             result came from outside (ext? where that was not recorded), and [owner: …] where \
+             the owner stepped in. These are names and flags only — no arguments, results or \
+             words — and a tool's name is whatever its server chose:\n",
         );
         for d in &self.digests {
             out.push_str(&format!("- {}\n", d.render()));
         }
         if self.digests_not_shown > 0 {
+            // Said as counted, never as a description of what was cut: past
+            // the bound, the cut ones are often signal-bearing too (found on
+            // review of #719).
             out.push_str(&format!(
-                "- and {} further episode(s) with nothing failed, no intervention and a \
-                 completed run, not shown\n",
-                self.digests_not_shown
+                "- and {} further episode(s) not shown, {} of them with a failed call, an \
+                 intervention or an incomplete run\n",
+                self.digests_not_shown, self.digests_not_shown_with_signal
             ));
         }
         out
@@ -985,6 +1043,7 @@ impl Evidence {
             appraisals_skipped: 0,
             digests: Vec::new(),
             digests_not_shown: 0,
+            digests_not_shown_with_signal: 0,
         }
     }
 
@@ -2604,6 +2663,35 @@ rationale: the threshold is too low";
         let mut taint = bare.taint;
         taint.arm_for_content(&bare.messages);
         assert!(!taint.private);
+        assert!(!taint.untrusted);
+
+        // And a brief holding digests (found on review of #719): private and
+        // untrusted off the transcript, however it was built.
+        let messages = vec![
+            crate::message::Message::user("task"),
+            crate::message::Message::assistant(vec![crate::message::Block::ToolUse {
+                id: "t1".into(),
+                name: "kg_search".into(),
+                input: serde_json::json!({}),
+            }]),
+            crate::message::Message::tool_results(vec![crate::message::Block::ToolResult {
+                tool_use_id: "t1".into(),
+                content: String::new(),
+                is_error: false,
+            }]),
+        ];
+        let digested =
+            Evidence::default().with_digests(vec![EpisodeDigest::of("s-1", &messages, None)]);
+        let brief = digested.brief();
+        assert!(brief.contains(DIGEST_STEM), "{brief}");
+        let hand_built = crate::agent::Conversation::user(format!("{brief}\n---\nx"));
+        let mut taint = hand_built.taint;
+        assert!(
+            !taint.private && !taint.untrusted,
+            "not armed by whoever built it"
+        );
+        taint.arm_for_content(&hand_built.messages);
+        assert!(taint.private && taint.untrusted, "armed off the transcript");
     }
 
     /// `candidate::judge` still decides. The judgement is a function of the
@@ -2930,12 +3018,38 @@ mod digest_tests {
         assert_eq!(e.digests.len(), MAX_DIGESTS);
         assert_eq!(e.digests[0].session_id(), "loud");
         assert_eq!(e.digests_not_shown, 1);
+        assert_eq!(e.digests_not_shown_with_signal, 0);
         let brief = e.brief();
         assert!(brief.contains("- loud: stopped completed"), "{brief}");
-        assert!(brief.contains("1 further episode(s)"), "{brief}");
+        assert!(
+            brief.contains("1 further episode(s) not shown, 0 of them"),
+            "{brief}"
+        );
+
+        // Past the bound, the cut ones are signal-bearing too, and the brief
+        // says so rather than calling them quiet. Fails on the old wording.
+        let loud: Vec<EpisodeDigest> = (0..MAX_DIGESTS + 3)
+            .map(|i| {
+                EpisodeDigest::of(
+                    &format!("l{i}"),
+                    &session(),
+                    Some(&stats(crate::agent::StopCause::Completed)),
+                )
+            })
+            .collect();
+        let crowded = Evidence::default().with_digests(loud);
+        assert_eq!(crowded.digests_not_shown, 3);
+        assert_eq!(crowded.digests_not_shown_with_signal, 3);
+        assert!(crowded
+            .brief()
+            .contains("3 further episode(s) not shown, 3 of them with a failed call"));
         assert!(
             e.conversation("x").taint.private,
             "a digest is about the owner's activity"
+        );
+        assert!(
+            e.conversation("x").taint.untrusted,
+            "a tool's name may be its server's own words"
         );
         assert!(!Evidence::default().conversation("x").taint.private);
     }
@@ -2961,9 +3075,25 @@ mod digest_tests {
         );
         assert_eq!(proposal(Some("`loud` #`5`")).cites.unwrap().call, 5);
         assert_eq!(proposal(Some("loud, call two")).cites, None);
+        assert_eq!(
+            proposal(Some("loud #3 (the mail_search call)")).cites,
+            Some(Citation {
+                episode: "loud".into(),
+                call: 3
+            }),
+            "a note after the number is still the citation"
+        );
 
         let e = Evidence::default().with_digests(vec![EpisodeDigest::of("loud", &session(), None)]);
-        assert!(e.cite_instruction().contains("cites:"));
+        let instruction = e.instruction();
+        let block = instruction.split("PROPOSAL").nth(1).unwrap();
+        assert!(
+            block.contains(
+                "rationale: <one line: what is wrong, and why this addresses it>\n\
+                 cites: <episode id> #<call number>"
+            ),
+            "the required field is in the template itself: {instruction}"
+        );
         assert!(e.check_citation(&proposal(Some("loud #2"))).is_ok());
         assert!(
             e.check_citation(&proposal(Some("loud #5"))).is_ok(),
@@ -2983,7 +3113,7 @@ mod digest_tests {
             .contains("cites no episode"));
 
         let bare = Evidence::default();
-        assert_eq!(bare.cite_instruction(), "");
+        assert_eq!(bare.instruction(), DIAGNOSE_INSTRUCTION);
         assert!(bare.check_citation(&proposal(None)).is_ok());
     }
 }

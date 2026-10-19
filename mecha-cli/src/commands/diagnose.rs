@@ -17,9 +17,7 @@
 
 use crate::{setup, GlobalOpts};
 use anyhow::{Context, Result};
-use mecha_core::diagnose::{
-    diagnose_system, lifted, parse_proposal, Evidence, Proposal, DIAGNOSE_INSTRUCTION,
-};
+use mecha_core::diagnose::{diagnose_system, lifted, parse_proposal, Evidence, Proposal};
 use mecha_core::message::Block;
 use mecha_core::runlog::{Corpus, Scan};
 use mecha_core::session::Session;
@@ -564,12 +562,7 @@ pub async fn run_diagnostician(global: &GlobalOpts, evidence: &Evidence) -> Resu
     // Through `Evidence::conversation`, which opens it carrying private data
     // when a clean appraisal rides in the brief (row 2f): the interlock knows
     // only what the conversation's taint tells it.
-    let cite = match evidence.cite_instruction() {
-        "" => String::new(),
-        line => format!("\n\n{line}"),
-    };
-    let mut convo =
-        evidence.conversation(&format!("{DIAGNOSE_INSTRUCTION}{cite}\n{applicability}"));
+    let mut convo = evidence.conversation(&format!("{}\n{applicability}", evidence.instruction()));
     let outcome = prepared.agent.run(&mut convo, None).await?;
 
     let Some(proposal) = parse_proposal(&outcome.text) else {

@@ -1122,6 +1122,20 @@ impl Taint {
         }) {
             self.private = true;
         }
+        // **And the diagnostician's episode digests** (P9): the owner's
+        // activity, so private, and tool names a server may have chosen, so
+        // untrusted — read off the transcript, as the appraisal stem is, so a
+        // brief holding them is armed however it was built or resumed.
+        if messages.iter().any(|m| {
+            m.role == Role::User
+                && m.content.iter().any(|b| {
+                    matches!(b, Block::Text { text }
+                        if text.contains(crate::diagnose::DIGEST_STEM))
+                })
+        }) {
+            self.private = true;
+            self.untrusted = true;
+        }
         // **And a persona's files, folded into a chat's first turn** (§10.6):
         // the owner's material in words a third party wrote — private and
         // untrusted, as `file_read` and `document_read` declare their

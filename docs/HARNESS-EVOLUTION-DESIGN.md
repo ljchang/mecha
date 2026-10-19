@@ -1041,6 +1041,11 @@ covering what the diagnostician reads most.
   come first, and the rest are counted.
 - **Citation:** a brief with digests asks for `cites: <episode> #<call>`. An
   uncited proposal is refused before it is measured.
+- **Such a brief is untrusted as well as private.** An MCP server names its
+  own tools, and a name that passes an identifier check can still be a
+  sentence. On those nights the diagnostician cannot use the fetch tool
+  where it picks the address. Its search, which has no such address, still
+  works.
 - **Not built:**
   - The text halves wait on R6.
   - The divergence index waits on P8.
