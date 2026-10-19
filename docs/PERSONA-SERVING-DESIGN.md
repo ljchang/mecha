@@ -105,7 +105,12 @@ Four pieces, each with one job:
    voice seat is handed to the worker.
 3. **The worker's HRP transport** — a new transport in
    `mecha-core/units/voice/worker.py`, beside `SmallWebRTCTransport` and
-   `UplinkTransport` (the transport is already the swap point). It plays the
+   `UplinkTransport`. Below `run_bot` the pipeline is transport-agnostic;
+   above it, both existing transports are WebRTC (`UplinkTransport`
+   subclasses `SmallWebRTCTransport`) and are built at one site inside the
+   WebRTC runner's entry, so this is the first non-WebRTC transport: pipecat's
+   transport surface implemented from scratch, plus its own entrypoint and
+   route beside the offer endpoint. It plays the
    *engine's* side of the Realtime protocol over a loopback relay from the
    wiring, never over the internet: the owner's worker is unconfined, holds
    the owner's environment and every persona's reference audio, and so does
@@ -127,9 +132,23 @@ this box rather than a separate one, and built with `trial_env`'s: an
 isolated home per seat, assembled from an explicit list, never from the
 operator's home.
 
+**The seat directory** (`hyperstudy/seats/<seat>/`) holds four things side
+by side, none inside another: `home/` (the guest home, `MECHA_HOME`),
+`workspace/` (the jail, which contains no part of `home/` — `setup`'s rule
+that a workspace never contains the mecha home), `run/` (the sockets, §3
+below) and the manifest.
+
 **It holds:** the named persona's voice — its voice settings and reference
 audio, copied in, read-only — and nothing of its text: who the agent is
-comes from the study (S10).
+comes from the study (S10). Its config is written fresh by the wiring, not
+derived: `[security]` is copied verbatim from the owner's (§4a);
+`[providers]` names only the loopback router, with no key; the agent's
+model and timezone come from the owner's; and no other table is written —
+no `[[mcp]]`, `[[hook]]`, `[rule]`, `[approval]` or `[search]`. That is
+deliberately not `trial_env`'s shape: a trial home inherits the operator's
+`[providers]` and keys along with `[security]`, and a seat inheriting them
+would hand a stranger's conversation a cloud key and a non-local model with
+the seal intact around it.
 
 **It never holds:** the owner's persona memory or chat history with that
 persona; mail, calendar, graph, outbox, learning store or triggers; the
@@ -155,8 +174,9 @@ data and would refuse the seat directory itself.
 **The agent loop is its own process; the audio leg is shared.** The guest
 facade runs as a child with `MECHA_HOME` set to the guest home, bound to
 loopback on a port chosen per seat, never the owner's `voice-serve`; its
-workspace jail is rooted inside the seat's own directory, never the owner's
-working tree, though a seat has no file tool to use it (§4a). A voice
+workspace jail is the seat's `workspace/`, a sibling of its home, so the
+guarantee is structural rather than resting on a seat having no file tool
+(§4a). A voice
 seat's audio runs through the owner's running voice worker — the one worker
 on the box, its journal the owner's (S8) — which is part of why a live owner
 call makes a voice seat `busy` (§5): one worker's state, not only GPU room.
@@ -180,7 +200,8 @@ crosses a network namespace. The wiring, outside the jail, creates
 `seat/run/parent.sock` (to itself) inside the bound seat directory; the
 facade runs under `--unshare-net` and reaches the model and its parent
 through those and nothing else. The facade's clients either take a socket
-path (reqwest's `ClientBuilder::unix_socket`, in the locked 0.12.28) or keep
+path (reqwest's `ClientBuilder::unix_socket`, present in the locked
+0.12.28 under `cfg(unix)` with no feature flag) or keep
 their `http://127.0.0.1` URLs through a forwarder on the jail's own `lo`;
 the first is less moving parts. The result is a seat with no route to any
 host, so egress no longer rests on the tool catalogue alone (§4a).
@@ -222,7 +243,11 @@ falls through (the silently-degrading guard).
 experiment store's pattern, a trial's home kept as its record. The seat's
 manifest names the study's session, the persona whose voice it used, the
 model `served_props` reported, and the HRP settings it ran under, so a seat
-can be read back the way a trial is. Retention of these records is the
+can be read back the way a trial is. Seat transcripts stay out of the
+owner's run corpus and reflection mining because the corpus reads
+`$MECHA_HOME/sessions` without recursing, and seats live elsewhere — a
+property a test in step 2 pins, since a recursive reader added later would
+quietly mine strangers' conversations. Retention of these records is the
 owner's (S2 hands participants' consent to the study); nothing here deletes
 them on a clock. mecha declares to HyperStudy that the engine keeps
 transcripts (`hs.retention`), so a study can tell its participants.
@@ -239,10 +264,13 @@ the agent is or who it is talking with. The clock needs saying: the
 calendar note renders only when the system prompt carries
 `date_context::GUIDANCE_HEADING`, so a verbatim study prompt would earn no
 date on any request — the "Sunday on a Monday" failure by construction.
-The gate stays keyed on the heading ("so the two cannot drift"), and a seat
-gets the date the way it gets everything else mechanical: as a labelled
-context item (§4a), read from the clock per request, so the model can tell
-what it is and the system prompt stays the study's byte for byte.
+The note's vehicle is right and stays: it is attached at wire time, once
+per request, never persisted, so it cannot go stale across midnight or
+accumulate in history — which a context item folded into the conversation
+would do. What changes is the gate: a seat-mode allowance beside the
+heading test, so a seat's requests carry the head note, with a one-line
+label saying what it is, while the system prompt stays the study's byte
+for byte.
 
 ## 4. The voice transport
 
@@ -311,20 +339,38 @@ fold at the next legal boundary through the steering path
 carrying the tool results. The steering path alone is not enough: its one
 drain site skips a closing turn by design — a steer taken there could not
 be acted on, and "the front end says it came too late" — and a seat has no
-front end to say it. So a seat folds at a second boundary the wiring owns:
-an item that arrives during a closing turn, or between turns, joins the
-**tail user message**. If the conversation ends on the agent's reply, the
-item opens a new user message of context alone; if it already ends on a
-user message — the participant's pending turn, or context with no reply
-yet — the item is appended to it. A participant turn that arrives while the
-tail is a context-only user message is appended to that message, never
-added after it, so two user messages in a row never occur. Whether any of
+front end to say it. So a seat also folds at a boundary the wiring owns,
+and it is a **deferred** fold: `run_in` holds `&mut Conversation` for the
+whole run, so the wiring cannot touch the messages while a run is in
+flight, and a message already sent must not change — the transcript would
+record words the model never received, and the next request would stop
+extending the last one's prefix. Three cases:
+
+- **A run is in flight** (a closing turn, or a reply with no tool call):
+  the item waits, and cannot be acted on in that turn — the consequence the
+  steering drain already accepts. When `run_in` returns it is handled as
+  below.
+- **The conversation ends on the agent's reply:** the item opens a new user
+  message of context alone.
+- **It ends on an unsent user message** (context with no reply yet, or a
+  participant turn not yet sent): the item is appended to it, and a
+  participant turn arriving on a context-only tail is appended to that
+  message too, so two user messages in a row never occur. Whether any of
 it asks for a reply is the study's, by its own `response.create`. Nothing is dropped: an item still queued when the
 seat closes is recorded as unfolded in the seat's transcript. The
 mid-round half is not free either: the steering queue carries text
 (`queued_input` is a `VecDeque<String>`), and an image context item needs it
 to carry `Block`s. That widening is a core change that touches every
 steering caller, the TUI and web chat included, and §8 step 3 names it.
+
+**Compaction.** A long voice seat reaches the slot's `context_window`, and
+compaction applies as it does anywhere: the cut lands on an assistant
+message, taint survives it, and the session file records the rewrite. The
+study's `instructions` are the system prompt, not a message, so a
+`session.update` never falls inside a cut; deferred context items wait for
+the run that compacts to return like any other. "Nothing is dropped" means
+no context item is lost unrecorded — compaction's summary of earlier turns
+is the seat's history, as it is the owner's.
 
 **What a ClientTool declares.** An armed loop refuses every
 `Egress::Chosen` tool, so a study tool labelled `Chosen` fails the first
@@ -345,8 +391,9 @@ guarantees is that nothing it sends goes anywhere else. The private leg a
 seat carries is the study's own material shown back to the study, but the
 send-axis leak guard (`block_sends_after_private`, which refuses `Blind`
 too) is a `[security]` switch — a machine fact and the owner's standing
-word, which `trial_env`'s `MACHINE_TABLES` keeps any derived home from
-loosening. So a seat reads it from the owner's config, never writes it. With
+word. The wiring copies the owner's `[security]` into the guest config
+verbatim and writes nothing of its own there (§3; §8 step 2 tests it), so a
+seat holds the owner's value rather than the permissive default. With
 it off (the default) the catalogue works as above; with it on, a seat
 cannot act after its first image, so the engine's hello offers no study
 tools and seats are conversation only. Exempting the catalogue from an
@@ -360,8 +407,11 @@ The bound is the per-seat budget below, in bytes as well as rounds.
 **Not in a seat:** image generation (S5); any mecha tool — no `web_search`,
 no file reading, no `http_fetch`, no shell, no owner `[[mcp]]` server, no
 grants. Adding one later is a ruling, and the bar is that it reaches no
-destination a stranger could aim: `http_fetch` would make this box a fetcher
-pointed at the owner's LAN and tailnet.
+destination a stranger could aim and no content a stranger should read:
+`http_fetch` would make this box a fetcher pointed at the owner's LAN and
+tailnet, and a file tool, though it aims nowhere outside, would reach the
+seat's own directory — the copied reference audio and the seat's
+transcript.
 
 **The tool list is declared once.** mecha's tool list is the front of its
 cached prefix, so a study that swaps tools per screen re-pays the prefix on
@@ -498,10 +548,18 @@ mecha provides; the study decides:
   on in a seat**, whatever the named persona's `safety.crisis` switch says:
   that switch is the owner's choice about the owner's chat, and it does not
   travel with the voice into a study's. Nothing here is inherited: the
-  sensor is invoked per surface (`persona_chat.rs`, `voice/direct.rs`,
-  `listen.rs`; the loop has no call site), so a seat is a fourth surface
-  wiring it, and it fails closed — a seat whose crisis path is not wired,
-  or whose sensor cannot be built, does not open. In a
+  sensor runs in one place today, interleaved through `persona_chat.rs`'s
+  handler — the keyword tier, the judge and its answered state, the
+  cooldown, `record_crisis`. (`voice/direct.rs` and `listen.rs` only
+  recognise `SAFE_MESSAGE` as harness speech.) So a seat is the second
+  surface, and step 2 begins by lifting the sensor out into something both
+  can call; it fails closed — a seat whose crisis path is not wired, or
+  whose sensor cannot be built, does not open. The ledger follows the
+  owner, not the seal: `record_crisis` appends to `<home>/personas/
+  safety.jsonl`, which under the guest home would hide every study trip
+  from the owner's host report, so the wiring writes a seat's records to the
+  owner's store — they carry no words by construction — with the surface
+  named `hyperstudy` rather than today's literal `web`. In a
   seat it keeps the actions it takes today: on a trip the harness steps out
   of character with `SAFE_MESSAGE` and pauses the persona for
   `CRISIS_COOLDOWN`, and mecha raises HRP's `hs.flag`. Two seat-specific
@@ -544,7 +602,9 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    outside serve; the confined launch (§3: bwrap, `--unshare-net`, the two
    sockets, a preflight proving the model answers and a LAN address does
    not); guest home, untrusted run mode, the §3 table as
-   tests (the approver allows the catalogue and nothing else — and whether `Approver` gains
+   tests (the sensor lifted out of `persona_chat.rs` first, with a seat's
+   trip recorded in the owner's ledger as `hyperstudy`; seat transcripts
+   absent from the owner's corpus; the approver allows the catalogue and nothing else — and whether `Approver` gains
    a door enum so the compiler holds a future door is decided here; the
    seat is armed untrusted before its first turn; a seat writes nothing
    under the operator's home outside its own seat directory; the system
@@ -558,7 +618,7 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    mid-round boundary and on a closing turn, unfolded items recorded, the
    crisis handover and the degraded state, a seat refusing to open without
    its crisis path, the facade's environment holding only the allowlist, the
-   date context item present with a verbatim study prompt, the guest
+   calendar head note present with a verbatim study prompt, the guest
    config holding no `[[hook]]`, skill, charter or subagent, the owner's
    `[security]` read and never written, budgets.
 3. **A text seat on loopback** — HRP with text-only output against a local
@@ -567,8 +627,11 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    `CrisisState` declaration on the session (§7). Exit: a scripted study (read a screen, chat, answer a rating
    through a silent forced call) runs end to end, including a context item
    with no `response.create` followed by the participant speaking — the
-   sequence that would otherwise send two user messages.
-4. **The voice transport on loopback** — the worker takes its facade URL
+   sequence that would otherwise send two user messages. And a context item
+   arriving mid-reply in a turn with no tool call, which must wait for the
+   run rather than enter a message already sent.
+4. **The voice transport on loopback** — the first non-WebRTC transport,
+   with its own entrypoint (§2); the worker takes its facade URL
    per call from the relay, and its HRP transport takes
    the wiring's loopback relay, which is its only shape (§2), and
    HyperStudy's conformance suite runs against it through a local stand-in
@@ -607,7 +670,10 @@ accepted socket instead.
 
 - Whether a seat's study tools may run when the owner has `block_sends_after_private` on (§4a); conversation only until ruled.
 - What happens when the owner switches the router's model mid-seat (§5):
-  wait out the seat, or end it with a reason.
+  wait out the seat, or end it with a reason. `hold.rs` makes the run the
+  side that yields, and here the wiring holds for the seat, so the answer
+  is the wiring's: refuse to yield until the seat ends (the owner waits,
+  with no time limit), or end the seat with a reason and yield.
 - What happens to a live voice seat when the owner starts a call: end the
   seat with a reason, or refuse the owner's call while a study runs.
 - The budget numbers and `max_seats`' default, set from a measured seat,
