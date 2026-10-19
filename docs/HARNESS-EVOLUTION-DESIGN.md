@@ -650,15 +650,18 @@ the shape above left open:
   "no observed effect".
 
 **Almost nothing reopens on its own.** A thin selection slice always
-proposes and never rejects, so measuring can't produce `Underpowered`. It
-comes from exactly two places:
+proposes and never rejects, so measuring can't produce `Underpowered`. Only
+two things reopen a change:
 - **The owner's `--verdict unmeasured`.**
-- **A no-headroom rejection**, where no run in that night's corpus had any of
-  the metric the change predicted to lower. Headroom belongs to the corpus,
-  not the change. A re-proposal into a corpus that still has none is
-  rejected again before any replay is paid for.
+- **A no-headroom rejection (`HistoryVerdict::NoHeadroom`)**, where no run in
+  that night's corpus had any of the metric the change predicted to lower.
+  Headroom belongs to the corpus, not the change. The rejection holds until
+  the counters show that metric above zero. The brief says so, and the
+  re-derivation check applies the same `forbids_retry`.
 
-Apart from those, P1 lifts only the bans the owner lifts.
+Apart from those, P1 lifts only the bans the owner lifts. The brief shows
+each change once, by the record that decides it, so a retried change never
+appears under two contradicting instructions.
 
 The live record when it was built: the gate had rejected none of the 17
 candidates. All 12 rejections were the owner's, and four of them were keys
