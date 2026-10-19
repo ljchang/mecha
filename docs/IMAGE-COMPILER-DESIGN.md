@@ -396,7 +396,8 @@ to be built in the video tool.
 - **§1, "a character is a portrait plus a description … no body reference
   (E9), no required crop (E10)."**
   - **Changed for pictures by E9b** (passed; owner, 2026-10-13): a
-    `full_body` reference is sent, bound to its portrait (§9.4).
+    `full_body` reference is sent, bound to its portrait (§9.4), and
+    narrowed by E14 (owner, 2026-10-19) to a picture of that person alone.
   - **Changed for video by V-B's retest** (passed; owner, 2026-10-14): a
     `full_body` is sent beside the face crop, unbound, all or nothing
     (§9.4).
@@ -682,8 +683,9 @@ kind is derived from its directory (`Entry.kind`).
       never happens.
     - What was left out is said.
     - **The four was established by E9b** (review of #680, passes 7 and
-      22), and E14 retired it for pictures; video keeps it. E12 measured four *different* faces with no duplicate, while two
-      people with a body each is E9's B2 arm, which drew one person twice.
+      22), and E14 retired it for pictures; video keeps it. E12 measured
+      four *different* faces with no duplicate, while two people with a
+      body each is E9's B2 arm, which drew one person twice.
       E9b ran that configuration, a cast of two with a body each, and drew
       two people in both seeds with no grey from the references; pose
       transfer was its one side effect (next bullet). It was judged by
