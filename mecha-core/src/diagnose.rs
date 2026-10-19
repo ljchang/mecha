@@ -324,10 +324,12 @@ pub struct Evidence {
 // `closed_name` stops punctuation and length, not a sentence. Nothing at
 // digest time can tell a name mecha defined from one a server chose, so the
 // brief is treated as third-party content as well as the owner's: unknown
-// taint classifies untrusted. The cost is the diagnostician's model-chosen
-// fetch on every night with digests — with the defaults, every night; its
-// blind search is untouched, and `[agent] digests_in_brief` (a stage lever)
-// turns the digests off to buy the fetch back or to measure them.
+// taint classifies untrusted. The cost, on every night with digests (every
+// night, with the defaults), is two things from the first turn: the
+// model-chosen fetch is refused, and `web_search` — which narrows on
+// `private && untrusted` — runs blind backends only, at quick depth, whatever
+// depth it asks for (found on review of #719). `[agent] digests_in_brief` (a
+// stage lever) turns the digests off to buy both back or to measure them.
 
 /// The most episodes the brief carries a digest of.
 pub const MAX_DIGESTS: usize = 12;
@@ -402,9 +404,14 @@ impl EpisodeDigest {
                 .map(|m| m.tool_uses().len())
                 .sum()
         };
+        // Clamped to the calls the recording answered: `extract` keeps a call
+        // only once its result arrived, so an intervention counted past the
+        // last answered call would select the episode (`has_signal`) and
+        // then never render (found on review of #719).
+        let answered = trajectory.calls.len();
         let interventions = crate::learning::extract_interventions(messages)
             .iter()
-            .map(|i| (calls_before(i.at), i.trigger.as_str()))
+            .map(|i| (calls_before(i.at).min(answered), i.trigger.as_str()))
             .collect();
         let stop = episode.and_then(|e| e.stop_cause).map(|c| {
             serde_json::to_string(&c)
