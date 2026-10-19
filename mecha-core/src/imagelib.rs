@@ -57,10 +57,12 @@ pub const REFERENCE_SIZE: u32 = 512;
 /// (`IMAGE-COMPILER-DESIGN.md` §9.3).
 pub const MAX_LABEL: usize = 100;
 /// Images a new picture carries when each person is bound to two
-/// (`IMAGE-COMPILER-DESIGN.md` §9.4): E9b passed with a cast of two and a
-/// full body each, and E12's duplicate-free evidence stops at four. So
-/// full-figure references go to a cast of one or two, never more.
-pub const MAX_BOUND_IMAGES: usize = 4;
+/// (`IMAGE-COMPILER-DESIGN.md` §9.4): so full-figure references go to a cast
+/// of one. E9b passed a cast of two by eye on two seeds, but a cast of two
+/// with a body each drew someone twice in 6 of 13 live pictures (2026-10-17),
+/// and portraits alone with a closed count took recorded calls from 19 of 21
+/// doubled to 2 of 21 (E14); a cast of one with a body drew no one twice.
+pub const MAX_BOUND_IMAGES: usize = 2;
 
 /// What an entry is. The directory it lives under.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -1728,12 +1730,11 @@ pub fn compile(
 /// portraits alone: one planned in layers, whose cutouts were measured with
 /// a portrait each and whose fallback must draw what they would have.
 ///
-/// With `bodies`, every person is bound to two images, portrait then full
-/// figure, when everyone in the cast has a full body attached and the
-/// whole fits [`MAX_BOUND_IMAGES`]; otherwise no one is, and the notes say
-/// why (§9.4: a person bound to two images beside others bound to one is a
-/// shape no wording covers and nothing has measured). The binding is E9b's
-/// measured wording, with the name for its pronoun.
+/// With `bodies`, a cast of one with a full body attached is bound to two
+/// images, portrait then full figure ([`MAX_BOUND_IMAGES`]); a larger cast
+/// is drawn from portraits, and the notes say why (§9.4, E14: four images
+/// for two people drew someone twice). The binding is E9b's measured
+/// wording, with the name for its pronoun.
 pub fn compile_with(
     lib: &Library,
     scene: &str,
@@ -1843,7 +1844,7 @@ pub fn compile_with(
         });
     }
 
-    // All or nothing (§9.4), and said in counts, never labels:
+    // A cast of one only (§9.4, E14), and said in counts, never labels:
     // `image_generate` declares no private data, so its result names nothing
     // the library holds beyond what the call already named.
     let mut notes = Vec::new();
@@ -1860,17 +1861,8 @@ pub fn compile_with(
         // must not suggest it (review of #685).
         } else if 2 * n > MAX_BOUND_IMAGES {
             notes.push(format!(
-                "{not_sent}: they go only to a picture of one or two people, and this one \
-                 has {}.",
+                "{not_sent}: they go only to a picture of one person, and this one has {}.",
                 number(n)
-            ));
-        } else if attached < n {
-            notes.push(format!(
-                "{not_sent}: {} of the {} people {} one attached, and they go to everyone or \
-                 no one.",
-                number(attached),
-                number(n),
-                if attached == 1 { "has" } else { "have" }
             ));
         } else {
             let read: Vec<_> = members
@@ -1885,11 +1877,7 @@ pub fn compile_with(
             if read.iter().all(Result::is_ok) {
                 bound = read.into_iter().map(Result::ok).collect();
             } else {
-                let bad = read.iter().filter(|r| r.is_err()).count();
-                notes.push(format!(
-                    "{not_sent}: {} could not be read.",
-                    if bad == 1 { "one" } else { "some" }
-                ));
+                notes.push(format!("{not_sent}: it could not be read."));
             }
         }
     }
@@ -1901,8 +1889,10 @@ pub fn compile_with(
     let mut people = Vec::with_capacity(n);
     let mut bindings = Vec::new();
     let mut figures = Vec::new();
+    let mut names = Vec::with_capacity(n);
     for (i, (m, body)) in members.into_iter().zip(bound).enumerate() {
         let shown = crate::imagegen::capitalized(&m.name);
+        names.push(shown.clone());
         let who = match &body {
             Some(_) => {
                 let (face, figure) = (refs.len() + 1, refs.len() + 2);
@@ -1975,14 +1965,20 @@ pub fn compile_with(
     } else {
         format!("{scene}.")
     };
-    // Two measured rules. With extras, the head count counts everyone (E11):
-    // "Exactly three people" beside a scene with a waiter pushed him into the
-    // background, and counted as a new person he stood where the scene put
-    // him. Without extras, no total at all (E12): the model does not always
-    // use `extras` — a live run wrote the waiter into the prose — and there
-    // "Exactly two people" erased him outright, while "each appears exactly
-    // once; anyone else is a new person" drew him and, with four cast and no
-    // one else, still drew exactly four with no duplicate.
+    // Three measured rules. With extras, the head count counts everyone
+    // (E11): "Exactly three people" beside a scene with a waiter pushed him
+    // into the background, and counted as a new person he stood where the
+    // scene put him. One person without extras gets no total (E12): the
+    // model does not always use `extras` — a live run wrote the waiter into
+    // the prose — and there "Exactly two people" erased him outright, while
+    // "appears exactly once; anyone else is a new person" drew him, and with
+    // four cast still drew exactly four. Two without extras get a closed
+    // count naming them (E14): E12's open wording let a cast of two touching
+    // be drawn three or four times, 19 of 21 pictures of recorded calls, and
+    // closed with portraits only it was 2 of 21. The cost is E12's waiter: a
+    // person only the prose describes may be erased, so a scene's other
+    // people belong in `extras`. Three or more keep E12's wording, which is
+    // all that has been measured there.
     let others = extras.join("; ");
     let m = extras.len();
     let new_people = if m == 1 {
@@ -2022,6 +2018,12 @@ pub fn compile_with(
              composition, pose and lighting.",
             capitalize(&people[0]),
             number(1 + m)
+        )),
+        (2, 0) => prompt.push_str(&format!(
+            " From left to right: {}.{bound_words} Exactly two people are in the image, {}, each \
+             exactly once; no one else is in it. All images serve as identity sources only.",
+            people.join("; "),
+            join_and(&names)
         )),
         (n, 0) => prompt.push_str(&format!(
             " From left to right: {}.{bound_words} Each of the {} people from the images \
@@ -2786,7 +2788,8 @@ mod tests {
             c.prompt,
             "a park. Also in the scene: a child; a dog walker."
         );
-        // No extras: no total that would forbid a person the prose describes.
+        // No extras, three or more: no total that would forbid a person the
+        // prose describes (E12).
         let c = compile(&lib, "a park", &cast, &[], None).unwrap();
         assert!(
             c.prompt.contains(
@@ -2795,6 +2798,24 @@ mod tests {
             "{}",
             c.prompt
         );
+        // No extras, two: closed, by name (E14).
+        let c = compile(&lib, "a park", &cast[..2], &[], None).unwrap();
+        assert!(
+            c.prompt.ends_with(
+                "Exactly two people are in the image, Maya and John, each exactly once; no one \
+                 else is in it. All images serve as identity sources only."
+            ),
+            "{}",
+            c.prompt
+        );
+        // With extras, two are counted with them as before (E11).
+        let c = compile(&lib, "a diner booth", &cast[..2], &waiter, None).unwrap();
+        assert!(
+            c.prompt.contains("Exactly three people in the image"),
+            "{}",
+            c.prompt
+        );
+        assert!(!c.prompt.contains("no one else"), "{}", c.prompt);
     }
 
     #[test]
@@ -3242,34 +3263,34 @@ mod tests {
         add_reference(dir, name, RefKind::FullBody, &png_of(rgb), None).unwrap();
     }
 
-    /// E9b's shape (§9.4): two people, each bound to a portrait then a full
-    /// figure, named in the binding and never given a pronoun; the figures'
-    /// clothing is not worn; the head count is E12's, never a total.
+    /// E14's shape (§9.4): two people with a body each send their portraits
+    /// only, said in the notes, and are counted closed, by name: four images
+    /// for two people drew someone twice where two did not.
     #[test]
-    fn a_cast_of_two_with_bodies_binds_each_to_two_images() {
+    fn a_cast_of_two_with_bodies_sends_portraits_and_a_closed_count() {
         let dir = scratch();
         with_body(dir.path(), "maya", [9, 1, 1]);
         with_body(dir.path(), "jo", [9, 2, 2]);
         let lib = Library::load(dir.path()).0;
         let c = compile(&lib, "a studio", &[member("maya"), member("jo")], &[], None).unwrap();
         let names: Vec<&str> = c.references.iter().map(|r| r.0.as_str()).collect();
-        assert_eq!(names, ["maya", "full_body:maya", "jo", "full_body:jo"]);
-        assert_eq!(c.references[1].1, png_of([9, 1, 1]));
-        assert_eq!(c.references[3].1, png_of([9, 2, 2]));
+        assert_eq!(names, ["maya", "jo"]);
         assert_eq!(
             c.prompt,
-            "a studio. From left to right: the person shown in <image1> and <image2> (maya, a \
-             person with a memorable face), wearing a yellow raincoat, laughing; the person \
-             shown in <image3> and <image4> (jo, a person with a memorable face), wearing a \
-             yellow raincoat, laughing. <image1> and <image2> show one person, Maya: <image1> \
-             is Maya's portrait, <image2> Maya's full figure. <image3> and <image4> show one \
-             person, Jo: <image3> is Jo's portrait, <image4> Jo's full figure. The clothing in \
-             <image2> and <image4> is not worn here. Each of the two people from the images \
-             appears exactly once; anyone else the scene describes is a new person, not from \
-             any image. All images serve as identity sources only."
+            "a studio. From left to right: the person from <image1> (maya, a person with a \
+             memorable face), wearing a yellow raincoat, laughing; the person from <image2> \
+             (jo, a person with a memorable face), wearing a yellow raincoat, laughing. Exactly \
+             two people are in the image, Maya and Jo, each exactly once; no one else is in \
+             it. All images serve as identity sources only."
         );
-        assert!(c.notes.is_empty(), "{:?}", c.notes);
-        assert!(c.used.iter().all(|u| u.full_body.is_some()));
+        assert_eq!(
+            c.notes,
+            [
+                "Full-figure references were not sent: they go only to a picture of one person, \
+              and this one has two."
+            ]
+        );
+        assert!(c.used.iter().all(|u| u.full_body.is_none()));
     }
 
     /// One person: the same binding, in the singular.
@@ -3293,10 +3314,10 @@ mod tests {
         );
     }
 
-    /// All or nothing (§9.4), each refusal said in counts and never a label:
-    /// one person without a body, a cast too big to bind, a layered plan.
+    /// A body goes only to a picture of one person (§9.4, E14), each refusal
+    /// said in counts and never a label: a cast of more, a layered plan.
     #[test]
-    fn bodies_go_to_everyone_or_no_one_and_say_why_in_counts() {
+    fn bodies_go_to_a_cast_of_one_and_say_why_in_counts() {
         let dir = scratch();
         with_body(dir.path(), "maya", [9, 4, 4]);
         create(dir.path(), character("jo", Origin::Owner)).unwrap();
@@ -3319,8 +3340,8 @@ mod tests {
         assert_eq!(
             c.notes,
             [
-                "Full-figure references were not sent: one of the two people has one attached, \
-                 and they go to everyone or no one."
+                "Full-figure references were not sent: they go only to a picture of one person, \
+                 and this one has two."
             ]
         );
 
@@ -3340,13 +3361,12 @@ mod tests {
         assert_eq!(
             c.notes,
             [
-                "Full-figure references were not sent: they go only to a picture of one or \
-                 two people, and this one has three."
+                "Full-figure references were not sent: they go only to a picture of one \
+                 person, and this one has three."
             ]
         );
 
-        let two = [member("maya"), member("theo")];
-        let c = compile_with(&lib, "a studio", &two, &[], None, false).unwrap();
+        let c = compile_with(&lib, "a studio", &[member("maya")], &[], None, false).unwrap();
         faces_only(&c);
         assert_eq!(
             c.notes,
@@ -3368,21 +3388,20 @@ mod tests {
     fn bodies_past_the_prompt_cap_fall_back_to_faces() {
         let dir = scratch();
         with_body(dir.path(), "maya", [9, 9, 1]);
-        with_body(dir.path(), "jo", [9, 9, 2]);
         let lib = Library::load(dir.path()).0;
-        let two = [member("maya"), member("jo")];
-        let base = compile_with(&lib, "x", &two, &[], None, false)
+        let one = [member("maya")];
+        let base = compile_with(&lib, "x", &one, &[], None, false)
             .unwrap()
             .prompt
             .chars()
             .count();
         // "x" becomes a scene ten characters under the cap, faces only.
         let scene = "a".repeat(MAX_COMPILED_PROMPT - 10 - (base - 1));
-        let faces = compile_with(&lib, &scene, &two, &[], None, false).unwrap();
+        let faces = compile_with(&lib, &scene, &one, &[], None, false).unwrap();
         assert_eq!(faces.prompt.chars().count(), MAX_COMPILED_PROMPT - 10);
-        let c = compile(&lib, &scene, &two, &[], None).unwrap();
+        let c = compile(&lib, &scene, &one, &[], None).unwrap();
         assert_eq!(c.prompt, faces.prompt);
-        assert_eq!(c.references.len(), 2);
+        assert_eq!(c.references.len(), 1);
         assert!(c.used.iter().all(|u| u.full_body.is_none()));
         assert_eq!(
             c.notes,
@@ -3393,26 +3412,25 @@ mod tests {
         );
         // Over the cap from faces alone is still the scene's to shorten.
         let long = "a".repeat(MAX_COMPILED_PROMPT);
-        assert!(compile(&lib, &long, &two, &[], None)
+        assert!(compile(&lib, &long, &one, &[], None)
             .unwrap_err()
             .contains("shorten the scene"));
     }
 
-    /// A body whose bytes no longer match their hash is not sent, and with it
-    /// no one's is; the picture still draws, from faces.
+    /// A body whose bytes no longer match their hash is not sent; the
+    /// picture still draws, from the portrait.
     #[test]
-    fn a_body_that_fails_its_hash_sends_no_bodies() {
+    fn a_body_that_fails_its_hash_is_not_sent() {
         let dir = scratch();
-        with_body(dir.path(), "maya", [9, 7, 7]);
         with_body(dir.path(), "jo", [9, 8, 8]);
         let lib = Library::load(dir.path()).0;
         let jo = lib.get(Kind::Character, "jo").unwrap();
         std::fs::write(lib.blob_path(&jo.references[0].blob), png_of([0, 0, 1])).unwrap();
-        let c = compile(&lib, "a studio", &[member("maya"), member("jo")], &[], None).unwrap();
-        assert_eq!(c.references.len(), 2);
+        let c = compile(&lib, "a studio", &[member("jo")], &[], None).unwrap();
+        assert_eq!(c.references.len(), 1);
         assert_eq!(
             c.notes,
-            ["Full-figure references were not sent: one could not be read."]
+            ["Full-figure references were not sent: it could not be read."]
         );
     }
 
