@@ -894,7 +894,10 @@ impl Evidence {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PastCandidate {
     pub verdict: HistoryVerdict,
-    /// `change (class)` — machine-authored, never the rejection's prose.
+    /// `change (class)`, then the record's reason when it has one. The
+    /// reason is context for the reader, never the instruction: which group
+    /// the line sits under, and so what may be done with it, comes from
+    /// `verdict` alone.
     pub line: String,
 }
 

@@ -181,10 +181,13 @@ fn floors_say_asserted_until_a_null_run_measures_them() {
                     diverged: vec!["s-1".into()],
                     replay_caveats: Vec::new(),
                     divergence_detail: Vec::new(),
-                    skipped: 0,
+                    // Sessions the pool scan passed over before anything was
+                    // drawn: never part of the denominator.
+                    skipped: 40,
                 },
             ),
             by_metric: vec![accepted, proposed],
+            drawn: 3,
         })
         .unwrap();
     let one: Value = serde_json::from_str(&f.ok(&["harness", "floors", "--json"])).unwrap();
@@ -192,7 +195,10 @@ fn floors_say_asserted_until_a_null_run_measures_them() {
     assert_eq!(one["accept"], 1);
     assert_eq!(one["propose"], 1);
     assert_eq!(one["runs_filling_both_floors"], 0);
-    assert_eq!(one["episodes_drawn"], 1);
+    assert_eq!(
+        one["episodes_drawn"], 3,
+        "what was drawn, not what the scan skipped"
+    );
     assert!(f
         .ok(&["harness", "floors"])
         .contains("1 accepted, 0 rejected, 1 proposed"));

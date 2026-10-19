@@ -649,6 +649,12 @@ the shape above left open:
   tallies. A gate rejection recorded before this field is untyped, never
   "no observed effect".
 
+**Nothing reopens on its own.** `Underpowered` cannot come from any record
+the gate writes today, because a thin selection slice always proposes and
+never rejects. So the "may be proposed again" group fills only from the
+owner's `--verdict unmeasured`. P1 lifts the bans the owner lifts, and no
+others.
+
 The live record when it was built: the gate had rejected none of the 17
 candidates. All 12 rejections were the owner's, and four of them were keys
 that never existed.

@@ -685,9 +685,15 @@ pub fn judge_slices<T>(
     // make.
     let measured = sel.total() + hold.total();
     let all_ties = sel.wins == 0 && sel.losses == 0 && hold.wins == 0 && hold.losses == 0;
+    // Work that is *known* and equal, per pair. A zero is not known: this
+    // gate is generic, and `experiment::judge` reports a trial with no stats
+    // as zero calls, so two zeros can be two unknowns — and "same tool
+    // calls" read out of them is a claim the data does not make (found on
+    // review of #717). A pair that genuinely made no calls on either arm
+    // falls to the ordinary path, as it did before this check existed.
     let work_unmoved = selection.iter().chain(holdout.iter()).all(|p| {
         let (b, c) = work(p);
-        b == c
+        b == c && b > 0
     });
     if measured > 0 && all_ties && work_unmoved {
         return judgement(Disposition::Propose(format!(
@@ -1615,6 +1621,27 @@ mod prioritised_tests {
             ),
             other => panic!("an inert measurement must not be a verdict: {other:?}"),
         }
+
+        // Zero work is unknown work, not equal work: an experiment's trial
+        // with no stats reports zero calls on both arms, and that must reach
+        // the ordinary path rather than claim the arms were the same run.
+        let unrecorded = |id: String| Pair {
+            episode: id,
+            baseline: stats(0, 0),
+            candidate: stats(0, 0),
+        };
+        let unknown: Vec<Pair> = (0..MIN_SELECTION_PAIRS)
+            .map(|i| unrecorded(format!("u{i}")))
+            .collect();
+        let unknown_hold: Vec<Pair> = (0..MIN_HOLDOUT_PAIRS)
+            .map(|i| unrecorded(format!("v{i}")))
+            .collect();
+        let j = judge_drawn(ChangeClass::Config, &prediction, &unknown, &unknown_hold);
+        assert!(
+            !matches!(&j.disposition, Disposition::Propose(why) if why.contains("no room to differ")),
+            "two zeros are two unknowns: {:?}",
+            j.disposition
+        );
 
         // The guard is about *identical* arms, not about ties. A slice that
         // ties on the metric while the work moved is a real neutral result
