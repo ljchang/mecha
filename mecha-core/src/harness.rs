@@ -119,7 +119,7 @@ impl OverrideKey {
 /// — it ran only under `mecha sessions appraise --appraise`, never inside a
 /// run — and it no longer runs at all (retired in row 2a-3), so there is
 /// nothing for a per-run lever to remove;
-/// and `sensors_in_brief` and `appraisals_in_brief` are *stage* levers
+/// and `sensors_in_brief`, `appraisals_in_brief` and `digests_in_brief` are *stage* levers
 /// (`ruminate` inputs), recorded on a trial's manifest rather than on a run,
 /// and wait for that store.
 ///
@@ -475,6 +475,11 @@ pub struct HarnessCandidate {
     /// before the field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rejection: Option<Rejection>,
+    /// The moment the proposal said it addresses, `<episode> #<call>` (P9).
+    /// `None` on a record from before the field, or from a brief that
+    /// carried no episodes to cite.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cites: Option<String>,
 }
 
 /// Who rejected a candidate, and — when it was the owner — what they ruled.
@@ -1793,6 +1798,7 @@ accepted_at = "2026-08-22T00:00:00Z"
             resolved_at: None,
             reason: None,
             rejection: None,
+            cites: None,
         };
         store.write(&c).unwrap();
         let read = store.find("hc-2026").unwrap();
@@ -1960,6 +1966,7 @@ mod history_verdict_tests {
             resolved_at: None,
             reason: Some("prose the verdict must never read".into()),
             rejection,
+            cites: None,
         }
     }
 

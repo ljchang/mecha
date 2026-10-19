@@ -70,6 +70,7 @@ impl Fixture {
                 resolved_at: None,
                 reason: None,
                 rejection: None,
+                cites: None,
             })
             .unwrap();
     }
@@ -317,9 +318,17 @@ fn a_null_run_that_paired_nothing_is_not_a_clean_sheet() {
     };
     same.arms_identical = true;
     f.store().write_null(&same).unwrap();
+    // And one that paired, differed, and had no metric with headroom to
+    // judge: it judged nothing, and must land in a bucket of its own.
+    let mut dry = same.clone();
+    dry.id = HarnessStore::mint_null_id() + "-dry";
+    dry.arms_identical = false;
+    dry.no_headroom = mecha_core::candidate::Metric::ALL.to_vec();
+    f.store().write_null(&dry).unwrap();
 
     let read: Value = serde_json::from_str(&f.ok(&["harness", "floors", "--json"])).unwrap();
-    assert_eq!(read["null_runs"], 2);
+    assert_eq!(read["null_runs"], 3);
+    assert_eq!(read["runs_with_no_metric_to_judge"], 1);
     assert_eq!(read["runs_with_identical_arms"], 1);
     assert_eq!(
         read["runs_filling_both_floors"], 0,
@@ -333,11 +342,11 @@ fn a_null_run_that_paired_nothing_is_not_a_clean_sheet() {
     );
     let text = f.ok(&["harness", "floors"]);
     assert!(
-        text.contains("1 paired nothing, 1 replayed identically"),
+        text.contains(
+            "1 paired nothing, 1 replayed identically on both arms, 1 had no metric with \
+             headroom to judge"
+        ),
         "{text}"
     );
-    assert!(
-        text.contains("verdicts on noise are still unmeasured"),
-        "{text}"
-    );
+    assert!(text.contains("no null run judged anything"), "{text}");
 }

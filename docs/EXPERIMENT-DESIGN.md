@@ -724,7 +724,7 @@ closures, workflows and questions), so a single trial's arm is the control
 until a lifetime's tasks close. `plan_reinjection`,
 `declared_checks` and `appraiser` are not levers until their switch
 exists. The stage levers as built are `reflect`, `learn`, `validate`,
-`retire`, `ruminate`, `sensors_in_brief`, `appraisals_in_brief` and `contrast_evidence` (`experiment::StageLever`; `appraisals_in_brief` since `APPRAISAL-WIRING-DESIGN.md` 2f, `contrast_evidence` since 2e-4b-2 — the one that ships off, so an arm measures it on through its environment's `config.toml` and names it in `stages_off` only to force it off).
+`retire`, `ruminate`, `sensors_in_brief`, `appraisals_in_brief`, `digests_in_brief` and `contrast_evidence` (`experiment::StageLever`; `appraisals_in_brief` since `APPRAISAL-WIRING-DESIGN.md` 2f, `digests_in_brief` since `HARNESS-EVOLUTION-DESIGN.md` P9, `contrast_evidence` since 2e-4b-2 — the one that ships off, so an arm measures it on through its environment's `config.toml` and names it in `stages_off` only to force it off).
 
 Loop-stage levers, `lifetime` only:
 
