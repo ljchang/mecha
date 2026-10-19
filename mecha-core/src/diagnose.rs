@@ -510,6 +510,17 @@ impl EpisodeDigest {
     }
 }
 
+/// Whether `id` occurs in `text` with no identifier character on either
+/// side — the characters [`closed_name`] admits.
+fn contains_as_id(text: &str, id: &str) -> bool {
+    let is_id = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':');
+    text.match_indices(id).any(|(at, _)| {
+        let before = text[..at].chars().next_back();
+        let after = text[at + id.len()..].chars().next();
+        !before.is_some_and(is_id) && !after.is_some_and(is_id)
+    })
+}
+
 /// Where a proposal says its change applies: one episode the brief showed,
 /// and a call number in it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -868,16 +879,24 @@ impl Evidence {
     /// shown id inside it is ambiguous, and refused.
     pub fn check_citation(&self, proposal: &mut Proposal) -> Result<(), String> {
         if self.digests.is_empty() {
+            // Nothing to check a citation against, and `lifted` reads only
+            // the change and the rationale — so one is dropped here, in the
+            // one place every caller passes through, rather than kept
+            // unexamined on the candidate (found on review of #719).
+            proposal.cites = None;
             return Ok(());
         }
         let Some(c) = proposal.cites.as_mut() else {
             return Err("it cites no episode, and the brief showed episodes to cite".into());
         };
         let exact = self.digests.iter().find(|d| d.session_id == c.episode);
+        // Contained *as a whole id*: bounded by the ends or by characters an
+        // id cannot hold, or `loudmouth` would match `loud` and be stored as
+        // an episode the brief showed (found on review of #719).
         let contained: Vec<&EpisodeDigest> = self
             .digests
             .iter()
-            .filter(|d| c.episode.contains(d.session_id.as_str()))
+            .filter(|d| contains_as_id(&c.episode, &d.session_id))
             .collect();
         let d = match (exact, contained.as_slice()) {
             (Some(d), _) => d,
@@ -3133,6 +3152,12 @@ mod digest_tests {
             "spelled as the brief spelled it"
         );
         assert!(
+            e.check_citation(&mut proposal(Some("loudmouth #0")))
+                .unwrap_err()
+                .contains("not an episode"),
+            "an id that merely contains a shown one is not that episode"
+        );
+        assert!(
             e.check_citation(&mut proposal(Some("loud #5"))).is_ok(),
             "the end of the run"
         );
@@ -3152,5 +3177,11 @@ mod digest_tests {
         let bare = Evidence::default();
         assert_eq!(bare.instruction(), DIAGNOSE_INSTRUCTION);
         assert!(bare.check_citation(&mut proposal(None)).is_ok());
+        let mut unshown = proposal(Some("anything at all #3"));
+        assert!(bare.check_citation(&mut unshown).is_ok());
+        assert_eq!(
+            unshown.cites, None,
+            "nothing to check it against, so not kept"
+        );
     }
 }

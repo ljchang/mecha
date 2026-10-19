@@ -1450,7 +1450,10 @@ fn floors(as_json: bool) -> Result<()> {
     let no_metric = runs
         .iter()
         .filter(|r| {
-            !r.measurement.episodes.is_empty() && !r.arms_identical && r.by_metric.is_empty()
+            !r.measurement.episodes.is_empty()
+                && !r.arms_identical
+                && r.by_metric.is_empty()
+                && !r.no_headroom.is_empty()
         })
         .count();
     let count = |d: &str| judged.iter().filter(|j| j.disposition == d).count();

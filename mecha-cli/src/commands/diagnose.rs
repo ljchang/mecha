@@ -571,14 +571,8 @@ pub async fn run_diagnostician(global: &GlobalOpts, evidence: &Evidence) -> Resu
             outcome: DiagnosisOutcome::NoProposal,
         });
     };
-    // **A citation is kept only where the brief gave something to cite**
-    // (found on review of #719): with no digests, `check_citation` has
-    // nothing to check it against and `lifted` reads only the change and the
-    // rationale, so whatever prose preceded a `#<digits>` would otherwise be
-    // stored on the candidate unexamined.
-    if evidence.digests.is_empty() {
-        proposal.cites = None;
-    }
+    // `check_citation` also drops a citation when the brief showed nothing
+    // to cite.
     if let Err(why) = evidence.check_citation(&mut proposal) {
         return Ok(Diagnosis {
             reply: outcome.text,
