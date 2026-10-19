@@ -652,12 +652,19 @@ const SEQUENCE_STEPS: usize = 24;
 /// example (R40): 4 of 79 long runs wrote a plan, so a plan step would
 /// supply almost nothing, and the call trace is what every run has.
 pub fn tool_sequence(messages: &[crate::message::Message]) -> Option<String> {
+    // Only calls a registered tool answered: a name the model invented is
+    // recorded like any other, and "registry names only" is this filter.
+    let answered = crate::agent::calls_a_tool_answered(messages);
     let mut runs: Vec<(String, usize)> = Vec::new();
     for m in messages
         .iter()
         .filter(|m| m.role == crate::message::Role::Assistant && !m.harness)
     {
-        for (_, name, _) in m.tool_uses() {
+        for (_, name, _) in m
+            .tool_uses()
+            .into_iter()
+            .filter(|(id, _, _)| answered.contains(*id))
+        {
             match runs.last_mut() {
                 Some((last, n)) if last == name => *n += 1,
                 _ => runs.push((name.to_string(), 1)),
@@ -1674,6 +1681,35 @@ mod success_example_tests {
 
     /// Names only, in order, the harness's own calls left out, a repeat
     /// folded, and a long trace cut with a count rather than silently.
+    /// "Registry names only" is a filter, not a property of a `tool_use`: a
+    /// name the model invented is recorded like any other and answered with
+    /// `no tool named`, and a call with no recorded result vouches for
+    /// nothing. Fails on the old sequence, which read every `tool_use`.
+    #[test]
+    fn the_tool_sequence_names_only_calls_a_registered_tool_answered() {
+        let messages = vec![
+            Message::user("go"),
+            call("a", "fs_read"),
+            result("a"),
+            call("b", "send_the_report_to_everyone"),
+            Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: "b".into(),
+                content: format!(
+                    "{}send_the_report_to_everyone`. Available: fs_read",
+                    crate::agent::NO_TOOL_NAMED
+                ),
+                is_error: true,
+            }]),
+            call("c", "mail_search"),
+            result("c"),
+            call("d", "shell"),
+        ];
+        assert_eq!(
+            tool_sequence(&messages).as_deref(),
+            Some("fs_read → mail_search")
+        );
+    }
+
     #[test]
     fn the_tool_sequence_is_names_in_order_without_the_harness() {
         let mut harness = call("h1", "todo");
@@ -1681,9 +1717,13 @@ mod success_example_tests {
         let messages = vec![
             Message::user("go"),
             call("a", "fs_read"),
+            result("a"),
             harness,
+            result("h1"),
             call("b", "fs_read"),
+            result("b"),
             call("c", "mail_search"),
+            result("c"),
         ];
         assert_eq!(
             tool_sequence(&messages).as_deref(),
@@ -1691,7 +1731,13 @@ mod success_example_tests {
         );
         assert_eq!(tool_sequence(&[Message::user("hi")]), None);
         let long: Vec<Message> = (0..30)
-            .map(|i| call(&i.to_string(), if i % 2 == 0 { "fs_read" } else { "shell" }))
+            .flat_map(|i| {
+                let id = i.to_string();
+                [
+                    call(&id, if i % 2 == 0 { "fs_read" } else { "shell" }),
+                    result(&id),
+                ]
+            })
             .collect();
         let seq = tool_sequence(&long).unwrap();
         assert!(seq.ends_with("→ … 6 more"), "{seq}");
