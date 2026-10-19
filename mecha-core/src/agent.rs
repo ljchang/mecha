@@ -1806,6 +1806,35 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
         )
 }
 
+/// How the loop answers a call to a name no registered tool has. Every
+/// transcript since the first commit spells it this way, which is what lets
+/// [`calls_a_tool_answered`] read it back.
+pub const NO_TOOL_NAMED: &str = "no tool named `";
+
+/// The calls a registered tool answered, by `tool_use_id`.
+///
+/// A `tool_use` records whatever name the model wrote, and a name no tool
+/// has is recorded like any other, answered with [`NO_TOOL_NAMED`]. So
+/// "registry names, never model prose" holds only for names read through
+/// this set: in a conversation that held third-party content, an invented
+/// name is the one string in the call trace a page can author outright.
+/// A call with no recorded result is not in it, so an unanswered call
+/// withholds its name rather than vouching for it.
+pub fn calls_a_tool_answered(messages: &[Message]) -> std::collections::HashSet<String> {
+    messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter_map(|b| match b {
+            Block::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } if !(*is_error && content.starts_with(NO_TOOL_NAMED)) => Some(tool_use_id.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The owner's own words in one user message: text blocks, harness voices
 /// dropped, joined exactly as [`Message::text`] joins them.
 ///
@@ -5227,7 +5256,7 @@ impl Agent {
                     )
                 } else {
                     format!(
-                        "no tool named `{name}`. Available: {}",
+                        "{NO_TOOL_NAMED}{name}`. Available: {}",
                         self.registry.available_names().join(", ")
                     )
                 };
