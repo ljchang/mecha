@@ -2026,7 +2026,7 @@ mecha harness <ruminate|list|show|accept|reject|revert|overrides|null|floors> [O
 | `reject` | `--verdict <V>` | Why: `harmful`, `no-effect` or `unmeasured`. On a candidate already rejected, retypes it. |
 | `revert` | `<ID\|KEY>` | Take an accepted override back out. |
 | `overrides` | | The active override layer, with where each entry came from. |
-| `null` | `--sessions`, `-n`, `--holdout-in`, `--from-workspace` | As `ruminate`: the replay with nothing changed on either arm. |
+| `null` | `--sessions`, `--days`, `-n`, `--holdout-in`, `--from-workspace` | As `ruminate`: the replay with nothing changed on either arm. |
 | `null` | `--drawn-by <METRIC>` | The metric the selection is ranked by. Default `tool_error_rate`. |
 | `floors` | `--json` | The gate's floors, beside what the null runs measured. |
 

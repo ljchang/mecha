@@ -106,6 +106,10 @@ pub enum Cmd {
         /// Replay this many recent sessions per arm.
         #[arg(long, default_value_t = 16)]
         sessions: usize,
+        /// Pick the model from sessions started in the last N days, as
+        /// `ruminate --days` does, so the null arm calibrates the same window.
+        #[arg(long)]
+        days: Option<i64>,
         /// Scan at most this many sessions for the corpus.
         #[arg(long, short = 'n', default_value_t = 200)]
         limit: usize,
@@ -188,6 +192,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         Cmd::Overrides => overrides(),
         Cmd::Null {
             sessions,
+            days,
             limit,
             holdout_in,
             drawn_by,
@@ -196,10 +201,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             anyhow::ensure!(holdout_in >= 2, "--holdout-in must be at least 2");
             null_arm(
                 global,
-                sessions,
-                limit,
-                holdout_in,
-                drawn_by,
+                NullSpec {
+                    sessions,
+                    days,
+                    limit,
+                    holdout_in,
+                    drawn_by,
+                },
                 from_workspace,
             )
             .await
@@ -1085,6 +1093,15 @@ async fn measure(
     Ok(())
 }
 
+/// The null arm's draw, as `ruminate`'s flags spell it.
+struct NullSpec {
+    sessions: usize,
+    days: Option<i64>,
+    limit: usize,
+    holdout_in: u64,
+    drawn_by: mecha_core::candidate::Metric,
+}
+
 /// The null arm (HARNESS-EVOLUTION-DESIGN.md P2): `ruminate`'s draw and
 /// `drive_arms`, with nothing changed on either arm, judged by the same
 /// gate under every metric a candidate could predict.
@@ -1095,16 +1112,20 @@ async fn measure(
 /// one — `floors` says so rather than letting this stand for both.
 async fn null_arm(
     global: &GlobalOpts,
-    sessions: usize,
-    limit: usize,
-    holdout_in: u64,
-    drawn_by: mecha_core::candidate::Metric,
+    spec: NullSpec,
     from_workspace: Option<std::path::PathBuf>,
 ) -> Result<()> {
     use mecha_core::harness::{NullJudgement, NullRun};
+    let NullSpec {
+        sessions,
+        days,
+        limit,
+        holdout_in,
+        drawn_by,
+    } = spec;
     let store = HarnessStore::open_default()?;
     let from_workspace = crate::commands::diagnose::resolve_workspace_filter(from_workspace)?;
-    let Some((model, _, _)) = corpus_slice(None, None, limit, from_workspace.clone())? else {
+    let Some((model, _, _)) = corpus_slice(None, days, limit, from_workspace.clone())? else {
         println!("no recorded run outcomes yet — nothing to replay");
         return Ok(());
     };
@@ -1148,10 +1169,22 @@ async fn null_arm(
             &driven.holdout_pairs,
         )
     };
-    let by_metric: Vec<NullJudgement> = mecha_core::candidate::Metric::ALL
-        .iter()
-        .map(|m| NullJudgement::of(*m, &judge(*m)))
-        .collect();
+    // **Nothing paired is not a clean sheet.** Judged anyway, an empty draw
+    // gives a `propose` under every metric, and `floors` would count eleven
+    // judgements that "declined to react to noise" out of a run that
+    // measured nothing — and with the baseline arm diverging on most
+    // non-scripted episodes, that is the likeliest first result (found on
+    // review of #717). The run is still recorded: how often the arms left
+    // the recording is the other half of what it measures.
+    let paired = !driven.selection_pairs.is_empty() || !driven.holdout_pairs.is_empty();
+    let by_metric: Vec<NullJudgement> = if paired {
+        mecha_core::candidate::Metric::ALL
+            .iter()
+            .map(|m| NullJudgement::of(*m, &judge(*m)))
+            .collect()
+    } else {
+        Vec::new()
+    };
     let episodes: Vec<String> = driven
         .selection_pairs
         .iter()
@@ -1214,6 +1247,13 @@ async fn null_arm(
             }
         );
     }
+    if run.by_metric.is_empty() {
+        println!(
+            "nothing paired, so nothing was judged — this run measures how often the arms left \
+             the recording, and says nothing about the gate's verdicts"
+        );
+        return Ok(());
+    }
     let false_verdicts = run.by_metric.iter().filter(|j| j.false_verdict()).count();
     println!(
         "{false_verdicts} of {} metric(s) would have reached a verdict on an unchanged \
@@ -1234,6 +1274,9 @@ fn floors(as_json: bool) -> Result<()> {
     let (runs, unreadable) = store.nulls_counting()?;
     let judged: Vec<&mecha_core::harness::NullJudgement> =
         runs.iter().flat_map(|r| r.by_metric.iter()).collect();
+    // Counted apart: a run that paired nothing judged nothing, and must not
+    // read as a run in which the gate declined to react.
+    let unpaired = runs.iter().filter(|r| r.by_metric.is_empty()).count();
     let count = |d: &str| judged.iter().filter(|j| j.disposition == d).count();
     let filled = runs
         .iter()
@@ -1261,6 +1304,7 @@ fn floors(as_json: bool) -> Result<()> {
                 "null_runs": runs.len(),
                 "unreadable": unreadable,
                 "runs_filling_both_floors": filled,
+                "runs_pairing_nothing": unpaired,
                 "judgements": judged.len(),
                 "accept": count("accept"),
                 "reject": count("reject"),
@@ -1287,10 +1331,16 @@ fn floors(as_json: bool) -> Result<()> {
         return Ok(());
     }
     println!(
-        "{} null run(s): {filled} filled both floors; the baseline arm left the recording on \
-         {baseline_diverged} of {drawn} drawn episode(s)",
+        "{} null run(s): {filled} filled both floors, {unpaired} paired nothing; the baseline \
+         arm left the recording on {baseline_diverged} of {drawn} drawn episode(s)",
         runs.len()
     );
+    if judged.is_empty() {
+        println!(
+            "no null run paired anything, so the gate's verdicts on noise are still unmeasured"
+        );
+        return Ok(());
+    }
     println!(
         "an unchanged configuration, judged under each metric: {} accepted, {} rejected, {} \
          proposed, of {} judgement(s) — every accept or reject is a verdict on nothing",

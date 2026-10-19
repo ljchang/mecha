@@ -521,6 +521,26 @@ pub fn judge(
     guard_regressions(judged, metric, pairs.iter())
 }
 
+/// Whether every pair's two replays came out the same: equal on every
+/// metric and on tool calls, with the calls *known* — a zero is not known,
+/// since a run with no recorded stats reports zero calls (found on review of
+/// #717). Empty is not identical: nothing paired is a different finding.
+fn arms_identical<'a>(pairs: impl Iterator<Item = &'a Pair>) -> bool {
+    let mut any = false;
+    for p in pairs {
+        any = true;
+        let same_work =
+            p.baseline.tool_calls == p.candidate.tool_calls && p.baseline.tool_calls > 0;
+        let same_cost = Metric::ALL
+            .iter()
+            .all(|m| m.of(&p.baseline) == m.of(&p.candidate));
+        if !(same_work && same_cost) {
+            return false;
+        }
+    }
+    any
+}
+
 /// Judge two slices the caller drew: selection by priority, holdout uniformly.
 ///
 /// The replay path's entry point. `judge` hash-partitions one pool and is
@@ -558,7 +578,43 @@ pub fn judge_drawn(
             )
         },
     );
-    guard_regressions(judged, metric, selection.iter().chain(holdout.iter()))
+    let judged = guard_regressions(judged, metric, selection.iter().chain(holdout.iter()));
+    // **Ahead of every count, and only here.** "The arms never differed" is a
+    // stronger statement than "there were only four of them", and the count
+    // was masking it: on 2026-09-01/02/03 three nights running measured
+    // `compact_at_tokens`, `max_output_tokens` and `effort` at 0 wins, 0
+    // losses, all ties, identical work — each reported as thin evidence. It
+    // was not thin. The episodes that survive replay are the ones whose tool
+    // sequence the *prompt* pins ("follow these steps literally and exactly,
+    // do not skip any call"), because a pinned sequence is the one thing that
+    // cannot diverge; a config knob cannot move them by construction.
+    // `Metric::headroom` does not catch this — those episodes had 32 recorded
+    // tool calls of headroom and no elasticity at all.
+    //
+    // A `Propose` and not a `Reject`: the absence of a measurement is not a
+    // measurement against, and until the history was typed
+    // (`harness::HistoryVerdict`) a rejection reached the diagnostician as
+    // "do not propose this again" — three of the four overridable knobs
+    // foreclosed on an instrument's failure. The guard is left as judged, so
+    // a point-wise win still carries it under R36.
+    //
+    // **Replay only, which is why it is here and not in [`judge_slices`].**
+    // Two replays of one recording that agree on everything were held to the
+    // recording; two separately executed experiment trials that agree are a
+    // real tie, and reading them as "no room to differ" would turn a true
+    // negative into an absent measurement (found on review of #717).
+    if arms_identical(selection.iter().chain(holdout.iter())) {
+        let n = selection.len() + holdout.len();
+        return Judgement {
+            disposition: Disposition::Propose(format!(
+                "the two arms behaved identically on all {n} paired episode(s) — the same cost \
+                 on every metric and the same tool calls — so nothing here measures the \
+                 change: the episodes that survived replay had no room to differ"
+            )),
+            ..judged
+        };
+    }
+    judged
 }
 
 /// The same gate over anything that can name an episode and produce a cost.
@@ -659,47 +715,6 @@ pub fn judge_slices<T>(
         return judgement(Disposition::Reject(format!(
             "work fell from {work_baseline} tool calls to {work_candidate}: a gain bought by \
              attempting less is not a gain"
-        )));
-    }
-    // Ahead of the count check on purpose: "the arms never differed" is a
-    // stronger statement than "there were only four of them", and the count
-    // was masking it. On 2026-09-01/02/03 three nights running measured
-    // `compact_at_tokens`, `max_output_tokens` and `effort` at 0 wins, 0
-    // losses, all ties, with identical work on both arms — and each was
-    // reported as thin evidence. It was not thin. The episodes that survive
-    // replay are the ones whose tool sequence the *prompt* pins ("follow
-    // these steps literally and exactly, do not skip any call"), because a
-    // pinned sequence is the one thing that cannot diverge; a config knob
-    // cannot move them by construction. Drawing the selection slice by
-    // `Metric::headroom` does not catch this — those episodes had 32 recorded
-    // tool calls of headroom and no elasticity at all. Headroom is recorded
-    // cost; what is missing is room to differ.
-    //
-    // A `Propose` and not a `Reject`, for the reason `MIN_INFORMATIVE_HOLDOUT`
-    // gives: the absence of a measurement is not a measurement against. It
-    // also must not read as a verdict on the change — until the history was
-    // typed (`harness::HistoryVerdict`), every rejection reached the
-    // diagnostician as "do not propose this again", and three of the four
-    // overridable knobs foreclosed on an instrument's failure is exactly the
-    // "unusable by construction" trade `guard_regressions` already refuses to
-    // make.
-    let measured = sel.total() + hold.total();
-    let all_ties = sel.wins == 0 && sel.losses == 0 && hold.wins == 0 && hold.losses == 0;
-    // Work that is *known* and equal, per pair. A zero is not known: this
-    // gate is generic, and `experiment::judge` reports a trial with no stats
-    // as zero calls, so two zeros can be two unknowns — and "same tool
-    // calls" read out of them is a claim the data does not make (found on
-    // review of #717). A pair that genuinely made no calls on either arm
-    // falls to the ordinary path, as it did before this check existed.
-    let work_unmoved = selection.iter().chain(holdout.iter()).all(|p| {
-        let (b, c) = work(p);
-        b == c && b > 0
-    });
-    if measured > 0 && all_ties && work_unmoved {
-        return judgement(Disposition::Propose(format!(
-            "the two arms behaved identically on all {measured} paired episode(s) — same cost \
-             on the predicted metric, same tool calls — so nothing here measures the change: \
-             the episodes that survived replay had no room to differ"
         )));
     }
     if sel.total() < MIN_SELECTION_PAIRS {
@@ -1641,6 +1656,35 @@ mod prioritised_tests {
             !matches!(&j.disposition, Disposition::Propose(why) if why.contains("no room to differ")),
             "two zeros are two unknowns: {:?}",
             j.disposition
+        );
+
+        // **Replay only.** The same identical pairs, judged the way
+        // `experiment::judge` judges separately executed trials, are a real
+        // tie — "did not beat the original", never "no room to differ".
+        let sel_refs: Vec<&Pair> = selection.iter().collect();
+        let hold_refs: Vec<&Pair> = holdout.iter().collect();
+        let trials = judge_slices(
+            ChangeClass::Config,
+            &sel_refs,
+            &hold_refs,
+            |p| {
+                (
+                    p.episode.as_str(),
+                    Metric::ToolErrorRate.of(&p.baseline),
+                    Metric::ToolErrorRate.of(&p.candidate),
+                )
+            },
+            |p| {
+                (
+                    u64::from(p.baseline.tool_calls),
+                    u64::from(p.candidate.tool_calls),
+                )
+            },
+        );
+        assert!(
+            matches!(&trials.disposition, Disposition::Reject(why) if why.contains("did not beat")),
+            "an experiment's agreeing trials are a tie: {:?}",
+            trials.disposition
         );
 
         // The guard is about *identical* arms, not about ties. A slice that
