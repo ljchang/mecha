@@ -620,7 +620,15 @@ impl Command {
                 Some(frontdoor::Cmd::Extract { .. } | frontdoor::Cmd::Triage { .. })
             ),
             Command::Questions(a) => matches!(a.cmd, Some(questions::Cmd::Answer { .. })),
-            Command::Harness(a) => matches!(a.cmd, harness::Cmd::Ruminate { .. }),
+            // `null` replays on the served model as `ruminate` does, so a
+            // switch must wait for it too: unheld, the model could change
+            // between its pick and its replays, and they would name the old
+            // one — the load `diagnose::Pick` exists to prevent. It spawns no
+            // `mecha` child, so it cannot deadlock a switch (review of #726).
+            Command::Harness(a) => matches!(
+                a.cmd,
+                harness::Cmd::Ruminate { .. } | harness::Cmd::Null { .. }
+            ),
             Command::Exp(a) => matches!(a.cmd, exp::Cmd::Run { .. } | exp::Cmd::Judge { .. }),
             // `appraise --probe` and `compare` replay sessions against a model.
             Command::Sessions(a) => matches!(
@@ -1054,6 +1062,7 @@ mod tests {
             &["mecha", "mail", "classify"],
             &["mecha", "frontdoor", "triage"],
             &["mecha", "harness", "ruminate"],
+            &["mecha", "harness", "null"],
             &["mecha", "sessions", "appraise", "--probe"],
         ] {
             assert!(one_run(held), "{held:?} runs a model and must hold");
