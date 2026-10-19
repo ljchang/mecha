@@ -138,14 +138,14 @@ the seat, never falls through (the silently-degrading guard).
 | Surface | Owner's persona chat | Guest seat |
 |---|---|---|
 | Who the human side is | the owner | a stranger; every turn `external`, so the conversation is armed untrusted from the first word |
-| The harness's opening text | `BASE`, plus `DISCLOSED` while `disclosure` is on | a guest base of its own that says neither who wrote the character nor what the participant's screen shows; `DISCLOSED` is never appended, whatever the card's settings (§7) |
+| The harness's opening text | `BASE`, plus `DISCLOSED` while `disclosure` is on | a guest base of its own that says neither who wrote the character nor what the participant's screen shows; `DISCLOSED` is never appended — its premise is a tag no participant sees — and disclosure is the study's switch instead (§7) |
 | Persona memory | written and recalled | neither: no writer, no recall over owner stores; seeds only |
 | Confirmations, outbox | spoken yes can release | none exist: no outbox route, no `parse_answer` path |
-| Approver | the owner's | refuses every request, `escalate_access` included — a test drives both doors |
+| Approver | the owner's | refuses at every door, exhaustively — `escalate`, `escalate_access`, `consult`, `permit` and `approve` today; the test enumerates them, so a sixth door added later fails it until the guest approver answers it |
 | Grants | `[[grant]]` and `/grant` | off by type, as an incognito chat's are |
 | Tools | the persona's eligible set | HyperStudy's declared tools only, as ClientTools (§4a); none of mecha's |
 | Transcript | the chat's session file | nothing kept past the seat: HyperStudy is the system of record |
-| Voice worker logging | an ordinary call: journaled under the wordless allowlist, with `journal.py`'s named residual | always unlogged: a voice seat's key carries the incognito marker the worker keys its silence on (`INCOGNITO_PREFIX`, `X-Voice-Unlogged`), so the journal gets what an incognito call's does and no more |
+| Voice worker logging | an ordinary call: journaled under the wordless allowlist, with `journal.py`'s named residual | always unlogged, and **taken, not inherited**: the worker's silence (`UNLOGGED`) is held today only by `OfferSilence` and `bot()`, both reading a browser's WebRTC offer, and a transport that dials out passes through neither. The HRP transport holds `UNLOGGED` itself before its first frame — which is also what makes the facade request carry `X-Voice-Unlogged` — and a test fails if a seat's first audio reaches the pipeline without it |
 
 **Researcher guidance ranks below the persona.** HyperStudy sends each
 state's guidance as a `session.update` that replaces `instructions`
@@ -203,7 +203,16 @@ can act at all.
 | Talk by voice | §4 | Phase 3 `accept` |
 | Read the study's text | screen text, instructions and typed chat arrive as quoted context items, untrusted like speech | — (sent today as `[context]` items) |
 | Read images | a study image or one a participant shares arrives inline as an image content item and reaches the model as `Block::Image`, capped at the door as every image is; mecha never fetches a URL a session names | images on the session, inline |
-| Act in the study | **ClientTools**: HyperStudy declares a tool (`send_chat` today; make a rating, advance the screen), the call goes out over the session, `function_call_output` comes back, a timeout returns `is_error` — so the agent loop never learns where a tool came from | the study tools, declared per session |
+| Act in the study | **ClientTools**: HyperStudy declares a tool (`send_chat` today; make a rating, advance the screen), the call goes out over the session, `function_call_output` comes back marked `.from_outside()`, a timeout returns `is_error` — so the agent loop never learns where a tool came from | the study tools, declared per session |
+
+**Where context lands.** Screen changes, typed chat and images arrive on
+HyperStudy's clock, including while a ClientTool call is in flight — and
+there is no legal slot between a `tool_use` and its result, nor for two user
+messages in a row (images are user turns only). So context items queue and
+fold at the next legal boundary through the steering path
+(`ARCHITECTURE.md` §Interruption and steering): into the message carrying
+the tool results mid-round, or into the next user turn otherwise. One
+mechanism, not a second.
 
 **What a ClientTool declares.** An armed loop refuses every
 `Egress::Chosen` tool, so a study tool labelled `Chosen` fails the first
@@ -268,6 +277,13 @@ An offer is accepted only when every check passes; each refusal is typed
   guest home would give it a pool of its own. Every text seat holds a router
   slot while it answers, so the cap is set against the owner's `-np`, not
   apart from it.
+- **A seat holds the router's model in the owner's home.** The same
+  per-home trap breaks `hold.rs`, and there it is a correctness bug:
+  `Holds::open_default` roots at `MECHA_HOME`, so a guest facade's hold
+  would land where `mecha model use` never reads, and a model switch could
+  land mid-seat — one conversation answered by two models, the thing holds
+  exist to prevent. The wiring passes the owner's hold directory to the
+  guest facade explicitly; nothing in a seat derives it from `MECHA_HOME`.
 - **The credential** for the control socket is a connected-agent token
   HyperStudy issues and can revoke; mecha keeps it with the other secrets in
   its home, and an offer carries only a single-use, sixty-second session
@@ -309,36 +325,60 @@ owner says so. Guided setup offers it once personas are on and asks for the
 two things it cannot work without — the HyperStudy origin and the
 connected-agent credential — and `Unready` names whichever is missing. Voice
 seats additionally need the voice worker (`calls`); without it the engine's
-hello offers text only. The `[hyperstudy]` config table is two edits,
-`Config` and `ConfigLayer`, as every table is.
+hello offers text only. Building it follows `ARCHITECTURE.md` §Adding a
+feature item by item rather than a subset copied here; the one choice the
+checklist leaves to the feature is made here: `switchable_from_environment`
+is **no**, because the credential lives in the owner's home and an
+environment that could switch `hyperstudy` on would be a trial home dialling
+HyperStudy.
 
 ## 7. Mechanisms, not policy (S2)
 
 mecha provides; the study decides:
 
-- **Crisis flagging.** The harness-side crisis sensor (`persona::safety`,
-  keyword tier plus model judge) runs on every participant turn and raises
-  HRP's `hs.flag` when it trips. What the study does with a flag is the
-  study's. Until HyperStudy reads `hs.flag`, a flag is logged on mecha's
-  side without its words.
+- **Crisis handling.** The harness-side crisis sensor (`persona::safety`,
+  keyword tier plus model judge) runs on every participant turn, and in a
+  seat it keeps the actions it takes today: on a trip the harness steps out
+  of character with `SAFE_MESSAGE` and pauses the persona for
+  `CRISIS_COOLDOWN`, and mecha raises HRP's `hs.flag`. Two seat-specific
+  differences. The crisis resources come from the study when the session
+  supplies them, since a participant may be anywhere and `SAFE_MESSAGE`'s
+  numbers are US ones; the default text stands otherwise. And the handover
+  is spoken or typed into the session, so until HyperStudy reads `hs.flag`
+  the trip is still visible to the study in its own record of the
+  conversation. Whether a study may turn the handover off is owed (§9).
+- **A check that cannot run is said.** `CrisisState::Degraded` — the judge
+  could not answer, keywords only — is declared to HyperStudy at session
+  start and on every change, beside `hs.flag` rather than through it, so
+  "switched off" and "couldn't check" never pass for each other on the far
+  end either (`safety.rs`'s own rule).
 - **Retention.** The guest home keeps nothing, and mecha declares
   `hs.retention: none`.
-- **Disclosure.** Whether a participant is told the other party is an AI is
-  study design. mecha neither inserts nor suppresses a statement; the
-  persona card and the researcher's guidance say what they say.
+- **Disclosure is the study's switch.** Whether a participant is told the
+  other party is an AI is study design (S2), so the session carries it:
+  with disclosure on, the guest base tells the model to say it is an AI when
+  asked and never to claim otherwise; with it off, the guest base says
+  nothing either way and the persona card and the researcher's guidance say
+  what they say. **On is the default** — PERSONA-DESIGN §15 names a
+  not-human disclosure as the baseline for any host, shipped on — and a
+  study that conceals turns it off explicitly. The owner's per-persona
+  `disclosure` switch governs the owner's page, where its truth-maker is;
+  it does not reach a seat.
 
 ## 8. Build order
 
 Each step is testable before the next; only step 5 waits on HyperStudy.
 
-1. **The feature** — `hyperstudy` in the registry, the switch, setup's
-   offer, the config table; nothing behind it yet but `Unready`.
+1. **The feature** — every item of `ARCHITECTURE.md` §Adding a feature;
+   nothing behind it yet but `Unready`.
 2. **The guest facade** — guest home, untrusted run mode, the §3 table as
-   tests (the approver test drives `escalate_access`; a seat writes nothing
-   under the operator's home; the guest base is the opening text and
-   `DISCLOSED` is absent with `disclosure` on), the ClientTool catalogue (an
-   armed seat with an image in it still rates and advances; an uncatalogued
-   tool is refused), budgets.
+   tests (the approver refuses at every door, enumerated; a seat writes
+   nothing under the operator's home; the guest base is the opening text and
+   `DISCLOSED` is absent with the card's `disclosure` on; both disclosure
+   settings render; a seat's hold is visible to `mecha model use`), the
+   ClientTool catalogue (an armed seat with an image in it still rates and
+   advances; an uncatalogued tool is refused), context folding at a
+   mid-round boundary, the crisis handover and the degraded state, budgets.
 3. **A text seat on loopback** — HRP with text-only output against a local
    stand-in for HyperStudy's session: context items, inline images, declared
    tools. Exit: a scripted study (read a screen, chat, rate, advance) runs
@@ -347,7 +387,8 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    socket for development only, and HyperStudy's conformance suite runs
    against it (its runner takes any HRP client; a URL wrapper is all it
    needs). Exit: both turn-detection modes pass, truncate `approximate`,
-   and a seat's key puts the worker in incognito silence.
+   and a test that fails if a seat's first frame arrives without the
+   transport holding `UNLOGGED`.
 5. **`mecha-hyperstudy` + wiring + admission** — once HyperStudy's `accept`
    exists; the seats switch from serving a local socket to dialing the
    session URL.
@@ -382,6 +423,7 @@ accepted socket instead.
   not guessed.
 - Whether a persona on the romantic template may ever be servable (§5);
   refused until ruled.
+- Whether a study may turn the crisis handover off (§7); on until ruled.
 - Whether bwrap confinement of the guest facade is required from step 2 or
   added after.
 - Latency, measured on this box: OpenAI's Realtime models are
