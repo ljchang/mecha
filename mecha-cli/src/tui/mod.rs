@@ -832,8 +832,8 @@ pub async fn execute(global: &GlobalOpts, resume: Option<String>, no_session: bo
         // shows an empty pane beside a model that knows exactly where it got
         // to.
         if let Some(todo) = &prepared.todo {
-            let ws = prepared.agent.context().tools.workspace.clone();
-            todo.rehydrate(&ws, &prior.messages);
+            let plan = mecha_core::tool::todo::PlanKey::of(&prepared.agent.context().tools);
+            todo.rehydrate(&plan, &prior.messages);
         }
         convo = prior;
         mecha_core::archive::reopened(&path, &meta.id);
@@ -1181,10 +1181,11 @@ async fn run_loop(
         // Polled per frame rather than event-driven: the list lives behind a
         // Mutex the tool writes to, and a lock-and-clone at frame rate is
         // cheaper than being clever.
-        let todo_items = live
-            .todo
-            .as_ref()
-            .map(|t| t.items_in(&live.agent.context().tools.workspace));
+        let todo_items = live.todo.as_ref().map(|t| {
+            t.items_in(&mecha_core::tool::todo::PlanKey::of(
+                &live.agent.context().tools,
+            ))
+        });
         // CSI 2026: the terminal buffers everything between the pair and
         // presents it as one repaint. Follow-mode streaming scrolls the whole
         // transcript region every token, and over SSH that write arrives in
