@@ -137,11 +137,11 @@ the seat, never falls through (the silently-degrading guard).
 
 | Surface | Owner's persona chat | Guest seat |
 |---|---|---|
-| Who the human side is | the owner | a stranger; every turn `external`, so the conversation is armed untrusted from the first word |
+| Who the human side is | the owner | a stranger. Inbound text arms nothing today, on the premise that the user chose every word (`Taint::arm_for_content`'s comment), and `external` is a tool result's field, not a message's — so a seat sets `Conversation.taint.untrusted` at construction, and the conversation records it, so the seat is armed from the first word |
 | The harness's opening text | `BASE`, plus `DISCLOSED` while `disclosure` is on | a guest base of its own that says neither who wrote the character nor what the participant's screen shows; `DISCLOSED` is never appended — its premise is a tag no participant sees — and disclosure is the study's switch instead (§7) |
 | Persona memory | written and recalled | neither: no writer, no recall over owner stores; seeds only |
 | Confirmations, outbox | spoken yes can release | none exist: no outbox route, no `parse_answer` path |
-| Approver | the owner's | refuses at every door, exhaustively — `escalate`, `escalate_access`, `consult`, `permit` and `approve` today; the test enumerates them, so a sixth door added later fails it until the guest approver answers it |
+| Approver | the owner's | refuses at every door — `approve`, `escalate`, `escalate_access`, `consult`, `permit` today. What holds a future door is the trait's defaults, which fail closed (`escalate`, `consult` → `Blocked`) or delegate (`escalate_access` → `escalate`, `permit` → `approve`); so the guest approver refuses `approve` and `escalate` and overrides nothing that delegates. A test listing today's doors cannot catch a new one with a default body — exhaustiveness the compiler checks would need a door enum on `Approver`, named in §8 step 2 as a choice, not assumed |
 | Grants | `[[grant]]` and `/grant` | off by type, as an incognito chat's are |
 | Tools | the persona's eligible set | HyperStudy's declared tools only, as ClientTools (§4a); none of mecha's |
 | Transcript | the chat's session file | nothing kept past the seat: HyperStudy is the system of record |
@@ -212,7 +212,10 @@ messages in a row (images are user turns only). So context items queue and
 fold at the next legal boundary through the steering path
 (`ARCHITECTURE.md` §Interruption and steering): into the message carrying
 the tool results mid-round, or into the next user turn otherwise. One
-mechanism, not a second.
+mechanism, not a second — but not free: the steering queue carries text
+(`queued_input` is a `VecDeque<String>`), and an image context item needs it
+to carry `Block`s. That widening is a core change that touches every
+steering caller, the TUI and web chat included, and §8 step 3 names it.
 
 **What a ClientTool declares.** An armed loop refuses every
 `Egress::Chosen` tool, so a study tool labelled `Chosen` fails the first
@@ -318,8 +321,9 @@ There is no public URL for this box, by any provider:
 
 ## 6. The feature (S6)
 
-`hyperstudy`, a part of `personas` in the closed registry (`feature.rs`,
-`FEATURES-DESIGN.md`): its own switch in `[features]`, off by default and
+`hyperstudy`, a new variant in the closed registry (`feature.rs`,
+`FEATURES-DESIGN.md`) that requires `personas`: its own switch in
+`[features]`, off by default and
 off on every install that predates it, so nothing dials HyperStudy until the
 owner says so. Guided setup offers it once personas are on and asks for the
 two things it cannot work without — the HyperStudy origin and the
@@ -369,10 +373,13 @@ mecha provides; the study decides:
 
 Each step is testable before the next; only step 5 waits on HyperStudy.
 
-1. **The feature** — every item of `ARCHITECTURE.md` §Adding a feature;
+1. **The feature** — every item of `ARCHITECTURE.md` §Adding a feature,
+   and the `[hyperstudy]` table in both `Config` and `ConfigLayer`;
    nothing behind it yet but `Unready`.
 2. **The guest facade** — guest home, untrusted run mode, the §3 table as
-   tests (the approver refuses at every door, enumerated; a seat writes
+   tests (the approver refuses at every door — and whether `Approver` gains
+   a door enum so the compiler holds a future door is decided here; the
+   seat is armed untrusted before its first turn; a seat writes
    nothing under the operator's home; the guest base is the opening text and
    `DISCLOSED` is absent with the card's `disclosure` on; both disclosure
    settings render; a seat's hold is visible to `mecha model use`), the
@@ -381,7 +388,7 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    mid-round boundary, the crisis handover and the degraded state, budgets.
 3. **A text seat on loopback** — HRP with text-only output against a local
    stand-in for HyperStudy's session: context items, inline images, declared
-   tools. Exit: a scripted study (read a screen, chat, rate, advance) runs
+   tools, and the steering queue widened to carry `Block`s (§4a). Exit: a scripted study (read a screen, chat, rate, advance) runs
    end to end.
 4. **The voice transport on loopback** — the worker serves HRP on a local
    socket for development only, and HyperStudy's conformance suite runs
@@ -424,6 +431,9 @@ accepted socket instead.
 - Whether a persona on the romantic template may ever be servable (§5);
   refused until ruled.
 - Whether a study may turn the crisis handover off (§7); on until ruled.
+- What a trip does to a seat shorter than `CRISIS_COOLDOWN`'s fifteen
+  minutes: a pause that outlasts the seat ends it, which is not today's
+  action.
 - Whether bwrap confinement of the guest facade is required from step 2 or
   added after.
 - Latency, measured on this box: OpenAI's Realtime models are
