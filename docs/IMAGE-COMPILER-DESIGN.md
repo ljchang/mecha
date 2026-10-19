@@ -128,6 +128,10 @@ The rules, each a measurement:
   describes is a new person". No total: a total with
   no extras erased a waiter the prose described, and without it four cast
   still drew exactly four (E12). With `extras`, a total that counts them.
+  *(Ruled 2026-10-19: a cast of exactly two without extras gets a closed
+  count naming them, "Exactly two people are in the image, Maya and Jo, each
+  exactly once; no one else is in it", since the open one drew a touching
+  pair three or four times, E14.)*
 - **`wearing` and `doing` are required** (E3, E8: a reference supplies its own
   outfit, pose and stare when the scene is silent; stated, they land), except
   that `doing` is left empty when the scene's `together` says what its people
@@ -572,7 +576,7 @@ kind is derived from its directory (`Entry.kind`).
 | Reference | `image_generate` (Qwen-Image) | `video_generate` (H3) |
 |---|---|---|
 | face | the whole portrait at 512² for a new picture (E10), its crop for an edit, as now | the face crop, as now; from an attached `face` reference when there is one, else from the portrait |
-| full_body | **sent** to a new picture of one or two people when everyone has one, bound to the portrait (E9b passed; owner, 2026-10-13); faces only otherwise, and on edits | **sent** beside the face crop to a cast of **one or two** when everyone has one, **unbound** (both pictures named as one subject, with no face-from/build-from split): "the person in `<Picture 1>` and `<Picture 2>`", not the face-from/build-from wording, the likely cause of V-B's extra person (V-B's retest passed for a cast of two; owner, 2026-10-14) |
+| full_body | **sent** to a new picture of one person, bound to the portrait (E9b; owner, 2026-10-13); faces only for two or more (E14; owner, 2026-10-19), and on edits | **sent** beside the face crop to a cast of **one or two** when everyone has one, **unbound** (both pictures named as one subject, with no face-from/build-from split): "the person in `<Picture 1>` and `<Picture 2>`", not the face-from/build-from wording, the likely cause of V-B's extra person (V-B's retest passed for a cast of two; owner, 2026-10-14) |
 | detail | not sent; its `label` is appended to the description | sent with its label ("`<Picture k>` shows her left-forearm tattoo"), if V-D passes |
 | location | its text in the scene | its images as an environment `<Subject>`, if V-L passes |
 | outfit | its text as `wearing` | its text as `wearing` |
@@ -668,16 +672,17 @@ kind is derived from its directory (`Entry.kind`).
       `IMAGE-DESIGN.md` §5.2's measurement: five whole portraits drew all
       five people, 3/3. It is the provisional C5 (§3), so if C5 goes back
       to four this cap moves with it (review of #680, pass 22).
-    - Faces come first. **Bodies are all or nothing** (review of #680, pass
-      8): every person gets their `full_body`, or none does, and only while
-      the total stays at four or fewer. So that's a cast of one or two. A
-      cast of three gets no bodies, never one person bound to two images
-      beside others bound to one, which no wording covers and nothing has
-      measured. Attached and fitting both: a person with no `full_body`
-      attached means no one in that cast gets one.
+    - Faces come first. **Bodies go to a cast of one** (owner, 2026-10-19,
+      on E14): two images for one person. It was all or nothing within four
+      images, a cast of one or two (review of #680, pass 8), until a cast of
+      two with a body each drew someone twice in 6 of 13 live pictures and
+      19 of 21 replayed ones, against 2 of 21 from portraits with a closed
+      count. A cast of two or more gets no bodies, so a person bound to two
+      images beside others bound to one, which no wording covers, still
+      never happens.
     - What was left out is said.
-    - **The four is established by E9b** (review of #680, passes 7 and
-      22). E12 measured four *different* faces with no duplicate, while two
+    - **The four was established by E9b** (review of #680, passes 7 and
+      22), and E14 retired it for pictures; video keeps it. E12 measured four *different* faces with no duplicate, while two
       people with a body each is E9's B2 arm, which drew one person twice.
       E9b ran that configuration, a cast of two with a body each, and drew
       two people in both seeds with no grey from the references; pose
@@ -702,7 +707,9 @@ kind is derived from its directory (`Entry.kind`).
     Maya's portrait, `<image2>` Maya's full figure"), since the library
     holds anyone and a description settles no pronoun;
   - the head count stays E12's (no total without extras), not arm B's
-    "Exactly two people": a total erased a person the prose described;
+    "Exactly two people": a total erased a person the prose described
+    (superseded 2026-10-19 for a cast of two: E14 closes it, by name, once
+    the pictures no longer outnumber the people);
   - a picture the layers switch may build compiles without bodies, so a
     layered build's fallback single pass draws what its cutouts would
     have, and the result says so. If layers then decline (three people, a
@@ -874,6 +881,7 @@ only says what each one gates:
 | Id | Gates |
 |---|---|
 | **E9b** | `full_body` for pictures (§9.4), and the two-images-one-person wording |
+| **E14** | `full_body` for pictures of one person only, and the closed count for a cast of two (§9.4; passed 2026-10-18) |
 | **V-B's retest** | `full_body` for video: **passed** 2026-10-14, unbound (V-B itself failed, 2026-10-13) |
 | **V-D** | `detail` images for video |
 | **E13** | a location reference for pictures |
@@ -962,3 +970,10 @@ repository, never their names or images.
      gate only its images (review of #680, pass 11). The `docs/TRIFECTA.md`
      row for listed library names (L5's cost) ships with it (pass 29);
   5. outfits, last, being text and the cheapest.
+
+**Ruled by the owner, 2026-10-19: E14's D ships** ("let's go with d for
+now"). A new picture of two or more library characters sends their
+portraits only, and a cast of exactly two without extras gets a closed count
+naming them (§3, §9.4). The layers pipeline (`IMAGE-DESIGN.md` §15) stays the
+per-persona switch for when no doubling is acceptable at its cost in time.
+MOSS-Image is explored outside this repository.

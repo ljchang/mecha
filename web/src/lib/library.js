@@ -214,7 +214,7 @@ export const LABEL_MAX = 100;
 export function refNote(kind) {
   return {
     full_body:
-      'Head to toe, standing square-on with arms relaxed: its stance carries into pictures. Sent with a new picture of one or two people when everyone in it has one.',
+      'Head to toe, standing square-on with arms relaxed: its stance carries into pictures. Sent with a new picture of this person alone; pictures with others use portraits.',
     face:
       'A clearer face than the portrait shows. Kept for the video tool; pictures use the portrait.',
     detail:
