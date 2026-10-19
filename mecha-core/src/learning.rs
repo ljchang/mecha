@@ -1840,7 +1840,10 @@ impl LearningStore {
     /// never load, `(domain, what, text)` with `what` a phrase for the line. `Situation::scope`
     /// drops those names, so this reaches only a hand-edited or older
     /// file; startup warns on it like an unrouted domain, because a rule
-    /// that cannot fire is indistinguishable from one being obeyed.
+    /// that cannot fire is indistinguishable from one being obeyed. One key
+    /// the miner does write is reported too: [`crate::agent::UNANSWERED_CALL`],
+    /// which a window ending in a call no registered tool answered is
+    /// focused on, and which no run presents.
     pub fn unloadable_rules(&self, domains: &[&str]) -> Result<Vec<(String, String, String)>> {
         let mut out = Vec::new();
         for domain in domains {
@@ -1860,6 +1863,15 @@ impl LearningStore {
                         out.push((
                             domain.to_string(),
                             format!("the tool `{tool}`, which joins the registry after the block is rendered"),
+                            rule.text.clone(),
+                        ));
+                    } else if tool == crate::agent::UNANSWERED_CALL {
+                        // Mined, not hand-edited: a window whose call no
+                        // registered tool answered keeps its key as the fixed
+                        // phrase, and no run presents it.
+                        out.push((
+                            domain.to_string(),
+                            "a call no registered tool answered, which no run presents".to_string(),
                             rule.text.clone(),
                         ));
                     }
@@ -8308,6 +8320,41 @@ mod situation_tests {
         assert_eq!(out[0].2, "Marked.");
         assert!(out[1].1.contains("cannot name"), "{}", out[1].1);
         assert_eq!(out[1].2, "Unreadable.");
+    }
+
+    /// A window that ends in a call no registered tool answered is focused on
+    /// `UNANSWERED_CALL`, so the rule mined there is scoped to a key no run
+    /// presents. It loads nowhere, as a scope naming the invented tool did,
+    /// and startup must say so rather than let it read as obeyed.
+    #[test]
+    fn a_scope_naming_an_unanswered_call_is_reported_as_unloadable() {
+        let dir = std::env::temp_dir().join(format!(
+            "mecha-unloadable-unanswered-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let store = LearningStore::open(&dir).unwrap();
+        let unanswered = rule(
+            "Unanswered.",
+            "r-un",
+            Some(Situation {
+                tools: vec!["fs_read".into(), crate::agent::UNANSWERED_CALL.into()],
+                ..Default::default()
+            }),
+        );
+        let fine = rule("Fine.", "r-f", Some(shell()));
+        store
+            .write_learned_rules("behavior", &[unanswered, fine])
+            .unwrap();
+        let out = store.unloadable_rules(&["behavior"]).unwrap();
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].2, "Unanswered.");
+        assert!(
+            out[0].1.contains("no registered tool answered"),
+            "{}",
+            out[0].1
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The decision, before any write, the same for either key: a row with
