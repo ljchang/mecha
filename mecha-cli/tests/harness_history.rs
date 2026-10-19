@@ -180,7 +180,18 @@ fn floors_say_asserted_until_a_null_run_measures_them() {
                     ranked: None,
                     diverged: vec!["s-1".into()],
                     replay_caveats: Vec::new(),
-                    divergence_detail: Vec::new(),
+                    divergence_detail: vec![
+                        mecha_core::harness::Divergence {
+                            episode: "s-1".into(),
+                            arm: mecha_core::harness::Arm::Baseline,
+                            reason: "left the recording".into(),
+                        },
+                        mecha_core::harness::Divergence {
+                            episode: "s-1".into(),
+                            arm: mecha_core::harness::Arm::Candidate,
+                            reason: "left the recording".into(),
+                        },
+                    ],
                     // Sessions the pool scan passed over before anything was
                     // drawn: never part of the denominator.
                     skipped: 40,
@@ -199,6 +210,14 @@ fn floors_say_asserted_until_a_null_run_measures_them() {
     assert_eq!(
         one["episodes_drawn"], 3,
         "what was drawn, not what the scan skipped"
+    );
+    assert_eq!(
+        one["replays"], 6,
+        "both replays of a null run are the baseline"
+    );
+    assert_eq!(
+        one["replays_diverged"], 2,
+        "a divergence on either replay is the identity failing to reproduce itself"
     );
     assert!(f
         .ok(&["harness", "floors"])

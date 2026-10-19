@@ -1243,8 +1243,24 @@ async fn null_arm(
         .iter()
         .map(|p| p.episode.clone())
         .collect();
-    let arms =
-        mecha_core::harness::Divergence::arms_summary(&driven.divergence_detail, driven.skipped);
+    // **Not `Divergence::arms_summary`.** That is worded for two arms that
+    // differ by a change — a candidate-arm divergence "says the change moved
+    // behaviour" — and here there is no change: the second replay is the
+    // baseline again, recorded under `Arm::Candidate` only because
+    // `drive_arms` is shared. Either replay leaving the recording is the
+    // identity failing to reproduce itself (found on review of #717).
+    let arms = {
+        let first = mecha_core::harness::Divergence::baseline_count(&driven.divergence_detail);
+        let second = mecha_core::harness::Divergence::candidate_count(&driven.divergence_detail);
+        if first + second == 0 {
+            String::new()
+        } else {
+            format!(
+                "; {first} on the first replay and {second} on the second — an unchanged \
+                 configuration that did not reproduce itself"
+            )
+        }
+    };
     let mut measurement = Measurement::record(
         &judge(drawn_by),
         &model,
@@ -1351,9 +1367,15 @@ fn floors(as_json: bool) -> Result<()> {
         })
         .count();
     let drawn: usize = runs.iter().map(|r| r.drawn).sum();
-    let baseline_diverged: usize = runs
+    // Both replays are the baseline in a null run, so a divergence on either
+    // is the identity failing to reproduce itself, and the denominator is
+    // two replays per drawn episode — counting only the first arm reported
+    // half the rate (found on review of #717). An arm skipped before it ran
+    // makes this an upper bound on the replays actually driven.
+    let replays = 2 * drawn;
+    let replays_diverged: usize = runs
         .iter()
-        .map(|r| mecha_core::harness::Divergence::baseline_count(&r.measurement.divergence_detail))
+        .map(|r| r.measurement.divergence_detail.len())
         .sum();
     if as_json {
         println!(
@@ -1375,7 +1397,8 @@ fn floors(as_json: bool) -> Result<()> {
                 "reject": count("reject"),
                 "propose": count("propose"),
                 "episodes_drawn": drawn,
-                "baseline_arm_diverged": baseline_diverged,
+                "replays": replays,
+                "replays_diverged": replays_diverged,
             }))?
         );
         return Ok(());
@@ -1397,8 +1420,8 @@ fn floors(as_json: bool) -> Result<()> {
     }
     println!(
         "{} null run(s): {filled} filled both floors, {unpaired} paired nothing, {identical} \
-         replayed identically on both arms; the baseline arm left the recording on \
-         {baseline_diverged} of {drawn} drawn episode(s)",
+         replayed identically on both arms; a replay left the recording {replays_diverged} \
+         time(s) in {replays} replay(s) of {drawn} drawn episode(s)",
         runs.len()
     );
     if judged.is_empty() {
