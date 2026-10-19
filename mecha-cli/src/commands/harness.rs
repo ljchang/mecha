@@ -233,14 +233,18 @@ async fn ruminate(
     // replays name it on the wire, and on a router naming another loads it
     // over the owner's pick (`diagnose::Pick`).
     let served = setup::served_model(global)?;
-    let Some((model, slice, _)) =
-        corpus_slice(Pick::Served(&served), days, limit, from_workspace.clone())?
+    let Some((model, slice, _)) = corpus_slice(
+        nightly_pick(global, &served),
+        days,
+        limit,
+        from_workspace.clone(),
+    )?
     else {
         println!("no recorded run outcomes yet — nothing to diagnose from; deferring");
         return Ok(());
     };
     if slice.is_empty() {
-        println!("{}", no_served_runs(&model));
+        println!("{}", no_served_runs(&model, from_workspace.as_deref()));
         return Ok(());
     }
     let cfg = mecha_core::config::Config::load_global()?;
@@ -486,12 +490,29 @@ async fn ruminate(
     Ok(())
 }
 
+/// Which slice a nightly verb measures. The served model, as a quiet
+/// deferral when it has no runs — unless `--model` named it: a name a person
+/// typed is a question about that model, so no runs for it is an error at
+/// the terminal, not the 03:30 register (`diagnose::Pick`; found on review —
+/// a typo'd `--model` deferred, calling itself "the model in use").
+fn nightly_pick<'a>(global: &GlobalOpts, served: &'a str) -> Pick<'a> {
+    match global.model {
+        Some(_) => Pick::Named(served),
+        None => Pick::Served(served),
+    }
+}
+
 /// Why a night with runs on the store, but none on the served model, does
 /// nothing: deferred rather than measured on another model, because a replay
-/// naming that model would load it over the one in use.
-fn no_served_runs(model: &str) -> String {
+/// naming that model would load it over the one in use. A `--from-workspace`
+/// filter is named, so its zero is not read as the model's (`corpus_slice`
+/// keeps those two apart for the same reason).
+fn no_served_runs(model: &str, from_workspace: Option<&std::path::Path>) -> String {
+    let under = from_workspace
+        .map(|w| format!(" under {}", w.display()))
+        .unwrap_or_default();
     format!(
-        "no recorded runs on `{model}`, the model in use — deferring; runs on other \
+        "no recorded runs on `{model}`, the model in use{under} — deferring; runs on other \
          models are not replayed, because naming one would load it over this one"
     )
 }
@@ -1193,14 +1214,18 @@ async fn null_arm(
     // As the nightly does: the null arm judges the gate it shares, so it
     // replays the same model, and never loads another (`diagnose::Pick`).
     let served = setup::served_model(global)?;
-    let Some((model, slice, _)) =
-        corpus_slice(Pick::Served(&served), days, limit, from_workspace.clone())?
+    let Some((model, slice, _)) = corpus_slice(
+        nightly_pick(global, &served),
+        days,
+        limit,
+        from_workspace.clone(),
+    )?
     else {
         println!("no recorded run outcomes yet — nothing to replay");
         return Ok(());
     };
     if slice.is_empty() {
-        println!("{}", no_served_runs(&model));
+        println!("{}", no_served_runs(&model, from_workspace.as_deref()));
         return Ok(());
     }
     let id = HarnessStore::mint_null_id();
@@ -2330,5 +2355,20 @@ mod tests {
         assert_eq!(seed_of(""), 0xcbf2_9ce4_8422_2325);
         assert_eq!(seed_of("a"), 0xaf63_dc4c_8601_ec8c);
         assert_ne!(seed_of("hc-a"), seed_of("hc-b"));
+    }
+
+    /// A `--model` the person typed is a question about that model: no runs
+    /// for it errors at the terminal. Unnamed, the served model defers
+    /// quietly at 03:30 (review of #726: a typo'd `--model` deferred).
+    #[test]
+    fn a_typed_model_is_named_and_the_served_one_defers() {
+        let unnamed = GlobalOpts::default();
+        assert_eq!(nightly_pick(&unnamed, "m"), Pick::Served("m"));
+        let typed = GlobalOpts {
+            model: Some("m".into()),
+            ..Default::default()
+        };
+        assert_eq!(nightly_pick(&typed, "m"), Pick::Named("m"));
+        assert!(no_served_runs("m", Some(std::path::Path::new("/w"))).contains("under /w"));
     }
 }
