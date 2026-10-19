@@ -997,6 +997,12 @@ pub struct NullRun {
     /// The same pairs judged under every metric a candidate could predict:
     /// the gate's false-positive surface, one row per metric.
     pub by_metric: Vec<NullJudgement>,
+    /// Episodes drawn and driven: the selection plus the holdout, before
+    /// either arm ran. The denominator for how often an arm left the
+    /// recording — never `paired + diverged + skipped`, because
+    /// `Measurement::skipped` also counts sessions the pool scan passed over
+    /// before anything was drawn (found on review of #717).
+    pub drawn: usize,
 }
 
 /// The gate's verdict on the identity under one predicted metric.

@@ -1186,6 +1186,7 @@ async fn null_arm(
         drawn_by,
         measurement,
         by_metric,
+        drawn: draw.selection.len() + draw.holdout.len(),
     };
     store.write_null(&run)?;
 
@@ -1242,12 +1243,7 @@ fn floors(as_json: bool) -> Result<()> {
                 && m.holdout.wins + m.holdout.losses + m.holdout.ties >= MIN_HOLDOUT_PAIRS
         })
         .count();
-    let drawn: usize = runs
-        .iter()
-        .map(|r| {
-            r.measurement.episodes.len() + r.measurement.diverged.len() + r.measurement.skipped
-        })
-        .sum();
+    let drawn: usize = runs.iter().map(|r| r.drawn).sum();
     let baseline_diverged: usize = runs
         .iter()
         .map(|r| mecha_core::harness::Divergence::baseline_count(&r.measurement.divergence_detail))
