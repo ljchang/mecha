@@ -2853,7 +2853,10 @@ no run ever had.
 `Situation` it was mined in — tool names from the registry (only calls a
 registered tool answered, `agent::calls_a_tool_answered`: a `tool_use`
 records whatever name the model wrote, so an invented one, answered `no tool
-named`, rode into the withheld view and the scope until 2026-10-19), the trigger, the
+named`, rode into the withheld view and the scope until 2026-10-19; any other
+call now stands as `agent::UNANSWERED_CALL`, substituted rather than dropped,
+because an empty tool list matches every run and a dropped key would widen
+the scope), the trigger, the
 surface, the workspace; never a tool argument, never the reflector's
 `error_type`, because a key a model can author is a key an injection can
 set (`situation.rs`) — and `mecha learn` batches a domain's pool by focus
