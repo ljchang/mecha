@@ -1798,7 +1798,8 @@ Not legal advice; the law report holds the text and the analysis.
   suicide/self-harm protocol with crisis referral (§12.1, §12.2). The
   published crate ships both on by default. Study seats
   (`PERSONA-SERVING-DESIGN.md`) are the exception for one half: the crisis
-  protocol is forced on in every seat, and disclosure is the study's to
+  protocol is forced on in every seat, and disclosure — including the
+  sincere-question line every persona chat carries — is the study's to
   write into its own prompt (its S2, S10).
 
 **Words and claims.** No shipped starter template or example uses:

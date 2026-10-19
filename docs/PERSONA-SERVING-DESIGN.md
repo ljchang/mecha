@@ -144,8 +144,17 @@ comes from the study (S10). Its config is written fresh by the wiring, not
 derived: `[security]` is taken from the owner's field by field — the
 owner's value where it narrows a seat, the strictest value where it would
 widen one (§4a);
-`[providers]` names only the loopback router, with no key; the agent's
-model and timezone come from the owner's; and no other table is written —
+`[providers]` names only the loopback router, with no key, and carries
+the three fields the seat depends on from the owner's router entry:
+`context_window` (it must equal the router's `-c / -np`, as everywhere —
+without it compaction never fires and the output budget falls back to a
+ceiling too large for the slot), `vision` (without it every study image is
+replaced by a text placeholder while still arming `private`), and
+`follow_loaded = false`, set as a seat property rather than inherited, as
+`trial_env` sets it for every arm — following whatever the owner last
+loaded would change a seat's model mid-conversation, the other half of §5's
+hold. The agent's model and timezone come from the owner's; and no other
+table is written —
 no `[[mcp]]`, `[[hook]]`, `[rule]`, `[approval]` or `[search]`. That is
 deliberately not `trial_env`'s shape: a trial home inherits the operator's
 `[providers]` and keys along with `[security]`, and a seat inheriting them
@@ -568,7 +577,8 @@ seat work has to undo it: persona calls are hosted only inside serve
 worker reads its facade URL once, process-wide (`FACADE_URL` from
 `MECHA_VOICE_LLM`). So a guest facade is built on `voice`'s `Facade` and
 `Mount` with a seat's own `SessionHost`, which means exposing them beyond
-serve; the worker takes the facade URL per call, carried by the wiring's
+serve; the worker takes the facade URL per call — and with it the affect
+and direction URLs derived from it at import (`AFFECT_URL`, `DIRECT_URL`) — carried by the wiring's
 relay as a trusted field the way the persona voice binding is today; and
 the voice binding check that `offer_proxy` does for a browser call moves
 into the seat wiring. Building it follows `ARCHITECTURE.md` §Adding a
@@ -599,10 +609,12 @@ mecha provides; the study decides:
   from the owner's host report, so the wiring writes a seat's records to the
   owner's store — they carry no words by construction — with the surface
   named `hyperstudy` rather than today's literal `web`. Its neighbour does
-  not travel: `record_dose`, the owner-facing usage measure written beside
-  `record_crisis` in the same handler, is never written for a seat — a
-  stranger's turns counted as the owner's, under the voice's persona name,
-  would be the instrument measuring someone else. In a
+  not travel: `record_dose` and `record_call` — the owner-facing usage
+  measures, turns and call minutes, written beside `record_crisis` and by
+  `PersonaChats::call_ended` into the owner's store under the persona's
+  name — are never written for a seat. A stranger's turns or minutes
+  counted as the owner's would be the instrument measuring someone else,
+  and §11's call meter exists because voice raises attachment. In a
   seat it keeps the actions it takes today: on a trip the harness steps out
   of character with `SAFE_MESSAGE` and pauses the persona for
   `CRISIS_COOLDOWN`, and mecha raises HRP's `hs.flag`. Two seat-specific
@@ -663,7 +675,9 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    and the wiring's writes there are a closed list of two — the router hold
    (§5) and the crisis record (§7); a seat's session carries its own
    `SessionKind` and the corpus scan excludes it; `check-private.py` reads the seat
-   transcripts; no dose record is written for a seat; a study's crisis
+   transcripts; no dose or call record is written for a seat; a seat's
+   config carries `context_window` and `vision` and pins its model with
+   `follow_loaded = false`; a study's crisis
    resources that fail their bound fall back to `SAFE_MESSAGE`; the `[security]` floor
    holds against an owner config with `trifecta = "allow"`; the system
    prompt is the study's `instructions` byte for byte, with no `BASE`, card,
@@ -689,7 +703,7 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    arriving mid-reply in a turn with no tool call, which must wait for the
    run rather than enter a message already sent.
 4. **The voice transport on loopback** — the first non-WebRTC transport,
-   with its own entrypoint (§2); the worker takes its facade URL
+   with its own entrypoint (§2); the worker takes its facade URL (and the two derived from it)
    per call from the relay, and its HRP transport takes
    the wiring's loopback relay, which is its only shape (§2), and
    HyperStudy's conformance suite runs against it through a local stand-in
@@ -735,6 +749,9 @@ accepted socket instead.
   with no time limit), or end the seat with a reason and yield.
 - What happens to a live voice seat when the owner starts a call: end the
   seat with a reason, or refuse the owner's call while a study runs.
+- A reader for `hyperstudy/seats/`: it grows without bound by design
+  (S8), so `doctor.rs` should report its count and size, and how the owner
+  prunes it is theirs to say.
 - The budget numbers and `max_seats`' default, set from a measured seat,
   not guessed.
 - Whether a study may turn the crisis handover off (§7); on until ruled.
