@@ -505,13 +505,14 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    through a silent forced call) runs end to end, including a context item
    with no `response.create` followed by the participant speaking — the
    sequence that would otherwise send two user messages.
-4. **The voice transport on loopback** — the worker serves HRP on a local
-   socket for development only, and HyperStudy's conformance suite runs
-   against it (its runner takes any HRP client; a URL wrapper is all it
+4. **The voice transport on loopback** — the worker's HRP transport takes
+   the wiring's loopback relay, which is its only shape (§2), and
+   HyperStudy's conformance suite runs against it through a local stand-in
+   for the crate (its runner takes any HRP client; a URL wrapper is all it
    needs). Exit: both turn-detection modes pass, truncate `approximate`.
 5. **`mecha-hyperstudy` + wiring + admission** — once HyperStudy's `accept`
-   exists; the seats switch from serving a local socket to dialing the
-   session URL.
+   exists; the crate replaces the local stand-in, dialing the control and
+   session sockets and validating frames, and nothing behind it changes.
 6. **`hs.flag`** — once HyperStudy reads it.
 
 **What HyperStudy builds** (its document's Phase 3): connected-agent
