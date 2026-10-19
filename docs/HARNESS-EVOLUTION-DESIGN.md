@@ -1033,6 +1033,20 @@ covering what the diagnostician reads most.
   or 2), so the clean-transcript half is thin. The digest carries most of
   the weight. Whether the clean half is worth building is **R6**.
 
+**Built (2026-10-19): the digest and the citation rule.**
+- **Each digest holds** tool names, the error and external flags, the stop
+  cause, turns, and the kind and position of each intervention.
+- **The brief shows up to 12 remainder episodes, and never a held-out
+  one.** Episodes with a failed call, an intervention or an incomplete run
+  come first, and the rest are counted.
+- **Citation:** a brief with digests asks for `cites: <episode> #<call>`. An
+  uncited proposal is refused before it is measured.
+- **Not built:**
+  - The text halves wait on R6.
+  - The divergence index waits on P8.
+  - `lifted` does not read digests, because there are no words in one to
+    lift.
+
 ### P10. Structural candidates arrive with a measurement — L
 
 **Gap.**

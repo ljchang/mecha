@@ -7241,6 +7241,20 @@ The decisions that carry it, each a bug if undone:
   among the candidates, so nothing reads it as a proposal. Only the numeric
   gate is measured this way: the point-wise comparison needs a change to
   apply at a decision point, and its own floor is the next measurement.
+- **The diagnostician sees what each episode did, and must cite one.**
+  `harness_probe::prepare_episode` builds an `EpisodeDigest` from the same
+  read as the trajectory: tool names, error and external flags, stop cause,
+  turns, and the kind and position of each intervention — closed-set facts
+  only, by a constructor that walks typed blocks and withholds any tool name
+  that is not a plain identifier. `Pool::digests` hands the brief the
+  remainder's and never the holdout's, on the appraisals' rule. Up to
+  `MAX_DIGESTS` ride, those with a failed call, an intervention or an
+  incomplete run first, and the rest are counted. A brief carrying digests
+  opens private and asks for `cites: <episode> #<call>`; a proposal citing no
+  episode it showed, or a call that episode lacks, is refused before
+  anything is stored or measured, like a quoted one. The citation rides on
+  the candidate. The owner's words at each intervention are P9's other half
+  and wait on R6.
 - **A quoted proposal is refused before it becomes a record.** The
   `carries_over` check runs before the store is touched: a candidate file is
   a place changes wait to be applied, which is the one place lifted
