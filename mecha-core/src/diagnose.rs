@@ -325,7 +325,9 @@ pub struct Evidence {
 // digest time can tell a name mecha defined from one a server chose, so the
 // brief is treated as third-party content as well as the owner's: unknown
 // taint classifies untrusted. The cost is the diagnostician's model-chosen
-// fetch on a night with digests; its blind search is untouched.
+// fetch on every night with digests — with the defaults, every night; its
+// blind search is untouched, and `[agent] digests_in_brief` (a stage lever)
+// turns the digests off to buy the fetch back or to measure them.
 
 /// The most episodes the brief carries a digest of.
 pub const MAX_DIGESTS: usize = 12;
@@ -434,9 +436,10 @@ impl EpisodeDigest {
     /// Whether anything in it is worth a diagnostician's attention first: a
     /// failed call, an intervention, or a run that did not complete.
     fn has_signal(&self) -> bool {
+        // An unrecorded stop cause sorts as signal: a dash is never zero.
         self.steps.iter().any(|s| s.is_error)
             || !self.interventions.is_empty()
-            || self.stop.as_deref().is_some_and(|s| s != "completed")
+            || self.stop.as_deref() != Some("completed")
     }
 
     /// One line: the header, then the calls by number with consecutive
@@ -854,21 +857,45 @@ impl Evidence {
         )
     }
 
-    /// Whether a proposal cites a moment the brief showed. Required only when
-    /// the brief carried digests: a brief with none gave it nothing to cite.
-    pub fn check_citation(&self, proposal: &Proposal) -> Result<(), String> {
+    /// Whether a proposal cites a moment the brief showed, and the episode
+    /// spelled as the brief spelled it. Required only when the brief carried
+    /// digests: a brief with none gave it nothing to cite.
+    ///
+    /// An exact id, or the one shown id the cited text contains — `episode
+    /// <id>` is the citation it looks like, not a missing one, and a literal
+    /// model losing the night to a word around the id is the failure the
+    /// template exists to prevent (found on review of #719). More than one
+    /// shown id inside it is ambiguous, and refused.
+    pub fn check_citation(&self, proposal: &mut Proposal) -> Result<(), String> {
         if self.digests.is_empty() {
             return Ok(());
         }
-        let Some(c) = &proposal.cites else {
+        let Some(c) = proposal.cites.as_mut() else {
             return Err("it cites no episode, and the brief showed episodes to cite".into());
         };
-        let Some(d) = self.digests.iter().find(|d| d.session_id == c.episode) else {
-            return Err(format!(
-                "it cites `{}`, which is not an episode the brief showed",
-                c.episode
-            ));
+        let exact = self.digests.iter().find(|d| d.session_id == c.episode);
+        let contained: Vec<&EpisodeDigest> = self
+            .digests
+            .iter()
+            .filter(|d| c.episode.contains(d.session_id.as_str()))
+            .collect();
+        let d = match (exact, contained.as_slice()) {
+            (Some(d), _) => d,
+            (None, [d]) => *d,
+            (None, []) => {
+                return Err(format!(
+                    "it cites `{}`, which is not an episode the brief showed",
+                    c.episode
+                ))
+            }
+            (None, _) => {
+                return Err(format!(
+                    "it cites `{}`, which names more than one episode the brief showed",
+                    c.episode
+                ))
+            }
         };
+        c.episode = d.session_id.clone();
         if c.call > d.calls() {
             return Err(format!(
                 "it cites call #{} of `{}`, which has {} call(s)",
@@ -3094,26 +3121,36 @@ mod digest_tests {
             ),
             "the required field is in the template itself: {instruction}"
         );
-        assert!(e.check_citation(&proposal(Some("loud #2"))).is_ok());
+        assert!(e.check_citation(&mut proposal(Some("loud #2"))).is_ok());
+        let mut worded = proposal(Some("episode loud #2"));
         assert!(
-            e.check_citation(&proposal(Some("loud #5"))).is_ok(),
+            e.check_citation(&mut worded).is_ok(),
+            "a word around the id"
+        );
+        assert_eq!(
+            worded.cites.unwrap().episode,
+            "loud",
+            "spelled as the brief spelled it"
+        );
+        assert!(
+            e.check_citation(&mut proposal(Some("loud #5"))).is_ok(),
             "the end of the run"
         );
         assert!(e
-            .check_citation(&proposal(Some("loud #6")))
+            .check_citation(&mut proposal(Some("loud #6")))
             .unwrap_err()
             .contains("5 call(s)"));
         assert!(e
-            .check_citation(&proposal(Some("other #0")))
+            .check_citation(&mut proposal(Some("other #0")))
             .unwrap_err()
             .contains("not an episode"));
         assert!(e
-            .check_citation(&proposal(None))
+            .check_citation(&mut proposal(None))
             .unwrap_err()
             .contains("cites no episode"));
 
         let bare = Evidence::default();
         assert_eq!(bare.instruction(), DIAGNOSE_INSTRUCTION);
-        assert!(bare.check_citation(&proposal(None)).is_ok());
+        assert!(bare.check_citation(&mut proposal(None)).is_ok());
     }
 }

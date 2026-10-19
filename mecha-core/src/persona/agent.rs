@@ -380,6 +380,7 @@ pub fn agent_config(base: &AgentConfig, system: String) -> AgentConfig {
         carried_state,
         sensors_in_brief: _,
         appraisals_in_brief: _,
+        digests_in_brief: _,
         situation_brief: _,
         past_appraisals: _,
         success_examples: _,
@@ -418,6 +419,7 @@ pub fn agent_config(base: &AgentConfig, system: String) -> AgentConfig {
         goal_guidance: false,
         sensors_in_brief: false,
         appraisals_in_brief: false,
+        digests_in_brief: false,
         situation_brief: false,
         past_appraisals: false,
         success_examples: false,
@@ -1113,6 +1115,7 @@ mod tests {
             contrast_evidence: true,
             sensors_in_brief: true,
             appraisals_in_brief: true,
+            digests_in_brief: true,
             boredom: true,
             step_checks: true,
             step_escalation: true,
@@ -1131,6 +1134,7 @@ mod tests {
                 || c.contrast_evidence
                 || c.sensors_in_brief
                 || c.appraisals_in_brief
+                || c.digests_in_brief
                 || c.step_checks
                 || c.step_escalation)
         );

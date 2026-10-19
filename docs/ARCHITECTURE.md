@@ -7254,8 +7254,11 @@ The decisions that carry it, each a bug if undone:
   **private and untrusted**: the owner's activity, and tool names an MCP
   server chose for itself, which an identifier check cannot tell from a
   sentence (`DIGEST_STEM` arms both off a transcript, as `APPRAISAL_STEM`
-  does). The cost is the diagnostician's model-chosen fetch on such a night;
-  its blind search is untouched. The block template itself carries
+  does). The cost is the diagnostician's model-chosen fetch on every night
+  with digests, which with the defaults is every night; its blind search is
+  untouched. `[agent] digests_in_brief` (on; a stage lever) withholds the
+  digests and the citation rule together, and a citation is never stored
+  from a brief that showed nothing to cite. The block template itself carries
   `cites: <episode> #<call>`; a proposal citing no
   episode it showed, or a call that episode lacks, is refused before
   anything is stored or measured, like a quoted one. The citation rides on
