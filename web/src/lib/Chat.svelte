@@ -2496,26 +2496,31 @@
               {/each}
             </div>
           {/if}
+          <input
+            class="qinput"
+            placeholder="something else…"
+            bind:value={entry.freeText}
+            onkeydown={(e) => {
+              if (e.key === 'Enter' && entry.freeText.trim()) {
+                respond(entry, { answer: entry.freeText.trim() });
+              }
+            }}
+          />
+          <!-- Decline is a button the size of Answer, not a caption under
+               it: styled as muted text it read as a hint, and "Decline"
+               got typed into the box instead — which reaches the model as
+               an answer, never as the structured decline. -->
           <div class="qrow">
-            <input
-              class="qinput"
-              placeholder="something else…"
-              bind:value={entry.freeText}
-              onkeydown={(e) => {
-                if (e.key === 'Enter' && entry.freeText.trim()) {
-                  respond(entry, { answer: entry.freeText.trim() });
-                }
-              }}
-            />
+            <button class="qbtn" onclick={() => respond(entry, { decline: true })}>
+              Decline
+            </button>
             <button
-              class="qbtn primary slim"
+              class="qbtn primary"
               disabled={!entry.freeText.trim()}
               onclick={() => respond(entry, { answer: entry.freeText.trim() })}
             >Answer</button>
           </div>
-          <button class="qdecline" onclick={() => respond(entry, { decline: true })}>
-            Decline — mecha proceeds without guessing
-          </button>
+          <div class="qfoot">decline → mecha proceeds without guessing</div>
         </div>
       {/if}
     {/each}
@@ -3700,9 +3705,6 @@
     color: var(--hazard);
     border-color: var(--accent-700);
   }
-  .qbtn.slim {
-    flex: 0 0 88px;
-  }
   .qbtn:disabled {
     opacity: 0.5;
   }
@@ -3716,14 +3718,6 @@
     padding: 11px 12px;
     min-height: 44px;
     box-sizing: border-box;
-  }
-  .qdecline {
-    background: none;
-    border: none;
-    color: var(--text-muted);
-    font-size: 13px;
-    min-height: 44px;
-    cursor: pointer;
   }
   .qfoot {
     font-family: var(--mono);
