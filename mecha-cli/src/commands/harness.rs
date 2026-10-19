@@ -28,8 +28,8 @@ use mecha_core::candidate::{
     judge_drawn, measurable, ChangeClass, Disposition, Pair, Prediction, MIN_MEASURABLE_RUNS,
 };
 use mecha_core::harness::{
-    parse_change, AcceptedOverride, HarnessCandidate, HarnessStore, Measurement, STATUS_ACCEPTED,
-    STATUS_REJECTED, STATUS_REVERTED, STATUS_STAGED,
+    parse_change, AcceptedOverride, HarnessCandidate, HarnessStore, Measurement, Rejection,
+    STATUS_ACCEPTED, STATUS_REJECTED, STATUS_REVERTED, STATUS_STAGED,
 };
 use mecha_core::session::Session;
 
@@ -77,11 +77,19 @@ pub enum Cmd {
     /// applied to the override layer; anything else is only marked — the
     /// change itself is yours to make.
     Accept { id: String },
-    /// Reject a staged candidate, with a reason the record keeps.
+    /// Reject a staged candidate, with a reason the record keeps — or retype
+    /// one already rejected, with `--verdict`.
+    ///
+    /// The verdict decides what the next diagnostician is told: `harmful` is
+    /// never proposed again; `no-effect` is not, until the instrument has
+    /// changed; `unmeasured` (the measurement could not tell) may be. With
+    /// no verdict the rejection is a plain no, never proposed again.
     Reject {
         id: String,
         #[arg(long)]
         reason: Option<String>,
+        #[arg(long, value_enum)]
+        verdict: Option<OwnerVerdict>,
     },
     /// Take an accepted override back out. The candidate record survives as
     /// evidence, and the key returns to whatever your config says.
@@ -91,6 +99,69 @@ pub enum Cmd {
     },
     /// The active override layer, with where each entry came from.
     Overrides,
+    /// The null arm: the nightly's paired replay with nothing changed on
+    /// either arm, judged by the same gate — how often the identity "wins"
+    /// against itself. Recorded under `null/`, never as a candidate.
+    Null {
+        /// Replay this many recent sessions per arm.
+        #[arg(long, default_value_t = 16)]
+        sessions: usize,
+        /// Scan at most this many sessions for the corpus.
+        #[arg(long, short = 'n', default_value_t = 200)]
+        limit: usize,
+        /// One episode in this many is held out of selection.
+        #[arg(long, default_value_t = 3)]
+        holdout_in: u64,
+        /// The metric the selection slice is ranked by; the pairs are judged
+        /// under every metric regardless.
+        #[arg(long, default_value = "tool_error_rate", value_parser = parse_metric)]
+        drawn_by: mecha_core::candidate::Metric,
+        /// Only draw from sessions rooted at this path or beneath it.
+        #[arg(long, value_name = "PATH")]
+        from_workspace: Option<std::path::PathBuf>,
+    },
+    /// The gate's floors, beside what the null arm has measured of them.
+    Floors {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+/// The owner's verdict on a rejection — what the next diagnostician is told.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OwnerVerdict {
+    /// It would do harm: never proposed again.
+    Harmful,
+    /// It does nothing worth having: not proposed again until the
+    /// instrument changes.
+    NoEffect,
+    /// The measurement could not tell — not a verdict on the change; it may
+    /// be proposed again.
+    Unmeasured,
+}
+
+impl From<OwnerVerdict> for Rejection {
+    fn from(v: OwnerVerdict) -> Rejection {
+        match v {
+            OwnerVerdict::Harmful => Rejection::Harmful,
+            OwnerVerdict::NoEffect => Rejection::NoEffect,
+            OwnerVerdict::Unmeasured => Rejection::Unmeasured,
+        }
+    }
+}
+
+fn parse_metric(s: &str) -> Result<mecha_core::candidate::Metric, String> {
+    mecha_core::candidate::Metric::ALL
+        .iter()
+        .copied()
+        .find(|m| m.as_str() == s)
+        .ok_or_else(|| {
+            let names: Vec<&str> = mecha_core::candidate::Metric::ALL
+                .iter()
+                .map(|m| m.as_str())
+                .collect();
+            format!("not a metric: `{s}` (one of {})", names.join(", "))
+        })
 }
 
 pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
@@ -108,9 +179,32 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         Cmd::List { all, json } => list(all, json),
         Cmd::Show { id } => show(&id),
         Cmd::Accept { id } => accept(&id),
-        Cmd::Reject { id, reason } => reject(&id, reason),
+        Cmd::Reject {
+            id,
+            reason,
+            verdict,
+        } => reject(&id, reason, verdict),
         Cmd::Revert { id } => revert(&id),
         Cmd::Overrides => overrides(),
+        Cmd::Null {
+            sessions,
+            limit,
+            holdout_in,
+            drawn_by,
+            from_workspace,
+        } => {
+            anyhow::ensure!(holdout_in >= 2, "--holdout-in must be at least 2");
+            null_arm(
+                global,
+                sessions,
+                limit,
+                holdout_in,
+                drawn_by,
+                from_workspace,
+            )
+            .await
+        }
+        Cmd::Floors { json } => floors(json),
     }
 }
 
@@ -184,19 +278,8 @@ async fn ruminate(
     };
 
     // The same change, re-derived: the measurement is already paid for, and
-    // the brief told it not to. Comparison is on the canonical spec when the
-    // change parses, so spacing differences cannot re-open a rejection.
-    let canonical = |change: &str| {
-        parse_change(change)
-            .map(|c| c.spec())
-            .unwrap_or_else(|_| change.trim().to_string())
-    };
-    let new_spec = canonical(&proposal.change);
-    if let Some(prior) = store
-        .all()?
-        .into_iter()
-        .find(|c| canonical(&c.change) == new_spec)
-    {
+    // the brief told it not to — unless every record of it allows a retry.
+    if let Some(prior) = forbidding_prior(&store.all()?, &proposal.change) {
         println!(
             "the diagnostician re-derived `{}`, already on file as {} ({}) — nothing new tonight",
             proposal.change, prior.id, prior.status
@@ -218,6 +301,7 @@ async fn ruminate(
         measurement: None,
         resolved_at: None,
         reason: None,
+        rejection: None,
     };
 
     println!("── candidate {} ──", cand.id);
@@ -327,6 +411,7 @@ async fn ruminate(
                 // would be free to come back tomorrow.
                 Verdict::NoHeadroom => {
                     cand.status = STATUS_REJECTED.into();
+                    cand.rejection = Some(Rejection::NoHeadroom);
                     cand.resolved_at = Some(now.clone());
                     cand.reason = Some(format!("{unrefutable}, so it was not worth a replay"));
                     store.write(&cand)?;
@@ -351,6 +436,30 @@ async fn ruminate(
         },
     }
     Ok(())
+}
+
+/// A record of the same change that forbids proposing it again, if any.
+///
+/// Compared on the canonical spec when the change parses, so spacing
+/// differences cannot re-open a rejection. **Only a prior that forbids a
+/// retry stops it** (P1): this used to stop any re-derivation of anything on
+/// file, so a change the owner had marked "the measurement could not tell" —
+/// which the brief now invites back — would have been refused the night it
+/// came back. Any one prior that forbids is enough: an owner's "harmful" on
+/// one record is not undone by an underpowered measurement on another.
+fn forbidding_prior<'a>(
+    on_file: &'a [HarnessCandidate],
+    change: &str,
+) -> Option<&'a HarnessCandidate> {
+    let canonical = |change: &str| {
+        parse_change(change)
+            .map(|c| c.spec())
+            .unwrap_or_else(|_| change.trim().to_string())
+    };
+    let new_spec = canonical(change);
+    on_file
+        .iter()
+        .find(|c| canonical(&c.change) == new_spec && !c.history_verdict().may_repropose())
 }
 
 /// The draw's seed, off the candidate id rather than the clock: re-measuring
@@ -518,6 +627,170 @@ struct DrawSpec<'a> {
     workspace: Option<&'a std::path::Path>,
 }
 
+/// What driving a draw under two arms produced, before anything judged it.
+struct Driven {
+    arm_receipts: Vec<serde_json::Value>,
+    selection_pairs: Vec<Pair>,
+    holdout_pairs: Vec<Pair>,
+    diverged: Vec<String>,
+    replay_caveats: Vec<String>,
+    divergence_detail: Vec<mecha_core::harness::Divergence>,
+    skipped: usize,
+}
+
+/// Drive every drawn episode under the baseline arm and then the candidate
+/// arm, and pair the ones that held on the recording.
+///
+/// `change: None` drives the candidate arm with nothing changed — the null
+/// arm (P2). One loop for both, so the A/A measures the instrument the
+/// candidates are measured with and not a copy that has drifted from it.
+async fn drive_arms(
+    prepared: &setup::Prepared,
+    provider_cfg: &mecha_core::config::ProviderConfig,
+    model: &str,
+    draw: &harness_probe::Draw,
+    change: Option<&mecha_core::harness::ConfigChange>,
+) -> Result<Driven> {
+    let mut arm_receipts = Vec::new();
+    let mut selection_pairs: Vec<Pair> = Vec::new();
+    let mut holdout_pairs: Vec<Pair> = Vec::new();
+    let mut diverged: Vec<String> = Vec::new();
+    let mut replay_caveats: Vec<String> = Vec::new();
+    // See `Measurement::divergence_detail`.
+    let mut divergence_detail: Vec<mecha_core::harness::Divergence> = Vec::new();
+    // Recorded as each arm finishes, never after both. Review finding: the
+    // push used to sit past the candidate's `Err` arm, so an episode whose
+    // BASELINE left the recording and whose candidate then failed to replay
+    // at all lost the baseline's reason entirely and landed in `skipped`
+    // with no account of itself — the same loss this branch exists to fix,
+    // one case narrower.
+    macro_rules! note_divergence {
+        ($arm:expr, $outcome:expr, $id:expr) => {
+            arm_receipts.push(serde_json::json!({"episode": $id, "arm": $arm, "replay": $outcome.receipt}));
+            if let Some(why) = &$outcome.divergence {
+                divergence_detail.push(mecha_core::harness::Divergence {
+                    episode: $id.clone(),
+                    arm: $arm,
+                    reason: why.clone(),
+                });
+            }
+        };
+    }
+    let mut skipped = draw.skipped;
+    let total = draw.selection.len() + draw.holdout.len();
+    // The flag decides the slice; the label only decides the column width.
+    // These were one string: `if label == "select"` routed the pair, so
+    // renaming the display text — `"sel"` for a narrower line — would have
+    // sent every selection pair into the holdout, and the gate would have read
+    // a candidate that won on nothing and confirmed on everything.
+    let slices = [
+        (true, "select", &draw.selection),
+        (false, "hold  ", &draw.holdout),
+    ];
+    let mut n = 0usize;
+    for (is_selection, label, preps) in slices {
+        for prep in preps.iter() {
+            n += 1;
+            // The caveat rides the episode's own line: a later "diverged —
+            // dropped" on a multi-config session is then legible as the
+            // recording being unreplayable-as-one-run, not the candidate or
+            // the replay machinery failing.
+            let caveat = prep
+                .config_caveat
+                .as_deref()
+                .map(|c| format!(" [{c}]"))
+                .unwrap_or_default();
+            // Into the stored record for *every* multi-config episode, not
+            // only the dropped ones — found on review: an episode that pairs
+            // cleanly contributes to the tally that gates acceptance, and
+            // that is the more consequential place for the decider reading
+            // `mecha harness show` to know the replay was compromising.
+            if let Some(c) = &prep.config_caveat {
+                replay_caveats.push(format!("{} — {c}", prep.id));
+            }
+            eprint!(
+                "· [{label}] {}{caveat} ({}/{}) baseline…",
+                prep.id, n, total
+            );
+            let baseline =
+                match harness_probe::drive_episode(prepared, provider_cfg, model, prep, None)
+                    .await?
+                {
+                    Ok(arm) => arm,
+                    Err(why) => {
+                        eprintln!(" skipped: {why}");
+                        skipped += 1;
+                        continue;
+                    }
+                };
+            note_divergence!(mecha_core::harness::Arm::Baseline, baseline, prep.id);
+            eprint!(" candidate…");
+            let candidate =
+                match harness_probe::drive_episode(prepared, provider_cfg, model, prep, change)
+                    .await?
+                {
+                    Ok(arm) => arm,
+                    Err(why) => {
+                        eprintln!(" skipped: {why}");
+                        skipped += 1;
+                        continue;
+                    }
+                };
+            // Which arm left the recording, and why — beside the id, never
+            // folded into it (`Measurement::diverged`'s ids stay joinable,
+            // the same contract `replay_caveats` respects).
+            //
+            // **The distinction the bare bool destroyed.** A baseline
+            // divergence says the replay is unreliable on this episode; a
+            // candidate-only divergence says the change altered behaviour,
+            // which is the measurement working, not failing. On 2026-09-01
+            // twelve of sixteen episodes were dropped as one undifferentiated
+            // pile, and the four that paired were all far below the
+            // threshold the candidate moved — so the tally scored only the
+            // episodes where the change provably did nothing, and reported
+            // it as a thin sample rather than a censored one.
+            note_divergence!(mecha_core::harness::Arm::Candidate, candidate, prep.id);
+            if baseline.diverged() || candidate.diverged() {
+                // The recording has nothing truthful to say past a divergence;
+                // stats over the tracked prefix would grade a behaviour-visible
+                // change on the fraction it happened to track.
+                //
+                // The caveat rides into the stored record too, not only the
+                // nightly's stderr — beside the id, never folded into it:
+                // `diverged` is a joinable id list by contract, and the
+                // reader the caveat was written for is `mecha harness
+                // show`'s (whoever decides on a staged candidate) — such a
+                // divergence says something about the replay's compromise,
+                // not necessarily about the change.
+                eprintln!(" diverged — dropped");
+                diverged.push(prep.id.clone());
+                continue;
+            }
+            eprintln!(" paired");
+            let pair = Pair {
+                episode: prep.id.clone(),
+                baseline: baseline.stats,
+                candidate: candidate.stats,
+            };
+            if is_selection {
+                selection_pairs.push(pair);
+            } else {
+                holdout_pairs.push(pair);
+            }
+        }
+    }
+
+    Ok(Driven {
+        arm_receipts,
+        selection_pairs,
+        holdout_pairs,
+        diverged,
+        replay_caveats,
+        divergence_detail,
+        skipped,
+    })
+}
+
 /// Replay the corpus under both arms, judge, and dispose.
 async fn measure(
     global: &GlobalOpts,
@@ -573,139 +846,15 @@ async fn measure(
         unusable
     );
 
-    let mut arm_receipts = Vec::new();
-    let mut selection_pairs: Vec<Pair> = Vec::new();
-    let mut holdout_pairs: Vec<Pair> = Vec::new();
-    let mut diverged: Vec<String> = Vec::new();
-    let mut replay_caveats: Vec<String> = Vec::new();
-    // See `Measurement::divergence_detail`.
-    let mut divergence_detail: Vec<mecha_core::harness::Divergence> = Vec::new();
-    // Recorded as each arm finishes, never after both. Review finding: the
-    // push used to sit past the candidate's `Err` arm, so an episode whose
-    // BASELINE left the recording and whose candidate then failed to replay
-    // at all lost the baseline's reason entirely and landed in `skipped`
-    // with no account of itself — the same loss this branch exists to fix,
-    // one case narrower.
-    macro_rules! note_divergence {
-        ($arm:expr, $outcome:expr, $id:expr) => {
-            arm_receipts.push(serde_json::json!({"episode": $id, "arm": $arm, "replay": $outcome.receipt}));
-            if let Some(why) = &$outcome.divergence {
-                divergence_detail.push(mecha_core::harness::Divergence {
-                    episode: $id.clone(),
-                    arm: $arm,
-                    reason: why.clone(),
-                });
-            }
-        };
-    }
-    let mut skipped = unusable;
-    let total = draw.selection.len() + draw.holdout.len();
-    // The flag decides the slice; the label only decides the column width.
-    // These were one string: `if label == "select"` routed the pair, so
-    // renaming the display text — `"sel"` for a narrower line — would have
-    // sent every selection pair into the holdout, and the gate would have read
-    // a candidate that won on nothing and confirmed on everything.
-    let slices = [
-        (true, "select", &draw.selection),
-        (false, "hold  ", &draw.holdout),
-    ];
-    let mut n = 0usize;
-    for (is_selection, label, preps) in slices {
-        for prep in preps.iter() {
-            n += 1;
-            // The caveat rides the episode's own line: a later "diverged —
-            // dropped" on a multi-config session is then legible as the
-            // recording being unreplayable-as-one-run, not the candidate or
-            // the replay machinery failing.
-            let caveat = prep
-                .config_caveat
-                .as_deref()
-                .map(|c| format!(" [{c}]"))
-                .unwrap_or_default();
-            // Into the stored record for *every* multi-config episode, not
-            // only the dropped ones — found on review: an episode that pairs
-            // cleanly contributes to the tally that gates acceptance, and
-            // that is the more consequential place for the decider reading
-            // `mecha harness show` to know the replay was compromising.
-            if let Some(c) = &prep.config_caveat {
-                replay_caveats.push(format!("{} — {c}", prep.id));
-            }
-            eprint!(
-                "· [{label}] {}{caveat} ({}/{}) baseline…",
-                prep.id, n, total
-            );
-            let baseline =
-                match harness_probe::drive_episode(&prepared, provider_cfg, model, prep, None)
-                    .await?
-                {
-                    Ok(arm) => arm,
-                    Err(why) => {
-                        eprintln!(" skipped: {why}");
-                        skipped += 1;
-                        continue;
-                    }
-                };
-            note_divergence!(mecha_core::harness::Arm::Baseline, baseline, prep.id);
-            eprint!(" candidate…");
-            let candidate = match harness_probe::drive_episode(
-                &prepared,
-                provider_cfg,
-                model,
-                prep,
-                Some(&change),
-            )
-            .await?
-            {
-                Ok(arm) => arm,
-                Err(why) => {
-                    eprintln!(" skipped: {why}");
-                    skipped += 1;
-                    continue;
-                }
-            };
-            // Which arm left the recording, and why — beside the id, never
-            // folded into it (`Measurement::diverged`'s ids stay joinable,
-            // the same contract `replay_caveats` respects).
-            //
-            // **The distinction the bare bool destroyed.** A baseline
-            // divergence says the replay is unreliable on this episode; a
-            // candidate-only divergence says the change altered behaviour,
-            // which is the measurement working, not failing. On 2026-09-01
-            // twelve of sixteen episodes were dropped as one undifferentiated
-            // pile, and the four that paired were all far below the
-            // threshold the candidate moved — so the tally scored only the
-            // episodes where the change provably did nothing, and reported
-            // it as a thin sample rather than a censored one.
-            note_divergence!(mecha_core::harness::Arm::Candidate, candidate, prep.id);
-            if baseline.diverged() || candidate.diverged() {
-                // The recording has nothing truthful to say past a divergence;
-                // stats over the tracked prefix would grade a behaviour-visible
-                // change on the fraction it happened to track.
-                //
-                // The caveat rides into the stored record too, not only the
-                // nightly's stderr — beside the id, never folded into it:
-                // `diverged` is a joinable id list by contract, and the
-                // reader the caveat was written for is `mecha harness
-                // show`'s (whoever decides on a staged candidate) — such a
-                // divergence says something about the replay's compromise,
-                // not necessarily about the change.
-                eprintln!(" diverged — dropped");
-                diverged.push(prep.id.clone());
-                continue;
-            }
-            eprintln!(" paired");
-            let pair = Pair {
-                episode: prep.id.clone(),
-                baseline: baseline.stats,
-                candidate: candidate.stats,
-            };
-            if is_selection {
-                selection_pairs.push(pair);
-            } else {
-                holdout_pairs.push(pair);
-            }
-        }
-    }
+    let Driven {
+        arm_receipts,
+        selection_pairs,
+        holdout_pairs,
+        diverged,
+        replay_caveats,
+        divergence_detail,
+        skipped,
+    } = drive_arms(&prepared, provider_cfg, model, &draw, Some(&change)).await?;
 
     let now = chrono::Utc::now().to_rfc3339();
     if selection_pairs.is_empty() && holdout_pairs.is_empty() {
@@ -926,12 +1075,238 @@ async fn measure(
         }
         Disposition::Reject(reason) => {
             cand.status = STATUS_REJECTED.into();
+            cand.rejection = Some(Rejection::Gate);
             cand.reason = Some(reason.clone());
             cand.resolved_at = Some(now);
             store.write(&cand)?;
             println!("rejected — {reason}");
         }
     }
+    Ok(())
+}
+
+/// The null arm (HARNESS-EVOLUTION-DESIGN.md P2): `ruminate`'s draw and
+/// `drive_arms`, with nothing changed on either arm, judged by the same
+/// gate under every metric a candidate could predict.
+///
+/// **Only the numeric gate.** The point-wise comparison (R26/R36) needs a
+/// change to apply at each decision point and decides acceptance when it
+/// decides at all, so its own noise floor is the next measurement, not this
+/// one — `floors` says so rather than letting this stand for both.
+async fn null_arm(
+    global: &GlobalOpts,
+    sessions: usize,
+    limit: usize,
+    holdout_in: u64,
+    drawn_by: mecha_core::candidate::Metric,
+    from_workspace: Option<std::path::PathBuf>,
+) -> Result<()> {
+    use mecha_core::harness::{NullJudgement, NullRun};
+    let store = HarnessStore::open_default()?;
+    let from_workspace = crate::commands::diagnose::resolve_workspace_filter(from_workspace)?;
+    let Some((model, _, _)) = corpus_slice(None, None, limit, from_workspace.clone())? else {
+        println!("no recorded run outcomes yet — nothing to replay");
+        return Ok(());
+    };
+    let id = HarnessStore::mint_null_id();
+    let pool = harness_probe::draw_pool(
+        &Session::default_dir()?,
+        &model,
+        sessions,
+        holdout_in,
+        seed_of(&id),
+        from_workspace.as_deref(),
+    )?;
+    for caveat in &pool.caveats {
+        eprintln!("replay priority: {caveat}");
+    }
+    let draw = pool.select(drawn_by);
+    if draw.selection.is_empty() && draw.holdout.is_empty() {
+        println!("no replayable sessions recorded for `{model}` — nothing to measure");
+        return Ok(());
+    }
+    let prepared = setup::prepare(&global.clone(), false).await?;
+    let (_, provider_cfg) = prepared.config.provider(global.provider.as_deref())?;
+    eprintln!(
+        "null arm {id}: {} selected (by {}) + {} held-out episode(s) × 2 unchanged arms \
+         (seed {}, {} unusable session(s) passed over)",
+        draw.selection.len(),
+        drawn_by.as_str(),
+        draw.holdout.len(),
+        draw.seed,
+        draw.skipped,
+    );
+    let driven = drive_arms(&prepared, provider_cfg, &model, &draw, None).await?;
+    let judge = |metric| {
+        judge_drawn(
+            ChangeClass::Config,
+            &Prediction {
+                metric,
+                rationale: String::new(),
+            },
+            &driven.selection_pairs,
+            &driven.holdout_pairs,
+        )
+    };
+    let by_metric: Vec<NullJudgement> = mecha_core::candidate::Metric::ALL
+        .iter()
+        .map(|m| NullJudgement::of(*m, &judge(*m)))
+        .collect();
+    let episodes: Vec<String> = driven
+        .selection_pairs
+        .iter()
+        .chain(driven.holdout_pairs.iter())
+        .map(|p| p.episode.clone())
+        .collect();
+    let holdout_episodes: Vec<String> = driven
+        .holdout_pairs
+        .iter()
+        .map(|p| p.episode.clone())
+        .collect();
+    let arms =
+        mecha_core::harness::Divergence::arms_summary(&driven.divergence_detail, driven.skipped);
+    let mut measurement = Measurement::record(
+        &judge(drawn_by),
+        &model,
+        chrono::Utc::now().to_rfc3339(),
+        mecha_core::harness::Drawn {
+            episodes,
+            holdout_episodes,
+            seed: draw.seed,
+            ranked: draw.ranked,
+            diverged: driven.diverged,
+            replay_caveats: driven.replay_caveats,
+            divergence_detail: driven.divergence_detail,
+            skipped: driven.skipped,
+        },
+    );
+    measurement.arm_receipts = driven.arm_receipts;
+    let run = NullRun {
+        id,
+        drawn_by,
+        measurement,
+        by_metric,
+    };
+    store.write_null(&run)?;
+
+    let m = &run.measurement;
+    println!(
+        "null arm {}: {} paired ({} selection, {} holdout), {} diverged, {} skipped{arms}",
+        run.id,
+        m.episodes.len(),
+        m.episodes.len() - m.holdout_episodes.len(),
+        m.holdout_episodes.len(),
+        m.diverged.len(),
+        m.skipped,
+    );
+    for j in &run.by_metric {
+        println!(
+            "  {:<22} selection {}  holdout {}  → {}{}",
+            j.metric.as_str(),
+            j.selection,
+            j.holdout,
+            j.disposition,
+            if j.false_verdict() {
+                "  ← a verdict on nothing"
+            } else {
+                ""
+            }
+        );
+    }
+    let false_verdicts = run.by_metric.iter().filter(|j| j.false_verdict()).count();
+    println!(
+        "{false_verdicts} of {} metric(s) would have reached a verdict on an unchanged \
+         configuration — `mecha harness floors` reads every null run together",
+        run.by_metric.len()
+    );
+    Ok(())
+}
+
+/// The gate's floors beside what the null arm has measured of them: how
+/// often an unchanged configuration paired, filled the floors, and drew a
+/// verdict it should not have.
+fn floors(as_json: bool) -> Result<()> {
+    use mecha_core::candidate::{
+        MIN_DECIDED_POINTS, MIN_HOLDOUT_PAIRS, MIN_SELECTION_PAIRS, WORK_FLOOR,
+    };
+    let store = HarnessStore::open_default()?;
+    let (runs, unreadable) = store.nulls_counting()?;
+    let judged: Vec<&mecha_core::harness::NullJudgement> =
+        runs.iter().flat_map(|r| r.by_metric.iter()).collect();
+    let count = |d: &str| judged.iter().filter(|j| j.disposition == d).count();
+    let filled = runs
+        .iter()
+        .filter(|r| {
+            let m = &r.measurement;
+            m.selection.wins + m.selection.losses + m.selection.ties >= MIN_SELECTION_PAIRS
+                && m.holdout.wins + m.holdout.losses + m.holdout.ties >= MIN_HOLDOUT_PAIRS
+        })
+        .count();
+    let drawn: usize = runs
+        .iter()
+        .map(|r| {
+            r.measurement.episodes.len() + r.measurement.diverged.len() + r.measurement.skipped
+        })
+        .sum();
+    let baseline_diverged: usize = runs
+        .iter()
+        .map(|r| mecha_core::harness::Divergence::baseline_count(&r.measurement.divergence_detail))
+        .sum();
+    if as_json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "floors": {
+                    "min_selection_pairs": MIN_SELECTION_PAIRS,
+                    "min_holdout_pairs": MIN_HOLDOUT_PAIRS,
+                    "work_floor": WORK_FLOOR,
+                    "min_decided_points": MIN_DECIDED_POINTS,
+                },
+                "null_runs": runs.len(),
+                "unreadable": unreadable,
+                "runs_filling_both_floors": filled,
+                "judgements": judged.len(),
+                "accept": count("accept"),
+                "reject": count("reject"),
+                "propose": count("propose"),
+                "episodes_drawn": drawn,
+                "baseline_arm_diverged": baseline_diverged,
+            }))?
+        );
+        return Ok(());
+    }
+    println!(
+        "floors: selection ≥ {MIN_SELECTION_PAIRS} pairs, holdout ≥ {MIN_HOLDOUT_PAIRS} pairs, \
+         work ≥ {:.0}% of the baseline's, point-wise ≥ {MIN_DECIDED_POINTS} decided points",
+        WORK_FLOOR * 100.0
+    );
+    if unreadable > 0 {
+        println!("{unreadable} null record(s) would not parse and are not counted");
+    }
+    if runs.is_empty() {
+        println!(
+            "no null runs yet — the floors are asserted, not measured. \
+             `mecha harness null` runs one."
+        );
+        return Ok(());
+    }
+    println!(
+        "{} null run(s): {filled} filled both floors; the baseline arm left the recording on \
+         {baseline_diverged} of {drawn} drawn episode(s)",
+        runs.len()
+    );
+    println!(
+        "an unchanged configuration, judged under each metric: {} accepted, {} rejected, {} \
+         proposed, of {} judgement(s) — every accept or reject is a verdict on nothing",
+        count("accept"),
+        count("reject"),
+        count("propose"),
+        judged.len()
+    );
+    println!(
+        "the point-wise comparison's own floor ({MIN_DECIDED_POINTS} decided points) is not \
+         measured here: a null arm has no change to apply at a decision point"
+    );
     Ok(())
 }
 
@@ -1005,6 +1380,17 @@ fn show(id: &str) -> Result<()> {
     println!("id:         {}", c.id);
     println!("created:    {}", c.created_at);
     println!("status:     {}", c.status);
+    // What the next diagnostician is told about trying it again — typed, so
+    // a reader can check it against the reason below rather than infer it.
+    println!(
+        "history:    {:?}{}",
+        c.history_verdict(),
+        if c.history_verdict().may_repropose() {
+            " (may be proposed again)"
+        } else {
+            ""
+        }
+    );
     println!("class:      {:?}", c.class);
     println!("change:     {}", c.change);
     println!("predicts:   lower {:?}", c.metric);
@@ -1159,9 +1545,35 @@ fn record_owner_verdict(
     .context("the candidate changed, but the owner's verdict could not be recorded against it")
 }
 
-fn reject(id: &str, reason: Option<String>) -> Result<()> {
+fn reject(id: &str, reason: Option<String>, verdict: Option<OwnerVerdict>) -> Result<()> {
     let store = HarnessStore::open_default()?;
     let mut c = store.find(id)?;
+    // **Retyping a past rejection.** The three all-ties knobs were rejected
+    // before a verdict could be typed, with "NOT a verdict on the knob" in
+    // the prose — so the owner needs a way to say so in the type, or the
+    // history keeps them banned on an instrument's failure. Only the verdict
+    // (and a reason, if given) changes: the status, the time and the
+    // curation ledger's one entry for the rejection stay as they were.
+    if c.status == STATUS_REJECTED {
+        let Some(verdict) = verdict else {
+            anyhow::bail!(
+                "{} is already rejected — pass --verdict to type the rejection",
+                c.id
+            );
+        };
+        c.rejection = Some(verdict.into());
+        if reason.is_some() {
+            c.reason = reason;
+        }
+        store.write(&c)?;
+        println!(
+            "{} retyped — {:?}; the next diagnostician reads it as {:?}",
+            c.id,
+            verdict,
+            c.history_verdict()
+        );
+        return Ok(());
+    }
     anyhow::ensure!(
         c.pending(),
         "{} is `{}`, not staged — only a staged candidate can be rejected",
@@ -1169,6 +1581,7 @@ fn reject(id: &str, reason: Option<String>) -> Result<()> {
         c.status
     );
     c.status = STATUS_REJECTED.into();
+    c.rejection = Some(verdict.map_or(Rejection::Unstated, Rejection::from));
     c.resolved_at = Some(chrono::Utc::now().to_rfc3339());
     c.reason = reason
         .clone()
@@ -1262,6 +1675,64 @@ fn overrides() -> Result<()> {
 mod tests {
     use super::*;
     use mecha_core::candidate::MIN_MEASURABLE_RUNS as FLOOR;
+
+    fn rejected(id: &str, change: &str, rejection: Option<Rejection>) -> HarnessCandidate {
+        HarnessCandidate {
+            id: id.into(),
+            created_at: "2026-10-19T00:00:00Z".into(),
+            class: ChangeClass::Config,
+            change: change.into(),
+            metric: mecha_core::candidate::Metric::Turns,
+            rationale: String::new(),
+            evidence: String::new(),
+            model: None,
+            status: STATUS_REJECTED.into(),
+            measurement: None,
+            resolved_at: None,
+            reason: None,
+            rejection,
+        }
+    }
+
+    /// The brief invites an "unmeasured" rejection back, so the night it
+    /// comes back must not refuse it — and any record that forbids still
+    /// stops it, however the spec is spaced. Fails on the old check, which
+    /// refused every re-derivation of anything on file.
+    #[test]
+    fn a_rederived_change_is_refused_only_by_a_prior_that_forbids_a_retry() {
+        let unmeasured = rejected("hc-a", "effort=high", Some(Rejection::Unmeasured));
+        assert!(forbidding_prior(std::slice::from_ref(&unmeasured), "effort=high").is_none());
+
+        let harmful = rejected("hc-b", "effort = high", Some(Rejection::Harmful));
+        let both = [unmeasured.clone(), harmful];
+        assert_eq!(
+            forbidding_prior(&both, "effort=high").map(|c| c.id.as_str()),
+            Some("hc-b"),
+            "one forbidding record is enough, matched on the canonical spec"
+        );
+
+        let mut staged = unmeasured;
+        staged.status = STATUS_STAGED.into();
+        assert!(
+            forbidding_prior(&[staged], "effort=high").is_some(),
+            "a change already waiting on a person is not proposed twice"
+        );
+        assert!(forbidding_prior(&both, "effort=low").is_none());
+    }
+
+    #[test]
+    fn every_metric_parses_by_its_own_name_and_the_default_is_one() {
+        for m in mecha_core::candidate::Metric::ALL {
+            assert_eq!(parse_metric(m.as_str()), Ok(m));
+        }
+        assert!(
+            parse_metric("tool_error_rate").is_ok(),
+            "the --drawn-by default"
+        );
+        assert!(parse_metric("vibes")
+            .unwrap_err()
+            .contains("tool_error_rate"));
+    }
 
     /// `harness show` names a censored pass beside its tally, by arm, and
     /// says nothing of a record it cannot know about.

@@ -388,7 +388,25 @@ mecha harness list                              # what is waiting on you
 mecha harness show <id>                         # prediction, measurement, evidence
 mecha harness overrides                         # the active layer, and where each entry came from
 mecha harness revert <id|key>                   # take one back out
+mecha harness reject <id> --verdict unmeasured  # say why: harmful, no-effect or unmeasured
+mecha harness null                              # the same replay with nothing changed
+mecha harness floors                            # how often "nothing changed" still got a verdict
 ```
+
+**Each earlier candidate reaches the next diagnosis with a verdict.** That
+verdict comes from what the record holds, never from the wording of a reason.
+Harm, whether measured or ruled by you, is never proposed again. Neither is a
+plain rejection, a revert, or a key that doesn't exist. "No observed effect"
+waits until the measurement method changes. A change whose measurement could not
+tell either way may be proposed again. Before this, every earlier candidate sat
+under one "do not propose any of these again", including knobs you rejected
+because the measurement had tied everything.
+
+**A null run measures the gate's thresholds against noise.** It replays the
+sessions the nightly would, with nothing changed on either arm. A local model
+does not repeat its own runs exactly, so an unchanged configuration can still
+"win". Any accept or reject it gets is the gate reacting to noise, and `floors`
+counts how often that has happened.
 
 **A config change that wins on selection, is confirmed on the holdout, and holds
 the work guardrail auto-accepts** into a revertible override layer. Everything
