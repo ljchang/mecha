@@ -521,6 +521,26 @@ pub fn judge(
     guard_regressions(judged, metric, pairs.iter())
 }
 
+/// Whether every pair's two replays came out the same: equal on every
+/// metric and on tool calls, with the calls *known* — a zero is not known,
+/// since a run with no recorded stats reports zero calls (found on review of
+/// #717). Empty is not identical: nothing paired is a different finding.
+pub fn arms_identical<'a>(pairs: impl Iterator<Item = &'a Pair>) -> bool {
+    let mut any = false;
+    for p in pairs {
+        any = true;
+        let same_work =
+            p.baseline.tool_calls == p.candidate.tool_calls && p.baseline.tool_calls > 0;
+        let same_cost = Metric::ALL
+            .iter()
+            .all(|m| m.of(&p.baseline) == m.of(&p.candidate));
+        if !(same_work && same_cost) {
+            return false;
+        }
+    }
+    any
+}
+
 /// Judge two slices the caller drew: selection by priority, holdout uniformly.
 ///
 /// The replay path's entry point. `judge` hash-partitions one pool and is
@@ -558,7 +578,43 @@ pub fn judge_drawn(
             )
         },
     );
-    guard_regressions(judged, metric, selection.iter().chain(holdout.iter()))
+    let judged = guard_regressions(judged, metric, selection.iter().chain(holdout.iter()));
+    // **Ahead of every count, and only here.** "The arms never differed" is a
+    // stronger statement than "there were only four of them", and the count
+    // was masking it: on 2026-09-01/02/03 three nights running measured
+    // `compact_at_tokens`, `max_output_tokens` and `effort` at 0 wins, 0
+    // losses, all ties, identical work — each reported as thin evidence. It
+    // was not thin. The episodes that survive replay are the ones whose tool
+    // sequence the *prompt* pins ("follow these steps literally and exactly,
+    // do not skip any call"), because a pinned sequence is the one thing that
+    // cannot diverge; a config knob cannot move them by construction.
+    // `Metric::headroom` does not catch this — those episodes had 32 recorded
+    // tool calls of headroom and no elasticity at all.
+    //
+    // A `Propose` and not a `Reject`: the absence of a measurement is not a
+    // measurement against, and until the history was typed
+    // (`harness::HistoryVerdict`) a rejection reached the diagnostician as
+    // "do not propose this again" — three of the four overridable knobs
+    // foreclosed on an instrument's failure. The guard is left as judged, so
+    // a point-wise win still carries it under R36.
+    //
+    // **Replay only, which is why it is here and not in [`judge_slices`].**
+    // Two replays of one recording that agree on everything were held to the
+    // recording; two separately executed experiment trials that agree are a
+    // real tie, and reading them as "no room to differ" would turn a true
+    // negative into an absent measurement (found on review of #717).
+    if arms_identical(selection.iter().chain(holdout.iter())) {
+        let n = selection.len() + holdout.len();
+        return Judgement {
+            disposition: Disposition::Propose(format!(
+                "the two arms behaved identically on all {n} paired episode(s) — the same cost \
+                 on every metric and the same tool calls — so nothing here measures the \
+                 change: the episodes that survived replay had no room to differ"
+            )),
+            ..judged
+        };
+    }
+    judged
 }
 
 /// The same gate over anything that can name an episode and produce a cost.
@@ -1545,6 +1601,109 @@ mod prioritised_tests {
         let j = judge_drawn(ChangeClass::Config, &prediction, &selection, &holdout[..1]);
         assert!(matches!(j.disposition, Disposition::Propose(_)));
     }
+
+    /// A measurement in which neither arm ever moved is an absence of
+    /// evidence, not evidence against — even with the slice full.
+    ///
+    /// Fails on the old behaviour, and the old behaviour was the damaging
+    /// one: `sel.better()` is `wins > losses`, so an inert slice of eight
+    /// scored as "did not beat the original" and was **rejected** — a
+    /// verdict on the change from an instrument with no discriminating
+    /// power.
+    #[test]
+    fn arms_that_never_differed_propose_rather_than_reject() {
+        let pair = |id: &str, before: u32, after: u32| Pair {
+            episode: id.into(),
+            baseline: stats(10, before),
+            candidate: stats(10, after),
+        };
+        let prediction = Prediction {
+            metric: Metric::ToolErrorRate,
+            rationale: String::new(),
+        };
+        // Every pair identical on both arms: same cost, same work.
+        let selection: Vec<Pair> = (0..MIN_SELECTION_PAIRS)
+            .map(|i| pair(&format!("s{i}"), 5, 5))
+            .collect();
+        let holdout: Vec<Pair> = (0..MIN_HOLDOUT_PAIRS)
+            .map(|i| pair(&format!("h{i}"), 5, 5))
+            .collect();
+        let j = judge_drawn(ChangeClass::Config, &prediction, &selection, &holdout);
+        match &j.disposition {
+            Disposition::Propose(why) => assert!(
+                why.contains("no room to differ"),
+                "the reason must name the instrument, not the change: {why}"
+            ),
+            other => panic!("an inert measurement must not be a verdict: {other:?}"),
+        }
+
+        // Zero work is unknown work, not equal work: an experiment's trial
+        // with no stats reports zero calls on both arms, and that must reach
+        // the ordinary path rather than claim the arms were the same run.
+        let unrecorded = |id: String| Pair {
+            episode: id,
+            baseline: stats(0, 0),
+            candidate: stats(0, 0),
+        };
+        let unknown: Vec<Pair> = (0..MIN_SELECTION_PAIRS)
+            .map(|i| unrecorded(format!("u{i}")))
+            .collect();
+        let unknown_hold: Vec<Pair> = (0..MIN_HOLDOUT_PAIRS)
+            .map(|i| unrecorded(format!("v{i}")))
+            .collect();
+        let j = judge_drawn(ChangeClass::Config, &prediction, &unknown, &unknown_hold);
+        assert!(
+            !matches!(&j.disposition, Disposition::Propose(why) if why.contains("no room to differ")),
+            "two zeros are two unknowns: {:?}",
+            j.disposition
+        );
+
+        // **Replay only.** The same identical pairs, judged the way
+        // `experiment::judge` judges separately executed trials, are a real
+        // tie — "did not beat the original", never "no room to differ".
+        let sel_refs: Vec<&Pair> = selection.iter().collect();
+        let hold_refs: Vec<&Pair> = holdout.iter().collect();
+        let trials = judge_slices(
+            ChangeClass::Config,
+            &sel_refs,
+            &hold_refs,
+            |p| {
+                (
+                    p.episode.as_str(),
+                    Metric::ToolErrorRate.of(&p.baseline),
+                    Metric::ToolErrorRate.of(&p.candidate),
+                )
+            },
+            |p| {
+                (
+                    u64::from(p.baseline.tool_calls),
+                    u64::from(p.candidate.tool_calls),
+                )
+            },
+        );
+        assert!(
+            matches!(&trials.disposition, Disposition::Reject(why) if why.contains("did not beat")),
+            "an experiment's agreeing trials are a tie: {:?}",
+            trials.disposition
+        );
+
+        // The guard is about *identical* arms, not about ties. A slice that
+        // ties on the metric while the work moved is a real neutral result
+        // and must still reach the ordinary path.
+        let moved: Vec<Pair> = (0..MIN_SELECTION_PAIRS)
+            .map(|i| Pair {
+                episode: format!("m{i}"),
+                baseline: stats(10, 5),
+                candidate: stats(7, 5),
+            })
+            .collect();
+        let j = judge_drawn(ChangeClass::Config, &prediction, &moved, &holdout);
+        assert!(
+            !matches!(&j.disposition, Disposition::Propose(w) if w.contains("no room to differ")),
+            "work moved, so the arms were distinguishable: {:?}",
+            j.disposition
+        );
+    }
 }
 
 /// R26's acceptance rule as R36 refines it (row 2d-2): point-wise decides,
@@ -1713,11 +1872,14 @@ mod r36_tests {
             &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (10, 4)),
             &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (10, 4)),
         );
+        // The candidate makes one more call and ties on turns: a real tie.
+        // Arms identical in work too would be no measurement at all, and
+        // propose (`arms_that_never_differed_propose_rather_than_reject`).
         let rejected = judge_drawn(
             ChangeClass::Config,
             &turns(),
-            &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (10, 6)),
-            &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (10, 6)),
+            &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (11, 6)),
+            &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (11, 6)),
         );
         assert!(matches!(rejected.disposition, Disposition::Reject(_)));
         for numeric in [accepted, rejected] {
@@ -1740,11 +1902,12 @@ mod r36_tests {
     /// a regression (the row's acceptance: "wins point-wise and holds").
     #[test]
     fn a_point_wise_win_over_numbers_that_held_is_accepted() {
+        // A real tie: the work moved, the metric did not.
         let numeric = judge_drawn(
             ChangeClass::Config,
             &turns(),
-            &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (10, 6)),
-            &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (10, 6)),
+            &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (11, 6)),
+            &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (11, 6)),
         );
         assert!(
             matches!(numeric.disposition, Disposition::Reject(ref why) if why.contains("did not beat")),
@@ -1842,8 +2005,8 @@ mod r36_tests {
         let held = judge_drawn(
             ChangeClass::Config,
             &turns(),
-            &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (10, 6)),
-            &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (10, 6)),
+            &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (11, 6)),
+            &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (11, 6)),
         );
         let win = tally(4, 0, 0);
         for class in [ChangeClass::Security, ChangeClass::Architecture] {
@@ -1924,8 +2087,8 @@ mod r36_tests {
         let missing_win = judge_drawn(
             ChangeClass::Config,
             &turns(),
-            &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (10, 6)),
-            &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (10, 6)),
+            &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (11, 6)),
+            &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (11, 6)),
         );
         assert!(
             pointwise_can_change(&missing_win),
@@ -1941,8 +2104,8 @@ mod r36_tests {
         let held = judge_drawn(
             ChangeClass::Config,
             &turns(),
-            &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (10, 6)),
-            &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (10, 6)),
+            &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (11, 6)),
+            &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (11, 6)),
         );
         let censored = PointwiseTally {
             lost_candidate: 4,
