@@ -405,6 +405,12 @@ pub enum DiagnosisOutcome {
     Quoted {
         run: String,
     },
+    /// Refused: the brief showed episodes and the proposal did not cite a
+    /// moment in one of them (P9) — refused before any measurement is paid
+    /// for, and never recorded, like a quoted one.
+    Uncited {
+        why: String,
+    },
     Proposal(Proposal),
 }
 
@@ -558,7 +564,12 @@ pub async fn run_diagnostician(global: &GlobalOpts, evidence: &Evidence) -> Resu
     // Through `Evidence::conversation`, which opens it carrying private data
     // when a clean appraisal rides in the brief (row 2f): the interlock knows
     // only what the conversation's taint tells it.
-    let mut convo = evidence.conversation(&format!("{DIAGNOSE_INSTRUCTION}\n{applicability}"));
+    let cite = match evidence.cite_instruction() {
+        "" => String::new(),
+        line => format!("\n\n{line}"),
+    };
+    let mut convo =
+        evidence.conversation(&format!("{DIAGNOSE_INSTRUCTION}{cite}\n{applicability}"));
     let outcome = prepared.agent.run(&mut convo, None).await?;
 
     let Some(proposal) = parse_proposal(&outcome.text) else {
@@ -567,6 +578,12 @@ pub async fn run_diagnostician(global: &GlobalOpts, evidence: &Evidence) -> Resu
             outcome: DiagnosisOutcome::NoProposal,
         });
     };
+    if let Err(why) = evidence.check_citation(&proposal) {
+        return Ok(Diagnosis {
+            reply: outcome.text,
+            outcome: DiagnosisOutcome::Uncited { why },
+        });
+    }
 
     // What it read, so a lifted sentence can be caught. Every tool result in
     // the conversation — the source it opened, the pages it fetched, the
@@ -638,6 +655,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                  from a source is a proposal; a sentence lifted from one is the source's, and a \
                  sentence in the prompt prefix is the longest-lived thing in this system."
             );
+        }
+        DiagnosisOutcome::Uncited { why } => {
+            println!("── proposal ──");
+            println!("REFUSED: {why}");
         }
         DiagnosisOutcome::Proposal(proposal) => {
             println!("── proposal ──");
@@ -774,6 +795,7 @@ mod tests {
             resolved_at: None,
             reason: None,
             rejection,
+            cites: None,
         }
     }
 

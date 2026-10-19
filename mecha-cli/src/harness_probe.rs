@@ -38,6 +38,9 @@ use tokio_util::sync::CancellationToken;
 /// number of candidate changes.
 pub struct EpisodePrep {
     pub id: String,
+    /// What the episode did, as closed-set facts, for the diagnostician's
+    /// brief (P9). Built off the same read as the trajectory.
+    digest: mecha_core::diagnose::EpisodeDigest,
     trajectory: Trajectory,
     recorded: RunConfig,
     /// Every outcome the session recorded, folded — what the episode's replay
@@ -91,6 +94,8 @@ pub fn prepare_episode(
         Err(e) => return Ok(Err(format!("session unreadable: {e:#}"))),
     };
     let trajectory = extract(&read.convo.messages);
+    let digest =
+        mecha_core::diagnose::EpisodeDigest::of(id, &read.convo.messages, read.episode.as_ref());
     if let Err(error) = trajectory.ensure_replayable() {
         return Ok(Err(error.to_string()));
     }
@@ -147,6 +152,7 @@ pub fn prepare_episode(
     };
     Ok(Ok(EpisodePrep {
         id: id.to_string(),
+        digest,
         trajectory,
         recorded,
         episode: read.episode,
@@ -302,6 +308,13 @@ impl Pool {
     /// else.
     pub fn remainder(&self) -> Vec<String> {
         self.rest.iter().map(|p| p.id.clone()).collect()
+    }
+
+    /// The remainder's digests, for the brief (P9) — **never the holdout's**,
+    /// on the rule the appraisals keep: the slice that confirms a change is
+    /// one its author never read about.
+    pub fn digests(&self) -> Vec<mecha_core::diagnose::EpisodeDigest> {
+        self.rest.iter().map(|p| p.digest.clone()).collect()
     }
 
     /// The held-out episodes' ids.
@@ -1449,6 +1462,36 @@ mod tests {
         let mut lead_sorted = lead.clone();
         lead_sorted.sort();
         assert_eq!(lead_sorted, surprised, "the surprised lead the selection");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The brief's digests are the remainder's, and never a held-out
+    /// episode's: the slice that confirms a change is one its author never
+    /// read about (P9, on the appraisals' rule).
+    #[test]
+    fn the_brief_digests_the_remainder_and_never_the_holdout() {
+        mecha_core::session::ignore_kind_env_for_tests();
+        let home = crate::testenv::HomeGuard::new("probe-digests-remainder");
+        let dir = home.dir.join("sessions");
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..16u32 {
+            fixture_session(&dir, &format!("20260101T0000{i:02}-d{i:02}"), i, None);
+        }
+        let pool = draw_pool(&dir, "m", 8, 2, 42, None).unwrap();
+        let digested: Vec<String> = pool
+            .digests()
+            .iter()
+            .map(|d| d.session_id().to_string())
+            .collect();
+        assert_eq!(digested, pool.remainder());
+        let held: Vec<String> = pool
+            .select(Metric::Turns)
+            .holdout
+            .iter()
+            .map(|p| p.id.clone())
+            .collect();
+        assert!(!held.is_empty(), "not vacuous: something was held out");
+        assert!(held.iter().all(|h| !digested.contains(h)));
         std::fs::remove_dir_all(&dir).ok();
     }
 

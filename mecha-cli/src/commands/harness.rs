@@ -264,7 +264,9 @@ async fn ruminate(
             mecha_core::appraisal_store::AppraisalStore::open_existing_default()
                 .map(|store| store.clean())
         },
-    );
+    )
+    // What the remainder's episodes did (P9): the holdout's never ride.
+    .with_digests(pool.digests());
 
     let diagnosis = run_diagnostician(global, &evidence).await?;
     let proposal = match diagnosis.outcome {
@@ -280,6 +282,12 @@ async fn ruminate(
             // source's, and a candidate store is a place changes wait to be
             // applied — the one place lifted text must not sit.
             println!("proposal refused — it reproduces what it read: \"{run}\"");
+            return Ok(());
+        }
+        DiagnosisOutcome::Uncited { why } => {
+            // Not recorded: a proposal about no moment in the evidence is a
+            // guess the brief no longer has to pay a measurement for.
+            println!("proposal refused — {why}");
             return Ok(());
         }
         DiagnosisOutcome::Proposal(p) => p,
@@ -320,6 +328,7 @@ async fn ruminate(
         resolved_at: None,
         reason: None,
         rejection: None,
+        cites: proposal.cites.as_ref().map(ToString::to_string),
     };
 
     println!("── candidate {} ──", cand.id);
@@ -327,6 +336,9 @@ async fn ruminate(
     println!("change:    {}", cand.change);
     println!("predicts:  lower {:?}", cand.metric);
     println!("because:   {}", cand.rationale);
+    if let Some(cites) = &cand.cites {
+        println!("cites:     {cites}");
+    }
     // Printed, not only stored: the nightly's log is where a pattern of
     // mislabels would first be visible, and a candidate nobody opens is one
     // nobody sees the note on.
@@ -1426,6 +1438,16 @@ fn floors(as_json: bool) -> Result<()> {
         .iter()
         .filter(|r| r.measurement.episodes.is_empty())
         .count();
+    // Paired, differed, and still judged nothing: no metric in that night's
+    // corpus had headroom. Counted so the readout accounts for every run —
+    // otherwise such a run sits in no bucket and the summary below reads as
+    // if nothing had differed (found on review of #717).
+    let no_metric = runs
+        .iter()
+        .filter(|r| {
+            !r.measurement.episodes.is_empty() && !r.arms_identical && r.by_metric.is_empty()
+        })
+        .count();
     let count = |d: &str| judged.iter().filter(|j| j.disposition == d).count();
     // Only runs that judged something: an identical-arms run fills both
     // floors with ties from two replays that were the same run, which is no
@@ -1465,6 +1487,7 @@ fn floors(as_json: bool) -> Result<()> {
                 "runs_filling_both_floors": filled,
                 "runs_pairing_nothing": unpaired,
                 "runs_with_identical_arms": identical,
+                "runs_with_no_metric_to_judge": no_metric,
                 "judgements": judged.len(),
                 "accept": count("accept"),
                 "reject": count("reject"),
@@ -1499,14 +1522,14 @@ fn floors(as_json: bool) -> Result<()> {
     }
     println!(
         "{} null run(s): {filled} filled both floors, {unpaired} paired nothing, {identical} \
-         replayed identically on both arms; a replay left the recording {replays_diverged} \
-         time(s) in {replays} replay(s) of {drawn} drawn episode(s)",
+         replayed identically on both arms, {no_metric} had no metric with headroom to judge; \
+         a replay left the recording {replays_diverged} time(s) in {replays} replay(s) of \
+         {drawn} drawn episode(s)",
         runs.len()
     );
     if judged.is_empty() {
         println!(
-            "no null run paired episodes that differed, so the gate's verdicts on noise are \
-             still unmeasured"
+            "no null run judged anything, so the gate's verdicts on noise are still unmeasured"
         );
         return Ok(());
     }
@@ -1600,15 +1623,22 @@ fn show(id: &str) -> Result<()> {
     println!(
         "history:    {:?}{}",
         c.history_verdict(),
-        if c.history_verdict().may_repropose() {
-            " (may be proposed again)"
-        } else {
-            ""
+        // `show` has no corpus, so it cannot say whether a no-headroom
+        // rejection is held tonight; it says on what it waits instead.
+        match c.history_verdict() {
+            mecha_core::harness::HistoryVerdict::NoHeadroom => {
+                " (may be proposed again once that metric has headroom)"
+            }
+            v if v.may_repropose() => " (may be proposed again)",
+            _ => "",
         }
     );
     println!("class:      {:?}", c.class);
     println!("change:     {}", c.change);
     println!("predicts:   lower {:?}", c.metric);
+    if let Some(cites) = &c.cites {
+        println!("cites:      {cites}");
+    }
     println!("because:    {}", c.rationale);
     if let Some(model) = &c.model {
         println!("model:      {model}");
@@ -1920,6 +1950,7 @@ mod tests {
             resolved_at: None,
             reason: None,
             rejection,
+            cites: None,
         }
     }
 

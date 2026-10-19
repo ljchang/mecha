@@ -402,6 +402,14 @@ tell either way may be proposed again. Before this, every earlier candidate sat
 under one "do not propose any of these again", including knobs you rejected
 because the measurement had tied everything.
 
+**The diagnosis sees what each recent session did, not only totals.**
+For each sampled session it gets the tools called in order, which calls
+failed, which results came from outside, why the run stopped, and where you
+stepped in. It never gets an argument, a result or a word anyone wrote, and
+it never sees the held-out sessions a change will be checked against. A
+proposal must cite the session and call it is about, or it is refused before
+anything is measured.
+
 **A null run measures the gate's thresholds against noise.** It replays the
 sessions the nightly would, with nothing changed on either arm. A local model
 does not repeat its own runs exactly, so an unchanged configuration can still
