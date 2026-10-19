@@ -1796,7 +1796,10 @@ Not legal advice; the law report holds the text and the analysis.
   Oregon SB 1546 counts "an application or other combination of software".
 - **The shared baseline** for any host: a not-human disclosure and a
   suicide/self-harm protocol with crisis referral (§12.1, §12.2). The
-  published crate ships both on by default.
+  published crate ships both on by default. Study seats
+  (`PERSONA-SERVING-DESIGN.md`) are the exception for one half: the crisis
+  protocol is forced on in every seat, and disclosure is the study's to
+  write into its own prompt (its S2, S10).
 
 **Words and claims.** No shipped starter template or example uses:
 
