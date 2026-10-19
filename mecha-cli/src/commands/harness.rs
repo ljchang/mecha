@@ -265,8 +265,13 @@ async fn ruminate(
                 .map(|store| store.clean())
         },
     )
-    // What the remainder's episodes did (P9): the holdout's never ride.
-    .with_digests(pool.digests());
+    // What the remainder's episodes did (P9): the holdout's never ride. The
+    // stage lever withholds them, and the citation rule with them.
+    .with_digests(if cfg.agent.digests_in_brief {
+        pool.digests()
+    } else {
+        Vec::new()
+    });
 
     let diagnosis = run_diagnostician(global, &evidence).await?;
     let proposal = match diagnosis.outcome {

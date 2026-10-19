@@ -565,13 +565,21 @@ pub async fn run_diagnostician(global: &GlobalOpts, evidence: &Evidence) -> Resu
     let mut convo = evidence.conversation(&format!("{}\n{applicability}", evidence.instruction()));
     let outcome = prepared.agent.run(&mut convo, None).await?;
 
-    let Some(proposal) = parse_proposal(&outcome.text) else {
+    let Some(mut proposal) = parse_proposal(&outcome.text) else {
         return Ok(Diagnosis {
             reply: outcome.text,
             outcome: DiagnosisOutcome::NoProposal,
         });
     };
-    if let Err(why) = evidence.check_citation(&proposal) {
+    // **A citation is kept only where the brief gave something to cite**
+    // (found on review of #719): with no digests, `check_citation` has
+    // nothing to check it against and `lifted` reads only the change and the
+    // rationale, so whatever prose preceded a `#<digits>` would otherwise be
+    // stored on the candidate unexamined.
+    if evidence.digests.is_empty() {
+        proposal.cites = None;
+    }
+    if let Err(why) = evidence.check_citation(&mut proposal) {
         return Ok(Diagnosis {
             reply: outcome.text,
             outcome: DiagnosisOutcome::Uncited { why },

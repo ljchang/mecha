@@ -403,12 +403,15 @@ under one "do not propose any of these again", including knobs you rejected
 because the measurement had tied everything.
 
 **The diagnosis sees what each recent session did, not only totals.**
-For each sampled session it gets the tools called in order, which calls
+For up to 12 sampled sessions, the ones with something to look at first, it
+gets the tools called in order, which calls
 failed, which results came from outside, why the run stopped, and where you
 stepped in. It never gets an argument, a result or a word anyone wrote, and
 it never sees the held-out sessions a change will be checked against. A
 proposal must cite the session and call it is about, or it is refused before
-anything is measured.
+anything is measured. The brief says how many sessions it left out, and
+how many of those had a failure. `[agent] digests_in_brief = false` turns all
+of this off.
 
 **A null run measures the gate's thresholds against noise.** It replays the
 sessions the nightly would, with nothing changed on either arm. A local model

@@ -724,6 +724,16 @@ pub struct AgentConfig {
     /// preset's reach into `harness ruminate`. Off withholds the section by
     /// omission: the brief reads less, never something else.
     pub appraisals_in_brief: bool,
+    /// Hand the diagnostician a closed-set digest of each episode its
+    /// candidate may be selected from (`diagnose::Evidence::with_digests`,
+    /// P9 of `HARNESS-EVOLUTION-DESIGN.md`) — the pool minus the uniform
+    /// holdout, never the holdout — and require its proposal to cite one.
+    /// On by default. A brief carrying them opens private **and untrusted**,
+    /// so on a night with digests the diagnostician's model-chosen fetch is
+    /// refused; off restores it, and withholds the digests and the citation
+    /// rule with them. Off is also a *stage* lever (`digests_in_brief`), so a
+    /// lifetime experiment can measure what the digests are worth.
+    pub digests_in_brief: bool,
     /// Deliver the situation brief a front-end assembled
     /// (`brief::SituationBrief`, recorded on every run that has one) into the
     /// run's first user turn, as words and bands (`brief::render`), in the
@@ -791,6 +801,7 @@ impl Default for AgentConfig {
             carried_state: true,
             sensors_in_brief: true,
             appraisals_in_brief: true,
+            digests_in_brief: true,
             situation_brief: false,
             past_appraisals: false,
             success_examples: false,
@@ -2236,6 +2247,7 @@ struct AgentLayer {
     carried_state: Option<bool>,
     sensors_in_brief: Option<bool>,
     appraisals_in_brief: Option<bool>,
+    digests_in_brief: Option<bool>,
     situation_brief: Option<bool>,
     past_appraisals: Option<bool>,
     success_examples: Option<bool>,
@@ -2355,6 +2367,9 @@ impl ConfigLayer {
             }
             if let Some(v) = a.appraisals_in_brief {
                 t.appraisals_in_brief = v;
+            }
+            if let Some(v) = a.digests_in_brief {
+                t.digests_in_brief = v;
             }
             if let Some(v) = a.situation_brief {
                 t.situation_brief = v;

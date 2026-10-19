@@ -952,6 +952,9 @@ pub enum StageLever {
     /// `[agent] appraisals_in_brief` in the trial home's config — the clean
     /// appraisals' entry into the diagnostician's brief (row 2f).
     AppraisalsInBrief,
+    /// `[agent] digests_in_brief` in the trial home's config — the episode
+    /// digests and the citation rule in the diagnostician's brief (P9).
+    DigestsInBrief,
     /// `[agent] contrast_evidence` in the trial home's config — a verified
     /// success set beside a correction in its region, read by the `reflect`
     /// stage (row 2e-4b-2, R43). **Ships off**, unlike the two above: an
@@ -973,7 +976,7 @@ pub enum StageLever {
 }
 
 impl StageLever {
-    pub const ALL: [StageLever; 8] = [
+    pub const ALL: [StageLever; 9] = [
         StageLever::Reflect,
         StageLever::Learn,
         StageLever::Validate,
@@ -981,6 +984,7 @@ impl StageLever {
         StageLever::Retire,
         StageLever::SensorsInBrief,
         StageLever::AppraisalsInBrief,
+        StageLever::DigestsInBrief,
         StageLever::ContrastEvidence,
     ];
 
@@ -994,6 +998,7 @@ impl StageLever {
             StageLever::Principal => "principal",
             StageLever::SensorsInBrief => "sensors_in_brief",
             StageLever::AppraisalsInBrief => "appraisals_in_brief",
+            StageLever::DigestsInBrief => "digests_in_brief",
             StageLever::ContrastEvidence => "contrast_evidence",
             StageLever::Unknown => "unknown",
         }
@@ -1026,6 +1031,7 @@ impl StageLever {
             StageLever::Retire => Some(&["rules", "propose-retirements", "--apply"]),
             StageLever::SensorsInBrief
             | StageLever::AppraisalsInBrief
+            | StageLever::DigestsInBrief
             | StageLever::ContrastEvidence
             | StageLever::Principal
             | StageLever::Unknown => None,
@@ -3220,6 +3226,9 @@ pub fn child_invocation(
     }
     if stages.contains(&StageLever::AppraisalsInBrief) {
         config.agent.appraisals_in_brief = false;
+    }
+    if stages.contains(&StageLever::DigestsInBrief) {
+        config.agent.digests_in_brief = false;
     }
     if stages.contains(&StageLever::ContrastEvidence) {
         config.agent.contrast_evidence = false;
@@ -5465,6 +5474,31 @@ rationale = "r"
         assert!(child.config.agent.sensors_in_brief);
         assert!(child.flags.is_empty(), "a switch, not a flag");
         assert_eq!(StageLever::AppraisalsInBrief.argv(), None);
+    }
+
+    /// P9's lever: on by default, `stages_off` turns the digests off in the
+    /// child's config, and the appraisals stay.
+    #[test]
+    fn digests_in_brief_off_rides_in_the_childs_config() {
+        let real = crate::config::Config::default();
+        let mut arm = Arm::default();
+        assert!(
+            child_invocation(&real, &arm, None)
+                .unwrap()
+                .config
+                .agent
+                .digests_in_brief
+        );
+        arm.stages_off = vec!["digests_in_brief".into()];
+        let child = child_invocation(&real, &arm, None).unwrap();
+        assert!(!child.config.agent.digests_in_brief);
+        assert!(child.config.agent.appraisals_in_brief);
+        assert!(child.flags.is_empty(), "a switch, not a flag");
+        assert_eq!(StageLever::DigestsInBrief.argv(), None);
+        assert_eq!(
+            StageLever::parse("digests_in_brief"),
+            Some(StageLever::DigestsInBrief)
+        );
     }
 
     /// Row 2e-4b-2's lever (R43) ships off: a child inherits off, an arm
