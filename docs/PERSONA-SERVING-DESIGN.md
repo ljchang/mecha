@@ -269,7 +269,8 @@ transcripts (`hs.retention`), so a study can tell its participants.
 agent's identity, objective and per-state guidance into `instructions`, and
 sends a `session.update` replacing them when the study's state changes.
 mecha uses them as the system prompt verbatim, which makes `instructions`
-the one trusted slot on a socket that also carries participant text: the
+a trusted slot on a socket that also carries participant text (the
+study's crisis resources are the other, §7): the
 contract with HyperStudy is that `instructions` carry only
 experimenter-authored text, and anything a participant wrote — a
 free-text answer, typed chat — comes back as a quoted context item, never
