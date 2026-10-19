@@ -22,7 +22,7 @@ copies of a protocol drift into disagreeing.
 | S2 | **Study policy is the experimenter's.** Disclosure, concealment, consent, age and institutional review belong to whoever runs the study. mecha builds infrastructure: it provides mechanisms (§7) and takes no position on how a study uses them. | owner | 2026-10-19 |
 | S3 | **Personas only, for now; the owner's live mecha is never served.** A seat runs a persona from a sealed guest home (§3). A general assistant may come later, and when it does it is a sandboxed instance launched for the purpose — never the owner's running mecha, its stores or its main chat (§1). | owner | 2026-10-19 |
 | S4 | **Engine-owned turn-taking for one human and one agent.** The engine decides when a turn ends and when it is interrupted (HRP engine mode); platform mode, for two or more humans, is a later phase on both sides. | owner, via the HyperStudy session | 2026-10-17 |
-| S5 | **What a seat does:** reads text and images the study presents, chats by text and by voice, and takes the study's actions — make a rating, advance the screen. **No image generation** for now (§4a). | owner | 2026-10-19 |
+| S5 | **What a seat does:** reads text and images the study presents, chats by text and by voice, and takes the study's actions — answering on-screen questions and ratings. **No image generation** for now (§4a). | owner | 2026-10-19 |
 | S6 | **A feature of its own,** off until the owner turns it on in setup (§6). | owner | 2026-10-19 |
 | S7 | **mecha mints the token;** the owner pastes it into HyperStudy (§5.1). | owner | 2026-10-19 |
 | S8 | **A seat is recorded in full.** The point of a local model is that what it did can be investigated afterwards: transcripts, directions and the voice journal are kept as an owner's call's are, not silenced (§3). | owner | 2026-10-19 |
@@ -182,6 +182,14 @@ HyperStudy's to define):
   `audio.output.voice` ignored, since the named persona supplies the voice
   (`preset: null`). A field mecha does not support is **refused, not ignored** —
   HyperStudy's conformance asks for exactly that.
+- **Silent forced answers.** HyperStudy asks an on-screen question with a
+  `response.create` that is text-only and forces one named tool
+  (`tool_choice: {type: "function", name}`); its suite's `silent_tool`
+  check fails an engine that speaks or skips the call. So that response
+  produces no audio, and the forcing must not change the tool list — the
+  cached prefix (§4a) — whether through llama-server's `tool_choice` for a
+  named function, checked on the installed build rather than assumed, or
+  `required` with any other name refused.
 - **Audio in.** `input_audio_buffer.append` (PCM16, 24 kHz, mono) into the
   existing Silero VAD → SmartTurn v3 → Parakeet chain.
 - **Turns, engine mode (S4).** Two modes, both certified by HyperStudy's
@@ -220,7 +228,7 @@ can act at all.
 | Talk by voice | §4 | Phase 3 `accept` |
 | Read the study's text | screen text, instructions and typed chat arrive as quoted context items, untrusted like speech | — (sent today as `[context]` items) |
 | Read images | a study image or one a participant shares arrives inline as an image content item and reaches the model as `Block::Image`, capped at the door as every image is; mecha never fetches a URL a session names | images on the session, inline |
-| Act in the study | **ClientTools**: HyperStudy declares a tool (`send_chat` today; make a rating, advance the screen), the call goes out over the session, `function_call_output` comes back marked `.from_outside()`, a timeout returns `is_error` — so the agent loop never learns where a tool came from | the study tools, declared per session |
+| Act in the study | **ClientTools**: HyperStudy declares its study tools — `send_chat`, and the answer tools for on-screen questions (`answer_choice`, `answer_choices`, `answer_scale`, `answer_ranking`, `answer_text`, `answer_dimensions`); advancing the screen is not an agent capability in HyperStudy yet — the call goes out over the session, `function_call_output` comes back marked `.from_outside()`, a timeout returns `is_error` — so the agent loop never learns where a tool came from | the study tools, declared per session |
 
 **Where context lands.** Screen changes, typed chat and images arrive on
 HyperStudy's clock, including while a ClientTool call is in flight — and
@@ -241,7 +249,7 @@ can never be labelled anything else — "a remote tool's input schema is the
 server's to write", so nothing can prove it holds no destination. The way
 through is the one CLAUDE.md already names: `Blind` is earned in code by a
 tool this repo can read. So ClientTools are a **closed catalogue in mecha's
-code** — `send_chat`, make a rating, advance the screen — each with the
+code** — `send_chat` and the six answer tools above — each with the
 schema HRP pins for it, each `Blind` because its one recipient is the
 session the seat answers (the party every reply already reaches) and its
 schema has no destination field. A tool HyperStudy declares that is not in
@@ -401,13 +409,13 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    or `DISCLOSED` even with the persona's `disclosure` on; a closed seat's
    transcript and manifest are readable afterwards; a seat's hold is visible
    to `mecha model use`), the
-   ClientTool catalogue (an armed seat with an image in it still rates and
-   advances; an uncatalogued tool is refused), context folding at a
+   ClientTool catalogue (an armed seat with an image in it still answers a
+   question; an uncatalogued tool is refused), context folding at a
    mid-round boundary, the crisis handover and the degraded state, budgets.
 3. **A text seat on loopback** — HRP with text-only output against a local
    stand-in for HyperStudy's session: context items, inline images, declared
-   tools, and the steering queue widened to carry `Block`s (§4a). Exit: a scripted study (read a screen, chat, rate, advance) runs
-   end to end.
+   tools, and the steering queue widened to carry `Block`s (§4a). Exit: a scripted study (read a screen, chat, answer a rating
+   through a silent forced call) runs end to end.
 4. **The voice transport on loopback** — the worker serves HRP on a local
    socket for development only, and HyperStudy's conformance suite runs
    against it (its runner takes any HRP client; a URL wrapper is all it
