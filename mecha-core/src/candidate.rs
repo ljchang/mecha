@@ -525,7 +525,7 @@ pub fn judge(
 /// metric and on tool calls, with the calls *known* — a zero is not known,
 /// since a run with no recorded stats reports zero calls (found on review of
 /// #717). Empty is not identical: nothing paired is a different finding.
-fn arms_identical<'a>(pairs: impl Iterator<Item = &'a Pair>) -> bool {
+pub fn arms_identical<'a>(pairs: impl Iterator<Item = &'a Pair>) -> bool {
     let mut any = false;
     for p in pairs {
         any = true;
@@ -2005,8 +2005,8 @@ mod r36_tests {
         let held = judge_drawn(
             ChangeClass::Config,
             &turns(),
-            &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (10, 6)),
-            &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (10, 6)),
+            &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (11, 6)),
+            &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (11, 6)),
         );
         let win = tally(4, 0, 0);
         for class in [ChangeClass::Security, ChangeClass::Architecture] {
@@ -2087,8 +2087,8 @@ mod r36_tests {
         let missing_win = judge_drawn(
             ChangeClass::Config,
             &turns(),
-            &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (10, 6)),
-            &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (10, 6)),
+            &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (11, 6)),
+            &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (11, 6)),
         );
         assert!(
             pointwise_can_change(&missing_win),
@@ -2104,8 +2104,8 @@ mod r36_tests {
         let held = judge_drawn(
             ChangeClass::Config,
             &turns(),
-            &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (10, 6)),
-            &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (10, 6)),
+            &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (11, 6)),
+            &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (11, 6)),
         );
         let censored = PointwiseTally {
             lost_candidate: 4,
