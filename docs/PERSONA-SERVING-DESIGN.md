@@ -164,16 +164,44 @@ The worker sees a seat only through the wiring's loopback relay of frames
 the crate has already validated (§2); it never holds a socket to
 HyperStudy.
 
-**Confinement is filesystem confinement.** Under the existing sandbox
-(`sandbox.rs`, bwrap) the guest facade binds the guest home, with
-`MECHA_HOME` named in the sandbox's environment, since bwrap clears it.
-bwrap's network is all or nothing — `--unshare-net` leaves the jail unable
-to reach the loopback router, and without it the jail has the host's
-network, LAN and tailnet included — so it adds nothing on the egress axis.
-What keeps a seat off the network is that it has no network tool (§4a): a
-property of the tool catalogue, not of the jail. A confinement that is
-configured and fails stops the seat, never falls through (the
-silently-degrading guard).
+**Confinement: bwrap with no network, and Unix sockets as the only way
+out.** Nothing confines a whole mecha process today — `shell`, MCP servers
+and two document helpers are wrapped, and experiment trials, the closest
+precedent, get a cleared environment and their own home but no jail. The
+guest facade is the first, through `Sandbox::wrap_argv_with_env` (built for
+long-lived MCP children), with the seat directory as the workspace and
+`MECHA_HOME` in its environment, since bwrap clears it.
+
+bwrap's network is all or nothing — with the host's network the jail
+reaches the LAN and the tailnet, and with `--unshare-net` it reaches not
+even the loopback router. The way through is that a *pathname* Unix socket
+crosses a network namespace. The wiring, outside the jail, creates
+`seat/run/model.sock` (forwarding to the router on `127.0.0.1:8080`) and
+`seat/run/parent.sock` (to itself) inside the bound seat directory; the
+facade runs under `--unshare-net` and reaches the model and its parent
+through those and nothing else. The facade's clients either take a socket
+path (reqwest's `ClientBuilder::unix_socket`, in the locked 0.12.28) or keep
+their `http://127.0.0.1` URLs through a forwarder on the jail's own `lo`;
+the first is less moving parts. The result is a seat with no route to any
+host, so egress no longer rests on the tool catalogue alone (§4a).
+
+The alternatives, weighed: Landlock (already a backend) can allow TCP
+connect by port, but only by port — `8080` would also allow
+`<any LAN host>:8080` and the tailnet's — and it leaves `/proc` readable,
+the owner's processes' environments included. Docker's `--network none`
+needs the same socket bridge plus an image and a daemon. Filesystem-only
+bwrap with the host network is the cheaper first step if the bridge is not
+ready, and is the interim the build order allows (§8 step 2).
+
+Three things the build must not miss: the `mecha` binary and any model or
+cache file the facade reads live under the owner's home, which bwrap does
+not bind, so they are named read-only; `bwrap` is resolved through `PATH`,
+and this box's `/usr/bin/bwrap` cannot create user namespaces under its
+AppArmor setting (the local `/usr/local/bin` build can), so the launch names
+the binary it preflighted; and the preflight proves both directions — the
+model answers through the socket, and a LAN address does not answer at
+all. A confinement that is configured and fails stops the seat, never
+falls through (the silently-degrading guard).
 
 **The interlocutor is untrusted — a run mode, not a prompt:**
 
@@ -437,7 +465,24 @@ seats additionally need the voice worker installed — `voice`, not
 `calls`: `calls` is what buys `mecha serve`'s relay to the worker (and so
 requires `web`), and a seat reaches the worker through the wiring's own
 loopback relay (§2), so it needs neither the owner's page nor its tailnet
-listener. Without `voice` the engine's hello offers text only. Building it follows `ARCHITECTURE.md` §Adding a
+listener. The registry already allows that: `requires` puts `web` on
+voice's browser parts only (`dictate`, `calls`, `cloning`), and `voice`
+itself stands alone (FEATURES-DESIGN F3: `mecha voice-serve` is its own
+loopback surface), so no registry edge changes. `hyperstudy` requires
+`personas` only, and a seat checks `voice` at runtime to decide whether its
+hello offers voice — a `requires` edge on `voice` would block text seats on
+a machine without it. Without `voice` the engine's hello offers text only.
+
+The coupling to `mecha serve` is in code, not in the registry, and the
+seat work has to undo it: persona calls are hosted only inside serve
+(`VoiceHost` → `PersonaChats`, mounted only when `calls` is on), and the
+worker reads its facade URL once, process-wide (`FACADE_URL` from
+`MECHA_VOICE_LLM`). So a guest facade is built on `voice`'s `Facade` and
+`Mount` with a seat's own `SessionHost`, which means exposing them beyond
+serve; the worker takes the facade URL per call, carried by the wiring's
+relay as a trusted field the way the persona voice binding is today; and
+the voice binding check that `offer_proxy` does for a browser call moves
+into the seat wiring. Building it follows `ARCHITECTURE.md` §Adding a
 feature item by item rather than a subset copied here; the one choice the
 checklist leaves to the feature is made here: `switchable_from_environment`
 is **no**, because the credential lives in the owner's home and an
@@ -495,7 +540,10 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    §Adding a feature, the `[hyperstudy]` table (origin, `max_seats`) in both
    `Config` and `ConfigLayer`, and `mecha hyperstudy token` with setup's
    step; nothing behind it yet but `Unready` until a token exists.
-2. **The guest facade** — guest home, untrusted run mode, the §3 table as
+2. **The guest facade** — `Facade`, `Mount` and a seat `SessionHost` usable
+   outside serve; the confined launch (§3: bwrap, `--unshare-net`, the two
+   sockets, a preflight proving the model answers and a LAN address does
+   not); guest home, untrusted run mode, the §3 table as
    tests (the approver allows the catalogue and nothing else — and whether `Approver` gains
    a door enum so the compiler holds a future door is decided here; the
    seat is armed untrusted before its first turn; a seat writes nothing
@@ -520,7 +568,8 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    through a silent forced call) runs end to end, including a context item
    with no `response.create` followed by the participant speaking — the
    sequence that would otherwise send two user messages.
-4. **The voice transport on loopback** — the worker's HRP transport takes
+4. **The voice transport on loopback** — the worker takes its facade URL
+   per call from the relay, and its HRP transport takes
    the wiring's loopback relay, which is its only shape (§2), and
    HyperStudy's conformance suite runs against it through a local stand-in
    for the crate (its runner takes any HRP client; a URL wrapper is all it
@@ -567,9 +616,8 @@ accepted socket instead.
 - What a trip does to a seat shorter than `CRISIS_COOLDOWN`'s fifteen
   minutes: a pause that outlasts the seat ends it, which is not today's
   action.
-- Whether bwrap's filesystem confinement of the guest facade is required
-  from step 2 or added after, and whether a seat ever needs a loopback-only
-  network namespace built for it (§3).
+- Whether the Unix-socket bridge (§3) lands with step 2 or follows a
+  filesystem-only first cut — before any real participant either way.
 - Latency, measured on this box: OpenAI's Realtime models are
   speech-to-speech and mecha is a cascade, so vendor figures are not ours.
   End-of-turn to first audio is recorded per turn-detection mode, with the
