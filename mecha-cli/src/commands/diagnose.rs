@@ -666,8 +666,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     };
     anyhow::ensure!(
         !slice.is_empty(),
-        "no recorded runs on `{model}`, the model a run here serves — `--model` names \
-         another model's runs to diagnose"
+        "no recorded runs on `{model}`, the model a run here serves{} — `--model` names \
+         another model's runs to diagnose",
+        args.from_workspace
+            .as_deref()
+            .map(|w| format!(", under {}", w.display()))
+            .unwrap_or_default()
     );
 
     // The interactive verb shows history too: a person about to spend a
