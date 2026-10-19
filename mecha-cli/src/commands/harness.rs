@@ -297,11 +297,7 @@ async fn ruminate(
             .find(|(m, _, _)| *m == metric)
             .is_some_and(|(_, _, with)| *with > 0)
     };
-    if let Some(prior) = forbidding_prior(
-        &store.all()?,
-        &proposal.change,
-        has_headroom(proposal.metric),
-    ) {
+    if let Some(prior) = forbidding_prior(&store.all()?, &proposal.change, has_headroom) {
         println!(
             "the diagnostician re-derived `{}`, already on file as {} ({}) — nothing new tonight",
             proposal.change, prior.id, prior.status
@@ -482,12 +478,15 @@ async fn ruminate(
 fn forbidding_prior<'a>(
     on_file: &'a [HarnessCandidate],
     change: &str,
-    has_headroom: bool,
+    has_headroom: impl Fn(mecha_core::candidate::Metric) -> bool,
 ) -> Option<&'a HarnessCandidate> {
     let new_spec = mecha_core::harness::canonical_change(change);
+    // Each record against the metric *it* predicted — what `history_lines`
+    // reads too, so the brief and this check cannot disagree about one
+    // record (found on review of #717).
     on_file.iter().find(|c| {
         mecha_core::harness::canonical_change(&c.change) == new_spec
-            && c.forbids_retry(has_headroom)
+            && c.forbids_retry(has_headroom(c.metric))
     })
 }
 
@@ -1155,7 +1154,7 @@ async fn null_arm(
     } = spec;
     let store = HarnessStore::open_default()?;
     let from_workspace = crate::commands::diagnose::resolve_workspace_filter(from_workspace)?;
-    let Some((model, _, _)) = corpus_slice(None, days, limit, from_workspace.clone())? else {
+    let Some((model, slice, _)) = corpus_slice(None, days, limit, from_workspace.clone())? else {
         println!("no recorded run outcomes yet — nothing to replay");
         return Ok(());
     };
@@ -1218,8 +1217,18 @@ async fn null_arm(
                 .iter()
                 .chain(driven.holdout_pairs.iter()),
         );
+    // **Only the metrics `ruminate` would judge** (found on review of #717):
+    // a metric no run in the corpus has any of can only tie, the gate rejects
+    // that as "did not beat the original", and `ruminate` never measures it
+    // (`Verdict::NoHeadroom`). Judged here, it would count as a verdict on
+    // nothing that the gate never actually reaches. Read from the same corpus
+    // slice, by the same rule as the brief's metrics table.
+    let (with_headroom, no_headroom): (Vec<_>, Vec<_>) = mecha_core::candidate::Metric::ALL
+        .iter()
+        .copied()
+        .partition(|m| slice.metric_cost(*m).1 > 0);
     let by_metric: Vec<NullJudgement> = if paired && !arms_identical {
-        mecha_core::candidate::Metric::ALL
+        with_headroom
             .iter()
             .map(|m| NullJudgement::of(*m, &judge(*m)))
             .collect()
@@ -1288,6 +1297,7 @@ async fn null_arm(
         by_metric,
         drawn: draw.selection.len() + draw.holdout.len(),
         arms_identical,
+        no_headroom,
     };
     // **The readout first, then the record** (found on review of #717): the
     // replay is paid for, and a write that fails — an unwritable store, a
@@ -1338,6 +1348,13 @@ fn print_null_run(run: &mecha_core::harness::NullRun, arms: &str) {
              the recording, and says nothing about the gate's verdicts"
         );
         return;
+    }
+    if !run.no_headroom.is_empty() {
+        let names: Vec<&str> = run.no_headroom.iter().map(|m| m.as_str()).collect();
+        println!(
+            "  not judged, no run in the corpus has any: {} — `ruminate` never measures these",
+            names.join(", ")
+        );
     }
     let false_verdicts = run.by_metric.iter().filter(|j| j.false_verdict()).count();
     println!(
@@ -1870,12 +1887,14 @@ mod tests {
     #[test]
     fn a_rederived_change_is_refused_only_by_a_prior_that_forbids_a_retry() {
         let unmeasured = rejected("hc-a", "effort=high", Some(Rejection::Unmeasured));
-        assert!(forbidding_prior(std::slice::from_ref(&unmeasured), "effort=high", true).is_none());
+        assert!(
+            forbidding_prior(std::slice::from_ref(&unmeasured), "effort=high", |_| true).is_none()
+        );
 
         let harmful = rejected("hc-b", "effort = high", Some(Rejection::Harmful));
         let both = [unmeasured.clone(), harmful];
         assert_eq!(
-            forbidding_prior(&both, "effort=high", true).map(|c| c.id.as_str()),
+            forbidding_prior(&both, "effort=high", |_| true).map(|c| c.id.as_str()),
             Some("hc-b"),
             "one forbidding record is enough, matched on the canonical spec"
         );
@@ -1883,10 +1902,10 @@ mod tests {
         let mut staged = unmeasured;
         staged.status = STATUS_STAGED.into();
         assert!(
-            forbidding_prior(&[staged], "effort=high", true).is_some(),
+            forbidding_prior(&[staged], "effort=high", |_| true).is_some(),
             "a change already waiting on a person is not proposed twice"
         );
-        assert!(forbidding_prior(&both, "effort=low", true).is_none());
+        assert!(forbidding_prior(&both, "effort=low", |_| true).is_none());
     }
 
     /// A no-headroom rejection may come back, but only into a corpus that
@@ -1900,8 +1919,14 @@ mod tests {
             Some(Rejection::NoHeadroom),
         );
         let on_file = std::slice::from_ref(&starved);
-        assert!(forbidding_prior(on_file, "compact_at_tokens=16384", false).is_some());
-        assert!(forbidding_prior(on_file, "compact_at_tokens=16384", true).is_none());
+        assert!(forbidding_prior(on_file, "compact_at_tokens=16384", |_| false).is_some());
+        assert!(forbidding_prior(on_file, "compact_at_tokens=16384", |_| true).is_none());
+        // Read against the metric the *record* predicted, not tonight's: the
+        // record predicted turns, so headroom on turns alone releases it.
+        let turns_only = |m| m == mecha_core::candidate::Metric::Turns;
+        assert!(forbidding_prior(on_file, "compact_at_tokens=16384", turns_only).is_none());
+        let others_only = |m| m != mecha_core::candidate::Metric::Turns;
+        assert!(forbidding_prior(on_file, "compact_at_tokens=16384", others_only).is_some());
     }
 
     #[test]

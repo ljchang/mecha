@@ -229,6 +229,7 @@ fn floors_say_asserted_until_a_null_run_measures_them() {
             by_metric: vec![accepted, proposed],
             drawn: 3,
             arms_identical: false,
+            no_headroom: Vec::new(),
         })
         .unwrap();
     let one: Value = serde_json::from_str(&f.ok(&["harness", "floors", "--json"])).unwrap();
@@ -294,6 +295,7 @@ fn a_null_run_that_paired_nothing_is_not_a_clean_sheet() {
             by_metric: Vec::new(),
             drawn: 2,
             arms_identical: false,
+            no_headroom: Vec::new(),
         })
         .unwrap();
     // And one whose arms replayed identically: it paired, but there was no
