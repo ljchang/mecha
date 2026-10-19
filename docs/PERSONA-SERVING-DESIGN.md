@@ -154,7 +154,9 @@ data and would refuse the seat directory itself.
 
 **The agent loop is its own process; the audio leg is shared.** The guest
 facade runs as a child with `MECHA_HOME` set to the guest home, bound to
-loopback on a port chosen per seat, never the owner's `voice-serve`. A voice
+loopback on a port chosen per seat, never the owner's `voice-serve`; its
+workspace jail is rooted inside the seat's own directory, never the owner's
+working tree, though a seat has no file tool to use it (§4a). A voice
 seat's audio runs through the owner's running voice worker — the one worker
 on the box, its journal the owner's (S8) — which is part of why a live owner
 call makes a voice seat `busy` (§5): one worker's state, not only GPU room.
@@ -381,7 +383,12 @@ An offer is accepted only when every check passes; each refusal is typed
   when a seat opens and releases it when the seat closes; the guest facade
   never writes one. The seal stays literal — a seat writes nothing under
   the owner's home outside its seat directory — and the hold's liveness is
-  the seat's lifetime, which the wiring already tracks.
+  the seat's lifetime, which the wiring already tracks. That widens
+  `hold.rs`'s unit from a run to a seat of many runs, and its ruling has no
+  time limit, so the owner's `mecha model use` waits on a participant for
+  the whole session — or forces the switch and gets the mid-seat swap the
+  hold prevents. Which way it goes is owed (§9), beside the owner-call
+  collision.
 - **The credential** for the control socket is a token mecha mints and the
   owner registers in HyperStudy (§5.1); an offer carries only a single-use,
   sixty-second session token.
@@ -426,9 +433,11 @@ owner says so. Guided setup offers it once personas are on and asks for the
 two things it cannot work without — the HyperStudy origin, and a minted
 token (§5.1), which setup mints and shows for pasting — and `Unready` names
 whichever is missing. Voice
-seats additionally need the voice worker (`calls`), which requires `web` —
-the owner's page, a tailnet listener behind `owner_guard`, never a public
-one; without them the engine's hello offers text only. Building it follows `ARCHITECTURE.md` §Adding a
+seats additionally need the voice worker installed — `voice`, not
+`calls`: `calls` is what buys `mecha serve`'s relay to the worker (and so
+requires `web`), and a seat reaches the worker through the wiring's own
+loopback relay (§2), so it needs neither the owner's page nor its tailnet
+listener. Without `voice` the engine's hello offers text only. Building it follows `ARCHITECTURE.md` §Adding a
 feature item by item rather than a subset copied here; the one choice the
 checklist leaves to the feature is made here: `switchable_from_environment`
 is **no**, because the credential lives in the owner's home and an
@@ -463,7 +472,12 @@ mecha provides; the study decides:
   "switched off" and "couldn't check" never pass for each other on the far
   end either (`safety.rs`'s own rule). In a seat `Off` cannot occur (the
   check is forced on); `Degraded` — the judge could not answer, keywords
-  only — can, and is said.
+  only — can, and is said. The declaration needs only the session socket,
+  so it lands with the text seat (§8 step 3), not with `hs.flag`; until
+  HyperStudy reads it, a dropped declaration still leaves the state in the
+  seat's transcript and manifest, and the study, reading only its own
+  record, cannot exclude the session on it — which is why HyperStudy reading
+  it is on its build list.
 - **Retention.** Seats are kept in full (S8, §3), and mecha declares that
   through `hs.retention`, so a study can tell its participants.
 - **Disclosure is in the study's prompt.** Whether a participant is told
@@ -501,7 +515,8 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    `[security]` read and never written, budgets.
 3. **A text seat on loopback** — HRP with text-only output against a local
    stand-in for HyperStudy's session: context items, inline images, declared
-   tools, and the steering queue widened to carry `Block`s (§4a). Exit: a scripted study (read a screen, chat, answer a rating
+   tools, the steering queue widened to carry `Block`s (§4a), and the
+   `CrisisState` declaration on the session (§7). Exit: a scripted study (read a screen, chat, answer a rating
    through a silent forced call) runs end to end, including a context item
    with no `response.create` followed by the participant speaking — the
    sequence that would otherwise send two user messages.
@@ -542,6 +557,8 @@ accepted socket instead.
 **Owed:**
 
 - Whether a seat's study tools may run when the owner has `block_sends_after_private` on (§4a); conversation only until ruled.
+- What happens when the owner switches the router's model mid-seat (§5):
+  wait out the seat, or end it with a reason.
 - What happens to a live voice seat when the owner starts a call: end the
   seat with a reason, or refuse the owner's call while a study runs.
 - The budget numbers and `max_seats`' default, set from a measured seat,

@@ -1074,9 +1074,9 @@ two to five participants, variables, export, analytics, and LLM agent
 participants through `hyperstudy-agent`'s llama-server endpoint; a room is
 the `ensemble` kind — but its runtime is a browser, LiveKit and Firebase
 around synchronised media, which a trial of headless processes writing
-JSONL would carry for nothing. Two things borrowed: its vocabulary, so the
-manifest maps one-to-one and a later bridge is cheap; and the bridge
-itself, which was thought to exist — `mecha voice-serve` is an
+JSONL would carry for nothing. One thing borrowed: its vocabulary, so the
+manifest maps one-to-one and a later bridge is cheap. A second was claimed
+— the bridge itself, thought to exist because `mecha voice-serve` is an
 OpenAI-compatible chat endpoint over the agent loop, the contract
 `hyperstudy-agent` verifies.
 
