@@ -228,7 +228,34 @@ An offer is accepted only when every check passes; each refusal is typed
 - **The credential** for the control socket is a connected-agent token
   HyperStudy issues and can revoke; mecha keeps it with the other secrets in
   its home, and an offer carries only a single-use, sixty-second session
-  token.
+  token (§5.1).
+
+### 5.1 Who issues the key, and why there is no URL
+
+The key runs the other way from `hyperstudy-agent`'s. There, mecha's side
+would mint a bearer key and publish a URL for HyperStudy to call; here
+HyperStudy mints the key and mecha presents it when it dials, because the
+side that accepts connections is the side that issues and checks
+credentials. HyperStudy's settings issue a connected-agent token — shown
+once, stored hashed, scoped to the owner's experiments, revocable — and the
+owner pastes it into `mecha setup`. A device-code pairing (setup shows a
+short code, the owner approves it in HyperStudy) is the later refinement
+that keeps the secret off the clipboard.
+
+There is no public URL for this box, by any provider:
+
+- **A tunnel** — Cloudflare's, which `hyperstudy-agent tunnel` runs, or
+  Tailscale Funnel, which gives a public `*.ts.net` HTTPS address without
+  putting the caller on the tailnet — publishes a listener on this box to
+  the internet. `REMOTE-SURFACE-DESIGN.md` §2 ruled that out for the owner's
+  own page ("Funnel is never the answer"); a door for strangers is the
+  weaker case for it, not the stronger.
+- **What a leaked key costs differs.** Behind a tunnel, a leaked bearer key
+  reaches the engine — the box's model and whatever the endpoint can do.
+  Over the dial-out, a leaked token lets someone pose as this engine to
+  HyperStudy, and HyperStudy revokes it; nothing on this box answers it.
+- **HyperStudy never joins the tailnet,** and needs no custom-URL guard for
+  this engine: it calls nothing of ours.
 
 ## 6. The feature (S6)
 
