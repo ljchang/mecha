@@ -291,8 +291,9 @@ exactly the text you were shown.
 
 **Reference pictures.** A character can carry up to three kinds of extra
 picture beside its portrait: a **full body** (head to toe, standing
-square-on — its stance carries into pictures, and a new picture of one or two
-people sends it when everyone in the picture has one), a **face** (for the
+square-on — its stance carries into pictures, and a new picture of that
+character alone sends it; with anyone else in the picture, portraits are
+sent instead, since two pictures each drew people twice), a **face** (for the
 video tool), and up to four **details** such as a tattoo, each with a label
 saying what and where. Add or remove them on the character's page in the
 **Library** tab, or with `mecha imagelib add-reference`. You can also ask in

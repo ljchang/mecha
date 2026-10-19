@@ -8522,7 +8522,10 @@ mod tests {
             "{submitted}"
         );
         assert!(
-            submitted.contains("Each of the two people from the images appears exactly once"),
+            submitted.contains(
+                "Exactly two people are in the foreground, Maya and John, each exactly once; \
+                 anyone in the background is a stranger, not from any image."
+            ),
             "{submitted}"
         );
         // A portrait is not a canvas: the default is square, not its shape.
@@ -8568,17 +8571,23 @@ mod tests {
         .unwrap();
     }
 
-    /// Library v2 step 2b (IMAGE-COMPILER-DESIGN.md §9.4): a cast of two with
-    /// a full body each sends four images, bound by person, and the manifest
-    /// says which figure went.
+    /// IMAGE-COMPILER-DESIGN.md §9.4: a cast of one with a full body sends
+    /// two images, bound to that person, and the manifest says which figure
+    /// went; a cast of two with a body each sends portraits only (E14).
     #[tokio::test]
-    async fn a_cast_with_bodies_sends_four_images_bound_by_person() {
-        let (url, seen) = fake(vec![done()], "200 OK").await;
+    async fn a_body_goes_to_a_picture_of_its_character_alone() {
+        let (url, seen) = fake(vec![done(); 2], "200 OK").await;
         let dir = tempdir();
         let lib = library_with(&["maya", "john"]);
         attach_body(&lib, "maya", [70, 1, 1]);
         attach_body(&lib, "john", [70, 2, 2]);
         let t = tool(&url).with_library_dir(lib.clone());
+        let uploads = |seen: &[String]| {
+            seen.iter()
+                .filter(|l| l.starts_with("POST /upload/image"))
+                .count()
+        };
+
         let out = t
             .call(
                 json!({"scene": {"setting": "a studio", "people": two_people()}, "seed": 5}),
@@ -8587,18 +8596,36 @@ mod tests {
             .await
             .unwrap();
         assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains(
+                "Full-figure references were not sent: they go only to a picture of one person, \
+                 and this one has two."
+            ),
+            "{}",
+            out.content
+        );
+        assert_eq!(uploads(&seen.lock().unwrap()), 2, "a portrait per person");
+
+        let john = json!([{"who": "john", "wearing": "a flannel shirt", "doing": "smiling"}]);
+        let out = t
+            .call(
+                json!({"scene": {"setting": "a studio", "people": john}, "seed": 5}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
         assert!(!out.content.contains("Full-figure"), "{}", out.content);
         let seen = seen.lock().unwrap().clone();
-        let uploads = seen
+        assert_eq!(uploads(&seen) - 2, 2, "a portrait and a full figure");
+        let submitted = seen
             .iter()
-            .filter(|l| l.starts_with("POST /upload/image"))
-            .count();
-        assert_eq!(uploads, 4, "a portrait and a full figure per person");
-        let submitted = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+            .rfind(|l| l.starts_with("POST /prompt"))
+            .unwrap();
         assert!(
             submitted.contains(
-                "<image3> and <image4> show one person, John: <image3> is John's portrait, \
-                 <image4> John's full figure."
+                "<image1> and <image2> show one person, John: <image1> is John's portrait, \
+                 <image2> John's full figure."
             ),
             "{submitted}"
         );
@@ -8612,7 +8639,7 @@ mod tests {
         let manifest: Value =
             serde_json::from_slice(&std::fs::read(dir.join(png.replace(".png", ".json"))).unwrap())
                 .unwrap();
-        assert!(manifest["cast"][1]["full_body"]
+        assert!(manifest["cast"][0]["full_body"]
             .as_str()
             .unwrap()
             .starts_with("sha256-"));
@@ -8620,10 +8647,10 @@ mod tests {
         std::fs::remove_dir_all(lib).ok();
     }
 
-    /// One body in a cast of two goes to no one, and the model is told in a
-    /// count, never which person or what the picture is labelled.
+    /// A body in a cast of two is not sent, and the model is told in a count,
+    /// never which person or what the picture is labelled.
     #[tokio::test]
-    async fn a_lone_body_is_not_sent_and_the_result_says_so_in_counts() {
+    async fn a_body_in_a_cast_of_two_is_not_sent_and_the_result_says_so_in_counts() {
         let (url, seen) = fake(vec![done()], "200 OK").await;
         let dir = tempdir();
         let lib = library_with(&["maya", "john"]);
@@ -8639,7 +8666,8 @@ mod tests {
         assert!(!out.is_error, "{}", out.content);
         assert!(
             out.content.contains(
-                "Full-figure references were not sent: one of the two people has one attached"
+                "Full-figure references were not sent: they go only to a picture of one person, \
+                 and this one has two."
             ),
             "{}",
             out.content
