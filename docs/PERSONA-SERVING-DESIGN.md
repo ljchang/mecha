@@ -141,7 +141,9 @@ below) and the manifest.
 **It holds:** the named persona's voice — its voice settings and reference
 audio, copied in, read-only — and nothing of its text: who the agent is
 comes from the study (S10). Its config is written fresh by the wiring, not
-derived: `[security]` is copied verbatim from the owner's (§4a);
+derived: `[security]` is taken from the owner's field by field — the
+owner's value where it narrows a seat, the strictest value where it would
+widen one (§4a);
 `[providers]` names only the loopback router, with no key; the agent's
 model and timezone come from the owner's; and no other table is written —
 no `[[mcp]]`, `[[hook]]`, `[rule]`, `[approval]` or `[search]`. That is
@@ -201,7 +203,8 @@ crosses a network namespace. The wiring, outside the jail, creates
 facade runs under `--unshare-net` and reaches the model and its parent
 through those and nothing else. The facade's clients either take a socket
 path (reqwest's `ClientBuilder::unix_socket`, present in the locked
-0.12.28 under `cfg(unix)` with no feature flag) or keep
+0.12.28 under `cfg(unix)` with no feature flag — checked in the crate's
+registry source) or keep
 their `http://127.0.0.1` URLs through a forwarder on the jail's own `lo`;
 the first is less moving parts. The result is a seat with no route to any
 host, so egress no longer rests on the tool catalogue alone (§4a).
@@ -212,7 +215,8 @@ connect by port, but only by port — `8080` would also allow
 the owner's processes' environments included. Docker's `--network none`
 needs the same socket bridge plus an image and a daemon. Filesystem-only
 bwrap with the host network is the cheaper first step if the bridge is not
-ready, and is the interim the build order allows (§8 step 2).
+ready; whether step 2 ships the bridge or that interim is owed (§9), and
+the two-way preflight belongs to the bridge.
 
 Three things the build must not miss: the `mecha` binary and any model or
 cache file the facade reads live under the owner's home, which bwrap does
@@ -244,10 +248,13 @@ experiment store's pattern, a trial's home kept as its record. The seat's
 manifest names the study's session, the persona whose voice it used, the
 model `served_props` reported, and the HRP settings it ran under, so a seat
 can be read back the way a trial is. Seat transcripts stay out of the
-owner's run corpus and reflection mining because the corpus reads
-`$MECHA_HOME/sessions` without recursing, and seats live elsewhere — a
-property a test in step 2 pins, since a recursive reader added later would
-quietly mine strangers' conversations. Retention of these records is the
+owner's run corpus and reflection mining by a recorded fact, not only by
+where they live: a seat's session carries its own `SessionKind`, and the
+corpus `Scan` excludes it as it excludes `Test` and `Experiment` — the
+variant alone is not enough, since `Scan::admits` admits every kind it does
+not name. Their location (outside `$MECHA_HOME/sessions`, which the corpus
+reads without recursing) is the second guard, not the only one, so a
+recursive reader added later still cannot mine strangers' conversations. Retention of these records is the
 owner's (S2 hands participants' consent to the study); nothing here deletes
 them on a clock. mecha declares to HyperStudy that the engine keeps
 transcripts (`hs.retention`), so a study can tell its participants.
@@ -255,7 +262,12 @@ transcripts (`hs.retention`), so a study can tell its participants.
 **The study's prompt is the whole prompt (S10).** HyperStudy builds the
 agent's identity, objective and per-state guidance into `instructions`, and
 sends a `session.update` replacing them when the study's state changes.
-mecha uses them as the system prompt verbatim — this is HyperStudy §4.4's
+mecha uses them as the system prompt verbatim, which makes `instructions`
+the one trusted slot on a socket that also carries participant text: the
+contract with HyperStudy is that `instructions` carry only
+experimenter-authored text, and anything a participant wrote — a
+free-text answer, typed chat — comes back as a quoted context item, never
+interpolated into the next state's guidance (§8). This is HyperStudy §4.4's
 `persona: "hyperstudy"`, the ownership it builds today. Each replacement
 re-pays the cached prefix once, which is the study's cost to choose. The
 only harness text a seat adds is what the loop needs mechanically (tool
@@ -391,9 +403,13 @@ guarantees is that nothing it sends goes anywhere else. The private leg a
 seat carries is the study's own material shown back to the study, but the
 send-axis leak guard (`block_sends_after_private`, which refuses `Blind`
 too) is a `[security]` switch — a machine fact and the owner's standing
-word. The wiring copies the owner's `[security]` into the guest config
-verbatim and writes nothing of its own there (§3; §8 step 2 tests it), so a
-seat holds the owner's value rather than the permissive default. With
+word. The wiring takes `[security]` field by field (§3; §8 step 2 tests
+it): the owner's value where it narrows a seat, the strictest value where it
+would widen one. So `block_sends_after_private` is the owner's when the
+owner has it on, while `trifecta` is always enforced — an owner's `allow`,
+set for trusted content on their own network, never reaches a stranger's
+seat — and `mark_untrusted_output` is always on. A seat's floor is a
+property of the seat code, not of the operator's config. With
 it off (the default) the catalogue works as above; with it on, a seat
 cannot act after its first image, so the engine's hello offers no study
 tools and seats are conversation only. Exempting the catalogue from an
@@ -597,17 +613,23 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
 1. **The feature and the token** — every item of `ARCHITECTURE.md`
    §Adding a feature, the `[hyperstudy]` table (origin, `max_seats`) in both
    `Config` and `ConfigLayer`, and `mecha hyperstudy token` with setup's
-   step; nothing behind it yet but `Unready` until a token exists.
+   step; nothing behind it yet but `Unready` until a token exists. A test
+   on the chained `enable_command`, since `hyperstudy` is the first
+   switch-bearing feature with a `requires` edge and that branch of
+   `plan_enable` has never run.
 2. **The guest facade** — `Facade`, `Mount` and a seat `SessionHost` usable
-   outside serve; the confined launch (§3: bwrap, `--unshare-net`, the two
-   sockets, a preflight proving the model answers and a LAN address does
-   not); guest home, untrusted run mode, the §3 table as
+   outside serve; the confined launch (§3 — the socket bridge with its
+   two-way preflight, or the filesystem-only interim, per §9); guest home, untrusted run mode, the §3 table as
    tests (the sensor lifted out of `persona_chat.rs` first, with a seat's
    trip recorded in the owner's ledger as `hyperstudy`; seat transcripts
    absent from the owner's corpus; the approver allows the catalogue and nothing else — and whether `Approver` gains
    a door enum so the compiler holds a future door is decided here; the
-   seat is armed untrusted before its first turn; a seat writes nothing
-   under the operator's home outside its own seat directory; the system
+   seat is armed untrusted before its first turn; the guest facade process
+   writes nothing under the operator's home outside its own seat directory,
+   and the wiring's writes there are a closed list of two — the router hold
+   (§5) and the crisis record (§7); a seat's session carries its own
+   `SessionKind` and the corpus scan excludes it; the `[security]` floor
+   holds against an owner config with `trifecta = "allow"`; the system
    prompt is the study's `instructions` byte for byte, with no `BASE`, card,
    `SINCERE` or `DISCLOSED` even with the persona's `disclosure` on; a closed seat's
    transcript and manifest are readable afterwards; while a seat is open the
@@ -648,8 +670,9 @@ session tokens, an adapter that gives its voice bridge an HRP client over an
 accepted socket, text seats on the same socket, a `connected` engine naming
 the registered token and the persona whose voice speaks, a settings page to
 register a mecha-minted token (stored hashed, revocable), inline images on the
-session, and the study tools as a catalogue pinned in HRP, declared once per
-session (§4a). **The frames
+session, the study tools as a catalogue pinned in HRP, declared once per
+session (§4a), and `instructions` kept to experimenter-authored text, with
+participant-authored bytes only ever sent as context items (§3). **The frames
 are pinned in its §4.1 before either side builds against them** — with a
 direct connection, HyperStudy's spec is the contract mecha codes to.
 
