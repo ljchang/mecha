@@ -323,8 +323,8 @@ async fn answer_and_resume(
     // D15 — the plan comes back with the conversation, so the resumed run
     // reads its own list rather than rebuilding one from the summary.
     if let Some(todo) = &prepared.todo {
-        let ws = prepared.agent.context().tools.workspace.clone();
-        if let Some(n) = todo.rehydrate(&ws, &prior.messages) {
+        let plan = mecha_core::tool::todo::PlanKey::of(&prepared.agent.context().tools);
+        if let Some(n) = todo.rehydrate(&plan, &prior.messages) {
             eprintln!("restored a plan of {n} item(s)");
         }
     }
