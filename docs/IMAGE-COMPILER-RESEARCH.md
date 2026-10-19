@@ -805,10 +805,20 @@ vision head count, scene clauses, ArcFace against each portrait):
   M's composition broke on close poses (heads out of frame, a limb with no
   body), worse by eye than its counts.
 - **Reading: passes for a cast of two without extras.** Owner, 2026-10-19:
-  D ships (design §9.4); L stays the per-persona switch. Unmeasured: a cast of
-  three or more (E12's open count stays there), and the closed count's cost
-  where the model writes a third person into the prose rather than `extras`
-  (E12's erased waiter).
+  D ships (design §9.4); L stays the per-persona switch. D's "no one else is
+  in it" would also empty a busy setting and erase E12's prose-only waiter,
+  so the owner chose the count in the foreground for every cast size:
+  "Exactly N people are in the foreground, …, each exactly once; anyone in
+  the background is a stranger, not from any image" (arm G, below).
+- **Arm G, the foreground count** (2026-10-19): D's compile with that
+  wording, the same 7 calls and seeds. Right head count 18/21, someone
+  drawn twice 3/21, faces identified 38/42, face count matches 19/21, scene
+  clauses shown 42/84. Two of the three doubles are on the call that
+  doubled D twice, and the third is on another call. All three are a cast
+  member drawn a second time, not a stranger in the background. That is one
+  picture of 21 against D, too few to tell apart. The nine-clause drop
+  against D is unexplained. None of the calls has a crowd in it, so whether
+  background strangers survive is still unmeasured.
 
 **Still open**, in the order they would change the design:
 

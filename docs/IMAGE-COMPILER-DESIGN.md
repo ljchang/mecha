@@ -128,10 +128,12 @@ The rules, each a measurement:
   describes is a new person". No total: a total with
   no extras erased a waiter the prose described, and without it four cast
   still drew exactly four (E12). With `extras`, a total that counts them.
-  *(Ruled 2026-10-19: a cast of exactly two without extras gets a closed
-  count naming them, "Exactly two people are in the image, Maya and Jo, each
-  exactly once; no one else is in it", since the open one drew a touching
-  pair three or four times, E14.)*
+  *(Ruled 2026-10-19: without extras, every cast is counted closed in the
+  foreground, by name: "Exactly two people are in the foreground, Maya and
+  Jo, each exactly once; anyone in the background is a stranger, not from
+  any image". The open wording drew a touching pair three or four times
+  (E14), and "no one else is in it" would empty a busy setting as it erased
+  E12's waiter.)*
 - **`wearing` and `doing` are required** (E3, E8: a reference supplies its own
   outfit, pose and stare when the scene is silent; stated, they land), except
   that `doing` is left empty when the scene's `together` says what its people
@@ -710,7 +712,7 @@ kind is derived from its directory (`Entry.kind`).
     holds anyone and a description settles no pronoun;
   - the head count stays E12's (no total without extras), not arm B's
     "Exactly two people": a total erased a person the prose described
-    (superseded 2026-10-19 for a cast of two: E14 closes it, by name, once
+    (superseded 2026-10-19: E14 closes it, by name, in the foreground, once
     the pictures no longer outnumber the people);
   - a picture the layers switch may build compiles without bodies, so a
     layered build's fallback single pass draws what its cutouts would
@@ -883,7 +885,7 @@ only says what each one gates:
 | Id | Gates |
 |---|---|
 | **E9b** | `full_body` for pictures (§9.4), and the two-images-one-person wording |
-| **E14** | `full_body` for pictures of one person only, and the closed count for a cast of two (§9.4; passed 2026-10-18) |
+| **E14** | `full_body` for pictures of one person only, and the closed foreground count without extras (§9.4; passed 2026-10-18 for the strict wording, 2/21 drawn twice; the foreground one measured 2026-10-19, 3/21, crowds unmeasured) |
 | **V-B's retest** | `full_body` for video: **passed** 2026-10-14, unbound (V-B itself failed, 2026-10-13) |
 | **V-D** | `detail` images for video |
 | **E13** | a location reference for pictures |
@@ -975,7 +977,10 @@ repository, never their names or images.
 
 **Ruled by the owner, 2026-10-19: E14's D ships** ("let's go with d for
 now"). A new picture of two or more library characters sends their
-portraits only, and a cast of exactly two without extras gets a closed count
-naming them (§3, §9.4). The layers pipeline (`IMAGE-DESIGN.md` §15) stays the
+portraits only, and without extras the cast is counted closed, by name, in
+the foreground, with anyone in the background a stranger (§3, §9.4): the
+count is whoever the scene lists, never a cap of two. The strict "no one
+else is in it" was measured; the owner chose the foreground wording so a
+busy setting keeps its crowd. The layers pipeline (`IMAGE-DESIGN.md` §15) stays the
 per-persona switch for when no doubling is acceptable at its cost in time.
 MOSS-Image is explored outside this repository.
