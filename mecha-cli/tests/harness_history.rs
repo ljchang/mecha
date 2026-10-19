@@ -116,6 +116,35 @@ fn a_rejection_is_a_plain_no_until_the_owner_types_it() {
     assert_eq!(ledger.len(), 1, "a retype is not a second rejection");
 }
 
+/// Retyping a *gate* rejection is the owner overruling the gate — it can
+/// re-open the change — so it is recorded as the owner's act: the gate wrote
+/// no ledger line, and the retype writes the first.
+#[test]
+fn retyping_a_gate_rejection_is_recorded_as_the_owners_act() {
+    let f = Fixture::new();
+    f.staged("hc-gate", "max_turns=40");
+    let mut c = f.store().find("hc-gate").unwrap();
+    c.status = STATUS_REJECTED.into();
+    c.rejection = Some(mecha_core::harness::Rejection::Gate);
+    f.store().write(&c).unwrap();
+    let ledger = |f: &Fixture| {
+        mecha_core::curation::read_counting(f.store().root())
+            .unwrap()
+            .0
+    };
+    assert!(ledger(&f).is_empty(), "the gate's rejection wrote nothing");
+
+    f.ok(&["harness", "reject", "hc-gate", "--verdict", "unmeasured"]);
+    let after = ledger(&f);
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0].act, mecha_core::curation::Act::Rejected);
+    assert!(f.store().find("hc-gate").unwrap().rejected_by_owner());
+
+    // Retyped again, it is already the owner's: still one line.
+    f.ok(&["harness", "reject", "hc-gate", "--verdict", "harmful"]);
+    assert_eq!(ledger(&f).len(), 1);
+}
+
 #[test]
 fn a_verdict_given_at_rejection_is_kept_and_a_bad_one_is_refused() {
     let f = Fixture::new();
@@ -296,7 +325,10 @@ fn a_null_run_that_paired_nothing_is_not_a_clean_sheet() {
     );
     assert_eq!(read["runs_pairing_nothing"], 1);
     assert_eq!(read["judgements"], 0);
-    assert_eq!(read["propose"], 0, "nothing judged is not eleven proposals");
+    assert_eq!(
+        read["propose"], 0,
+        "nothing judged is not a proposal per metric"
+    );
     let text = f.ok(&["harness", "floors"]);
     assert!(
         text.contains("1 paired nothing, 1 replayed identically"),

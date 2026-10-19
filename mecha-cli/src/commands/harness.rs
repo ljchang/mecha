@@ -257,7 +257,7 @@ async fn ruminate(
         eprintln!("replay priority: {caveat}");
     }
     let evidence = with_draw_appraisals(
-        evidence_for(&model, &slice, harness_history().unwrap_or_default(), &cfg),
+        evidence_for(&model, &slice, &harness_history().unwrap_or_default(), &cfg),
         &pool.remainder(),
         cfg.agent.appraisals_in_brief,
         || {
@@ -484,16 +484,10 @@ fn forbidding_prior<'a>(
     change: &str,
     has_headroom: bool,
 ) -> Option<&'a HarnessCandidate> {
-    let canonical = |change: &str| {
-        parse_change(change)
-            .map(|c| c.spec())
-            .unwrap_or_else(|_| change.trim().to_string())
-    };
-    let new_spec = canonical(change);
+    let new_spec = mecha_core::harness::canonical_change(change);
     on_file.iter().find(|c| {
-        canonical(&c.change) == new_spec
-            && (!c.history_verdict().may_repropose()
-                || (c.rejection == Some(Rejection::NoHeadroom) && !has_headroom))
+        mecha_core::harness::canonical_change(&c.change) == new_spec
+            && c.forbids_retry(has_headroom)
     })
 }
 
@@ -1206,7 +1200,7 @@ async fn null_arm(
         )
     };
     // **Nothing paired is not a clean sheet.** Judged anyway, an empty draw
-    // gives a `propose` under every metric, and `floors` would count eleven
+    // gives a `propose` under every metric, and `floors` would count one
     // judgements that "declined to react to noise" out of a run that
     // measured nothing — and with the baseline arm diverging on most
     // non-scripted episodes, that is the likeliest first result (found on
@@ -1277,6 +1271,16 @@ async fn null_arm(
         },
     );
     measurement.arm_receipts = driven.arm_receipts;
+    // Not `judge_drawn`'s floor text ("only 0 paired episode(s) … below the
+    // floor of 8") when nothing paired: that frames a censored draw as a
+    // small one, which `measure` overwrites for the same reason.
+    if driven.selection_pairs.is_empty() && driven.holdout_pairs.is_empty() {
+        measurement.reason = format!(
+            "nothing paired: {} diverged, {} skipped",
+            measurement.diverged.len(),
+            measurement.skipped
+        );
+    }
     let run = NullRun {
         id,
         drawn_by,
@@ -1285,8 +1289,18 @@ async fn null_arm(
         drawn: draw.selection.len() + draw.holdout.len(),
         arms_identical,
     };
-    store.write_null(&run)?;
+    // **The readout first, then the record** (found on review of #717): the
+    // replay is paid for, and a write that fails — an unwritable store, a
+    // full disk — must not take the numbers with it. `measure` was corrected
+    // for the same shape twice.
+    print_null_run(&run, &arms);
+    store
+        .write_null(&run)
+        .context("the null run above was measured, but its record could not be written")
+}
 
+/// A null run's readout, as `mecha harness null` prints it.
+fn print_null_run(run: &mecha_core::harness::NullRun, arms: &str) {
     let m = &run.measurement;
     println!(
         "null arm {}: {} paired ({} selection, {} holdout), {} diverged, {} skipped{arms}",
@@ -1316,14 +1330,14 @@ async fn null_arm(
             "both arms replayed identically on every paired episode, so there was no noise for \
              the gate to react to — this run says nothing about its verdicts"
         );
-        return Ok(());
+        return;
     }
     if run.by_metric.is_empty() {
         println!(
             "nothing paired, so nothing was judged — this run measures how often the arms left \
              the recording, and says nothing about the gate's verdicts"
         );
-        return Ok(());
+        return;
     }
     let false_verdicts = run.by_metric.iter().filter(|j| j.false_verdict()).count();
     println!(
@@ -1331,7 +1345,6 @@ async fn null_arm(
          configuration — `mecha harness floors` reads every null run together",
         run.by_metric.len()
     );
-    Ok(())
 }
 
 /// The gate's floors beside what the null arm has measured of them: how
@@ -1412,9 +1425,15 @@ fn floors(as_json: bool) -> Result<()> {
         println!("{unreadable} null record(s) would not parse and are not counted");
     }
     if runs.is_empty() {
+        // "Yet" would be false beside an unreadable count: there may be runs,
+        // and none could be read.
         println!(
-            "no null runs yet — the floors are asserted, not measured. \
-             `mecha harness null` runs one."
+            "{} — the floors are asserted, not measured. `mecha harness null` runs one.",
+            if unreadable > 0 {
+                "no readable null run"
+            } else {
+                "no null runs yet"
+            }
         );
         return Ok(());
     }
@@ -1697,11 +1716,25 @@ fn reject(id: &str, reason: Option<String>, verdict: Option<OwnerVerdict>) -> Re
                 c.id
             );
         };
+        // A gate rejection retyped is the owner overruling the gate, and it
+        // can re-open the change — so it is recorded as the owner's act. The
+        // gate wrote no ledger line, so this is the rejection's first. An
+        // owner rejection retyped already has its one line, and stays at one
+        // (found on review of #717).
+        let first_owner_act = !c.rejected_by_owner();
         c.rejection = Some(verdict.into());
         if reason.is_some() {
-            c.reason = reason;
+            c.reason = reason.clone();
         }
         store.write(&c)?;
+        if first_owner_act {
+            record_owner_verdict(
+                &store,
+                &c.id,
+                mecha_core::curation::Act::Rejected,
+                Some(reason.unwrap_or_else(|| format!("retyped as {verdict:?}"))),
+            )?;
+        }
         println!(
             "{} retyped — {:?}; the next diagnostician reads it as {:?}",
             c.id,

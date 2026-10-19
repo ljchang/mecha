@@ -7209,14 +7209,17 @@ The decisions that carry it, each a bug if undone:
   its own instruction: measured or owner-ruled harm is never re-proposed; an
   untyped rejection, a revert and a key the override set cannot make are
   not; "no observed effect" is not *yet*, because the instrument that
-  measured it has not changed; and "too little evidence" — a rejection for no
-  headroom (a property of that night's corpus), or the owner's `reject
-  --verdict unmeasured` — may be. The verdict is derived
-  from typed fields and the stored measurement, never from the reason's
-  prose, and a re-derived change is refused before anything is stored or
-  measured only when a record of it forbids a retry (`forbidding_prior`), so
-  a rejection stays paid for without the brief inviting back what the loop
-  then refuses. **One instruction for all of them was the defect:** the
+  measured it has not changed; a rejection for no headroom may come back
+  once the counters show that metric above zero, since headroom belongs to
+  that night's corpus; and "too little evidence", or the owner's `reject
+  --verdict unmeasured`, may be. The verdict is derived from typed fields and
+  the stored measurement, never from the reason's prose. **One predicate
+  decides both readers**: `HarnessCandidate::forbids_retry` refuses a
+  re-derived change before anything is stored or measured
+  (`forbidding_prior`), and the brief shows each change *once*, by the
+  record that predicate says decides it (`history_lines`) — one line per
+  record listed a retried change under "may propose" and under "waiting on
+  a person" at once, while the check refused it. **One instruction for all of them was the defect:** the
   brief used to say "do not propose any of these again" over every record,
   including three knobs the owner rejected while writing that the
   measurement was "NOT a verdict on the knob". The gate had rejected none of
@@ -7227,8 +7230,10 @@ The decisions that carry it, each a bug if undone:
   on a metric the candidate did not predict rejects without showing in the
   tallies. A gate rejection with no guard on record is untyped, never "no
   effect". Retyping a past rejection (`reject --verdict` on one already
-  rejected) changes only the verdict: the status, the time and the curation
-  ledger's one entry stand.
+  rejected) changes only the verdict, the status and the time stand. An
+  owner's rejection keeps its one curation-ledger entry; a *gate* rejection
+  retyped is the owner overruling the gate, which can re-open the change, so
+  it gets the ledger line the gate never wrote.
 - **The floors are measured, not only asserted.** `mecha harness null` runs
   the same draw and the same `drive_arms` loop with nothing changed on either
   arm and judges the pairs under every metric; `mecha harness floors` reads

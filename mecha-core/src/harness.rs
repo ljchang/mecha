@@ -527,13 +527,14 @@ pub enum HistoryVerdict {
     Harmed,
     /// The gate measured no harm and no win.
     NoObservedEffect,
-    /// The gate rejected it without the evidence to say either way: too few
-    /// pairs, or no measurement at all because no run in that night's corpus
-    /// had any of the metric it predicted to lower. Headroom is a property of
-    /// the corpus, which changes nightly, so it is not a verdict on the
-    /// change (found on review of #717) — and a re-proposal into a corpus
-    /// that still has none is rejected again before any replay is paid for.
+    /// The gate rejected it with too few pairs to say either way.
     Underpowered,
+    /// The gate rejected it unmeasured: no run in that night's corpus had
+    /// any of the metric it predicted to lower. Headroom belongs to the
+    /// corpus, which changes nightly, so this is not a verdict on the change
+    /// (found on review of #717) — it may come back, but only into a corpus
+    /// that has some ([`HarnessCandidate::forbids_retry`]).
+    NoHeadroom,
     /// A config change the closed override set cannot make — the key does
     /// not exist or the value does not parse.
     NotProposable,
@@ -566,12 +567,50 @@ impl HistoryVerdict {
     pub fn may_repropose(self) -> bool {
         matches!(
             self,
-            HistoryVerdict::Underpowered | HistoryVerdict::OwnerUnmeasured
+            HistoryVerdict::Underpowered
+                | HistoryVerdict::OwnerUnmeasured
+                | HistoryVerdict::NoHeadroom
         )
     }
 }
 
+/// A change as the store compares it: the canonical spec when it parses,
+/// so spacing cannot make two records of one change look like two changes.
+pub fn canonical_change(change: &str) -> String {
+    parse_change(change)
+        .map(|c| c.spec())
+        .unwrap_or_else(|_| change.trim().to_string())
+}
+
 impl HarnessCandidate {
+    /// Whether this record forbids proposing its change again tonight —
+    /// the one predicate the re-derivation check and the brief's grouping
+    /// both read, so the brief cannot invite what the loop then refuses.
+    ///
+    /// A no-headroom rejection forbids while the corpus still has none of
+    /// the metric it predicted: free to return every night, one re-derived
+    /// change would add a rejected record a night.
+    pub fn forbids_retry(&self, has_headroom: bool) -> bool {
+        let v = self.history_verdict();
+        !v.may_repropose() || (v == HistoryVerdict::NoHeadroom && !has_headroom)
+    }
+
+    /// Whether a person, rather than the gate, made this rejection — what
+    /// decides whether retyping it is a new owner act (the gate's rejections
+    /// put nothing in the curation ledger). Unknown is not the gate's: a
+    /// variant a newer build wrote is recorded as the owner's act rather
+    /// than lost.
+    pub fn rejected_by_owner(&self) -> bool {
+        match self.rejection {
+            Some(Rejection::Gate | Rejection::NoHeadroom) => false,
+            Some(_) => true,
+            None => !self
+                .measurement
+                .as_ref()
+                .is_some_and(|m| m.disposition == "reject"),
+        }
+    }
+
     /// This candidate's verdict for the next diagnostician's history.
     pub fn history_verdict(&self) -> HistoryVerdict {
         match self.status.as_str() {
@@ -596,7 +635,7 @@ impl HarnessCandidate {
             Some(Rejection::NoEffect) => HistoryVerdict::OwnerNoEffect,
             Some(Rejection::Unmeasured) => HistoryVerdict::OwnerUnmeasured,
             Some(Rejection::Unstated) | Some(Rejection::Unknown) => HistoryVerdict::RejectedUntyped,
-            Some(Rejection::NoHeadroom) => HistoryVerdict::Underpowered,
+            Some(Rejection::NoHeadroom) => HistoryVerdict::NoHeadroom,
             Some(Rejection::Gate) => self.measured_verdict(),
             // From before the field: the gate's own disposition is the one
             // typed thing that says whether it, rather than a person,
@@ -2002,10 +2041,14 @@ mod history_verdict_tests {
         assert_eq!(c.history_verdict(), V::Harmed, "the work floor");
 
         // No headroom is the corpus's state that night, not the change's
-        // verdict: it may come back once the corpus has some.
+        // verdict: it may come back once the corpus has some, and not before.
         let c = rejected("max_turns=9", Some(Rejection::NoHeadroom), None);
-        assert_eq!(c.history_verdict(), V::Underpowered);
-        assert!(c.history_verdict().may_repropose());
+        assert_eq!(c.history_verdict(), V::NoHeadroom);
+        assert!(c.forbids_retry(false));
+        assert!(!c.forbids_retry(true));
+        assert!(!c.rejected_by_owner());
+        assert!(rejected("max_turns=9", Some(Rejection::Unstated), None).rejected_by_owner());
+        assert!(!rejected("max_turns=9", Some(Rejection::Gate), None).rejected_by_owner());
     }
 
     /// An invented key outranks whatever anyone ruled: it was never a change

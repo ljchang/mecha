@@ -929,6 +929,12 @@ const HISTORY_GROUPS: &[(&[HistoryVerdict], &str)] = &[
          again yet",
     ),
     (
+        &[HistoryVerdict::NoHeadroom],
+        "rejected unmeasured because no run had any of the metric it predicted to lower — \
+         you may propose one again only if the counters above now show that metric above \
+         zero",
+    ),
+    (
         &[
             HistoryVerdict::Underpowered,
             HistoryVerdict::OwnerUnmeasured,
@@ -2363,6 +2369,7 @@ mod history_tests {
             V::Harmed,
             V::NoObservedEffect,
             V::Underpowered,
+            V::NoHeadroom,
             V::NotProposable,
             V::OwnerHarmful,
             V::OwnerNoEffect,
@@ -2377,6 +2384,7 @@ mod history_tests {
                 V::Harmed
                 | V::NoObservedEffect
                 | V::Underpowered
+                | V::NoHeadroom
                 | V::NotProposable
                 | V::OwnerHarmful
                 | V::OwnerNoEffect
