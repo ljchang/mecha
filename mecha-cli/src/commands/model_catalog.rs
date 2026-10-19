@@ -1,0 +1,576 @@
+//! `mecha model catalog`, `add` and `remove` — the owner's side of
+//! `mecha_core::catalog` (`docs/MODEL-CATALOG-DESIGN.md`).
+//!
+//! **Installing is the owner's act (C4).** This command, and the chip through
+//! `mecha serve`, which runs `model add --yes` as a child exactly as it runs
+//! `model use`. There is no tool: a model never chooses what is fetched onto
+//! the machine, any more than it chooses the model.
+
+use crate::GlobalOpts;
+use anyhow::{bail, Context, Result};
+use mecha_core::catalog::{self, Entry, Offer};
+use mecha_core::config::Config;
+use mecha_core::provider::router;
+use mecha_core::router_unit::{self, Naming};
+use serde::Serialize;
+use std::io::{IsTerminal, Write};
+use std::time::{Duration, Instant};
+
+/// The comment line above every provider table `model add` writes — and the
+/// line `remove` looks for, so it takes out only its own.
+const TABLE_COMMENT: &str = "Written by `mecha model add` from mecha's catalog.";
+
+/// What every catalog verb reads first: the machine, its hub, the router.
+struct Here {
+    m: mecha_core::sidecar::Machinery,
+    machine: mecha_core::recommend::Machine,
+    hub: std::path::PathBuf,
+    naming: Naming,
+}
+
+impl Here {
+    fn read() -> Result<Here> {
+        Ok(Here {
+            m: mecha_core::sidecar::Machinery::real()?,
+            machine: mecha_core::recommend::Machine::read()?,
+            hub: mecha_core::fetch::hub_dir()?,
+            naming: Naming::shipped(),
+        })
+    }
+
+    fn offers(&self) -> Result<Vec<Offer>> {
+        catalog::offers(&self.m.mecha_home, &self.hub, &self.machine)
+    }
+
+    /// Why a catalog model cannot be put on the router here, or `None`.
+    /// Only a router mecha installed: one the owner runs is theirs (§3), and
+    /// gets the section to paste instead.
+    fn router_refusal(&self) -> Result<Option<String>> {
+        let home = &self.m.mecha_home;
+        if !router_unit::installed_by_mecha(home)? {
+            return Ok(Some(
+                "mecha did not install the chat router here — `mecha setup chat` installs it; a \
+                 router you run yourself takes the preset section by hand"
+                    .into(),
+            ));
+        }
+        if router_unit::installed_choice(home)?.is_none() {
+            return Ok(Some(
+                "the router's presets file is missing — `mecha setup chat` writes it again".into(),
+            ));
+        }
+        Ok(None)
+    }
+}
+
+/// The catalog as `model list --json` carries it for the chip: every offer,
+/// whether a model can be installed here at all, and an install under way.
+#[derive(Serialize)]
+pub(super) struct Listing {
+    offers: Vec<Offer>,
+    /// Why nothing can be installed on this machine's router, or `None`.
+    refusal: Option<String>,
+    installing: Option<catalog::Progress>,
+}
+
+pub(super) fn listing() -> Option<Listing> {
+    let here = Here::read().ok()?;
+    Some(Listing {
+        offers: here.offers().ok()?,
+        refusal: here
+            .router_refusal()
+            .unwrap_or_else(|e| Some(format!("{e:#}"))),
+        installing: catalog::progress_read(&here.m.mecha_home),
+    })
+}
+
+fn gib(bytes: u64) -> String {
+    format!("{:.1} GiB", bytes as f64 / 1_073_741_824.0)
+}
+
+/// `mecha model catalog`.
+pub(super) async fn show(cfg: &Config, json: bool) -> Result<()> {
+    let here = Here::read()?;
+    let offers = here.offers()?;
+    let served = served_ids(cfg, &here.naming).await;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "offers": offers,
+                "served": served,
+                "refusal": here.router_refusal()?,
+            }))?
+        );
+        return Ok(());
+    }
+    let tier = here.machine.tier_gb();
+    println!(
+        "Chat models in mecha's catalog{}:",
+        tier.map(|t| format!(" (this machine: the {t} GB tier)"))
+            .unwrap_or_default()
+    );
+    for o in &offers {
+        let serves = served.as_ref().is_some_and(|s| s.iter().any(|x| x == o.id));
+        let state = if serves && o.installed {
+            "installed, served"
+        } else if serves {
+            // A preset someone wrote by hand: served, and not in the record —
+            // `setup chat` would drop it, and `model add` adopts it.
+            "served, set up by hand — `mecha model add` brings it into the catalog's record"
+        } else if o.installed {
+            "installed, not served yet"
+        } else if o.unfit.is_some() {
+            "not offered here"
+        } else {
+            "available"
+        };
+        println!("\n  {}  — {state}", o.id);
+        println!("    {}", o.label);
+        println!("    {}", o.note);
+        match &o.unfit {
+            Some(why) => println!("    {why}"),
+            None => println!(
+                "    {} to download{}; ~{} in memory (arithmetic), in place of the chat model",
+                gib(o.download_bytes),
+                if o.assembles {
+                    ", then a graft built here"
+                } else {
+                    ""
+                },
+                o.memory_mb
+                    .map(|mb| gib(u64::from(mb) * 1_048_576))
+                    .unwrap_or_else(|| "—".into())
+            ),
+        }
+    }
+    if let Some(why) = here.router_refusal()? {
+        println!("\nNothing can be installed here yet: {why}");
+    } else {
+        println!("\n`mecha model add <id>` shows what it will do and asks first.");
+    }
+    Ok(())
+}
+
+/// The ids the router at the naming's port serves, or `None` when it did not
+/// answer — never an empty list for a router that is down.
+async fn served_ids(_cfg: &Config, naming: &Naming) -> Option<Vec<String>> {
+    router::models(&naming.base())
+        .await
+        .map(|l| l.into_iter().map(|m| m.id).collect())
+}
+
+/// The provider table a catalog model is served through (C9): from the
+/// entry's pins, never from `/props`, which would load the model to answer.
+fn provider_settings(e: &Entry, tier: u32, base: &str) -> Result<Vec<(&'static str, String)>> {
+    let (ctx, slots, _) = catalog::geometry_at(e, tier)
+        .with_context(|| format!("{} is not offered at the {tier} GB tier", e.id))?;
+    let q = mecha_core::onboarding::toml_string;
+    let mut s = vec![
+        ("kind", q("local")),
+        ("base_url", q(base)),
+        ("model", q(e.id)),
+        // Per slot: `-c` is divided across `-np` (CLAUDE.md).
+        ("context_window", (ctx / slots).to_string()),
+        (
+            "vision",
+            e.pins
+                .iter()
+                .any(|p| p.role == catalog::Role::Projector)
+                .to_string(),
+        ),
+    ];
+    if let Some(t) = e.temperature {
+        s.push(("temperature", format!("{t:?}")));
+    }
+    Ok(s)
+}
+
+/// The default provider's name when it names this router and does not yet
+/// follow it — the table `follow_loaded = true` goes on (C8).
+fn follow_target(cfg: &Config, port: u16) -> Option<String> {
+    let p = cfg.providers.get(&cfg.default_provider)?;
+    (router_unit::names_this_router(p, port) && !p.follow_loaded)
+        .then(|| cfg.default_provider.clone())
+}
+
+/// A table of that name already in the config that is not this entry's.
+fn table_conflict(cfg: &Config, e: &Entry, port: u16) -> Option<String> {
+    let p = cfg.providers.get(e.provider)?;
+    let ours = router_unit::names_this_router(p, port) && p.model.as_deref() == Some(e.id);
+    (!ours).then(|| {
+        format!(
+            "[providers.{}] is already in your config and names something else — rename it, or \
+             remove it, and run this again",
+            e.provider
+        )
+    })
+}
+
+fn confirm(question: &str) -> Result<bool> {
+    print!("\n{question} [y/N] ");
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(matches!(line.trim(), "y" | "Y" | "yes"))
+}
+
+/// Clears the progress record however `add` ends.
+struct ProgressGuard<'a>(&'a std::path::Path);
+
+impl Drop for ProgressGuard<'_> {
+    fn drop(&mut self) {
+        catalog::progress_clear(self.0);
+    }
+}
+
+/// `mecha model add <id>`.
+pub(super) async fn add(
+    global: &GlobalOpts,
+    cfg: &Config,
+    id: &str,
+    yes: bool,
+    use_after: bool,
+    json: bool,
+) -> Result<()> {
+    let here = Here::read()?;
+    let home = here.m.mecha_home.clone();
+    let Some(e) = catalog::entry(id) else {
+        bail!(
+            "no chat model {id:?} in mecha's catalog — `mecha model catalog` lists them: {}",
+            catalog::CATALOG
+                .iter()
+                .map(|e| e.id)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    };
+    let offer = here
+        .offers()?
+        .into_iter()
+        .find(|o| o.id == id)
+        .context("the catalog entry has no offer")?;
+    if let Some(why) = &offer.unfit {
+        bail!("{id} is not offered on this machine: {why}");
+    }
+    let tier = here.machine.tier_gb().context("no memory tier")?;
+    let base = here.naming.base();
+    if let Some(why) = here.router_refusal()? {
+        // The owner's router: what to paste, and nothing changed.
+        let paths = catalog::paths(e, &home, &here.hub)?;
+        eprintln!(
+            "The preset section and provider table for {id}, to add by hand:\n\n{}\n[providers.{}]",
+            catalog::section_text(e, tier, &paths)?,
+            e.provider
+        );
+        for (k, v) in provider_settings(e, tier, &base)? {
+            eprintln!("{k} = {v}");
+        }
+        bail!("nothing was installed: {why}");
+    }
+    if let Some(why) = table_conflict(cfg, e, here.naming.port) {
+        bail!("nothing was installed: {why}");
+    }
+    if let Some(p) = catalog::progress_read(&home) {
+        bail!(
+            "another catalog install is running ({} — {}, pid {}); one at a time",
+            p.id,
+            p.phase,
+            p.pid
+        );
+    }
+    let settings = provider_settings(e, tier, &base)?;
+    let follow = follow_target(cfg, here.naming.port);
+
+    // The plan, in full, before anything is fetched: what the approval is for.
+    // On stderr under `--json`, where stdout is the answer.
+    let say_line = |s: &str| {
+        if json {
+            eprintln!("{s}");
+        } else {
+            println!("{s}");
+        }
+    };
+    say_line(&format!("{id} — {}", e.label));
+    say_line(&format!("  {}", e.note));
+    say_line(&format!(
+        "  downloads {}{} (pinned, every file checked against its sha256)",
+        gib(offer.download_bytes),
+        if offer.assembles {
+            ", then grafts the production model's MTP head onto it here, checked against its pin"
+        } else {
+            ""
+        }
+    ));
+    if let Some(mb) = offer.memory_mb {
+        say_line(&format!(
+            "  ~{} in memory at this machine's tier (arithmetic), in place of the chat model — \
+             the router holds one at a time",
+            gib(u64::from(mb) * 1_048_576)
+        ));
+    }
+    say_line(&format!(
+        "  writes [providers.{}] for it{}",
+        e.provider,
+        follow
+            .as_deref()
+            .map(|d| format!(", and `follow_loaded = true` on [providers.{d}] so default runs follow the model you load"))
+            .unwrap_or_default()
+    ));
+    say_line("  then restarts the router — after any run using it has finished");
+    if !yes {
+        if !std::io::stdin().is_terminal() {
+            bail!("nothing was installed: not a terminal to ask at — pass --yes to approve");
+        }
+        if !confirm(&format!("Install {id}?"))? {
+            say_line("Nothing was changed.");
+            return Ok(());
+        }
+    }
+
+    // Fetch and assemble, recording progress for the chip. Nothing below
+    // holds the router until the restart (C6).
+    let _guard = ProgressGuard(&home);
+    let started_at = chrono::Utc::now();
+    let pid = std::process::id();
+    let mut last = (String::new(), 0u64, Instant::now());
+    let mut progress = |phase: &str, done: u64, total: u64| {
+        let moved = done.saturating_sub(last.1) >= 64 * 1_048_576
+            || last.2.elapsed() >= Duration::from_secs(1);
+        if phase != last.0 || moved {
+            last = (phase.to_string(), done, Instant::now());
+            let _ = catalog::progress_write(
+                &home,
+                &catalog::Progress {
+                    id: id.to_string(),
+                    phase: phase.to_string(),
+                    done_bytes: done,
+                    total_bytes: total,
+                    pid,
+                    started_at,
+                },
+            );
+        }
+    };
+    progress("fetching", 0, offer.download_bytes);
+    catalog::fetch(
+        e,
+        &here.m,
+        &here.hub,
+        &mut |s| say_line(&format!("  {s}")),
+        &mut progress,
+    )
+    .await
+    .with_context(|| format!("nothing was installed: fetching {id}"))?;
+    catalog::record_add(&home, id)?;
+
+    progress("restarting", 0, 0);
+    let previous = router::models(&base)
+        .await
+        .filter(|l| router::readable(l))
+        .and_then(|l| router::resident(&l).map(str::to_string));
+    let choice = router_unit::installed_choice(&home)?.context("the router's presets are gone")?;
+    router_unit::install(
+        &here.m,
+        cfg,
+        &choice,
+        &here.naming,
+        &here.machine,
+        &here.hub,
+        &mut |s| say_line(&format!("  {s}")),
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "{id} is downloaded and recorded, and the router was not restarted onto it — `mecha \
+             model add {id}` again restarts it"
+        )
+    })?;
+
+    super::setup::write_provider_table(e.provider, TABLE_COMMENT, &settings)?;
+    if let Some(d) = &follow {
+        super::setup::write_provider_table(d, TABLE_COMMENT, &[("follow_loaded", "true".into())])?;
+    }
+    drop(_guard);
+
+    // The config just written is what the switch below must read.
+    let cfg = super::model::load_config(global)?;
+    if use_after {
+        let out = if json {
+            super::model::Out::Json
+        } else {
+            super::model::Out::Text
+        };
+        return super::model::use_(&cfg, e.provider, 600, false, out).await;
+    }
+    load_back(&cfg, &base, previous, &mut |l| say_line(l)).await;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({ "installed": id, "provider": e.provider })
+        );
+    } else {
+        println!(
+            "\n{id} is installed. `mecha model use {}` (or the chip) loads it.",
+            e.provider
+        );
+    }
+    Ok(())
+}
+
+/// The router's restart loaded its base model; load back what was resident
+/// before — when that was something else, still served, and followed.
+async fn load_back(cfg: &Config, base: &str, previous: Option<String>, say: &mut dyn FnMut(&str)) {
+    let now = router::models(base)
+        .await
+        .filter(|l| router::readable(l))
+        .and_then(|l| router::resident(&l).map(str::to_string));
+    let Some(prev) = previous.filter(|p| {
+        Some(p) != now.as_ref() && router::namers(cfg, &router::base(base), p).next().is_some()
+    }) else {
+        return;
+    };
+    if let Err(err) = super::model::use_(cfg, &prev, 600, false, super::model::Out::Quiet).await {
+        say(&format!("  {prev} was not loaded back: {err:#}"));
+    }
+}
+
+/// `mecha model remove <id>`.
+pub(super) async fn remove(global: &GlobalOpts, cfg: &Config, id: &str, yes: bool) -> Result<()> {
+    let here = Here::read()?;
+    let home = &here.m.mecha_home;
+    let e =
+        catalog::entry(id).with_context(|| format!("no chat model {id:?} in mecha's catalog"))?;
+    if !catalog::installed(home)?.iter().any(|i| i == id) {
+        bail!("{id} is not installed from the catalog here");
+    }
+    if let Some(why) = here.router_refusal()? {
+        bail!("nothing was removed: {why}");
+    }
+    // Its own files and the graft built from them; a graft's donor is the
+    // production model's, which stays in use.
+    let held: u64 =
+        e.pins.iter().map(|p| p.file.bytes).sum::<u64>() + e.graft.map_or(0, |g| g.bytes);
+    println!(
+        "This takes {id} off the router and removes [providers.{}], then restarts the router \
+         after any run using it has finished. Its files stay where they are — about {} in the \
+         Hugging Face cache ({}){} — for `mecha model add {id}` to use again.",
+        e.provider,
+        gib(held),
+        here.hub.display(),
+        if e.graft.is_some() {
+            format!(" and {}", catalog::graft_dir(home).display())
+        } else {
+            String::new()
+        }
+    );
+    if !yes {
+        if !std::io::stdin().is_terminal() {
+            bail!("nothing was removed: not a terminal to ask at — pass --yes");
+        }
+        if !confirm(&format!("Remove {id}?"))? {
+            println!("Nothing was changed.");
+            return Ok(());
+        }
+    }
+    let base = here.naming.base();
+    let previous = router::models(&base)
+        .await
+        .filter(|l| router::readable(l))
+        .and_then(|l| router::resident(&l).map(str::to_string))
+        .filter(|p| p != id);
+    catalog::record_remove(home, id)?;
+    let choice = router_unit::installed_choice(home)?.context("the router's presets are gone")?;
+    router_unit::install(
+        &here.m,
+        cfg,
+        &choice,
+        &here.naming,
+        &here.machine,
+        &here.hub,
+        &mut |s| println!("  {s}"),
+    )
+    .await
+    .with_context(|| {
+        format!("{id} is out of the record, and the router was not restarted without it")
+    })?;
+    if cfg
+        .providers
+        .get(e.provider)
+        .is_some_and(|p| p.model.as_deref() == Some(id))
+    {
+        super::setup::remove_provider_table(e.provider, TABLE_COMMENT)?;
+    }
+    let cfg = super::model::load_config(global)?;
+    load_back(&cfg, &base, previous, &mut |l| println!("{l}")).await;
+    println!("{id} is removed.");
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mecha_core::config::ProviderConfig;
+
+    fn router_table(model: &str, follow: bool) -> ProviderConfig {
+        ProviderConfig {
+            kind: "local".into(),
+            base_url: Some("http://127.0.0.1:8080".into()),
+            model: Some(model.into()),
+            follow_loaded: follow,
+            ..Default::default()
+        }
+    }
+
+    /// The pin's fields, per slot, with `temperature` only where the preset
+    /// sets one (R4).
+    #[test]
+    fn a_provider_table_comes_from_the_pin() {
+        let gemma = catalog::entry("gemma-4-26b-a4b").unwrap();
+        let s = provider_settings(gemma, 128, "http://127.0.0.1:8080").unwrap();
+        let get = |k| s.iter().find(|(n, _)| *n == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("model"), Some("\"gemma-4-26b-a4b\""));
+        assert_eq!(get("context_window"), Some("32768"));
+        assert_eq!(get("vision"), Some("true"));
+        assert_eq!(get("temperature"), None);
+
+        let u = catalog::entry("qwen3.6-35b-a3b-uncensored").unwrap();
+        let s = provider_settings(u, 128, "http://127.0.0.1:8080").unwrap();
+        let get = |k| s.iter().find(|(n, _)| *n == k).map(|(_, v)| v.clone());
+        let g = mecha_core::recommend::chat_geometry(128).unwrap();
+        assert_eq!(get("context_window"), Some((g.ctx / g.slots).to_string()));
+        assert_eq!(get("temperature").as_deref(), Some("0.6"));
+        assert!(provider_settings(u, 16, "x").is_err());
+    }
+
+    /// `follow_loaded` goes on the default only when it names this router and
+    /// does not follow yet.
+    #[test]
+    fn follow_is_offered_only_on_a_default_that_names_this_router() {
+        let mut cfg = Config {
+            default_provider: "local".into(),
+            ..Default::default()
+        };
+        cfg.providers
+            .insert("local".into(), router_table("qwen3.6-35b-a3b", false));
+        assert_eq!(follow_target(&cfg, 8080).as_deref(), Some("local"));
+        cfg.providers.get_mut("local").unwrap().follow_loaded = true;
+        assert_eq!(follow_target(&cfg, 8080), None);
+        cfg.default_provider = "anthropic".into();
+        assert_eq!(follow_target(&cfg, 8080), None);
+    }
+
+    /// A table of the entry's name that is not the entry's is the owner's.
+    #[test]
+    fn an_owner_s_table_of_the_same_name_is_not_written_over() {
+        let e = catalog::entry("qwen3.8-27b").unwrap();
+        let mut cfg = Config::default();
+        assert_eq!(table_conflict(&cfg, e, 8080), None);
+        cfg.providers
+            .insert(e.provider.into(), router_table("qwen3.8-27b", false));
+        assert_eq!(table_conflict(&cfg, e, 8080), None);
+        cfg.providers
+            .insert(e.provider.into(), router_table("something-else", false));
+        assert!(table_conflict(&cfg, e, 8080).is_some());
+    }
+}

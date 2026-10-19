@@ -1237,6 +1237,98 @@ fn apply(provider: &str, settings: &[(&'static str, String)]) -> Result<()> {
     Ok(())
 }
 
+/// Set `settings` on `[providers.<provider>]` in the global file — the
+/// table filled in where it is, or appended under `comment` where no file
+/// names it — through the same comment-keeping line edit, backup and parse
+/// check `--write` uses. `mecha model add`'s writer (MODEL-CATALOG-DESIGN C8,
+/// C9): one place edits provider tables.
+pub(super) fn write_provider_table(
+    provider: &str,
+    comment: &str,
+    settings: &[(&'static str, String)],
+) -> Result<()> {
+    let path = mecha_core::config::Config::global_path()
+        .context("no global config path — is $HOME set?")?;
+    seed_config_file(&path)?;
+    let text = std::fs::read_to_string(&path).with_context(|| format!("reading {path:?}"))?;
+    let header = format!("[providers.{provider}]");
+    let new = if text.lines().any(|l| l.trim() == header) {
+        apply_text(&text, provider, settings)?
+    } else {
+        let mut out = text.clone();
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(&format!("\n# {comment}\n{header}\n"));
+        for (k, v) in settings {
+            out.push_str(&format!("{k} = {v}\n"));
+        }
+        out
+    };
+    write_checked(&path, &new)
+}
+
+/// Take `[providers.<provider>]` out of the global file: its header, its
+/// assignments, and the one comment line `write_provider_table` put above
+/// it — never the comment block that introduces the next table. `false` when
+/// no file names it.
+pub(super) fn remove_provider_table(provider: &str, comment: &str) -> Result<bool> {
+    let path = mecha_core::config::Config::global_path()
+        .context("no global config path — is $HOME set?")?;
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Ok(false);
+    };
+    let Some(new) = without_table(&text, provider, comment) else {
+        return Ok(false);
+    };
+    write_checked(&path, &new).map(|()| true)
+}
+
+fn without_table(text: &str, provider: &str, comment: &str) -> Option<String> {
+    let header = format!("[providers.{provider}]");
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.iter().position(|l| l.trim() == header)?;
+    let end = lines
+        .iter()
+        .enumerate()
+        .skip(start + 1)
+        .find(|(_, l)| l.trim_start().starts_with('['))
+        .map_or(lines.len(), |(i, _)| i);
+    // The table's own lines end at its last assignment; comments after it
+    // belong to the next table.
+    let last = (start + 1..end)
+        .rev()
+        .find(|&i| {
+            let t = lines[i].trim();
+            !t.is_empty() && !t.starts_with('#')
+        })
+        .unwrap_or(start);
+    let mut from = start;
+    if from > 0 && lines[from - 1].trim() == format!("# {comment}") {
+        from -= 1;
+    }
+    // The blank line `write_provider_table` put before it.
+    if from > 0 && lines[from - 1].trim().is_empty() {
+        from -= 1;
+    }
+    let mut out: Vec<&str> = lines[..from].to_vec();
+    out.extend_from_slice(&lines[last + 1..]);
+    Some(out.join("\n") + "\n")
+}
+
+/// Write `text` to the config at `path`, keeping the previous copy, and put
+/// it back if what was written does not parse.
+fn write_checked(path: &std::path::Path, text: &str) -> Result<()> {
+    let backup = path.with_extension("toml.bak");
+    std::fs::copy(path, &backup).ok();
+    std::fs::write(path, text)?;
+    if let Err(e) = mecha_core::config::Config::load_global() {
+        let restored = std::fs::copy(&backup, path).is_ok();
+        return Err(unparsed(path, e, restored));
+    }
+    Ok(())
+}
+
 /// `apply_text`, or — for a provider the config has but no file names, the
 /// built-in `local` entry (ruling F12) — a new table written from that
 /// entry's kind and address with the settings beneath. `--write` is the
@@ -1390,6 +1482,31 @@ fn shell_words(argv: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `model remove` takes out the table `model add` wrote — its comment, its
+    /// lines and the blank before it — and nothing of the tables around it,
+    /// the next one's comment block included.
+    #[test]
+    fn a_written_table_comes_out_whole_and_alone() {
+        let comment = "Written by `mecha model add` from mecha's catalog.";
+        let text = "default_provider = \"local\"\n\n[providers.local]\nkind = \"local\"\n\n\
+                    # Written by `mecha model add` from mecha's catalog.\n[providers.gemma26]\n\
+                    model = \"gemma-4-26b-a4b\"\ncontext_window = 32768\n\n\
+                    # The hosted one.\n[providers.anthropic]\nkind = \"anthropic\"\n";
+        let out = without_table(text, "gemma26", comment).unwrap();
+        assert_eq!(
+            out,
+            "default_provider = \"local\"\n\n[providers.local]\nkind = \"local\"\n\n\
+             # The hosted one.\n[providers.anthropic]\nkind = \"anthropic\"\n"
+        );
+        assert!(without_table(text, "absent", comment).is_none());
+        // The last table in the file, with no comment of ours above it.
+        let tail = "[providers.local]\nkind = \"local\"\n[providers.x]\nmodel = \"m\"\n";
+        assert_eq!(
+            without_table(tail, "x", comment).unwrap(),
+            "[providers.local]\nkind = \"local\"\n"
+        );
+    }
 
     /// `--write` and `setup chat` fill the starter's `[providers.local]`
     /// (ruling F12) without landing under the next table's introduction,
