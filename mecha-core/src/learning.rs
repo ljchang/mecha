@@ -3397,7 +3397,8 @@ pub fn extract_interventions(messages: &[Message]) -> Vec<Intervention> {
         .collect();
     // Names ride only for calls a registered tool answered: an invented name
     // is the one string in the call trace a page can author outright, and the
-    // names below reach a reflection filed clean and a rule's scope.
+    // names below reach a reflection filed clean and a rule's scope. Any
+    // other call stands as `UNANSWERED_CALL`, so a scope keeps its key.
     let answered = crate::agent::calls_a_tool_answered(messages);
     // Rolling description of what the assistant last did.
     let mut doing = String::new();
@@ -3432,9 +3433,7 @@ pub fn extract_interventions(messages: &[Message]) -> Vec<Intervention> {
                 let mut uses: Vec<(String, String)> = Vec::new();
                 for (id, name, input) in message.tool_uses() {
                     parts.push(format!("{name} {}", truncate(&input.to_string(), 120)));
-                    if !answered.contains(id) {
-                        continue;
-                    }
+                    let name = crate::agent::answered_name(&answered, id, name);
                     if !names.contains(&name.to_string()) {
                         names.push(name.to_string());
                     }
@@ -3554,11 +3553,8 @@ pub fn extract_interventions(messages: &[Message]) -> Vec<Intervention> {
             .iter()
             .filter(|m| m.role == Role::Assistant && !m.harness)
         {
-            for (_, name, _) in m
-                .tool_uses()
-                .into_iter()
-                .filter(|(id, _, _)| answered.contains(*id))
-            {
+            for (id, name, _) in m.tool_uses() {
+                let name = crate::agent::answered_name(&answered, id, name);
                 if !intervention.tools_after.contains(&name.to_string()) {
                     intervention.tools_after.push(name.to_string());
                 }
@@ -4712,10 +4708,11 @@ mod tests {
             ]),
         ];
         let found = extract_interventions(&messages);
+        let unanswered = crate::agent::UNANSWERED_CALL;
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].trigger, Trigger::Steer);
-        assert_eq!(found[0].tools_before, vec!["fs_read"]);
-        assert_eq!(found[0].tools_after, vec!["fs_read"]);
+        assert_eq!(found[0].tools_before, vec!["fs_read", unanswered]);
+        assert_eq!(found[0].tools_after, vec!["fs_read", unanswered]);
         let withheld = found[0].user_evidence_only();
         for rendered in [&withheld.context, &withheld.aftermath] {
             assert!(!rendered.contains(invented), "{rendered}");
@@ -4724,14 +4721,48 @@ mod tests {
                 "the real call still rides: {rendered}"
             );
         }
-        assert!(!crate::situation::Situation::recorded(
-            &found[0].tools_before,
-            "steer",
-            None,
-            None
-        )
-        .describe()
-        .contains(invented));
+        let situation =
+            crate::situation::Situation::recorded(&found[0].tools_before, "steer", None, None);
+        assert!(!situation.describe().contains(invented));
+        // Substituted, never dropped: the scope keeps its key, so a rule
+        // mined here loads where the invented name let it load — nowhere —
+        // rather than in every run that read a file.
+        let run = crate::situation::Situation {
+            tools: vec!["fs_read".into()],
+            ..Default::default()
+        };
+        assert!(!situation.scope().matches(&run));
+    }
+
+    /// A window whose only call was invented must not mine a standing rule:
+    /// an empty tool list matches every run, which would widen the region
+    /// the rule loads in exactly when its evidence is least trustworthy.
+    #[test]
+    fn a_window_of_only_invented_calls_never_mines_a_standing_scope() {
+        let mut steered = Message::tool_results(vec![result(
+            "made-up",
+            &format!(
+                "{}reply_to_everyone`. Available: fs_read",
+                crate::agent::NO_TOOL_NAMED
+            ),
+            true,
+        )]);
+        steered.content.push(Block::text("There is no such tool."));
+        let messages = vec![
+            Message::user("answer the thread"),
+            Message::assistant(vec![Block::ToolUse {
+                id: "made-up".into(),
+                name: "reply_to_everyone".into(),
+                input: json!({}),
+            }]),
+            steered,
+        ];
+        let found = extract_interventions(&messages);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].tools_before, vec![crate::agent::UNANSWERED_CALL]);
+        let situation =
+            crate::situation::Situation::recorded(&found[0].tools_before, "steer", None, None);
+        assert!(!situation.is_standing());
     }
 
     /// The other half of the filter: a call with no recorded result vouches
@@ -4754,7 +4785,10 @@ mod tests {
         ];
         let found = extract_interventions(&messages);
         assert_eq!(found.len(), 1);
-        assert_eq!(found[0].tools_before, vec!["fs_read"]);
+        assert_eq!(
+            found[0].tools_before,
+            vec!["fs_read", crate::agent::UNANSWERED_CALL]
+        );
     }
 
     #[test]

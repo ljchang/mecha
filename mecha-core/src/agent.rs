@@ -1811,6 +1811,28 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
 /// [`calls_a_tool_answered`] read it back.
 pub const NO_TOOL_NAMED: &str = "no tool named `";
 
+/// What stands where a name the model wrote is withheld: a call no
+/// registered tool answered (see [`calls_a_tool_answered`]). Substituted,
+/// never dropped: a learned rule's scope must not lose a key when the
+/// string goes. A scope naming an invented tool loaded in no run, because
+/// no run registers it, and a scope carrying this phrase loads in none
+/// either. The filter changes the string and never the match.
+pub const UNANSWERED_CALL: &str = "(a call no tool answered)";
+
+/// `name` when a registered tool answered call `id`, [`UNANSWERED_CALL`]
+/// otherwise: the one spelling every "registry names only" reader shares.
+pub fn answered_name<'a>(
+    answered: &std::collections::HashSet<String>,
+    id: &str,
+    name: &'a str,
+) -> &'a str {
+    if answered.contains(id) {
+        name
+    } else {
+        UNANSWERED_CALL
+    }
+}
+
 /// The calls a registered tool answered, by `tool_use_id`.
 ///
 /// A `tool_use` records whatever name the model wrote, and a name no tool
@@ -7387,10 +7409,13 @@ mod tests {
                 is_error, content, ..
             } => {
                 assert!(is_error);
-                assert!(content.contains("no tool named"));
+                // The contract `calls_a_tool_answered` reads back: the real
+                // loop's refusal, not a string a test assembled itself.
+                assert!(content.starts_with(NO_TOOL_NAMED), "{content}");
             }
             other => panic!("expected an error tool result, got {other:?}"),
         }
+        assert!(!calls_a_tool_answered(&convo.messages).contains("t1"));
     }
 
     #[tokio::test]
