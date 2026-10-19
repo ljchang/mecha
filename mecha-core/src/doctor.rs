@@ -3821,6 +3821,7 @@ mod tests {
             measurement: None,
             resolved_at: None,
             reason: None,
+            rejection: None,
         };
         std::fs::write(
             dir.join(format!("{id}.json")),

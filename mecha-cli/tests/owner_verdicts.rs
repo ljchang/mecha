@@ -139,6 +139,7 @@ fn seed_candidates(home: &Path) {
                 measurement: None,
                 resolved_at: None,
                 reason: None,
+                rejection: None,
             })
             .unwrap();
     }

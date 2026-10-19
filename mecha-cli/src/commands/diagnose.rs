@@ -215,7 +215,7 @@ pub fn corpus_slice(
 pub fn evidence_for(
     model: &str,
     slice: &Corpus,
-    history: Vec<String>,
+    history: &[mecha_core::harness::HarnessCandidate],
     cfg: &mecha_core::config::Config,
 ) -> Evidence {
     let mut evidence = Evidence::of(model, slice);
@@ -229,7 +229,14 @@ pub fn evidence_for(
                 .push(format!("{} — {}", finding.summary, finding.detail));
         }
     }
-    evidence.history = history;
+    // Grouped against this brief's own counters: a no-headroom rejection is
+    // held exactly while the metric it predicted is still at zero here.
+    let headroom: Vec<(mecha_core::candidate::Metric, bool)> = evidence
+        .metrics
+        .iter()
+        .map(|(m, _, with)| (*m, *with > 0))
+        .collect();
+    evidence.history = history_lines(history, |m| headroom.iter().any(|(k, has)| *k == m && *has));
     evidence.compact_at_fraction = compact_at_fraction(slice);
     // The stage lever: a trial home whose config withholds the sensors gets
     // a brief without them. The config is the caller's, loaded with `?`, so
@@ -606,7 +613,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // measurement deserves to know what already failed one.
     let history = harness_history().unwrap_or_default();
     let cfg = mecha_core::config::Config::load_global()?;
-    let evidence = evidence_for(&model, &slice, history, &cfg);
+    let evidence = evidence_for(&model, &slice, &history, &cfg);
 
     if args.dry_run {
         println!("{}", evidence.brief());
@@ -662,31 +669,71 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     Ok(())
 }
 
-/// One line per already-disposed candidate, for the brief. Best-effort: a
-/// missing store is an empty history, not an error. Newest 20 only — the
-/// brief rides in a real request every night, and the dedupe in `harness
-/// ruminate` catches an exact re-derivation regardless of age.
-pub fn harness_history() -> Result<Vec<String>> {
-    let store = mecha_core::harness::HarnessStore::open_default()?;
-    let all = store.all()?;
-    let newest_20 = all.len().saturating_sub(20);
-    Ok(all[newest_20..]
+/// Every earlier candidate, oldest first, for the brief. Best-effort: a
+/// missing store is an empty history, not an error.
+pub fn harness_history() -> Result<Vec<mecha_core::harness::HarnessCandidate>> {
+    mecha_core::harness::HarnessStore::open_default()?.all()
+}
+
+/// The brief's history: **one entry per change**, newest 20 changes.
+///
+/// One line per *record* made the brief contradict itself once a retry was
+/// honoured — the same change under "you may propose one again" from its
+/// old record and under "waiting on a person" from the new one, while the
+/// re-derivation check refused it (found on review of #717). So a change
+/// shows the record that decides it, by the same
+/// [`HarnessCandidate::forbids_retry`] the check reads: the newest record
+/// that forbids a retry if any does, else the newest record.
+///
+/// The reason rides on the line as context, bounded — never the
+/// instruction: what may be done with the change comes from the verdict.
+///
+/// [`HarnessCandidate::forbids_retry`]: mecha_core::harness::HarnessCandidate::forbids_retry
+pub fn history_lines(
+    all: &[mecha_core::harness::HarnessCandidate],
+    has_headroom: impl Fn(mecha_core::candidate::Metric) -> bool,
+) -> Vec<mecha_core::diagnose::PastCandidate> {
+    const REASON_CHARS: usize = 160;
+    // Newest first, so the first record seen of a change is its newest.
+    let mut order: Vec<String> = Vec::new();
+    let mut decides: std::collections::HashMap<String, &mecha_core::harness::HarnessCandidate> =
+        std::collections::HashMap::new();
+    for c in all.iter().rev() {
+        let key = mecha_core::harness::canonical_change(&c.change);
+        let forbids = c.forbids_retry(has_headroom(c.metric));
+        match decides.get(&key) {
+            None => {
+                order.push(key.clone());
+                decides.insert(key, c);
+            }
+            Some(kept) if forbids && !kept.forbids_retry(has_headroom(kept.metric)) => {
+                decides.insert(key, c);
+            }
+            Some(_) => {}
+        }
+    }
+    order.truncate(20);
+    order.reverse();
+    order
         .iter()
-        .map(|c| {
-            let verdict = match c.status.as_str() {
-                mecha_core::harness::STATUS_REJECTED => {
-                    format!(
-                        "rejected: {}",
-                        c.reason.as_deref().unwrap_or("measured worse")
-                    )
+        .map(|key| {
+            let c = decides[key];
+            let line = match c.reason.as_deref() {
+                Some(why) => {
+                    let mut short: String = why.chars().take(REASON_CHARS).collect();
+                    if why.chars().count() > REASON_CHARS {
+                        short.push('…');
+                    }
+                    format!("{key} ({:?}) — {short}", c.class)
                 }
-                mecha_core::harness::STATUS_REVERTED => "accepted, then reverted by hand".into(),
-                mecha_core::harness::STATUS_ACCEPTED => "accepted and live".into(),
-                _ => "staged, awaiting a person".into(),
+                None => format!("{key} ({:?})", c.class),
             };
-            format!("{} ({:?}) — {verdict}", c.change, c.class)
+            mecha_core::diagnose::PastCandidate {
+                verdict: c.history_verdict(),
+                line,
+            }
         })
-        .collect())
+        .collect()
 }
 
 /// Single-quote a value for a shell, so a printed command cannot become a
@@ -706,6 +753,86 @@ pub fn shell_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn record(
+        id: &str,
+        change: &str,
+        status: &str,
+        rejection: Option<mecha_core::harness::Rejection>,
+    ) -> mecha_core::harness::HarnessCandidate {
+        mecha_core::harness::HarnessCandidate {
+            id: id.into(),
+            created_at: "2026-10-19T00:00:00Z".into(),
+            class: mecha_core::candidate::ChangeClass::Config,
+            change: change.into(),
+            metric: mecha_core::candidate::Metric::Turns,
+            rationale: String::new(),
+            evidence: String::new(),
+            model: None,
+            status: status.into(),
+            measurement: None,
+            resolved_at: None,
+            reason: None,
+            rejection,
+        }
+    }
+
+    /// One entry per change, chosen by the predicate the re-derivation check
+    /// reads — so a change retried after an "unmeasured" verdict shows once,
+    /// under what now decides it, and the brief never invites what the loop
+    /// then refuses. Fails on one-line-per-record, which listed it twice.
+    #[test]
+    fn the_history_shows_each_change_once_by_the_record_that_decides_it() {
+        use mecha_core::harness::{HistoryVerdict as V, Rejection, STATUS_REJECTED, STATUS_STAGED};
+        let on_file = [
+            record(
+                "hc-1",
+                "effort=high",
+                STATUS_REJECTED,
+                Some(Rejection::Unmeasured),
+            ),
+            record("hc-2", "effort = high", STATUS_STAGED, None),
+            record(
+                "hc-3",
+                "max_turns=3",
+                STATUS_REJECTED,
+                Some(Rejection::Harmful),
+            ),
+            record(
+                "hc-4",
+                "max_turns=3",
+                STATUS_REJECTED,
+                Some(Rejection::Unmeasured),
+            ),
+            record(
+                "hc-5",
+                "compact_at_tokens=16384",
+                STATUS_REJECTED,
+                Some(Rejection::NoHeadroom),
+            ),
+        ];
+        let lines = history_lines(&on_file, |_| false);
+        let verdicts: Vec<(&str, V)> = lines
+            .iter()
+            .map(|l| (l.line.split(' ').next().unwrap(), l.verdict))
+            .collect();
+        assert_eq!(
+            verdicts,
+            vec![
+                ("effort=high", V::Staged),
+                ("max_turns=3", V::OwnerHarmful),
+                ("compact_at_tokens=16384", V::NoHeadroom),
+            ],
+            "one per change, oldest change first; a newer retry does not undo a harmful verdict"
+        );
+        // Each shown record is the one that forbids, where one does — the
+        // same answer `forbidding_prior` reaches.
+        assert!(on_file[1].forbids_retry(false) && on_file[2].forbids_retry(false));
+        assert!(on_file[4].forbids_retry(false));
+        // With headroom, the no-headroom record stops forbidding, and the
+        // brief still shows it under the group that says so.
+        assert!(!on_file[4].forbids_retry(true));
+    }
 
     /// Found on review of #329: the diagnostician's run is narrowed off past
     /// appraisals as well as learned rules, so `goal_context` — a second
