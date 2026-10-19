@@ -27,7 +27,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -222,7 +222,7 @@ pub struct Plan {
     pub items: Vec<TodoItem>,
 }
 
-/// One plan per conversation, keyed by the run's workspace.
+/// One plan per conversation, keyed by [`PlanKey`].
 ///
 /// It held a single list for the lifetime of the *agent* until 2026-08-26,
 /// which was correct while every front-end holding one served a single
@@ -231,17 +231,46 @@ pub struct Plan {
 /// handle rendered the wrong conversation's plan, which is worse than
 /// rendering none, because a plausible list belonging to something else is
 /// indistinguishable from this one's.
-///
-/// The key is the run's workspace, on the precedent [`Asker::ask_in`] set for
-/// exactly this shape: one agent, many conversations, and the jail as the only
-/// thing in scope at call time that says which is which. Two runs sharing a
-/// workspace share a list, which is right — that is the same conversation
-/// resumed, not two.
-///
-/// [`Asker::ask_in`]: super::ask::Asker::ask_in
 #[derive(Default)]
 pub struct TodoTool {
-    lists: Mutex<HashMap<PathBuf, Tracked>>,
+    lists: Mutex<HashMap<PlanKey, Tracked>>,
+}
+
+/// Which conversation a plan belongs to.
+///
+/// **The conversation the turn was stamped with, where a front end stamps
+/// one; the workspace only where none does.** A workspace is not a
+/// conversation: a resumed conversation keeps its recorded workspace under a
+/// new key, so two live web chats — a reopened `main` transcript and the new
+/// `main` — shared `~/.mecha/work/web/main` and one plan, and the reopened
+/// chat's plan showed in main (2026-10-19). The same keying, for the same
+/// reason, as `ask_user`'s routing (2026-10-18).
+///
+/// The workspace stays the key for a front end that serves one conversation
+/// (the TUI, `run`, `chat`) and for a delegated task run, which gets a
+/// workspace of its own (`work::ensure(task_id)`, D14).
+///
+/// Readers derive the key from the same place the writer does: from the
+/// run's [`ToolCtx`] ([`PlanKey::of`]), or, in `serve`, from the session key
+/// it stamps into that context. Reading by the workspace a stamped run wrote
+/// under its conversation finds nothing — and the reverse is the bug above.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum PlanKey {
+    /// The front end's own name for the conversation
+    /// ([`ToolCtx::conversation`]): the web chat's session key.
+    Conversation(String),
+    /// The run's workspace, where nothing stamped a conversation.
+    Workspace(PathBuf),
+}
+
+impl PlanKey {
+    /// The key a run in `ctx` writes its plan under.
+    pub fn of(ctx: &ToolCtx) -> Self {
+        match &ctx.conversation {
+            Some(key) => Self::Conversation(key.clone()),
+            None => Self::Workspace(ctx.workspace.clone()),
+        }
+    }
 }
 
 /// One conversation's plan, and what the harness knows about how its steps
@@ -839,9 +868,9 @@ impl Tracked {
         // conversation waiting for a step of the same wording to be re-added.
         // `completed` gets the same sweep: unlike `started`/`flagged`, it is
         // read by `escalation_candidate` as "the plan's other completed
-        // steps", and `TodoTool`'s lists are keyed by workspace rather than
-        // conversation — so without this, a wholesale plan rewrite (or a
-        // second conversation reusing the workspace) leaves stale entries
+        // steps", and a `TodoTool` list outlives any one plan written into it
+        // — so without this, a wholesale plan rewrite (or, where the key is
+        // a workspace, a second conversation reusing it) leaves stale entries
         // from a plan that no longer exists as the mean a new plan's steps
         // are judged against. Bounding `COMPLETED_HISTORY_CAP` protects
         // against unbounded growth; it does not scope the history to the
@@ -897,8 +926,8 @@ impl TodoTool {
     /// the marks would measure the resumed run's work against the killed
     /// one's — the exact wrong-units mistake rung 4 made reading headroom off
     /// one run's outcome for a whole episode.
-    pub fn set_plan_in(&self, workspace: &Path, plan: Plan) {
-        self.install_in(workspace, plan, HashMap::new());
+    pub fn set_plan_in(&self, key: &PlanKey, plan: Plan) {
+        self.install_in(key, plan, HashMap::new());
     }
 
     /// [`set_plan_in`](Self::set_plan_in), plus freezes the plan itself
@@ -914,7 +943,7 @@ impl TodoTool {
     /// freeze map and in the plan itself: the body says why. `tampered`
     /// starts at zero, as the counter is per process and the transcript's
     /// own echoes already carry the earlier lines.
-    fn install_in(&self, workspace: &Path, mut plan: Plan, extra: HashMap<String, String>) {
+    fn install_in(&self, key: &PlanKey, mut plan: Plan, extra: HashMap<String, String>) {
         // The plan's own completed checks first, then the echo-derived
         // ones *over* them: when the plan came from a whole echo the two
         // agree, and when it came from the input fallback (a thinned echo)
@@ -962,7 +991,7 @@ impl TodoTool {
             }
         }
         self.lists.lock().unwrap_or_else(|e| e.into_inner()).insert(
-            workspace.into(),
+            key.clone(),
             Tracked {
                 plan,
                 checks,
@@ -986,7 +1015,7 @@ impl TodoTool {
     /// with it — the objection that keeps a mecha-side store of task runs from
     /// existing, and the reason the TUI reads a trigger's last answer from the
     /// session file rather than caching it.
-    pub fn rehydrate(&self, workspace: &Path, messages: &[Message]) -> Option<usize> {
+    pub fn rehydrate(&self, key: &PlanKey, messages: &[Message]) -> Option<usize> {
         let plan = Self::plan_from_transcript(messages)?;
         let n = plan.items.len();
         // Freezes from every echo the transcript holds, not only the plan
@@ -995,11 +1024,7 @@ impl TodoTool {
         // steps — was absent from the restored plan and so re-added
         // unfrozen, the drop-then-re-add door with a process boundary in
         // the middle (found on review).
-        self.install_in(
-            workspace,
-            plan,
-            Self::frozen_checks_from_transcript(messages),
-        );
+        self.install_in(key, plan, Self::frozen_checks_from_transcript(messages));
         Some(n)
     }
 
@@ -1285,13 +1310,13 @@ impl TodoTool {
         Plan { goal, items }
     }
 
-    /// Drop the plan kept for `workspace`. An incognito chat's plan lives
+    /// Drop the plan kept under `key`. An incognito chat's plan lives
     /// only here, in memory; closing the chat must not leave it behind.
-    pub fn forget_in(&self, workspace: &Path) {
+    pub fn forget_in(&self, key: &PlanKey) {
         self.lists
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(workspace);
+            .remove(key);
     }
 
     /// One run's list, for a UI that wants to render progress live.
@@ -1299,21 +1324,21 @@ impl TodoTool {
     /// An absent key is an empty list rather than an error: a conversation
     /// that has not written a plan and one that never will look the same from
     /// here, and both render as no pane.
-    pub fn items_in(&self, workspace: &Path) -> Vec<TodoItem> {
+    pub fn items_in(&self, key: &PlanKey) -> Vec<TodoItem> {
         self.lists
             .lock()
             .unwrap()
-            .get(workspace)
+            .get(key)
             .map(|t| t.plan.items.clone())
             .unwrap_or_default()
     }
 
     /// What this run's plan serves, if it said.
-    pub fn goal_in(&self, workspace: &Path) -> Option<GoalRef> {
+    pub fn goal_in(&self, key: &PlanKey) -> Option<GoalRef> {
         self.lists
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .get(workspace)?
+            .get(key)?
             .plan
             .goal
             .clone()
@@ -1355,15 +1380,15 @@ impl TodoTool {
         out
     }
 
-    /// Tampers recorded on this workspace's plan — a completed step's check
+    /// Tampers recorded on this conversation's plan — a completed step's check
     /// rewritten after the fact. Not yet folded into `RunStats` (the loop
     /// would have to ask this tool by name, which it never does); exposed so
     /// a caller that already holds the tool can read it.
-    pub fn tampered_in(&self, workspace: &Path) -> u32 {
+    pub fn tampered_in(&self, key: &PlanKey) -> u32 {
         self.lists
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .get(workspace)
+            .get(key)
             .map(|t| t.tampered)
             .unwrap_or(0)
     }
@@ -1461,7 +1486,7 @@ impl Tool for TodoTool {
     /// copy of it.
     fn carried_state(&self, ctx: &ToolCtx) -> Option<CarriedState> {
         let lists = self.lists.lock().unwrap_or_else(|e| e.into_inner());
-        let plan = &lists.get(&ctx.workspace)?.plan;
+        let plan = &lists.get(&PlanKey::of(ctx))?.plan;
         // An empty list is genuinely nothing to carry, and an empty section in
         // the prompt reads as "the plan is finished" rather than "there was
         // never a plan".
@@ -1478,8 +1503,9 @@ impl Tool for TodoTool {
     /// over", and the plan is conversation state like any other.
     ///
     /// It went unimplemented while the list was agent-wide, when the same
-    /// omission merely meant a stale pane. Keyed by workspace it is worse: a
-    /// cleared conversation and the next one share a jail, so yesterday's plan
+    /// omission merely meant a stale pane. Keyed by workspace (every front end
+    /// that stamps no conversation) it is worse: a cleared conversation and
+    /// the next one share a jail, so yesterday's plan
     /// would survive into today's run *and* be spliced into its compaction by
     /// `carried_state` — which is precisely the "plausible list belonging to
     /// something else" the keying was introduced to prevent, arriving through
@@ -1502,7 +1528,7 @@ impl Tool for TodoTool {
         // like a successful one — never as work that failed.
         let (own_calls_before, last_real) = {
             let mut lists = self.lists.lock().unwrap_or_else(|e| e.into_inner());
-            let tracked = lists.entry(ctx.workspace.clone()).or_default();
+            let tracked = lists.entry(PlanKey::of(ctx)).or_default();
             let own_calls_before = tracked.observe(ctx.work);
             (own_calls_before, tracked.last_real)
         };
@@ -1669,7 +1695,7 @@ impl Tool for TodoTool {
         // stood (found on review).
         let (findings, rendered) = {
             let mut lists = self.lists.lock().unwrap_or_else(|e| e.into_inner());
-            let tracked = lists.entry(ctx.workspace.clone()).or_default();
+            let tracked = lists.entry(PlanKey::of(ctx)).or_default();
             let previous: std::collections::HashSet<String> = tracked
                 .plan
                 .items
@@ -1820,7 +1846,7 @@ mod tests {
         assert!(out.content.contains("[x] read the config"));
         assert!(out.content.contains("[~] fix the port"));
         assert!(out.content.contains("[ ] run the tests"));
-        assert_eq!(tool.items_in(&ctx.workspace).len(), 3);
+        assert_eq!(tool.items_in(&PlanKey::of(&ctx)).len(), 3);
     }
 
     #[tokio::test]
@@ -1840,7 +1866,7 @@ mod tests {
         .await
         .unwrap();
 
-        let items = tool.items_in(&ctx.workspace);
+        let items = tool.items_in(&PlanKey::of(&ctx));
         assert_eq!(items.len(), 1, "a write replaces the whole list");
         assert_eq!(items[0].content, "b");
     }
@@ -1894,7 +1920,7 @@ mod tests {
             out.content
         );
         assert_eq!(
-            tool.goal_in(&ctx.workspace),
+            tool.goal_in(&PlanKey::of(&ctx)),
             Some(GoalRef::Task("01J8ZK".into()))
         );
     }
@@ -1923,7 +1949,7 @@ mod tests {
             out.content
         );
         assert!(
-            tool.items_in(&ctx.workspace).is_empty(),
+            tool.items_in(&PlanKey::of(&ctx)).is_empty(),
             "a rejected write changes nothing"
         );
     }
@@ -1941,7 +1967,7 @@ mod tests {
             .unwrap();
         assert!(!out.is_error);
         assert!(out.content.starts_with("0/1 done"), "{}", out.content);
-        assert_eq!(tool.goal_in(&ctx.workspace), None);
+        assert_eq!(tool.goal_in(&PlanKey::of(&ctx)), None);
     }
 
     /// Present but not a string is an error, not an absence. The object
@@ -1963,7 +1989,7 @@ mod tests {
             .unwrap();
         assert!(out.is_error, "{}", out.content);
         assert!(out.content.contains("must be a string"), "{}", out.content);
-        assert!(tool.items_in(&ctx.workspace).is_empty());
+        assert!(tool.items_in(&PlanKey::of(&ctx)).is_empty());
     }
 
     /// An empty string is how a model spells an unused optional field.
@@ -1984,8 +2010,12 @@ mod tests {
             .await
             .unwrap();
         assert!(!out.is_error, "{}", out.content);
-        assert_eq!(tool.items_in(&ctx.workspace).len(), 1, "the plan was kept");
-        assert_eq!(tool.goal_in(&ctx.workspace), None);
+        assert_eq!(
+            tool.items_in(&PlanKey::of(&ctx)).len(),
+            1,
+            "the plan was kept"
+        );
+        assert_eq!(tool.goal_in(&PlanKey::of(&ctx)), None);
     }
 
     /// The echo is what the model reads this turn. A goal it cannot see is one
@@ -2017,7 +2047,7 @@ mod tests {
         assert!(out.is_error);
         assert!(out.content.contains("expected pending"));
         assert!(
-            tool.items_in(&ctx.workspace).is_empty(),
+            tool.items_in(&PlanKey::of(&ctx)).is_empty(),
             "a rejected write changes nothing"
         );
     }
@@ -2052,7 +2082,10 @@ mod tests {
         .await
         .unwrap();
 
-        let (ia, ib) = (tool.items_in(&a.workspace), tool.items_in(&b.workspace));
+        let (ia, ib) = (
+            tool.items_in(&PlanKey::of(&a)),
+            tool.items_in(&PlanKey::of(&b)),
+        );
         assert_eq!(ia.len(), 1);
         assert_eq!(ib.len(), 1);
         assert_eq!(ia[0].content, "a", "b's write must not reach a's list");
@@ -2106,12 +2139,78 @@ mod tests {
             result("t2", false),
         ];
 
-        assert!(tool.items_in(&ws).is_empty(), "nothing before the resume");
-        assert_eq!(tool.rehydrate(&ws, &msgs), Some(2));
+        assert!(
+            tool.items_in(&PlanKey::Workspace(ws.to_path_buf()))
+                .is_empty(),
+            "nothing before the resume"
+        );
+        assert_eq!(
+            tool.rehydrate(&PlanKey::Workspace(ws.to_path_buf()), &msgs),
+            Some(2)
+        );
 
-        let items = tool.items_in(&ws);
+        let items = tool.items_in(&PlanKey::Workspace(ws.to_path_buf()));
         assert_eq!(items[0].content, "first");
         assert_eq!(items[1].status, Status::InProgress);
+    }
+
+    /// Two conversations in one workspace keep two plans. A reopened `main`
+    /// transcript runs in `work/web/main` under its own key beside the new
+    /// `main`, and its plan showed in main (2026-10-19). Fails on the old
+    /// behaviour: keyed by workspace, the resume and the write both land on
+    /// main's list.
+    #[tokio::test]
+    async fn two_conversations_in_one_workspace_keep_separate_plans() {
+        let tool = TodoTool::new();
+        let in_chat = |key: &str| ToolCtx {
+            workspace: PathBuf::from("/w/web/main"),
+            conversation: Some(key.into()),
+            ..Default::default()
+        };
+        let (main, reopened) = (in_chat("main"), in_chat("resumed-1"));
+
+        tool.call(
+            json!({"items": [{"content": "main step", "status": "in_progress"}]}),
+            &main,
+        )
+        .await
+        .unwrap();
+        // The reopened chat's plan comes back from its own transcript, under
+        // its own key, and its next write stays there.
+        let recorded = vec![
+            todo_call("t1", &[("earlier step", "completed")]),
+            result("t1", false),
+        ];
+        assert_eq!(tool.rehydrate(&PlanKey::of(&reopened), &recorded), Some(1));
+        tool.call(
+            json!({"items": [
+                {"content": "earlier step", "status": "completed"},
+                {"content": "later step", "status": "in_progress"}
+            ]}),
+            &reopened,
+        )
+        .await
+        .unwrap();
+
+        let ours = tool.items_in(&PlanKey::Conversation("main".into()));
+        assert_eq!(ours.len(), 1, "the reopened chat's plan reached main");
+        assert_eq!(ours[0].content, "main step");
+        let theirs = tool.items_in(&PlanKey::Conversation("resumed-1".into()));
+        assert_eq!(
+            theirs
+                .iter()
+                .map(|i| i.content.as_str())
+                .collect::<Vec<_>>(),
+            ["earlier step", "later step"]
+        );
+        // Nothing wrote by the directory, so nothing reads back by it.
+        assert!(tool
+            .items_in(&PlanKey::Workspace(PathBuf::from("/w/web/main")))
+            .is_empty());
+        // And a compaction in main carries main's plan, not the neighbour's.
+        let carried = tool.carried_state(&main).expect("main has a plan").body;
+        assert!(carried.contains("main step"));
+        assert!(!carried.contains("later step"), "{carried}");
     }
 
     /// A write the tool rejected never changed the list, so restoring it would
@@ -2127,8 +2226,9 @@ mod tests {
             result("t2", true),
         ];
 
-        tool.rehydrate(&ws, &msgs).unwrap();
-        let items = tool.items_in(&ws);
+        tool.rehydrate(&PlanKey::Workspace(ws.to_path_buf()), &msgs)
+            .unwrap();
+        let items = tool.items_in(&PlanKey::Workspace(ws.to_path_buf()));
         assert_eq!(items.len(), 1);
         assert_eq!(
             items[0].content, "real plan",
@@ -2161,8 +2261,11 @@ mod tests {
             ],
         };
 
-        assert_eq!(tool.rehydrate(&ws, &[head]), Some(2));
-        let items = tool.items_in(&ws);
+        assert_eq!(
+            tool.rehydrate(&PlanKey::Workspace(ws.to_path_buf()), &[head]),
+            Some(2)
+        );
+        let items = tool.items_in(&PlanKey::Workspace(ws.to_path_buf()));
         assert_eq!(items[0].content, "read the thread");
         assert_eq!(items[0].status, Status::Completed);
         assert_eq!(items[1].content, "draft the reply");
@@ -2189,8 +2292,12 @@ mod tests {
             result("t9", false),
         ];
 
-        tool.rehydrate(&ws, &msgs).unwrap();
-        assert_eq!(tool.items_in(&ws)[0].content, "current");
+        tool.rehydrate(&PlanKey::Workspace(ws.to_path_buf()), &msgs)
+            .unwrap();
+        assert_eq!(
+            tool.items_in(&PlanKey::Workspace(ws.to_path_buf()))[0].content,
+            "current"
+        );
     }
 
     /// `parse_carried` is the inverse of `render`, and drift between them
@@ -2282,10 +2389,13 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(tool.items_in(&ctx.workspace).len(), 1);
+        assert_eq!(tool.items_in(&PlanKey::of(&ctx)).len(), 1);
 
         tool.forget_conversation_state();
-        assert!(tool.items_in(&ctx.workspace).is_empty(), "the plan is gone");
+        assert!(
+            tool.items_in(&PlanKey::of(&ctx)).is_empty(),
+            "the plan is gone"
+        );
         assert!(
             tool.carried_state(&ctx).is_none(),
             "and cannot reach the next conversation's compaction"
@@ -3614,7 +3724,7 @@ mod tests {
         tool.call(write("completed", "make test"), &ctx)
             .await
             .unwrap();
-        assert_eq!(tool.tampered_in(&ws), 0);
+        assert_eq!(tool.tampered_in(&PlanKey::Workspace(ws.to_path_buf())), 0);
         // Rewriting the check after the fact is reported, and counted.
         let out = tool.call(write("completed", "true"), &ctx).await.unwrap();
         assert!(
@@ -3623,14 +3733,14 @@ mod tests {
             "{}",
             out.content
         );
-        assert_eq!(tool.tampered_in(&ws), 1);
+        assert_eq!(tool.tampered_in(&PlanKey::Workspace(ws.to_path_buf())), 1);
         // Re-stating the frozen check is not a tamper.
         let out = tool
             .call(write("completed", "make test"), &ctx)
             .await
             .unwrap();
         assert!(!out.content.contains("was changed"), "{}", out.content);
-        assert_eq!(tool.tampered_in(&ws), 1);
+        assert_eq!(tool.tampered_in(&PlanKey::Workspace(ws.to_path_buf())), 1);
     }
 
     /// The one write that both completes the step and swaps its check is
@@ -3651,7 +3761,7 @@ mod tests {
             "{}",
             out.content
         );
-        assert_eq!(tool.tampered_in(&ws), 1);
+        assert_eq!(tool.tampered_in(&PlanKey::Workspace(ws.to_path_buf())), 1);
         // A step completed with the check it declared while open is clean,
         // and one that first declares a check on the completing write
         // freezes that declaration.
@@ -3672,7 +3782,7 @@ mod tests {
             "{}",
             out.content
         );
-        assert_eq!(tool.tampered_in(&ws), 1);
+        assert_eq!(tool.tampered_in(&PlanKey::Workspace(ws.to_path_buf())), 1);
         let out = tool
             .call(write2("completed", Some("true")), &ctx)
             .await
@@ -3682,7 +3792,7 @@ mod tests {
             "{}",
             out.content
         );
-        assert_eq!(tool.tampered_in(&ws), 2);
+        assert_eq!(tool.tampered_in(&PlanKey::Workspace(ws.to_path_buf())), 2);
     }
 
     /// Reopening the step must not release the freeze — the first fix let
@@ -3705,10 +3815,10 @@ mod tests {
         // second completion.
         let out = tool.call(write("in_progress", "true"), &ctx).await.unwrap();
         assert!(out.content.contains("was changed"), "{}", out.content);
-        assert_eq!(tool.tampered_in(&ws), 1);
+        assert_eq!(tool.tampered_in(&PlanKey::Workspace(ws.to_path_buf())), 1);
         let out = tool.call(write("completed", "true"), &ctx).await.unwrap();
         assert!(out.content.contains("was changed"), "{}", out.content);
-        assert_eq!(tool.tampered_in(&ws), 2);
+        assert_eq!(tool.tampered_in(&PlanKey::Workspace(ws.to_path_buf())), 2);
         // Reopening and re-stating the frozen check is fine.
         let out = tool
             .call(write("in_progress", "make test"), &ctx)
@@ -3719,7 +3829,7 @@ mod tests {
         tool.call(json!({"items": []}), &ctx).await.unwrap();
         let out = tool.call(write("pending", "echo ok"), &ctx).await.unwrap();
         assert!(out.content.contains("was changed"), "{}", out.content);
-        assert_eq!(tool.tampered_in(&ws), 3);
+        assert_eq!(tool.tampered_in(&PlanKey::Workspace(ws.to_path_buf())), 3);
     }
 
     /// The tamper is not only announced: the plan the tool keeps — and so
@@ -3745,7 +3855,7 @@ mod tests {
             "the echo shows the frozen check, not the rewrite: {}",
             out.content
         );
-        let kept = tool.items_in(&ws);
+        let kept = tool.items_in(&PlanKey::Workspace(ws.to_path_buf()));
         assert_eq!(kept[0].check.as_deref(), Some("make test"));
         let carried = tool.carried_state(&ctx).unwrap();
         assert!(
@@ -3794,8 +3904,13 @@ mod tests {
             "{}",
             out.content
         );
-        assert_eq!(tool.tampered_in(&ws), 1);
-        assert_eq!(tool.items_in(&ws)[0].check.as_deref(), Some("make test"));
+        assert_eq!(tool.tampered_in(&PlanKey::Workspace(ws.to_path_buf())), 1);
+        assert_eq!(
+            tool.items_in(&PlanKey::Workspace(ws.to_path_buf()))[0]
+                .check
+                .as_deref(),
+            Some("make test")
+        );
         // An open step may drop its check freely — nothing is frozen yet.
         tool.call(
             json!({"items": [{"content": "ship it", "status": "in_progress", "check": "true"}]}),
@@ -3830,16 +3945,26 @@ mod tests {
             .await
             .unwrap();
         }
-        assert_eq!(tool.items_in(&ws)[0].check.as_deref(), Some("make test"));
-        assert_eq!(tool.tampered_in(&ws), 1);
+        assert_eq!(
+            tool.items_in(&PlanKey::Workspace(ws.to_path_buf()))[0]
+                .check
+                .as_deref(),
+            Some("make test")
+        );
+        assert_eq!(tool.tampered_in(&PlanKey::Workspace(ws.to_path_buf())), 1);
         tool.call(
             json!({"items": [{"content": "wire it", "status": "in_progress", "check": "true"}]}),
             &ctx,
         )
         .await
         .unwrap();
-        assert_eq!(tool.items_in(&ws)[0].check.as_deref(), Some("make test"));
-        assert_eq!(tool.tampered_in(&ws), 2);
+        assert_eq!(
+            tool.items_in(&PlanKey::Workspace(ws.to_path_buf()))[0]
+                .check
+                .as_deref(),
+            Some("make test")
+        );
+        assert_eq!(tool.tampered_in(&PlanKey::Workspace(ws.to_path_buf())), 2);
     }
 
     #[tokio::test]
@@ -3859,8 +3984,13 @@ mod tests {
             .await
             .unwrap();
         }
-        assert_eq!(tool.items_in(&ws)[0].check.as_deref(), Some("new check"));
-        assert_eq!(tool.tampered_in(&ws), 0);
+        assert_eq!(
+            tool.items_in(&PlanKey::Workspace(ws.to_path_buf()))[0]
+                .check
+                .as_deref(),
+            Some("new check")
+        );
+        assert_eq!(tool.tampered_in(&PlanKey::Workspace(ws.to_path_buf())), 0);
     }
 
     /// The fourth door: a resume rebuilds the tracker, and the first cut
@@ -3875,7 +4005,7 @@ mod tests {
         let mut open = TodoItem::new("ship it", Status::InProgress);
         open.check = Some("true".into());
         tool.set_plan_in(
-            &ws,
+            &PlanKey::Workspace(ws.to_path_buf()),
             Plan {
                 goal: None,
                 items: vec![done, open],
@@ -3901,8 +4031,13 @@ mod tests {
             "an open step's check is not frozen: {}",
             out.content
         );
-        assert_eq!(tool.tampered_in(&ws), 1);
-        assert_eq!(tool.items_in(&ws)[0].check.as_deref(), Some("make test"));
+        assert_eq!(tool.tampered_in(&PlanKey::Workspace(ws.to_path_buf())), 1);
+        assert_eq!(
+            tool.items_in(&PlanKey::Workspace(ws.to_path_buf()))[0]
+                .check
+                .as_deref(),
+            Some("make test")
+        );
     }
 
     /// A newline in a prediction would forge plan lines in the carried block
@@ -4079,7 +4214,10 @@ mod tests {
         let tool = TodoTool::default();
         let ws = std::env::temp_dir().join(format!("todo-freeze-{}", uuid::Uuid::new_v4()));
         let ctx = ctx_in(&ws.to_string_lossy());
-        assert_eq!(tool.rehydrate(&ws, &messages), Some(1));
+        assert_eq!(
+            tool.rehydrate(&PlanKey::Workspace(ws.to_path_buf()), &messages),
+            Some(1)
+        );
         let out = tool
             .call(
                 json!({"items": [
@@ -4095,9 +4233,9 @@ mod tests {
             "{}",
             out.content
         );
-        assert_eq!(tool.tampered_in(&ws), 1);
+        assert_eq!(tool.tampered_in(&PlanKey::Workspace(ws.to_path_buf())), 1);
         assert_eq!(
-            tool.items_in(&ws)
+            tool.items_in(&PlanKey::Workspace(ws.to_path_buf()))
                 .iter()
                 .find(|i| i.content == "wire it")
                 .and_then(|i| i.check.clone())
@@ -4232,7 +4370,7 @@ mod tests {
             "{}",
             out.content
         );
-        assert_eq!(tool.tampered_in(&ws), 1);
+        assert_eq!(tool.tampered_in(&PlanKey::Workspace(ws.to_path_buf())), 1);
     }
 
     /// The input fallback must not out-freeze an earlier whole echo (found
@@ -4329,13 +4467,13 @@ mod tests {
         let tool = TodoTool::default();
         let ws = std::env::temp_dir().join(format!("todo-freeze-{}", uuid::Uuid::new_v4()));
         assert_eq!(
-            tool.rehydrate(&ws, &messages),
+            tool.rehydrate(&PlanKey::Workspace(ws.to_path_buf()), &messages),
             Some(11),
             "the plan came from the input fallback"
         );
         // The first echo survived whole; its freeze must outrank the
         // input's rewritten check.
-        let kept = tool.items_in(&ws);
+        let kept = tool.items_in(&PlanKey::Workspace(ws.to_path_buf()));
         let wire = kept.iter().find(|i| i.content == "wire it").unwrap();
         assert_eq!(
             wire.check.as_deref(),
@@ -4343,7 +4481,7 @@ mod tests {
             "the plan carries the frozen command, not the input's rewrite (nineteenth pass)"
         );
         let lists = tool.lists.lock().unwrap();
-        let tracked = lists.get(&ws).unwrap();
+        let tracked = lists.get(&PlanKey::Workspace(ws.to_path_buf())).unwrap();
         assert_eq!(
             tracked.checks.get("wire it").map(|f| f.check.as_str()),
             Some("make test")
@@ -4502,7 +4640,10 @@ mod tests {
         let tool = TodoTool::default();
         let ws = std::env::temp_dir().join(format!("todo-freeze-{}", uuid::Uuid::new_v4()));
         let ctx = ctx_in(&ws.to_string_lossy());
-        assert_eq!(tool.rehydrate(&ws, &messages), Some(1));
+        assert_eq!(
+            tool.rehydrate(&PlanKey::Workspace(ws.to_path_buf()), &messages),
+            Some(1)
+        );
         let out = tool
             .call(
                 json!({"items": [
@@ -4518,7 +4659,7 @@ mod tests {
             "{}",
             out.content
         );
-        assert_eq!(tool.tampered_in(&ws), 1);
+        assert_eq!(tool.tampered_in(&PlanKey::Workspace(ws.to_path_buf())), 1);
     }
 
     /// A truncation marker in a step's text made every echo of that step
@@ -4548,7 +4689,11 @@ mod tests {
                 out.content
             );
         }
-        assert!(tool.items_in(&ws).is_empty(), "nothing was installed");
+        assert!(
+            tool.items_in(&PlanKey::Workspace(ws.to_path_buf()))
+                .is_empty(),
+            "nothing was installed"
+        );
         let item: TodoItem = serde_json::from_value(json!({
             "content": "wire it", "status": "completed", "check": cap
         }))
@@ -4578,14 +4723,14 @@ mod tests {
             .into_iter()
             .collect();
         tool.install_in(
-            &ws,
+            &PlanKey::Workspace(ws.to_path_buf()),
             Plan {
                 goal: None,
                 items: vec![reopened],
             },
             extra,
         );
-        let kept = tool.items_in(&ws);
+        let kept = tool.items_in(&PlanKey::Workspace(ws.to_path_buf()));
         assert_eq!(kept[0].status, Status::InProgress);
         assert_eq!(kept[0].check.as_deref(), Some("make test"));
     }

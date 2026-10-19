@@ -160,8 +160,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         let (meta, prior) = Session::load(&path)?;
         // D15, as in the other three resume paths.
         if let Some(todo) = &prepared.todo {
-            let ws = prepared.agent.context().tools.workspace.clone();
-            todo.rehydrate(&ws, &prior.messages);
+            let plan = mecha_core::tool::todo::PlanKey::of(&prepared.agent.context().tools);
+            todo.rehydrate(&plan, &prior.messages);
         }
         convo = prior;
         mecha_core::archive::reopened(&path, &meta.id);

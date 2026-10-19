@@ -61,8 +61,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // D15: restore the plan from the transcript the model is about to
         // re-read it from, so the two agree from the first turn.
         if let Some(todo) = &prepared.todo {
-            let ws = prepared.agent.context().tools.workspace.clone();
-            if let Some(n) = todo.rehydrate(&ws, &prior.messages) {
+            let plan = mecha_core::tool::todo::PlanKey::of(&prepared.agent.context().tools);
+            if let Some(n) = todo.rehydrate(&plan, &prior.messages) {
                 println!("restored a plan of {n} item(s)");
             }
         }
