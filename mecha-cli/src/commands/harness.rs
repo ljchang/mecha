@@ -1144,7 +1144,6 @@ async fn null_arm(
     spec: NullSpec,
     from_workspace: Option<std::path::PathBuf>,
 ) -> Result<()> {
-    use mecha_core::harness::{NullJudgement, NullRun};
     let NullSpec {
         sessions,
         days,
@@ -1187,6 +1186,53 @@ async fn null_arm(
         draw.skipped,
     );
     let driven = drive_arms(&prepared, provider_cfg, &model, &draw, None).await?;
+    let run = null_record(
+        id,
+        &model,
+        drawn_by,
+        driven,
+        NullDraw {
+            seed: draw.seed,
+            ranked: draw.ranked,
+            drawn: draw.selection.len() + draw.holdout.len(),
+            measured_at: chrono::Utc::now().to_rfc3339(),
+        },
+        // The brief's own rule: a metric some run in the corpus has any of.
+        |m| slice.metric_cost(m).1 > 0,
+    );
+    // **The readout first, then the record** (found on review of #717): the
+    // replay is paid for, and a write that fails — an unwritable store, a
+    // full disk — must not take the numbers with it. `measure` was corrected
+    // for the same shape twice.
+    print_null_run(&run, &null_divergences(&run));
+    store
+        .write_null(&run)
+        .context("the null run above was measured, but its record could not be written")
+}
+
+/// What a null run's draw carries into its record, beside the pairs.
+struct NullDraw {
+    seed: u64,
+    ranked: Option<usize>,
+    /// Selection plus holdout, before either arm ran.
+    drawn: usize,
+    measured_at: String,
+}
+
+/// A null run's record from its driven pairs — pure, so the three ways a
+/// run can measure nothing (nothing paired, identical arms, a metric with
+/// no headroom) are pinned by tests rather than argued; every earlier
+/// review finding on the null arm landed in this stretch (found on review
+/// of #717).
+fn null_record(
+    id: String,
+    model: &str,
+    drawn_by: mecha_core::candidate::Metric,
+    driven: Driven,
+    meta: NullDraw,
+    has_headroom: impl Fn(mecha_core::candidate::Metric) -> bool,
+) -> mecha_core::harness::NullRun {
+    use mecha_core::harness::{NullJudgement, NullRun};
     let judge = |metric| {
         judge_drawn(
             ChangeClass::Config,
@@ -1226,7 +1272,7 @@ async fn null_arm(
     let (with_headroom, no_headroom): (Vec<_>, Vec<_>) = mecha_core::candidate::Metric::ALL
         .iter()
         .copied()
-        .partition(|m| slice.metric_cost(*m).1 > 0);
+        .partition(|m| has_headroom(*m));
     let by_metric: Vec<NullJudgement> = if paired && !arms_identical {
         with_headroom
             .iter()
@@ -1246,33 +1292,15 @@ async fn null_arm(
         .iter()
         .map(|p| p.episode.clone())
         .collect();
-    // **Not `Divergence::arms_summary`.** That is worded for two arms that
-    // differ by a change — a candidate-arm divergence "says the change moved
-    // behaviour" — and here there is no change: the second replay is the
-    // baseline again, recorded under `Arm::Candidate` only because
-    // `drive_arms` is shared. Either replay leaving the recording is the
-    // identity failing to reproduce itself (found on review of #717).
-    let arms = {
-        let first = mecha_core::harness::Divergence::baseline_count(&driven.divergence_detail);
-        let second = mecha_core::harness::Divergence::candidate_count(&driven.divergence_detail);
-        if first + second == 0 {
-            String::new()
-        } else {
-            format!(
-                "; {first} on the first replay and {second} on the second — an unchanged \
-                 configuration that did not reproduce itself"
-            )
-        }
-    };
     let mut measurement = Measurement::record(
         &judge(drawn_by),
-        &model,
-        chrono::Utc::now().to_rfc3339(),
+        model,
+        meta.measured_at,
         mecha_core::harness::Drawn {
             episodes,
             holdout_episodes,
-            seed: draw.seed,
-            ranked: draw.ranked,
+            seed: meta.seed,
+            ranked: meta.ranked,
             diverged: driven.diverged,
             replay_caveats: driven.replay_caveats,
             divergence_detail: driven.divergence_detail,
@@ -1290,23 +1318,36 @@ async fn null_arm(
             measurement.skipped
         );
     }
-    let run = NullRun {
+    NullRun {
         id,
         drawn_by,
         measurement,
         by_metric,
-        drawn: draw.selection.len() + draw.holdout.len(),
+        drawn: meta.drawn,
         arms_identical,
         no_headroom,
-    };
-    // **The readout first, then the record** (found on review of #717): the
-    // replay is paid for, and a write that fails — an unwritable store, a
-    // full disk — must not take the numbers with it. `measure` was corrected
-    // for the same shape twice.
-    print_null_run(&run, &arms);
-    store
-        .write_null(&run)
-        .context("the null run above was measured, but its record could not be written")
+    }
+}
+
+/// How often each replay left the recording, worded for a null run.
+fn null_divergences(run: &mecha_core::harness::NullRun) -> String {
+    let detail = &run.measurement.divergence_detail;
+    // **Not `Divergence::arms_summary`.** That is worded for two arms that
+    // differ by a change — a candidate-arm divergence "says the change moved
+    // behaviour" — and here there is no change: the second replay is the
+    // baseline again, recorded under `Arm::Candidate` only because
+    // `drive_arms` is shared. Either replay leaving the recording is the
+    // identity failing to reproduce itself (found on review of #717).
+    let first = mecha_core::harness::Divergence::baseline_count(detail);
+    let second = mecha_core::harness::Divergence::candidate_count(detail);
+    if first + second == 0 {
+        String::new()
+    } else {
+        format!(
+            "; {first} on the first replay and {second} on the second — an unchanged \
+             configuration that did not reproduce itself"
+        )
+    }
 }
 
 /// A null run's readout, as `mecha harness null` prints it.
@@ -1379,9 +1420,11 @@ fn floors(as_json: bool) -> Result<()> {
     // run, judged nothing, and must not read as a run in which the gate
     // declined to react.
     let identical = runs.iter().filter(|r| r.arms_identical).count();
+    // From the paired episodes themselves, not an empty `by_metric`, which
+    // is also what a run that paired with no metric to judge would leave.
     let unpaired = runs
         .iter()
-        .filter(|r| r.by_metric.is_empty() && !r.arms_identical)
+        .filter(|r| r.measurement.episodes.is_empty())
         .count();
     let count = |d: &str| judged.iter().filter(|j| j.disposition == d).count();
     // Only runs that judged something: an identical-arms run fills both
@@ -1927,6 +1970,91 @@ mod tests {
         assert!(forbidding_prior(on_file, "compact_at_tokens=16384", turns_only).is_none());
         let others_only = |m| m != mecha_core::candidate::Metric::Turns;
         assert!(forbidding_prior(on_file, "compact_at_tokens=16384", others_only).is_some());
+    }
+
+    fn run_stats(tool_calls: u32, turns: u32) -> mecha_core::session::RunStats {
+        mecha_core::session::RunStats {
+            tool_calls,
+            turns,
+            ..Default::default()
+        }
+    }
+
+    fn driven(pairs: Vec<Pair>, diverged: usize) -> Driven {
+        Driven {
+            arm_receipts: Vec::new(),
+            selection_pairs: pairs,
+            holdout_pairs: Vec::new(),
+            diverged: (0..diverged).map(|i| format!("d{i}")).collect(),
+            replay_caveats: Vec::new(),
+            divergence_detail: Vec::new(),
+            skipped: 0,
+        }
+    }
+
+    fn null_of(
+        d: Driven,
+        headroom: impl Fn(mecha_core::candidate::Metric) -> bool,
+    ) -> mecha_core::harness::NullRun {
+        null_record(
+            "aa-test".into(),
+            "m",
+            mecha_core::candidate::Metric::Turns,
+            d,
+            NullDraw {
+                seed: 7,
+                ranked: None,
+                drawn: 4,
+                measured_at: "2026-10-19T00:00:00Z".into(),
+            },
+            headroom,
+        )
+    }
+
+    /// The three ways a null run measures nothing, each judged nothing —
+    /// the record, not only the readout. Every earlier review finding on the
+    /// null arm landed in this derivation, and the readout tests build their
+    /// records by hand, so these are what fail if a guard here is dropped.
+    #[test]
+    fn a_null_run_judges_only_pairs_that_differed_on_metrics_with_headroom() {
+        use mecha_core::candidate::Metric;
+        // Nothing paired: no judgements, and not the floor text as a reason.
+        let none = null_of(driven(Vec::new(), 2), |_| true);
+        assert!(none.by_metric.is_empty() && !none.arms_identical);
+        assert!(none
+            .measurement
+            .reason
+            .starts_with("nothing paired: 2 diverged"));
+
+        // Identical arms: paired, flagged, and judged nothing.
+        let same = |id: &str| Pair {
+            episode: id.into(),
+            baseline: run_stats(5, 3),
+            candidate: run_stats(5, 3),
+        };
+        let identical = null_of(driven(vec![same("a"), same("b")], 0), |_| true);
+        assert!(identical.arms_identical);
+        assert!(identical.by_metric.is_empty());
+        assert_eq!(identical.measurement.episodes, vec!["a", "b"]);
+
+        // Arms that differed: judged — but only on metrics with headroom,
+        // and the rest are named rather than dropped.
+        let moved = Pair {
+            episode: "c".into(),
+            baseline: run_stats(5, 3),
+            candidate: run_stats(6, 4),
+        };
+        let real = null_of(driven(vec![moved], 0), |m| m == Metric::Turns);
+        assert!(!real.arms_identical);
+        let judged: Vec<Metric> = real.by_metric.iter().map(|j| j.metric).collect();
+        assert_eq!(judged, vec![Metric::Turns]);
+        assert_eq!(real.no_headroom.len(), Metric::ALL.len() - 1);
+        assert!(!real.no_headroom.contains(&Metric::Turns));
+        assert_eq!(real.drawn, 4);
+        assert!(
+            null_divergences(&real).is_empty(),
+            "nothing diverged, nothing said"
+        );
     }
 
     #[test]
