@@ -119,7 +119,7 @@ impl OverrideKey {
 /// — it ran only under `mecha sessions appraise --appraise`, never inside a
 /// run — and it no longer runs at all (retired in row 2a-3), so there is
 /// nothing for a per-run lever to remove;
-/// and `sensors_in_brief` and `appraisals_in_brief` are *stage* levers
+/// and `sensors_in_brief`, `appraisals_in_brief` and `digests_in_brief` are *stage* levers
 /// (`ruminate` inputs), recorded on a trial's manifest rather than on a run,
 /// and wait for that store.
 ///
