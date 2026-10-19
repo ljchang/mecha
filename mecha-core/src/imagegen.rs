@@ -8523,8 +8523,8 @@ mod tests {
         );
         assert!(
             submitted.contains(
-                "Exactly two people are in the image, Maya and John, each exactly once; no one \
-                 else is in it."
+                "Exactly two people are in the foreground, Maya and John, each exactly once; \
+                 anyone in the background is a stranger, not from any image."
             ),
             "{submitted}"
         );

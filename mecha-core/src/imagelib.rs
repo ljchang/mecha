@@ -1975,13 +1975,14 @@ pub fn compile_with(
     // model does not always use `extras` — a live run wrote the waiter into
     // the prose — and there "Exactly two people" erased him outright, while
     // "appears exactly once; anyone else is a new person" drew him, and with
-    // four cast still drew exactly four. Two without extras get a closed
-    // count naming them (E14): E12's open wording let a cast of two touching
-    // be drawn three or four times, 19 of 21 pictures of recorded calls, and
-    // closed with portraits only it was 2 of 21. The cost is E12's waiter: a
-    // person only the prose describes may be erased, so a scene's other
-    // people belong in `extras`. Three or more keep E12's wording, which is
-    // all that has been measured there.
+    // four cast still drew exactly four. But that open wording let a cast of
+    // two touching be drawn three or four times, 19 of 21 pictures of
+    // recorded calls, and "Exactly two people are in the image, A and B, each
+    // exactly once; no one else is in it" with portraits only was 2 of 21
+    // (E14). So without extras the cast is counted closed, by name, in the
+    // foreground (owner, 2026-10-19), and the background is left to the
+    // scene: "no one else" would empty a busy café as it erased the waiter.
+    // Background people are strangers, never a second copy of the cast.
     let others = extras.join("; ");
     let m = extras.len();
     let new_people = if m == 1 {
@@ -1995,10 +1996,11 @@ pub fn compile_with(
         // One person bound to two images: E9b's two-person shape for one,
         // its pronoun-free singular.
         (1, 0) if both => prompt.push_str(&format!(
-            " {}.{bound_words} The person from the images appears exactly once; anyone else \
-             the scene describes is a new person, not from the images. The images are identity \
+            " {}.{bound_words} Exactly one person is in the foreground, {}, once; anyone in \
+             the background is a stranger, not from the images. The images are identity \
              references only; this is a new image with its own composition, pose and lighting.",
-            capitalize(&people[0])
+            capitalize(&people[0]),
+            names[0]
         )),
         (1, _) if both => prompt.push_str(&format!(
             " {}.{bound_words} Also in the scene, not from the images: {others}. Exactly {} \
@@ -2009,10 +2011,11 @@ pub fn compile_with(
             number(1 + m)
         )),
         (1, 0) => prompt.push_str(&format!(
-            " {}. The person from the image appears exactly once; anyone else the scene \
-             describes is a new person, not from the image. The image is an identity reference \
-             only; this is a new image with its own composition, pose and lighting.",
-            capitalize(&people[0])
+            " {}. Exactly one person is in the foreground, {}, once; anyone in the background \
+             is a stranger, not from the image. The image is an identity reference only; this \
+             is a new image with its own composition, pose and lighting.",
+            capitalize(&people[0]),
+            names[0]
         )),
         (1, _) => prompt.push_str(&format!(
             " {}. Also in the scene, not from the image: {others}. Exactly {} people in the \
@@ -2022,18 +2025,13 @@ pub fn compile_with(
             capitalize(&people[0]),
             number(1 + m)
         )),
-        (2, 0) => prompt.push_str(&format!(
-            " From left to right: {}.{bound_words} Exactly two people are in the image, {}, each \
-             exactly once; no one else is in it. All images serve as identity sources only.",
-            people.join("; "),
-            join_and(&names)
-        )),
         (n, 0) => prompt.push_str(&format!(
-            " From left to right: {}.{bound_words} Each of the {} people from the images \
-             appears exactly once; anyone else the scene describes is a new person, not from \
-             any image. All images serve as identity sources only.",
+            " From left to right: {}.{bound_words} Exactly {} people are in the foreground, {}, \
+             each exactly once; anyone in the background is a stranger, not from any image. All \
+             images serve as identity sources only.",
             people.join("; "),
-            number(n)
+            number(n),
+            join_and(&names)
         )),
         (n, _) => prompt.push_str(&format!(
             " From left to right: {}.{bound_words} Also in the scene, not from any image: \
@@ -2661,9 +2659,14 @@ mod tests {
             .prompt
             .starts_with("a diner at night. The person in the image (maya, a person"));
         assert!(c.prompt.contains("wearing a yellow raincoat, laughing"));
-        assert!(c
-            .prompt
-            .contains("The person from the image appears exactly once"));
+        assert!(
+            c.prompt.contains(
+                "Exactly one person is in the foreground, Maya, once; anyone in the background \
+                 is a stranger, not from the image."
+            ),
+            "{}",
+            c.prompt
+        );
         let c = compile(&lib, "a surprise party!", &[member("maya")], &[], None).unwrap();
         assert!(
             c.prompt.starts_with("a surprise party! The person"),
@@ -2729,9 +2732,14 @@ mod tests {
         let second = c.prompt.find("<image2> (john").unwrap();
         assert!(first < second);
         assert!(c.prompt.contains("<image3> (priya"));
-        assert!(c
-            .prompt
-            .contains("Each of the three people from the images appears exactly once"));
+        assert!(
+            c.prompt.contains(
+                "Exactly three people are in the foreground, Maya, John and Priya, each exactly \
+                 once; anyone in the background is a stranger"
+            ),
+            "{}",
+            c.prompt
+        );
         assert!(c
             .prompt
             .ends_with("Style: high-contrast black and white film noir"));
@@ -2791,26 +2799,20 @@ mod tests {
             c.prompt,
             "a park. Also in the scene: a child; a dog walker."
         );
-        // No extras, three or more: no total that would forbid a person the
-        // prose describes (E12).
+        // No extras: the cast counted closed, by name, in the foreground,
+        // and nothing that would forbid the background the scene describes
+        // (E12's erased waiter, E14).
         let c = compile(&lib, "a park", &cast, &[], None).unwrap();
         assert!(
-            c.prompt.contains(
-                "Each of the three people from the images appears exactly once; anyone else"
-            ),
-            "{}",
-            c.prompt
-        );
-        // No extras, two: closed, by name (E14).
-        let c = compile(&lib, "a park", &cast[..2], &[], None).unwrap();
-        assert!(
             c.prompt.ends_with(
-                "Exactly two people are in the image, Maya and John, each exactly once; no one \
-                 else is in it. All images serve as identity sources only."
+                "Exactly three people are in the foreground, Maya, John and Priya, each exactly \
+                 once; anyone in the background is a stranger, not from any image. All images \
+                 serve as identity sources only."
             ),
             "{}",
             c.prompt
         );
+        assert!(!c.prompt.contains("no one else"), "{}", c.prompt);
         // With extras, two are counted with them as before (E11).
         let c = compile(&lib, "a diner booth", &cast[..2], &waiter, None).unwrap();
         assert!(
@@ -3283,8 +3285,9 @@ mod tests {
             "a studio. From left to right: the person from <image1> (maya, a person with a \
              memorable face), wearing a yellow raincoat, laughing; the person from <image2> \
              (jo, a person with a memorable face), wearing a yellow raincoat, laughing. Exactly \
-             two people are in the image, Maya and Jo, each exactly once; no one else is in \
-             it. All images serve as identity sources only."
+             two people are in the foreground, Maya and Jo, each exactly once; anyone in the \
+             background is a stranger, not from any image. All images serve as identity sources \
+             only."
         );
         assert_eq!(
             c.notes,
@@ -3309,8 +3312,9 @@ mod tests {
                 "The person shown in <image1> and <image2> (maya, a person with a memorable \
                  face), wearing a yellow raincoat, laughing. <image1> and <image2> show one \
                  person, Maya: <image1> is Maya's portrait, <image2> Maya's full figure. The \
-                 clothing in <image2> is not worn here. The person from the images appears \
-                 exactly once"
+                 clothing in <image2> is not worn here. Exactly one person is in the \
+                 foreground, Maya, once; anyone in the background is a stranger, not from the \
+                 images."
             ),
             "{}",
             c.prompt
