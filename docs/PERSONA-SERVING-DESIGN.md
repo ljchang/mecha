@@ -27,7 +27,7 @@ copies of a protocol drift into disagreeing.
 | S7 | **mecha mints the token;** the owner pastes it into HyperStudy (§5.1). | owner | 2026-10-19 |
 | S8 | **A seat is recorded in full.** The point of a local model is that what it did can be investigated afterwards: transcripts, directions and the voice journal are kept as an owner's call's are, not silenced (§3). | owner | 2026-10-19 |
 | S9 | **`max_seats` caps concurrent seats,** so studies cannot slow every conversation on the box, the owner's included (§5). | owner | 2026-10-19 |
-| S10 | **The system prompt is the study's.** A seat is prompted with what HyperStudy sends as its instructions and nothing of the owner's persona text — no `BASE`, no card; the persona a seat names contributes its voice (§3). | owner | 2026-10-19 |
+| S10 | **The system prompt is the study's.** A seat is prompted with what HyperStudy sends as its instructions and nothing of the owner's persona text — no `BASE`, no card, no `DISCLOSED`, no `SINCERE`; the persona a seat names contributes its voice (§3). | owner | 2026-10-19 |
 
 ## 1. Why no existing door fits
 
@@ -129,8 +129,13 @@ comes from the study (S10).
 persona; mail, calendar, graph, outbox, learning store or triggers; the
 owner's `[[mcp]]` servers — including those marked `personas = true`, which
 were marked for the owner's chats, not for strangers; provider keys beyond
-the loopback model endpoints. What keeps those out is the explicit source
-list. The guard on the home's *location* is the trial home's,
+the loopback model endpoints. What keeps those out of the *directory* is
+the explicit source list; what keeps them out of the *process* is the
+launch: the guest facade is spawned with its environment cleared first and
+an explicit allowlist added back, in `Sandbox::child_env`'s shape — the
+`mcp.rs` `env_clear()` rule, since `Command::envs()` alone layers on an
+inherited environment and hands the child the owner's provider keys. That
+holds whether or not the bwrap question in §9 is settled either way. The guard on the home's *location* is the trial home's,
 `experiment::refuse_unsafe_home` — it refuses a home that is or contains
 the real one and allows one inside it, which is where §3 keeps seats — not
 `trial_env::refuse_operator_home`, which guards an environment's source
@@ -159,7 +164,7 @@ silently-degrading guard).
 | Surface | Owner's persona chat | Guest seat |
 |---|---|---|
 | Who the human side is | the owner | a stranger. Inbound text arms nothing today, on the premise that the user chose every word (`Taint::arm_for_content`'s comment), and `external` is a tool result's field, not a message's — so a seat sets `Conversation.taint.untrusted` at construction, and the conversation records it, so the seat is armed from the first word |
-| System prompt | `BASE`, the card, plus `DISCLOSED` while `disclosure` is on | HyperStudy's `instructions`, verbatim, and nothing of mecha's persona text (S10) |
+| System prompt | `BASE`, the card, plus `DISCLOSED` while `disclosure` is on | HyperStudy's `instructions`, verbatim, and nothing of mecha's persona text (S10) — `SINCERE`, the persona prompt's one unconditional line (a sincere "am I talking to a person?" gets the truth), included: whether an agent answers that truthfully is a disclosure decision, the study's by S2, and a study that wants the floor writes it into its own prompt |
 | Persona memory | written and recalled | neither: no writer, no recall over owner stores |
 | Confirmations, outbox | spoken yes can release | none exist: no outbox route, no `parse_answer` path |
 | Approver | the owner's | allows **exactly the ClientTool catalogue** at `approve` — the loop sends every tool that is not `read_only` there, and the answer tools and `send_chat` genuinely act — and refuses every other tool there and every other door (`escalate`, `escalate_access`, `consult`, `permit` today). Catalogue membership, checked in mecha's code, is what makes a tool runnable, the same place §4a earns `Blind`; no catalogue tool claims `read_only`. What holds a future door is the trait's defaults, which fail closed (`escalate`, `consult` → `Blocked`) or delegate (`escalate_access` → `escalate`, `permit` → `approve`); so the guest approver overrides `approve` and `escalate` and nothing that delegates. A test listing today's doors cannot catch a new one with a default body — exhaustiveness the compiler checks would need a door enum on `Approver`, named in §8 step 2 as a choice, not assumed |
@@ -185,8 +190,13 @@ mecha uses them as the system prompt verbatim — this is HyperStudy §4.4's
 `persona: "hyperstudy"`, the ownership it builds today. Each replacement
 re-pays the cached prefix once, which is the study's cost to choose. The
 only harness text a seat adds is what the loop needs mechanically (tool
-results, the context items of §4a), never a claim about who the agent is or
-who it is talking with.
+results, the context items of §4a, and the clock), never a claim about who
+the agent is or who it is talking with. The clock needs saying: the
+calendar note renders only when the system prompt carries
+`date_context::GUIDANCE_HEADING`, so a verbatim study prompt would earn no
+date on any request — the "Sunday on a Monday" failure by construction. A
+seat earns the calendar note by being a seat, not through its prompt; it
+names nobody, and the system prompt stays the study's byte for byte.
 
 ## 4. The voice transport
 
@@ -256,11 +266,14 @@ carrying the tool results. The steering path alone is not enough: its one
 drain site skips a closing turn by design — a steer taken there could not
 be acted on, and "the front end says it came too late" — and a seat has no
 front end to say it. So a seat folds at a second boundary the wiring owns:
-an item that arrives during a closing turn, or between turns, joins the next
-user message — the participant's next turn if one is pending, otherwise a
-user message of context alone, legal because the last message is the
-agent's reply. Whether that message asks for a reply is the study's, by its
-own `response.create`. Nothing is dropped: an item still queued when the
+an item that arrives during a closing turn, or between turns, joins the
+**tail user message**. If the conversation ends on the agent's reply, the
+item opens a new user message of context alone; if it already ends on a
+user message — the participant's pending turn, or context with no reply
+yet — the item is appended to it. A participant turn that arrives while the
+tail is a context-only user message is appended to that message, never
+added after it, so two user messages in a row never occur. Whether any of
+it asks for a reply is the study's, by its own `response.create`. Nothing is dropped: an item still queued when the
 seat closes is recorded as unfolded in the seat's transcript. The
 mid-round half is not free either: the steering queue carries text
 (`queued_input` is a `VecDeque<String>`), and an image context item needs it
@@ -404,7 +417,11 @@ mecha provides; the study decides:
   keyword tier plus model judge) runs on every participant turn — **forced
   on in a seat**, whatever the named persona's `safety.crisis` switch says:
   that switch is the owner's choice about the owner's chat, and it does not
-  travel with the voice into a study's. In a
+  travel with the voice into a study's. Nothing here is inherited: the
+  sensor is invoked per surface (`persona_chat.rs`, `voice/direct.rs`,
+  `listen.rs`; the loop has no call site), so a seat is a fourth surface
+  wiring it, and it fails closed — a seat whose crisis path is not wired,
+  or whose sensor cannot be built, does not open. In a
   seat it keeps the actions it takes today: on a trip the harness steps out
   of character with `SAFE_MESSAGE` and pauses the persona for
   `CRISIS_COOLDOWN`, and mecha raises HRP's `hs.flag`. Two seat-specific
@@ -443,18 +460,23 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    a door enum so the compiler holds a future door is decided here; the
    seat is armed untrusted before its first turn; a seat writes nothing
    under the operator's home outside its own seat directory; the system
-   prompt is the study's `instructions` byte for byte, with no `BASE`, card
-   or `DISCLOSED` even with the persona's `disclosure` on; a closed seat's
+   prompt is the study's `instructions` byte for byte, with no `BASE`, card,
+   `SINCERE` or `DISCLOSED` even with the persona's `disclosure` on; a closed seat's
    transcript and manifest are readable afterwards; while a seat is open the
    wiring's hold is visible
    to `mecha model use`), the
    ClientTool catalogue (an armed seat with an image in it still answers a
    question; an uncatalogued tool is refused), context folding at a
-   mid-round boundary and on a closing turn, unfolded items recorded, the crisis handover and the degraded state, budgets.
+   mid-round boundary and on a closing turn, unfolded items recorded, the
+   crisis handover and the degraded state, a seat refusing to open without
+   its crisis path, the facade's environment holding only the allowlist, the
+   calendar note present with a verbatim study prompt, budgets.
 3. **A text seat on loopback** — HRP with text-only output against a local
    stand-in for HyperStudy's session: context items, inline images, declared
    tools, and the steering queue widened to carry `Block`s (§4a). Exit: a scripted study (read a screen, chat, answer a rating
-   through a silent forced call) runs end to end.
+   through a silent forced call) runs end to end, including a context item
+   with no `response.create` followed by the participant speaking — the
+   sequence that would otherwise send two user messages.
 4. **The voice transport on loopback** — the worker serves HRP on a local
    socket for development only, and HyperStudy's conformance suite runs
    against it (its runner takes any HRP client; a URL wrapper is all it
