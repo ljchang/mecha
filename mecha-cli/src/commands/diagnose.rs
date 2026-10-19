@@ -113,6 +113,9 @@ pub fn pick_slice(by_model: &BTreeMap<String, Corpus>, pick: Pick<'_>) -> Result
 /// transcripts it could not read, and a store holding only smoke-test
 /// sessions the diagnosis excludes — a rotting store and a filter working
 /// are findings, and at 03:30 a non-zero exit is the register they get.
+/// A third, `Ok(Some(_))` with an *empty* slice, is [`Pick::Served`]'s: the
+/// served model has no runs yet, and every caller checks `is_empty()` before
+/// reading the slice — its `sessions_read` is not the store's.
 pub fn corpus_slice(
     want: Pick<'_>,
     days: Option<i64>,

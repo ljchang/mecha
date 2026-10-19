@@ -7107,7 +7107,10 @@ The decisions that carry it, each a bug if undone:
   (`diagnose::Pick::Served`); the replays then name it, so on a router they
   ask for the model already loaded. A served model with no recorded runs
   defers the night rather than measuring another model's: on a router a
-  request naming a model loads it. On 2026-10-17 at 04:45Z the nightly took
+  request naming a model loads it. And where the router's resident model is
+  unknown — no answer, nothing readable, none or two resident, or no single
+  entry naming it — `served_model` refuses with a non-zero exit, because the
+  default it would fall back to is not "the model in use". On 2026-10-17 at 04:45Z the nightly took
   the largest slice, months of runs on `qwen3.6-35b-a3b`, and its replays
   evicted the owner's resident `qwen3.6-35b-a3b-uncensored`.
   `mecha diagnose` defaults to the same model, and falls back to the largest

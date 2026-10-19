@@ -1173,11 +1173,54 @@ fn pin_named_model(cfg: &mut Config, opts: &GlobalOpts) {
 /// that must know it before paying for a whole [`prepare`]: the nightly
 /// picks the corpus slice it measures by it (`diagnose::Pick::Served`),
 /// so its replays name the model that is already loaded.
+///
+/// **On a router, unknown is an error, never the default.** When nothing was
+/// named and the entry sits on a router a `follow_loaded` entry stands for,
+/// the name is checked against what that router had resident when this
+/// process looked ([`router::resident_at`]). `Config::provider(None)` falls
+/// back to the default entry whenever following fails — the router did not
+/// answer, listed nothing readable, held none or two, or its resident model
+/// is named by no entry or by several — and a replay naming that default
+/// would load it over whatever is resident, or a model-less default would
+/// name a placeholder as "the model in use" (found on review of #726). A
+/// `--model` or `--provider` on the command line was pointed there on
+/// purpose — by a person, or by `ruminate.sh`'s `MECHA_RUMINATE_PROVIDER` —
+/// and is not checked; `pin.sh` passes none on a router that is followed.
+///
+/// [`router::resident_at`]: mecha_core::provider::router::resident_at
 pub fn served_model(opts: &GlobalOpts) -> Result<String> {
+    use mecha_core::provider::router;
     let cfg = load_config(opts)?;
-    let (_, provider_cfg) = cfg.provider(opts.provider.as_deref())?;
+    let (name, provider_cfg) = cfg.provider(opts.provider.as_deref())?;
     let provider = mecha_core::provider::build(provider_cfg)?;
-    Ok(model_for(opts, provider_cfg, provider.as_ref()))
+    let model = model_for(opts, provider_cfg, provider.as_ref());
+    if opts.model.is_none() && opts.provider.is_none() {
+        if let Some(b) = provider_cfg.base_url.as_deref().map(router::base) {
+            if router::followed_bases(&cfg).contains(&b) {
+                ensure_resident(&b, &name, &model, router::resident_at(&b).as_deref())?;
+            }
+        }
+    }
+    Ok(model)
+}
+
+/// The pure half of [`served_model`]'s router check: `model` is what the
+/// router at `base` has resident, or the run cannot claim it is in use.
+fn ensure_resident(base: &str, entry: &str, model: &str, resident: Option<&str>) -> Result<()> {
+    match resident {
+        Some(r) if r == model => Ok(()),
+        Some(r) => anyhow::bail!(
+            "the router at {base} has `{r}` resident, and no single provider entry follows \
+             it (the default resolved to `{entry}`, naming `{model}`) — a run naming `{model}` \
+             would load it over `{r}`. Name one entry per model in config, or pass --provider."
+        ),
+        None => anyhow::bail!(
+            "cannot tell which model the router at {base} has resident (it did not answer, \
+             listed nothing readable, or held none or two), so `{model}` cannot be called the \
+             model in use — and naming it could load it over whatever is. Nothing is replayed; \
+             pass --provider or --model to choose."
+        ),
+    }
 }
 
 fn model_for(
@@ -3003,11 +3046,25 @@ mod tests {
     }
 
     use super::{
-        build_subagent, excluded_by_allowlist, fold_agent_switches, front_end_interactive,
-        jail_requests_answered, levers_off, offers_request_access, pin_named_model, posture_for,
-        sandbox_line, step_escalation_enabled, step_escalation_slot,
+        build_subagent, ensure_resident, excluded_by_allowlist, fold_agent_switches,
+        front_end_interactive, jail_requests_answered, levers_off, offers_request_access,
+        pin_named_model, posture_for, sandbox_line, step_escalation_enabled, step_escalation_slot,
     };
     use crate::GlobalOpts;
+
+    /// The nightly's served model is the router's resident one or an error:
+    /// a default that following fell back to is never "the model in use"
+    /// (review of #726 — it would load over the resident, or name a
+    /// placeholder).
+    #[test]
+    fn only_the_resident_model_passes_as_served_on_a_router() {
+        let at = "http://127.0.0.1:8080";
+        assert!(ensure_resident(at, "local-x", "x", Some("x")).is_ok());
+        let other = ensure_resident(at, "local", "default-model", Some("x")).unwrap_err();
+        assert!(format!("{other:#}").contains("would load it over `x`"));
+        let unknown = ensure_resident(at, "local", "gpt-4o-mini", None).unwrap_err();
+        assert!(format!("{unknown:#}").contains("cannot tell which model"));
+    }
 
     /// `--model` pins: the default no longer follows the router to a sibling
     /// whose window and prices belong to another model.

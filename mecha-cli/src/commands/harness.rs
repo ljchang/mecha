@@ -491,10 +491,13 @@ async fn ruminate(
 }
 
 /// Which slice a nightly verb measures. The served model, as a quiet
-/// deferral when it has no runs — unless `--model` named it: a name a person
-/// typed is a question about that model, so no runs for it is an error at
-/// the terminal, not the 03:30 register (`diagnose::Pick`; found on review —
-/// a typo'd `--model` deferred, calling itself "the model in use").
+/// deferral when it has no runs — unless `--model` named it: a model a
+/// person typed is a question about that model, so no runs for it is an
+/// error at the terminal, not the 03:30 register (`diagnose::Pick`; found on
+/// review — a typo'd `--model` deferred, calling itself "the model in use").
+/// Not `--provider`: off a router `scripts/pin.sh` passes `-p local` on every
+/// night as the stand-in for the default, so it is no evidence anyone typed
+/// it, and a night with no runs there must stay a deferral.
 fn nightly_pick<'a>(global: &GlobalOpts, served: &'a str) -> Pick<'a> {
     match global.model {
         Some(_) => Pick::Named(served),
@@ -2369,6 +2372,12 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(nightly_pick(&typed, "m"), Pick::Named("m"));
+        let pinned = GlobalOpts {
+            provider: Some("local".into()),
+            ..Default::default()
+        };
+        // pin.sh's automatic `-p local` is not a person's question.
+        assert_eq!(nightly_pick(&pinned, "m"), Pick::Served("m"));
         assert!(no_served_runs("m", Some(std::path::Path::new("/w"))).contains("under /w"));
     }
 }
