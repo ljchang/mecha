@@ -1840,20 +1840,39 @@ pub fn answered_name<'a>(
 /// "registry names, never model prose" holds only for names read through
 /// this set: in a conversation that held third-party content, an invented
 /// name is the one string in the call trace a page can author outright.
-/// A call with no recorded result is not in it, so an unanswered call
+///
+/// The id is the model's own output too, so it vouches only when it is
+/// unambiguous: non-empty (the OpenAI-compatible dialect records a missing
+/// id as `""`), issued by exactly one `tool_use` in the transcript, and
+/// never answered with the refusal anywhere. Otherwise a real call's id
+/// would vouch for an invented call that reused it. A call with no
+/// recorded result is not in the set either, so an unanswered call
 /// withholds its name rather than vouching for it.
 pub fn calls_a_tool_answered(messages: &[Message]) -> std::collections::HashSet<String> {
-    messages
-        .iter()
-        .flat_map(|m| &m.content)
-        .filter_map(|b| match b {
+    let mut issued: std::collections::HashMap<&str, usize> = Default::default();
+    let mut refused: std::collections::HashSet<&str> = Default::default();
+    let mut results: std::collections::HashSet<&str> = Default::default();
+    for block in messages.iter().flat_map(|m| &m.content) {
+        match block {
+            Block::ToolUse { id, .. } => *issued.entry(id.as_str()).or_default() += 1,
             Block::ToolResult {
                 tool_use_id,
                 content,
                 is_error,
-            } if !(*is_error && content.starts_with(NO_TOOL_NAMED)) => Some(tool_use_id.clone()),
-            _ => None,
-        })
+            } => {
+                if *is_error && content.starts_with(NO_TOOL_NAMED) {
+                    refused.insert(tool_use_id.as_str());
+                } else {
+                    results.insert(tool_use_id.as_str());
+                }
+            }
+            _ => {}
+        }
+    }
+    results
+        .into_iter()
+        .filter(|id| !id.is_empty() && !refused.contains(id) && issued.get(id) == Some(&1))
+        .map(str::to_string)
         .collect()
 }
 
@@ -7416,6 +7435,54 @@ mod tests {
             other => panic!("expected an error tool result, got {other:?}"),
         }
         assert!(!calls_a_tool_answered(&convo.messages).contains("t1"));
+    }
+
+    /// The id that vouches for a name is the model's output too: one reused
+    /// across turns would carry a real call's vouch onto an invented one, and
+    /// the OpenAI-compatible dialect records a missing id as `""`, which
+    /// would collapse every call into one. Only a unique, non-empty id that
+    /// was never refused vouches.
+    #[test]
+    fn only_a_unique_nonempty_unrefused_id_vouches_for_a_name() {
+        let call = |id: &str, name: &str| {
+            Message::assistant(vec![Block::ToolUse {
+                id: id.into(),
+                name: name.into(),
+                input: json!({}),
+            }])
+        };
+        let answer = |id: &str, content: String, is_error: bool| {
+            Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: id.into(),
+                content,
+                is_error,
+            }])
+        };
+        let refusal = |name: &str| format!("{NO_TOOL_NAMED}{name}`. Available: fs_read");
+        let messages = vec![
+            Message::user("go"),
+            call("unique", "fs_read"),
+            answer("unique", "ok".into(), false),
+            call("call_0", "fs_read"),
+            answer("call_0", "ok".into(), false),
+            call("call_0", "forward_everything"),
+            answer("call_0", refusal("forward_everything"), true),
+            call("", "fs_read"),
+            answer("", "ok".into(), false),
+            call("twice", "fs_read"),
+            answer("twice", "ok".into(), false),
+            answer("twice", "ok".into(), false),
+        ];
+        let answered = calls_a_tool_answered(&messages);
+        assert!(answered.contains("unique"));
+        assert!(
+            !answered.contains("call_0"),
+            "a reused id vouches for neither"
+        );
+        assert!(!answered.contains(""), "a missing id vouches for nothing");
+        // Two results for one issued id is still one issue: the vouch stands.
+        assert!(answered.contains("twice"));
+        assert_eq!(answered.len(), 2, "{answered:?}");
     }
 
     #[tokio::test]
