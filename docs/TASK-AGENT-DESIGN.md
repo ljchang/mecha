@@ -530,6 +530,13 @@ session key (`Asker::ask_in`). The todo tool takes the same treatment. Required
 the first thing to exercise it, and the symptom is a plausible-looking list
 belonging to something else.
 
+*Amended 2026-10-19:* the key is the conversation the front end stamps into
+`ToolCtx::conversation` (`todo::PlanKey`), and the jail only where nothing
+stamps one — the TUI, `run`, and a task run in its own workspace. A jail's
+file name is not the session key: a reopened `main` transcript keeps
+`work/web/main` under a new key beside the new `main`, and its plan showed in
+main. `ask_user` had moved off the jail the day before, for the same reason.
+
 **D15 — The list rehydrates from the transcript, never from a second store.**
 The list lives in memory on the tool, which is fine for a run that ends when its
 conversation does. A task outlives its run by construction (D13), and on resume

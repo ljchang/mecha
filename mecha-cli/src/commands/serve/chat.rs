@@ -366,7 +366,7 @@ impl ChatState {
     pub async fn stop(&self) {
         let mut sessions = self.sessions.lock().await;
         self.stopping.cancel();
-        for ws in sessions.values() {
+        for (key, ws) in sessions.iter() {
             ws.questions.shutdown();
             if let Some(live) = &ws.live {
                 live.cancel
@@ -384,7 +384,7 @@ impl ChatState {
                 // The same close as End's (`close_incognito_locked`), in the
                 // same order — plan, then room — so the two paths do not drift.
                 if let Some(todo) = &self.follower.current().todo {
-                    todo.forget_in(&ws.workspace);
+                    todo.forget_in(&mecha_core::tool::todo::PlanKey::Conversation(key.clone()));
                 }
                 if ws.live.is_none() {
                     if let Err(e) = room.remove() {
@@ -507,7 +507,7 @@ impl ChatState {
             routes.remove(&key);
         }
         if let Some(todo) = &self.follower.current().todo {
-            todo.forget_in(&ws.workspace);
+            todo.forget_in(&mecha_core::tool::todo::PlanKey::Conversation(key.clone()));
         }
         Ok(Some(key))
     }
@@ -1676,7 +1676,10 @@ fn ensure_session_as<'a>(
                 // The plan comes back with it (D15), from the transcript the
                 // model is about to re-read anyway.
                 if let Some(todo) = &bound.todo {
-                    todo.rehydrate(&workspace, &convo.messages);
+                    todo.rehydrate(
+                        &mecha_core::tool::todo::PlanKey::Conversation(key.to_string()),
+                        &convo.messages,
+                    );
                 }
                 // Picked back up: out of the archive, as every resume is.
                 mecha_core::archive::reopened(&path, &meta.id);
@@ -1843,7 +1846,9 @@ fn close_incognito_locked(
         routes.remove(key);
     }
     if let Some(todo) = &chat.follower.current().todo {
-        todo.forget_in(&ws.workspace);
+        todo.forget_in(&mecha_core::tool::todo::PlanKey::Conversation(
+            key.to_string(),
+        ));
     }
     if let Some(room) = ws.session.room() {
         if let Err(e) = room.remove() {
@@ -2017,7 +2022,7 @@ pub async fn transcript(
         // The page refetches when the SSE stream announces a `todo` result;
         // no new event type is needed because every write already shows up
         // there as a tool call.
-        "todo": plan(&bound, ws),
+        "todo": plan(&bound, &key),
         "entries": entries,
         "taint": taint.map(|t| serde_json::json!({
             "private": t.private, "untrusted": t.untrusted,
@@ -2055,24 +2060,31 @@ pub async fn todo(
     // the way the transcript read does to name the model.
     let bound = chat.follower.current();
     let sessions = chat.sessions.lock().await;
-    let ws = match sessions.get(&key) {
-        Some(ws) => ws,
+    match sessions.get(&key) {
+        Some(_) => {}
         None if super::incognito::is_incognito_key(&key) => {
             return (StatusCode::GONE, format!("{}\n", super::incognito::Closed)).into_response()
         }
         None => return (StatusCode::NOT_FOUND, "no such session\n").into_response(),
-    };
-    Json(serde_json::json!({ "todo": plan(&bound, ws) })).into_response()
+    }
+    Json(serde_json::json!({ "todo": plan(&bound, &key) })).into_response()
 }
 
-/// This session's plan, keyed by its jail (D14) — one function for both
-/// reads that carry it, so the plan's own read cannot drift from the one the
-/// transcript read serves.
-fn plan(bound: &crate::follow::Bound, ws: &WebSession) -> Vec<mecha_core::tool::todo::TodoItem> {
+/// This session's plan — one function for both reads that carry it, so the
+/// plan's own read cannot drift from the one the transcript read serves.
+/// Keyed by the session key every turn here is stamped with
+/// (`ToolCtx::conversation`), never the jail: a resumed conversation shares
+/// its recorded workspace with the chat it was recorded in, and keyed by the
+/// directory a reopened chat's plan showed in main (2026-10-19).
+fn plan(bound: &crate::follow::Bound, key: &str) -> Vec<mecha_core::tool::todo::TodoItem> {
     bound
         .todo
         .as_ref()
-        .map(|t| t.items_in(&ws.workspace))
+        .map(|t| {
+            t.items_in(&mecha_core::tool::todo::PlanKey::Conversation(
+                key.to_string(),
+            ))
+        })
         .unwrap_or_default()
 }
 
@@ -3422,7 +3434,9 @@ fn begin_turn(
                 }
                 // And its plan, which a late `todo` call re-inserted the same way.
                 if let Some(todo) = &bound_for_task.todo {
-                    todo.forget_in(&room.workspace);
+                    todo.forget_in(&mecha_core::tool::todo::PlanKey::Conversation(
+                        key_for_task.clone(),
+                    ));
                 }
             }
         }
@@ -4469,16 +4483,7 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
     if let Err(e) = mecha_core::archive::unarchive(&dir, &meta.id) {
         tracing::warn!("resumed {} but could not unarchive it: {e:#}", meta.id);
     }
-    // D15 — the plan comes back with the conversation, and two things then
-    // read it: the transcript response serves it to the page, and
-    // `carried_state` carries it across a compaction so a resumed session that
-    // summarises itself keeps its real plan rather than nothing.
     let bound = chat.follower.current();
-    if let Some(todo) = &bound.todo {
-        if let Some(n) = todo.rehydrate(&workspace, &conversation.messages) {
-            tracing::debug!(items = n, "restored the resumed session's todo list");
-        }
-    }
     let key = resume_key(&meta.id);
     // **A placeholder squatting on the key gives way.** After a restart the
     // map is empty, and a page still open on a resumed chat reconnects
@@ -4538,6 +4543,20 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
             })
             .flatten();
         routes.insert(key.clone(), (questions.clone(), events.clone(), park));
+    }
+    // D15 — the plan comes back with the conversation, and two things then
+    // read it: the transcript response serves it to the page, and
+    // `carried_state` carries it across a compaction so a resumed session that
+    // summarises itself keeps its real plan rather than nothing. Under the key
+    // it was just given, never its workspace — which a resumed conversation
+    // shares with the chat it was recorded in (2026-10-19) — and only once
+    // the key is its own: before the conflict check, a refused resume would
+    // overwrite the plan of the conversation holding the key.
+    if let Some(todo) = &bound.todo {
+        let plan = mecha_core::tool::todo::PlanKey::Conversation(key.clone());
+        if let Some(n) = todo.rehydrate(&plan, &conversation.messages) {
+            tracing::debug!(items = n, "restored the resumed session's todo list");
+        }
     }
     let mut conversation = conversation;
     // The binding read above, not a second `current()` (review of #666,
@@ -5996,7 +6015,7 @@ pub(super) async fn test_transcript(chat: &ChatState, key: &str) -> PathBuf {
         .clone()
 }
 
-/// The jail `key`'s session runs in — what its plan is keyed by (D14).
+/// The jail `key`'s session runs in.
 #[cfg(test)]
 pub(super) async fn test_workspace(chat: &ChatState, key: &str) -> PathBuf {
     chat.sessions.lock().await[key].workspace.clone()

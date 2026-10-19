@@ -4419,6 +4419,77 @@ mod boundary_tests {
         release.abort();
     }
 
+    /// A reopened transcript runs in the workspace of the chat it was
+    /// recorded in, beside that chat's new conversation — and each shows its
+    /// own plan. Fails on the old behaviour: keyed by the shared directory,
+    /// main's plan was the reopened chat's, and the reverse (2026-10-19).
+    #[tokio::test]
+    async fn a_reopened_chat_and_main_in_one_workspace_show_their_own_plans() {
+        let _home = crate::testenv::HomeGuard::new("plan-reopened");
+        let todo = Arc::new(mecha_core::tool::todo::TodoTool::new());
+        let chat = chat::test_chat_planned("noted", todo.clone());
+        let app = app(chat.clone());
+        converse(&app, "main", "an earlier conversation").await;
+        let rail = body(app.clone().oneshot(get("/api/sessions")).await.unwrap()).await;
+        let earlier = rail["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["key"] == "main")
+            .and_then(|r| r["id"].as_str())
+            .unwrap()
+            .to_string();
+        // A restart, then a new conversation under `main`, with a plan.
+        chat::test_forget_session(&chat, "main").await;
+        converse(&app, "main", "a new conversation").await;
+        todo.set_plan_in(
+            &mecha_core::tool::todo::PlanKey::Conversation("main".into()),
+            mecha_core::tool::todo::Plan {
+                goal: None,
+                items: vec![mecha_core::tool::todo::TodoItem::new(
+                    "main's step",
+                    mecha_core::tool::todo::Status::InProgress,
+                )],
+            },
+        );
+
+        let r = app
+            .clone()
+            .oneshot(json_post(
+                "/api/resume",
+                serde_json::json!({ "id": earlier }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        let reopened = body(r).await["key"].as_str().unwrap().to_string();
+        assert_ne!(reopened, "main");
+        assert_eq!(
+            chat::test_workspace(&chat, &reopened).await,
+            chat::test_workspace(&chat, "main").await,
+            "the premise: one directory, two conversations"
+        );
+
+        let plan_of = |key: String| {
+            let app = app.clone();
+            async move {
+                body(
+                    app.oneshot(get(&format!("/api/chat/{key}/todo")))
+                        .await
+                        .unwrap(),
+                )
+                .await["todo"]
+                    .clone()
+            }
+        };
+        assert_eq!(
+            plan_of(reopened.clone()).await,
+            serde_json::json!([]),
+            "main's plan showed in the reopened chat"
+        );
+        assert_eq!(plan_of("main".into()).await[0]["content"], "main's step");
+    }
+
     /// The page re-reads the plan on every `todo` result a run streams; this
     /// read is the plan and nothing else, so a mid-run revision does not pay
     /// for the history the transcript read now carries.
@@ -4429,10 +4500,11 @@ mod boundary_tests {
         let chat = chat::test_chat_planned("noted", todo.clone());
         let app = app(chat.clone());
         converse(&app, "planned", "first question").await;
-        // One step, in this session's jail and nowhere else: a read that
-        // looked the plan up by any other key would come back empty.
+        // One step, under this session's key and nowhere else: a read that
+        // looked the plan up by any other key — its jail included — would
+        // come back empty.
         todo.set_plan_in(
-            &chat::test_workspace(&chat, "planned").await,
+            &mecha_core::tool::todo::PlanKey::Conversation("planned".into()),
             mecha_core::tool::todo::Plan {
                 goal: None,
                 items: vec![mecha_core::tool::todo::TodoItem::new(
