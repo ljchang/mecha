@@ -387,11 +387,7 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     let (provider_name, provider_cfg) = cfg.provider(opts.provider.as_deref())?;
     let mut provider = mecha_core::provider::build(provider_cfg)?;
 
-    let model = opts
-        .model
-        .clone()
-        .or_else(|| provider_cfg.model.clone())
-        .unwrap_or_else(|| provider.default_model().to_string());
+    let model = model_for(opts, provider_cfg, provider.as_ref());
 
     // Fallbacks, resolved at startup so a typo'd name fails on every start
     // rather than only on the outage that needed it. `--no-fallback` is the
@@ -1170,6 +1166,45 @@ fn pin_named_model(cfg: &mut Config, opts: &GlobalOpts) {
     }
 }
 
+/// The model a run under `opts` names on the wire: `--model`, else the
+/// entry the provider resolves to — a following default takes the router's
+/// resident model (`provider::router`) — else the provider's own default.
+/// The one resolution [`build`] records as `Prepared::model`, for a caller
+/// that must know it before paying for a whole [`prepare`]: the nightly
+/// picks the corpus slice it measures by it (`diagnose::Pick::Served`),
+/// so its replays name the model that is already loaded.
+pub fn served_model(opts: &GlobalOpts) -> Result<String> {
+    let cfg = load_config(opts)?;
+    let (_, provider_cfg) = cfg.provider(opts.provider.as_deref())?;
+    let provider = mecha_core::provider::build(provider_cfg)?;
+    Ok(model_for(opts, provider_cfg, provider.as_ref()))
+}
+
+fn model_for(
+    opts: &GlobalOpts,
+    provider_cfg: &mecha_core::config::ProviderConfig,
+    provider: &dyn mecha_core::provider::Provider,
+) -> String {
+    opts.model
+        .clone()
+        .or_else(|| provider_cfg.model.clone())
+        .unwrap_or_else(|| provider.default_model().to_string())
+}
+
+/// The config a run under `opts` reads, with the flags that pin a provider
+/// already applied — shared by [`prepare_tools`] and [`served_model`], so the
+/// two cannot resolve different entries.
+fn load_config(opts: &GlobalOpts) -> Result<Config> {
+    let cwd = std::env::current_dir().context("cannot determine the working directory")?;
+    let mut cfg = if opts.global_config_only {
+        Config::load_global()?
+    } else {
+        Config::load(&cwd)?
+    };
+    pin_named_model(&mut cfg, opts);
+    Ok(cfg)
+}
+
 /// Resolve config, workspace, tools, and the approval policy.
 pub async fn prepare_tools(opts: &GlobalOpts, interactive: bool) -> Result<PreparedTools> {
     prepare_tools_carrying(opts, interactive, None).await
@@ -1182,14 +1217,9 @@ async fn prepare_tools_carrying(
     carried_todo: Option<Arc<mecha_core::tool::todo::TodoTool>>,
 ) -> Result<PreparedTools> {
     let cwd = std::env::current_dir().context("cannot determine the working directory")?;
-    let mut cfg = if opts.global_config_only {
-        Config::load_global()?
-    } else {
-        Config::load(&cwd)?
-    };
+    let mut cfg = load_config(opts)?;
 
     // --- flags override config ---
-    pin_named_model(&mut cfg, opts);
     if let Some(effort) = opts.effort {
         cfg.agent.effort = Some(effort);
     }

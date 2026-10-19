@@ -19,7 +19,7 @@
 //! impression — the §2 failure mode the whole design is arranged against.
 
 use crate::commands::diagnose::{
-    corpus_slice, evidence_for, harness_history, run_diagnostician, DiagnosisOutcome,
+    corpus_slice, evidence_for, harness_history, run_diagnostician, DiagnosisOutcome, Pick,
 };
 use crate::harness_probe;
 use crate::{setup, GlobalOpts};
@@ -229,10 +229,20 @@ async fn ruminate(
     // Resolved once, at the boundary, so the brief and the draw compare the
     // same path against the same recorded ones. See `resolve_workspace_filter`.
     let from_workspace = crate::commands::diagnose::resolve_workspace_filter(from_workspace)?;
-    let Some((model, slice, _)) = corpus_slice(None, days, limit, from_workspace.clone())? else {
+    // The model a run here serves, not the corpus's largest slice: the
+    // replays name it on the wire, and on a router naming another loads it
+    // over the owner's pick (`diagnose::Pick`).
+    let served = setup::served_model(global)?;
+    let Some((model, slice, _)) =
+        corpus_slice(Pick::Served(&served), days, limit, from_workspace.clone())?
+    else {
         println!("no recorded run outcomes yet — nothing to diagnose from; deferring");
         return Ok(());
     };
+    if slice.is_empty() {
+        println!("{}", no_served_runs(&model));
+        return Ok(());
+    }
     let cfg = mecha_core::config::Config::load_global()?;
 
     // **The draw's first phase comes before the diagnosis** (row 2f, R38).
@@ -474,6 +484,16 @@ async fn ruminate(
         },
     }
     Ok(())
+}
+
+/// Why a night with runs on the store, but none on the served model, does
+/// nothing: deferred rather than measured on another model, because a replay
+/// naming that model would load it over the one in use.
+fn no_served_runs(model: &str) -> String {
+    format!(
+        "no recorded runs on `{model}`, the model in use — deferring; runs on other \
+         models are not replayed, because naming one would load it over this one"
+    )
 }
 
 /// A record of the same change that forbids proposing it again, if any.
@@ -1170,10 +1190,19 @@ async fn null_arm(
     } = spec;
     let store = HarnessStore::open_default()?;
     let from_workspace = crate::commands::diagnose::resolve_workspace_filter(from_workspace)?;
-    let Some((model, slice, _)) = corpus_slice(None, days, limit, from_workspace.clone())? else {
+    // As the nightly does: the null arm judges the gate it shares, so it
+    // replays the same model, and never loads another (`diagnose::Pick`).
+    let served = setup::served_model(global)?;
+    let Some((model, slice, _)) =
+        corpus_slice(Pick::Served(&served), days, limit, from_workspace.clone())?
+    else {
         println!("no recorded run outcomes yet — nothing to replay");
         return Ok(());
     };
+    if slice.is_empty() {
+        println!("{}", no_served_runs(&model));
+        return Ok(());
+    }
     let id = HarnessStore::mint_null_id();
     let pool = harness_probe::draw_pool(
         &Session::default_dir()?,
