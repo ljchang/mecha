@@ -218,6 +218,15 @@ their `http://127.0.0.1` URLs through a forwarder on the jail's own `lo`;
 the first is less moving parts. The result is a seat with no route to any
 host, so egress no longer rests on the tool catalogue alone (§4a).
 
+**`parent.sock` is pinned like the catalogue.** It is the one channel from
+the process holding a stranger's conversation into the process holding the
+owner's home, the router hold and the crisis ledger — and §7 needs it, since
+a facade under `--unshare-net` cannot write the owner's ledger itself. So
+the wiring accepts a closed set of messages on it: a ClientTool call (and
+returns its result), a crisis trip record, a `CrisisState` change, and seat
+close. Anything else is refused and logged, failing the seat closed, never
+ignored.
+
 The alternatives, weighed: Landlock (already a backend) can allow TCP
 connect by port, but UDP is restrictable at no ABI — which is why
 `can_reach_network()` is unconditionally true for it in `sandbox.rs` — so a
@@ -248,7 +257,7 @@ falls through (the silently-degrading guard).
 | System prompt | `BASE`, the card, plus `DISCLOSED` while `disclosure` is on | HyperStudy's `instructions`, verbatim, and nothing of mecha's persona text (S10), `SINCERE` among it — the persona prompt's one unconditional line (a sincere "am I talking to a person?" gets the truth) is left out because whether an agent answers that truthfully is a disclosure decision, the study's by S2; a study that wants the floor writes it into its own prompt |
 | Persona memory | written and recalled | neither: no writer, no recall over owner stores |
 | Confirmations, outbox | spoken yes can release | none exist: no outbox route, no `parse_answer` path |
-| Approver | the owner's | allows **exactly the ClientTool catalogue** at `approve` — the loop sends every tool that is not `read_only` there, and the answer tools and `send_chat` genuinely act — and refuses every other tool there and every other door (`escalate`, `escalate_access`, `consult`, `permit` today). Catalogue membership, checked in mecha's code, is what makes a tool runnable, the same place §4a earns `Blind`; no catalogue tool claims `read_only`. What holds a future door is the trait's defaults, which fail closed (`escalate`, `consult` → `Blocked`) or delegate (`escalate_access` → `escalate`, `permit` → `approve`); so the guest approver overrides `approve` and `escalate` and nothing that delegates. Every refusal it returns is `Decision::Blocked`, never `Deny`: `Deny` renders as the owner's correction ("Denied by the user: "), which the learning miner reads from the result string and compaction preserves across a cut, and no human speaks in a seat. A test listing today's doors cannot catch a new one with a default body — exhaustiveness the compiler checks would need a door enum on `Approver`, named in §8 step 2 as a choice, not assumed |
+| Approver | the owner's | allows **exactly the ClientTool catalogue** at `approve` — the loop sends every tool that is not `read_only` there, and the answer tools and `send_chat` genuinely act — and refuses every other tool there, and every other door that does not delegate into it (`escalate`, `escalate_access` through it, and `consult` by its own fail-closed default). `permit` delegates to `approve`, so it can allow nothing `approve` would not — and a seat writes no `[approval]` table for it to fire on. Catalogue membership, checked in mecha's code, is what makes a tool runnable, the same place §4a earns `Blind`; no catalogue tool claims `read_only`. What holds a future door is the trait's defaults, which fail closed (`escalate`, `consult` → `Blocked`) or delegate (`escalate_access` → `escalate`, `permit` → `approve`); so the guest approver overrides `approve` and `escalate` and nothing that delegates. Every refusal it returns is `Decision::Blocked`, never `Deny`: `Deny` renders as the owner's correction ("Denied by the user: "), which the learning miner reads from the result string and compaction preserves across a cut, and no human speaks in a seat. A test listing today's doors cannot catch a new one with a default body — exhaustiveness the compiler checks would need a door enum on `Approver`, named in §8 step 2 as a choice, not assumed |
 | Grants | `[[grant]]` and `/grant` | off by type, as an incognito chat's are |
 | Tools | the persona's eligible set | HyperStudy's declared tools only, as ClientTools — mecha registry tools whose call goes out over the session and whose result HyperStudy sends back (§4a); none of mecha's own |
 | Transcript | the chat's session file | kept in full (S8): the seat's session file, with every record a run writes — tool calls, ClientTool results, context items, spoken directions — and the seat's guest home is left in place when it closes |
@@ -392,7 +401,14 @@ extending the last one's prefix. Three cases:
 - **It ends on an unsent user message** (context with no reply yet, or a
   participant turn not yet sent): the item is appended to it, and a
   participant turn arriving on a context-only tail is appended to that
-  message too, so two user messages in a row never occur. Whether any of
+  message too, so two user messages in a row never occur.
+- **The run failed:** `run_in` does not roll back on `Err`, so the tail is
+  a tool-result message or a user message already sent — neither case
+  above. The seat calls `Conversation::roll_back_failed_turn` first, the
+  shared helper every conversation driver uses, records the rolled-back
+  state as a rewrite in the seat's transcript (the helper's contract, and
+  the transcript is kept in full, S8), and only then applies the rules
+  above. Whether any of
 it asks for a reply is the study's, by its own `response.create`. Nothing is dropped: an item still queued when the
 seat closes is recorded as unfolded in the seat's transcript. The
 mid-round half is not free either: the steering queue carries text
@@ -649,7 +665,9 @@ mecha provides; the study decides:
   whole system prompt (S10), so it says what the study wants said. mecha
   adds no statement either way; the owner's per-persona `disclosure` switch
   governs the owner's page, where its truth-maker is, and does not reach a
-  seat.
+  seat. Said beside §3's: this is the second guarantee a remote party
+  keeps rather than mecha's code — and the half of PERSONA-DESIGN §15's
+  host baseline that §15 attributes to statute, not to good practice.
 
 ## 8. Build order
 
@@ -672,6 +690,9 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    a door enum so the compiler holds a future door is decided here; the
    seat is armed untrusted before its first turn; the guest facade process
    writes nothing under the operator's home outside its own seat directory,
+   `parent.sock` accepts only its closed message set and fails the seat on
+   anything else; a failed run is rolled back and recorded as a rewrite
+   before any context folds;
    and the wiring's writes there are a closed list of two — the router hold
    (§5) and the crisis record (§7); a seat's session carries its own
    `SessionKind` and the corpus scan excludes it; `check-private.py` reads the seat
