@@ -45,6 +45,7 @@
 //! conclusion drawn from one can.
 
 use crate::candidate::{ChangeClass, Metric};
+use crate::harness::HistoryVerdict;
 use crate::runlog::Corpus;
 
 /// What the diagnostician is told it is, minus what it can see.
@@ -248,8 +249,9 @@ pub struct Evidence {
     /// from the harness candidate store, the way the learner is shown retired
     /// rules. Without it a nightly diagnostician re-derives the same rejected
     /// change forever, and every night costs a measurement that was already
-    /// paid for.
-    pub history: Vec<String>,
+    /// paid for. Rendered grouped by verdict, each group with its own
+    /// instruction ([`PastCandidate`]).
+    pub history: Vec<PastCandidate>,
     /// The clean appraisals of the episodes this measurement draws from
     /// (row 2f, L8), bounded ([`AppraisalNote`]). Empty by default: a brief
     /// built from a corpus alone carries none, and nothing but
@@ -882,17 +884,94 @@ impl Evidence {
             }
         }
         out.push_str(&self.appraisal_section());
-        if !self.history.is_empty() {
-            out.push_str(
-                "\nalready proposed by earlier passes — do not propose any of these again; \
-                 a measured rejection is evidence, not an invitation to retry:\n",
-            );
-            for h in &self.history {
-                out.push_str(&format!("- {h}\n"));
-            }
-        }
+        out.push_str(&history_section(&self.history));
         out
     }
+}
+
+/// One earlier candidate, as the brief's history shows it: a typed verdict
+/// and a machine-authored line.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PastCandidate {
+    pub verdict: HistoryVerdict,
+    /// `change (class)` — machine-authored, never the rejection's prose.
+    pub line: String,
+}
+
+/// The brief's history groups, in the order they are shown: each verdict
+/// in exactly one (`every_history_verdict_has_exactly_one_group`).
+const HISTORY_GROUPS: &[(&[HistoryVerdict], &str)] = &[
+    (
+        &[HistoryVerdict::Harmed, HistoryVerdict::OwnerHarmful],
+        "measured as harmful, or rejected by the owner as harmful — never propose these \
+         again",
+    ),
+    (
+        &[HistoryVerdict::RejectedUntyped, HistoryVerdict::Reverted],
+        "rejected or reverted by the owner with no typed verdict — do not propose these \
+         again",
+    ),
+    (
+        &[HistoryVerdict::NotProposable],
+        "not a change the override set can make (the key does not exist, or the value \
+         does not parse) — do not propose these again",
+    ),
+    (
+        &[
+            HistoryVerdict::NoObservedEffect,
+            HistoryVerdict::OwnerNoEffect,
+        ],
+        "measured to make no difference, or judged by the owner to do nothing — the \
+         instrument that measured them has not changed since, so do not propose these \
+         again yet",
+    ),
+    (
+        &[
+            HistoryVerdict::Underpowered,
+            HistoryVerdict::OwnerUnmeasured,
+        ],
+        "measured with too little evidence to say either way — not a verdict on the \
+         change; you may propose one again if your evidence supports it",
+    ),
+    (
+        &[HistoryVerdict::Accepted],
+        "accepted and live — already in effect",
+    ),
+    (
+        &[HistoryVerdict::Staged],
+        "waiting on a person — do not propose these again while they wait",
+    ),
+];
+
+/// The history, grouped by what each verdict says about trying again.
+///
+/// **One instruction per group, because one instruction for all of them was
+/// the defect** (HARNESS-EVOLUTION-DESIGN.md P1). Every earlier candidate
+/// used to sit under "do not propose any of these again; a measured
+/// rejection is evidence" — including the three knobs the owner rejected
+/// while writing that the measurement was "NOT a verdict on the knob", and
+/// changes the gate had only staged. A ban on what the instrument could not
+/// see is the instrument's failure laid on the change.
+fn history_section(history: &[PastCandidate]) -> String {
+    let mut out = String::new();
+    if history.is_empty() {
+        return out;
+    }
+    out.push_str("\nalready proposed by earlier passes, by what was found:\n");
+    for (verdicts, heading) in HISTORY_GROUPS {
+        let lines: Vec<&PastCandidate> = history
+            .iter()
+            .filter(|h| verdicts.contains(&h.verdict))
+            .collect();
+        if lines.is_empty() {
+            continue;
+        }
+        out.push_str(&format!("{heading}:\n"));
+        for h in lines {
+            out.push_str(&format!("- {}\n", h.line));
+        }
+    }
+    out
 }
 
 // ─── The class is derived, never taken on trust ─────────────────────────────
@@ -2266,5 +2345,104 @@ rationale: the threshold is too low";
         assert!(brief.contains("30.0%"));
         assert!(brief.contains("what the health check reported"));
         assert!(brief.contains("- 30% of calls refused"));
+    }
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+
+    /// Every verdict, by an exhaustive match: a new variant fails to compile
+    /// here until it is listed, and then fails the test until it has a group.
+    fn every_verdict() -> Vec<HistoryVerdict> {
+        use HistoryVerdict as V;
+        let all = [
+            V::Harmed,
+            V::NoObservedEffect,
+            V::Underpowered,
+            V::NotProposable,
+            V::OwnerHarmful,
+            V::OwnerNoEffect,
+            V::OwnerUnmeasured,
+            V::RejectedUntyped,
+            V::Reverted,
+            V::Accepted,
+            V::Staged,
+        ];
+        for v in all {
+            match v {
+                V::Harmed
+                | V::NoObservedEffect
+                | V::Underpowered
+                | V::NotProposable
+                | V::OwnerHarmful
+                | V::OwnerNoEffect
+                | V::OwnerUnmeasured
+                | V::RejectedUntyped
+                | V::Reverted
+                | V::Accepted
+                | V::Staged => {}
+            }
+        }
+        all.to_vec()
+    }
+
+    #[test]
+    fn every_history_verdict_has_exactly_one_group() {
+        for v in every_verdict() {
+            let homes = HISTORY_GROUPS
+                .iter()
+                .filter(|(vs, _)| vs.contains(&v))
+                .count();
+            assert_eq!(homes, 1, "{v:?} sits in {homes} groups");
+        }
+    }
+
+    /// The group that invites a retry holds exactly the verdicts that may be
+    /// re-proposed — the brief and `ruminate`'s re-derivation check read one
+    /// definition, so the brief cannot invite what the loop then refuses.
+    #[test]
+    fn only_the_retry_group_invites_a_retry_and_it_matches_may_repropose() {
+        for (verdicts, heading) in HISTORY_GROUPS {
+            let invites = heading.contains("you may propose");
+            for v in *verdicts {
+                assert_eq!(v.may_repropose(), invites, "{v:?} under {heading:?}");
+            }
+            assert!(
+                invites
+                    || heading.contains("do not propose")
+                    || heading.contains("never propose")
+                    || heading.contains("already in effect"),
+                "a group must say what to do: {heading:?}"
+            );
+        }
+    }
+
+    /// The defect P1 fixes, in the brief's own words: an owner rejection
+    /// marked "the measurement could not tell" no longer sits under a ban,
+    /// and a measured harm still does.
+    #[test]
+    fn an_unmeasured_rejection_is_not_banned_and_a_harm_still_is() {
+        let past = [
+            PastCandidate {
+                verdict: HistoryVerdict::OwnerUnmeasured,
+                line: "effort=high (Config)".into(),
+            },
+            PastCandidate {
+                verdict: HistoryVerdict::Harmed,
+                line: "max_turns=3 (Config)".into(),
+            },
+        ];
+        let text = history_section(&past);
+        let harm = text.find("max_turns=3").unwrap();
+        let unmeasured = text.find("effort=high").unwrap();
+        let ban = text.find("never propose these again").unwrap();
+        let retry = text.find("you may propose one again").unwrap();
+        assert!(ban < harm && harm < retry && retry < unmeasured, "{text}");
+        assert!(
+            !text.contains("do not propose any of these again"),
+            "the old blanket instruction is gone: {text}"
+        );
+        assert_eq!(history_section(&[]), "", "no history, no section");
     }
 }

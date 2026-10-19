@@ -7200,10 +7200,38 @@ The decisions that carry it, each a bug if undone:
   `Security` stages with the standing warning and is never measured at all —
   a loop that can argue for widening its own confinement will eventually
   argue well, and the metric will agree with it.
-- **The brief carries history.** Every prior candidate rides in the evidence
-  as "already tried — do not re-propose" (the retired-rules precedent), and a
-  re-derived change is refused by canonical-spec comparison before anything
-  is stored or measured, so a rejection stays paid for.
+- **The brief carries history, grouped by a typed verdict.** Every prior
+  candidate rides in the evidence (the retired-rules precedent) under the
+  group its `HarnessCandidate::history_verdict` puts it in, each group with
+  its own instruction: measured or owner-ruled harm is never re-proposed; an
+  untyped rejection, a revert and a key the override set cannot make are
+  not; "no observed effect" is not *yet*, because the instrument that
+  measured it has not changed; and "too little evidence" — underpowered, or
+  the owner's `reject --verdict unmeasured` — may be. The verdict is derived
+  from typed fields and the stored measurement, never from the reason's
+  prose, and a re-derived change is refused before anything is stored or
+  measured only when a record of it forbids a retry (`forbidding_prior`), so
+  a rejection stays paid for without the brief inviting back what the loop
+  then refuses. **One instruction for all of them was the defect:** the
+  brief used to say "do not propose any of these again" over every record,
+  including three knobs the owner rejected while writing that the
+  measurement was "NOT a verdict on the knob". The gate had rejected none of
+  the seventeen; every rejection was a person's.
+- **Who rejected is recorded, and the guard with it.** `Rejection` says gate,
+  no-headroom, or the owner's `harmful | no-effect | unmeasured | unstated`;
+  `Measurement::guard` keeps the gate's no-regression guard, because a breach
+  on a metric the candidate did not predict rejects without showing in the
+  tallies. A gate rejection with no guard on record is untyped, never "no
+  effect". Retyping a past rejection (`reject --verdict` on one already
+  rejected) changes only the verdict: the status, the time and the curation
+  ledger's one entry stand.
+- **The floors are measured, not only asserted.** `mecha harness null` runs
+  the same draw and the same `drive_arms` loop with nothing changed on either
+  arm and judges the pairs under every metric; `mecha harness floors` reads
+  every such run against the floors. A null run lives under `null/`, never
+  among the candidates, so nothing reads it as a proposal. Only the numeric
+  gate is measured this way: the point-wise comparison needs a change to
+  apply at a decision point, and its own floor is the next measurement.
 - **A quoted proposal is refused before it becomes a record.** The
   `carries_over` check runs before the store is touched: a candidate file is
   a place changes wait to be applied, which is the one place lifted

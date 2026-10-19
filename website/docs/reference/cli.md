@@ -2008,7 +2008,7 @@ The self-improvement loop over the harness itself, and the review surface for
 what it did. Requires a subcommand.
 
 ```
-mecha harness <ruminate|list|show|accept|reject|revert|overrides> [OPTIONS]
+mecha harness <ruminate|list|show|accept|reject|revert|overrides|null|floors> [OPTIONS]
 ```
 
 | Subcommand | Flag | Description |
@@ -2023,8 +2023,12 @@ mecha harness <ruminate|list|show|accept|reject|revert|overrides> [OPTIONS]
 | `show` | `<ID>` | One candidate, whole: prediction, measurement, evidence. |
 | `accept` | `<ID>` | Accept a staged candidate. |
 | `reject` | `<ID>` `--reason <TEXT>` | Reject one, with a reason the record keeps. |
+| `reject` | `--verdict <V>` | Why: `harmful`, `no-effect` or `unmeasured`. On a candidate already rejected, retypes it. |
 | `revert` | `<ID\|KEY>` | Take an accepted override back out. |
 | `overrides` | | The active override layer, with where each entry came from. |
+| `null` | `--sessions`, `-n`, `--holdout-in`, `--from-workspace` | As `ruminate`: the replay with nothing changed on either arm. |
+| `null` | `--drawn-by <METRIC>` | The metric the selection is ranked by. Default `tool_error_rate`. |
+| `floors` | `--json` | The gate's floors, beside what the null runs measured. |
 
 `ruminate` is the nightly verb — diagnose, record, measure by replay, dispose —
 and it exits 0 on "nothing to do", because a skipped night is not a failed
@@ -2036,12 +2040,24 @@ A `security`-class proposal is never measured and never applied.
 `revert` puts the key back to whatever your config says and keeps the candidate
 record as evidence.
 
+`reject --verdict` decides what the next nightly diagnosis is told about that
+change. `harmful` means never propose it again. `no-effect` means not until the
+measurement method changes. `unmeasured` means the measurement could not tell,
+so it may be proposed again. A rejection with no verdict is a plain no.
+
+`null` runs the nightly replay with nothing changed. Any verdict it gets is the
+gate reacting to noise, and `floors` shows how often that has happened. Until a
+null run exists, the gate's thresholds are asserted rather than measured.
+
 ```bash
 mecha harness ruminate --days 7
 mecha harness list
 mecha harness show hc-20260828T0330
 mecha harness overrides
 mecha harness revert max_turns
+mecha harness reject hc-20260903T0345 --verdict unmeasured
+mecha harness null --sessions 16
+mecha harness floors
 ```
 
 See [Run quality](/docs/features/learning/run-quality#running-the-whole-loop-unattended).

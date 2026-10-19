@@ -215,7 +215,7 @@ pub fn corpus_slice(
 pub fn evidence_for(
     model: &str,
     slice: &Corpus,
-    history: Vec<String>,
+    history: Vec<mecha_core::diagnose::PastCandidate>,
     cfg: &mecha_core::config::Config,
 ) -> Evidence {
     let mut evidence = Evidence::of(model, slice);
@@ -662,29 +662,29 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     Ok(())
 }
 
-/// One line per already-disposed candidate, for the brief. Best-effort: a
-/// missing store is an empty history, not an error. Newest 20 only — the
-/// brief rides in a real request every night, and the dedupe in `harness
-/// ruminate` catches an exact re-derivation regardless of age.
-pub fn harness_history() -> Result<Vec<String>> {
+/// One entry per earlier candidate, for the brief: its typed verdict
+/// ([`HarnessCandidate::history_verdict`]), which decides the group and the
+/// instruction it sits under, and a line naming it. Best-effort: a missing
+/// store is an empty history, not an error. Newest 20 only — the brief rides
+/// in a real request every night, and the re-derivation check in `harness
+/// ruminate` reads the whole store regardless of age.
+///
+/// The reason rides on the line as context, never as the instruction: what
+/// a reader may do with the change comes from the verdict alone.
+///
+/// [`HarnessCandidate::history_verdict`]: mecha_core::harness::HarnessCandidate::history_verdict
+pub fn harness_history() -> Result<Vec<mecha_core::diagnose::PastCandidate>> {
     let store = mecha_core::harness::HarnessStore::open_default()?;
     let all = store.all()?;
     let newest_20 = all.len().saturating_sub(20);
     Ok(all[newest_20..]
         .iter()
-        .map(|c| {
-            let verdict = match c.status.as_str() {
-                mecha_core::harness::STATUS_REJECTED => {
-                    format!(
-                        "rejected: {}",
-                        c.reason.as_deref().unwrap_or("measured worse")
-                    )
-                }
-                mecha_core::harness::STATUS_REVERTED => "accepted, then reverted by hand".into(),
-                mecha_core::harness::STATUS_ACCEPTED => "accepted and live".into(),
-                _ => "staged, awaiting a person".into(),
-            };
-            format!("{} ({:?}) — {verdict}", c.change, c.class)
+        .map(|c| mecha_core::diagnose::PastCandidate {
+            verdict: c.history_verdict(),
+            line: match c.reason.as_deref() {
+                Some(why) => format!("{} ({:?}) — {why}", c.change, c.class),
+                None => format!("{} ({:?})", c.change, c.class),
+            },
         })
         .collect())
 }
