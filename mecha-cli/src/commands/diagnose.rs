@@ -724,9 +724,9 @@ pub fn history_lines(
                     if why.chars().count() > REASON_CHARS {
                         short.push('…');
                     }
-                    format!("{} ({:?}) — {short}", c.change, c.class)
+                    format!("{key} ({:?}) — {short}", c.class)
                 }
-                None => format!("{} ({:?})", c.change, c.class),
+                None => format!("{key} ({:?})", c.class),
             };
             mecha_core::diagnose::PastCandidate {
                 verdict: c.history_verdict(),
@@ -819,7 +819,7 @@ mod tests {
         assert_eq!(
             verdicts,
             vec![
-                ("effort", V::Staged),
+                ("effort=high", V::Staged),
                 ("max_turns=3", V::OwnerHarmful),
                 ("compact_at_tokens=16384", V::NoHeadroom),
             ],

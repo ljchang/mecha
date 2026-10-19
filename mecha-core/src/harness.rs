@@ -1054,6 +1054,10 @@ pub struct NullRun {
     /// Required, not defaulted — a missing flag read as `false` would count
     /// an unmeasured run as a clean one.
     pub arms_identical: bool,
+    /// Metrics not judged because no run in the corpus had any of them —
+    /// the ones `ruminate` never measures either (`Verdict::NoHeadroom`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub no_headroom: Vec<Metric>,
 }
 
 /// The gate's verdict on the identity under one predicted metric.
