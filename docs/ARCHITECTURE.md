@@ -6815,6 +6815,32 @@ prediction that was made *before* either was measured.
   evidence of harm, and the floors are deliberately low because a replay
   corpus costs a real model run per episode per arm — the holdout does the
   work a larger sample would.
+- **Arms that never differed report no power, not a verdict.** When every
+  paired episode ties on the predicted metric *and* both arms make the same
+  number of tool calls, the two runs were the same run: the measurement says
+  nothing about the change, and `judge_slices` proposes with that as its
+  reason. It sits *ahead* of the pair-count floor, because "the arms never
+  differed" is a stronger statement than "there were only four of them", and
+  the count was masking it. Three consecutive nights (2026-09-01/02/03)
+  measured `compact_at_tokens`, `max_output_tokens` and `effort` at 0 wins,
+  0 losses, all ties with identical work on both arms, and each was filed as
+  thin evidence. It was not thin: the episodes that survive replay are the
+  ones whose tool sequence the *prompt* pins ("follow these steps literally
+  and exactly, do not skip any call"), because a pinned sequence is the one
+  thing that cannot diverge — so no config knob can move them. Drawing the
+  selection slice by `Metric::headroom` does not catch this; those episodes
+  carried 32 recorded tool calls of headroom and no elasticity whatever.
+  **Headroom is recorded cost, and what an inert episode lacks is room to
+  differ.** The disposition matters as much as the report: on a *full* slice
+  the old path read all-ties as `!sel.better()` and **rejected**, and until
+  the history was typed every rejection reached the diagnostician as "do not
+  propose this again" — so an instrument with no discriminating power was
+  quietly retiring three of the four overridable knobs, the same "unusable by
+  construction" trade `guard_regressions` already refuses. The upstream cause is untouched
+  and is the larger job: those sessions carry no `SessionKind`, so the
+  corpus's `include_tests = false` never excluded them, and the baseline arm
+  diverges on most non-scripted episodes because a local sampler does not
+  reproduce its own tool sequence.
 - **An episode that ran in only one arm is dropped.** Not a tie and not a
   loss: scoring it either way lets a candidate that dies on the hard episodes
   look good on the ones it survived.
