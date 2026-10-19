@@ -7249,8 +7249,14 @@ The decisions that carry it, each a bug if undone:
   that is not a plain identifier. `Pool::digests` hands the brief the
   remainder's and never the holdout's, on the appraisals' rule. Up to
   `MAX_DIGESTS` ride, those with a failed call, an intervention or an
-  incomplete run first, and the rest are counted. A brief carrying digests
-  opens private and asks for `cites: <episode> #<call>`; a proposal citing no
+  incomplete run first, and the rest are counted — the cut ones by how many
+  carried signal, never described as quiet. A brief carrying digests opens
+  **private and untrusted**: the owner's activity, and tool names an MCP
+  server chose for itself, which an identifier check cannot tell from a
+  sentence (`DIGEST_STEM` arms both off a transcript, as `APPRAISAL_STEM`
+  does). The cost is the diagnostician's model-chosen fetch on such a night;
+  its blind search is untouched. The block template itself carries
+  `cites: <episode> #<call>`; a proposal citing no
   episode it showed, or a call that episode lacks, is refused before
   anything is stored or measured, like a quoted one. The citation rides on
   the candidate. The owner's words at each intervention are P9's other half
