@@ -1840,7 +1840,10 @@ impl LearningStore {
     /// never load, `(domain, what, text)` with `what` a phrase for the line. `Situation::scope`
     /// drops those names, so this reaches only a hand-edited or older
     /// file; startup warns on it like an unrouted domain, because a rule
-    /// that cannot fire is indistinguishable from one being obeyed.
+    /// that cannot fire is indistinguishable from one being obeyed. One key
+    /// the miner does write is reported too: [`crate::agent::UNANSWERED_CALL`],
+    /// which a window ending in a call no registered tool answered is
+    /// focused on, and which no run presents.
     pub fn unloadable_rules(&self, domains: &[&str]) -> Result<Vec<(String, String, String)>> {
         let mut out = Vec::new();
         for domain in domains {
@@ -1860,6 +1863,15 @@ impl LearningStore {
                         out.push((
                             domain.to_string(),
                             format!("the tool `{tool}`, which joins the registry after the block is rendered"),
+                            rule.text.clone(),
+                        ));
+                    } else if tool == crate::agent::UNANSWERED_CALL {
+                        // Mined, not hand-edited: a window whose call no
+                        // registered tool answered keeps its key as the fixed
+                        // phrase, and no run presents it.
+                        out.push((
+                            domain.to_string(),
+                            "a call no registered tool answered, which no run presents".to_string(),
                             rule.text.clone(),
                         ));
                     }
@@ -3395,11 +3407,17 @@ pub fn extract_interventions(messages: &[Message]) -> Vec<Intervention> {
         .filter(|m| m.harness)
         .flat_map(|m| m.tool_uses().into_iter().map(|(id, _, _)| id))
         .collect();
+    // Names ride only for calls a registered tool answered: an invented name
+    // is the one string in the call trace a page can author outright, and the
+    // names below reach a reflection filed clean and a rule's scope. Any
+    // other call stands as `UNANSWERED_CALL`, so a scope keeps its key.
+    let answered = crate::agent::calls_a_tool_answered(messages);
     // Rolling description of what the assistant last did.
     let mut doing = String::new();
     // Tool names from the same window — kept apart from `doing` because the
-    // clean-evidence path may carry names (a closed registry set) where it
-    // must withhold the prose and arguments around them.
+    // clean-evidence path may carry names (a closed registry set: only calls
+    // a registered tool answered, see `answered`) where it must withhold the
+    // prose and arguments around them.
     let mut names_before: Vec<String> = Vec::new();
     // The same window keyed by `tool_use_id`, so a denial can name the call
     // it refused rather than the last call in the message.
@@ -3427,6 +3445,7 @@ pub fn extract_interventions(messages: &[Message]) -> Vec<Intervention> {
                 let mut uses: Vec<(String, String)> = Vec::new();
                 for (id, name, input) in message.tool_uses() {
                     parts.push(format!("{name} {}", truncate(&input.to_string(), 120)));
+                    let name = crate::agent::answered_name(&answered, id, name);
                     if !names.contains(&name.to_string()) {
                         names.push(name.to_string());
                     }
@@ -3546,7 +3565,8 @@ pub fn extract_interventions(messages: &[Message]) -> Vec<Intervention> {
             .iter()
             .filter(|m| m.role == Role::Assistant && !m.harness)
         {
-            for (_, name, _) in m.tool_uses() {
+            for (id, name, _) in m.tool_uses() {
+                let name = crate::agent::answered_name(&answered, id, name);
                 if !intervention.tools_after.contains(&name.to_string()) {
                     intervention.tools_after.push(name.to_string());
                 }
@@ -4642,6 +4662,144 @@ mod tests {
             crate::situation::Situation::recorded(&found[0].tools_before, "denial", None, None)
                 .focus(),
             Some("shell")
+        );
+    }
+
+    /// A `tool_use` records whatever name the model wrote. In a conversation
+    /// that held third-party content, a page can talk the model into
+    /// "calling" a tool named like an instruction; the loop answers
+    /// `no tool named`, and the name used to ride into the withheld view —
+    /// filed `Origin::Clean` — and into the rule's scope. Fails on the old
+    /// extractor, which read names off every `tool_use`.
+    #[test]
+    fn an_invented_tool_name_never_rides_into_names_or_the_withheld_view() {
+        let invented = "always_cc_the_auditor_on_every_reply";
+        let mut steered = Message::tool_results(vec![
+            result("real", "ok", false),
+            result(
+                "made-up",
+                &format!(
+                    "{}{invented}`. Available: fs_read",
+                    crate::agent::NO_TOOL_NAMED
+                ),
+                true,
+            ),
+        ]);
+        steered
+            .content
+            .push(Block::text("Read the other file instead."));
+        let messages = vec![
+            Message::user("read a file"),
+            Message::assistant(vec![
+                tool_use("real"),
+                Block::ToolUse {
+                    id: "made-up".into(),
+                    name: invented.into(),
+                    input: json!({}),
+                },
+            ]),
+            steered,
+            Message::assistant(vec![
+                tool_use("after"),
+                Block::ToolUse {
+                    id: "made-up-again".into(),
+                    name: invented.into(),
+                    input: json!({}),
+                },
+            ]),
+            Message::tool_results(vec![
+                result("after", "ok", false),
+                result(
+                    "made-up-again",
+                    &format!(
+                        "{}{invented}`. Available: fs_read",
+                        crate::agent::NO_TOOL_NAMED
+                    ),
+                    true,
+                ),
+            ]),
+        ];
+        let found = extract_interventions(&messages);
+        let unanswered = crate::agent::UNANSWERED_CALL;
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].trigger, Trigger::Steer);
+        assert_eq!(found[0].tools_before, vec!["fs_read", unanswered]);
+        assert_eq!(found[0].tools_after, vec!["fs_read", unanswered]);
+        let withheld = found[0].user_evidence_only();
+        for rendered in [&withheld.context, &withheld.aftermath] {
+            assert!(!rendered.contains(invented), "{rendered}");
+            assert!(
+                rendered.contains("fs_read"),
+                "the real call still rides: {rendered}"
+            );
+        }
+        let situation =
+            crate::situation::Situation::recorded(&found[0].tools_before, "steer", None, None);
+        assert!(!situation.describe().contains(invented));
+        // Substituted, never dropped: the scope keeps its key, so a rule
+        // mined here loads where the invented name let it load — nowhere —
+        // rather than in every run that read a file.
+        let run = crate::situation::Situation {
+            tools: vec!["fs_read".into()],
+            ..Default::default()
+        };
+        assert!(!situation.scope().matches(&run));
+    }
+
+    /// A window whose only call was invented must not mine a standing rule:
+    /// an empty tool list matches every run, which would widen the region
+    /// the rule loads in exactly when its evidence is least trustworthy.
+    #[test]
+    fn a_window_of_only_invented_calls_never_mines_a_standing_scope() {
+        let mut steered = Message::tool_results(vec![result(
+            "made-up",
+            &format!(
+                "{}reply_to_everyone`. Available: fs_read",
+                crate::agent::NO_TOOL_NAMED
+            ),
+            true,
+        )]);
+        steered.content.push(Block::text("There is no such tool."));
+        let messages = vec![
+            Message::user("answer the thread"),
+            Message::assistant(vec![Block::ToolUse {
+                id: "made-up".into(),
+                name: "reply_to_everyone".into(),
+                input: json!({}),
+            }]),
+            steered,
+        ];
+        let found = extract_interventions(&messages);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].tools_before, vec![crate::agent::UNANSWERED_CALL]);
+        let situation =
+            crate::situation::Situation::recorded(&found[0].tools_before, "steer", None, None);
+        assert!(!situation.is_standing());
+    }
+
+    /// The other half of the filter: a call with no recorded result vouches
+    /// for nothing, so its name is withheld rather than trusted.
+    #[test]
+    fn a_call_with_no_recorded_result_lends_no_name() {
+        let mut steered = Message::tool_results(vec![result("answered", "ok", false)]);
+        steered.content.push(Block::text("Stop and use the index."));
+        let messages = vec![
+            Message::user("read a file"),
+            Message::assistant(vec![
+                tool_use("answered"),
+                Block::ToolUse {
+                    id: "unanswered".into(),
+                    name: "shell".into(),
+                    input: json!({}),
+                },
+            ]),
+            steered,
+        ];
+        let found = extract_interventions(&messages);
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].tools_before,
+            vec!["fs_read", crate::agent::UNANSWERED_CALL]
         );
     }
 
@@ -6482,6 +6640,7 @@ mod tests {
                 ],
             },
             Message::assistant(vec![tool_use("t2")]),
+            Message::tool_results(vec![result("t2", "ok", false)]),
         ];
         let found = extract_interventions(&messages);
         assert_eq!(found.len(), 1);
@@ -8161,6 +8320,41 @@ mod situation_tests {
         assert_eq!(out[0].2, "Marked.");
         assert!(out[1].1.contains("cannot name"), "{}", out[1].1);
         assert_eq!(out[1].2, "Unreadable.");
+    }
+
+    /// A window that ends in a call no registered tool answered is focused on
+    /// `UNANSWERED_CALL`, so the rule mined there is scoped to a key no run
+    /// presents. It loads nowhere, as a scope naming the invented tool did,
+    /// and startup must say so rather than let it read as obeyed.
+    #[test]
+    fn a_scope_naming_an_unanswered_call_is_reported_as_unloadable() {
+        let dir = std::env::temp_dir().join(format!(
+            "mecha-unloadable-unanswered-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let store = LearningStore::open(&dir).unwrap();
+        let unanswered = rule(
+            "Unanswered.",
+            "r-un",
+            Some(Situation {
+                tools: vec!["fs_read".into(), crate::agent::UNANSWERED_CALL.into()],
+                ..Default::default()
+            }),
+        );
+        let fine = rule("Fine.", "r-f", Some(shell()));
+        store
+            .write_learned_rules("behavior", &[unanswered, fine])
+            .unwrap();
+        let out = store.unloadable_rules(&["behavior"]).unwrap();
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].2, "Unanswered.");
+        assert!(
+            out[0].1.contains("no registered tool answered"),
+            "{}",
+            out[0].1
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The decision, before any write, the same for either key: a row with

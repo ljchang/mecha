@@ -2850,7 +2850,13 @@ no run ever had.
 
 **Within a domain, a rule loads where its scope matches the run** (built
 2026-09-04, `GOAL-SYSTEM-DESIGN.md` §17.3–17.4). A reflection records the
-`Situation` it was mined in — tool names from the registry, the trigger, the
+`Situation` it was mined in — tool names from the registry (only calls a
+registered tool answered, `agent::calls_a_tool_answered`: a `tool_use`
+records whatever name the model wrote, so an invented one, answered `no tool
+named`, rode into the withheld view and the scope until 2026-10-19; any other
+call now stands as `agent::UNANSWERED_CALL`, substituted rather than dropped,
+because an empty tool list matches every run and a dropped key would widen
+the scope), the trigger, the
 surface, the workspace; never a tool argument, never the reflector's
 `error_type`, because a key a model can author is a key an injection can
 set (`situation.rs`) — and `mecha learn` batches a domain's pool by focus
@@ -7876,7 +7882,8 @@ check, which almost never happens; a verified success is the other source.
   stands is unknown (found on review of #342). A success verified after the
   build is missed until the next one — a miss, never a retraction ignored.
 - **The step is the session's tool sequence** (R40: 4 of 79 long runs wrote a
-  plan): registry names in call order, the harness's own calls left out, a
+  plan): registry names in call order (only calls a registered tool answered,
+  `agent::calls_a_tool_answered`), the harness's own calls left out, a
   consecutive repeat folded to `name ×n`, the first 24 spelled out and the
   rest counted (`planning::tool_sequence`), over **every message the session
   ever held** (`Session::messages_ever`, off the same bytes the transcript
