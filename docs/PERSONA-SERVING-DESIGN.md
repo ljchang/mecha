@@ -44,6 +44,13 @@ code:
 - **The approver** now has a second door, `Approver::escalate_access`, which
   asks a person to grant a path (#716). There is no person on the far end of
   a study session entitled to answer it.
+- **The persona prompt itself.** `persona::agent::BASE` presents the
+  interlocutor as the character's author, with an assistant of their own
+  that the chat is separated from. `DISCLOSED` (appended while the
+  persona's `disclosure` switch is on, the default) relies on `mecha
+  serve`'s AI tag having done the disclosing — a tag no participant sees.
+  In a seat both premises are false, and the second steers the model away
+  from a disclosure the study may want.
 
 **Why the owner's main chat cannot be served even with every tool off
 (S3).** The trifecta interlock guards tools whose destination the model
@@ -131,12 +138,14 @@ the seat, never falls through (the silently-degrading guard).
 | Surface | Owner's persona chat | Guest seat |
 |---|---|---|
 | Who the human side is | the owner | a stranger; every turn `external`, so the conversation is armed untrusted from the first word |
+| The harness's opening text | `BASE`, plus `DISCLOSED` while `disclosure` is on | a guest base of its own that says neither who wrote the character nor what the participant's screen shows; `DISCLOSED` is never appended, whatever the card's settings (§7) |
 | Persona memory | written and recalled | neither: no writer, no recall over owner stores; seeds only |
 | Confirmations, outbox | spoken yes can release | none exist: no outbox route, no `parse_answer` path |
 | Approver | the owner's | refuses every request, `escalate_access` included — a test drives both doors |
 | Grants | `[[grant]]` and `/grant` | off by type, as an incognito chat's are |
 | Tools | the persona's eligible set | HyperStudy's declared tools only, as ClientTools (§4a); none of mecha's |
 | Transcript | the chat's session file | nothing kept past the seat: HyperStudy is the system of record |
+| Voice worker logging | an ordinary call: journaled under the wordless allowlist, with `journal.py`'s named residual | always unlogged: a voice seat's key carries the incognito marker the worker keys its silence on (`INCOGNITO_PREFIX`, `X-Voice-Unlogged`), so the journal gets what an incognito call's does and no more |
 
 **Researcher guidance ranks below the persona.** HyperStudy sends each
 state's guidance as a `session.update` that replaces `instructions`
@@ -178,10 +187,15 @@ HyperStudy's to define):
 ## 4a. What a seat can do (S5)
 
 A seat is mecha's agent loop with no tools of its own: everything it reads
-and everything it does goes through the session HyperStudy opened. The
-sealed home removes the private leg of the trifecta by construction, and
-this removes mecha-side egress too — the only way out of a seat is the
-session it answers.
+and everything it does goes through the session HyperStudy opened, so the
+only way out of a seat is the session it answers. The sealed home keeps the
+*owner's* data out; it does not keep the private leg from arming. An image
+arms `private` wherever it sits in a conversation
+(`Taint::arm_for_content`), and with the stranger arming `untrusted` from
+the first word, a seat is armed from its first study screen. That is
+correct — the interlock cannot know a study image from the owner's — and it
+makes what a ClientTool declares the question that decides whether a seat
+can act at all.
 
 | Capability | How | Needs from HyperStudy |
 |---|---|---|
@@ -190,6 +204,27 @@ session it answers.
 | Read the study's text | screen text, instructions and typed chat arrive as quoted context items, untrusted like speech | — (sent today as `[context]` items) |
 | Read images | a study image or one a participant shares arrives inline as an image content item and reaches the model as `Block::Image`, capped at the door as every image is; mecha never fetches a URL a session names | images on the session, inline |
 | Act in the study | **ClientTools**: HyperStudy declares a tool (`send_chat` today; make a rating, advance the screen), the call goes out over the session, `function_call_output` comes back, a timeout returns `is_error` — so the agent loop never learns where a tool came from | the study tools, declared per session |
+
+**What a ClientTool declares.** An armed loop refuses every
+`Egress::Chosen` tool, so a study tool labelled `Chosen` fails the first
+action after the first image; and `mcp.rs` records why a wire-declared tool
+can never be labelled anything else — "a remote tool's input schema is the
+server's to write", so nothing can prove it holds no destination. The way
+through is the one CLAUDE.md already names: `Blind` is earned in code by a
+tool this repo can read. So ClientTools are a **closed catalogue in mecha's
+code** — `send_chat`, make a rating, advance the screen — each with the
+schema HRP pins for it, each `Blind` because its one recipient is the
+session the seat answers (the party every reply already reaches) and its
+schema has no destination field. A tool HyperStudy declares that is not in
+the catalogue, or whose schema differs from the pinned one, is refused at
+`session.update`, never registered as `Chosen` and never relabelled. A new
+study tool is a catalogue entry in a reviewed change, on both sides. What
+HyperStudy does past the session with a rating is the study's; what mecha
+guarantees is that nothing it sends goes anywhere else. The private leg a
+seat carries is the study's own material shown back to the study, so the
+send-axis leak guard (`block_sends_after_private`, which refuses `Blind`
+too) stays off in a guest home's config — and the guest home's config is
+written by the wiring, never the owner's.
 
 **Not in a seat:** image generation (S5); any mecha tool — no `web_search`,
 no file reading, no `http_fetch`, no shell, no owner `[[mcp]]` server, no
@@ -215,16 +250,24 @@ An offer is accepted only when every check passes; each refusal is typed
 - **The persona is servable.** A per-persona switch the owner sets, off by
   default. The engine's hello lists only servable personas, as opaque refs;
   an offer naming anything else is `unknown_persona`, so the rest of the
-  owner's personas are never confirmed to anyone. Per PERSONA-DESIGN §15, a
-  persona on the romantic template cannot be made servable.
-- **The owner comes first.** A live owner call, or a voice-lock hold, is
-  `busy` for a voice seat — and an owner call that starts mid-seat does not
-  preempt the seat silently; what happens then is owed (§9).
-- **One voice seat at a time,** and only with GPU room for STT, TTS and the
-  model beside whatever else holds the card (image and video servers start
-  on demand); otherwise `capacity`. `mecha system` is the reading. Text
-  seats share the router's slots and are bounded by `permit.rs`'s seats, as
-  any background run is.
+  owner's personas are never confirmed to anyone. A persona on the romantic
+  template is refused the switch until the owner rules (§9):
+  PERSONA-DESIGN §15 says a romantic persona must never reach a minor, S2
+  gives age to the experimenter, and so nothing on mecha's side can check
+  it.
+- **The owner comes first.** A live owner call is `busy` for a voice seat —
+  and an owner call that starts mid-seat does not preempt the seat
+  silently; what happens then is owed (§9).
+- **A seat cap, counted where admission runs.** One voice seat at a time,
+  and only with GPU room for STT, TTS and the model beside whatever else
+  holds the card (image and video servers start on demand); otherwise
+  `capacity`. `mecha system` is the reading. Text seats are capped by
+  `[hyperstudy] max_seats`, counted by the one long-running process that
+  admits every seat, in the owner's home. `permit.rs` cannot do this: a
+  seat is interactive work, which takes no permit by design, and each seat's
+  guest home would give it a pool of its own. Every text seat holds a router
+  slot while it answers, so the cap is set against the owner's `-np`, not
+  apart from it.
 - **The credential** for the control socket is a connected-agent token
   HyperStudy issues and can revoke; mecha keeps it with the other secrets in
   its home, and an offer carries only a single-use, sixty-second session
@@ -292,7 +335,10 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    offer, the config table; nothing behind it yet but `Unready`.
 2. **The guest facade** — guest home, untrusted run mode, the §3 table as
    tests (the approver test drives `escalate_access`; a seat writes nothing
-   under the operator's home), ClientTools, budgets.
+   under the operator's home; the guest base is the opening text and
+   `DISCLOSED` is absent with `disclosure` on), the ClientTool catalogue (an
+   armed seat with an image in it still rates and advances; an uncatalogued
+   tool is refused), budgets.
 3. **A text seat on loopback** — HRP with text-only output against a local
    stand-in for HyperStudy's session: context items, inline images, declared
    tools. Exit: a scripted study (read a screen, chat, rate, advance) runs
@@ -300,7 +346,8 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
 4. **The voice transport on loopback** — the worker serves HRP on a local
    socket for development only, and HyperStudy's conformance suite runs
    against it (its runner takes any HRP client; a URL wrapper is all it
-   needs). Exit: both turn-detection modes pass, truncate `approximate`.
+   needs). Exit: both turn-detection modes pass, truncate `approximate`,
+   and a seat's key puts the worker in incognito silence.
 5. **`mecha-hyperstudy` + wiring + admission** — once HyperStudy's `accept`
    exists; the seats switch from serving a local socket to dialing the
    session URL.
@@ -311,7 +358,8 @@ credentials, the control socket, the engine hello, offers and rejects,
 session tokens, an adapter that gives its voice bridge an HRP client over an
 accepted socket, text seats on the same socket, a `connected` engine naming
 credential and persona, §4.4's persona ownership, inline images on the
-session, and the study tools declared once per session (§4a). **The frames
+session, and the study tools as a catalogue pinned in HRP, declared once per
+session (§4a). **The frames
 are pinned in its §4.1 before either side builds against them** — with a
 direct connection, HyperStudy's spec is the contract mecha codes to.
 
@@ -330,7 +378,10 @@ accepted socket instead.
 
 - What happens to a live voice seat when the owner starts a call: end the
   seat with a reason, or refuse the owner's call while a study runs.
-- The budget numbers, set from a measured seat, not guessed.
+- The budget numbers and `max_seats`' default, set from a measured seat,
+  not guessed.
+- Whether a persona on the romantic template may ever be servable (§5);
+  refused until ruled.
 - Whether bwrap confinement of the guest facade is required from step 2 or
   added after.
 - Latency, measured on this box: OpenAI's Realtime models are
