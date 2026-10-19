@@ -1001,7 +1001,7 @@ pub struct NullRun {
     /// The same pairs judged under every metric a candidate could predict:
     /// the gate's false-positive surface, one row per metric. **Empty when
     /// nothing paired** — a run that judged nothing is not one in which the
-    /// gate declined to react.
+    /// gate declined to react. Empty, too, when the arms were identical.
     pub by_metric: Vec<NullJudgement>,
     /// Episodes drawn and driven: the selection plus the holdout, before
     /// either arm ran. The denominator for how often an arm left the
@@ -1009,6 +1009,12 @@ pub struct NullRun {
     /// `Measurement::skipped` also counts sessions the pool scan passed over
     /// before anything was drawn (found on review of #717).
     pub drawn: usize,
+    /// Every paired episode replayed identically on both arms
+    /// (`candidate::arms_identical`): there was no noise for the gate to
+    /// react to, so `by_metric` is empty and the run judged nothing.
+    /// Required, not defaulted — a missing flag read as `false` would count
+    /// an unmeasured run as a clean one.
+    pub arms_identical: bool,
 }
 
 /// The gate's verdict on the identity under one predicted metric.

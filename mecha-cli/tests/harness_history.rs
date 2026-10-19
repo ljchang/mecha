@@ -188,6 +188,7 @@ fn floors_say_asserted_until_a_null_run_measures_them() {
             ),
             by_metric: vec![accepted, proposed],
             drawn: 3,
+            arms_identical: false,
         })
         .unwrap();
     let one: Value = serde_json::from_str(&f.ok(&["harness", "floors", "--json"])).unwrap();
@@ -244,15 +245,28 @@ fn a_null_run_that_paired_nothing_is_not_a_clean_sheet() {
             ),
             by_metric: Vec::new(),
             drawn: 2,
+            arms_identical: false,
         })
         .unwrap();
+    // And one whose arms replayed identically: it paired, but there was no
+    // noise to react to, so it judged nothing either.
+    let mut same = f.store().nulls_counting().unwrap().0.remove(0);
+    same.id = HarnessStore::mint_null_id() + "-same";
+    same.measurement.episodes = vec!["s-3".into()];
+    same.arms_identical = true;
+    f.store().write_null(&same).unwrap();
+
     let read: Value = serde_json::from_str(&f.ok(&["harness", "floors", "--json"])).unwrap();
-    assert_eq!(read["null_runs"], 1);
+    assert_eq!(read["null_runs"], 2);
+    assert_eq!(read["runs_with_identical_arms"], 1);
     assert_eq!(read["runs_pairing_nothing"], 1);
     assert_eq!(read["judgements"], 0);
     assert_eq!(read["propose"], 0, "nothing judged is not eleven proposals");
     let text = f.ok(&["harness", "floors"]);
-    assert!(text.contains("1 paired nothing"), "{text}");
+    assert!(
+        text.contains("1 paired nothing, 1 replayed identically"),
+        "{text}"
+    );
     assert!(
         text.contains("verdicts on noise are still unmeasured"),
         "{text}"

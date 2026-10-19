@@ -287,7 +287,21 @@ async fn ruminate(
 
     // The same change, re-derived: the measurement is already paid for, and
     // the brief told it not to — unless every record of it allows a retry.
-    if let Some(prior) = forbidding_prior(&store.all()?, &proposal.change) {
+    // Whether this corpus holds any of the metric the proposal predicts to
+    // lower — read here as well as below, because a prior rejected for *no
+    // headroom* forbids a retry exactly while that is still true.
+    let has_headroom = |metric| {
+        evidence
+            .metrics
+            .iter()
+            .find(|(m, _, _)| *m == metric)
+            .is_some_and(|(_, _, with)| *with > 0)
+    };
+    if let Some(prior) = forbidding_prior(
+        &store.all()?,
+        &proposal.change,
+        has_headroom(proposal.metric),
+    ) {
         println!(
             "the diagnostician re-derived `{}`, already on file as {} ({}) — nothing new tonight",
             proposal.change, prior.id, prior.status
@@ -416,7 +430,10 @@ async fn ruminate(
                     );
                 }
                 // Rejected so the brief's history carries it: dropped, it
-                // would be free to come back tomorrow.
+                // would be free to come back tomorrow. Recorded, it comes back
+                // only on a night whose corpus has some of the metric —
+                // `forbidding_prior` holds it until then, so a re-derivation
+                // does not add a record a night.
                 Verdict::NoHeadroom => {
                     cand.status = STATUS_REJECTED.into();
                     cand.rejection = Some(Rejection::NoHeadroom);
@@ -455,9 +472,17 @@ async fn ruminate(
 /// which the brief now invites back — would have been refused the night it
 /// came back. Any one prior that forbids is enough: an owner's "harmful" on
 /// one record is not undone by an underpowered measurement on another.
+///
+/// **A rejection for no headroom forbids while the corpus still has none.**
+/// Headroom belongs to the corpus, so such a rejection is not a verdict on
+/// the change and may come back — but only on a night that can measure it.
+/// Free to return every night, one re-derived change would add a rejected
+/// record a night and push every forbidding record out of the brief's
+/// newest-20 window (found on review of #717).
 fn forbidding_prior<'a>(
     on_file: &'a [HarnessCandidate],
     change: &str,
+    has_headroom: bool,
 ) -> Option<&'a HarnessCandidate> {
     let canonical = |change: &str| {
         parse_change(change)
@@ -465,9 +490,11 @@ fn forbidding_prior<'a>(
             .unwrap_or_else(|_| change.trim().to_string())
     };
     let new_spec = canonical(change);
-    on_file
-        .iter()
-        .find(|c| canonical(&c.change) == new_spec && !c.history_verdict().may_repropose())
+    on_file.iter().find(|c| {
+        canonical(&c.change) == new_spec
+            && (!c.history_verdict().may_repropose()
+                || (c.rejection == Some(Rejection::NoHeadroom) && !has_headroom))
+    })
 }
 
 /// The draw's seed, off the candidate id rather than the clock: re-measuring
@@ -1177,7 +1204,18 @@ async fn null_arm(
     // review of #717). The run is still recorded: how often the arms left
     // the recording is the other half of what it measures.
     let paired = !driven.selection_pairs.is_empty() || !driven.holdout_pairs.is_empty();
-    let by_metric: Vec<NullJudgement> = if paired {
+    // **Identical arms measured nothing either** (found on review of #717):
+    // `judge_drawn` proposes "no room to differ" under every metric, which
+    // `floors` would otherwise count as the gate declining to react to
+    // noise — on the result this PR's own account of replay calls likely.
+    let arms_identical = paired
+        && mecha_core::candidate::arms_identical(
+            driven
+                .selection_pairs
+                .iter()
+                .chain(driven.holdout_pairs.iter()),
+        );
+    let by_metric: Vec<NullJudgement> = if paired && !arms_identical {
         mecha_core::candidate::Metric::ALL
             .iter()
             .map(|m| NullJudgement::of(*m, &judge(*m)))
@@ -1220,6 +1258,7 @@ async fn null_arm(
         measurement,
         by_metric,
         drawn: draw.selection.len() + draw.holdout.len(),
+        arms_identical,
     };
     store.write_null(&run)?;
 
@@ -1246,6 +1285,13 @@ async fn null_arm(
                 ""
             }
         );
+    }
+    if run.arms_identical {
+        println!(
+            "both arms replayed identically on every paired episode, so there was no noise for \
+             the gate to react to — this run says nothing about its verdicts"
+        );
+        return Ok(());
     }
     if run.by_metric.is_empty() {
         println!(
@@ -1274,9 +1320,14 @@ fn floors(as_json: bool) -> Result<()> {
     let (runs, unreadable) = store.nulls_counting()?;
     let judged: Vec<&mecha_core::harness::NullJudgement> =
         runs.iter().flat_map(|r| r.by_metric.iter()).collect();
-    // Counted apart: a run that paired nothing judged nothing, and must not
-    // read as a run in which the gate declined to react.
-    let unpaired = runs.iter().filter(|r| r.by_metric.is_empty()).count();
+    // Counted apart: a run that paired nothing, or whose arms were the same
+    // run, judged nothing, and must not read as a run in which the gate
+    // declined to react.
+    let identical = runs.iter().filter(|r| r.arms_identical).count();
+    let unpaired = runs
+        .iter()
+        .filter(|r| r.by_metric.is_empty() && !r.arms_identical)
+        .count();
     let count = |d: &str| judged.iter().filter(|j| j.disposition == d).count();
     let filled = runs
         .iter()
@@ -1305,6 +1356,7 @@ fn floors(as_json: bool) -> Result<()> {
                 "unreadable": unreadable,
                 "runs_filling_both_floors": filled,
                 "runs_pairing_nothing": unpaired,
+                "runs_with_identical_arms": identical,
                 "judgements": judged.len(),
                 "accept": count("accept"),
                 "reject": count("reject"),
@@ -1331,13 +1383,15 @@ fn floors(as_json: bool) -> Result<()> {
         return Ok(());
     }
     println!(
-        "{} null run(s): {filled} filled both floors, {unpaired} paired nothing; the baseline \
-         arm left the recording on {baseline_diverged} of {drawn} drawn episode(s)",
+        "{} null run(s): {filled} filled both floors, {unpaired} paired nothing, {identical} \
+         replayed identically on both arms; the baseline arm left the recording on \
+         {baseline_diverged} of {drawn} drawn episode(s)",
         runs.len()
     );
     if judged.is_empty() {
         println!(
-            "no null run paired anything, so the gate's verdicts on noise are still unmeasured"
+            "no null run paired episodes that differed, so the gate's verdicts on noise are \
+             still unmeasured"
         );
         return Ok(());
     }
@@ -1747,12 +1801,12 @@ mod tests {
     #[test]
     fn a_rederived_change_is_refused_only_by_a_prior_that_forbids_a_retry() {
         let unmeasured = rejected("hc-a", "effort=high", Some(Rejection::Unmeasured));
-        assert!(forbidding_prior(std::slice::from_ref(&unmeasured), "effort=high").is_none());
+        assert!(forbidding_prior(std::slice::from_ref(&unmeasured), "effort=high", true).is_none());
 
         let harmful = rejected("hc-b", "effort = high", Some(Rejection::Harmful));
         let both = [unmeasured.clone(), harmful];
         assert_eq!(
-            forbidding_prior(&both, "effort=high").map(|c| c.id.as_str()),
+            forbidding_prior(&both, "effort=high", true).map(|c| c.id.as_str()),
             Some("hc-b"),
             "one forbidding record is enough, matched on the canonical spec"
         );
@@ -1760,10 +1814,25 @@ mod tests {
         let mut staged = unmeasured;
         staged.status = STATUS_STAGED.into();
         assert!(
-            forbidding_prior(&[staged], "effort=high").is_some(),
+            forbidding_prior(&[staged], "effort=high", true).is_some(),
             "a change already waiting on a person is not proposed twice"
         );
-        assert!(forbidding_prior(&both, "effort=low").is_none());
+        assert!(forbidding_prior(&both, "effort=low", true).is_none());
+    }
+
+    /// A no-headroom rejection may come back, but only into a corpus that
+    /// can measure it: held while there is still none, so one re-derived
+    /// change cannot add a record a night.
+    #[test]
+    fn a_no_headroom_prior_holds_until_the_corpus_has_some() {
+        let starved = rejected(
+            "hc-c",
+            "compact_at_tokens=16384",
+            Some(Rejection::NoHeadroom),
+        );
+        let on_file = std::slice::from_ref(&starved);
+        assert!(forbidding_prior(on_file, "compact_at_tokens=16384", false).is_some());
+        assert!(forbidding_prior(on_file, "compact_at_tokens=16384", true).is_none());
     }
 
     #[test]
