@@ -564,6 +564,19 @@ pub async fn observe_all_for(
     (warnings, seen, unnamed)
 }
 
+/// The model the router at `base_url` had resident when this process looked.
+/// `None` is unknown, never "nothing to worry about": not observed, did not
+/// answer, listed nothing readable, or held none or two ([`resident`]).
+pub fn resident_at(base_url: &str) -> Option<String> {
+    let b = base(base_url);
+    let s = SNAPSHOT.read().ok()?;
+    s.seen
+        .iter()
+        .find(|seen| seen.base_url == b)?
+        .resident
+        .clone()
+}
+
 /// How many background runs may hold the model at once, under this process's
 /// snapshot (`permit.rs`; owner's ruling 2026-09-26, §14 trap 5).
 pub fn background_seats(fallback: usize) -> usize {
