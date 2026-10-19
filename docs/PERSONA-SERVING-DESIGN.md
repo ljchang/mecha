@@ -222,7 +222,9 @@ host, so egress no longer rests on the tool catalogue alone (§4a).
 the process holding a stranger's conversation into the process holding the
 owner's home, the router hold and the crisis ledger — and §7 needs it, since
 a facade under `--unshare-net` cannot write the owner's ledger itself. So
-the wiring accepts a closed set of messages on it: a ClientTool call (and
+the wiring accepts a closed set of messages on it, checking a ClientTool
+call's name and arguments against the catalogue again on arrival, not only
+at registration: a ClientTool call (and
 returns its result), a crisis trip record, a `CrisisState` change, and seat
 close. Anything else is refused and logged, failing the seat closed, never
 ignored.
@@ -390,7 +392,7 @@ and it is a **deferred** fold: `run_in` holds `&mut Conversation` for the
 whole run, so the wiring cannot touch the messages while a run is in
 flight, and a message already sent must not change — the transcript would
 record words the model never received, and the next request would stop
-extending the last one's prefix. Three cases:
+extending the last one's prefix. Four cases:
 
 - **A run is in flight** (a closing turn, or a reply with no tool call):
   the item waits, and cannot be acted on in that turn — the consequence the
@@ -404,11 +406,16 @@ extending the last one's prefix. Three cases:
   message too, so two user messages in a row never occur.
 - **The run failed:** `run_in` does not roll back on `Err`, so the tail is
   a tool-result message or a user message already sent — neither case
-  above. The seat calls `Conversation::roll_back_failed_turn` first, the
-  shared helper every conversation driver uses, records the rolled-back
-  state as a rewrite in the seat's transcript (the helper's contract, and
-  the transcript is kept in full, S8), and only then applies the rules
-  above. Whether any of
+  above. The seat restores the snapshot taken before the run — the first
+  half of `Conversation::roll_back_failed_turn` — and **not** its second
+  half, which pops a plain user tail because a front end will resend it. A
+  seat has no front end: HyperStudy sent that context and that participant
+  turn once, so popping them would lose them from the conversation with
+  nothing to record their loss. After the restore the tail is an unsent
+  user message again, the third case applies, and the next request carries
+  it — legal, because nothing will resend it. The rolled-back state is
+  recorded as a rewrite in the seat's transcript (the helper's contract,
+  and the transcript is kept in full, S8). Whether any of
 it asks for a reply is the study's, by its own `response.create`. Nothing is dropped: an item still queued when the
 seat closes is recorded as unfolded in the seat's transcript. The
 mid-round half is not free either: the steering queue carries text
@@ -691,8 +698,11 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    seat is armed untrusted before its first turn; the guest facade process
    writes nothing under the operator's home outside its own seat directory,
    `parent.sock` accepts only its closed message set and fails the seat on
-   anything else; a failed run is rolled back and recorded as a rewrite
-   before any context folds;
+   anything else, and re-checks a ClientTool call against the catalogue on
+   arrival; a run that fails after context and a participant turn were
+   folded into its tail restores the snapshot without popping, so both are
+   still in the next request — the test asserts the words survive, not only
+   that a rewrite was recorded;
    and the wiring's writes there are a closed list of two — the router hold
    (§5) and the crisis record (§7); a seat's session carries its own
    `SessionKind` and the corpus scan excludes it; `check-private.py` reads the seat
