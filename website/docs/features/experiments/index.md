@@ -211,7 +211,7 @@ arm moves that knob, because the arm is the treatment.
 
 **Stage levers** apply to [lifetimes](#lifetimes) only: `reflect`, `learn`,
 `validate`, `retire`, `ruminate`, `sensors_in_brief`, `appraisals_in_brief`,
-`contrast_evidence`, named in `stages_off`.
+`digests_in_brief`, `contrast_evidence`, named in `stages_off`.
 
 **The environment.** An arm may name its own
 [environment](#arm-environments), which is how it varies anything the list
@@ -614,11 +614,15 @@ ran under.
 
 **Stage levers** are a second closed set, beside the per-run levers, and a
 lifetime's arm may name them off in `stages_off`: `reflect`, `learn`,
-`validate`, `retire`, `ruminate`, `sensors_in_brief`, `appraisals_in_brief` and
-`contrast_evidence` — the last three are not stages but switches: `[agent] sensors_in_brief` hands the
-homeostat's and guilt's readings to the diagnostician's brief, which is those
-sensors' only reader, and `[agent] appraisals_in_brief` hands it the clean text
-appraisals of the sessions its candidate may be selected from.
+`validate`, `retire`, `ruminate`, `sensors_in_brief`, `appraisals_in_brief`,
+`digests_in_brief` and `contrast_evidence`. The last four are switches, not
+stages:
+- `[agent] sensors_in_brief` gives the diagnostician's brief the homeostat's
+  and guilt's readings. The brief is the only thing that reads those sensors.
+- `[agent] appraisals_in_brief` gives it the appraisals of the sessions its
+  candidate may be selected from.
+- `[agent] digests_in_brief` gives it a digest of each of those sessions'
+  tool calls, and requires every proposal to cite one.
 `contrast_evidence` is the one that ships **off**: `[agent]
 contrast_evidence` lets `mecha reflect` show a correction a success you
 verified in the same situation. To measure it, give the arm its own
