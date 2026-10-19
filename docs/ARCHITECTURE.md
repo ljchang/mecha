@@ -6816,12 +6816,15 @@ prediction that was made *before* either was measured.
   corpus costs a real model run per episode per arm — the holdout does the
   work a larger sample would.
 - **Arms that never differed report no power, not a verdict.** When every
-  paired episode ties on the predicted metric *and* both arms make the same
+  paired replay comes out the same on every metric *and* on a known, nonzero
   number of tool calls, the two runs were the same run: the measurement says
-  nothing about the change, and `judge_slices` proposes with that as its
-  reason. It sits *ahead* of the pair-count floor, because "the arms never
-  differed" is a stronger statement than "there were only four of them", and
-  the count was masking it. Three consecutive nights (2026-09-01/02/03)
+  nothing about the change, and `judge_drawn` proposes with that as its
+  reason, ahead of every count, because "the arms never differed" is a
+  stronger statement than "there were only four of them", and the count was
+  masking it. **Replay only**: it lives in `judge_drawn`, not the generic
+  `judge_slices`, because two experiment trials run separately that agree
+  are a real tie, not a recording that held both arms in place; and a zero
+  is not a known count, since a trial with no stats reports zero calls. Three consecutive nights (2026-09-01/02/03)
   measured `compact_at_tokens`, `max_output_tokens` and `effort` at 0 wins,
   0 losses, all ties with identical work on both arms, and each was filed as
   thin evidence. It was not thin: the episodes that survive replay are the
@@ -7206,8 +7209,9 @@ The decisions that carry it, each a bug if undone:
   its own instruction: measured or owner-ruled harm is never re-proposed; an
   untyped rejection, a revert and a key the override set cannot make are
   not; "no observed effect" is not *yet*, because the instrument that
-  measured it has not changed; and "too little evidence" — underpowered, or
-  the owner's `reject --verdict unmeasured` — may be. The verdict is derived
+  measured it has not changed; and "too little evidence" — a rejection for no
+  headroom (a property of that night's corpus), or the owner's `reject
+  --verdict unmeasured` — may be. The verdict is derived
   from typed fields and the stored measurement, never from the reason's
   prose, and a re-derived change is refused before anything is stored or
   measured only when a record of it forbids a retry (`forbidding_prior`), so

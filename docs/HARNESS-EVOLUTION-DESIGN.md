@@ -649,11 +649,16 @@ the shape above left open:
   tallies. A gate rejection recorded before this field is untyped, never
   "no observed effect".
 
-**Nothing reopens on its own.** `Underpowered` cannot come from any record
-the gate writes today, because a thin selection slice always proposes and
-never rejects. So the "may be proposed again" group fills only from the
-owner's `--verdict unmeasured`. P1 lifts the bans the owner lifts, and no
-others.
+**Almost nothing reopens on its own.** A thin selection slice always
+proposes and never rejects, so measuring can't produce `Underpowered`. It
+comes from exactly two places:
+- **The owner's `--verdict unmeasured`.**
+- **A no-headroom rejection**, where no run in that night's corpus had any of
+  the metric the change predicted to lower. Headroom belongs to the corpus,
+  not the change. A re-proposal into a corpus that still has none is
+  rejected again before any replay is paid for.
+
+Apart from those, P1 lifts only the bans the owner lifts.
 
 The live record when it was built: the gate had rejected none of the 17
 candidates. All 12 rejections were the owner's, and four of them were keys

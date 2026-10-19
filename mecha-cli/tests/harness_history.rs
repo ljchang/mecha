@@ -205,3 +205,56 @@ fn floors_say_asserted_until_a_null_run_measures_them() {
     // A null run is never a candidate: nothing waits on the owner.
     assert!(f.store().all().unwrap().is_empty());
 }
+
+/// A null run in which nothing paired judged nothing: it counts toward how
+/// often the arms left the recording, and never as a run in which the gate
+/// declined to react. Fails on a readout that judges the empty draw, which
+/// gives a clean-looking `propose` under every metric.
+#[test]
+fn a_null_run_that_paired_nothing_is_not_a_clean_sheet() {
+    use mecha_core::candidate::{judge_drawn, ChangeClass, Metric, Prediction};
+    let f = Fixture::new();
+    let nothing = judge_drawn(
+        ChangeClass::Config,
+        &Prediction {
+            metric: Metric::Turns,
+            rationale: String::new(),
+        },
+        &[],
+        &[],
+    );
+    f.store()
+        .write_null(&mecha_core::harness::NullRun {
+            id: HarnessStore::mint_null_id(),
+            drawn_by: Metric::Turns,
+            measurement: mecha_core::harness::Measurement::record(
+                &nothing,
+                "m",
+                "2026-10-19T00:00:00Z".into(),
+                mecha_core::harness::Drawn {
+                    episodes: Vec::new(),
+                    holdout_episodes: Vec::new(),
+                    seed: 1,
+                    ranked: None,
+                    diverged: vec!["s-1".into(), "s-2".into()],
+                    replay_caveats: Vec::new(),
+                    divergence_detail: Vec::new(),
+                    skipped: 0,
+                },
+            ),
+            by_metric: Vec::new(),
+            drawn: 2,
+        })
+        .unwrap();
+    let read: Value = serde_json::from_str(&f.ok(&["harness", "floors", "--json"])).unwrap();
+    assert_eq!(read["null_runs"], 1);
+    assert_eq!(read["runs_pairing_nothing"], 1);
+    assert_eq!(read["judgements"], 0);
+    assert_eq!(read["propose"], 0, "nothing judged is not eleven proposals");
+    let text = f.ok(&["harness", "floors"]);
+    assert!(text.contains("1 paired nothing"), "{text}");
+    assert!(
+        text.contains("verdicts on noise are still unmeasured"),
+        "{text}"
+    );
+}

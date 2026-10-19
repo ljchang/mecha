@@ -525,10 +525,14 @@ pub enum HistoryVerdict {
     /// The gate measured harm: a loss on the predicted metric in either
     /// slice, a guard breach, the work floor, or a point-wise loss.
     Harmed,
-    /// The gate measured no harm and no win, or had no headroom to measure
-    /// one in.
+    /// The gate measured no harm and no win.
     NoObservedEffect,
-    /// The gate rejected it with too few pairs to say either way.
+    /// The gate rejected it without the evidence to say either way: too few
+    /// pairs, or no measurement at all because no run in that night's corpus
+    /// had any of the metric it predicted to lower. Headroom is a property of
+    /// the corpus, which changes nightly, so it is not a verdict on the
+    /// change (found on review of #717) — and a re-proposal into a corpus
+    /// that still has none is rejected again before any replay is paid for.
     Underpowered,
     /// A config change the closed override set cannot make — the key does
     /// not exist or the value does not parse.
@@ -592,7 +596,7 @@ impl HarnessCandidate {
             Some(Rejection::NoEffect) => HistoryVerdict::OwnerNoEffect,
             Some(Rejection::Unmeasured) => HistoryVerdict::OwnerUnmeasured,
             Some(Rejection::Unstated) | Some(Rejection::Unknown) => HistoryVerdict::RejectedUntyped,
-            Some(Rejection::NoHeadroom) => HistoryVerdict::NoObservedEffect,
+            Some(Rejection::NoHeadroom) => HistoryVerdict::Underpowered,
             Some(Rejection::Gate) => self.measured_verdict(),
             // From before the field: the gate's own disposition is the one
             // typed thing that says whether it, rather than a person,
@@ -995,7 +999,9 @@ pub struct NullRun {
     /// `drawn_by`. Carries the draw, the divergences and the receipts.
     pub measurement: Measurement,
     /// The same pairs judged under every metric a candidate could predict:
-    /// the gate's false-positive surface, one row per metric.
+    /// the gate's false-positive surface, one row per metric. **Empty when
+    /// nothing paired** — a run that judged nothing is not one in which the
+    /// gate declined to react.
     pub by_metric: Vec<NullJudgement>,
     /// Episodes drawn and driven: the selection plus the holdout, before
     /// either arm ran. The denominator for how often an arm left the
@@ -1989,8 +1995,11 @@ mod history_verdict_tests {
         let c = rejected("max_turns=9", Some(Rejection::Gate), Some(m));
         assert_eq!(c.history_verdict(), V::Harmed, "the work floor");
 
+        // No headroom is the corpus's state that night, not the change's
+        // verdict: it may come back once the corpus has some.
         let c = rejected("max_turns=9", Some(Rejection::NoHeadroom), None);
-        assert_eq!(c.history_verdict(), V::NoObservedEffect);
+        assert_eq!(c.history_verdict(), V::Underpowered);
+        assert!(c.history_verdict().may_repropose());
     }
 
     /// An invented key outranks whatever anyone ruled: it was never a change
