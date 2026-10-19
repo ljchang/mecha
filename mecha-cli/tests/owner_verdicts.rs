@@ -140,6 +140,7 @@ fn seed_candidates(home: &Path) {
                 resolved_at: None,
                 reason: None,
                 rejection: None,
+                cites: None,
             })
             .unwrap();
     }
