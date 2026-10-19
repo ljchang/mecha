@@ -21,11 +21,14 @@ use mecha_core::diagnose::{diagnose_system, lifted, parse_proposal, Evidence, Pr
 use mecha_core::message::Block;
 use mecha_core::runlog::{Corpus, Scan};
 use mecha_core::session::Session;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 #[derive(clap::Args, Debug)]
 pub struct Args {
-    /// Which model's runs to diagnose. Defaults to whichever has the most.
+    /// Which model's runs to diagnose. Defaults to the model a run here
+    /// serves — the router's resident one where the default follows it — and
+    /// to whichever has the most runs only when no provider resolves.
     #[arg(long)]
     pub model: Option<String>,
 
@@ -54,6 +57,54 @@ pub struct Args {
     pub dry_run: bool,
 }
 
+/// Which model's slice [`corpus_slice`] takes.
+///
+/// **The model measured is the model in use, never the corpus's largest
+/// slice.** A replay names the slice's model on the wire, and on a router a
+/// request naming a model loads it: on 2026-10-17 at 04:45Z the nightly took
+/// the largest slice — months of runs on `qwen3.6-35b-a3b` — and evicted the
+/// owner's resident `qwen3.6-35b-a3b-uncensored` to replay them. Ruminating
+/// on the model that answers now is also the right question: a harness change
+/// is applied to the runs ahead, not to a model retired from them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pick<'a> {
+    /// A model the person named (`diagnose --model`); no runs for it is an
+    /// error, because they asked about that model and nothing else.
+    Named(&'a str),
+    /// The model this process serves ([`setup::served_model`]); no runs for
+    /// it is an *empty* slice under its name, for the caller to report — a
+    /// quiet deferral at 03:30, never a fall back to another model.
+    Served(&'a str),
+    /// Nothing named and nothing resolvable: whichever slice has the most
+    /// runs. Kept only for `diagnose`, which replays nothing and so loads
+    /// nothing, on a machine whose provider will not build (no key, say) —
+    /// the brief can still be read with `--dry-run`.
+    Largest,
+}
+
+/// The pure half of [`corpus_slice`]: one model's slice out of `by_model`.
+pub fn pick_slice(by_model: &BTreeMap<String, Corpus>, pick: Pick<'_>) -> Result<(String, Corpus)> {
+    match pick {
+        Pick::Named(want) => {
+            let slice = by_model
+                .get(want)
+                .with_context(|| format!("no recorded runs for model `{want}`"))?;
+            Ok((want.to_string(), slice.clone()))
+        }
+        Pick::Served(want) => Ok((
+            want.to_string(),
+            by_model.get(want).cloned().unwrap_or_default(),
+        )),
+        Pick::Largest => {
+            let (model, slice) = by_model
+                .iter()
+                .max_by_key(|(_, c)| c.len())
+                .context("the corpus holds no model's runs")?;
+            Ok((model.clone(), slice.clone()))
+        }
+    }
+}
+
 /// Scan the run corpus and pick one model's slice — one model, because a rate
 /// blended across two describes neither. `Ok(None)` means the corpus holds no
 /// recorded outcomes at all, which callers report in their own register: an
@@ -62,8 +113,11 @@ pub struct Args {
 /// transcripts it could not read, and a store holding only smoke-test
 /// sessions the diagnosis excludes — a rotting store and a filter working
 /// are findings, and at 03:30 a non-zero exit is the register they get.
+/// A third, `Ok(Some(_))` with an *empty* slice, is [`Pick::Served`]'s: the
+/// served model has no runs yet, and every caller checks `is_empty()` before
+/// reading the slice — its `sessions_read` is not the store's.
 pub fn corpus_slice(
-    want: Option<&str>,
+    want: Pick<'_>,
     days: Option<i64>,
     limit: usize,
     workspace: Option<std::path::PathBuf>,
@@ -187,23 +241,8 @@ pub fn corpus_slice(
         }
         return Ok(None);
     }
-    let by_model = corpus.by_model();
-    let picked = match want {
-        Some(want) => {
-            let slice = by_model
-                .get(want)
-                .with_context(|| format!("no recorded runs for model `{want}`"))?;
-            (want.to_string(), slice.clone())
-        }
-        None => {
-            let (model, slice) = by_model
-                .iter()
-                .max_by_key(|(_, c)| c.len())
-                .expect("corpus is not empty");
-            (model.clone(), slice.clone())
-        }
-    };
-    Ok(Some((picked.0, picked.1, sessions_read)))
+    let (model, slice) = pick_slice(&corpus.by_model(), want)?;
+    Ok(Some((model, slice, sessions_read)))
 }
 
 /// Build the evidence brief for one model's slice: counters, plus doctor's
@@ -606,12 +645,20 @@ pub async fn run_diagnostician(global: &GlobalOpts, evidence: &Evidence) -> Resu
 }
 
 pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
-    let Some((model, slice, _)) = corpus_slice(
-        args.model.as_deref(),
-        args.days,
-        args.limit,
-        args.from_workspace.clone(),
-    )?
+    // Resolved best-effort: a provider that will not build still leaves the
+    // brief readable (`Pick::Largest`), and the diagnostician run that needs
+    // it reports the failure in its own words.
+    let served = match &args.model {
+        Some(_) => None,
+        None => setup::served_model(global).ok(),
+    };
+    let pick = match (&args.model, &served) {
+        (Some(m), _) => Pick::Named(m),
+        (None, Some(s)) => Pick::Served(s),
+        (None, None) => Pick::Largest,
+    };
+    let Some((model, slice, _)) =
+        corpus_slice(pick, args.days, args.limit, args.from_workspace.clone())?
     else {
         let dir = Session::default_dir()?;
         anyhow::bail!(
@@ -620,6 +667,15 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             dir.display(),
         );
     };
+    anyhow::ensure!(
+        !slice.is_empty(),
+        "no recorded runs on `{model}`, the model a run here serves{} — `--model` names \
+         another model's runs to diagnose",
+        args.from_workspace
+            .as_deref()
+            .map(|w| format!(", under {}", w.display()))
+            .unwrap_or_default()
+    );
 
     // The interactive verb shows history too: a person about to spend a
     // measurement deserves to know what already failed one.
@@ -1062,5 +1118,43 @@ mod tests {
         let sneaky = "a'; rm -rf /; echo '";
         let quoted = shell_quote(sneaky);
         assert_eq!(quoted.matches("'\\''").count(), 2, "{quoted}");
+    }
+
+    // ── Which slice is measured ─────────────────────────────────────────
+
+    /// **The served model is measured, however few runs it has beside the
+    /// others.** The nightly used to take the largest slice, and on
+    /// 2026-10-17 that was a model the owner had switched away from — the
+    /// replays named it and the router loaded it over the resident one.
+    #[test]
+    fn the_served_model_is_picked_over_a_larger_slice() {
+        let by_model = corpus(vec![
+            row("local", "older-model"),
+            row("local", "older-model"),
+            row("local", "older-model"),
+            row("local-uncensored", "resident-model"),
+        ])
+        .by_model();
+        let (model, slice) = pick_slice(&by_model, Pick::Served("resident-model")).unwrap();
+        assert_eq!(model, "resident-model");
+        assert_eq!(slice.len(), 1);
+        // What the nightly took before, on the same corpus — the contrast is
+        // the bug: a count is not a choice the owner made.
+        let (largest, _) = pick_slice(&by_model, Pick::Largest).unwrap();
+        assert_eq!(largest, "older-model");
+    }
+
+    /// No runs on the served model is an empty slice under *its* name, for
+    /// the caller to defer on — never a fall back to a model with runs,
+    /// which is the load the pick exists to prevent.
+    #[test]
+    fn a_served_model_without_runs_is_empty_not_another_model() {
+        let by_model = corpus(vec![row("local", "older-model")]).by_model();
+        let (model, slice) = pick_slice(&by_model, Pick::Served("new-model")).unwrap();
+        assert_eq!(model, "new-model");
+        assert!(slice.is_empty());
+        // A model the person named and that has no runs is still an error:
+        // they asked about that model and nothing else.
+        assert!(pick_slice(&by_model, Pick::Named("new-model")).is_err());
     }
 }

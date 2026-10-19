@@ -7088,7 +7088,7 @@ corpus → record it as a candidate (`harness.rs`,
 `~/.mecha/learning/harness/candidates/`, one pretty JSON per candidate on the
 proposals-store conventions) → measure it by **counterfactual replay of
 recent sessions** (`harness_probe.rs`: up to `--sessions` recent sessions of
-the diagnosed model, each driven twice — recorded config against recorded
+the model in use, each driven twice — recorded config against recorded
 config plus the candidate change, recorded tool results both times, whole
 trajectory, `RunStats` as the label; the pool is four times the wanted count
 and the draw is `judge_drawn`'s two slices, not a hash partition) → judge →
@@ -7099,6 +7099,22 @@ everything else stages for review or is rejected with the evidence attached.
 
 The decisions that carry it, each a bug if undone:
 
+- **The model ruminated is the model in use, never the corpus's largest
+  slice.** `ruminate` and `harness null` resolve what a run here serves
+  (`setup::served_model` — `--model`, else the entry the provider resolves
+  to, which on a router is the one following the resident model — the same
+  resolution `Prepared::model` records) and take that slice
+  (`diagnose::Pick::Served`); the replays then name it, so on a router they
+  ask for the model already loaded. A served model with no recorded runs
+  defers the night rather than measuring another model's: on a router a
+  request naming a model loads it. And where the router's resident model is
+  unknown — no answer, nothing readable, none or two resident, or no single
+  entry naming it — `served_model` refuses with a non-zero exit, because the
+  default it would fall back to is not "the model in use". On 2026-10-17 at 04:45Z the nightly took
+  the largest slice, months of runs on `qwen3.6-35b-a3b`, and its replays
+  evicted the owner's resident `qwen3.6-35b-a3b-uncensored`.
+  `mecha diagnose` defaults to the same model, and falls back to the largest
+  slice only when no provider resolves, since it replays nothing.
 - **The draw is split in two phases on one seed, and the holdout is fixed
   before the diagnosis** (row 2f, R38). `ruminate` mints the candidate id
   (the seed, `seed_of`) before diagnosing, and a night with no candidate
