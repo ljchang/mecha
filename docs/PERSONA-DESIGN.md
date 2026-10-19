@@ -1743,7 +1743,10 @@ document's.
 **Deferred by the owner (2026-09-29).** This section records what the
 eventual design has to resolve, so it is not rediscovered. *Designed
 2026-10-19 for HyperStudy studies in `PERSONA-SERVING-DESIGN.md` — the third
-option below, with study policy left to the experimenter.*
+option below. Its rulings supersede part of the prerequisite list here: age
+handling, consent, disclosure and what an institution requires are the
+experimenter's (its S2), retention is none (its §7), and the romantic
+template stays unservable until the owner rules (its §5).*
 
 **The conflict.** `PUBLIC-SURFACE-DESIGN.md` §8 settled that no model runs on
 the public box — "a model on the public box is a provider key on the box we
