@@ -469,6 +469,214 @@ pub struct HarnessCandidate {
     /// Why it sits where it does, human-readable.
     #[serde(default)]
     pub reason: Option<String>,
+    /// Who rejected it, and on what verdict, typed — the history the next
+    /// diagnostician reads is grouped by this and never by `reason`'s prose
+    /// ([`HarnessCandidate::history_verdict`]). `None` on a record from
+    /// before the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejection: Option<Rejection>,
+}
+
+/// Who rejected a candidate, and — when it was the owner — what they ruled.
+///
+/// **Why the owner's verdict is typed too.** On 2026-09-01/02/03 the owner
+/// rejected `compact_at_tokens`, `max_output_tokens` and `effort` while
+/// writing that the rejection was "NOT a verdict on the knob": the
+/// measurement had tied everything. A history that bans every owner
+/// rejection would contradict the owner's own reason, and one that reads the
+/// reason's prose would be guessing. `mecha harness reject --verdict` says
+/// which.
+///
+/// A closed enum in an append-only store, so a wire format: a variant a newer
+/// build wrote reads [`Rejection::Unknown`], which the history treats as a
+/// rejection with no verdict — never proposed again. Unknown is never clean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Rejection {
+    /// The gate rejected it on a measurement; the measurement says why.
+    Gate,
+    /// The gate rejected it unmeasured: no run in the corpus had any of the
+    /// metric it predicted to lower, so a replay could only tie.
+    NoHeadroom,
+    /// The owner: it would do harm.
+    Harmful,
+    /// The owner: it does nothing worth having.
+    NoEffect,
+    /// The owner: the measurement could not tell — not a verdict on the
+    /// change.
+    Unmeasured,
+    /// The owner rejected it without saying which.
+    Unstated,
+    #[serde(other)]
+    Unknown,
+}
+
+/// What a past candidate's record says about proposing it again, derived
+/// from its typed fields and its stored [`Measurement`], never from prose
+/// (HARNESS-EVOLUTION-DESIGN.md P1).
+///
+/// The split the brief used to erase: `candidate::Guard` already told a
+/// missing win from a regression, and the history rendered both — and every
+/// owner rejection, and a gate that had measured nothing — as "do not
+/// propose any of these again". Harness² draws the same line with its
+/// `helped / hurt / no observed effect / confounded` verdicts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryVerdict {
+    /// The gate measured harm: a loss on the predicted metric in either
+    /// slice, a guard breach, the work floor, or a point-wise loss.
+    Harmed,
+    /// The gate measured no harm and no win.
+    NoObservedEffect,
+    /// The gate rejected it with too few pairs to say either way.
+    Underpowered,
+    /// The gate rejected it unmeasured: no run in that night's corpus had
+    /// any of the metric it predicted to lower. Headroom belongs to the
+    /// corpus, which changes nightly, so this is not a verdict on the change
+    /// (found on review of #717) — it may come back, but only into a corpus
+    /// that has some ([`HarnessCandidate::forbids_retry`]).
+    NoHeadroom,
+    /// A config change the closed override set cannot make — the key does
+    /// not exist or the value does not parse.
+    NotProposable,
+    /// Rejected by the owner as harmful.
+    OwnerHarmful,
+    /// Rejected by the owner as doing nothing.
+    OwnerNoEffect,
+    /// Rejected by the owner as a measurement that could not tell.
+    OwnerUnmeasured,
+    /// Rejected with no typed verdict: by the owner without one, before the
+    /// field existed, or by a newer build's variant.
+    RejectedUntyped,
+    /// Accepted, then taken back out by hand.
+    Reverted,
+    /// Accepted and live.
+    Accepted,
+    /// Waiting on a person.
+    Staged,
+}
+
+impl HistoryVerdict {
+    /// Whether a diagnostician may propose the same change again.
+    ///
+    /// Only where nothing has ruled against it: too little evidence, or the
+    /// owner saying the measurement could not tell. `NoObservedEffect` may
+    /// one day be retried once the instrument or the corpus has changed
+    /// since it was measured, but nothing here can show that yet (P8's
+    /// continued branches are the instrument change it waits on), so it is
+    /// not — a promise the brief cannot keep is not made.
+    pub fn may_repropose(self) -> bool {
+        matches!(
+            self,
+            HistoryVerdict::Underpowered
+                | HistoryVerdict::OwnerUnmeasured
+                | HistoryVerdict::NoHeadroom
+        )
+    }
+}
+
+/// A change as the store compares it: the canonical spec when it parses,
+/// so spacing cannot make two records of one change look like two changes.
+pub fn canonical_change(change: &str) -> String {
+    parse_change(change)
+        .map(|c| c.spec())
+        .unwrap_or_else(|_| change.trim().to_string())
+}
+
+impl HarnessCandidate {
+    /// Whether this record forbids proposing its change again tonight —
+    /// the one predicate the re-derivation check and the brief's grouping
+    /// both read, so the brief cannot invite what the loop then refuses.
+    ///
+    /// A no-headroom rejection forbids while the corpus still has none of
+    /// the metric it predicted: free to return every night, one re-derived
+    /// change would add a rejected record a night.
+    pub fn forbids_retry(&self, has_headroom: bool) -> bool {
+        let v = self.history_verdict();
+        !v.may_repropose() || (v == HistoryVerdict::NoHeadroom && !has_headroom)
+    }
+
+    /// Whether a person, rather than the gate, made this rejection — what
+    /// decides whether retyping it is a new owner act (the gate's rejections
+    /// put nothing in the curation ledger). Unknown is not the gate's: a
+    /// variant a newer build wrote is recorded as the owner's act rather
+    /// than lost.
+    pub fn rejected_by_owner(&self) -> bool {
+        match self.rejection {
+            Some(Rejection::Gate | Rejection::NoHeadroom) => false,
+            Some(_) => true,
+            None => !self
+                .measurement
+                .as_ref()
+                .is_some_and(|m| m.disposition == "reject"),
+        }
+    }
+
+    /// This candidate's verdict for the next diagnostician's history.
+    pub fn history_verdict(&self) -> HistoryVerdict {
+        match self.status.as_str() {
+            STATUS_ACCEPTED => HistoryVerdict::Accepted,
+            STATUS_REVERTED => HistoryVerdict::Reverted,
+            STATUS_STAGED => HistoryVerdict::Staged,
+            STATUS_REJECTED => self.rejected_verdict(),
+            // A status a newer build wrote: fail closed, never re-proposed.
+            _ => HistoryVerdict::RejectedUntyped,
+        }
+    }
+
+    fn rejected_verdict(&self) -> HistoryVerdict {
+        // Ahead of the owner's verdict: whatever anyone ruled, a change the
+        // override set cannot make is not a change to propose. Four of the
+        // first nights' rejections were keys that never existed.
+        if self.class == ChangeClass::Config && parse_change(&self.change).is_err() {
+            return HistoryVerdict::NotProposable;
+        }
+        match self.rejection {
+            Some(Rejection::Harmful) => HistoryVerdict::OwnerHarmful,
+            Some(Rejection::NoEffect) => HistoryVerdict::OwnerNoEffect,
+            Some(Rejection::Unmeasured) => HistoryVerdict::OwnerUnmeasured,
+            Some(Rejection::Unstated) | Some(Rejection::Unknown) => HistoryVerdict::RejectedUntyped,
+            Some(Rejection::NoHeadroom) => HistoryVerdict::NoHeadroom,
+            Some(Rejection::Gate) => self.measured_verdict(),
+            // From before the field: the gate's own disposition is the one
+            // typed thing that says whether it, rather than a person,
+            // rejected. Anything else is a person's no with no verdict.
+            None => match &self.measurement {
+                Some(m) if m.disposition == "reject" => self.measured_verdict(),
+                _ => HistoryVerdict::RejectedUntyped,
+            },
+        }
+    }
+
+    /// A gate rejection's verdict, from the stored measurement alone.
+    fn measured_verdict(&self) -> HistoryVerdict {
+        use crate::candidate::{Basis, PointwiseVerdict, MIN_SELECTION_PAIRS, WORK_FLOOR};
+        let Some(m) = &self.measurement else {
+            return HistoryVerdict::RejectedUntyped;
+        };
+        let work_fell =
+            m.work_baseline > 0 && (m.work_candidate as f64) < m.work_baseline as f64 * WORK_FLOOR;
+        let lost = m.selection.losses > m.selection.wins || m.holdout.losses > m.holdout.wins;
+        let lost_pointwise = m.pointwise.as_ref().is_some_and(|p| {
+            p.basis == Basis::Pointwise && p.tally.verdict() == PointwiseVerdict::Against
+        });
+        if work_fell || lost || lost_pointwise {
+            return HistoryVerdict::Harmed;
+        }
+        match m.guard {
+            Some(GuardRecord::Regressed) => return HistoryVerdict::Harmed,
+            Some(GuardRecord::Held | GuardRecord::NewCost | GuardRecord::Unmeasured) => {}
+            // A breach on a metric the candidate did not predict rejects
+            // without showing in the tallies above, and only the guard
+            // records it. With no guard on record a gate rejection is
+            // unexplained — so it is untyped, never "no effect".
+            None | Some(GuardRecord::Unknown) => return HistoryVerdict::RejectedUntyped,
+        }
+        let selection = m.selection.wins + m.selection.losses + m.selection.ties;
+        if selection < MIN_SELECTION_PAIRS {
+            return HistoryVerdict::Underpowered;
+        }
+        HistoryVerdict::NoObservedEffect
+    }
 }
 
 impl HarnessCandidate {
@@ -599,6 +807,37 @@ pub struct Measurement {
     /// unknown, never "numeric only".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pointwise: Option<PointwiseEvidence>,
+    /// The numeric gate's no-regression guard, typed. `None` on a record
+    /// from before the field — and then a gate rejection cannot be told
+    /// from a regression the tallies do not show
+    /// ([`HarnessCandidate::history_verdict`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guard: Option<GuardRecord>,
+}
+
+/// [`crate::candidate::Guard`] as the store keeps it: which way, without the
+/// metric. A wire format, so an unknown variant reads `Unknown`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GuardRecord {
+    Held,
+    Regressed,
+    NewCost,
+    Unmeasured,
+    #[serde(other)]
+    Unknown,
+}
+
+impl GuardRecord {
+    pub fn of(guard: crate::candidate::Guard) -> GuardRecord {
+        use crate::candidate::Guard;
+        match guard {
+            Guard::Held => GuardRecord::Held,
+            Guard::Regressed(_) => GuardRecord::Regressed,
+            Guard::NewCost(_) => GuardRecord::NewCost,
+            Guard::Unmeasured => GuardRecord::Unmeasured,
+        }
+    }
 }
 
 /// A candidate's point-wise comparison, kept on its measurement.
@@ -771,7 +1010,94 @@ impl Measurement {
             divergence_detail,
             skipped,
             pointwise: None,
+            guard: Some(GuardRecord::of(judgement.guard)),
         }
+    }
+}
+
+// ─── The null arm ───────────────────────────────────────────────────────────
+
+/// One A/A measurement (HARNESS-EVOLUTION-DESIGN.md P2): the paired replay
+/// `ruminate` runs, with **no change on either arm**, judged by the same
+/// gate.
+///
+/// The gate's floors (`MIN_SELECTION_PAIRS`, `MIN_HOLDOUT_PAIRS`) were set by
+/// argument, never by a count of how often an unchanged configuration "wins"
+/// against itself — and replay on a non-greedy local model is pass@k-shaped,
+/// so it does. If an identity arm clears the gate at any meaningful rate,
+/// the floors are wrong, and every verdict above them is noise. This record
+/// is that count, kept beside the candidates and never among them: a null
+/// run has no change to accept, so nothing reads it as a proposal.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NullRun {
+    pub id: String,
+    /// The metric the selection slice was ranked by — the draw needs one,
+    /// and the identity arm predicts nothing.
+    pub drawn_by: Metric,
+    /// The gate over the pairs, judged as if the identity had predicted
+    /// `drawn_by`. Carries the draw, the divergences and the receipts.
+    pub measurement: Measurement,
+    /// The same pairs judged under every metric a candidate could predict:
+    /// the gate's false-positive surface, one row per metric. **Empty when
+    /// nothing paired** — a run that judged nothing is not one in which the
+    /// gate declined to react. Empty, too, when the arms were identical.
+    pub by_metric: Vec<NullJudgement>,
+    /// Episodes drawn and driven: the selection plus the holdout, before
+    /// either arm ran. The denominator for how often an arm left the
+    /// recording — never `paired + diverged + skipped`, because
+    /// `Measurement::skipped` also counts sessions the pool scan passed over
+    /// before anything was drawn (found on review of #717).
+    pub drawn: usize,
+    /// Every paired episode replayed identically on both arms
+    /// (`candidate::arms_identical`): there was no noise for the gate to
+    /// react to, so `by_metric` is empty and the run judged nothing.
+    /// Required, not defaulted — a missing flag read as `false` would count
+    /// an unmeasured run as a clean one.
+    pub arms_identical: bool,
+    /// Metrics not judged because no run in the corpus had any of them —
+    /// the ones `ruminate` never measures either (`Verdict::NoHeadroom`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub no_headroom: Vec<Metric>,
+}
+
+/// The gate's verdict on the identity under one predicted metric.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NullJudgement {
+    pub metric: Metric,
+    /// `accept` | `propose` | `reject`, as [`Measurement::disposition`].
+    pub disposition: String,
+    pub selection: TallyRecord,
+    pub holdout: TallyRecord,
+    pub guard: GuardRecord,
+}
+
+impl NullJudgement {
+    pub fn of(metric: Metric, j: &Judgement) -> NullJudgement {
+        use crate::candidate::Disposition;
+        let tally = |t: &crate::candidate::Tally| TallyRecord {
+            wins: t.wins,
+            losses: t.losses,
+            ties: t.ties,
+        };
+        NullJudgement {
+            metric,
+            disposition: match j.disposition {
+                Disposition::Accept => "accept",
+                Disposition::Propose(_) => "propose",
+                Disposition::Reject(_) => "reject",
+            }
+            .into(),
+            selection: tally(&j.selection),
+            holdout: tally(&j.holdout),
+            guard: GuardRecord::of(j.guard),
+        }
+    }
+
+    /// Whether the gate would have acted on nothing: accepted the identity,
+    /// or rejected it — a verdict either way, where the only true one is
+    /// "no difference".
+    pub fn false_verdict(&self) -> bool {
+        self.disposition != "propose"
     }
 }
 
@@ -964,6 +1290,53 @@ impl HarnessStore {
             return Err(std::io::Error::last_os_error()).context("locking the harness store");
         }
         Ok(file)
+    }
+
+    /// Record one A/A measurement under `null/`, apart from the candidates.
+    pub fn write_null(&self, run: &NullRun) -> Result<()> {
+        let dir = self.root.join("null");
+        crate::create_private_dir(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        // The candidates' own write, tmp then rename, so a reader never
+        // sees half a record.
+        let path = dir.join(format!("{}.json", run.id));
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_string_pretty(run)?)
+            .with_context(|| format!("writing {}", tmp.display()))?;
+        std::fs::rename(&tmp, &path)?;
+        Ok(())
+    }
+
+    /// Every A/A measurement, oldest first, and how many files would not
+    /// parse — counted, never silently dropped.
+    pub fn nulls_counting(&self) -> Result<(Vec<NullRun>, usize)> {
+        let dir = self.root.join("null");
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((Vec::new(), 0)),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", dir.display())),
+        };
+        let (mut runs, mut unreadable) = (Vec::new(), 0);
+        for entry in entries {
+            let path = entry?.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            match std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|t| serde_json::from_str::<NullRun>(&t).ok())
+            {
+                Some(r) => runs.push(r),
+                None => unreadable += 1,
+            }
+        }
+        runs.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok((runs, unreadable))
+    }
+
+    /// Mint an A/A id, sortable beside candidate ids but never mistaken for
+    /// one.
+    pub fn mint_null_id() -> String {
+        Self::mint_id().replacen("hc-", "aa-", 1)
     }
 
     /// Mint a candidate id: sortable timestamp plus a sub-second tail, so
@@ -1419,6 +1792,7 @@ accepted_at = "2026-08-22T00:00:00Z"
             measurement: None,
             resolved_at: None,
             reason: None,
+            rejection: None,
         };
         store.write(&c).unwrap();
         let read = store.find("hc-2026").unwrap();
@@ -1539,5 +1913,205 @@ mod divergence_arm_tests {
         assert_eq!(back[0].arm, Arm::Baseline);
         assert_eq!(back[1].episode, "ep-2");
         assert!(back[0].reason.contains("recorded call #0"));
+    }
+}
+
+#[cfg(test)]
+mod history_verdict_tests {
+    use super::*;
+
+    fn tally(wins: usize, losses: usize, ties: usize) -> TallyRecord {
+        TallyRecord { wins, losses, ties }
+    }
+
+    fn measured(
+        selection: TallyRecord,
+        holdout: TallyRecord,
+        guard: Option<GuardRecord>,
+    ) -> Measurement {
+        serde_json::from_value::<Measurement>(serde_json::json!({
+            "measured_at": "2026-10-19T00:00:00Z", "model": "m", "disposition": "reject",
+            "reason": "", "selection": selection, "holdout": holdout,
+            "work_baseline": 40, "work_candidate": 40, "episodes": [], "diverged": [], "skipped": 0,
+        }))
+        .map(|mut m| {
+            m.guard = guard;
+            m
+        })
+        .unwrap()
+    }
+
+    fn rejected(
+        change: &str,
+        rejection: Option<Rejection>,
+        m: Option<Measurement>,
+    ) -> HarnessCandidate {
+        HarnessCandidate {
+            id: "hc-20261019T000000-0001".into(),
+            created_at: "2026-10-19T00:00:00Z".into(),
+            class: ChangeClass::Config,
+            change: change.into(),
+            metric: Metric::Turns,
+            rationale: String::new(),
+            evidence: String::new(),
+            model: None,
+            status: STATUS_REJECTED.into(),
+            measurement: m,
+            resolved_at: None,
+            reason: Some("prose the verdict must never read".into()),
+            rejection,
+        }
+    }
+
+    #[test]
+    fn the_owners_typed_verdict_decides_and_unstated_is_never_retried() {
+        use HistoryVerdict as V;
+        for (r, want) in [
+            (Rejection::Harmful, V::OwnerHarmful),
+            (Rejection::NoEffect, V::OwnerNoEffect),
+            (Rejection::Unmeasured, V::OwnerUnmeasured),
+            (Rejection::Unstated, V::RejectedUntyped),
+            (Rejection::Unknown, V::RejectedUntyped),
+        ] {
+            assert_eq!(
+                rejected("max_turns=9", Some(r), None).history_verdict(),
+                want
+            );
+        }
+        assert!(V::OwnerUnmeasured.may_repropose());
+        assert!(!V::RejectedUntyped.may_repropose());
+        assert!(!V::OwnerNoEffect.may_repropose());
+    }
+
+    /// The live record's shape: the three all-ties knobs were rejected by
+    /// hand over a measurement whose own disposition was `propose`. With no
+    /// typed verdict that is a person's no — untyped, never "no effect" read
+    /// out of the reason's prose.
+    #[test]
+    fn a_legacy_hand_rejection_is_untyped_and_a_legacy_gate_rejection_reads_its_measurement() {
+        let mut m = measured(tally(0, 0, 4), tally(0, 0, 2), None);
+        m.disposition = "propose".into();
+        let c = rejected("effort=high", None, Some(m));
+        assert_eq!(c.history_verdict(), HistoryVerdict::RejectedUntyped);
+
+        // A legacy gate rejection that lost is harm, guard or no guard.
+        let c = rejected(
+            "max_turns=9",
+            None,
+            Some(measured(tally(2, 6, 0), tally(1, 1, 2), None)),
+        );
+        assert_eq!(c.history_verdict(), HistoryVerdict::Harmed);
+        // One that did not lose but has no guard on record is unexplained:
+        // an unpredicted-metric breach rejects without touching the tallies.
+        let c = rejected(
+            "max_turns=9",
+            None,
+            Some(measured(tally(3, 3, 2), tally(1, 1, 2), None)),
+        );
+        assert_eq!(c.history_verdict(), HistoryVerdict::RejectedUntyped);
+    }
+
+    #[test]
+    fn a_gate_rejection_is_harm_or_no_effect_by_its_measurement() {
+        use HistoryVerdict as V;
+        let gate = |sel, hold, guard| {
+            rejected(
+                "max_turns=9",
+                Some(Rejection::Gate),
+                Some(measured(sel, hold, guard)),
+            )
+            .history_verdict()
+        };
+        let held = Some(GuardRecord::Held);
+        assert_eq!(
+            gate(tally(3, 3, 2), tally(1, 1, 2), held),
+            V::NoObservedEffect
+        );
+        assert_eq!(
+            gate(tally(3, 3, 2), tally(1, 2, 1), held),
+            V::Harmed,
+            "a holdout loss"
+        );
+        assert_eq!(
+            gate(tally(3, 3, 2), tally(1, 1, 2), Some(GuardRecord::Regressed)),
+            V::Harmed,
+            "an unpredicted-metric breach shows only in the guard"
+        );
+        assert_eq!(gate(tally(0, 0, 3), tally(0, 0, 1), held), V::Underpowered);
+
+        let mut m = measured(tally(4, 4, 0), tally(2, 2, 0), held);
+        m.work_candidate = 10;
+        let c = rejected("max_turns=9", Some(Rejection::Gate), Some(m));
+        assert_eq!(c.history_verdict(), V::Harmed, "the work floor");
+
+        // No headroom is the corpus's state that night, not the change's
+        // verdict: it may come back once the corpus has some, and not before.
+        let c = rejected("max_turns=9", Some(Rejection::NoHeadroom), None);
+        assert_eq!(c.history_verdict(), V::NoHeadroom);
+        assert!(c.forbids_retry(false));
+        assert!(!c.forbids_retry(true));
+        assert!(!c.rejected_by_owner());
+        assert!(rejected("max_turns=9", Some(Rejection::Unstated), None).rejected_by_owner());
+        assert!(!rejected("max_turns=9", Some(Rejection::Gate), None).rejected_by_owner());
+    }
+
+    /// An invented key outranks whatever anyone ruled: it was never a change
+    /// the override set could make.
+    #[test]
+    fn a_key_that_does_not_exist_is_not_proposable_whoever_rejected_it() {
+        let c = rejected(
+            "context.auto_compact=true",
+            Some(Rejection::Unmeasured),
+            None,
+        );
+        assert_eq!(c.history_verdict(), HistoryVerdict::NotProposable);
+        let mut arch = rejected("context.auto_compact=true", None, None);
+        arch.class = ChangeClass::Architecture;
+        assert_eq!(
+            arch.history_verdict(),
+            HistoryVerdict::RejectedUntyped,
+            "only config parses"
+        );
+    }
+
+    #[test]
+    fn statuses_map_and_an_unknown_one_fails_closed() {
+        let mut c = rejected("max_turns=9", None, None);
+        for (status, want) in [
+            (STATUS_ACCEPTED, HistoryVerdict::Accepted),
+            (STATUS_REVERTED, HistoryVerdict::Reverted),
+            (STATUS_STAGED, HistoryVerdict::Staged),
+            ("superseded", HistoryVerdict::RejectedUntyped),
+        ] {
+            c.status = status.into();
+            assert_eq!(c.history_verdict(), want);
+        }
+    }
+
+    /// Both new fields are wire formats: a variant a newer build wrote loads
+    /// as `Unknown` rather than unreading the record, and a record from
+    /// before them loads with `None`.
+    #[test]
+    fn the_new_fields_degrade_rather_than_fail() {
+        let c = rejected(
+            "max_turns=9",
+            Some(Rejection::Gate),
+            Some(measured(
+                tally(0, 0, 0),
+                tally(0, 0, 0),
+                Some(GuardRecord::Held),
+            )),
+        );
+        let mut v = serde_json::to_value(&c).unwrap();
+        v["rejection"] = "overruled_by_committee".into();
+        v["measurement"]["guard"] = "sideways".into();
+        let read: HarnessCandidate = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(read.rejection, Some(Rejection::Unknown));
+        assert_eq!(read.measurement.unwrap().guard, Some(GuardRecord::Unknown));
+        v.as_object_mut().unwrap().remove("rejection");
+        v["measurement"].as_object_mut().unwrap().remove("guard");
+        let read: HarnessCandidate = serde_json::from_value(v).unwrap();
+        assert_eq!(read.rejection, None);
+        assert_eq!(read.measurement.unwrap().guard, None);
     }
 }

@@ -6815,6 +6815,35 @@ prediction that was made *before* either was measured.
   evidence of harm, and the floors are deliberately low because a replay
   corpus costs a real model run per episode per arm — the holdout does the
   work a larger sample would.
+- **Arms that never differed report no power, not a verdict.** When every
+  paired replay comes out the same on every metric *and* on a known, nonzero
+  number of tool calls, the two runs were the same run: the measurement says
+  nothing about the change, and `judge_drawn` proposes with that as its
+  reason, ahead of every count, because "the arms never differed" is a
+  stronger statement than "there were only four of them", and the count was
+  masking it. **Replay only**: it lives in `judge_drawn`, not the generic
+  `judge_slices`, because two experiment trials run separately that agree
+  are a real tie, not a recording that held both arms in place; and a zero
+  is not a known count, since a trial with no stats reports zero calls. Three consecutive nights (2026-09-01/02/03)
+  measured `compact_at_tokens`, `max_output_tokens` and `effort` at 0 wins,
+  0 losses, all ties with identical work on both arms, and each was filed as
+  thin evidence. It was not thin: the episodes that survive replay are the
+  ones whose tool sequence the *prompt* pins ("follow these steps literally
+  and exactly, do not skip any call"), because a pinned sequence is the one
+  thing that cannot diverge — so no config knob can move them. Drawing the
+  selection slice by `Metric::headroom` does not catch this; those episodes
+  carried 32 recorded tool calls of headroom and no elasticity whatever.
+  **Headroom is recorded cost, and what an inert episode lacks is room to
+  differ.** The disposition matters as much as the report: on a *full* slice
+  the old path read all-ties as `!sel.better()` and **rejected**, and until
+  the history was typed every rejection reached the diagnostician as "do not
+  propose this again" — so an instrument with no discriminating power was
+  quietly retiring three of the four overridable knobs, the same "unusable by
+  construction" trade `guard_regressions` already refuses. The upstream cause is untouched
+  and is the larger job: those sessions carry no `SessionKind`, so the
+  corpus's `include_tests = false` never excluded them, and the baseline arm
+  diverges on most non-scripted episodes because a local sampler does not
+  reproduce its own tool sequence.
 - **An episode that ran in only one arm is dropped.** Not a tie and not a
   loss: scoring it either way lets a candidate that dies on the hard episodes
   look good on the ones it survived.
@@ -7174,10 +7203,44 @@ The decisions that carry it, each a bug if undone:
   `Security` stages with the standing warning and is never measured at all —
   a loop that can argue for widening its own confinement will eventually
   argue well, and the metric will agree with it.
-- **The brief carries history.** Every prior candidate rides in the evidence
-  as "already tried — do not re-propose" (the retired-rules precedent), and a
-  re-derived change is refused by canonical-spec comparison before anything
-  is stored or measured, so a rejection stays paid for.
+- **The brief carries history, grouped by a typed verdict.** Every prior
+  candidate rides in the evidence (the retired-rules precedent) under the
+  group its `HarnessCandidate::history_verdict` puts it in, each group with
+  its own instruction: measured or owner-ruled harm is never re-proposed; an
+  untyped rejection, a revert and a key the override set cannot make are
+  not; "no observed effect" is not *yet*, because the instrument that
+  measured it has not changed; a rejection for no headroom may come back
+  once the counters show that metric above zero, since headroom belongs to
+  that night's corpus; and "too little evidence", or the owner's `reject
+  --verdict unmeasured`, may be. The verdict is derived from typed fields and
+  the stored measurement, never from the reason's prose. **One predicate
+  decides both readers**: `HarnessCandidate::forbids_retry` refuses a
+  re-derived change before anything is stored or measured
+  (`forbidding_prior`), and the brief shows each change *once*, by the
+  record that predicate says decides it (`history_lines`) — one line per
+  record listed a retried change under "may propose" and under "waiting on
+  a person" at once, while the check refused it. **One instruction for all of them was the defect:** the
+  brief used to say "do not propose any of these again" over every record,
+  including three knobs the owner rejected while writing that the
+  measurement was "NOT a verdict on the knob". The gate had rejected none of
+  the seventeen; every rejection was a person's.
+- **Who rejected is recorded, and the guard with it.** `Rejection` says gate,
+  no-headroom, or the owner's `harmful | no-effect | unmeasured | unstated`;
+  `Measurement::guard` keeps the gate's no-regression guard, because a breach
+  on a metric the candidate did not predict rejects without showing in the
+  tallies. A gate rejection with no guard on record is untyped, never "no
+  effect". Retyping a past rejection (`reject --verdict` on one already
+  rejected) changes only the verdict, the status and the time stand. An
+  owner's rejection keeps its one curation-ledger entry; a *gate* rejection
+  retyped is the owner overruling the gate, which can re-open the change, so
+  it gets the ledger line the gate never wrote.
+- **The floors are measured, not only asserted.** `mecha harness null` runs
+  the same draw and the same `drive_arms` loop with nothing changed on either
+  arm and judges the pairs under every metric; `mecha harness floors` reads
+  every such run against the floors. A null run lives under `null/`, never
+  among the candidates, so nothing reads it as a proposal. Only the numeric
+  gate is measured this way: the point-wise comparison needs a change to
+  apply at a decision point, and its own floor is the next measurement.
 - **A quoted proposal is refused before it becomes a record.** The
   `carries_over` check runs before the store is touched: a candidate file is
   a place changes wait to be applied, which is the one place lifted

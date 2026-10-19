@@ -635,6 +635,38 @@ rollout is all the evidence (`core/prompts.py::experience`).
 **Rules kept.** Counters in, no prose. The prompt sits in the
 diagnostician's brief, not in any run's prefix.
 
+**Built (2026-10-19)** as `harness::HistoryVerdict`, with three decisions
+the shape above left open:
+- **An owner rejection with no typed verdict is still never re-proposed.**
+  `reject` without `--verdict` is a plain no. The owner can type an old
+  rejection later (`reject <id> --verdict unmeasured` on one already
+  rejected), and only that changes.
+- **The re-derivation check reads the same verdict.** It used to refuse any
+  change already on file. Left alone, the brief would invite back changes
+  that the loop then refused the night they returned.
+- **The gate's guard is now stored with each measurement.** A breach on a
+  metric the candidate did not predict rejects without showing in the
+  tallies. A gate rejection recorded before this field is untyped, never
+  "no observed effect".
+
+**Almost nothing reopens on its own.** A thin selection slice always
+proposes and never rejects, so measuring can't produce `Underpowered`. Only
+two things reopen a change:
+- **The owner's `--verdict unmeasured`.**
+- **A no-headroom rejection (`HistoryVerdict::NoHeadroom`)**, where no run in
+  that night's corpus had any of the metric the change predicted to lower.
+  Headroom belongs to the corpus, not the change. The rejection holds until
+  the counters show that metric above zero. The brief says so, and the
+  re-derivation check applies the same `forbids_retry`.
+
+Apart from those, P1 lifts only the bans the owner lifts. The brief shows
+each change once, by the record that decides it, so a retried change never
+appears under two contradicting instructions.
+
+The live record when it was built: the gate had rejected none of the 17
+candidates. All 12 rejections were the owner's, and four of them were keys
+that never existed.
+
 ### P2. A null arm, and tenure for accepted overrides — S/M
 
 **Gap.**
@@ -665,6 +697,15 @@ diagnostician's brief, not in any run's prefix.
    absence, with the same gate and arms swapped. Removing an override only
    ever moves toward defaults, which is a narrowing. Whether it reverts
    automatically or stages for a person is **R4**.
+
+**Built (2026-10-19): step 1 only.** `mecha harness null` and `mecha harness
+floors` exist. A null run uses `ruminate`'s draw and the same `drive_arms`
+loop with nothing changed on either arm, and judges the pairs under every
+metric. It is not scheduled: the owner adds the trigger, because a null run
+costs as much replay as a real measurement. The point-wise comparison's own
+noise floor is not measured, since it needs a change to apply at each
+decision point. Step 2 waits on R4, and no override has ever been accepted
+that it could re-measure.
 
 ### P3. The learn gate also probes interventions it did not learn from — M
 
