@@ -771,6 +771,55 @@ seeds to see how often it adds someone.
   it from turbo's own variance. **Owner, 2026-10-14: on for video**, unbound
   and all or nothing (design §9.4).
 
+**E14 — a cast of two touching, drawn twice** (2026-10-17 and 2026-10-18;
+design §9.4). Two of the owner's library characters, each with a full body
+attached, the configuration E9b passed by eye on two seeds. In live use it
+drew someone twice in 6 of 13 pictures (2026-10-17). Measured with `mecha
+replay --run-call` on recorded picture calls, each run verbatim through the
+real compiler, three paired seeds per call, graded by `replay --judge` (a
+vision head count, scene clauses, ArcFace against each portrait):
+
+- **A 2×2 on 3 calls, 4 seeds** (2026-10-17): four images with E12's open
+  count drew someone twice in 9 of 12; with a closed count naming the cast,
+  10 of 12; portraits only with the open count, 5 of 12; portraits only with
+  the closed count, 1 of 12 (9 against 1 discordant pairs, sign test
+  p ≈ 0.02). Closing the count does nothing while the pictures outnumber the
+  people.
+- **On 7 calls, 3 seeds** (2026-10-18), portraits only with the closed count
+  (D) against the shipped compile (A), the layers pipeline (L, design
+  `IMAGE-DESIGN.md` §15) and a two-stage MOSS-Image composition with a head
+  swap (M, outside this repository):
+
+  | | A | D | L | M |
+  |---|---|---|---|---|
+  | right head count | 2/21 | 19/21 | 21/21 | 20/21 |
+  | someone drawn twice or extra | 19/21 | 2/21 | 0/21 | 1/21 |
+  | faces identified (ArcFace) | 40/42 | 36/42 | 23/42 | 31/42 |
+  | face count matches | 5/21 | 21/21 | 18/21 | 15/21 |
+  | scene clauses shown | 49/84 | 51/84 | 56/84 | 50/84 |
+
+  A's identity is inflated by its copies: a picture with each person twice
+  gives the face assigner more faces to choose from. D's two doubled
+  pictures were on one call. L never doubled but lost likeness (people drawn
+  small) and took about five minutes a picture against D's forty seconds;
+  M's composition broke on close poses (heads out of frame, a limb with no
+  body), worse by eye than its counts.
+- **Reading: passes for a cast of two without extras.** Owner, 2026-10-19:
+  D ships (design §9.4); L stays the per-persona switch. D's "no one else is
+  in it" would also empty a busy setting and erase E12's prose-only waiter,
+  so the owner chose the count in the foreground for every cast size:
+  "Exactly N people are in the foreground, …, each exactly once; anyone in
+  the background is a stranger, not from any image" (arm G, below).
+- **Arm G, the foreground count** (2026-10-19): D's compile with that
+  wording, the same 7 calls and seeds. Right head count 18/21, someone
+  drawn twice 3/21, faces identified 38/42, face count matches 19/21, scene
+  clauses shown 42/84. Two of the three doubles are on the call that
+  doubled D twice, and the third is on another call. All three are a cast
+  member drawn a second time, not a stranger in the background. That is one
+  picture of 21 against D, too few to tell apart. The nine-clause drop
+  against D is unexplained. None of the calls has a crowd in it, so whether
+  background strangers survive is still unmeasured.
+
 **Still open**, in the order they would change the design:
 
 - **Library v2, the video side** (2026-10-13; the video tool, MiniMax H3,

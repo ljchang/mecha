@@ -153,6 +153,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A new picture of two or more library characters no longer draws one of
+  them twice.** It now sends their portraits only, even when they have a
+  full body attached, and a picture whose scene lists only library
+  characters says exactly who is in its foreground, by name, each once, with
+  anyone in the background a stranger. Before, a scene of two people
+  touching drew three or four people in 19 of 21 test renders; now 3 of 21.
+  A picture of one character still sends their full body.
+
 - **Editing a photo of someone no longer redraws it from scratch.** The first
   change that named who was in an uploaded photo, alongside any change to
   the room, light or camera, was drawn as a new picture from words, so the
