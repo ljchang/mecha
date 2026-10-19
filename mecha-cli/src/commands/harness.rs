@@ -759,7 +759,16 @@ async fn drive_arms(
                     }
                 };
             note_divergence!(mecha_core::harness::Arm::Baseline, baseline, prep.id);
-            eprint!(" candidate…");
+            // A null arm drives the baseline twice; say so, or its log
+            // reads as if something were being varied.
+            eprint!(
+                "{}",
+                if change.is_some() {
+                    " candidate…"
+                } else {
+                    " again…"
+                }
+            );
             let candidate =
                 match harness_probe::drive_episode(prepared, provider_cfg, model, prep, change)
                     .await?
@@ -1329,8 +1338,12 @@ fn floors(as_json: bool) -> Result<()> {
         .filter(|r| r.by_metric.is_empty() && !r.arms_identical)
         .count();
     let count = |d: &str| judged.iter().filter(|j| j.disposition == d).count();
+    // Only runs that judged something: an identical-arms run fills both
+    // floors with ties from two replays that were the same run, which is no
+    // power at all (found on review of #717).
     let filled = runs
         .iter()
+        .filter(|r| !r.by_metric.is_empty())
         .filter(|r| {
             let m = &r.measurement;
             m.selection.wins + m.selection.losses + m.selection.ties >= MIN_SELECTION_PAIRS

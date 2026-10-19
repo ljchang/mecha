@@ -253,12 +253,28 @@ fn a_null_run_that_paired_nothing_is_not_a_clean_sheet() {
     let mut same = f.store().nulls_counting().unwrap().0.remove(0);
     same.id = HarnessStore::mint_null_id() + "-same";
     same.measurement.episodes = vec!["s-3".into()];
+    // Full tallies, all ties: both floors look filled, and none of it is
+    // power — the arms were the same run.
+    same.measurement.selection = mecha_core::harness::TallyRecord {
+        wins: 0,
+        losses: 0,
+        ties: 8,
+    };
+    same.measurement.holdout = mecha_core::harness::TallyRecord {
+        wins: 0,
+        losses: 0,
+        ties: 4,
+    };
     same.arms_identical = true;
     f.store().write_null(&same).unwrap();
 
     let read: Value = serde_json::from_str(&f.ok(&["harness", "floors", "--json"])).unwrap();
     assert_eq!(read["null_runs"], 2);
     assert_eq!(read["runs_with_identical_arms"], 1);
+    assert_eq!(
+        read["runs_filling_both_floors"], 0,
+        "ties from two replays of the same run fill no floor"
+    );
     assert_eq!(read["runs_pairing_nothing"], 1);
     assert_eq!(read["judgements"], 0);
     assert_eq!(read["propose"], 0, "nothing judged is not eleven proposals");
