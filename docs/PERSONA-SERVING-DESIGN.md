@@ -128,8 +128,12 @@ comes from the study (S10).
 persona; mail, calendar, graph, outbox, learning store or triggers; the
 owner's `[[mcp]]` servers — including those marked `personas = true`, which
 were marked for the owner's chats, not for strangers; provider keys beyond
-the loopback model endpoints. `trial_env::refuse_operator_home` already
-refuses a world rooted in the operator's home; the guest home uses it.
+the loopback model endpoints. What keeps those out is the explicit source
+list. The guard on the home's *location* is the trial home's,
+`experiment::refuse_unsafe_home` — it refuses a home that is or contains
+the real one and allows one inside it, which is where §3 keeps seats — not
+`trial_env::refuse_operator_home`, which guards an environment's source
+data and would refuse the seat directory itself.
 
 **It is its own process.** The guest facade runs as a child with
 `MECHA_HOME` set to the guest home, bound to loopback on a port chosen per
@@ -146,7 +150,7 @@ the seat, never falls through (the silently-degrading guard).
 | System prompt | `BASE`, the card, plus `DISCLOSED` while `disclosure` is on | HyperStudy's `instructions`, verbatim, and nothing of mecha's persona text (S10) |
 | Persona memory | written and recalled | neither: no writer, no recall over owner stores |
 | Confirmations, outbox | spoken yes can release | none exist: no outbox route, no `parse_answer` path |
-| Approver | the owner's | refuses at every door — `approve`, `escalate`, `escalate_access`, `consult`, `permit` today. What holds a future door is the trait's defaults, which fail closed (`escalate`, `consult` → `Blocked`) or delegate (`escalate_access` → `escalate`, `permit` → `approve`); so the guest approver refuses `approve` and `escalate` and overrides nothing that delegates. A test listing today's doors cannot catch a new one with a default body — exhaustiveness the compiler checks would need a door enum on `Approver`, named in §8 step 2 as a choice, not assumed |
+| Approver | the owner's | allows **exactly the ClientTool catalogue** at `approve` — the loop sends every tool that is not `read_only` there, and the answer tools and `send_chat` genuinely act — and refuses every other tool there and every other door (`escalate`, `escalate_access`, `consult`, `permit` today). Catalogue membership, checked in mecha's code, is what makes a tool runnable, the same place §4a earns `Blind`; no catalogue tool claims `read_only`. What holds a future door is the trait's defaults, which fail closed (`escalate`, `consult` → `Blocked`) or delegate (`escalate_access` → `escalate`, `permit` → `approve`); so the guest approver overrides `approve` and `escalate` and nothing that delegates. A test listing today's doors cannot catch a new one with a default body — exhaustiveness the compiler checks would need a door enum on `Approver`, named in §8 step 2 as a choice, not assumed |
 | Grants | `[[grant]]` and `/grant` | off by type, as an incognito chat's are |
 | Tools | the persona's eligible set | HyperStudy's declared tools only, as ClientTools (§4a); none of mecha's |
 | Transcript | the chat's session file | kept in full (S8): the seat's session file, with every record a run writes — tool calls, ClientTool results, context items, spoken directions — and the seat's guest home is archived when it closes |
@@ -368,7 +372,10 @@ HyperStudy.
 mecha provides; the study decides:
 
 - **Crisis handling.** The harness-side crisis sensor (`persona::safety`,
-  keyword tier plus model judge) runs on every participant turn, and in a
+  keyword tier plus model judge) runs on every participant turn — **forced
+  on in a seat**, whatever the named persona's `safety.crisis` switch says:
+  that switch is the owner's choice about the owner's chat, and it does not
+  travel with the voice into a study's. In a
   seat it keeps the actions it takes today: on a trip the harness steps out
   of character with `SAFE_MESSAGE` and pauses the persona for
   `CRISIS_COOLDOWN`, and mecha raises HRP's `hs.flag`. Two seat-specific
@@ -378,11 +385,13 @@ mecha provides; the study decides:
   is spoken or typed into the session, so until HyperStudy reads `hs.flag`
   the trip is still visible to the study in its own record of the
   conversation. Whether a study may turn the handover off is owed (§9).
-- **A check that cannot run is said.** `CrisisState::Degraded` — the judge
-  could not answer, keywords only — is declared to HyperStudy at session
-  start and on every change, beside `hs.flag` rather than through it, so
+- **The check's state is said, whole.** The seat declares its
+  `CrisisState` to HyperStudy at session start and on every change, beside
+  `hs.flag` rather than through it — all of it, not one variant, so "on",
   "switched off" and "couldn't check" never pass for each other on the far
-  end either (`safety.rs`'s own rule).
+  end either (`safety.rs`'s own rule). In a seat `Off` cannot occur (the
+  check is forced on); `Degraded` — the judge could not answer, keywords
+  only — can, and is said.
 - **Retention.** Seats are kept in full (S8, §3), and mecha declares that
   through `hs.retention`, so a study can tell its participants.
 - **Disclosure is in the study's prompt.** Whether a participant is told
@@ -401,7 +410,7 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    `Config` and `ConfigLayer`, and `mecha hyperstudy token` with setup's
    step; nothing behind it yet but `Unready` until a token exists.
 2. **The guest facade** — guest home, untrusted run mode, the §3 table as
-   tests (the approver refuses at every door — and whether `Approver` gains
+   tests (the approver allows the catalogue and nothing else — and whether `Approver` gains
    a door enum so the compiler holds a future door is decided here; the
    seat is armed untrusted before its first turn; a seat writes nothing
    under the operator's home outside its own seat directory; the system
