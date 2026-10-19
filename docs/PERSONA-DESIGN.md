@@ -1746,7 +1746,9 @@ eventual design has to resolve, so it is not rediscovered. *Designed
 option below. Its rulings supersede part of the prerequisite list here: age
 handling, consent, disclosure and what an institution requires are the
 experimenter's (its S2), seats are recorded in full (its S8), and a seat is
-prompted by the study, taking only a persona's voice (its S10).*
+prompted by the study, taking only a persona's voice (its S10) — so
+no persona's character, romantic or otherwise, reaches a participant — and
+the crisis check is forced on in every seat (its §7).*
 
 **The conflict.** `PUBLIC-SURFACE-DESIGN.md` §8 settled that no model runs on
 the public box — "a model on the public box is a provider key on the box we
