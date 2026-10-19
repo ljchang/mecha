@@ -3,7 +3,7 @@
 *2026-10-19. Design, not built.* How a mecha persona takes part in a
 HyperStudy experiment — reading what the study shows, talking by text and
 voice, and acting in the study (a rating, the next screen) — for people who
-are not the owner, without a listener on this box and without anything of
+are not the owner, without a public listener on this box and without anything of
 the owner's in reach of the conversation. PERSONA-DESIGN §14 deferred
 serving and listed what it would need; this is the design it asked for.
 
@@ -116,7 +116,8 @@ module doc says it is: "deliberately dumb".
 
 ## 3. The sealed guest home
 
-PERSONA-DESIGN §14's third option, built with `trial_env`'s pattern: an
+The isolated-home pattern of PERSONA-DESIGN §14's third option, kept on
+this box rather than a separate one, and built with `trial_env`'s: an
 isolated home per seat, assembled from an explicit list, never from the
 operator's home.
 
@@ -135,12 +136,23 @@ the real one and allows one inside it, which is where §3 keeps seats — not
 `trial_env::refuse_operator_home`, which guards an environment's source
 data and would refuse the seat directory itself.
 
-**It is its own process.** The guest facade runs as a child with
-`MECHA_HOME` set to the guest home, bound to loopback on a port chosen per
-seat, never the owner's `voice-serve`. Confinement under the existing
-sandbox (`sandbox.rs`, bwrap) binding only the guest home is the stronger
-form and costs a preflight; a confinement that is configured and fails stops
-the seat, never falls through (the silently-degrading guard).
+**The agent loop is its own process; the audio leg is shared.** The guest
+facade runs as a child with `MECHA_HOME` set to the guest home, bound to
+loopback on a port chosen per seat, never the owner's `voice-serve`. A voice
+seat's audio runs through the owner's running voice worker — the one worker
+on the box, its journal the owner's (S8) — which is part of why a live owner
+call makes a voice seat `busy` (§5): one worker's state, not only GPU room.
+
+**Confinement is filesystem confinement.** Under the existing sandbox
+(`sandbox.rs`, bwrap) the guest facade binds the guest home, with
+`MECHA_HOME` named in the sandbox's environment, since bwrap clears it.
+bwrap's network is all or nothing — `--unshare-net` leaves the jail unable
+to reach the loopback router, and without it the jail has the host's
+network, LAN and tailnet included — so it adds nothing on the egress axis.
+What keeps a seat off the network is that it has no network tool (§4a): a
+property of the tool catalogue, not of the jail. A confinement that is
+configured and fails stops the seat, never falls through (the
+silently-degrading guard).
 
 **The interlocutor is untrusted — a run mode, not a prompt:**
 
@@ -152,8 +164,8 @@ the seat, never falls through (the silently-degrading guard).
 | Confirmations, outbox | spoken yes can release | none exist: no outbox route, no `parse_answer` path |
 | Approver | the owner's | allows **exactly the ClientTool catalogue** at `approve` — the loop sends every tool that is not `read_only` there, and the answer tools and `send_chat` genuinely act — and refuses every other tool there and every other door (`escalate`, `escalate_access`, `consult`, `permit` today). Catalogue membership, checked in mecha's code, is what makes a tool runnable, the same place §4a earns `Blind`; no catalogue tool claims `read_only`. What holds a future door is the trait's defaults, which fail closed (`escalate`, `consult` → `Blocked`) or delegate (`escalate_access` → `escalate`, `permit` → `approve`); so the guest approver overrides `approve` and `escalate` and nothing that delegates. A test listing today's doors cannot catch a new one with a default body — exhaustiveness the compiler checks would need a door enum on `Approver`, named in §8 step 2 as a choice, not assumed |
 | Grants | `[[grant]]` and `/grant` | off by type, as an incognito chat's are |
-| Tools | the persona's eligible set | HyperStudy's declared tools only, as ClientTools (§4a); none of mecha's |
-| Transcript | the chat's session file | kept in full (S8): the seat's session file, with every record a run writes — tool calls, ClientTool results, context items, spoken directions — and the seat's guest home is archived when it closes |
+| Tools | the persona's eligible set | HyperStudy's declared tools only, as ClientTools — mecha registry tools whose call goes out over the session and whose result HyperStudy sends back (§4a); none of mecha's own |
+| Transcript | the chat's session file | kept in full (S8): the seat's session file, with every record a run writes — tool calls, ClientTool results, context items, spoken directions — and the seat's guest home is left in place when it closes |
 | Voice worker logging | an ordinary call's journal | the same: a seat is an ordinary call to the worker, never incognito |
 
 **Where a seat is kept.** The guest home is built under the owner's home at
@@ -239,9 +251,18 @@ HyperStudy's clock, including while a ClientTool call is in flight — and
 there is no legal slot between a `tool_use` and its result, nor for two user
 messages in a row (images are user turns only). So context items queue and
 fold at the next legal boundary through the steering path
-(`ARCHITECTURE.md` §Interruption and steering): into the message carrying
-the tool results mid-round, or into the next user turn otherwise. One
-mechanism, not a second — but not free: the steering queue carries text
+(`ARCHITECTURE.md` §Interruption and steering) mid-round, into the message
+carrying the tool results. The steering path alone is not enough: its one
+drain site skips a closing turn by design — a steer taken there could not
+be acted on, and "the front end says it came too late" — and a seat has no
+front end to say it. So a seat folds at a second boundary the wiring owns:
+an item that arrives during a closing turn, or between turns, joins the next
+user message — the participant's next turn if one is pending, otherwise a
+user message of context alone, legal because the last message is the
+agent's reply. Whether that message asks for a reply is the study's, by its
+own `response.create`. Nothing is dropped: an item still queued when the
+seat closes is recorded as unfolded in the seat's transcript. The
+mid-round half is not free either: the steering queue carries text
 (`queued_input` is a `VecDeque<String>`), and an image context item needs it
 to carry `Block`s. That widening is a core change that touches every
 steering caller, the TUI and web chat included, and §8 step 3 names it.
@@ -293,7 +314,11 @@ An offer is accepted only when every check passes; each refusal is typed
   an offer naming anything else is `unknown_persona`, so the rest of the
   owner's personas are never confirmed to anyone. Since a seat takes only
   the persona's voice (S10), servable means "this voice may speak in
-  studies".
+  studies". That also settles PERSONA-DESIGN §15's line that a romantic
+  persona must never reach a minor, "binding when it is designed": no
+  persona's character — its template, card or relationship — reaches a
+  seat at all, so a romantic one cannot reach a participant of any age by
+  construction, not by a check on the switch.
 - **The owner comes first.** A live owner call is `busy` for a voice seat —
   and an owner call that starts mid-seat does not preempt the seat
   silently; what happens then is owed (§9).
@@ -313,8 +338,11 @@ An offer is accepted only when every check passes; each refusal is typed
   `Holds::open_default` roots at `MECHA_HOME`, so a guest facade's hold
   would land where `mecha model use` never reads, and a model switch could
   land mid-seat — one conversation answered by two models, the thing holds
-  exist to prevent. The wiring passes the owner's hold directory to the
-  guest facade explicitly; nothing in a seat derives it from `MECHA_HOME`.
+  exist to prevent. So the **wiring** takes the hold in the owner's home
+  when a seat opens and releases it when the seat closes; the guest facade
+  never writes one. The seal stays literal — a seat writes nothing under
+  the owner's home outside its seat directory — and the hold's liveness is
+  the seat's lifetime, which the wiring already tracks.
 - **The credential** for the control socket is a token mecha mints and the
   owner registers in HyperStudy (§5.1); an offer carries only a single-use,
   sixty-second session token.
@@ -359,8 +387,9 @@ owner says so. Guided setup offers it once personas are on and asks for the
 two things it cannot work without — the HyperStudy origin, and a minted
 token (§5.1), which setup mints and shows for pasting — and `Unready` names
 whichever is missing. Voice
-seats additionally need the voice worker (`calls`); without it the engine's
-hello offers text only. Building it follows `ARCHITECTURE.md` §Adding a
+seats additionally need the voice worker (`calls`), which requires `web` —
+the owner's page, a tailnet listener behind `owner_guard`, never a public
+one; without them the engine's hello offers text only. Building it follows `ARCHITECTURE.md` §Adding a
 feature item by item rather than a subset copied here; the one choice the
 checklist leaves to the feature is made here: `switchable_from_environment`
 is **no**, because the credential lives in the owner's home and an
@@ -416,11 +445,12 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    under the operator's home outside its own seat directory; the system
    prompt is the study's `instructions` byte for byte, with no `BASE`, card
    or `DISCLOSED` even with the persona's `disclosure` on; a closed seat's
-   transcript and manifest are readable afterwards; a seat's hold is visible
+   transcript and manifest are readable afterwards; while a seat is open the
+   wiring's hold is visible
    to `mecha model use`), the
    ClientTool catalogue (an armed seat with an image in it still answers a
    question; an uncatalogued tool is refused), context folding at a
-   mid-round boundary, the crisis handover and the degraded state, budgets.
+   mid-round boundary and on a closing turn, unfolded items recorded, the crisis handover and the degraded state, budgets.
 3. **A text seat on loopback** — HRP with text-only output against a local
    stand-in for HyperStudy's session: context items, inline images, declared
    tools, and the steering queue widened to carry `Block`s (§4a). Exit: a scripted study (read a screen, chat, answer a rating
@@ -466,8 +496,9 @@ accepted socket instead.
 - What a trip does to a seat shorter than `CRISIS_COOLDOWN`'s fifteen
   minutes: a pause that outlasts the seat ends it, which is not today's
   action.
-- Whether bwrap confinement of the guest facade is required from step 2 or
-  added after.
+- Whether bwrap's filesystem confinement of the guest facade is required
+  from step 2 or added after, and whether a seat ever needs a loopback-only
+  network namespace built for it (§3).
 - Latency, measured on this box: OpenAI's Realtime models are
   speech-to-speech and mecha is a cascade, so vendor figures are not ours.
   End-of-turn to first audio is recorded per turn-detection mode, with the
