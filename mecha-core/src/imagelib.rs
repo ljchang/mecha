@@ -1865,10 +1865,13 @@ pub fn compile_with(
                 number(n)
             ));
         } else {
+            // Under the cap the cast is one person with a body today; a
+            // member without one, should the cap move, is not sent rather
+            // than a panic inside a tool call (review of #718).
             let read: Vec<_> = members
                 .iter()
                 .map(|m| {
-                    let body = m.body.expect("everyone has one");
+                    let Some(body) = m.body else { return Err(()) };
                     lib.read_reference(m.entry, body).map_err(|e| {
                         tracing::warn!("imagelib: {e:#}");
                     })
