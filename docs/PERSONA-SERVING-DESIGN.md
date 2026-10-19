@@ -210,7 +210,10 @@ the first is less moving parts. The result is a seat with no route to any
 host, so egress no longer rests on the tool catalogue alone (§4a).
 
 The alternatives, weighed: Landlock (already a backend) can allow TCP
-connect by port, but only by port — `8080` would also allow
+connect by port, but UDP is restrictable at no ABI — which is why
+`can_reach_network()` is unconditionally true for it in `sandbox.rs` — so a
+landlocked seat remains a route out whatever its TCP rules; and TCP rules
+go only by port — `8080` would also allow
 `<any LAN host>:8080` and the tailnet's — and it leaves `/proc` readable,
 the owner's processes' environments included. Docker's `--network none`
 needs the same socket bridge plus an image and a daemon. Filesystem-only
@@ -236,7 +239,7 @@ falls through (the silently-degrading guard).
 | System prompt | `BASE`, the card, plus `DISCLOSED` while `disclosure` is on | HyperStudy's `instructions`, verbatim, and nothing of mecha's persona text (S10), `SINCERE` among it — the persona prompt's one unconditional line (a sincere "am I talking to a person?" gets the truth) is left out because whether an agent answers that truthfully is a disclosure decision, the study's by S2; a study that wants the floor writes it into its own prompt |
 | Persona memory | written and recalled | neither: no writer, no recall over owner stores |
 | Confirmations, outbox | spoken yes can release | none exist: no outbox route, no `parse_answer` path |
-| Approver | the owner's | allows **exactly the ClientTool catalogue** at `approve` — the loop sends every tool that is not `read_only` there, and the answer tools and `send_chat` genuinely act — and refuses every other tool there and every other door (`escalate`, `escalate_access`, `consult`, `permit` today). Catalogue membership, checked in mecha's code, is what makes a tool runnable, the same place §4a earns `Blind`; no catalogue tool claims `read_only`. What holds a future door is the trait's defaults, which fail closed (`escalate`, `consult` → `Blocked`) or delegate (`escalate_access` → `escalate`, `permit` → `approve`); so the guest approver overrides `approve` and `escalate` and nothing that delegates. A test listing today's doors cannot catch a new one with a default body — exhaustiveness the compiler checks would need a door enum on `Approver`, named in §8 step 2 as a choice, not assumed |
+| Approver | the owner's | allows **exactly the ClientTool catalogue** at `approve` — the loop sends every tool that is not `read_only` there, and the answer tools and `send_chat` genuinely act — and refuses every other tool there and every other door (`escalate`, `escalate_access`, `consult`, `permit` today). Catalogue membership, checked in mecha's code, is what makes a tool runnable, the same place §4a earns `Blind`; no catalogue tool claims `read_only`. What holds a future door is the trait's defaults, which fail closed (`escalate`, `consult` → `Blocked`) or delegate (`escalate_access` → `escalate`, `permit` → `approve`); so the guest approver overrides `approve` and `escalate` and nothing that delegates. Every refusal it returns is `Decision::Blocked`, never `Deny`: `Deny` renders as the owner's correction ("Denied by the user: "), which the learning miner reads from the result string and compaction preserves across a cut, and no human speaks in a seat. A test listing today's doors cannot catch a new one with a default body — exhaustiveness the compiler checks would need a door enum on `Approver`, named in §8 step 2 as a choice, not assumed |
 | Grants | `[[grant]]` and `/grant` | off by type, as an incognito chat's are |
 | Tools | the persona's eligible set | HyperStudy's declared tools only, as ClientTools — mecha registry tools whose call goes out over the session and whose result HyperStudy sends back (§4a); none of mecha's own |
 | Transcript | the chat's session file | kept in full (S8): the seat's session file, with every record a run writes — tool calls, ClientTool results, context items, spoken directions — and the seat's guest home is left in place when it closes |
@@ -274,7 +277,12 @@ study's crisis resources are the other, §7): the
 contract with HyperStudy is that `instructions` carry only
 experimenter-authored text, and anything a participant wrote — a
 free-text answer, typed chat — comes back as a quoted context item, never
-interpolated into the next state's guidance (§8). This is HyperStudy §4.4's
+interpolated into the next state's guidance (§8). Said plainly: this is
+the one guarantee in the design that a remote party's discipline keeps,
+not mecha's code — a study that breaks it puts a participant's words in
+the system prompt silently. The blast radius is bounded by everything
+mecha does enforce (no owner stores, no mecha tools, a crisis sensor no
+prompt can turn off), but the contract is HyperStudy's to keep. This is HyperStudy §4.4's
 `persona: "hyperstudy"`, the ownership it builds today. Each replacement
 re-pays the cached prefix once, which is the study's cost to choose. The
 only harness text a seat adds is what the loop needs mechanically (tool
@@ -433,9 +441,11 @@ no file reading, no `http_fetch`, no shell, no owner `[[mcp]]` server, no
 grants. Adding one later is a ruling, and the bar is that it reaches no
 destination a stranger could aim and no content a stranger should read:
 `http_fetch` would make this box a fetcher pointed at the owner's LAN and
-tailnet, and a file tool, though it aims nowhere outside, would reach the
-seat's own directory — the copied reference audio and the seat's
-transcript.
+tailnet. A file tool aims nowhere outside, and by §3's layout its jail is
+the seat's empty `workspace/`, which holds neither the reference audio nor
+the transcript — so it would be dead weight rather than a risk; the bar
+for adding one is that the study has material to put there, and what that
+material may contain.
 
 **The tool list is declared once.** mecha's tool list is the front of its
 cached prefix, so a study that swaps tools per screen re-pays the prefix on
@@ -443,9 +453,14 @@ every screen. The cheaper contract, asked of HyperStudy: declare every study
 tool at session start, and let each state say which are available; a call to
 an unavailable one is refused by HyperStudy with an error the model reads.
 
-**Per-seat budgets** bound what a stranger can spend: tool rounds per turn,
-turns per seat, bytes sent through ClientTools, and the seat's wall time. A budget that runs out is an
-`is_error` result the model can talk around, never a dead seat.
+**Per-seat budgets** bound what a stranger can spend, and they come in two
+kinds. Tool rounds per turn and bytes sent through ClientTools answer with
+an `is_error` result the model can talk around, never a dead seat. Turns
+per seat and the seat's wall time cannot work that way — a cap whose only
+effect is an error the model talks around bounds nothing, since a turn is
+the participant's to start — so when either runs out the wiring ends the
+seat with a reason sent to HyperStudy, the shape §9 owes for the
+owner-call and model-switch collisions.
 
 ## 5. Offers and admission
 
@@ -640,7 +655,8 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    two-way preflight, or the filesystem-only interim, per §9); guest home, untrusted run mode, the §3 table as
    tests (the sensor lifted out of `persona_chat.rs` first, with a seat's
    trip recorded in the owner's ledger as `hyperstudy`; seat transcripts
-   absent from the owner's corpus; the approver allows the catalogue and nothing else — and whether `Approver` gains
+   absent from the owner's corpus; the approver allows the catalogue and nothing else, every refusal
+   rendering `Blocked by policy:` and never the user-denial prefix — and whether `Approver` gains
    a door enum so the compiler holds a future door is decided here; the
    seat is armed untrusted before its first turn; the guest facade process
    writes nothing under the operator's home outside its own seat directory,
