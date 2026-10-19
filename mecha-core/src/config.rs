@@ -730,8 +730,9 @@ pub struct AgentConfig {
     /// holdout, never the holdout — and require its proposal to cite one.
     /// On by default. A brief carrying them opens private **and untrusted**,
     /// so on a night with digests the diagnostician's model-chosen fetch is
-    /// refused; off restores it, and withholds the digests and the citation
-    /// rule with them. Off is also a *stage* lever (`digests_in_brief`), so a
+    /// refused and its `web_search` runs blind backends at quick depth from
+    /// the first turn; off restores both, and withholds the digests and the
+    /// citation rule with them. Off is also a *stage* lever (`digests_in_brief`), so a
     /// lifetime experiment can measure what the digests are worth.
     pub digests_in_brief: bool,
     /// Deliver the situation brief a front-end assembled
