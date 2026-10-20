@@ -159,7 +159,10 @@ part in them is only a veto:
   *and* `Kept`. Assistant and Seat have no writer (§4); `Incognito`
   switches it off (§6).
 - **The session may enter the owner's corpus** only for Owner, *and* the
-  Assistant profile, *and* `Kept` (§5).
+  Assistant profile, *and* `Kept` (§5). That is necessary, not sufficient.
+  It narrows alongside the existing `SessionKind` filters and never
+  replaces them: a `MECHA_SESSION_KIND=test` smoke test is Owner ×
+  Assistant × Kept, and `Scan::admits` still drops it on its kind.
 
 Each is computed in one function of all three values, never derived from
 the principal alone. The incognito persona that arrives in step 8 is
@@ -438,6 +441,18 @@ behaviour visible before it moves.
    - **Multi-turn fixtures.** A one-turn conversation cannot catch the
      breakpoint that moves, the one on the last message block. Every
      fixture runs at least two turns with a tool round between them.
+   - **A compacting fixture.** Compaction is tangled with what steps 4
+     and 5 move. Rollback after a compaction meets a live list *shorter*
+     than the snapshot (`chat.rs`'s
+     `a_failure_after_a_compaction_still_drops_the_triggering_message`).
+     The persona re-anchor is keyed on `compactions > 0`, not
+     `context_overflows`. The persona files block must sit in
+     `messages[0]`, which compaction keeps whole. A two-turn fixture
+     reaches none of these, so at least one fixture runs with a
+     fixture-sized `context_window` until the cut happens. Its security
+     snapshot also records that a `rewrite` was written and that the cut
+     landed on an assistant message, since an orphaned `tool_result` is a
+     400 the rendered body only shows if a fixture gets there.
 
    A rendered body is blind to the security plumbing the host moves. A
    tool that loses `.from_outside()`, a dropped `Capabilities` field, or a
@@ -465,7 +480,14 @@ behaviour visible before it moves.
 4. **Tests move, never vanish.** The test attributes in §1's table move
    with their code. Each PR lists its test-count delta by name (a diff of
    `cargo test -- --list`), and a removed test needs its replacement
-   named next to it.
+   named next to it. **The written invariants move with them.** Five
+   `ARCHITECTURE.md` sections describe code that becomes core:
+   §Interruption and steering, §Background jobs, §Incognito chat,
+   §Personas and §Compaction. Each step updates the sections whose subject
+   it moved, step 4 adds §The session engine, and CLAUDE.md's module map
+   gains its row. CLAUDE.md makes a subsystem's section a precondition for
+   changing it, so a section describing a deleted path is a wrong
+   precondition, not just drift.
 5. **Setup is not in the path.** Guided setup does not touch either chat
    stack: `git grep -l -E 'persona_chat|serve::chat|PersonaChats'` over
    `commands/setup_guided.rs`, `setup_chat.rs`, `setup_engine.rs`,
