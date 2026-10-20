@@ -77,7 +77,15 @@ behaviour a row must hold. `tasks.rs` narrows its own registry by dropping
 front door is the one surface in the tree today where the human side is
 *not* the owner. It runs a tool-bearing session over a stranger's request
 and records its own taint, so it is E1's case already built, and §11 owes
-its principal (O5). The appraisal readout
+its principal (O5). A sixth loop calls bare `Agent::run` rather than
+`run_in`, which is why a `run_in` sweep misses it: `commands/diagnose.rs`,
+the one lane where a model authors a harness change. It opens a
+conversation carrying private data and then reads source, fetches pages
+and searches. It also resolves its own jail root with a hand copy of
+`prepare_tools`' fallback chain, a copy review already caught drifting
+once. It gets its inventory row, an armed fixture of its own in §9.2, and
+moves in step 8 onto `HostedSession::open`, whose root rule replaces the
+hand copy. The appraisal readout
 (`appraisal::live_readout`) is wired in three of them: `serve/chat.rs`,
 `tui/mod.rs` and `slack/connector.rs`.
 
@@ -293,6 +301,19 @@ which persona by reference, text or voice, a display label for the human.
 switch, the approval mode, the provider or its keys. An owner door adds
 the approval mode and nothing else from that second list.
 
+**What an owner door's caller fixes at open.** Three per-session values
+reach a session today from the door's caller, as `SessionInit`'s fields:
+`workspace`, `withheld` and `title`. The workspace is a fifth kind,
+owner-only like the approval mode, chosen by §4's rules and re-proved
+against the mecha home rather than trusted. `withheld` is a per-session
+capability narrowing (the safe direction, so it sits in the setup layer
+under "capabilities only narrow"). Its one live case is D6: a task chat
+withholds `kg_task_update`, set on create and, on resume, derived by
+`task_withholding` from the `"task: "` title prefix. It is coupled: a
+non-empty `withheld` is also what installs the `ParkingAsker`, so a task
+chat parks questions instead of asking. Both move in step 4 with
+`cx.withheld`.
+
 **E3 for configuration:** no *existing* field of `Config` or `ConfigLayer`
 changes, no key of `persona.toml` changes, the `~/.mecha` layout does not move,
 and the session file's existing records keep their shape. The three
@@ -315,7 +336,9 @@ session file written before the engine is absent on all three, and for
 `Profile` and `SessionRecording` the type defaults are `Assistant` and
 `Kept`, the admitting half of the corpus gate. So no axis takes its
 type's default when absent. Each is decided by location, beside the
-principal: a file under `sessions/` is Owner × Assistant × Kept, one under
+principal: a file under the owner's sessions directory (whatever
+`Session::default_dir()` returns, so a store moved by `MECHA_SESSION_DIR`
+is still the owner's) is Owner × Assistant × Kept, one under
 `personas/<n>/sessions/` is Owner × Persona × Kept, and one in a seat
 directory is refused, since every seat session is written with all three.
 A file anywhere else loads degraded on all three (§2).
@@ -336,7 +359,7 @@ capabilities never meeting, and free composition is how that breaks.
 | **Safety** | — | crisis sensor (per-persona switch), dose, lock | crisis sensor, forced on |
 | **Post-run** | appraisal, title, staged-draft card | citations | — |
 | **Voice binding** | the worker's voice | the persona's voice, checked at bind | the persona's voice, checked by the wiring |
-| **Workspace** (the path jail every model-supplied path resolves inside, `ToolCtx::resolve`) | `~/.mecha/work/web/<key>/`, plus the owner's grants | `~/.mecha/work/persona/<key>/`, no grants | the seat directory's own `workspace/`, no grants (PERSONA-SERVING §3) |
+| **Workspace** (the path jail every model-supplied path resolves inside, `ToolCtx::resolve`) | per session at open (below): `work/web/<key>/` new, the recorded workspace on resume, `work/<task-id>/` for a task chat; plus the owner's grants | `~/.mecha/work/persona/<key>/`, no grants | the seat directory's own `workspace/`, no grants (PERSONA-SERVING §3) |
 
 **What each function becomes:**
 
@@ -351,8 +374,17 @@ capabilities never meeting, and free composition is how that breaks.
 | Background jobs, steer, cancel | one implementation | the same | the same |
 | Slack | yes | never (Slack's servers would read it) | — |
 
-**The jail root is fixed by profile and recording in code, never by a
-connection or setup.** `Incognito` replaces any profile's root with its
+**The jail root is fixed per session at `HostedSession::open`, by rules in
+code, never by a connection's setup.** It is not fixed per profile. For
+the Assistant it has three sources today: `work/web/<key>` for a new web
+chat; the recorded `meta.workspace` when a transcript is resumed, because
+re-rooting a resumed conversation would be, in the resume handler's own
+words, "the outbox's wrong-bytes release through another door" (and the
+sessions directory is shared, so a `mecha chat --workspace` session
+resumes in the web page under its own root); and `work/<task-id>` for a
+task chat (`work::ensure`). Each is re-proved by
+`work::ensure_outside_mecha_home` on the way in, because the record is
+data, not authority. `Incognito` replaces any profile's root with its
 tmpfs room. The `upload` and `file` routes (§1) are descriptor-relative
 I/O inside that root (`workspace_files.rs`), so the host owns the root and
 the doors only carry bytes. For a guest, where the jail is rooted is a
@@ -570,7 +602,16 @@ behaviour visible before it moves.
      destination of a call the interlock would have refused, and its
      fail-closed timeout can stand in for the interlock's refusal. One
      fixture installs a `pre_tool` hook in an armed conversation calling a
-     `Chosen` tool and asserts the hook was never consulted. With all of
+     `Chosen` tool and asserts the hook was never consulted. (A routed
+     call legitimately skips the interlock, since staging sends nothing,
+     so the routed fixture's recorded sequence is not that order. The
+     snapshot compares old against new, not against a fixed order.) Two
+     more fixtures hold §4's and §3's per-session values. One resumes a
+     transcript that recorded a workspace other than the profile default
+     and must keep it; a fresh conversation would snapshot `work/web/<key>`
+     identically on both sides and never show a re-rooting. The other's
+     title wears the `"task: "` prefix, so `withheld` and the `ParkingAsker`
+     appear. With all of
      these recorded, plus two facts from `prepare_carrying`, which also
      moves (§9.5): **the outbox route** (whether one is installed, and its
      routed and publish name sets, so a fixture dispatching a routed tool
@@ -703,7 +744,9 @@ persona chat alone, and the assistant chat repeats steps 2–4 after step 6.
    steps 2–5, now on the host.
 8. **The rest onto the host:** TUI, `mecha chat`, Slack, scheduled
    triggers and `batch.rs` (which `mecha eval` drives, so its lever-off
-   rule, `RunConfig::levers_off`, rides along unchanged). Personas reach
+   rule, `RunConfig::levers_off`, rides along unchanged), and §1's other
+   loops: `mecha run`, `tasks work`, the questions resume, mail,
+   `diagnose.rs`, and the front door under whatever O5 rules. Personas reach
    the TUI and incognito personas exist, both as combinations. Exit:
    identical for every surface moved, and two live checks the synthetic
    ones of step 1 cannot make. A live Owner × Persona × Incognito session
