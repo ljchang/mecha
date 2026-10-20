@@ -64,7 +64,9 @@ own `run_in`, `record_run` and hook wiring) and `batch.rs`, which `mecha
 batch` and `mecha eval` drive. `replay_persona.rs` is a further persona
 `run_in` caller, a replay tool rather than a surface. All three are
 surveyed for §9.1's inventory like any door, and step 8 moves triggers and
-batch onto the host. The appraisal readout
+batch onto the host. `replay_persona.rs` stays where it is: it calls
+`run_in` directly rather than through a chat turn body, so it has no body
+to merge, and its inventory row is that it still replays. The appraisal readout
 (`appraisal::live_readout`) is wired in three of them: `serve/chat.rs`,
 `tui/mod.rs` and `slack/connector.rs`.
 
@@ -289,6 +291,16 @@ merge them, and an unparseable seat principal would then load as the
 owner. Absent is decided by where the file sits; unparseable is always
 `Guest` (§2).
 
+**The absent rule covers all three axes, not only the principal.** Every
+session file written before the engine is absent on all three, and for
+`Profile` and `SessionRecording` the type defaults are `Assistant` and
+`Kept`, the admitting half of the corpus gate. So no axis takes its
+type's default when absent. Each is decided by location, beside the
+principal: a file under `sessions/` is Owner × Assistant × Kept, one under
+`personas/<n>/sessions/` is Owner × Persona × Kept, and one in a seat
+directory is refused, since every seat session is written with all three.
+A file anywhere else loads degraded on all three (§2).
+
 ## 4. Modules: what a profile is made of
 
 Inside, a profile is a fixed composition of modules. The composition is
@@ -436,8 +448,10 @@ renders, and HRP is an adapter over core's events, not over the browser's
 
 ## 8. Doors, and the protocol at the door
 
-A door is a transport, how it authenticates (which fixes the principal),
-and how it renders. Nothing else.
+A door is four things: a transport, how it authenticates (which fixes the
+principal), how it renders, and its own declarations, which are the
+session setup it supplies (§3) and whether it can resend a failed turn
+(§7). It holds no conversation logic beyond those.
 
 | Door | Transport | Authentication → principal | Renders |
 |---|---|---|---|
@@ -666,7 +680,15 @@ persona chat alone, and the assistant chat repeats steps 2–4 after step 6.
 8. **The rest onto the host:** TUI, `mecha chat`, Slack, scheduled
    triggers and `batch.rs` (which `mecha eval` drives, so its lever-off
    rule, `RunConfig::levers_off`, rides along unchanged). Personas reach
-   the TUI and incognito personas exist, both as combinations.
+   the TUI and incognito personas exist, both as combinations. Exit:
+   identical for every surface moved, and two live checks the synthetic
+   ones of step 1 cannot make. A live Owner × Persona × Incognito session
+   is refused memory writes and corpus entry. Each batch item and eval
+   case opens a fresh `HostedSession`, and so a fresh `Conversation`,
+   asserted by a fixture whose first item arms the conversation and whose
+   second starts clean. CLAUDE.md's taint rule leans on that freshness,
+   and a host that holds sessions is where reuse across items would creep
+   in with every unit test green.
 9. **Optional:** one route set, and the page on the Realtime protocol
    (O4).
 
