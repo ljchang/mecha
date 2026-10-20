@@ -8,9 +8,9 @@ onto it. The document also says how the move is made without losing a
 behaviour or breaking setup, because that is the risk the owner named (E3).
 
 PERSONA-SERVING-DESIGN.md (PR #724) is the first new door built on this
-engine, and this document depends on it: S1–S10 and several sections are
-cited from there, so #724 lands first and this one after it: a HyperStudy seat is the `Seat` profile behind the HyperStudy
-door. That document stays the door's specification, and this one does not
+engine: a HyperStudy seat is the `Seat` profile behind the HyperStudy
+door. This document depends on it, citing S1–S10 and several sections
+from there, so #724 lands first and this one after it. That document stays the door's specification, and this one does not
 restate it.
 
 ## 0. Rulings and constraints
@@ -89,7 +89,13 @@ per door.
 
 ## 2. The model
 
-A session is three values, fixed when it opens and recorded in its file:
+A session is three values, fixed when it opens and recorded in its file.
+Two names below already mean something else in the tree. They coexist
+and are unrelated. `Principal` here lives in the engine's module, beside
+`experiment::Principal`, the experiment rig's scripted owner stand-in;
+this document's "principal" is always the engine's. The `Seat` profile is
+unrelated to `serve/listen.rs`'s read-aloud `Seat`, which becomes
+`ListenSlot` when the two `listen_seat`s merge in step 6.
 
 ```rust
 pub enum Principal {
@@ -372,6 +378,10 @@ In the engine, `Incognito` is a value of the Recording axis:
 
 ## 7. The host: one turn loop
 
+`HostedSession::open` (§2) builds one session and checks its
+invariants. `ConversationHost` holds the open sessions and runs their
+turns; it is the only caller of `open`.
+
 `ConversationHost` in `mecha-core` owns the turn. The name is chosen to
 stay clear of `voice::SessionHost`, the existing CLI trait through which a
 web chat exposes its sessions to calls; the two coexist for the whole
@@ -508,7 +518,15 @@ behaviour visible before it moves.
      fail-closed timeout can stand in for the interlock's refusal. One
      fixture installs a `pre_tool` hook in an armed conversation calling a
      `Chosen` tool and asserts the hook was never consulted. With all of
-     these recorded, a seat inheriting an owner's `trifecta = "allow"`
+     these recorded, plus two facts from `prepare_carrying`, which also
+     moves (§9.5): **the outbox route** (whether one is installed, and its
+     routed and publish name sets, so a fixture dispatching a routed tool
+     must leave a draft rather than an effect), and **the sandbox backend
+     with whether `Sandbox::preflight` ran and passed** (`shell`'s
+     narrowed label comes from `is_enabled()`, not from preflight, so a
+     dropped preflight would run unconfined behind a confined label; one
+     fixture's sandbox cannot preflight and its expected outcome is a
+     refused start). A seat inheriting an owner's `trifecta = "allow"`
      shows, and a moved workspace, the wrong approver, a lost
      incognito allowlist or observer hooks running in incognito each fail
      the step rather than pass it. The last two are set in the very block
@@ -588,7 +606,10 @@ together. Under the second (personas first), each of these steps moves the
 persona chat alone, and the assistant chat repeats steps 2–4 after step 6.
 
 2. **The job queue and its delivery** into core; both web chats on one
-   instance. Exit: identical; the late-job tests of both files green
+   implementation, with their two job marks (`marked("chat")`,
+   `marked("persona")`) kept as two, since `jobs::count_live` over
+   `marker_dir_under` feeds `system/measure.rs` and one mark would read two
+   jobs in flight as one. Exit: identical; the late-job tests of both files green
    against the one implementation.
 3. **Steer, cancel, reorder, barge-in.** Exit: identical, over two fixtures
    §9.2 adds for this step (one queues steer text mid-tool-round, one
