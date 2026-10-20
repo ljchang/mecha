@@ -189,7 +189,8 @@ t('a success with a warning says it', outcomeNote({ last_switch: { to: 'x', ok: 
   t('a download says how far it is', installLine(p) === 'downloading new-d — 1.0 GiB of 2.0 GiB');
   t('a restart is said as such', installLine({ ...p, phase: 'restarting' }).includes('restarting the router'));
   t('an unreadable catalog is said, not hidden', catalogTrouble({ catalog: { offers: [], refusal: 'mecha\'s catalog could not be read: x', installing: null } })?.includes('could not be read'));
-  t('a catalog with offers has no trouble line', catalogTrouble({ catalog: { ...cat, refusal: 'r' } }) === null);
+  t('a router-wide refusal is said beside the offers too', catalogTrouble({ catalog: { ...cat, refusal: 'mecha did not install the chat router here' } })?.includes('did not install'));
+  t('a catalog that can be installed from has no trouble line', catalogTrouble({ catalog: cat }) === null);
   t('an install reads fast with the menu open, slowly with it closed', pollWhileInstalling(p, true) === 2000 && pollWhileInstalling(p, false) === 15000);
 }
 

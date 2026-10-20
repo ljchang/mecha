@@ -516,14 +516,24 @@ pub fn section_text(entry: &Entry, tier: u32, paths: &Paths) -> Result<String> {
 
 /// Whether every file `entry` serves is on disk at its pinned size — the
 /// cheap check, which reads no bytes; the fetch verified them as they were
-/// written.
+/// written. A plain file of the pinned size put in the hub by hand
+/// (`Unverified`) counts: `fetch_hub_file` hash-checks one and keeps it where
+/// it is rather than moving it into a blob, so demanding the blob here would
+/// drop a section `model add` had just checked, on every add (review of #727).
 pub fn present(entry: &Entry, hub: &Path) -> Result<bool> {
     for p in entry.pins {
-        if crate::fetch::cached(hub, p.repo, p.revision, &p.file, false)? != Cached::Verified {
+        if !on_disk(hub, p)? {
             return Ok(false);
         }
     }
     Ok(true)
+}
+
+fn on_disk(hub: &Path, p: &Pin) -> Result<bool> {
+    Ok(matches!(
+        crate::fetch::cached(hub, p.repo, p.revision, &p.file, false)?,
+        Cached::Verified | Cached::Unverified
+    ))
 }
 
 /// The sections for every recorded id, rendered for `tier`, and why any
@@ -590,10 +600,9 @@ pub fn offers(mecha_home: &Path, hub: &Path, machine: &Machine) -> Result<Vec<Of
                 Some(_) => None,
             };
             let mut download = 0;
+            // A hand-placed file is hashed at install, not fetched.
             for p in e.pins {
-                if crate::fetch::cached(hub, p.repo, p.revision, &p.file, false)?
-                    != Cached::Verified
-                {
+                if !on_disk(hub, p)? {
                     download += p.file.bytes;
                 }
             }
@@ -766,8 +775,8 @@ mod tests {
     fn every_offered_tier_has_a_geometry_that_fits() {
         let production = |t: u32| {
             let g = crate::recommend::chat_geometry(t).unwrap();
-            // The production row's weights and projector.
-            let files = (22_663_387_424u64 + 902_822_528) / 1_048_576;
+            // The production row's weights and projector, from its pins.
+            let files = u64::from(crate::recommend::QWEN36_FILES_MB);
             files + u64::from(g.ctx) / 1024 * 22 + 64 * u64::from(g.slots)
         };
         for e in CATALOG {
@@ -842,6 +851,24 @@ mod tests {
         assert_eq!(skipped.len(), 2, "{skipped:?}");
         assert!(skipped[0].contains("mecha model add gemma-4-26b-a4b"));
         assert!(skipped[1].contains("not in this build's catalog"));
+
+        // Files of the pinned size put in the hub by hand — which
+        // `fetch_hub_file` hash-checks and leaves where they are — are in
+        // place: the section is rendered (review of #727). Sparse, so the
+        // test writes no 17 GB.
+        let e = entry("gemma-4-26b-a4b").unwrap();
+        for p in e.pins {
+            let snap = crate::fetch::snapshot_path(&hub, p.repo, p.revision, &p.file);
+            std::fs::create_dir_all(snap.parent().unwrap()).unwrap();
+            std::fs::File::create(&snap)
+                .unwrap()
+                .set_len(p.file.bytes)
+                .unwrap();
+        }
+        assert!(present(e, &hub).unwrap());
+        let (text, skipped) = sections(&home, &hub, Some(128)).unwrap();
+        assert!(text.contains("[gemma-4-26b-a4b]"), "{text}");
+        assert_eq!(skipped.len(), 1, "{skipped:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

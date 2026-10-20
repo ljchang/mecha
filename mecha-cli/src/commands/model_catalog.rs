@@ -16,8 +16,9 @@ use serde::Serialize;
 use std::io::{IsTerminal, Write};
 use std::time::{Duration, Instant};
 
-/// The comment line above every provider table `model add` writes — and the
-/// line `remove` looks for, so it takes out only its own.
+/// The comment line above every provider table `model add` writes, which
+/// `remove` takes out with the table. What decides that a table is `add`'s
+/// is the caller's check that it names this router and this id.
 const TABLE_COMMENT: &str = "Written by `mecha model add` from mecha's catalog.";
 
 /// What every catalog verb reads first: the machine, its hub, the router.
@@ -207,6 +208,18 @@ fn follow_target(cfg: &Config, port: u16) -> Option<String> {
         .then(|| cfg.default_provider.clone())
 }
 
+/// The project `mecha.toml` that names `[providers.<provider>]`, when the
+/// layered config reads one: a table there replaces the global one whole.
+fn project_table(global: &GlobalOpts, provider: &str) -> Option<std::path::PathBuf> {
+    if global.global_config_only {
+        return None;
+    }
+    let path = std::env::current_dir().ok()?.join(Config::PROJECT_FILE);
+    let v: toml::Value = toml::from_str(&std::fs::read_to_string(&path).ok()?).ok()?;
+    v.get("providers")?.get(provider)?;
+    Some(path)
+}
+
 /// A table of that name already in the config that is not this entry's.
 fn table_conflict(cfg: &Config, e: &Entry, port: u16) -> Option<String> {
     let p = cfg.providers.get(e.provider)?;
@@ -284,16 +297,35 @@ pub(super) async fn add(
     if let Some(why) = table_conflict(cfg, e, here.naming.port) {
         bail!("nothing was installed: {why}");
     }
-    if let Some(p) = catalog::progress_read(&home) {
-        bail!(
+    let one_at_a_time = || match catalog::progress_read(&home) {
+        Some(p) => bail!(
             "another catalog install is running ({} — {}, pid {}); one at a time",
             p.id,
             p.phase,
             p.pid
+        ),
+        None => Ok(()),
+    };
+    one_at_a_time()?;
+    let settings = provider_settings(e, tier, &base)?;
+    // Written to the global file, so a project `mecha.toml` naming the same
+    // table would shadow it whole: said in the plan, not written (review of
+    // #727) — `remove`'s mirror case.
+    let mut follow = follow_target(cfg, here.naming.port);
+    let shadowed = follow
+        .as_deref()
+        .and_then(|d| project_table(global, d).map(|f| (d.to_string(), f)));
+    if shadowed.is_some() {
+        follow = None;
+    }
+    if let Some(f) = project_table(global, e.provider) {
+        bail!(
+            "nothing was installed: [providers.{}] is in {}, which would shadow the table `add` \
+             writes to your global config — remove it there, or run this from another directory",
+            e.provider,
+            f.display()
         );
     }
-    let settings = provider_settings(e, tier, &base)?;
-    let follow = follow_target(cfg, here.naming.port);
 
     // The plan, in full, before anything is fetched: what the approval is for.
     // On stderr under `--json`, where stdout is the answer.
@@ -325,6 +357,13 @@ pub(super) async fn add(
             .map(|d| format!(", and `follow_loaded = true` on [providers.{d}] so default runs follow the model you load"))
             .unwrap_or_default()
     ));
+    if let Some((d, f)) = &shadowed {
+        say_line(&format!(
+            "  [providers.{d}] is in {}, which mecha does not edit — add `follow_loaded = true` \
+             there for default runs to follow the model you load",
+            f.display()
+        ));
+    }
     say_line("  then restarts the router — after any run using it has finished");
     if !yes {
         if !std::io::stdin().is_terminal() {
@@ -334,6 +373,9 @@ pub(super) async fn add(
             say_line("Nothing was changed.");
             return Ok(());
         }
+        // The prompt can sit for as long as the owner likes; another
+        // install may have started meanwhile (review of #727).
+        one_at_a_time()?;
     }
 
     // Fetch and assemble, recording progress for the chip. Nothing below

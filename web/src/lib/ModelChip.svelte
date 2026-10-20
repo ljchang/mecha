@@ -212,6 +212,7 @@
       {/if}
       {#if offers.length}
         <p class="line section">Available to download</p>
+        {#if catalogTrouble(data)}<p class="line bad">{catalogTrouble(data)}</p>{/if}
         {#each offers as o (o.id)}
           {#if confirming === o.id}
             <div class="confirm">
@@ -233,7 +234,7 @@
             >
               <span class="dot" aria-hidden="true">↓</span>
               <span class="id">{o.id}</span>
-              <span class="word" class:bad={o.disabled}>{o.disabled ? 'not offered here' : gib(o.download)}</span>
+              <span class="word" class:bad={o.disabled}>{o.unfit ? 'not offered here' : o.disabled ? 'not here' : gib(o.download)}</span>
             </button>
           {/if}
         {/each}
