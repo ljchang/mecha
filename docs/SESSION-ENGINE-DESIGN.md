@@ -253,7 +253,7 @@ capabilities never meeting, and free composition is how that breaks.
 | Module | Assistant | Persona | Seat |
 |---|---|---|---|
 | **Prompt source** | config prompt + charter + learned rules | the card + safety lines | the study's instructions, verbatim |
-| **Tool policy** | the full registry, the approver's modes, outbox, hooks, grants | `registry_as` allowlist, read-only | the seat catalogue only (PERSONA-SERVING §4a); HyperStudy runs the tools, and each result comes back `external`, marked `.from_outside()`, the only tool class whose result never passes through mecha's own code |
+| **Tool policy** | the full registry, the approver's modes, outbox, hooks, grants | `registry_as` allowlist, read-only | the seat catalogue only (PERSONA-SERVING §4a); HyperStudy runs the tools, and each result comes back `external`, marked `.from_outside()`, the only tool class whose result never passes through mecha's own code. Each declares `Egress::Blind`, earned by a closed catalogue in mecha's code with no destination field (PERSONA-SERVING §4a), and is new in step 7 with no old path to pin it, so its own tests hold the label |
 | **Context providers** | brief, homeostat, late notes, voice note | memory, recall, files, re-anchor, variety, scene, call note, late notes | context items, the clock (in UTC) |
 | **Store** | `sessions/`, corpus: yes | `personas/<n>/sessions/`, corpus: no | the seat directory, corpus: never |
 | **Safety** | — | crisis sensor (per-persona switch), dose, lock | crisis sensor, forced on |
@@ -359,7 +359,12 @@ migration (§9.3). The host's job:
 record → fold → run → `record_run` → roll back on failure → hand back late
 jobs → emit events. Recording comes first and is a guard: a turn whose
 record cannot be written does not run, as both copies refuse today. A
-guard that cannot run stops the run. It is the only place that does each, with one steer,
+guard that cannot run stops the run. *No recorder* and *the recorder
+refused* are two paths, as absent and unparseable are for the principal
+(§2). `Incognito` has no recorder by type (`Recording::kept()` is an
+`Option` today, each append its own arm), and that is not a failure.
+A `Kept` turn whose append fails stops. One "write, and treat a missing
+write as fine" path would merge them into the silently-degrading guard. It is the only place that does each, with one steer,
 one cancel, one job reorder, one job queue and one event stream. The
 shared `WireEvent` gains profile extensions rather than a second enum.
 
@@ -460,9 +465,16 @@ behaviour visible before it moves.
    them is in a request. So the harness takes a second snapshot beside the
    body, compared old path against new in the same way:
    - **the conversation's taint axes** after each turn;
-   - **the run's jail root** (`RunContext`) and **which approver was
-     installed**, so a moved workspace or the wrong approver fails the
-     step rather than passing it;
+   - **the run's jail root** (`RunContext`), **which approver was
+     installed**, **the dispatched `withheld` set** and **the installed
+     `HookSet`**, so a moved workspace, the wrong approver, a lost
+     incognito allowlist or observer hooks running in incognito each fail
+     the step rather than pass it. The last two are set in the very block
+     step 4 moves (`cx.withheld`, and `cx.hooks` cleared to a default
+     `HookSet`, its one site in `mecha-cli`). The incognito tests exercise
+     the pure functions (`incognito::withheld`, `incognito::hooks_allow`)
+     and not that wiring, and a test home configures no hooks for the
+     canary scan to catch;
    - **each dispatched tool's `Capabilities`** and its result's `external`
      flag;
    - **at least one fixture whose expected outcome is an interlock
@@ -520,8 +532,14 @@ means §9.2's two snapshots: the rendered bodies and the security snapshot.
    axes (§2), with every existing surface passing `Owner`. Exit:
    requests and security snapshots identical, every existing test green,
    no `Deny` able to originate under a guest principal, a guest-labelled
-   session refused memory writes and spoken confirmations, and an
-   Owner × Persona × Incognito combination refused memory writes.
+   session refused memory writes and spoken confirmations, an
+   Owner × Persona × Incognito combination refused memory writes, and the
+   corpus veto measured over synthetic metas. Guest × Seat × Sealed and
+   Owner × Persona × Kept are refused corpus entry, Owner × Assistant × Kept
+   is admitted, and `Scan::admits`' kind filter is asserted to still do its
+   own separate job. With every surface passing `Owner` until step 7, a
+   corpus rule that ignored the principal would otherwise stay green for
+   six steps.
 Steps 2–4 are written for O1's first answer, both web chats moving
 together. Under the second (personas first), each of these steps moves the
 persona chat alone, and the assistant chat repeats steps 2–4 after step 6.
