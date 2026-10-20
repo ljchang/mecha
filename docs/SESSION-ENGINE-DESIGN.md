@@ -26,14 +26,14 @@ are still open (§11).
 
 ## 1. What is duplicated, and what is different
 
-Measured at `dc00a90b2` (`wc -l`, and `#[test]`/`#[tokio::test]`
-attributes counted with `grep -c`):
+Measured at `dc00a90b2` (`git show dc00a90b2:<file> | wc -l`, and
+`#[test]`/`#[tokio::test]` attributes counted with `grep -c`):
 
 | File | Lines | Test attributes |
 |---|---|---|
 | `mecha-cli/src/commands/serve/persona_chat.rs` | 13,705 | 121 |
-| `mecha-cli/src/commands/serve/chat.rs` | 6,993 | 52 |
-| `mecha-cli/src/tui/mod.rs` | 11,286 | 62 |
+| `mecha-cli/src/commands/serve/chat.rs` | 7,012 | 52 |
+| `mecha-cli/src/tui/mod.rs` | 11,287 | 62 |
 | `mecha-cli/src/voice/mod.rs` | 3,535 | 44 |
 | `mecha-cli/src/slack/connector.rs` | 3,378 | 20 |
 | `mecha-cli/src/commands/serve/incognito.rs` | 795 | 10 |
@@ -134,8 +134,12 @@ participant, so the pilot tests what participants get.
 **The principal decides, with no other input:**
 
 - whether the conversation starts armed untrusted;
-- which approver answers, and whether a refusal renders `Denied by the
-  user:` (mined) or `Blocked by policy:` (never mined);
+- which approver is installed. A guest's approver can only return
+  `Decision::Blocked`, so the loop keeps choosing the refusal prefix from
+  the variant alone (`Denied by the user:` mined, `Blocked by policy:`
+  never). The principal is never a second input to that `match`: an input
+  there beside the variant is how machine policy could be labelled as a
+  human correction and mined into a rule;
 - whether persona memory may write;
 - whether a spoken confirmation can release anything;
 - the wording of notes that name the human ("the owner is speaking"
@@ -146,7 +150,8 @@ participant, so the pilot tests what participants get.
 
 The principal goes into the session file as a record, and the record is a
 wire format: a principal that fails to parse loads as `Guest`, never as
-`Owner`. Unknown is never clean.
+`Owner`. Unknown is never clean. An *absent* record is a different case
+with its own rule (§3), and the two must stay two code paths.
 
 ## 3. Settings: where each one lives
 
@@ -195,7 +200,11 @@ no key of `persona.toml` changes, the `~/.mecha` layout does not move,
 and the session file's existing records keep their shape. The principal
 record is the one addition, and a file without it loads as today: `Owner`
 for files under the owner's sessions, and refused for a seat directory,
-where every session is written with one.
+where every session is written with one. *Absent* and *unparseable* are
+separate paths: a single `#[serde(default)]` resolving to `Owner` would
+merge them, and an unparseable seat principal would then load as the
+owner. Absent is decided by where the file sits; unparseable is always
+`Guest` (§2).
 
 ## 4. Modules: what a profile is made of
 
@@ -348,14 +357,29 @@ behaviour visible before it moves.
    web page. The owner reviews it, because the row nobody wrote is the
    behaviour that gets lost. A step moves only rows the inventory holds,
    and closes them by name.
-2. **Byte-identical requests.** What the model sees is the request body.
-   Each extraction step runs a fixed set of made-up conversations through
-   the old path and the new one with a provider that records each request
-   (the test-only `Recording` providers in `agent.rs` and
-   `provider/mod.rs` already do), and the bodies must be identical byte
-   for byte. That covers the prompt, the tool list, every note and the
-   cached prefix in one assertion. A step meant to change bytes (the
-   principal's wording, say) does it in its own PR, with the diff shown.
+2. **Byte-identical requests, over the rendered body.** What the model
+   sees is the provider's rendered request, not the `CompletionRequest`
+   struct. The struct carries no cache breakpoints, because `cache_control`
+   placement is decided inside the private `Anthropic::body`. A
+   struct-equality check would therefore pass while the breakpoints moved,
+   which is exactly the regression "the cached prefix is sacred" is about.
+   So each extraction step runs a fixed set of made-up conversations through
+   the old path and the new one, and compares each provider's rendered JSON
+   body byte for byte: `Anthropic::body`, and `openai.rs`'s body, which is
+   what the router receives and what llama-server's prompt cache matches
+   on. One equality then covers the prompt, the tool list, every note and
+   the cached prefix. The harness does not exist yet, and step 0 builds it:
+   - **A request recorder exported from `mecha-core`** behind a test-only
+     feature, so `mecha-cli`'s old path and core's new host drive the same
+     recorder. Today's candidates are private `#[cfg(test)]` fixtures that
+     don't fit. `agent.rs`'s `ScriptedProvider` records `CompletionRequest`s
+     but only inside core's tests. `provider/mod.rs`'s `Recording` keeps
+     only `req.model`, and `agent.rs`'s `Recording` is an `Approver`.
+   - **A test-only render for each provider's body**, of which `openai.rs`'s
+     `pub(crate) body_for_test` is the seed.
+
+   A step meant to change bytes (the principal's wording, say) does it in
+   its own PR, with the rendered diff shown.
 3. **Beside, then instead.** The new host lands next to the old code. One
    surface switches at a time, behind the same routes. The old path is
    deleted only after the new one has run live (deployed with the
@@ -386,12 +410,16 @@ behaviour visible before it moves.
 Each step ships, deploys and is lived with before the next. "Identical"
 means §9.2's assertion.
 
-0. **The inventory** (`PARITY.md`), reviewed by the owner.
+0. **The inventory** (`PARITY.md`), reviewed by the owner, and the parity
+   harness of §9.2: the exported recorder and the per-provider render. Exit:
+   the harness fails on a moved cache breakpoint, shown by a test that
+   moves one.
 1. **The principal type.** `Principal` in core, recorded per session. The
-   taint seed, `Blocked` vs `Deny`, and memory-write eligibility are
+   taint seed, the approver installed, and memory-write eligibility are
    derived from it, with every existing surface passing `Owner`. Exit:
-   requests identical, every existing test green, a guest-labelled
-   session refused memory writes and spoken confirmations.
+   requests identical, every existing test green, no `Deny` able to
+   originate under a guest principal, and a guest-labelled session
+   refused memory writes and spoken confirmations.
 2. **The job queue and its delivery** into core; both web chats on one
    instance. Exit: identical; the late-job tests of both files green
    against the one implementation.
