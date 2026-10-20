@@ -571,7 +571,7 @@ pub fn sections(
         }
         let Some(t) = tier else {
             skipped.push(format!(
-                "{id}: this machine's memory tier could not be read"
+                "{id}: this machine is below the smallest memory tier"
             ));
             continue;
         };
@@ -711,14 +711,23 @@ pub async fn fetch(
             Cached::Verified => say(&format!("{}/{} is in the cache", p.repo, p.file.path)),
             Cached::Unverified => {
                 // Put there by hand: hashed against the pin, not fetched —
-                // and so not in the total the plan priced (`offers`).
+                // and so not in the total the plan priced (`offers`). On a
+                // hash miss `fetch_hub_file` fetches the pin after all; that
+                // download is said and its bytes reported, not silent
+                // (review of #727).
                 say(&format!(
-                    "checking {}/{} against its pin",
-                    p.repo, p.file.path
+                    "checking {}/{} against its pin — if it is not the pinned file, the pinned \
+                     one is downloaded ({:.1} GiB)",
+                    p.repo,
+                    p.file.path,
+                    p.file.bytes as f64 / 1_073_741_824.0
                 ));
-                crate::fetch::fetch_hub_file(hub, p.repo, p.revision, &p.file, &mut |_| {})
-                    .await
-                    .with_context(|| format!("checking {}/{}", p.repo, p.file.path))?;
+                let bytes = p.file.bytes;
+                crate::fetch::fetch_hub_file(hub, p.repo, p.revision, &p.file, &mut |n| {
+                    progress("fetching", n, bytes)
+                })
+                .await
+                .with_context(|| format!("checking {}/{}", p.repo, p.file.path))?;
             }
             _ => todo.push(p),
         }
