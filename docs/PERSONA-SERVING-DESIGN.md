@@ -153,7 +153,12 @@ replaced by a text placeholder while still arming `private`), and
 `follow_loaded = false`, set as a seat property rather than inherited, as
 `trial_env` sets it for every arm — following whatever the owner last
 loaded would change a seat's model mid-conversation, the other half of §5's
-hold. The agent's model and timezone come from the owner's; and no other
+hold. The agent's model comes from the owner's; its `timezone` is written
+as `UTC`, never copied, because the calendar head note renders in the
+configured zone (`Agent::calendar_note`) and a participant reading the
+owner's zone learns where the owner is — and a participant may be
+anywhere, so no zone is theirs either; a study that wants local time says
+so in its own instructions. No other
 table is written —
 no `[[mcp]]`, `[[hook]]`, `[rule]`, `[approval]` or `[search]`. That is
 deliberately not `trial_env`'s shape: a trial home inherits the operator's
@@ -218,6 +223,30 @@ their `http://127.0.0.1` URLs through a forwarder on the jail's own `lo`;
 the first is less moving parts. The result is a seat with no route to any
 host, so egress no longer rests on the tool catalogue alone (§4a).
 
+**The bridge runs both ways, and a voice seat needs the other way.** Those
+two sockets are the facade's way *out*; a voice seat also needs a way *in*,
+because the worker — unconfined, the owner's — is the facade's HTTP client:
+completions go to `FACADE_URL` (`MECHA_VOICE_LLM`), and the affect and
+direction reads to `AFFECT_URL` and `DIRECT_URL`, derived from it at
+import. A facade listening on loopback inside `--unshare-net` listens on
+the jail's own `lo`, which the host cannot reach, so without a third leg a
+voice seat's every reply, affect read and direction call has no route. The
+third leg is the same pathname trick reversed: the facade listens on
+`seat/run/facade.sock`, created inside the bound seat directory by the
+facade itself, and the worker connects to it from outside. The worker's
+side is real work, not a URL change. Its `httpx` (0.28.1 in the worker's
+environment) takes a socket through `AsyncHTTPTransport(uds=…)`, which
+covers the affect and direction clients. Completions go through Pipecat's
+`OpenAILLMService`, whose `create_client` (pipecat-ai 1.7.0,
+`BaseOpenAILLMService`) builds its own `DefaultAsyncHttpxClient` and
+accepts no client from outside — so a seat uses a subclass that overrides
+`create_client` to hand the OpenAI client one on that transport. The
+request URL keeps a placeholder host (`http://seat/v1`) that names the
+request and routes nothing. `parent.sock`'s closed message set is not
+widened to carry any of this: it is the facade's channel to the wiring, and
+completions are the worker's channel to the facade, a different direction
+with a different peer.
+
 **`parent.sock` is pinned like the catalogue.** It is the one channel from
 the process holding a stranger's conversation into the process holding the
 owner's home, the router hold and the crisis ledger — and §7 needs it, since
@@ -239,16 +268,20 @@ the owner's processes' environments included. Docker's `--network none`
 needs the same socket bridge plus an image and a daemon. Filesystem-only
 bwrap with the host network is the cheaper first step if the bridge is not
 ready; whether step 2 ships the bridge or that interim is owed (§9), and
-the two-way preflight belongs to the bridge.
+the preflight of every leg belongs to the bridge. The interim needs no
+`facade.sock`: with the host network the facade's loopback is the host's,
+so the worker's URLs reach it unchanged — the third leg is a cost of the
+bridge, not of the interim.
 
 Three things the build must not miss: the `mecha` binary and any model or
 cache file the facade reads live under the owner's home, which bwrap does
 not bind, so they are named read-only; `bwrap` is resolved through `PATH`,
 and this box's `/usr/bin/bwrap` cannot create user namespaces under its
 AppArmor setting (the local `/usr/local/bin` build can), so the launch names
-the binary it preflighted; and the preflight proves both directions — the
-model answers through the socket, and a LAN address does not answer at
-all. A confinement that is configured and fails stops the seat, never
+the binary it preflighted; and the preflight proves every leg — the model
+answers through `model.sock`, the wiring answers through `parent.sock`, a
+voice seat's facade answers the worker through `facade.sock`, and a LAN
+address does not answer at all. A confinement that is configured and fails stops the seat, never
 falls through (the silently-degrading guard).
 
 **The interlocutor is untrusted — a run mode, not a prompt:**
@@ -316,8 +349,8 @@ per request, never persisted, so it cannot go stale across midnight or
 accumulate in history — which a context item folded into the conversation
 would do. What changes is the gate: a seat-mode allowance beside the
 heading test, so a seat's requests carry the head note, with a one-line
-label saying what it is, while the system prompt stays the study's byte
-for byte.
+label saying what it is, rendered in the seat's `UTC` (above) rather than
+the owner's zone, while the system prompt stays the study's byte for byte.
 
 ## 4. The voice transport
 
@@ -600,9 +633,11 @@ seat work has to undo it: persona calls are hosted only inside serve
 worker reads its facade URL once, process-wide (`FACADE_URL` from
 `MECHA_VOICE_LLM`). So a guest facade is built on `voice`'s `Facade` and
 `Mount` with a seat's own `SessionHost`, which means exposing them beyond
-serve; the worker takes the facade URL per call — and with it the affect
-and direction URLs derived from it at import (`AFFECT_URL`, `DIRECT_URL`) — carried by the wiring's
-relay as a trusted field the way the persona voice binding is today; and
+serve; the worker takes the facade's address per call — a URL for the
+owner's calls, `seat/run/facade.sock` for a confined seat (§3) — and with
+it the affect and direction endpoints derived from it at import
+(`AFFECT_URL`, `DIRECT_URL`), carried by the wiring's relay as a trusted
+field the way the persona voice binding is today; and
 the voice binding check that `offer_proxy` does for a browser call moves
 into the seat wiring. Building it follows `ARCHITECTURE.md` §Adding a
 feature item by item rather than a subset copied here; the one choice the
@@ -689,7 +724,10 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    `plan_enable` has never run.
 2. **The guest facade** — `Facade`, `Mount` and a seat `SessionHost` usable
    outside serve; the confined launch (§3 — the socket bridge with its
-   two-way preflight, or the filesystem-only interim, per §9); guest home, untrusted run mode, the §3 table as
+   preflight of every leg, or the filesystem-only interim, per §9 — and,
+   first, a one-line compile check that reqwest's
+   `ClientBuilder::unix_socket` exists in the locked version, since the
+   bridge's shape rests on it); guest home, untrusted run mode, the §3 table as
    tests (the sensor lifted out of `persona_chat.rs` first, with a seat's
    trip recorded in the owner's ledger as `hyperstudy`; seat transcripts
    absent from the owner's corpus; the approver allows the catalogue and nothing else, every refusal
@@ -721,7 +759,8 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    mid-round boundary and on a closing turn, unfolded items recorded, the
    crisis handover and the degraded state, a seat refusing to open without
    its crisis path, the facade's environment holding only the allowlist, the
-   calendar head note present with a verbatim study prompt, the guest
+   calendar head note present with a verbatim study prompt and rendered
+   in `UTC` under an owner config with another zone, the guest
    config holding no `[[hook]]`, skill, charter or subagent, the owner's
    `[security]` read and never written, budgets.
 3. **A text seat on loopback** — HRP with text-only output against a local
@@ -734,8 +773,11 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    arriving mid-reply in a turn with no tool call, which must wait for the
    run rather than enter a message already sent.
 4. **The voice transport on loopback** — the first non-WebRTC transport,
-   with its own entrypoint (§2); the worker takes its facade URL (and the two derived from it)
-   per call from the relay, and its HRP transport takes
+   with its own entrypoint (§2); the worker takes its facade address (and the
+   two endpoints derived from it) per call from the relay — over
+   `facade.sock` for a confined seat, through an `httpx` socket transport
+   for the affect and direction clients and an `OpenAILLMService` subclass
+   whose `create_client` hands the OpenAI client the same transport (§3) — and its HRP transport takes
    the wiring's loopback relay, which is its only shape (§2), and
    HyperStudy's conformance suite runs against it through a local stand-in
    for the crate (its runner takes any HRP client; a URL wrapper is all it
@@ -790,7 +832,10 @@ accepted socket instead.
   minutes: a pause that outlasts the seat ends it, which is not today's
   action.
 - Whether the Unix-socket bridge (§3) lands with step 2 or follows a
-  filesystem-only first cut — before any real participant either way.
+  filesystem-only first cut — before any real participant either way. The
+  bridge is three legs, not two: `model.sock` and `parent.sock` out of the
+  facade, and `facade.sock` into it for a voice seat's worker, which is
+  Python work in step 4 that the interim does not need.
 - Latency, measured on this box: OpenAI's Realtime models are
   speech-to-speech and mecha is a cascade, so vendor figures are not ours.
   End-of-turn to first audio is recorded per turn-detection mode, with the
