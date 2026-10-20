@@ -7524,8 +7524,11 @@ through the store above (a `point-*` `Kind` per point kind).
   had read the failure (`counterfactual::first_repeats`): same target and
   identical error text, by `compact::same_failure`, the key
   `collapse_repeated_failures` folds on, so a poll (a changing result) and a
-  refusal are never repeats. Only a **later** turn repeats (a call doubled in
-  one batch was issued before either answer), only the **first** repeat of a
+  refusal are never repeats. Only a **later** turn **of the same run**
+  repeats (a call doubled in one batch was issued before either answer, and
+  a top-level user turn ends the streak: the owner may have fixed the cause
+  and asked for another try, and an arm that obeys is no dead end), only
+  the **first** repeat of a
   failure is a point (the third attempt is the same decision again, and
   would weight one stuck episode several times in a uniform draw), and only
   calls a registered tool answered count (#723: an invented name has no

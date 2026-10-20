@@ -574,7 +574,8 @@ mod tests {
     }
 
     /// One session holding a point of every transcript kind: a steer, a
-    /// denial, a staged draft, a failed check and a forecast miss.
+    /// denial, a staged draft, a failed check, a forecast miss and a
+    /// repeated failure.
     fn session() -> Vec<Message> {
         let mut steer = Message::tool_results(vec![result("t1", "q3.csv")]);
         steer
@@ -607,6 +608,18 @@ mod tests {
             Message::tool_results(vec![result("t3", "staged for review")]),
             Message::assistant(vec![tool_use("t5", "todo", json!({"op": "complete"}))]),
             feedback,
+            Message::assistant(vec![tool_use("t6", "fs_read", json!({"path": "q3.md"}))]),
+            Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: "t6".into(),
+                content: "no such file: q3.md".into(),
+                is_error: true,
+            }]),
+            Message::assistant(vec![tool_use("t7", "fs_read", json!({"path": "q3.md"}))]),
+            Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: "t7".into(),
+                content: "no such file: q3.md".into(),
+                is_error: true,
+            }]),
             Message::assistant(vec![Block::text("I believe it went very well")]),
         ]
     }
@@ -711,6 +724,7 @@ mod tests {
                 (PointKind::Surprise, 8),
                 (PointKind::EditedDraft, 5),
                 (PointKind::RejectedDraft, 5),
+                (PointKind::Repeat, 11),
             ],
             "the forecast that held and the draft sent unchanged are not points"
         );
