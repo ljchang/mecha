@@ -8046,9 +8046,12 @@ carries its own count rule.
   is P7's measure, could not be read.
 - **Every reply is a row** in `reflector_replies.jsonl`
   (`LearningStore::append_reply`, `ReplyRecord`): trigger, domain, outcome,
-  the lesson's id and `error_type`, the model, and **the hash of the system
+  the lesson's id and `error_type`, the model, **the hash of the system
   prompt sent**, so one prompt's skip share and category mix can be read
-  apart from another's. **No text.** Rows are written with the reflections
+  apart from another's, and **what the reflector was shown**: the evidence
+  class and whether a contrast success was set beside it. The prompt tells
+  the reflector to prefer a skip when excerpts are withheld, so a skip share
+  is read within an evidence class, never across a mix of them. **No text.** Rows are written with the reflections
   they belong to: a session's at its all-or-nothing commit, an outbox
   item's when it is marked mined. A retried pass therefore counts no reply
   twice. `--remine-untrusted` records none: that backfill never marks a

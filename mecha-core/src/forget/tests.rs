@@ -172,7 +172,8 @@ fn seeded(home: &Path) -> Roots {
         &l.join("reflector_replies.jsonl"),
         &format!(
             "{{\"session_id\":\"{GONE}\",\"outcome\":\"skip\"}}\n\
-         {{\"session_id\":\"{KEPT}\",\"outcome\":\"lesson\",\"reflexion_id\":\"refl-kept\"}}\n"
+         {{\"session_id\":\"{KEPT}\",\"outcome\":\"lesson\",\"reflexion_id\":\"refl-kept\"}}\n\
+         {{\"item_id\":\"item-x\",\"outcome\":\"lesson\",\"reflexion_id\":\"refl-gone\"}}\n"
         ),
     );
     write(&l.join("validation-attempts.jsonl"), &format!(

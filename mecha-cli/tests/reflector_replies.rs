@@ -178,6 +178,9 @@ async fn a_skip_is_recorded_once_with_its_prompt_and_no_text() {
     assert_eq!(r["domain"], "behavior");
     assert_eq!(r["session_id"], id.as_str());
     assert_eq!(r["model"], "fixture");
+    // A clean session's reflector saw the full excerpts, and the prompt
+    // tells it to prefer a skip when they are withheld: the class rides.
+    assert_eq!(r["evidence"], "full");
     assert!(r["prompt"].as_str().is_some_and(|p| !p.is_empty()), "{r}");
     let wire =
         std::fs::read_to_string(home.join("learning").join("reflector_replies.jsonl")).unwrap();
