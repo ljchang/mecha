@@ -149,7 +149,9 @@ bear on a seat: `trifecta` (always enforced), `mark_untrusted_output`
 three — `block_private_ips`, `allowed_domains`, `blocked_domains` — guard
 the fetch and search tools a seat does not have, and an empty domain list
 is the *widest* value rather than the strictest, so they are copied as the
-owner's and nothing is inferred from them;
+owner's and nothing is inferred from them; `[sandbox]` is not the owner's
+at all but written by the wiring as a seat property, as `trifecta` is
+enforced (below, after the launch);
 `[providers]` names only the loopback router, with no key, and carries
 the three fields the seat depends on from the owner's router entry:
 `context_window` (it must equal the router's `-c / -np`, as everywhere —
@@ -183,7 +185,17 @@ owner's `[[mcp]]` servers — including those marked `personas = true`, which
 were marked for the owner's chats, not for strangers; provider keys beyond
 the loopback model endpoints. What keeps those out of the *directory* is
 the explicit source list; what keeps them out of the *process* is the
-launch: the guest facade is spawned with its environment cleared first and
+launch, and the launch's confinement has a stated source and a floor.
+`SandboxConfig::default()` is `Backend::None`, under which
+`wrap_argv_with_env` returns the bare command — host network, no namespace,
+no cleared environment — and the trial-home precedent inherits the
+operator's `[sandbox]` among its machine tables. A seat does neither: its
+backend is bwrap, pinned by the wiring whatever the owner's `[sandbox]`
+says, and a box where that backend cannot run opens no seat. The rule
+about a configured sandbox that fails covers the broken case; this one
+covers the never-configured one, which would otherwise make "egress no
+longer rests on the tool catalogue alone" silently false on a default
+install. So: the guest facade is spawned with its environment cleared first and
 an explicit allowlist added back, in `Sandbox::child_env`'s shape — the
 `mcp.rs` `env_clear()` rule, since `Command::envs()` alone layers on an
 inherited environment and hands the child the owner's provider keys. The
@@ -328,9 +340,12 @@ variant alone is not enough, and the reason is across binary versions: a
 reader built before the variant exists loads the unknown kind as `None`
 (`de_lenient_kind`), and `Scan::admits` admits `None` like every kind it
 does not name — so the variant guards readers built after it, and the
-location guards the ones built before. Their location (outside `$MECHA_HOME/sessions`, which the corpus
-reads without recursing) is the second guard, not the only one, so a
-recursive reader added later still cannot mine strangers' conversations.
+location guards the ones built before — which is why the location stays
+the guard every reader honours (PERSONA-DESIGN §3.2), and the kind is the
+second check. Their location (outside `$MECHA_HOME/sessions`, which the corpus
+reads without recursing) is the one every binary honours, old and new,
+and the kind is what still holds against a recursive reader added later,
+so neither guard is alone.
 The repo's own guard must see them too: `scripts/check-private.py` refuses
 a commit that quotes a conversation, but it reads explicit, non-recursive
 globs (`personas/*/sessions`, `sessions`), so a seat's
@@ -691,10 +706,15 @@ catalogue's (§4a). `inject_voice_block` takes neither existing spelling,
 because both name the owner. `false` would put `VOICE_BLOCK` in the system
 prompt, which S10 gives wholly to the study. `true` adds the per-request
 voice note (`VOICE_NOTE`), which says the reply is read "to the owner, who
-hears it". A seat needs a third spelling: a spoken-turn note naming no
-listener — the same length and pacing guidance, with the listener left out
-for the reason `BASE` is (§1). It is a per-request note like the clock,
-never in the system prompt; the worker takes the facade's address per call — a URL for the
+hears it". A seat needs a third spelling, derived from `VOICE_NOTE_STREAMING`, not
+`VOICE_NOTE`. The two are chosen per call by engine, a seat streams (§4),
+and the streaming note carries no length rules by the owner's 2026-10-03
+ruling. So the seat's note is the streaming note's guidance with the
+listener left out, for the reason `BASE` is left out (§1), and it
+re-imposes nothing that ruling removed. It is a per-request note like the
+clock, never in the system prompt. (Strictly, `inject_voice_block: false`
+does not write the system prompt; `voice-serve`'s `opts.system_extra =
+VOICE_BLOCK` does, and a seat sets no `system_extra`.); the worker takes the facade's address per call — a URL for the
 owner's calls, `seat/run/facade.sock` for a confined seat (§3) — and with
 it the affect and direction endpoints derived from it at import
 (`AFFECT_URL`, `DIRECT_URL`), carried by the wiring's relay as a trusted
@@ -820,7 +840,9 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    mid-round boundary and on a closing turn, unfolded items recorded, the
    crisis handover and the degraded state, a seat refusing to open without
    its crisis path, the facade's environment holding only the allowlist and
-   its config loaded `global_config_only`, `facade.sock` answering the wiring
+   its config loaded `global_config_only`, its sandbox bwrap under an owner
+   config with `[sandbox]` absent or `none` (and no seat opening where bwrap
+   cannot run), `facade.sock` answering the wiring
    from a confined facade (a text seat's only route in), `approve_all` pinned
    false with the approver test driven *through* the facade's mount so it
    fails if the mount allows everything, no seat request containing "owner"
