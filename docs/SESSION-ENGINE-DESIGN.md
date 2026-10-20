@@ -132,7 +132,7 @@ is designed when it is wanted, not admitted by a missing check. The owner
 never gets Seat: a pilot of a study connects through HyperStudy like a
 participant, so the pilot tests what participants get.
 
-**The principal decides, with no other input:**
+**The principal alone decides:**
 
 - whether the conversation starts armed untrusted;
 - which approver is installed. A guest's approver can only return
@@ -141,17 +141,32 @@ participant, so the pilot tests what participants get.
   never). The principal is never a second input to that `match`: an input
   there beside the variant is how machine policy could be labelled as a
   human correction and mined into a rule;
-- whether persona memory may write;
 - whether a spoken confirmation can release anything;
 - the wording of notes that name the human ("the owner is speaking"
   becomes the principal's description);
-- whether the session may enter the owner's corpus;
 - which process runs it: the owner's mecha, or a sealed child with its own
   home (PERSONA-SERVING §3).
 
+**The principal vetoes, alongside the other two axes.** Two eligibilities
+are conjunctions over principal ∩ profile ∩ recording, and the principal's
+part in them is only a veto:
+
+- **Persona memory may write** only for Owner, *and* the Persona profile,
+  *and* `Kept`. Assistant and Seat have no writer (§4); `Incognito`
+  switches it off (§6).
+- **The session may enter the owner's corpus** only for Owner, *and* the
+  Assistant profile, *and* `Kept` (§5).
+
+Each is computed in one function of all three values, never derived from
+the principal alone. The incognito persona that arrives in step 8 is
+where a principal-only rule would bite, with every earlier step green.
+
 The principal goes into the session file as a record, and the record is a
 wire format: a principal that fails to parse loads as `Guest`, never as
-`Owner`. Unknown is never clean. An *absent* record is a different case
+`Owner`, and specifically as `Guest { issuer: Issuer::Unknown, label:
+"(unreadable principal)" }`. That label cannot be mistaken for a person's
+name, and `Issuer::Unknown` opens no profile, so the session reads back
+and cannot be resumed. Unknown is never clean. An *absent* record is a different case
 with its own rule (§3), and the two must stay two code paths.
 
 ## 3. Settings: where each one lives
@@ -163,7 +178,7 @@ Four layers. Three of them already exist and keep their formats:
 | **Code** | the profile's definition in core | nobody at runtime | the invariants: a persona never holds a `Chosen` tool; a seat enforces the trifecta check whatever the owner's config says |
 | **Machine config** | `config.toml`, layered, as today | the owner, reviewed as a diff | providers, router, sandbox, `[security]`, MCP servers, outbox routing, `[hyperstudy]`: the ceiling for the whole box |
 | **Owner stores** | `~/.mecha`: `persona.toml`, charter, skills, the library | the owner (files, the web settings page, the TUI) | one profile instance: this persona's voice, model, `tools.allow`, `[safety]` switches |
-| **Session setup** | the door, at session start | the connection | the web page's mode, model chip and picture settings; HyperStudy's `session.update` (prompt, study tools, turn-taking) |
+| **Session setup** | the door, at session start | the connection, within what its principal allows | an Owner door: the model chip and picture settings, and the approval mode (below). A Guest door: HyperStudy's `session.update` (prompt, study tools, turn-taking) |
 
 Two kinds of setting, resolved differently:
 
@@ -180,6 +195,14 @@ Two kinds of setting, resolved differently:
 Mixing the two kinds is how a setting ends up widening security, so each
 field's kind is part of its type, not a convention.
 
+**The approval mode is a third kind: owner-only.** The web page's mode
+chip is the `PermissionMode`, and `parse_mode` accepts `"allow"` off the
+wire against the session's `ReadOnly` default. So it widens, and is
+neither a narrowing capability nor a preference. It is settable only
+through a door whose principal is `Owner`. A guest door's setup has no
+mode field at all, and a frame carrying one is refused as an unsupported
+field.
+
 **Worked examples:**
 
 - **A persona's web chat.** Tools = persona-eligible (code) ∩ MCP servers
@@ -190,11 +213,12 @@ field's kind is part of its type, not a convention.
   Model = the owner's, pinned (`follow_loaded = false`). The study chooses
   the prompt and cannot add a tool or reach the config.
 
-**What a connection may set:** the system prompt (where the profile takes
-one), the tools it runs on its side, voice and speed, turn-taking, which
-persona by reference, text or voice, a display label for the human.
+**What a guest connection may set:** the system prompt (where the profile
+takes one), the tools it runs on its side, voice and speed, turn-taking,
+which persona by reference, text or voice, a display label for the human.
 **What it never sets:** the principal, the owner's stores, any security
-switch, approvals, the provider or its keys.
+switch, the approval mode, the provider or its keys. An owner door adds
+the approval mode and nothing else from that second list.
 
 **E3 for configuration:** no *existing* field of `Config` or `ConfigLayer`
 changes, no key of `persona.toml` changes, the `~/.mecha` layout does not move,
@@ -269,13 +293,20 @@ Two rules carry it:
   counts as a correction only when the principal is the owner. With a
   guest in the seat, the intervention channel measures something else
   while looking identical in the data.
-- **Corpus eligibility is a fact in the session's type.** Today persona
-  sessions are kept out by folder alone. The corpus is not only a log:
+- **Corpus exclusion keeps the folder as the guard, and adds a fact in
+  the type as the second check.** PERSONA-DESIGN §3.2 ("Why not a
+  `SessionKind`") ruled the folder primary. `Scan::admits` admits every
+  kind it does not name, `de_lenient_kind` reads an unknown kind as
+  `None`, and so a binary built before a new variant (an older install,
+  `mecha-mail`, the graph's MCP server) admits it, and nothing added here
+  can teach that binary otherwise. A directory no reader scans excludes
+  for every binary, old and new. The type is what lets *this* binary
+  refuse early, and what holds against a recursive reader added later.
+  The stakes are why the fail-open guard is never the first one. The corpus is not only a log:
   rumination, the diagnostician and learned rules close loops through
   it, and config rumination accepts changes on its own. A seat in the
   corpus would let strangers steer the owner's harness, which is the lane
-  promoting itself with strangers as the lane. The folder stays as the
-  second guard.
+  promoting itself with strangers as the lane.
 
 Appraising seats on purpose (offline, over a study's sealed transcripts,
 against goals the study declares) is a later analysis tool for
@@ -310,7 +341,9 @@ stay clear of `voice::SessionHost`, the existing CLI trait through which a
 web chat exposes its sessions to calls; the two coexist for the whole
 migration (§9.3). The host's job:
 record → fold → run → `record_run` → roll back on failure → hand back late
-jobs → emit events. It is the only place that does each, with one steer,
+jobs → emit events. Recording comes first and is a guard: a turn whose
+record cannot be written does not run, as both copies refuse today. A
+guard that cannot run stops the run. It is the only place that does each, with one steer,
 one cancel, one job reorder, one job queue and one event stream. The
 shared `WireEvent` gains profile extensions rather than a second enum.
 
@@ -393,8 +426,21 @@ behaviour visible before it moves.
      breakpoint that moves, the one on the last message block. Every
      fixture runs at least two turns with a tool round between them.
 
-   A step meant to change bytes (the principal's wording, say) does it in
-   its own PR, with the rendered diff shown.
+   A rendered body is blind to the security plumbing the host moves. A
+   tool that loses `.from_outside()`, a dropped `Capabilities` field, or a
+   taint seed that resets per turn all render identically, because none of
+   them is in a request. So the harness takes a second snapshot beside the
+   body, compared old path against new in the same way:
+   - **the conversation's taint axes** after each turn;
+   - **each dispatched tool's `Capabilities`** and its result's `external`
+     flag;
+   - **at least one fixture whose expected outcome is an interlock
+     refusal** (an armed conversation calling a `Chosen` tool). A fixture
+     that never trips the interlock cannot notice it has gone.
+
+   "Identical" in §10 means both snapshots. A step meant to change bytes
+   (the principal's wording, say) does it in its own PR, with the rendered
+   diff shown.
 3. **Beside, then instead.** The new host lands next to the old code. One
    surface switches at a time, behind the same routes. The old path is
    deleted only after the new one has run live (deployed with the
@@ -423,18 +469,21 @@ behaviour visible before it moves.
 ## 10. Build order
 
 Each step ships, deploys and is lived with before the next. "Identical"
-means §9.2's assertion.
+means §9.2's two snapshots: the rendered bodies and the security snapshot.
 
 0. **The inventory** (`PARITY.md`), reviewed by the owner, and the parity
-   harness of §9.2: the exported recorder and the per-provider render. Exit:
-   the harness fails on a moved cache breakpoint, shown by a test that
-   moves one.
+   harness of §9.2: the exported recorder, the per-provider render and the
+   security snapshot. Exit: the harness fails on a moved cache breakpoint
+   and on a tool stripped of `.from_outside()`, each shown by a test that
+   breaks it.
 1. **The principal type.** `Principal` in core, recorded per session. The
-   taint seed, the approver installed, and memory-write eligibility are
-   derived from it, with every existing surface passing `Owner`. Exit:
-   requests identical, every existing test green, no `Deny` able to
-   originate under a guest principal, and a guest-labelled session
-   refused memory writes and spoken confirmations.
+   taint seed and the approver installed are derived from it, and its veto
+   enters memory-write and corpus eligibility, each computed over all three
+   axes (§2), with every existing surface passing `Owner`. Exit:
+   requests and security snapshots identical, every existing test green,
+   no `Deny` able to originate under a guest principal, a guest-labelled
+   session refused memory writes and spoken confirmations, and an
+   Owner × Persona × Incognito combination refused memory writes.
 2. **The job queue and its delivery** into core; both web chats on one
    instance. Exit: identical; the late-job tests of both files green
    against the one implementation.
@@ -472,7 +521,10 @@ Slack; a change to any config or store format (E3).
 - **O1 Scope.** Do the owner's assistant sessions move onto the host in
   steps 2–4 alongside personas, or do personas move first and the
   assistant follow? The duplication is between the two, so moving both
-  is what removes it; moving personas first is the smaller first risk.
+  is what removes it; moving personas first is the smaller first risk,
+  but under §9.3 it means three turn bodies live at once for a while (the
+  new host, the old persona body until deleted, and the assistant's), not
+  two.
 - **O2 Order against #724.** Build seats on the engine (step 7), or ship
   a seat on today's persona code and move it later? The recommendation is
   the engine first: a seat needs steps 4 and 5 either way.
