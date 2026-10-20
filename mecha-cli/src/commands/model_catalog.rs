@@ -250,6 +250,40 @@ impl Drop for ProgressGuard<'_> {
     }
 }
 
+/// Wait until no run holds the router at `base`, as the plan promised:
+/// `router_unit::install` declines rather than waits (the gate's §10.3), and
+/// a decline after a 20 GB download is not what the owner approved (review
+/// of #727). Ctrl-C stops the wait with the files kept; a run that starts in
+/// the instant before the restart still meets the gate's decline, which says
+/// to run this again.
+async fn wait_quiet(base: &str, say: &mut dyn FnMut(&str)) -> Result<()> {
+    let holds = mecha_core::hold::Holds::open_default()?;
+    let mut said = String::new();
+    loop {
+        let live = holds.live(base);
+        if live.is_empty() {
+            return Ok(());
+        }
+        let what: Vec<&str> = live.iter().map(|h| h.what.as_str()).collect();
+        let now = format!(
+            "waiting for {} run(s) using the router to finish before restarting it: {}",
+            live.len(),
+            what.join(", ")
+        );
+        if now != said {
+            say(&now);
+            said = now;
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+            _ = tokio::signal::ctrl_c() => bail!(
+                "stopped waiting; nothing on the router changed — the files are kept, and running \
+                 this again picks up from here"
+            ),
+        }
+    }
+}
+
 /// `mecha model add <id>`.
 pub(super) async fn add(
     global: &GlobalOpts,
@@ -418,6 +452,7 @@ pub(super) async fn add(
         .await
         .filter(|l| router::readable(l))
         .and_then(|l| router::resident(&l).map(str::to_string));
+    wait_quiet(&base, &mut |l| say_line(&format!("  {l}"))).await?;
     let choice = router_unit::installed_choice(&home)?.context("the router's presets are gone")?;
     router_unit::install(
         &here.m,
@@ -552,6 +587,7 @@ pub(super) async fn remove(global: &GlobalOpts, cfg: &Config, id: &str, yes: boo
         .and_then(|l| router::resident(&l).map(str::to_string))
         .filter(|p| p != id);
     catalog::record_remove(home, id)?;
+    wait_quiet(&base, &mut |l| println!("  {l}")).await?;
     let choice = router_unit::installed_choice(home)?.context("the router's presets are gone")?;
     router_unit::install(
         &here.m,

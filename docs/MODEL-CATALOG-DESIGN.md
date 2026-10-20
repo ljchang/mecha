@@ -83,7 +83,10 @@ model keeps the catalog; `features enable --reinstall` keeps it.
 **C6 — The router restart is the router install's.** Adding a section means
 restarting the router, which stops the resident model — a switch, by D13.
 `model add` therefore goes through `router_unit::install` with the installed
-choice: it declines before the restart when a run holds the router, takes
+choice, after the downloads and after waiting for every run holding the
+router to finish (the plan says it will). The install itself still declines
+rather than waits (the gate's §10.3) for a run that starts in the instant
+between, and the line says to run `add` again, the files kept. It takes
 the switch across the restart, waits for `/health`, and checks the base
 model loads. The model that was resident before is loaded back after unless
 `--use` names the new one. Nothing is fetched while the switch is held:
