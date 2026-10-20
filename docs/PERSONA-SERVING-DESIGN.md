@@ -472,9 +472,13 @@ fold at the next legal boundary through the steering path
 carrying the tool results. The steering path alone is not enough: its one
 drain site skips a closing turn by design — a steer taken there could not
 be acted on, and "the front end says it came too late" — and a seat has no
-front end to say it. So a seat also folds at a boundary the wiring owns,
-and it is a **deferred** fold: `run_in` holds `&mut Conversation` for the
-whole run, so the wiring cannot touch the messages while a run is in
+front end to say it. So a seat also folds at a boundary of its own, and
+that boundary is in the facade child, not the wiring. The conversation
+lives there, in the seat's `SessionHost`, as voice's facade keeps it
+server-side today (`Slot` holds `convo`, and the handler calls `run_in`
+and `roll_back_failed_turn` in-process). The wiring only sends items to
+it. It is a **deferred** fold: `run_in` holds `&mut Conversation` for the
+whole run, so even the host cannot touch the messages while a run is in
 flight, and a message already sent must not change — the transcript would
 record words the model never received, and the next request would stop
 extending the last one's prefix. Four cases:
@@ -484,21 +488,41 @@ extending the last one's prefix. Four cases:
   steering drain already accepts. When `run_in` returns it is handled as
   below.
 - **The conversation ends on the agent's reply:** the item opens a new user
-  message of context alone.
+  message of context alone. This case and the next need a facade path that
+  *parks* an item in the conversation without starting a run. Today every
+  facade POST runs a turn, and a body with no user message is a 400. So
+  the seat's facade gains a context endpoint (append, no run), and §8
+  step 2 builds it.
 - **It ends on an unsent user message** (context with no reply yet, or a
   participant turn not yet sent): the item is appended to it, and a
   participant turn arriving on a context-only tail is appended to that
   message too, so two user messages in a row never occur.
 - **The run failed:** `run_in` does not roll back on `Err`, so the tail is
   a tool-result message or a user message already sent — neither case
-  above. The seat restores the snapshot taken before the run — the first
-  half of `Conversation::roll_back_failed_turn` — and **not** its second
-  half, which pops a plain user tail because a front end will resend it. A
-  seat has no front end: HyperStudy sent that context and that participant
-  turn once, so popping them would lose them from the conversation with
-  nothing to record their loss. After the restore the tail is an unsent
-  user message again, the third case applies, and the next request carries
-  it — legal, because nothing will resend it. The rolled-back state is
+  above. The seat restores to the **last complete round**, not to the
+  snapshot taken before the run. A round whose ClientTool calls already ran
+  has had effects outside mecha: a rating written into the study's data, a
+  chat line shown to the participant, each acknowledged by
+  `function_call_output` before the failure. Restoring to before the run
+  (the first half of `Conversation::roll_back_failed_turn`) would erase
+  the record of them, and the next request would ask again: two answers
+  for one screen. That is CLAUDE.md's "a retry must never duplicate work"
+  one layer up from the provider. So the restore keeps every message up to
+  and including the last tool-result message whose results all exist,
+  which is legal because every `tool_use` there has its result, and drops
+  only what followed it, the partial reply. When no ClientTool ran in the
+  failed run, that point *is* the pre-run snapshot. Either way the
+  helper's second half (popping a plain user tail because a front end will
+  resend it) is never taken. A seat has no front end: HyperStudy sent that
+  context and that participant turn once, so popping them would lose them
+  with nothing to record their loss. After the restore the tail is either
+  an unsent user message (the third case) or a kept tool-result message. A
+  later item or participant turn is appended to that message as the
+  steering path appends to one, so the next request extends the kept round
+  and the model sees what it has already done. Changing a message the
+  failed request carried costs that one request's prefix tail, and the
+  rewrite records it. Nothing will resend it. The restore is a new helper
+  beside `roll_back_failed_turn`, named in step 2. The rolled-back state is
   recorded as a rewrite in the seat's transcript (the helper's contract,
   and the transcript is kept in full, S8). Whether any of
 it asks for a reply is the study's, by its own `response.create`. Nothing is dropped: an item still queued when the
@@ -519,7 +543,7 @@ the screen arrived, which matters when the owner has
 `block_sends_after_private` on and in what the session records. So the
 drain that folds steered `Block`s arms them in the same place, through
 `arm_for_content` over the folded blocks, beside the tool-result branch.
-The wiring's deferred fold needs nothing new: its folds land between runs,
+The host's deferred fold needs nothing new: its folds land between runs,
 and the next run's `arm_at_start` counts them before anything is sent.
 
 **Compaction.** A long voice seat reaches the slot's `context_window`, and
@@ -552,8 +576,10 @@ send-axis leak guard (`block_sends_after_private`, which refuses `Blind`
 too) is a `[security]` switch — a machine fact and the owner's standing
 word. The wiring takes `[security]` field by field (§3; §8 step 2 tests
 it): the owner's value where it narrows a seat, the strictest value where it
-would widen one. So `block_sends_after_private` is the owner's when the
-owner has it on, while `trifecta` is always enforced — an owner's `allow`,
+would widen one, with one departure. `block_sends_after_private` is the
+one field where the owner's default (off) is the *wider* value, and it is
+taken as the owner's rather than as the strictest, until §9's ruling. So it
+binds a seat when the owner has it on, while `trifecta` is always enforced — an owner's `allow`,
 set for trusted content on their own network, never reaches a stranger's
 seat — and `mark_untrusted_output` is always on. A seat's floor is a
 property of the seat code, not of the operator's config. With
@@ -818,10 +844,14 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    writes nothing under the operator's home outside its own seat directory,
    `parent.sock` accepts only its closed message set and fails the seat on
    anything else, and re-checks a ClientTool call against the catalogue on
-   arrival; a run that fails after context and a participant turn were
-   folded into its tail restores the snapshot without popping, so both are
-   still in the next request — the test asserts the words survive, not only
-   that a rewrite was recorded;
+   arrival; the seat host's fold machine (§4a's four cases) with its
+   context endpoint, which parks an item without a run; a run that fails
+   after context and a participant turn were folded into its tail restores
+   without popping, so both are still in the next request (the test
+   asserts the words survive, not only that a rewrite was recorded); and
+   a run that fails after a forced answer ran keeps that round, so the next
+   request carries the `tool_use` and its result and no second answer call
+   goes out for the same screen;
    and the wiring's writes there are a closed list of two — the router hold
    (§5) and the crisis record (§7); a seat's session carries its own
    `SessionKind` and the corpus scan excludes it; `check-private.py` reads the seat
@@ -842,7 +872,9 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    its crisis path, the facade's environment holding only the allowlist and
    its config loaded `global_config_only`, its sandbox bwrap under an owner
    config with `[sandbox]` absent or `none` (and no seat opening where bwrap
-   cannot run), `facade.sock` answering the wiring
+   cannot run, with the step's bwrap tests run under
+   `MECHA_TEST_REQUIRE_BACKENDS=1` in CI, since a skipped confinement test
+   reads like a passing one), `facade.sock` answering the wiring
    from a confined facade (a text seat's only route in), `approve_all` pinned
    false with the approver test driven *through* the facade's mount so it
    fails if the mount allows everything, no seat request containing "owner"
