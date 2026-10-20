@@ -225,8 +225,18 @@ a type with exactly two constructors. The loader builds one from a file.
 `HostedSession::open` builds one from the principal its door
 authenticated and the profile defined in code, which is the write path:
 the one caller that legitimately has no file to resolve from, and which
-the writer then serializes. Nothing else can build the type, so it is
-the admitting variants' only source. So `Scan::admits`' eleven call sites and
+the writer then serializes. A third constructor exists for tests and is
+named so that no shortcut is invented: it rides the same test-only
+feature as §9.2's exported recorder, because the integration tests in
+`mecha-cli/tests/` build metas from outside the crate, where
+`#[cfg(test)]` does not reach. There is no `pub fn owner()` helper, since
+that would let a door assert `Owner` instead of authenticating one, the
+hole E1 exists to close. Outside that feature nothing else can build the
+type, so the loader and `open` are the admitting variants' only source.
+`Session::peek_meta` is `pub` and called directly (by
+`persona::writer::pending_chats`, the memory-write gate, by `forget.rs`,
+and from `commands/sessions.rs`), so it hands back only a resolved meta:
+it resolves from the path it was given, the same as `list_counting`. So `Scan::admits`' eleven call sites and
 `SessionMeta::admitted_by_default()`, which has no path by construction,
 can read only resolved axes, and a meta that skipped resolution does not
 type-check rather than admitting or silently dropping. The header is a
@@ -640,7 +650,13 @@ behaviour visible before it moves.
      more fixtures hold §4's and §3's per-session values. One resumes a
      transcript that recorded a workspace other than the profile default
      and must keep it; a fresh conversation would snapshot `work/web/<key>`
-     identically on both sides and never show a re-rooting. The other's
+     identically on both sides and never show a re-rooting. And an armed
+     parent and a clean parent each dispatch a subagent, snapshotting the
+     child's seeded taint both ways. The child seeds from the dispatch
+     stamp (`ctx.taint`, set by the turn body step 4 moves), and a lost
+     stamp falls back to fully armed. That is fail-closed, so nothing
+     leaks, but every subagent in a clean conversation would then refuse
+     its `Chosen` tools, with both rendered bodies identical. The other's
      title wears the `"task: "` prefix and is resumed, so `withheld` and the
      resume path's `ParkingAsker` appear. A third creates a task chat
      through `task`, so the create path's kind, goal anchor and asker
@@ -749,7 +765,9 @@ means §9.2's two snapshots: the rendered bodies and the security snapshot.
    corpus rule that ignored the principal would otherwise stay green for
    six steps. Synthetic metas are built with the axes already set, so they
    cannot catch a call site that never resolved them. So step 1 also loads
-   real files through every loader path (`list_counting`, `Session::read`):
+   real files through every loader path (`list_counting`, `Session::read`,
+   and `Session::peek_meta`, the one behind the persona memory-write
+   gate):
    one pre-engine file in each of the three locations of §3's absent rule
    and a fourth elsewhere. They must resolve to Owner × Assistant × Kept,
    Owner × Persona × Kept, refused, and degraded respectively, with the
