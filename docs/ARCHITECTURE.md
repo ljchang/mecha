@@ -332,6 +332,43 @@ The model is **hybrid attention** — 11 of 41 layers hold a KV cache, the other
 here (63 tok/s at 108k against 92 at 1k) and why the KV cost is 22 KiB/token
 rather than the 82 the naive per-layer arithmetic predicts.
 
+## The chat model catalog
+
+`mecha_core::catalog`, `mecha model catalog | add | remove`, and the chip's
+**Available to download** (design: `MODEL-CATALOG-DESIGN.md`). The invariants:
+
+- **Compiled in, never fetched.** Every entry is a reviewed pin per file
+  (repository, revision, path, sha256, size) and its preset lines are flags
+  handed to llama-server, so a new model is a pull request. No tool reaches
+  it: installing is the owner's, from the CLI or the owner-only
+  `POST /api/model/add`, which runs `model add --yes --use` as a child.
+- **The record, not the presets file, is the truth.** Installed ids live in
+  `~/.mecha/sidecars/router/catalog` (written through `write_owned`); the
+  presets are always rendered as the base section then one section per
+  recorded id (`router_unit::presets_with_catalog`), so `setup chat` and
+  `features enable --reinstall` keep them. A recorded id whose files are not
+  in place, that this build does not know, that the tier is not offered, or
+  that is the base section's own name, is left out and said — never a
+  section naming a file that is not there. Only `presets_text` is hashed by
+  the router's revision; the catalog's sections are not (`assert_rev`).
+- **Downloads before the switch, and the wait the plan promises.** `add`
+  fetches first, then waits for the router's live holds on every spelling of
+  its address (`router_unit::hold_bases`), then records the id and restarts
+  through `router_unit::install`, which still declines rather than waits for
+  a run that starts in between. The record is edited only after the wait and
+  restored if the restart fails, so a stopped `add` or `remove` can be run
+  again. SIGINT is not captured by the wait: a handler outliving it would
+  leave the restart unstoppable (#350).
+- **Provider entries come from the pin, never `/props`**, since asking an
+  unloaded alias's `/props` loads it. `add` writes `[providers.<entry>]` and,
+  on the default that names this router, `follow_loaded = true` — through
+  `apply_or_add`, so the built-in `local` entry keeps its kind and address in
+  the table that overrides it. `remove` refuses while the default, a
+  fallback, a subagent or a trigger still names the table.
+- **One fit rule.** No entry asks more of a tier than the production chat
+  model does there, to a tenth (`every_offered_tier_has_a_geometry_that_fits`),
+  since the router holds one chat model at a time.
+
 ## Images
 
 `Block::Image` is a fifth variant on `message.rs`'s block type, and it is

@@ -213,12 +213,6 @@ pub fn presets_path(mecha_home: &Path) -> PathBuf {
         .join("models.ini")
 }
 
-/// What the installed router's presets serve, read back from the file mecha
-/// wrote: the pinned row by its alias, or the GGUF the owner brought. `None`
-/// when there is no presets file; an error when there is one that cannot be
-/// read or names no model — unknown is never the pinned row, or a later
-/// `features enable` would install the recommended model over the owner's
-/// (found on review of #568).
 /// The base section's name for `choice`: the alias a provider's `model`
 /// names. A catalog entry by that name cannot be added beside it.
 pub fn choice_alias(choice: &Choice) -> String {
@@ -228,6 +222,12 @@ pub fn choice_alias(choice: &Choice) -> String {
     }
 }
 
+/// What the installed router's presets serve, read back from the file mecha
+/// wrote: the pinned row by its alias, or the GGUF the owner brought. `None`
+/// when there is no presets file; an error when there is one that cannot be
+/// read or names no model — unknown is never the pinned row, or a later
+/// `features enable` would install the recommended model over the owner's
+/// (found on review of #568).
 pub fn installed_choice(mecha_home: &Path) -> Result<Option<Choice>> {
     let path = presets_path(mecha_home);
     let text = match std::fs::read_to_string(&path) {

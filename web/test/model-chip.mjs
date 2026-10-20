@@ -181,7 +181,7 @@ t('a success with a warning says it', outcomeNote({ last_switch: { to: 'x', ok: 
   t('a router not read yet offers nothing — what is served is unknown', available({ routers: [{ base_url: 'x', reachable: false }], catalog: cat }, null).length === 0);
   t('no followed router at all (a fresh install) still offers the catalog', available({ routers: [], catalog: cat }, null).length === 3);
   const plan = planLine(av.find((r) => r.id === 'new-d'));
-  t('the plan says the download and the memory', plan.includes('2.0 GiB to download') && plan.includes('~20.0 GiB in memory'));
+  t('the plan says the download, the memory and the table it writes', plan.includes('2.0 GiB to download') && plan.includes('~20.0 GiB in memory') && plan.includes('[providers.new-d]'));
   t('gib is one decimal', gib(1610612736) === '1.5 GiB');
   t('no install is none', installing(data) === null && installLine(null) === null && pollWhileInstalling(null, true) === null);
   const p = { id: 'new-d', phase: 'fetching', done_bytes: 1073741824, total_bytes: 2 * 1073741824, pid: 1, started_at: 'x' };

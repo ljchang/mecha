@@ -230,6 +230,7 @@ export function available(data, router) {
         note: o.note,
         download: o.download_bytes ?? 0,
         memoryMb: o.memory_mb ?? null,
+        provider: o.provider ?? null,
         unfit: !!o.unfit,
         disabled: !!why,
         why,
@@ -241,6 +242,9 @@ export function available(data, router) {
 export function planLine(row) {
   const parts = [`${gib(row.download)} to download`];
   if (row.memoryMb != null) parts.push(`~${gib(row.memoryMb * 1048576)} in memory, in place of the loaded model`);
+  // The card is the approval `model add` asks for, so it names the config it
+  // writes, as the CLI's plan does (review of #727).
+  if (row.provider) parts.push(`writes [providers.${row.provider}] to your config`);
   return parts.join(' · ');
 }
 
