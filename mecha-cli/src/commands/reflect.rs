@@ -340,6 +340,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                         reflector.model(),
                         Some(meta.id.clone()),
                         None,
+                        evidence,
+                        // What `Reflector::prompt` renders: a success it was
+                        // handed, for a trigger the contrast applies to.
+                        beside.is_some() && mecha_core::learning::contrasted(intervention.trigger),
                     ));
                     Ok(reflected.outcome.into_lesson())
                 }
@@ -473,6 +477,8 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     reflector.model(),
                     item.session_id.clone(),
                     Some(item.id.clone()),
+                    evidence,
+                    false,
                 );
                 if let Some((mut r, answer)) = reflection.outcome.into_lesson() {
                     // A rejection is a correction D3 attributes; what the

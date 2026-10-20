@@ -4014,6 +4014,8 @@ impl Reflection {
         model: &str,
         session_id: Option<String>,
         item_id: Option<String>,
+        evidence: Evidence,
+        contrasted: bool,
     ) -> Option<ReplyRecord> {
         let (outcome, reflexion_id, error_type) = match &self.outcome {
             Reflected::Lesson(lesson) => (
@@ -4036,6 +4038,10 @@ impl Reflection {
             error_type,
             prompt: self.prompt.clone(),
             model: model.to_string(),
+            evidence: serde_json::to_value(evidence)
+                .ok()
+                .and_then(|v| v.as_str().map(String::from)),
+            contrasted,
         })
     }
 }
@@ -4118,6 +4124,16 @@ pub struct ReplyRecord {
     pub error_type: Option<String>,
     pub prompt: String,
     pub model: String,
+    /// What the reflector was shown (`Evidence`, by its wire name): the
+    /// prompt tells it to prefer a skip when excerpts are withheld, so a
+    /// prompt's skip share moves with this mix and must be read beside it
+    /// (found on review of #730). A string, so a class a newer build adds
+    /// never fails the row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<String>,
+    /// Whether a verified success was set beside the correction (R43).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub contrasted: bool,
 }
 
 // ─── Counterfactual validation ──────────────────────────────────────────────
@@ -9053,8 +9069,15 @@ mod correction_attribution {
     async fn a_skip_and_an_unusable_reply_are_told_apart_and_stamped_with_the_prompt() {
         let prompt = rules_hash(REFLECTOR_SYSTEM);
         let row = |r: &Reflection| {
-            r.record(Trigger::Followup, "replies-1", Some("s-ada".into()), None)
-                .unwrap()
+            r.record(
+                Trigger::Followup,
+                "replies-1",
+                Some("s-ada".into()),
+                None,
+                Evidence::UserTurns,
+                false,
+            )
+            .unwrap()
         };
         let skipped = reflect_typed(r#"{"skip": true}"#).await;
         assert!(matches!(skipped.outcome, Reflected::Skipped));
@@ -9067,6 +9090,8 @@ mod correction_attribution {
             (skip.domain.as_str(), skip.trigger.as_str()),
             ("behavior", "followup")
         );
+        assert_eq!(skip.evidence.as_deref(), Some("user_turns"));
+        assert!(!skip.contrasted);
         for unusable in [
             "no JSON at all",
             r#"{"skip": false, "reflexion": " "}"#,
@@ -9103,7 +9128,9 @@ mod correction_attribution {
             outcome: Reflected::NotAsked,
             prompt: "p".into(),
         };
-        assert!(unasked.record(Trigger::Mismatch, "m", None, None).is_none());
+        assert!(unasked
+            .record(Trigger::Mismatch, "m", None, None, Evidence::Full, false)
+            .is_none());
         let root = std::env::temp_dir().join(format!(
             "mecha-replies-{}",
             crate::session::Session::new_id()
@@ -9113,7 +9140,14 @@ mod correction_attribution {
             outcome: Reflected::Skipped,
             prompt: "p".into(),
         }
-        .record(Trigger::Edit, "m", None, Some("draft-1".into()))
+        .record(
+            Trigger::Edit,
+            "m",
+            None,
+            Some("draft-1".into()),
+            Evidence::Full,
+            false,
+        )
         .unwrap();
         store.append_reply(&skip).unwrap();
         let mut future = serde_json::to_value(&skip).unwrap();
