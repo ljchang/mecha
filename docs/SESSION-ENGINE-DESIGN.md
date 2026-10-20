@@ -22,7 +22,7 @@ restate it.
 | E3 | **Nothing is lost, and setup does not break.** A refactor this size is how behaviours quietly disappear. The migration (§9) is built around making each one visible before anything moves. | owner | 2026-10-20 |
 | E4 | **General text and voice chat without the web page.** A connection can supply the prompt and the session's setup. | owner | 2026-10-19 |
 
-PERSONA-SERVING-DESIGN's S1–S10 hold for seats unchanged. Four rulings
+PERSONA-SERVING-DESIGN's S1–S10 hold for seats unchanged. Five rulings
 are still open (§11).
 
 ## 1. What is duplicated, and what is different
@@ -66,7 +66,18 @@ batch` and `mecha eval` drive. `replay_persona.rs` is a further persona
 surveyed for §9.1's inventory like any door, and step 8 moves triggers and
 batch onto the host. `replay_persona.rs` stays where it is: it calls
 `run_in` directly rather than through a chat turn body, so it has no body
-to merge, and its inventory row is that it still replays. The appraisal readout
+to merge, and its inventory row is that it still replays. Five more
+session loops run through `interrupt::run_interruptible` (which wraps
+`run_in`): `mecha run` (`commands/run.rs`), the front door
+(`commands/frontdoor.rs`), `mecha tasks work` (`commands/tasks.rs`), the
+questions resume (`commands/questions.rs`) and mail (`commands/mail.rs`).
+Each gets its inventory row and moves in step 8. Two of them carry
+behaviour a row must hold. `tasks.rs` narrows its own registry by dropping
+`kg_task_update` (D6, the `withheld` the §9.2 snapshot protects). And the
+front door is the one surface in the tree today where the human side is
+*not* the owner. It runs a tool-bearing session over a stranger's request
+and records its own taint, so it is E1's case already built, and §11 owes
+its principal (O5). The appraisal readout
 (`appraisal::live_readout`) is wired in three of them: `serve/chat.rs`,
 `tui/mod.rs` and `slack/connector.rs`.
 
@@ -189,8 +200,15 @@ Each is computed in one function of all three values, never derived from
 the principal alone. The incognito persona that arrives in step 8 is
 where a principal-only rule would bite, with every earlier step green.
 
-The principal goes into the session file as a record, and the record is a
-wire format: a principal that fails to parse loads as `Guest`, never as
+The three axes go into the session file's **header** (`SessionMeta`),
+beside `SessionMeta::kind`, not into the body as a `Record`. They are fixed
+when the session opens, which is the header's granularity; `Record::Config`
+is per-attach because flags can differ on resume, and these cannot. They
+also have to be in the header to be read at all by the corpus filter:
+`Scan::admits` takes `&SessionMeta`, and `SessionIndex::load` decides
+admission from headers alone without opening a transcript. So the
+fail-closed degrade rules below live in the header's deserializer, next to
+`de_lenient_kind`. The header is a wire format: a principal that fails to parse loads as `Guest`, never as
 `Owner`, and specifically as `Guest { issuer: Issuer::Unknown, label:
 "(unreadable principal)" }`. That label cannot be mistaken for a person's
 name, and `Issuer::Unknown` opens no profile, so the session reads back
@@ -277,8 +295,9 @@ the approval mode and nothing else from that second list.
 
 **E3 for configuration:** no *existing* field of `Config` or `ConfigLayer`
 changes, no key of `persona.toml` changes, the `~/.mecha` layout does not move,
-and the session file's existing records keep their shape. The principal
-record is the one addition, and a file without it loads as today: `Owner`
+and the session file's existing records keep their shape. The three
+header fields (§2) are the one addition, and a file without them loads as
+today: `Owner`
 for files under the owner's sessions, and refused for a seat directory,
 where every session is written with one. The one new table is
 `[hyperstudy]`, and it arrives with PR #724's feature, not with the engine.
@@ -555,12 +574,17 @@ behaviour visible before it moves.
      these recorded, plus two facts from `prepare_carrying`, which also
      moves (§9.5): **the outbox route** (whether one is installed, and its
      routed and publish name sets, so a fixture dispatching a routed tool
-     must leave a draft rather than an effect), and **the sandbox backend
-     with whether `Sandbox::preflight` ran and passed** (`shell`'s
-     narrowed label comes from `is_enabled()`, not from preflight, so a
-     dropped preflight would run unconfined behind a confined label; one
-     fixture's sandbox cannot preflight and its expected outcome is a
-     refused start). A seat inheriting an owner's `trifecta = "allow"`
+     must leave a draft rather than an effect), and **the effective
+     `SandboxConfig`, `can_reach_network()`, and whether
+     `Sandbox::preflight` ran and passed**. `shell`'s egress label comes
+     from `can_reach_network()`, a function of both the backend and
+     `network`, so the backend alone does not pin it: a lost
+     `network = false` would snapshot an identical backend and a passing
+     preflight while `shell` went back to `Egress::Chosen`. And a dropped
+     preflight would run unconfined behind a confined label. Two fixtures
+     hold these: one whose sandbox cannot preflight, which must refuse the
+     start, and one that dispatches `shell` under a confined sandbox, whose
+     `Capabilities` must read `Egress::None`. A seat inheriting an owner's `trifecta = "allow"`
      shows, and a moved workspace, the wrong approver, a lost
      incognito allowlist or observer hooks running in incognito each fail
      the step rather than pass it. The last two are set in the very block
@@ -573,7 +597,7 @@ behaviour visible before it moves.
      installed, whether it was consulted on the turn, and its verdict,
      with the cooldown gate, a pending crisis held while a run is live, and
      the judge-unreachable path (today `crisis_paused_at`, `pending_crisis`,
-     `crisis_answered` and `crisis_shown` on `PersonaSession`). Step 5's
+     `judge_answered` and `crisis_shown` on `PersonaSession`). Step 5's
      "the sensor's tests run against the module" covers only the pure
      functions, the same gap as incognito's above, so at least one fixture's
      expected outcome is a sensor pause. The dose and call meters and the
@@ -719,4 +743,12 @@ Slack; a change to any config or store format (E3).
   separate pages kept?
 - **O4 The page's protocol.** Does the web page eventually speak the
   Realtime protocol too? Decided after step 7.
+- **O5 The front door's principal.** The front door already runs a
+  tool-bearing session over a stranger's request (§1). Under step 1 it
+  would pass `Owner` like everything else. Its transcripts land in the
+  owner's `sessions/` as `SessionKind::Frontdoor`, which `Scan::admits`
+  admits to the corpus today. Whether its sessions take a `Guest`
+  principal with their own issuer, and whether they belong in the corpus
+  at all, is the owner's to rule. It is the live instance of §5's
+  stranger-in-the-corpus argument.
 - **How long a step is lived with** before its old path is deleted (§9.3).
