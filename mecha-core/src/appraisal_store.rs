@@ -2419,6 +2419,7 @@ fn kind_phrase(kind: crate::comparison::Kind) -> Option<&'static str> {
         Kind::PointRejectedDraft => "a draft the owner rejected",
         Kind::PointCheck => "a failed check",
         Kind::PointSurprise => "a surprise",
+        Kind::PointRepeat => "a failed call the run repeated unchanged",
         // A lesson-source comparison (row 2e-1) is a measurement of the
         // learners, shadow by ruling: its losing arm carries a lesson, and
         // writing that into an appraisal would feed one source's words back
@@ -2454,6 +2455,10 @@ fn outcome_phrase(
         (Validator::RejectedDraft, false) => "drafted the text the owner rejected",
         (Validator::ArtifactGold, true) => "met the owner's pinned gold",
         (Validator::ArtifactGold, false) => "missed the owner's pinned gold",
+        (Validator::StructuralRepeat, true) => {
+            "did not repeat the call the recording shows failing"
+        }
+        (Validator::StructuralRepeat, false) => "repeated the call the recording shows failing",
         (Validator::Judge | Validator::Unposed | Validator::Unknown, _) => return None,
     })
 }
@@ -2506,13 +2511,34 @@ fn reflection_text(
     };
     format!(
         "Counterfactual at {} ({at}). Lost: {}. Won: {}. Decided by the {} validator against \
-         the owner's recorded verdict; comparison {}.",
+         {}; comparison {}.",
         kind_phrase(c.kind).unwrap_or("a point this build cannot name"),
         list(lost),
         list(won),
         crate::appraisal::enum_name(&c.validator),
+        evidence_phrase(c.validator),
         c.id
     )
+}
+
+/// What a validator decided against. Every structural validator but one
+/// grades by an act of the owner's; a repeat point has none behind it, and
+/// its reflection must not claim one (`HARNESS-EVOLUTION-DESIGN.md` P8).
+/// Exhaustive, so a new validator is a compile error here rather than an
+/// owner's verdict by default.
+fn evidence_phrase(validator: crate::comparison::Validator) -> &'static str {
+    use crate::comparison::Validator;
+    match validator {
+        Validator::StructuralRepeat => "the recording's own results",
+        Validator::StructuralSteer
+        | Validator::StructuralDenial
+        | Validator::ReleasedDraft
+        | Validator::RejectedDraft
+        | Validator::ArtifactGold
+        | Validator::Judge
+        | Validator::Unposed
+        | Validator::Unknown => "the owner's recorded verdict",
+    }
 }
 
 /// What one teaching pass did — every comparison read is counted once.
@@ -5028,6 +5054,37 @@ mod tests {
         // exactly what it served before.
         assert_eq!(again.clean().unwrap(), clean_before);
         assert_eq!(again.for_owner().unwrap().0.len(), 2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// P8's verdict-free repeat point teaches like any structural point,
+    /// and its words claim no owner act: the recording, not a person, said
+    /// the call fails.
+    #[test]
+    fn a_decided_repeat_teaches_without_naming_the_owner() {
+        let (root, store) = appraised("teach-repeat", &[row("s-dana", true)]);
+        let cmp = point(
+            "s-dana",
+            Kind::PointRepeat,
+            Validator::StructuralRepeat,
+            vec![
+                Arm::new(Role::WithoutIntervention, Some(RULES.into()), Outcome::Fail),
+                Arm::new(Role::RulesFree, Arm::no_block(), Outcome::Pass),
+            ],
+        );
+        let t = store.teach(std::slice::from_ref(&cmp)).unwrap();
+        assert_eq!(t.written, 1);
+        let (rows, _) = AppraisalStore::open(&root)
+            .unwrap()
+            .counterfactuals()
+            .unwrap();
+        let reflection = &rows[0].reflection;
+        assert!(
+            reflection.contains("a failed call the run repeated unchanged")
+                && reflection.contains("repeated the call the recording shows failing"),
+            "{reflection}"
+        );
+        assert!(!reflection.contains("owner"), "{reflection}");
         let _ = std::fs::remove_dir_all(&root);
     }
 

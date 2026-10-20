@@ -734,6 +734,7 @@ mod tests {
             final_text: "done".into(),
             stats: RunStats::default(),
             call_base: 0,
+            decision_turn_calls: None,
         };
         let arm = ArmOutcome::from_report(report, None);
         assert!(arm.diverged());

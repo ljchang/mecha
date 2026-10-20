@@ -176,10 +176,10 @@ A new axis, separate from `read_only()`.
 | Effect | What the dry world does | Examples today |
 |---|---|---|
 | `Read` | Executes for real. **A rollout's path jail *is* its scratch workspace (`Workspace` below)**, so `fs_*` reads see the branch's own writes, never the pre-branch tree. "For real" means the world outside the workspace: mail, calendar, documents, search | `fs_read`, `fs_list`, `document_read`, `mail_search`, `mail_get_thread`, `calendar_list_events`, `docs_read`, `web_search` (`Blind`) |
-| `ReadThatRecords` | Executes in an **unrecorded** mode when the server has one; otherwise ruling **W1** decides | graph reads (`query_log`, `retrieval_touch`) |
+| `ReadThatRecords` | Executes in an **unrecorded** mode, which is built before rollouts touch the graph (ruling **W1**): a rollout never nudges recency and never halts at a graph read | graph reads (`query_log`, `retrieval_touch`) |
 | `Staged` | Stages into a **scratch outbox** opened per rollout (`OutboxStore::open_like`). The model gets the same "Drafted, not sent" answer it gets live. The draft is kept for scoring and discarded with the rollout. A scratch outbox that cannot be opened halts the rollout: a staging failure never executes | `mail_send`, `mail_reply`, `calendar_*_event`, `docs_append`/`replace`, `sheets_write`, `factory__*` publishes |
 | `Workspace` | Executes against a **scratch copy** of the workspace taken at branch time. Shell runs sandboxed against the copy. The copy lives where run workspaces already live, under `~/.mecha/work/<producer>/` (`work.rs`). The rule it must obey is `work::ensure_outside_mecha_home`'s: a jail may never *contain* the mecha home. A root under it is the normal case | `fs_write`, `fs_edit`, confined `shell` |
-| `StoreWrite` | Not executed. Answered with a synthetic "recorded, not delivered" result and kept in the rollout record (ruling **W2**) | `message_send`, `ask_user` (headless), `hud_propose`, `persona_propose`, `image_library_propose`/`_reference` |
+| `StoreWrite` | Not executed: the rollout **halts** at the call, and the halt is recorded (ruling **W2**). No synthetic "recorded, not delivered" answer. `message_send` is the exception, delivered through a scratch `MailboxRoute` into a store nobody reads | `message_send`, `ask_user` (headless), `hud_propose`, `persona_propose`, `image_library_propose`/`_reference` |
 | `Render` | Not executed: the rollout halts at the call (a render costs the GPU, and a fake picture misleads the continuation) | `image_generate`, video |
 | `Irreversible` | The rollout **halts before the call**, and the halt is recorded with the tool's name. A halt is information, not a failure | `calendar_hold`, `mail_triage`, `docs_create`, `docs_trash`, graph writes, unconfined `shell`, any `Egress::Chosen` call (`http_fetch`) |
 | *(undeclared)* | Halts. Unknown is never safe | MCP tools without annotations |
@@ -285,8 +285,8 @@ neutralises drift instead of pretending it away:
   - The model is still handed the recorded answer, so the shadow read never
     changes the continuation.
   - One real read per rollout is the price, counted like any other.
-- **Point age is capped** (ruling **W4**). A point whose world has moved too
-  far is not offered.
+- **Point age is capped** (ruling **W4**): an offline point may be at most
+  14 days old to start, revisited once `drifted` rates are measured.
 
 Learning's existing counterfactual gate is the one place that keeps
 comparing with the recording, because its question is about the recording.
@@ -617,27 +617,28 @@ Each phase ships and is measured before the next starts.
 
 ---
 
-## 11. Rulings owed
+## 11. Rulings
 
-- **W1, graph reads.** A graph read writes `query_log` and
-  `retrieval_touch`. Choose one:
-  - build the unrecorded-read mode (`INCOGNITO-DESIGN.md` §5.2) before
-    rollouts touch the graph;
-  - accept that rollouts nudge the graph's recency signals;
-  - halt rollouts at graph reads, which loses most sessions, since the
-    assistant goes to the graph first.
-- **W2, store writes that claim to be read-only.** Should they get a
-  synthetic "recorded, not delivered" answer (the rollout continues, and the
-  model may believe a message was sent), or halt the rollout (honest, and
-  shorter rollouts)? `message_send` has a third answer that needs no
-  ruling: a rollout registry binds it to a scratch `MailboxRoute`, so it
-  really is delivered, into a store nobody reads. W2 then covers only the
-  remaining `StoreWrite` tools.
+### 11.1 Ruled, 2026-10-19 (the owner took the recommendations)
+
+- **W1, graph reads: build the unrecorded-read mode first**
+  (`INCOGNITO-DESIGN.md` §5.2), before rollouts touch the graph. A graph
+  read writes `query_log` and `retrieval_touch`; rollouts must neither nudge
+  those recency signals nor halt at graph reads, which would lose most
+  sessions, since the assistant goes to the graph first.
+- **W2, store writes that claim to be read-only: halt.** The rollout stops
+  at the call, which is honest and makes rollouts shorter; there is no
+  synthetic "recorded, not delivered" answer for the model to mistake for a
+  delivery. `message_send` needs no ruling: a rollout registry binds it to a
+  scratch `MailboxRoute`, so it really is delivered, into a store nobody
+  reads.
+- **W4, point age: 14 days** to start, revisited once `drifted` rates are
+  measured.
+
+### 11.2 Owed
+
 - **W3, interactive preplay.** Is preplay in a live chat ever wanted, at
   the latency it costs? v1 says no.
-- **W4, point age.** How old may an offline point be before drift makes it
-  not worth comparing? A starting value of 14 days is proposed, revisited
-  once `drifted` rates are measured.
 - **W5, showing the loser.** May a rollout's draft ever be shown to the
   owner, for example "I considered also replying to X"? v1 says no:
   rollout drafts are scored and deleted.
