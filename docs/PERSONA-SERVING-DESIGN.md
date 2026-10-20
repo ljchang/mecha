@@ -145,11 +145,12 @@ derived: `[security]` is taken from the owner's field by field — the
 owner's value where it narrows a seat, the strictest value where it would
 widen one (§4a). "Strictest" is defined only for the three fields that
 bear on a seat: `trifecta` (always enforced), `mark_untrusted_output`
-(always on) and `block_sends_after_private` (the owner's, §4a). The other
-three — `block_private_ips`, `allowed_domains`, `blocked_domains` — guard
-the fetch and search tools a seat does not have, and an empty domain list
-is the *widest* value rather than the strictest, so they are copied as the
-owner's and nothing is inferred from them; `[sandbox]` is not the owner's
+(always on) and `block_sends_after_private` (the owner's, §4a — the named
+departure). Of the other three, which guard the fetch and search tools a
+seat does not have: `block_private_ips` is set `true`, its strictest value,
+by the rule and moot under `--unshare-net`; the two domain lists have no
+strictest value, since an empty list is the *widest*, so they are copied
+as the owner's and nothing is inferred from them; `[sandbox]` is not the owner's
 at all but written by the wiring as a seat property, as `trifecta` is
 enforced (below, after the launch);
 `[providers]` names only the loopback router, with no key, and carries
@@ -448,8 +449,10 @@ only way out of a seat is the session it answers. The sealed home keeps the
 *owner's* data out; it does not keep the private leg from arming. An image
 arms `private` wherever it sits in a conversation
 (`Taint::arm_for_content`), and with the stranger arming `untrusted` from
-the first word, a seat is armed from the moment its first study screen
-lands. That needs saying at the fold (below), because an image the loop
+the first word, a seat is fully armed from the moment its first study
+*image* lands. A text-only study arms `untrusted` alone and never
+`private`, so `trifecta_armed()` stays false there, at no cost, since
+every catalogue tool is `Blind`. The image case needs saying at the fold (below), because an image the loop
 did not produce is otherwise counted only from the next run. That is
 correct — the interlock cannot know a study image from the owner's — and it
 makes what a ClientTool declares the question that decides whether a seat
@@ -728,8 +731,10 @@ worker reads its facade URL once, process-wide (`FACADE_URL` from
 serve. Two `Mount` fields are pinned for a seat, not inherited from
 `voice-serve`'s mount. `approve_all` is `false`: it is the owner-present
 posture, a mounted facade allowing every call, and a seat's approver is the
-catalogue's (§4a). `inject_voice_block` takes neither existing spelling,
-because both name the owner. `false` would put `VOICE_BLOCK` in the system
+catalogue's (§4a). `inject_voice_block` takes neither existing value,
+because both name the owner, and it is a `bool`, so the third value means
+widening the field to an enum. That touches `mecha serve`'s and
+`voice-serve`'s mounts too, which keep their two values. `false` would put `VOICE_BLOCK` in the system
 prompt, which S10 gives wholly to the study. `true` adds the per-request
 voice note (`VOICE_NOTE`), which says the reply is read "to the owner, who
 hears it". A seat needs a third spelling, derived from `VOICE_NOTE_STREAMING`, not
@@ -824,7 +829,15 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
 
 1. **The feature and the token** — every item of `ARCHITECTURE.md`
    §Adding a feature, the `[hyperstudy]` table (origin, `max_seats`) in both
-   `Config` and `ConfigLayer`, and `mecha hyperstudy token` with setup's
+   `Config` and `ConfigLayer`, **stripped from project layers in
+   `merge_text`, loudly**, as `[image]`, `[web]` and `[features]` are, and
+   for `[image]`'s reason one step worse. `origin` is where mecha presents
+   the owner's minted `mhs_` token, and it is the root of this design's
+   trust chain: the `sessionUrl` origin pin, verbatim `instructions` and the
+   catalogue's `Blind` labels all rest on the owner having chosen that
+   endpoint. A `mecha.toml` arriving with a cloned repository must not
+   redirect it, nor raise `max_seats` (`[system]`'s reason); a test that a
+   project layer's `[hyperstudy]` is dropped with a warning. And `mecha hyperstudy token` with setup's
    step; nothing behind it yet but `Unready` until a token exists. A test
    on the chained `enable_command`, since `hyperstudy` is the first
    switch-bearing feature with a `requires` edge and that branch of
@@ -856,7 +869,9 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    (§5) and the crisis record (§7); a seat's session carries its own
    `SessionKind` and the corpus scan excludes it; `check-private.py` reads the seat
    transcripts; no dose or call record is written for a seat; a seat's
-   config carries `context_window` and `vision` and pins its model with
+   config carries `context_window`, `vision` and `structured_output` (so
+   the crisis judge's `response_schema` applies, at parity with the owner's
+   chats) and pins its model with
    `follow_loaded = false`; a study's crisis
    resources that fail their bound fall back to `SAFE_MESSAGE`; the `[security]` floor
    holds against an owner config with `trifecta = "allow"`; the system
