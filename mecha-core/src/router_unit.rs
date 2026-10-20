@@ -160,7 +160,7 @@ pub fn presets_with_catalog(
     tier: Option<u32>,
     say: Say<'_>,
 ) -> Result<String> {
-    let (sections, skipped) = crate::catalog::sections(mecha_home, hub, tier)?;
+    let (sections, skipped) = crate::catalog::sections(mecha_home, hub, tier, &p.alias)?;
     for why in skipped {
         say(&format!("left out of the router's presets — {why}"));
     }
@@ -195,11 +195,10 @@ pub fn alias_for(model: &Path) -> String {
     let a = a.trim_matches('-').to_string();
     if a.is_empty() {
         "local".into()
-    } else if a == PINNED_ALIAS || crate::catalog::entry(&a).is_some() {
+    } else if a == PINNED_ALIAS {
         // The production name means the pinned row with its sampling and
         // draft lines; a brought file of the same name gets neither, so it
-        // is not given the name. A catalog id is a section of its own in the
-        // same file (review of #727).
+        // is not given the name.
         format!("{a}-own")
     } else {
         a
@@ -220,6 +219,15 @@ pub fn presets_path(mecha_home: &Path) -> PathBuf {
 /// read or names no model — unknown is never the pinned row, or a later
 /// `features enable` would install the recommended model over the owner's
 /// (found on review of #568).
+/// The base section's name for `choice`: the alias a provider's `model`
+/// names. A catalog entry by that name cannot be added beside it.
+pub fn choice_alias(choice: &Choice) -> String {
+    match choice {
+        Choice::Recommended => PINNED_ALIAS.to_string(),
+        Choice::Own { model, .. } => alias_for(model),
+    }
+}
+
 pub fn installed_choice(mecha_home: &Path) -> Result<Option<Choice>> {
     let path = presets_path(mecha_home);
     let text = match std::fs::read_to_string(&path) {
@@ -913,11 +921,6 @@ mod tests {
         assert_eq!(
             alias_for(Path::new(&format!("/m/{PINNED_ALIAS}.gguf"))),
             format!("{PINNED_ALIAS}-own")
-        );
-        // A catalog id is its own section in the same presets file.
-        assert_eq!(
-            alias_for(Path::new("/m/gemma-4-26b-a4b.gguf")),
-            "gemma-4-26b-a4b-own"
         );
     }
 
