@@ -1217,8 +1217,14 @@ fn apply(provider: &str, settings: &[(&'static str, String)]) -> Result<()> {
         .providers
         .get(provider)
         .cloned();
-    let lines = apply_or_add(&text, provider, entry.as_ref(), settings)
-        .with_context(|| format!("in {}", path.display()))?;
+    let lines = apply_or_add(
+        &text,
+        provider,
+        entry.as_ref(),
+        settings,
+        "Written by `mecha setup --write` from this server's own /props.",
+    )
+    .with_context(|| format!("in {}", path.display()))?;
     let backup = path.with_extension("toml.bak");
     std::fs::copy(&path, &backup).ok();
     std::fs::write(&path, lines)?;
@@ -1251,20 +1257,15 @@ pub(super) fn write_provider_table(
         .context("no global config path — is $HOME set?")?;
     seed_config_file(&path)?;
     let text = std::fs::read_to_string(&path).with_context(|| format!("reading {path:?}"))?;
-    let header = format!("[providers.{provider}]");
-    let new = if text.lines().any(|l| l.trim() == header) {
-        apply_text(&text, provider, settings)?
-    } else {
-        let mut out = text.clone();
-        if !out.ends_with('\n') {
-            out.push('\n');
-        }
-        out.push_str(&format!("\n# {comment}\n{header}\n"));
-        for (k, v) in settings {
-            out.push_str(&format!("{k} = {v}\n"));
-        }
-        out
-    };
+    // The entry no file names — the built-in `local` (F12) — keeps its kind
+    // and address in the table that now overrides it: a file's table replaces
+    // the entry whole, so `follow_loaded = true` alone would leave no kind.
+    let entry = mecha_core::config::Config::load_global()?
+        .providers
+        .get(provider)
+        .cloned();
+    let new = apply_or_add(&text, provider, entry.as_ref(), settings, comment)
+        .with_context(|| format!("in {}", path.display()))?;
     write_checked(&path, &new)
 }
 
@@ -1329,32 +1330,43 @@ fn write_checked(path: &std::path::Path, text: &str) -> Result<()> {
     Ok(())
 }
 
-/// `apply_text`, or — for a provider the config has but no file names, the
-/// built-in `local` entry (ruling F12) — a new table written from that
-/// entry's kind and address with the settings beneath. `--write` is the
-/// remedy named for exactly that shape, and refusing it with "no table"
-/// after the owner said yes left them nowhere (found on review of #627).
+/// `apply_text`, or — for a provider no file names — a new table under
+/// `# {comment}`. For one the config has anyway, the built-in `local` entry
+/// (ruling F12), the table is written from that entry's kind and address
+/// with the settings beneath, since a file's table replaces the entry whole.
+/// `--write` is the remedy named for exactly that shape, and refusing it with
+/// "no table" after the owner said yes left them nowhere (found on review of
+/// #627). A provider neither has is new only when `settings` names its kind.
 fn apply_or_add(
     text: &str,
     provider: &str,
     entry: Option<&mecha_core::config::ProviderConfig>,
     settings: &[(&'static str, String)],
+    comment: &str,
 ) -> Result<String> {
     let header = format!("[providers.{provider}]");
     if text.lines().any(|l| l.trim() == header) {
         return apply_text(text, provider, settings);
     }
-    let entry = entry.with_context(|| format!("no {header} in the config"))?;
+    let sets = |k: &str| settings.iter().any(|(s, _)| *s == k);
+    if entry.is_none() && !sets("kind") {
+        anyhow::bail!("no {header} in the config");
+    }
     let mut out = text.to_string();
     if !out.ends_with('\n') {
         out.push('\n');
     }
-    out.push_str(&format!(
-        "\n# Written by `mecha setup --write` from this server's own /props.\n{header}\nkind = {}\n",
-        onboarding::toml_string(&entry.kind)
-    ));
-    if let Some(url) = &entry.base_url {
-        out.push_str(&format!("base_url = {}\n", onboarding::toml_string(url)));
+    out.push_str(&format!("\n# {comment}\n{header}\n"));
+    if let Some(entry) = entry {
+        if !sets("kind") {
+            out.push_str(&format!(
+                "kind = {}\n",
+                onboarding::toml_string(&entry.kind)
+            ));
+        }
+        if let (Some(url), false) = (&entry.base_url, sets("base_url")) {
+            out.push_str(&format!("base_url = {}\n", onboarding::toml_string(url)));
+        }
     }
     for (k, v) in settings {
         out.push_str(&format!("{k} = {v}\n"));
@@ -1546,7 +1558,7 @@ mod tests {
         // (review of #627).
         let builtin = mecha_core::config::Config::default().providers["local"].clone();
         let only_agent = "[agent]\nmax_turns = 5\n";
-        let added = apply_or_add(only_agent, "local", Some(&builtin), &settings).unwrap();
+        let added = apply_or_add(only_agent, "local", Some(&builtin), &settings, "c").unwrap();
         let cfg: toml::Value = toml::from_str(&added).unwrap_or_else(|e| panic!("{e}\n{added}"));
         assert_eq!(cfg["providers"]["local"]["kind"].as_str(), Some("local"));
         assert_eq!(
@@ -1558,7 +1570,29 @@ mod tests {
             Some("served-alias")
         );
         assert_eq!(cfg["agent"]["max_turns"].as_integer(), Some(5));
-        assert!(apply_or_add(only_agent, "local", None, &settings).is_err());
+        assert!(apply_or_add(only_agent, "local", None, &settings, "c").is_err());
+
+        // `mecha model add`'s C8 write onto the same file: `follow_loaded`
+        // alone must not leave a table that replaces the built-in entry with
+        // no kind and no address (review of #727).
+        let follow = [("follow_loaded", "true".to_string())];
+        let added = apply_or_add(only_agent, "local", Some(&builtin), &follow, "c").unwrap();
+        let cfg: toml::Value = toml::from_str(&added).unwrap_or_else(|e| panic!("{e}\n{added}"));
+        let local = &cfg["providers"]["local"];
+        assert_eq!(local["kind"].as_str(), Some("local"), "{added}");
+        assert_eq!(local["base_url"].as_str(), Some("http://127.0.0.1:8080"));
+        assert_eq!(local["follow_loaded"].as_bool(), Some(true));
+        // A catalog provider is new, and its settings carry its own kind and
+        // address: written once each, never doubled from an entry.
+        let own = [
+            ("kind", "\"local\"".to_string()),
+            ("base_url", "\"http://127.0.0.1:8080\"".to_string()),
+        ];
+        let added = apply_or_add(only_agent, "qwen38", None, &own, "c").unwrap();
+        assert!(toml::from_str::<toml::Value>(&added).is_ok(), "{added}");
+        let added = apply_or_add(only_agent, "local", Some(&builtin), &own, "c").unwrap();
+        assert_eq!(added.matches("kind = ").count(), 1, "{added}");
+        assert_eq!(added.matches("base_url = ").count(), 1, "{added}");
 
         // A table ending in a multi-line array: the key goes after its
         // closing line, never inside it (review of #627).

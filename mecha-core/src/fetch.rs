@@ -128,12 +128,6 @@ pub fn cached(
     })
 }
 
-/// A file's sha256, hex — for a file mecha assembled rather than fetched
-/// (a catalog graft), checked against its pin the same way.
-pub fn sha256_of(path: &Path) -> Result<String> {
-    sha256_file(path)
-}
-
 fn sha256_file(path: &Path) -> Result<String> {
     use std::io::Read;
     let mut f = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
