@@ -58,7 +58,13 @@ are the same engine written twice. Each copy has:
   `jobs/order`, `upload` and `file`.
 
 Standalone voice (its `Slot` map in `voice/mod.rs`), `mecha chat`, the TUI and Slack
-each run their own assistant session loop as well. The appraisal readout
+each run their own assistant session loop as well. So do two surfaces with
+no connection at all: scheduled triggers (`commands/trigger.rs`, with its
+own `run_in`, `record_run` and hook wiring) and `batch.rs`, which `mecha
+batch` and `mecha eval` drive. `replay_persona.rs` is a further persona
+`run_in` caller, a replay tool rather than a surface. All three are
+surveyed for §9.1's inventory like any door, and step 8 moves triggers and
+batch onto the host. The appraisal readout
 (`appraisal::live_readout`) is wired in three of them: `serve/chat.rs`,
 `tui/mod.rs` and `slack/connector.rs`.
 
@@ -119,6 +125,10 @@ pub enum SessionRecording {
 - **The principal** is set by the door from authentication: the tailnet
   login (`owner_guard`), the local OS user, or a HyperStudy `mhs_` token.
   There is no upgrade path: no frame, field or spoken phrase changes it.
+  A session with no connection (a cron-fired trigger, a `mecha batch`
+  item) takes its principal from the store that authored it. The owner
+  wrote the trigger in `~/.mecha/`, so it is `Owner` by rule, written into
+  its record, not reached through the absent-record fallthrough of §3.
 - **The profile** is a closed set defined in code. Config fills in its
   parameters but cannot invent a fourth kind.
 - **Recording** (`SessionRecording`) is its own axis. The type names are
@@ -235,6 +245,16 @@ neither a narrowing capability nor a preference. It is settable only
 through a door whose principal is `Owner`. A guest door's setup has no
 mode field at all, and a frame carrying one is refused as an unsupported
 field.
+
+**A supplied system prompt is a fourth kind: replaced wholesale, and
+admissible only where the profile's ceiling does not read it.** A study's
+instructions are neither a capability (they do not narrow; S10 takes them
+verbatim) nor a preference (nothing falls back for a seat). They are safe
+only because the Seat profile's ceiling is fixed in code and independent
+of the prompt: the seat catalogue, `Egress::Blind`, no owner stores, a
+jail inside the sealed home. So `HostedSession::open` refuses a
+setup-supplied prompt for Assistant and Persona, and a later door cannot
+hand one to a profile that holds the owner's reach.
 
 **Worked examples:**
 
@@ -535,6 +555,15 @@ behaviour visible before it moves.
      the pure functions (`incognito::withheld`, `incognito::hooks_allow`)
      and not that wiring, and a test home configures no hooks for the
      canary scan to catch;
+   - **the persona-safety wiring**: whether a Safety module was
+     installed, whether it was consulted on the turn, and its verdict,
+     with the cooldown gate, a pending crisis held while a run is live, and
+     the judge-unreachable path (today `crisis_paused_at`, `pending_crisis`,
+     `crisis_answered` and `crisis_shown` on `PersonaSession`). Step 5's
+     "the sensor's tests run against the module" covers only the pure
+     functions, the same gap as incognito's above, so at least one fixture's
+     expected outcome is a sensor pause. The dose and call meters and the
+     library lock are snapshotted the same way;
    - **each dispatched tool's `Capabilities`** and its result's `external`
      flag;
    - **at least one fixture whose expected outcome is an interlock
@@ -634,7 +663,9 @@ persona chat alone, and the assistant chat repeats steps 2–4 after step 6.
    passes (an inventory row).
 7. **The Seat profile and the HyperStudy door:** PERSONA-SERVING §8
    steps 2–5, now on the host.
-8. **The rest onto the host:** TUI, `mecha chat`, Slack. Personas reach
+8. **The rest onto the host:** TUI, `mecha chat`, Slack, scheduled
+   triggers and `batch.rs` (which `mecha eval` drives, so its lever-off
+   rule, `RunConfig::levers_off`, rides along unchanged). Personas reach
    the TUI and incognito personas exist, both as combinations.
 9. **Optional:** one route set, and the page on the Realtime protocol
    (O4).
@@ -657,7 +688,8 @@ Slack; a change to any config or store format (E3).
   is what removes it; moving personas first is the smaller first risk,
   but under §9.3 it means three turn bodies live at once for a while (the
   new host, the old persona body until deleted, and the assistant's), not
-  two.
+  two, and each step's §9.2 snapshots then run against three bodies, not
+  two. That cost is what decides it.
 - **O2 Order against #724.** Build seats on the engine (step 7), or ship
   a seat on today's persona code and move it later? The recommendation is
   the engine first: a seat needs steps 4 and 5 either way.
