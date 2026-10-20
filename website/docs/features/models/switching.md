@@ -76,9 +76,9 @@ mecha model remove qwen3.8-27b    # off the router; the files stay in the cache
 the memory in place of the loaded model, the provider entry it writes, and
 `follow_loaded = true` on your default if it is not set — and installs only
 on a yes (`--yes` is the yes, given ahead). Every file is checked against the
-sha256 pinned in mecha; one model, the uncensored Qwen3.6, is assembled here
-by grafting the production model's draft head onto it, and the result is
-checked against its own pin too. The router is restarted only after the
+sha256 pinned in mecha. The uncensored Qwen3.6 is downloaded with the
+production model's draft head already grafted on, from mecha's own Hugging
+Face repository, so it drafts like the production model. The router is restarted only after the
 downloads, and only once no run is using it, the same wait a switch makes.
 
 In the web chat the model chip lists catalog models it does not serve yet

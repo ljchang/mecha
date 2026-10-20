@@ -198,6 +198,14 @@ export function gib(bytes) {
   return `${(bytes / 1073741824).toFixed(1)} GiB`;
 }
 
+/// Why the catalog offers nothing here, when it offers nothing and says why
+/// — an unreadable catalog arrives as a refusal with no offers, and an empty
+/// section with no word reads as a build with no catalog (review of #727).
+export function catalogTrouble(data) {
+  const cat = data?.catalog;
+  return cat && !(cat.offers ?? []).length && cat.refusal ? cat.refusal : null;
+}
+
 /// The catalog models not served by `router`, as rows. A model this machine
 /// is not offered stays listed, refused with why — "needs the 64 GB tier" is
 /// an answer, a missing row is not. With no router read yet nothing is
@@ -221,7 +229,6 @@ export function available(data, router) {
         note: o.note,
         download: o.download_bytes ?? 0,
         memoryMb: o.memory_mb ?? null,
-        assembles: !!o.assembles,
         disabled: !!why,
         why,
       };
@@ -231,7 +238,6 @@ export function available(data, router) {
 /// What installing `row` costs, in one line.
 export function planLine(row) {
   const parts = [`${gib(row.download)} to download`];
-  if (row.assembles) parts.push('a graft built on this machine');
   if (row.memoryMb != null) parts.push(`~${gib(row.memoryMb * 1048576)} in memory, in place of the loaded model`);
   return parts.join(' · ');
 }
@@ -250,8 +256,6 @@ export function installLine(p) {
       return p.total_bytes > 0
         ? `downloading ${p.id} — ${gib(p.done_bytes)} of ${gib(p.total_bytes)}`
         : `checking ${p.id}'s files`;
-    case 'grafting':
-      return `building ${p.id}'s graft — about a minute`;
     case 'restarting':
       return `restarting the router with ${p.id} — once no run is using it`;
     default:

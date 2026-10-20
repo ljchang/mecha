@@ -73,15 +73,29 @@ pub(super) struct Listing {
     installing: Option<catalog::Progress>,
 }
 
-pub(super) fn listing() -> Option<Listing> {
-    let here = Here::read().ok()?;
-    Some(Listing {
-        offers: here.offers().ok()?,
-        refusal: here
-            .router_refusal()
-            .unwrap_or_else(|e| Some(format!("{e:#}"))),
-        installing: catalog::progress_read(&here.m.mecha_home),
-    })
+/// A catalog that cannot be read is said as the refusal, with no offers —
+/// never a missing listing, which the chip would read as a build with no
+/// catalog (review of #727).
+pub(super) fn listing() -> Listing {
+    let unreadable = |e: anyhow::Error| Listing {
+        offers: Vec::new(),
+        refusal: Some(format!("mecha's catalog could not be read: {e:#}")),
+        installing: None,
+    };
+    let here = match Here::read() {
+        Ok(h) => h,
+        Err(e) => return unreadable(e),
+    };
+    match here.offers() {
+        Ok(offers) => Listing {
+            offers,
+            refusal: here
+                .router_refusal()
+                .unwrap_or_else(|e| Some(format!("{e:#}"))),
+            installing: catalog::progress_read(&here.m.mecha_home),
+        },
+        Err(e) => unreadable(e),
+    }
 }
 
 fn gib(bytes: u64) -> String {
@@ -118,6 +132,10 @@ pub(super) async fn show(cfg: &Config, json: bool) -> Result<()> {
             // A preset someone wrote by hand: served, and not in the record —
             // `setup chat` would drop it, and `model add` adopts it.
             "served, set up by hand — `mecha model add` brings it into the catalog's record"
+        } else if o.installed && served.is_none() {
+            // `served_ids` keeps a router that did not answer apart from one
+            // that serves none of these (review of #727).
+            "installed; the router is not answering, so whether it serves it is unknown"
         } else if o.installed {
             "installed, not served yet"
         } else if o.unfit.is_some() {
@@ -131,13 +149,8 @@ pub(super) async fn show(cfg: &Config, json: bool) -> Result<()> {
         match &o.unfit {
             Some(why) => println!("    {why}"),
             None => println!(
-                "    {} to download{}; ~{} in memory (arithmetic), in place of the chat model",
+                "    {} to download; ~{} in memory (arithmetic), in place of the chat model",
                 gib(o.download_bytes),
-                if o.assembles {
-                    ", then a graft built here"
-                } else {
-                    ""
-                },
                 o.memory_mb
                     .map(|mb| gib(u64::from(mb) * 1_048_576))
                     .unwrap_or_else(|| "—".into())
@@ -257,7 +270,7 @@ pub(super) async fn add(
     let base = here.naming.base();
     if let Some(why) = here.router_refusal()? {
         // The owner's router: what to paste, and nothing changed.
-        let paths = catalog::paths(e, &home, &here.hub)?;
+        let paths = catalog::paths(e, &here.hub)?;
         eprintln!(
             "The preset section and provider table for {id}, to add by hand:\n\n{}\n[providers.{}]",
             catalog::section_text(e, tier, &paths)?,
@@ -294,13 +307,8 @@ pub(super) async fn add(
     say_line(&format!("{id} — {}", e.label));
     say_line(&format!("  {}", e.note));
     say_line(&format!(
-        "  downloads {}{} (pinned, every file checked against its sha256)",
-        gib(offer.download_bytes),
-        if offer.assembles {
-            ", then grafts the production model's MTP head onto it here, checked against its pin"
-        } else {
-            ""
-        }
+        "  downloads {} (pinned, every file checked against its sha256)",
+        gib(offer.download_bytes)
     ));
     if let Some(mb) = offer.memory_mb {
         say_line(&format!(
@@ -355,7 +363,6 @@ pub(super) async fn add(
     progress("fetching", 0, offer.download_bytes);
     catalog::fetch(
         e,
-        &here.m,
         &here.hub,
         &mut |s| say_line(&format!("  {s}")),
         &mut progress,
@@ -447,22 +454,14 @@ pub(super) async fn remove(global: &GlobalOpts, cfg: &Config, id: &str, yes: boo
     if let Some(why) = here.router_refusal()? {
         bail!("nothing was removed: {why}");
     }
-    // Its own files and the graft built from them; a graft's donor is the
-    // production model's, which stays in use.
-    let held: u64 =
-        e.pins.iter().map(|p| p.file.bytes).sum::<u64>() + e.graft.map_or(0, |g| g.bytes);
+    let held: u64 = e.pins.iter().map(|p| p.file.bytes).sum();
     println!(
         "This takes {id} off the router and removes [providers.{}], then restarts the router \
          after any run using it has finished. Its files stay where they are — about {} in the \
-         Hugging Face cache ({}){} — for `mecha model add {id}` to use again.",
+         Hugging Face cache ({}) — for `mecha model add {id}` to use again.",
         e.provider,
         gib(held),
-        here.hub.display(),
-        if e.graft.is_some() {
-            format!(" and {}", catalog::graft_dir(home).display())
-        } else {
-            String::new()
-        }
+        here.hub.display()
     );
     if !yes {
         if !std::io::stdin().is_terminal() {
@@ -498,8 +497,18 @@ pub(super) async fn remove(global: &GlobalOpts, cfg: &Config, id: &str, yes: boo
         .providers
         .get(e.provider)
         .is_some_and(|p| p.model.as_deref() == Some(id))
+        && !super::setup::remove_provider_table(e.provider, TABLE_COMMENT)?
     {
-        super::setup::remove_provider_table(e.provider, TABLE_COMMENT)?;
+        // Moved to a project `mecha.toml` after `add` wrote it globally:
+        // the owner's file, so said rather than edited (review of #727).
+        println!(
+            "[providers.{}] is not in {} — it is in a file mecha did not write it to; \
+             remove it there.",
+            e.provider,
+            mecha_core::config::Config::global_path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "the global config".into())
+        );
     }
     let cfg = super::model::load_config(global)?;
     load_back(&cfg, &base, previous, &mut |l| println!("{l}")).await;

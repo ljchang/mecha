@@ -89,20 +89,23 @@ model loads. The model that was resident before is loaded back after unless
 `--use` names the new one. Nothing is fetched while the switch is held:
 downloads happen first, so hours of fetching never hold every run.
 
-**C7 — A graft is assembled here and checked against a pin.** One entry,
-the uncensored Qwen3.6-35B-A3B, ships without its MTP head; the GB10 serves
-it with the production model's head grafted on (`scripts/mtp-graft.py`, #516).
-The graft is not hosted anywhere (checked 2026-10-19, `mecha-factory` holds
-only the speech weights), and its inputs are both pinned, so the output is
-too: built from the same inputs, the graft is byte-identical (built on the
-owner's Mac 2026-10-19 and compared to the GB10's: `8290c5ba…` on both). The
-entry pins that sha256. `model add` runs the shipped script in a
-hash-locked environment (`locks/mtp-graft-requirements.txt`, `gguf` and
-`numpy` at the script's own pins) and keeps the output only if it matches;
-otherwise the file is removed and the install fails, said. A graft that
-would load wrongly is worse than none, and there is deliberately no
-"serve it without the head" fallback: the preset's draft lines would fail
-the child's start.
+**C7 — A grafted file is hosted, not assembled on each machine.** One
+entry, the uncensored Qwen3.6-35B-A3B, ships upstream without its MTP head;
+the GB10 serves it with the production model's head grafted on
+(`scripts/mtp-graft.py`, #516). Both inputs are pinned, so the output is
+deterministic: built on the owner's Mac on 2026-10-19 it was byte-identical
+to the GB10's (`8290c5ba…`). All three sources — Qwen's original, HauhauCS's
+uncensored weights, unsloth's MTP conversion — are Apache 2.0, which permits
+redistributing a modified file with the license and a statement of what
+changed. So the graft is hosted at
+`mecha-factory/Qwen3.6-35B-A3B-Uncensored-MTP-GGUF` (the owner's decision,
+2026-10-19), its card naming both inputs by revision and sha256, the script,
+and the credits, with Qwen's LICENSE beside it; the entry pins that file like
+any other. The alternative — a hash-locked Python environment on every
+machine that installs it, a second 22 GB download for the donor, and a
+minute's assembly checked against the same sha256 — bought nothing the pin
+does not already guarantee. There is no "serve it without the head"
+fallback: the preset's draft lines would fail the child's start.
 
 **C8 — The default entry follows the router once there is a choice.**
 `follow_loaded = true` is what lets a default run take whichever model is
@@ -143,7 +146,7 @@ answered and drafted on the owner's M-series Mac the same day:
 
 | id | files | tiers | ctx × slots | draft acceptance on Metal |
 |---|---|---|---|---|
-| `qwen3.6-35b-a3b-uncensored` | HauhauCS Q4_K_M + f16 projector, grafted | production's | production's | 0.86 |
+| `qwen3.6-35b-a3b-uncensored` | HauhauCS Q4_K_M with the MTP head grafted on (`mecha-factory`) + HauhauCS f16 projector | production's | production's | 0.86 |
 | `qwen3.8-27b` | unsloth UD-Q4_K_XL + BF16 projector (two revisions) | 64, 128 | 131072 × 1 at 64, 262144 × 1 at 128 | 0.51 |
 | `qwen3.8-27b-uncensored` | HauhauCS Q4_K_P (head in file) + BF16 projector | 64, 128 | as `qwen3.8-27b` | 0.51 |
 | `qwen3.8-27b-abliterated` | huihui-ai UD-Q4_K_XL + BF16 projector | 64, 128 | as `qwen3.8-27b` | 0.64 |

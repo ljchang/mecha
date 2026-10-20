@@ -11,34 +11,20 @@
 //! file beside the router's presets, one per line, and the presets are always
 //! rendered as the base section followed by one section per recorded id
 //! (`router_unit::install`), so changing the base model keeps the catalog.
-//!
-//! **A graft is checked against a pin (C7).** An entry whose upstream file
-//! dropped its MTP head is assembled here by `units/mtp-graft.py` — the
-//! script `scripts/start-router.sh` runs, byte for byte — in a hash-locked
-//! environment, and kept only when the output's sha256 is the entry's.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use crate::fetch::Cached;
 use crate::install::Say;
 use crate::recommend::{HubFile, Machine};
-use crate::sidecar::Machinery;
-
-/// `scripts/mtp-graft.py`, shipped: a crates.io install has no `scripts/`.
-const GRAFT_SCRIPT: &str = include_str!("../units/mtp-graft.py");
-/// Its environment: `gguf` and `numpy` at the script's own pins.
-const GRAFT_LOCK: &str = include_str!("../locks/mtp-graft-requirements.txt");
-const GRAFT_PYTHON: &str = "3.12";
-/// The sidecar id the graft's environment is recorded under.
-pub const GRAFT_ENV_ID: &str = "mtp-graft";
 
 /// What a pinned file is to the preset that serves it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
-    /// `model =` — or the graft's base, when the entry has one.
+    /// `model =`.
     Weights,
     /// `mmproj =`: the vision projector.
     Projector,
@@ -117,19 +103,6 @@ const QWEN38_GEOMETRY: &[TierGeometry] = &[
 ];
 const GEMMA_GEOMETRY: [TierGeometry; 3] = one_slot(32_768);
 
-/// An MTP head copied from `donor` onto the entry's weights (#516). The
-/// output is pinned like a download: built from the same two inputs by the
-/// same script it is the same bytes, so a different sha256 is a fault.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct Graft {
-    pub donor: Pin,
-    /// The output's file name: `start-router.sh`'s `graft_path` spelling,
-    /// which carries both inputs' hashes and the script's.
-    pub name: &'static str,
-    pub sha256: &'static str,
-    pub bytes: u64,
-}
-
 /// One catalog entry.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct Entry {
@@ -142,7 +115,6 @@ pub struct Entry {
     /// confirmation and beside the row.
     pub note: &'static str,
     pub pins: &'static [Pin],
-    pub graft: Option<Graft>,
     pub geometry: Geometry,
     /// The preset's own lines past model, projector, draft and geometry.
     pub lines: &'static [&'static str],
@@ -166,20 +138,6 @@ macro_rules! qwen_sampling {
     };
 }
 
-/// The production chat model's weights, the graft's donor — the pin
-/// `recommend`'s chat row fetches, so a machine that runs production already
-/// has it.
-const QWEN36_DONOR: Pin = Pin {
-    repo: "unsloth/Qwen3.6-35B-A3B-MTP-GGUF",
-    revision: "5bc3e238d916f48a861bac2f8a1990a0e9b7e98d",
-    file: HubFile {
-        path: "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
-        sha256: "0b21525e972670ed59e1812e170b27c26355381f0656ecc4e25617ece7dac58b",
-        bytes: 22_663_387_424,
-    },
-    role: Role::Weights,
-};
-
 const UNCENSORED_NOTE: &str =
     "an uncensored build: its refusals were trained out, so it answers what the base model would decline";
 
@@ -193,13 +151,18 @@ pub const CATALOG: &[Entry] = &[
         label: "Qwen3.6-35B-A3B uncensored (HauhauCS Aggressive), with the production model's MTP head",
         note: UNCENSORED_NOTE,
         pins: &[
+            // HauhauCS's Q4_K_M (`bbef58c3…`) with unsloth's MTP head
+            // (`0b21525e…`, the production row's weights) grafted on by
+            // `scripts/mtp-graft.py` (#516). Built on the GB10 and on the
+            // owner's Mac on 2026-10-19 to the same bytes, and hosted with
+            // its provenance in the card, since HauhauCS ships no head.
             Pin {
-                repo: "HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive",
-                revision: "f12a584fecbeb5f20001130d8ecd66c9327ae685",
+                repo: "mecha-factory/Qwen3.6-35B-A3B-Uncensored-MTP-GGUF",
+                revision: "caaaf5253c6b91d512b408df62afef354f03dc7f",
                 file: HubFile {
-                    path: "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf",
-                    sha256: "bbef58c37ce88820be9d98b6437f1cf4bac890c947bd55fc7b68e22098574231",
-                    bytes: 21_166_758_016,
+                    path: "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M-MTP.gguf",
+                    sha256: "8290c5bae3c744a9654281358e45669e158a9af2f0a23ad2a939bcb84528204f",
+                    bytes: 21_695_616_448,
                 },
                 role: Role::Weights,
             },
@@ -214,14 +177,6 @@ pub const CATALOG: &[Entry] = &[
                 role: Role::Projector,
             },
         ],
-        // The GB10's graft and the Mac's, built 2026-10-19 from these two
-        // inputs, are this file.
-        graft: Some(Graft {
-            donor: QWEN36_DONOR,
-            name: "Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_M+mtp-bbef58c37ce8-0b21525e9726-g0318bf20.gguf",
-            sha256: "8290c5bae3c744a9654281358e45669e158a9af2f0a23ad2a939bcb84528204f",
-            bytes: 21_695_616_448,
-        }),
         geometry: Geometry::Production { tiers: &[32, 64, 128] },
         // Two drafted tokens, not production's default: acceptance into this
         // model's prose was 0.58–0.66 at 2 against 0.47–0.52 at 3 (GB10).
@@ -265,7 +220,6 @@ pub const CATALOG: &[Entry] = &[
                 role: Role::Projector,
             },
         ],
-        graft: None,
         geometry: Geometry::PerTier(QWEN38_GEOMETRY),
         lines: &[
             "image-min-tokens = 1024",
@@ -305,7 +259,6 @@ pub const CATALOG: &[Entry] = &[
                 role: Role::Projector,
             },
         ],
-        graft: None,
         geometry: Geometry::PerTier(QWEN38_GEOMETRY),
         lines: &[
             "image-min-tokens = 1024",
@@ -345,7 +298,6 @@ pub const CATALOG: &[Entry] = &[
                 role: Role::Projector,
             },
         ],
-        graft: None,
         geometry: Geometry::PerTier(QWEN38_GEOMETRY),
         lines: &[
             "image-min-tokens = 1024",
@@ -397,7 +349,6 @@ pub const CATALOG: &[Entry] = &[
                 role: Role::Draft,
             },
         ],
-        graft: None,
         geometry: Geometry::PerTier(&GEMMA_GEOMETRY),
         // No sampling lines and no image floor, deliberately: the GB10 serves
         // it on llama-server's defaults, so the provider has no temperature.
@@ -439,17 +390,9 @@ pub fn geometry_at(entry: &Entry, tier: u32) -> Option<(u32, u32, Option<u32>)> 
     }
 }
 
-/// The bytes the router reads: the served weights (the graft's output in
-/// place of its base), the projector and any draft file.
+/// The bytes the router reads: the weights, the projector and any draft file.
 fn served_bytes(entry: &Entry) -> u64 {
-    entry
-        .pins
-        .iter()
-        .map(|p| match (p.role, entry.graft) {
-            (Role::Weights, Some(g)) => g.bytes,
-            _ => p.file.bytes,
-        })
-        .sum()
+    entry.pins.iter().map(|p| p.file.bytes).sum()
 }
 
 /// Its memory at `tier`, MiB, by `recommend`'s arithmetic: the served files,
@@ -529,12 +472,6 @@ pub fn record_remove(mecha_home: &Path, id: &str) -> Result<bool> {
     Ok(true)
 }
 
-/// Where grafts are written: under the router's own directory, beside the
-/// presets that name them.
-pub fn graft_dir(mecha_home: &Path) -> PathBuf {
-    crate::router_unit::presets_path(mecha_home).with_file_name("grafts")
-}
-
 /// The files a preset names, where they are on this machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Paths {
@@ -544,16 +481,12 @@ pub struct Paths {
 }
 
 /// Where `entry`'s served files are, whether or not they are there yet: the
-/// hub's snapshot paths, and the graft directory for a graft's output.
-pub fn paths(entry: &Entry, mecha_home: &Path, hub: &Path) -> Result<Paths> {
+/// hub's snapshot paths.
+pub fn paths(entry: &Entry, hub: &Path) -> Result<Paths> {
     let snap = |p: &Pin| crate::fetch::snapshot_path(hub, p.repo, p.revision, &p.file);
     let of = |role| entry.pins.iter().find(|p| p.role == role);
-    let model = match entry.graft {
-        Some(g) => graft_dir(mecha_home).join(g.name),
-        None => snap(of(Role::Weights).context("a catalog entry with no weights")?),
-    };
     Ok(Paths {
-        model,
+        model: snap(of(Role::Weights).context("a catalog entry with no weights")?),
         mmproj: of(Role::Projector).map(snap),
         draft: of(Role::Draft).map(snap),
     })
@@ -582,20 +515,11 @@ pub fn section_text(entry: &Entry, tier: u32, paths: &Paths) -> Result<String> {
 }
 
 /// Whether every file `entry` serves is on disk at its pinned size — the
-/// cheap check, which reads no bytes; the fetch and the graft verified them
-/// as they were written.
-pub fn present(entry: &Entry, mecha_home: &Path, hub: &Path) -> Result<bool> {
+/// cheap check, which reads no bytes; the fetch verified them as they were
+/// written.
+pub fn present(entry: &Entry, hub: &Path) -> Result<bool> {
     for p in entry.pins {
-        if p.role == Role::Weights && entry.graft.is_some() {
-            continue;
-        }
         if crate::fetch::cached(hub, p.repo, p.revision, &p.file, false)? != Cached::Verified {
-            return Ok(false);
-        }
-    }
-    if let Some(g) = entry.graft {
-        let out = graft_dir(mecha_home).join(g.name);
-        if !std::fs::metadata(&out).is_ok_and(|m| m.len() == g.bytes) {
             return Ok(false);
         }
     }
@@ -619,14 +543,14 @@ pub fn sections(mecha_home: &Path, hub: &Path, tier: Option<u32>) -> Result<(Str
             skipped.push(format!("{id}: not offered at this machine's memory tier"));
             continue;
         };
-        if !present(e, mecha_home, hub)? {
+        if !present(e, hub)? {
             skipped.push(format!(
                 "{id}: its files are not all in place — `mecha model add {id}` fetches them"
             ));
             continue;
         }
         text.push('\n');
-        text.push_str(&section_text(e, tier, &paths(e, mecha_home, hub)?)?);
+        text.push_str(&section_text(e, tier, &paths(e, hub)?)?);
     }
     Ok((text, skipped))
 }
@@ -645,8 +569,6 @@ pub struct Offer {
     pub unfit: Option<String>,
     /// What is still to download, less what the cache holds.
     pub download_bytes: u64,
-    /// The graft's output still to build, beside the download.
-    pub assembles: bool,
     /// Its memory at this machine's tier (`memory_mb`), MiB; `None` where it
     /// is not offered.
     pub memory_mb: Option<u32>,
@@ -668,31 +590,12 @@ pub fn offers(mecha_home: &Path, hub: &Path, machine: &Machine) -> Result<Vec<Of
                 Some(_) => None,
             };
             let mut download = 0;
-            for p in e.pins.iter().chain(e.graft.as_ref().map(|g| &g.donor)) {
+            for p in e.pins {
                 if crate::fetch::cached(hub, p.repo, p.revision, &p.file, false)?
                     != Cached::Verified
                 {
                     download += p.file.bytes;
                 }
-            }
-            let assembles = e.graft.is_some_and(|g| {
-                !std::fs::metadata(graft_dir(mecha_home).join(g.name))
-                    .is_ok_and(|m| m.len() == g.bytes)
-            });
-            // A graft already built needs neither of its inputs again.
-            if e.graft.is_some() && !assembles {
-                download = e
-                    .pins
-                    .iter()
-                    .filter(|p| p.role != Role::Weights)
-                    .filter(|p| {
-                        !matches!(
-                            crate::fetch::cached(hub, p.repo, p.revision, &p.file, false),
-                            Ok(Cached::Verified)
-                        )
-                    })
-                    .map(|p| p.file.bytes)
-                    .sum();
             }
             Ok(Offer {
                 id: e.id,
@@ -703,7 +606,6 @@ pub fn offers(mecha_home: &Path, hub: &Path, machine: &Machine) -> Result<Vec<Of
                 memory_mb: tier.and_then(|t| memory_mb(e, t)),
                 unfit,
                 download_bytes: download,
-                assembles,
             })
         })
         .collect()
@@ -714,7 +616,7 @@ pub fn offers(mecha_home: &Path, hub: &Path, machine: &Machine) -> Result<Vec<Of
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Progress {
     pub id: String,
-    /// `fetching`, `grafting` or `restarting`.
+    /// `fetching` or `restarting`.
     pub phase: String,
     pub done_bytes: u64,
     pub total_bytes: u64,
@@ -754,40 +656,21 @@ pub fn progress_clear(mecha_home: &Path) {
     let _ = std::fs::remove_file(progress_path(mecha_home));
 }
 
-/// Fetch every file `entry` needs and assemble its graft, verifying each
-/// against its pin. `progress` sees the bytes fetched so far of the total
-/// still to fetch. Nothing here touches the router: hours of download never
-/// hold a run (C6).
+/// Fetch every file `entry` needs, verifying each against its pin.
+/// `progress` sees the bytes fetched so far of the total still to fetch.
+/// Nothing here touches the router: hours of download never hold a run (C6).
 pub async fn fetch(
     entry: &Entry,
-    m: &Machinery,
     hub: &Path,
     say: Say<'_>,
     progress: &mut dyn FnMut(&str, u64, u64),
 ) -> Result<()> {
-    let home = &m.mecha_home;
-    let graft_built = entry.graft.is_some_and(|g| {
-        std::fs::metadata(graft_dir(home).join(g.name)).is_ok_and(|meta| meta.len() == g.bytes)
-    });
-    // A built graft needs neither input again.
-    let wanted: Vec<&Pin> = entry
-        .pins
-        .iter()
-        .filter(|p| !(graft_built && p.role == Role::Weights))
-        .chain(
-            entry
-                .graft
-                .as_ref()
-                .filter(|_| !graft_built)
-                .map(|g| &g.donor),
-        )
-        .collect();
     let mut todo = Vec::new();
-    for p in &wanted {
+    for p in entry.pins {
         if crate::fetch::cached(hub, p.repo, p.revision, &p.file, false)? == Cached::Verified {
             say(&format!("{}/{} is in the cache", p.repo, p.file.path));
         } else {
-            todo.push(*p);
+            todo.push(p);
         }
     }
     let total: u64 = todo.iter().map(|p| p.file.bytes).sum();
@@ -808,80 +691,6 @@ pub async fn fetch(
         .with_context(|| format!("fetching {}/{}", p.repo, p.file.path))?;
         before += p.file.bytes;
     }
-    if let (Some(g), false) = (entry.graft, graft_built) {
-        progress("grafting", 0, 0);
-        graft(entry, &g, m, hub, say).await?;
-    }
-    Ok(())
-}
-
-/// Assemble `g` from the entry's weights and the donor's head, in the
-/// hash-locked environment, and keep it only if it is the pinned file.
-async fn graft(entry: &Entry, g: &Graft, m: &Machinery, hub: &Path, say: Say<'_>) -> Result<()> {
-    let home = &m.mecha_home;
-    let base = entry
-        .pins
-        .iter()
-        .find(|p| p.role == Role::Weights)
-        .context("a graft with no base weights")?;
-    let env_dir = home.join("sidecars").join(GRAFT_ENV_ID);
-    crate::sidecar::Manifest::begin(home, GRAFT_ENV_ID)?;
-    crate::install::locked_env(
-        m,
-        GRAFT_ENV_ID,
-        &env_dir,
-        GRAFT_PYTHON,
-        GRAFT_LOCK,
-        "gguf and numpy",
-        say,
-    )
-    .await?;
-    let script = env_dir.join("mtp-graft.py");
-    crate::llama_units::write_owned(home, GRAFT_ENV_ID, &script, GRAFT_SCRIPT, 0o644)?;
-    crate::sidecar::Manifest::finish(home, GRAFT_ENV_ID)?;
-
-    let dir = graft_dir(home);
-    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    let out = dir.join(g.name);
-    say(&format!(
-        "grafting the MTP head onto {} — about a minute, {:.1} GiB written",
-        base.file.path,
-        g.bytes as f64 / 1_073_741_824.0
-    ));
-    let mut c = std::process::Command::new(env_dir.join("venv/bin/python"));
-    c.args(["-I", "-B"])
-        .arg(&script)
-        .arg(crate::fetch::snapshot_path(
-            hub,
-            base.repo,
-            base.revision,
-            &base.file,
-        ))
-        .arg(crate::fetch::snapshot_path(
-            hub,
-            g.donor.repo,
-            g.donor.revision,
-            &g.donor.file,
-        ))
-        .arg(&out);
-    let ran = tokio::task::spawn_blocking(move || crate::install::run(&mut c, "the MTP graft"))
-        .await
-        .context("the graft's task")?;
-    ran?;
-    say("checking the graft against its pin");
-    let check = out.clone();
-    let sha = tokio::task::spawn_blocking(move || crate::fetch::sha256_of(&check))
-        .await
-        .context("the graft check's task")??;
-    if sha != g.sha256 {
-        let _ = std::fs::remove_file(&out);
-        bail!(
-            "the graft came out as sha256 {sha}, not the pinned {} — removed, and nothing is \
-             served from it. Both inputs were checked against their pins, so the script or its \
-             environment differs from the one the pin was built with",
-            g.sha256
-        );
-    }
     Ok(())
 }
 
@@ -891,24 +700,6 @@ mod tests {
 
     fn scratch(what: &str) -> PathBuf {
         std::env::temp_dir().join(format!("mecha-catalog-{what}-{}", uuid::Uuid::new_v4()))
-    }
-
-    /// What runs is the script the hand install runs, byte for byte — the
-    /// graft's name carries that script's hash (`g0318bf20`), so a copy that
-    /// drifted would build a file under a name that lies about it.
-    #[test]
-    fn the_shipped_graft_script_is_the_scripts_copy() {
-        assert_eq!(GRAFT_SCRIPT, include_str!("../../scripts/mtp-graft.py"));
-    }
-
-    /// The lock pins every file by hash, at the script's own versions.
-    #[test]
-    fn the_graft_lock_pins_every_file_at_the_script_s_versions() {
-        assert!(GRAFT_LOCK.contains("--hash=sha256:"));
-        for pin in ["gguf==0.19.0", "numpy==2.5.3"] {
-            assert!(GRAFT_LOCK.contains(pin), "{pin}");
-            assert!(GRAFT_SCRIPT.contains(&format!("\"{pin}\"")), "{pin}");
-        }
     }
 
     /// Ids are unique, are the router's aliases (so plain), and none is the
@@ -943,44 +734,13 @@ mod tests {
             let n = |r| e.pins.iter().filter(|p| p.role == r).count();
             assert_eq!(n(Role::Weights), 1, "{}", e.id);
             assert!(n(Role::Projector) <= 1 && n(Role::Draft) <= 1, "{}", e.id);
-            for p in e.pins.iter().chain(e.graft.as_ref().map(|g| &g.donor)) {
+            for p in e.pins {
                 assert_eq!(p.file.sha256.len(), 64, "{}", p.file.path);
                 assert!(p.file.sha256.bytes().all(|b| b.is_ascii_hexdigit()));
                 assert_eq!(p.revision.len(), 40, "{}", p.file.path);
                 assert!(p.file.bytes > 0);
             }
-            if let Some(g) = e.graft {
-                assert_eq!(g.sha256.len(), 64);
-                // `start-router.sh`'s name: both inputs' hash prefixes, and
-                // the script's.
-                let base = e.pins.iter().find(|p| p.role == Role::Weights).unwrap();
-                assert!(g.name.contains(&base.file.sha256[..12]), "{}", g.name);
-                assert!(g.name.contains(&g.donor.file.sha256[..12]), "{}", g.name);
-            }
         }
-    }
-
-    /// The donor is the production chat row's own weights, so a machine
-    /// running production fetches nothing for it.
-    #[test]
-    fn the_graft_donor_is_the_production_row_s_weights() {
-        let slot = crate::recommend::SLOTS
-            .iter()
-            .find(|s| s.id == "chat")
-            .unwrap();
-        let pinned = slot.rows.iter().flat_map(|r| r.sources).any(|s| match s {
-            crate::recommend::Source::HuggingFace {
-                repo,
-                revision,
-                files,
-            } => {
-                *repo == QWEN36_DONOR.repo
-                    && *revision == QWEN36_DONOR.revision
-                    && files.contains(&QWEN36_DONOR.file)
-            }
-            _ => false,
-        });
-        assert!(pinned);
     }
 
     /// A provider's temperature is its preset's `temp`, and none where the
@@ -1006,7 +766,8 @@ mod tests {
     fn every_offered_tier_has_a_geometry_that_fits() {
         let production = |t: u32| {
             let g = crate::recommend::chat_geometry(t).unwrap();
-            let files = (QWEN36_DONOR.file.bytes + 902_822_528) / 1_048_576;
+            // The production row's weights and projector.
+            let files = (22_663_387_424u64 + 902_822_528) / 1_048_576;
             files + u64::from(g.ctx) / 1024 * 22 + 64 * u64::from(g.slots)
         };
         for e in CATALOG {

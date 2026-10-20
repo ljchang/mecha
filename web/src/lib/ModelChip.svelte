@@ -6,7 +6,7 @@
   // what is loaded, loading, or waiting is the router's own report, read
   // through `model list --json`, never a guess from a timer.
   import { apiFetch as fetch } from './api.js';
-  import { reader, routerOf, unavailable, rows, phase, busy, pollEvery, canHurry, chipLabel, waitingLine, outcomeNote, available, gib, planLine, installing, installLine, pollWhileInstalling } from './model-chip.js';
+  import { reader, routerOf, unavailable, rows, phase, busy, pollEvery, canHurry, chipLabel, waitingLine, outcomeNote, available, gib, planLine, installing, installLine, pollWhileInstalling, catalogTrouble } from './model-chip.js';
 
   /// `model` is what this chat's agent is bound to — the label until the
   /// router has been read. An incognito chat gets the same picker: every model
@@ -237,6 +237,8 @@
             </button>
           {/if}
         {/each}
+      {:else if catalogTrouble(data)}
+        <p class="line bad">{catalogTrouble(data)}</p>
       {/if}
       {#if incognito && router}
         <p class="line">Every model here runs on this machine, so this chat stays local whichever you pick.</p>

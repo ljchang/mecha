@@ -264,7 +264,7 @@ llama_units.rs the on-demand embeddings and OCR servers from nothing: units and
 router_unit.rs the resident router from nothing: its unit, launcher and presets
              from the tier's chat geometry or the owner's GGUF; `mecha setup chat`
 catalog.rs   the chat models mecha can install onto its router on the owner's yes: whole
-             serving decisions, pinned per file, a graft checked against its own pin
+             serving decisions, pinned per file
 launchd.rs   a systemd user unit's macOS twin: a plist in ~/Library/LaunchAgents,
              unloaded from both domains before it is bootstrapped into one
 stt_unit.rs  speech to text from nothing: a hash-locked environment, the model by
