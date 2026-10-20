@@ -284,7 +284,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             use_(&cfg, &name, wait_secs, now, out).await
         }
         Cmd::CancelSwitch => cancel_switch(),
-        Cmd::Catalog => super::model_catalog::show(&cfg, args.json).await,
+        Cmd::Catalog => super::model_catalog::show(args.json).await,
         Cmd::Add { id, yes, use_after } => {
             super::model_catalog::add(global, &cfg, &id, yes, use_after, args.json).await
         }
