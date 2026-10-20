@@ -450,7 +450,6 @@ pub(super) async fn add(
     )
     .await
     .with_context(|| format!("nothing was installed: fetching {id}"))?;
-    catalog::record_add(&home, id)?;
 
     progress("restarting", 0, 0);
     let previous = router::models(&base)
@@ -458,8 +457,13 @@ pub(super) async fn add(
         .filter(|l| router::readable(l))
         .and_then(|l| router::resident(&l).map(str::to_string));
     wait_quiet(cfg, &here.naming, &mut |l| say_line(&format!("  {l}"))).await?;
+    // Recorded only once the wait is over, and taken back out if the restart
+    // fails: a recorded id is rendered by the next router install, whoever
+    // runs it, and with no provider table behind it (review of #727).
+    let was_recorded = catalog::installed(&home)?.iter().any(|i| i == id);
+    catalog::record_add(&home, id)?;
     let choice = router_unit::installed_choice(&home)?.context("the router's presets are gone")?;
-    router_unit::install(
+    let restarted = router_unit::install(
         &here.m,
         cfg,
         &choice,
@@ -468,17 +472,39 @@ pub(super) async fn add(
         &here.hub,
         &mut |s| say_line(&format!("  {s}")),
     )
-    .await
-    .with_context(|| {
-        format!(
-            "{id} is downloaded and recorded, and the router was not restarted onto it — `mecha \
-             model add {id}` again restarts it"
-        )
-    })?;
+    .await;
+    if let Err(err) = restarted {
+        let undone = if was_recorded {
+            Ok(())
+        } else {
+            catalog::record_remove(&home, id).map(|_| ())
+        };
+        let mut msg = format!(
+            "{id} is downloaded, and the router was not restarted onto it — `mecha model add \
+             {id}` again restarts it, with nothing fetched twice"
+        );
+        if let Err(u) = undone {
+            msg.push_str(&format!(
+                "; its id also stayed in {} ({u:#})",
+                catalog::record_path(&home).display()
+            ));
+        }
+        return Err(err.context(msg));
+    }
 
-    super::setup::write_provider_table(e.provider, TABLE_COMMENT, &settings)?;
+    // The router has restarted with the section by now: what is not written
+    // below is said as such, not as a bare write error.
+    let unwritten = |table: &str| {
+        format!(
+            "{id} is on the router, and [providers.{table}] was not written — run `mecha model \
+             add {id}` again to write it"
+        )
+    };
+    super::setup::write_provider_table(e.provider, TABLE_COMMENT, &settings)
+        .with_context(|| unwritten(e.provider))?;
     if let Some(d) = &follow {
-        super::setup::write_provider_table(d, TABLE_COMMENT, &[("follow_loaded", "true".into())])?;
+        super::setup::write_provider_table(d, TABLE_COMMENT, &[("follow_loaded", "true".into())])
+            .with_context(|| unwritten(d))?;
     }
     drop(_guard);
 
@@ -524,10 +550,15 @@ async fn load_back(cfg: &Config, base: &str, previous: Option<String>, say: &mut
     }
 }
 
-/// What in the config still names `[providers.<provider>]` — the default, a
-/// fallback, a subagent — said as what to change first. Removing a table
-/// something names fails every run after, not this one (review of #727).
-fn still_named(cfg: &Config, provider: &str) -> Option<String> {
+/// What still names `[providers.<provider>]` — the default, a fallback, a
+/// subagent, a trigger (`(name, provider)`) — said as what to change first.
+/// Removing a table something names fails every run after, not this one; a
+/// trigger's fails unattended (review of #727).
+fn still_named(
+    cfg: &Config,
+    triggers: &[(String, Option<String>)],
+    provider: &str,
+) -> Option<String> {
     let mut by = Vec::new();
     if cfg.default_provider == provider {
         by.push("`default_provider`".to_string());
@@ -540,6 +571,11 @@ fn still_named(cfg: &Config, provider: &str) -> Option<String> {
     for s in &cfg.subagents {
         if s.provider.as_deref() == Some(provider) {
             by.push(format!("the subagent {:?}", s.name));
+        }
+    }
+    for (name, p) in triggers {
+        if p.as_deref() == Some(provider) {
+            by.push(format!("the trigger {name:?}"));
         }
     }
     (!by.is_empty()).then(|| {
@@ -564,7 +600,18 @@ pub(super) async fn remove(global: &GlobalOpts, cfg: &Config, id: &str, yes: boo
     if let Some(why) = here.router_refusal()? {
         bail!("nothing was removed: {why}");
     }
-    if let Some(why) = still_named(cfg, e.provider) {
+    // Read only: a check must not create the trigger store as a side effect.
+    let triggers: Vec<(String, Option<String>)> =
+        match mecha_core::trigger::TriggerStore::open_existing_default() {
+            Some(store) => store
+                .list()?
+                .0
+                .into_iter()
+                .map(|t| (t.name, t.provider))
+                .collect(),
+            None => Vec::new(),
+        };
+    if let Some(why) = still_named(cfg, &triggers, e.provider) {
         bail!("nothing was removed: {why}");
     }
     let held: u64 = e.pins.iter().map(|p| p.file.bytes).sum();
@@ -608,10 +655,16 @@ pub(super) async fn remove(global: &GlobalOpts, cfg: &Config, id: &str, yes: boo
     )
     .await;
     if let Err(err) = restarted {
-        catalog::record_add(home, id)?;
-        return Err(err.context(format!(
+        let mut msg = format!(
             "{id} was not removed: the router was not restarted without it — run this again"
-        )));
+        );
+        if let Err(u) = catalog::record_add(home, id) {
+            msg.push_str(&format!(
+                "; its id could not be put back in {} ({u:#}) — `mecha model add {id}` restores it",
+                catalog::record_path(home).display()
+            ));
+        }
+        return Err(err.context(msg));
     }
     if cfg
         .providers
@@ -682,9 +735,9 @@ mod tests {
         };
         cfg.providers
             .insert("qwen38".into(), router_table("qwen3.8-27b", false));
-        assert_eq!(still_named(&cfg, "qwen38"), None);
+        assert_eq!(still_named(&cfg, &[], "qwen38"), None);
         cfg.default_provider = "qwen38".into();
-        assert!(still_named(&cfg, "qwen38")
+        assert!(still_named(&cfg, &[], "qwen38")
             .unwrap()
             .contains("`default_provider` still names"));
         cfg.default_provider = "local".into();
@@ -695,9 +748,14 @@ mod tests {
                 ..router_table("qwen3.6-35b-a3b", true)
             },
         );
-        assert!(still_named(&cfg, "qwen38")
+        assert!(still_named(&cfg, &[], "qwen38")
             .unwrap()
             .contains("the fallbacks of [providers.local]"));
+        cfg.providers.get_mut("local").unwrap().fallbacks.clear();
+        let nightly = [("nightly".to_string(), Some("qwen38".to_string()))];
+        assert!(still_named(&cfg, &nightly, "qwen38")
+            .unwrap()
+            .contains("the trigger \"nightly\""));
     }
 
     /// `follow_loaded` goes on the default only when it names this router and
