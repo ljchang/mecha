@@ -62,8 +62,8 @@ pub enum Cmd {
     Catalog,
     /// Install a catalog model onto mecha's router: shows the download, the
     /// memory and the config it writes, and asks. Then fetches every file
-    /// against its pin (building a graft where the entry has one), restarts
-    /// the router once no run is using it, and writes the provider entry.
+    /// against its pin, restarts the router once no run is using it, and
+    /// writes the provider entry.
     Add {
         id: String,
         /// The approval, already given: install without asking.

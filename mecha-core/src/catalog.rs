@@ -553,10 +553,17 @@ pub fn sections(mecha_home: &Path, hub: &Path, tier: Option<u32>) -> Result<(Str
             skipped.push(format!("{id}: not in this build's catalog"));
             continue;
         };
-        let Some(tier) = tier.filter(|t| geometry_at(e, *t).is_some()) else {
-            skipped.push(format!("{id}: not offered at this machine's memory tier"));
+        let Some(t) = tier else {
+            skipped.push(format!(
+                "{id}: this machine's memory tier could not be read"
+            ));
             continue;
         };
+        if geometry_at(e, t).is_none() {
+            skipped.push(format!("{id}: not offered at this machine's memory tier"));
+            continue;
+        }
+        let tier = t;
         if !present(e, hub)? {
             skipped.push(format!(
                 "{id}: its files are not all in place — `mecha model add {id}` fetches them"
