@@ -208,7 +208,7 @@ export function catalogTrouble(data) {
 }
 
 /// The catalog models not served by `router`, as rows. A model this machine
-/// is not offered stays listed, refused with why — "needs the 64 GB tier" is
+/// is not offered stays listed, refused with why — "offered at the 64, 128 GB tiers" is
 /// an answer, a missing row is not. With no router read yet nothing is
 /// offered: what is served is unknown, and an install over a model already
 /// there is a restart for nothing.

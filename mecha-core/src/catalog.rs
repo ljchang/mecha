@@ -520,6 +520,10 @@ pub fn section_text(entry: &Entry, tier: u32, paths: &Paths) -> Result<String> {
 /// (`Unverified`) counts: `fetch_hub_file` hash-checks one and keeps it where
 /// it is rather than moving it into a blob, so demanding the blob here would
 /// drop a section `model add` had just checked, on every add (review of #727).
+/// From `setup chat` or `features enable --reinstall` nothing hashes it in
+/// that run: a same-size file swapped into the owner's hub cache by hand
+/// after the add would be served. The hub is the owner's, and hashing 20 GB
+/// on every render is the cost the cheap check exists to avoid.
 pub fn present(entry: &Entry, hub: &Path) -> Result<bool> {
     for p in entry.pins {
         if !on_disk(hub, p)? {
@@ -594,8 +598,12 @@ pub fn offers(mecha_home: &Path, hub: &Path, machine: &Machine) -> Result<Vec<Of
             let unfit = match tier {
                 None => Some("this machine is below the smallest memory tier".to_string()),
                 Some(t) if geometry_at(e, t).is_none() => Some(format!(
-                    "needs the {} GB memory tier or larger; this machine is at {t} GB",
-                    tiers(e).first().copied().unwrap_or(0)
+                    "offered at the {} GB memory tiers; this machine is at {t} GB",
+                    tiers(e)
+                        .iter()
+                        .map(u32::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 )),
                 Some(_) => None,
             };

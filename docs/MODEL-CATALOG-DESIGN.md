@@ -23,7 +23,7 @@ the owner approves its download.**
   whether it is installed, what it would download (less what the cache
   already holds), what it holds in memory at this machine's tier, and
   whether it fits. A model that does not fit is shown with the reason, never
-  hidden — "needs the 64 GB tier" is an answer; a missing row is not.
+  hidden — "offered at the 64, 128 GB tiers" is an answer; a missing row is not.
 - `mecha model add <id>` prints that plan and asks. Approved, it fetches,
   assembles, installs the preset, restarts the router under the same switch
   `mecha model use` takes, and writes the provider entry. `--use` then

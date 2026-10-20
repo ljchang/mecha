@@ -256,11 +256,16 @@ impl Drop for ProgressGuard<'_> {
 /// of #727). Ctrl-C stops the wait with the files kept; a run that starts in
 /// the instant before the restart still meets the gate's decline, which says
 /// to run this again.
-async fn wait_quiet(base: &str, say: &mut dyn FnMut(&str)) -> Result<()> {
+///
+/// Every spelling of the router's address `install` will check
+/// (`router_unit::hold_bases`): a run holds under its provider's own
+/// `base_url`, and `localhost` is not folded into `127.0.0.1`.
+async fn wait_quiet(cfg: &Config, naming: &Naming, say: &mut dyn FnMut(&str)) -> Result<()> {
     let holds = mecha_core::hold::Holds::open_default()?;
+    let bases = router_unit::hold_bases(cfg, naming);
     let mut said = String::new();
     loop {
-        let live = holds.live(base);
+        let live: Vec<_> = bases.iter().flat_map(|b| holds.live(b)).collect();
         if live.is_empty() {
             return Ok(());
         }
@@ -452,7 +457,7 @@ pub(super) async fn add(
         .await
         .filter(|l| router::readable(l))
         .and_then(|l| router::resident(&l).map(str::to_string));
-    wait_quiet(&base, &mut |l| say_line(&format!("  {l}"))).await?;
+    wait_quiet(cfg, &here.naming, &mut |l| say_line(&format!("  {l}"))).await?;
     let choice = router_unit::installed_choice(&home)?.context("the router's presets are gone")?;
     router_unit::install(
         &here.m,
@@ -586,10 +591,13 @@ pub(super) async fn remove(global: &GlobalOpts, cfg: &Config, id: &str, yes: boo
         .filter(|l| router::readable(l))
         .and_then(|l| router::resident(&l).map(str::to_string))
         .filter(|p| p != id);
+    // The record changes only once the wait is over, and is put back if the
+    // restart fails: a `remove` stopped or declined here can be run again
+    // (review of #727).
+    wait_quiet(cfg, &here.naming, &mut |l| println!("  {l}")).await?;
     catalog::record_remove(home, id)?;
-    wait_quiet(&base, &mut |l| println!("  {l}")).await?;
     let choice = router_unit::installed_choice(home)?.context("the router's presets are gone")?;
-    router_unit::install(
+    let restarted = router_unit::install(
         &here.m,
         cfg,
         &choice,
@@ -598,10 +606,13 @@ pub(super) async fn remove(global: &GlobalOpts, cfg: &Config, id: &str, yes: boo
         &here.hub,
         &mut |s| println!("  {s}"),
     )
-    .await
-    .with_context(|| {
-        format!("{id} is out of the record, and the router was not restarted without it")
-    })?;
+    .await;
+    if let Err(err) = restarted {
+        catalog::record_add(home, id)?;
+        return Err(err.context(format!(
+            "{id} was not removed: the router was not restarted without it — run this again"
+        )));
+    }
     if cfg
         .providers
         .get(e.provider)
