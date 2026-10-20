@@ -1785,6 +1785,7 @@ mod r36_tests {
                 ..RunStats::default()
             },
             call_base: 2,
+            decision_turn_calls: None,
         }
     }
 
