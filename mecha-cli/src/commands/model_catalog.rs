@@ -336,6 +336,16 @@ pub(super) async fn add(
     if let Some(why) = table_conflict(cfg, e, here.naming.port) {
         bail!("nothing was installed: {why}");
     }
+    // A brought GGUF whose stem is this id already holds the name on the
+    // router; the catalog's section would be left out (review of #727).
+    if let Some(c) = router_unit::installed_choice(&home)? {
+        if router_unit::choice_alias(&c) == id {
+            bail!(
+                "nothing was installed: the router's base model is already served as {id} — a \
+                 file you brought with that name — so a catalog model cannot have it too"
+            );
+        }
+    }
     let one_at_a_time = || match catalog::progress_read(&home) {
         Some(p) => bail!(
             "another catalog install is running ({} — {}, pid {}); one at a time",

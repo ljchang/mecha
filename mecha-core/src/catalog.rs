@@ -545,7 +545,17 @@ fn on_disk(hub: &Path, p: &Pin) -> Result<bool> {
 /// tier, or its files gone. A section naming a missing file would fail the
 /// child's start at the first switch to it; left out, the record keeps it and
 /// `mecha model add` again restores it.
-pub fn sections(mecha_home: &Path, hub: &Path, tier: Option<u32>) -> Result<(String, Vec<String>)> {
+///
+/// A recorded id that is the base section's own name (`base_alias`, a brought
+/// GGUF whose stem is a catalog id) is left out too: two sections of one
+/// name, and renaming the owner's base would orphan the provider that names
+/// it (review of #727).
+pub fn sections(
+    mecha_home: &Path,
+    hub: &Path,
+    tier: Option<u32>,
+    base_alias: &str,
+) -> Result<(String, Vec<String>)> {
     let mut text = String::new();
     let mut skipped = Vec::new();
     for id in installed(mecha_home)? {
@@ -553,6 +563,12 @@ pub fn sections(mecha_home: &Path, hub: &Path, tier: Option<u32>) -> Result<(Str
             skipped.push(format!("{id}: not in this build's catalog"));
             continue;
         };
+        if id == base_alias {
+            skipped.push(format!(
+                "{id}: the router's base model already has that name"
+            ));
+            continue;
+        }
         let Some(t) = tier else {
             skipped.push(format!(
                 "{id}: this machine's memory tier could not be read"
@@ -871,7 +887,7 @@ mod tests {
         crate::sidecar::Manifest::begin(&home, crate::router_unit::ID).unwrap();
         record_add(&home, "gemma-4-26b-a4b").unwrap();
         record_add(&home, "a-model-from-a-newer-build").unwrap();
-        let (text, skipped) = sections(&home, &hub, Some(128)).unwrap();
+        let (text, skipped) = sections(&home, &hub, Some(128), "qwen3.6-35b-a3b").unwrap();
         assert!(text.is_empty());
         assert_eq!(skipped.len(), 2, "{skipped:?}");
         assert!(skipped[0].contains("mecha model add gemma-4-26b-a4b"));
@@ -891,9 +907,13 @@ mod tests {
                 .unwrap();
         }
         assert!(present(e, &hub).unwrap());
-        let (text, skipped) = sections(&home, &hub, Some(128)).unwrap();
+        let (text, skipped) = sections(&home, &hub, Some(128), "qwen3.6-35b-a3b").unwrap();
         assert!(text.contains("[gemma-4-26b-a4b]"), "{text}");
         assert_eq!(skipped.len(), 1, "{skipped:?}");
+        // A base model of the same name keeps it; the catalog's is left out.
+        let (text, skipped) = sections(&home, &hub, Some(128), "gemma-4-26b-a4b").unwrap();
+        assert!(!text.contains("[gemma-4-26b-a4b]"), "{text}");
+        assert!(skipped.iter().any(|s| s.contains("already has that name")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
