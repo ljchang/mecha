@@ -195,10 +195,11 @@ pub fn alias_for(model: &Path) -> String {
     let a = a.trim_matches('-').to_string();
     if a.is_empty() {
         "local".into()
-    } else if a == PINNED_ALIAS {
+    } else if a == PINNED_ALIAS || crate::catalog::entry(&a).is_some() {
         // The production name means the pinned row with its sampling and
         // draft lines; a brought file of the same name gets neither, so it
-        // is not given the name.
+        // is not given the name. A catalog id is a section of its own in the
+        // same file (review of #727).
         format!("{a}-own")
     } else {
         a
@@ -912,6 +913,11 @@ mod tests {
         assert_eq!(
             alias_for(Path::new(&format!("/m/{PINNED_ALIAS}.gguf"))),
             format!("{PINNED_ALIAS}-own")
+        );
+        // A catalog id is its own section in the same presets file.
+        assert_eq!(
+            alias_for(Path::new("/m/gemma-4-26b-a4b.gguf")),
+            "gemma-4-26b-a4b-own"
         );
     }
 

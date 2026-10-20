@@ -396,6 +396,14 @@ pub(super) async fn add(
             .map(|d| format!(", and `follow_loaded = true` on [providers.{d}] so default runs follow the model you load"))
             .unwrap_or_default()
     ));
+    let followed = router::followed_bases(cfg).contains(&router::base(&base));
+    if use_after && follow.is_none() && !followed {
+        say_line(
+            "  and does not switch to it: no provider entry follows this router \
+             (`follow_loaded = true`), so there is nothing a switch would reach — set it on the \
+             entry that names this router, then `mecha model use`",
+        );
+    }
     if let Some((d, f)) = &shadowed {
         say_line(&format!(
             "  [providers.{d}] is in {}, which mecha does not edit — add `follow_loaded = true` \
@@ -516,7 +524,18 @@ pub(super) async fn add(
         } else {
             super::model::Out::Text
         };
-        return super::model::use_(&cfg, e.provider, 600, false, out).await;
+        // Installed either way; a switch that cannot follow says so, rather
+        // than a bare refusal that reads as the install failing (review of
+        // #727).
+        return super::model::use_(&cfg, e.provider, 600, false, out)
+            .await
+            .with_context(|| {
+                format!(
+                    "{id} is installed and on the router, and was not switched to — `mecha model \
+                     use {}` switches to it",
+                    e.provider
+                )
+            });
     }
     load_back(&cfg, &base, previous, &mut |l| say_line(l)).await;
     if json {
