@@ -143,7 +143,13 @@ audio, copied in, read-only — and nothing of its text: who the agent is
 comes from the study (S10). Its config is written fresh by the wiring, not
 derived: `[security]` is taken from the owner's field by field — the
 owner's value where it narrows a seat, the strictest value where it would
-widen one (§4a);
+widen one (§4a). "Strictest" is defined only for the three fields that
+bear on a seat: `trifecta` (always enforced), `mark_untrusted_output`
+(always on) and `block_sends_after_private` (the owner's, §4a). The other
+three — `block_private_ips`, `allowed_domains`, `blocked_domains` — guard
+the fetch and search tools a seat does not have, and an empty domain list
+is the *widest* value rather than the strictest, so they are copied as the
+owner's and nothing is inferred from them;
 `[providers]` names only the loopback router, with no key, and carries
 the three fields the seat depends on from the owner's router entry:
 `context_window` (it must equal the router's `-c / -np`, as everywhere —
@@ -306,9 +312,12 @@ model `served_props` reported, and the HRP settings it ran under, so a seat
 can be read back the way a trial is. Seat transcripts stay out of the
 owner's run corpus and reflection mining by a recorded fact, not only by
 where they live: a seat's session carries its own `SessionKind`, and the
-corpus `Scan` excludes it as it excludes `Test` and `Experiment` — the
-variant alone is not enough, since `Scan::admits` admits every kind it does
-not name. Their location (outside `$MECHA_HOME/sessions`, which the corpus
+corpus `Scan` excludes it as it excludes `Test` and `Experiment`. The
+variant alone is not enough, and the reason is across binary versions: a
+reader built before the variant exists loads the unknown kind as `None`
+(`de_lenient_kind`), and `Scan::admits` admits `None` like every kind it
+does not name — so the variant guards readers built after it, and the
+location guards the ones built before. Their location (outside `$MECHA_HOME/sessions`, which the corpus
 reads without recursing) is the second guard, not the only one, so a
 recursive reader added later still cannot mine strangers' conversations.
 The repo's own guard must see them too: `scripts/check-private.py` refuses
@@ -337,7 +346,21 @@ the system prompt silently. The blast radius is bounded by everything
 mecha does enforce (no owner stores, no mecha tools, a crisis sensor no
 prompt can turn off), but the contract is HyperStudy's to keep. This is HyperStudy §4.4's
 `persona: "hyperstudy"`, the ownership it builds today. Each replacement
-re-pays the cached prefix once, which is the study's cost to choose. The
+re-pays the cached prefix once, which is the study's cost to choose.
+
+**`instructions` is bounded, and an oversized one is refused.** The system
+prompt is the one part of a request compaction cannot cut: the loop's only
+overflow recovery is summarising `messages`, and `ContextOverflow` never
+retries. So a `session.update` whose `instructions` would not fit leaves a
+permanently dead seat whose cause reads as a model-server fault. The seat
+refuses it at the door with a typed rejection on that `session.update`,
+never truncating and never accepting it, under §4's "refused, not ignored"
+rule. The bound is a share of the seat's `context_window` and is counted in
+bytes: a byte-level tokenizer spends at least one byte per token, so bytes
+bound tokens from above with no tokenizer call, and the bound errs toward
+refusing. The share is set with the budgets, from a measured seat (§9).
+The crisis-resources slot already has its own bound and fallback (§7);
+this is the other trusted slot getting the same treatment. The
 only harness text a seat adds is what the loop needs mechanically (tool
 results, the context items of §4a, and the clock), never a claim about who
 the agent is or who it is talking with. The clock needs saying: the
@@ -360,7 +383,8 @@ HyperStudy's to define):
 - **Session.** Accept `session.update`; map `turn_detection` (below);
   `instructions` to the system prompt (§3); `tools` to ClientTools;
   `audio.output.voice` accepted only as null (`preset: null`, since the
-  named persona supplies the voice) and refused otherwise. A field mecha
+  named persona supplies the voice) and refused otherwise; `instructions`
+  over the seat's bound (§3) refused. A field mecha
   does not support is **refused, not ignored** —
   HyperStudy's conformance asks for exactly that.
 - **Silent forced answers.** HyperStudy asks an on-screen question with a
@@ -398,7 +422,9 @@ only way out of a seat is the session it answers. The sealed home keeps the
 *owner's* data out; it does not keep the private leg from arming. An image
 arms `private` wherever it sits in a conversation
 (`Taint::arm_for_content`), and with the stranger arming `untrusted` from
-the first word, a seat is armed from its first study screen. That is
+the first word, a seat is armed from the moment its first study screen
+lands. That needs saying at the fold (below), because an image the loop
+did not produce is otherwise counted only from the next run. That is
 correct — the interlock cannot know a study image from the owner's — and it
 makes what a ClientTool declares the question that decides whether a seat
 can act at all.
@@ -455,6 +481,20 @@ mid-round half is not free either: the steering queue carries text
 (`queued_input` is a `VecDeque<String>`), and an image context item needs it
 to carry `Block`s. That widening is a core change that touches every
 steering caller, the TUI and web chat included, and §8 step 3 names it.
+
+**A folded image arms at the fold, not at the next run.** Taint is
+recomputed at run start (`Agent::arm_at_start`, over the messages and the
+notes), and the loop's one mid-run arming site is the tool-result image
+branch, which exists for exactly this reason: so the pixels "are counted
+from the turn they arrive — the same answer, a run sooner". A context
+image folded mid-round through the steering path passes neither. Left as
+it is, a send later in that same run is judged on the taint from before
+the screen arrived, which matters when the owner has
+`block_sends_after_private` on and in what the session records. So the
+drain that folds steered `Block`s arms them in the same place, through
+`arm_for_content` over the folded blocks, beside the tool-result branch.
+The wiring's deferred fold needs nothing new: its folds land between runs,
+and the next run's `arm_at_start` counts them before anything is sent.
 
 **Compaction.** A long voice seat reaches the slot's `context_window`, and
 compaction applies as it does anywhere: the cut lands on an assistant
@@ -771,7 +811,11 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    with no `response.create` followed by the participant speaking — the
    sequence that would otherwise send two user messages. And a context item
    arriving mid-reply in a turn with no tool call, which must wait for the
-   run rather than enter a message already sent.
+   run rather than enter a message already sent. And an image folded
+   mid-round with `block_sends_after_private` on: the next send in that same
+   run is refused, and the session records the arming in that round; plus
+   an `instructions` over the bound refused on its `session.update` with the
+   seat still open on its previous instructions.
 4. **The voice transport on loopback** — the first non-WebRTC transport,
    with its own entrypoint (§2); the worker takes its facade address (and the
    two endpoints derived from it) per call from the relay — over
