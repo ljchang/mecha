@@ -135,8 +135,12 @@ participant, so the pilot tests what participants get.
 **The principal alone decides:**
 
 - whether the conversation starts armed untrusted;
-- which approver is installed. A guest's approver can only return
-  `Decision::Blocked`, so the loop keeps choosing the refusal prefix from
+- which approver is installed. A guest's approver never returns
+  `Decision::Deny`: it allows a call in the seat's catalogue and returns
+  `Blocked` for anything else. Seat tool calls do reach it. They are
+  dispatched as proxy `Tool` impls through the same interlock → hook →
+  approver path as any tool (a seat has no hooks), so no tool class
+  bypasses the approver. The loop keeps choosing the refusal prefix from
   the variant alone (`Denied by the user:` mined, `Blocked by policy:`
   never). The principal is never a second input to that `match`: an input
   there beside the variant is how machine policy could be labelled as a
@@ -252,6 +256,7 @@ capabilities never meeting, and free composition is how that breaks.
 | **Safety** | — | crisis sensor (per-persona switch), dose, lock | crisis sensor, forced on |
 | **Post-run** | appraisal, title, staged-draft card | citations | — |
 | **Voice binding** | the worker's voice | the persona's voice, checked at bind | the persona's voice, checked by the wiring |
+| **Workspace** (the path jail every model-supplied path resolves inside, `ToolCtx::resolve`) | `~/.mecha/work/web/<key>/`, plus the owner's grants | `~/.mecha/work/persona/<key>/`, no grants | the seat directory's own `workspace/`, no grants (PERSONA-SERVING §3) |
 
 **What each function becomes:**
 
@@ -265,6 +270,14 @@ capabilities never meeting, and free composition is how that breaks.
 | Voice calls | yes | yes | yes, over HRP |
 | Background jobs, steer, cancel | one implementation | the same | the same |
 | Slack | yes | never (Slack's servers would read it) | — |
+
+**The jail root is fixed by profile and recording in code, never by a
+connection or setup.** `Incognito` replaces any profile's root with its
+tmpfs room. The `upload` and `file` routes (§1) are descriptor-relative
+I/O inside that root (`workspace_files.rs`), so the host owns the root and
+the doors only carry bytes. For a guest, where the jail is rooted is a
+security answer, not a detail: a seat's root sits inside its sealed home,
+and `Session::open` refuses a root outside it.
 
 **Separate on purpose:**
 
@@ -432,6 +445,9 @@ behaviour visible before it moves.
    them is in a request. So the harness takes a second snapshot beside the
    body, compared old path against new in the same way:
    - **the conversation's taint axes** after each turn;
+   - **the run's jail root** (`RunContext`) and **which approver was
+     installed**, so a moved workspace or the wrong approver fails the
+     step rather than passing it;
    - **each dispatched tool's `Capabilities`** and its result's `external`
      flag;
    - **at least one fixture whose expected outcome is an interlock
@@ -484,6 +500,10 @@ means §9.2's two snapshots: the rendered bodies and the security snapshot.
    no `Deny` able to originate under a guest principal, a guest-labelled
    session refused memory writes and spoken confirmations, and an
    Owner × Persona × Incognito combination refused memory writes.
+Steps 2–4 are written for O1's first answer, both web chats moving
+together. Under the second (personas first), each of these steps moves the
+persona chat alone, and the assistant chat repeats steps 2–4 after step 6.
+
 2. **The job queue and its delivery** into core; both web chats on one
    instance. Exit: identical; the late-job tests of both files green
    against the one implementation.
