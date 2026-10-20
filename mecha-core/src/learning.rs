@@ -4061,6 +4061,9 @@ pub struct ReplyTally {
     pub lessons: usize,
     pub skips: usize,
     pub unusable: usize,
+    /// An outcome a newer build wrote: neither a skip nor a reply that
+    /// could not be used, so counted on its own.
+    pub unknown: usize,
 }
 
 impl ReplyTally {
@@ -4068,15 +4071,20 @@ impl ReplyTally {
         match outcome {
             ReplyOutcome::Lesson => self.lessons += 1,
             ReplyOutcome::Skip => self.skips += 1,
-            ReplyOutcome::Unusable | ReplyOutcome::Unknown => self.unusable += 1,
+            ReplyOutcome::Unusable => self.unusable += 1,
+            ReplyOutcome::Unknown => self.unknown += 1,
         }
     }
 
     pub fn line(&self) -> String {
-        format!(
+        let mut line = format!(
             "{} lesson(s), {} skip(s), {} unusable",
             self.lessons, self.skips, self.unusable
-        )
+        );
+        if self.unknown > 0 {
+            line.push_str(&format!(", {} this build cannot read", self.unknown));
+        }
+        line
     }
 }
 
@@ -9120,7 +9128,10 @@ mod correction_attribution {
         assert_eq!(rows[1].outcome, ReplyOutcome::Unknown);
         let mut tally = ReplyTally::default();
         rows.iter().for_each(|r| tally.count(r.outcome));
-        assert_eq!(tally.line(), "0 lesson(s), 1 skip(s), 1 unusable");
+        assert_eq!(
+            tally.line(),
+            "0 lesson(s), 1 skip(s), 0 unusable, 1 this build cannot read"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

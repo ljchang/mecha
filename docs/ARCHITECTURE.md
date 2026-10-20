@@ -8051,8 +8051,12 @@ carries its own count rule.
   apart from another's. **No text.** Rows are written with the reflections
   they belong to: a session's at its all-or-nothing commit, an outbox
   item's when it is marked mined. A retried pass therefore counts no reply
-  twice. `ReplyOutcome` is a wire format: an unknown outcome reads as
-  `Unknown`.
+  twice. `--remine-untrusted` records none: that backfill never marks a
+  session mined and is keyed by the reflections on file, which a skip does
+  not add, so a rerun would count the same skip again. `ReplyOutcome` is a
+  wire format: an unknown outcome reads as `Unknown` and is counted on its
+  own, never as unusable. `forget` purges the ledger by session and by
+  forgotten reflection, like the validation ledgers.
 - **The baseline before it is partial.** Skips used to be discarded, and
   only steer and denial skips were ever printed to the learning log
   (`· [steer] no lesson drawn`). Followup skips, the common case, have no
