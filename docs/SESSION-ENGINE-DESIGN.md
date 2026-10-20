@@ -118,7 +118,7 @@ pub enum SessionRecording {
 - **Recording** (`SessionRecording`) is its own axis. The type names are
   chosen clear of `session::Session`, the public store type the host will
   hold, and of the `Recording` enum in `serve/chat.rs` that this axis
-  replaces (plus two test-only `Recording` fixtures). It is what makes an incognito persona
+  replaces (plus four test-only `Recording` fixtures). It is what makes an incognito persona
   a combination rather than a feature.
 
 `HostedSession::open(principal, profile, recording, setup)` refuses every
@@ -184,9 +184,12 @@ and `SessionRecording` ride the same record, and CLAUDE.md's wire-format
 rule would by default degrade an unknown variant to `None` or the default.
 Here the defaults are exactly `Assistant` and `Kept`, the admitted half of
 the corpus gate. So an unparseable `Profile` loads as no profile (it opens
-nothing and is refused the corpus), and an unparseable `SessionRecording`
-loads as `Sealed` (kept, never in the corpus). Neither is ever read as the
-variant that admits.
+nothing and is refused the corpus). An unparseable `SessionRecording` is
+not relabelled as any variant: `Sealed` would assert a guest directory an
+owner file is not in, and a combination §2's table refuses. It loads as
+*degraded*: kept, never in the corpus, readable, and not resumable, which
+is the same consequence the principal degrade states. Neither axis is
+ever read as the variant that admits.
 
 **And each degrade is reported.** A fallback taken silently would shrink
 the corpus with nothing explaining why. `doctor.rs` already rules that an
@@ -457,8 +460,11 @@ behaviour visible before it moves.
    - **A request recorder exported from `mecha-core`** behind a test-only
      feature, so `mecha-cli`'s old path and core's new host drive the same
      recorder. Today's candidates are private `#[cfg(test)]` fixtures that
-     don't fit. `agent.rs`'s `ScriptedProvider` records `CompletionRequest`s
-     but only inside core's tests. `provider/mod.rs`'s `Recording` keeps
+     don't fit, by *visibility* rather than shape. The closest is
+     `distill.rs`'s test-only `Recording`, which already keeps every
+     `CompletionRequest` it was sent, exactly the recorder step 0 wants, and
+     is private to that module. `agent.rs`'s `ScriptedProvider` records
+     `CompletionRequest`s too, but only inside core's tests. `provider/mod.rs`'s `Recording` keeps
      only `req.model`, and `agent.rs`'s `Recording` is an `Approver`.
    - **A test-only render for each provider's body**, of which `openai.rs`'s
      `pub(crate) body_for_test` is the seed on one side. On the other,
@@ -492,9 +498,18 @@ behaviour visible before it moves.
      `HookSet`**, **the grant set** (standing, live, and whether
      `request_access` is requestable: `Grants::none()` and
      `Grants::standing_only()` are distinct facts, and `resolve_for` admits
-     a path outside the root when a grant covers it), and **the effective
-     `SecurityConfig`** the run was built with, so a seat inheriting an
-     owner's `trifecta = "allow"` shows. That way a moved workspace, the wrong approver, a lost
+     a path outside the root when a grant covers it), **the effective
+     `SecurityConfig`** the run was built with, and **the sequence of
+     decision points consulted per dispatched call** (interlock, then hook,
+     then approver), not only their identities. Order is a guarantee §2
+     states, and identity alone passes with it reversed. A hook run before
+     the interlock still refuses, but it hands a user command the
+     destination of a call the interlock would have refused, and its
+     fail-closed timeout can stand in for the interlock's refusal. One
+     fixture installs a `pre_tool` hook in an armed conversation calling a
+     `Chosen` tool and asserts the hook was never consulted. With all of
+     these recorded, a seat inheriting an owner's `trifecta = "allow"`
+     shows, and a moved workspace, the wrong approver, a lost
      incognito allowlist or observer hooks running in incognito each fail
      the step rather than pass it. The last two are set in the very block
      step 4 moves (`cx.withheld`, and `cx.hooks` cleared to a default
@@ -567,6 +582,7 @@ means §9.2's two snapshots: the rendered bodies and the security snapshot.
    own separate job. With every surface passing `Owner` until step 7, a
    corpus rule that ignored the principal would otherwise stay green for
    six steps.
+
 Steps 2–4 are written for O1's first answer, both web chats moving
 together. Under the second (personas first), each of these steps moves the
 persona chat alone, and the assistant chat repeats steps 2–4 after step 6.
