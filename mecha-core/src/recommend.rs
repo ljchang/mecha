@@ -292,7 +292,8 @@ const QWEN36_MODEL: &str = "Qwen3.6-35B-A3B Q4_K_M, with its vision projector";
 /// MTP file is larger than the ~20.7 GB generic figure on the page), plus
 /// the KV cache at 22.0 KiB per token (`LLAMA-SERVER.md`, §What the KV
 /// cache actually costs) — every term binary, so nothing mixes bases.
-const QWEN36_FILES_MB: u32 = ((QWEN36_FILES[0].bytes + QWEN36_FILES[1].bytes) / 1_048_576) as u32;
+pub(crate) const QWEN36_FILES_MB: u32 =
+    ((QWEN36_FILES[0].bytes + QWEN36_FILES[1].bytes) / 1_048_576) as u32;
 /// `slots` adds each slot's ~64 MiB of recurrent (SSM) state, the
 /// constant-size part of the cache beside the per-token figure.
 const fn qwen36_with_cache_mb(tokens: u32, slots: u32) -> u32 {

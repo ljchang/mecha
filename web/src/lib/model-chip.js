@@ -198,12 +198,13 @@ export function gib(bytes) {
   return `${(bytes / 1073741824).toFixed(1)} GiB`;
 }
 
-/// Why the catalog offers nothing here, when it offers nothing and says why
-/// — an unreadable catalog arrives as a refusal with no offers, and an empty
-/// section with no word reads as a build with no catalog (review of #727).
+/// Why nothing in the catalog can be installed here — this router is not
+/// mecha's, or the catalog could not be read — as a line the menu shows.
+/// A title on each greyed row is hover-only, so unreachable on a phone, and
+/// an empty section with no word reads as a build with no catalog (review
+/// of #727).
 export function catalogTrouble(data) {
-  const cat = data?.catalog;
-  return cat && !(cat.offers ?? []).length && cat.refusal ? cat.refusal : null;
+  return data?.catalog?.refusal ?? null;
 }
 
 /// The catalog models not served by `router`, as rows. A model this machine
@@ -229,6 +230,7 @@ export function available(data, router) {
         note: o.note,
         download: o.download_bytes ?? 0,
         memoryMb: o.memory_mb ?? null,
+        unfit: !!o.unfit,
         disabled: !!why,
         why,
       };

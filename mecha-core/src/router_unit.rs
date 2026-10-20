@@ -745,6 +745,11 @@ pub fn remove(m: &Machinery, naming: &Naming) -> Result<()> {
     let bin = bin_dir(home);
     gone(&bin.join("mecha-router"), &[ID])?;
     gone(&presets_path(home), &[ID])?;
+    // The catalog's record goes with the presets it renders into, or the
+    // directory stays and `installed_by_mecha` answers for a router that is
+    // gone (review of #727). Its progress file is never recorded.
+    gone(&crate::catalog::record_path(home), &[ID])?;
+    crate::catalog::progress_clear(home);
     // The launcher makes `no-cache` beside the presets on every start: the
     // tree goes with the record, as the drop-in directory does above.
     let _ = std::fs::remove_dir(presets_path(home).with_file_name("no-cache"));
