@@ -221,8 +221,12 @@ next to `de_lenient_kind`, yields a raw three-state value per axis:
 *absent*, *parsed*, or *unparseable*. The location-aware loader then
 resolves those into the effective axes, beside where `list_counting`
 already applies `marks.apply` after `peek_meta`. The resolved values are
-a type whose admitting variants are constructible only through that
-loader. So `Scan::admits`' eleven call sites and
+a type with exactly two constructors. The loader builds one from a file.
+`HostedSession::open` builds one from the principal its door
+authenticated and the profile defined in code, which is the write path:
+the one caller that legitimately has no file to resolve from, and which
+the writer then serializes. Nothing else can build the type, so it is
+the admitting variants' only source. So `Scan::admits`' eleven call sites and
 `SessionMeta::admitted_by_default()`, which has no path by construction,
 can read only resolved axes, and a meta that skipped resolution does not
 type-check rather than admitting or silently dropping. The header is a
@@ -410,9 +414,13 @@ and `HostedSession::open` refuses a root outside it.
 **A subagent is not a `HostedSession`.** It is a child conversation inside
 its parent's session, as today: it inherits the parent's principal and
 taint (CLAUDE.md: delegation does not create a clean boundary), and only
-the Assistant profile has subagents. The core-internal `run_in` callers
-(`subagent.rs`, `gossip.rs`, `mismatch.rs`, `planning.rs`, `face.rs`) stay
-where they are, already in core and never doors.
+the Assistant profile has subagents. The core-internal `Agent::run_in`
+callers (`subagent.rs`, `gossip.rs`, `mismatch.rs`, and `replay_run.rs`,
+the replay driver shared with the validation probes, whose continuation
+runs over `Conversation::resumed(seed, taint)`) stay where they are,
+already in core and never doors. `replay_run.rs` gets an inventory row
+like `replay_persona.rs`, since the taint it carries into a resumed
+conversation is a behaviour §9.2 protects.
 
 **Separate on purpose:**
 
@@ -639,8 +647,13 @@ behaviour visible before it moves.
      appear. The run's `Budget` (its `max_turns`) joins the snapshot,
      since a task chat reverting to 40 turns renders identically and would
      read to the owner as the model giving up. With all of
-     these recorded, plus two facts from `prepare_carrying`, which also
-     moves (§9.5): **the outbox route** (whether one is installed, and its
+     these recorded, plus three facts from `prepare_carrying`, which also
+     moves (§9.5): **the connected MCP servers**, each with its effective
+     `env_passthrough` and capability override (the `env_clear()`
+     allowlist `mcp::connect_all` spawns them under, which renders
+     identically if lost, measured by a fixture using
+     `nosy_mcp_server.py` rather than asserted about an argv); **the
+     outbox route** (whether one is installed, and its
      routed and publish name sets, so a fixture dispatching a routed tool
      must leave a draft rather than an effect), and **the effective
      `SandboxConfig`, `can_reach_network()`, and whether
