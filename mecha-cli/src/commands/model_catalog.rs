@@ -104,10 +104,10 @@ fn gib(bytes: u64) -> String {
 }
 
 /// `mecha model catalog`.
-pub(super) async fn show(cfg: &Config, json: bool) -> Result<()> {
+pub(super) async fn show(json: bool) -> Result<()> {
     let here = Here::read()?;
     let offers = here.offers()?;
-    let served = served_ids(cfg, &here.naming).await;
+    let served = served_ids(&here.naming).await;
     if json {
         println!(
             "{}",
@@ -168,7 +168,7 @@ pub(super) async fn show(cfg: &Config, json: bool) -> Result<()> {
 
 /// The ids the router at the naming's port serves, or `None` when it did not
 /// answer — never an empty list for a router that is down.
-async fn served_ids(_cfg: &Config, naming: &Naming) -> Option<Vec<String>> {
+async fn served_ids(naming: &Naming) -> Option<Vec<String>> {
     router::models(&naming.base())
         .await
         .map(|l| l.into_iter().map(|m| m.id).collect())
@@ -484,6 +484,34 @@ async fn load_back(cfg: &Config, base: &str, previous: Option<String>, say: &mut
     }
 }
 
+/// What in the config still names `[providers.<provider>]` — the default, a
+/// fallback, a subagent — said as what to change first. Removing a table
+/// something names fails every run after, not this one (review of #727).
+fn still_named(cfg: &Config, provider: &str) -> Option<String> {
+    let mut by = Vec::new();
+    if cfg.default_provider == provider {
+        by.push("`default_provider`".to_string());
+    }
+    for (name, p) in &cfg.providers {
+        if p.fallbacks.iter().any(|f| f == provider) {
+            by.push(format!("the fallbacks of [providers.{name}]"));
+        }
+    }
+    for s in &cfg.subagents {
+        if s.provider.as_deref() == Some(provider) {
+            by.push(format!("the subagent {:?}", s.name));
+        }
+    }
+    (!by.is_empty()).then(|| {
+        format!(
+            "{} still name{} [providers.{provider}] — point {} at another provider first",
+            by.join(", "),
+            if by.len() == 1 { "s" } else { "" },
+            if by.len() == 1 { "it" } else { "them" }
+        )
+    })
+}
+
 /// `mecha model remove <id>`.
 pub(super) async fn remove(global: &GlobalOpts, cfg: &Config, id: &str, yes: bool) -> Result<()> {
     let here = Here::read()?;
@@ -494,6 +522,9 @@ pub(super) async fn remove(global: &GlobalOpts, cfg: &Config, id: &str, yes: boo
         bail!("{id} is not installed from the catalog here");
     }
     if let Some(why) = here.router_refusal()? {
+        bail!("nothing was removed: {why}");
+    }
+    if let Some(why) = still_named(cfg, e.provider) {
         bail!("nothing was removed: {why}");
     }
     let held: u64 = e.pins.iter().map(|p| p.file.bytes).sum();
@@ -592,6 +623,34 @@ mod tests {
         assert_eq!(get("context_window"), Some((g.ctx / g.slots).to_string()));
         assert_eq!(get("temperature").as_deref(), Some("0.6"));
         assert!(provider_settings(u, 16, "x").is_err());
+    }
+
+    /// A table the default, a fallback or a subagent still names is not
+    /// removed: the next run would find no such provider (review of #727).
+    #[test]
+    fn a_table_something_still_names_is_not_removed() {
+        let mut cfg = Config {
+            default_provider: "local".into(),
+            ..Default::default()
+        };
+        cfg.providers
+            .insert("qwen38".into(), router_table("qwen3.8-27b", false));
+        assert_eq!(still_named(&cfg, "qwen38"), None);
+        cfg.default_provider = "qwen38".into();
+        assert!(still_named(&cfg, "qwen38")
+            .unwrap()
+            .contains("`default_provider` still names"));
+        cfg.default_provider = "local".into();
+        cfg.providers.insert(
+            "local".into(),
+            ProviderConfig {
+                fallbacks: vec!["qwen38".into()],
+                ..router_table("qwen3.6-35b-a3b", true)
+            },
+        );
+        assert!(still_named(&cfg, "qwen38")
+            .unwrap()
+            .contains("the fallbacks of [providers.local]"));
     }
 
     /// `follow_loaded` goes on the default only when it names this router and

@@ -676,10 +676,20 @@ pub async fn fetch(
 ) -> Result<()> {
     let mut todo = Vec::new();
     for p in entry.pins {
-        if crate::fetch::cached(hub, p.repo, p.revision, &p.file, false)? == Cached::Verified {
-            say(&format!("{}/{} is in the cache", p.repo, p.file.path));
-        } else {
-            todo.push(p);
+        match crate::fetch::cached(hub, p.repo, p.revision, &p.file, false)? {
+            Cached::Verified => say(&format!("{}/{} is in the cache", p.repo, p.file.path)),
+            Cached::Unverified => {
+                // Put there by hand: hashed against the pin, not fetched —
+                // and so not in the total the plan priced (`offers`).
+                say(&format!(
+                    "checking {}/{} against its pin",
+                    p.repo, p.file.path
+                ));
+                crate::fetch::fetch_hub_file(hub, p.repo, p.revision, &p.file, &mut |_| {})
+                    .await
+                    .with_context(|| format!("checking {}/{}", p.repo, p.file.path))?;
+            }
+            _ => todo.push(p),
         }
     }
     let total: u64 = todo.iter().map(|p| p.file.bytes).sum();
