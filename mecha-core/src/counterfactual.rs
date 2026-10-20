@@ -139,6 +139,9 @@ pub struct FirstRepeat {
 /// - **A later turn, never the same one.** A failure is repeated only by a
 ///   turn that came after its result: a call doubled inside one parallel
 ///   batch was issued before either answer arrived, so nothing had been read.
+/// - **Within one run.** A top-level user turn between the failure and the
+///   call ends the streak: the owner may have changed the world and asked
+///   for another try, which is no dead end.
 /// - **Once per failure.** The third and fourth attempts are the same
 ///   decision made again; counting each would weight one stuck episode
 ///   several times in a draw that is meant to be uniform.
@@ -164,6 +167,21 @@ pub fn first_repeats(messages: &[Message]) -> Vec<FirstRepeat> {
     let mut repeated: HashSet<(String, String)> = HashSet::new();
     let mut out = Vec::new();
     for (at, message) in messages.iter().enumerate() {
+        // A top-level user turn starts a new run: a failure before it is not
+        // one this run walked into again. The owner may have fixed the cause
+        // and said "try again", and an arm that obeys must not be graded as
+        // walking into a dead end with no one's act to say otherwise —
+        // `truncate_after_run`'s boundary (found on review of #729).
+        if message.role == Role::User
+            && !message
+                .content
+                .iter()
+                .any(|b| matches!(b, Block::ToolResult { .. }))
+        {
+            seen.clear();
+            repeated.clear();
+            continue;
+        }
         if message.role != Role::Assistant || message.harness {
             continue;
         }
@@ -1520,6 +1538,13 @@ mod tests {
         let mut harness = twice(MISSING, MISSING);
         harness[3].harness = true;
         assert!(first_repeats(&harness).is_empty(), "the harness's own turn");
+
+        let mut retried = twice(MISSING, MISSING);
+        retried.insert(3, Message::user("I just created it, try again"));
+        assert!(
+            first_repeats(&retried).is_empty(),
+            "the owner asked for another try in a new run (review of #729)"
+        );
     }
 
     fn repeat_point() -> ProbePoint {

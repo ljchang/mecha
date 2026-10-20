@@ -1076,8 +1076,8 @@ fn decision_turn(
         .iter()
         .find(|m| m.role == crate::message::Role::Assistant && !m.harness)?;
     let uses = turn.tool_uses();
-    // Names, not inputs: a staged call's trace may carry the defaults the
-    // loop pinned into it, which the message's block does not.
+    // Names suffice: which calls the turn made is the question here, and
+    // the verdict compares their inputs itself.
     let head = trace.get(..uses.len())?;
     let mut issued: Vec<&str> = uses.iter().map(|(_, name, _)| *name).collect();
     let mut traced: Vec<&str> = head.iter().map(|c| c.name.as_str()).collect();
