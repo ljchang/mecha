@@ -518,7 +518,11 @@ pub(super) async fn add(
 
     // The config just written is what the switch below must read.
     let cfg = super::model::load_config(global)?;
-    if use_after {
+    // With no entry following the router a switch has nothing to reach:
+    // the install stands, the plan already said it would not switch, and
+    // `use_` would only refuse (review of #727).
+    let switchable = router::followed_bases(&cfg).contains(&router::base(&base));
+    if use_after && switchable {
         let out = if json {
             super::model::Out::Json
         } else {
@@ -538,11 +542,17 @@ pub(super) async fn add(
             });
     }
     load_back(&cfg, &base, previous, &mut |l| say_line(l)).await;
+    let unswitched = (use_after && !switchable).then_some(
+        "not switched to: no provider entry follows this router — set `follow_loaded = true` \
+         on the entry that names it, then `mecha model use`",
+    );
     if json {
         println!(
             "{}",
-            serde_json::json!({ "installed": id, "provider": e.provider })
+            serde_json::json!({ "installed": id, "provider": e.provider, "not_switched": unswitched })
         );
+    } else if let Some(why) = unswitched {
+        println!("\n{id} is installed, and {why}.");
     } else {
         println!(
             "\n{id} is installed. `mecha model use {}` (or the chip) loads it.",
@@ -618,6 +628,15 @@ pub(super) async fn remove(global: &GlobalOpts, cfg: &Config, id: &str, yes: boo
     }
     if let Some(why) = here.router_refusal()? {
         bail!("nothing was removed: {why}");
+    }
+    // `add` rewrites the same record; one catalog change at a time.
+    if let Some(p) = catalog::progress_read(home) {
+        bail!(
+            "nothing was removed: a catalog install is running ({} — {}, pid {})",
+            p.id,
+            p.phase,
+            p.pid
+        );
     }
     // Read only: a check must not create the trigger store as a side effect.
     let triggers: Vec<(String, Option<String>)> =
