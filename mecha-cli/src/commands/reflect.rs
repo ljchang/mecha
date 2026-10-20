@@ -329,6 +329,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             // only with the lever on (R43; `contrasts` is `None` off).
             let beside = contrast_for(contrasts.as_ref(), &t, intervention, &meta.id);
             let reflected = match reflector.reflect_typed(&input, beside.as_ref()).await {
+                // The backfill never marks a session mined and is keyed by
+                // the reflections on file, which a skip does not add: a
+                // rerun asks the same intervention again, so its replies
+                // would be counted on every pass (found on review of #730).
+                Ok(reflected) if args.remine_untrusted => Ok(reflected.outcome.into_lesson()),
                 Ok(reflected) => {
                     replies.extend(reflected.record(
                         intervention.trigger,
