@@ -63,7 +63,8 @@ pub enum Kind {
     Gate,
     /// `mecha sessions compare` (row 2d-1, O1): K policies driven a short
     /// horizon from an informative decision point of a recorded session,
-    /// graded by the owner's recorded verdict. One kind per point kind, so
+    /// graded by the owner's recorded verdict (a repeat's, by the
+    /// recording's own results). One kind per point kind, so
     /// `Summary::by_kind` reads the mix without a new field: an owner's
     /// steer, an owner's denial, a failed check, a draft the owner rewrote
     /// before sending, a draft the owner rejected, and a surprise (a

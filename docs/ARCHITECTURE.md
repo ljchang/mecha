@@ -7543,7 +7543,8 @@ through the store above (a `point-*` `Kind` per point kind).
   corpus itself, which is the point: every other posed kind waits on an
   owner's act, and the harness gate had decided one point in total.
 - **The owner's recorded verdict decides, through a structural validator
-  only** (R27) — the recording's own, for a repeat (above). Steer and denial reuse `StructuralSteer`/`StructuralDenial`.
+  only** (R27) — the recording's own, for a repeat (above). Steer and
+  denial reuse `StructuralSteer`/`StructuralDenial`.
   A draft point is `ProbeKind::Draft`, branched like a denial (the whole
   staging turn regenerated), and graded by `counterfactual::draft_verdict`
   (`ReleasedDraft`/`RejectedDraft`): **an arm passes only by producing the

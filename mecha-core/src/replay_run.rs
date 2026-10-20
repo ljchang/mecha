@@ -1051,8 +1051,17 @@ pub async fn drive_branch(
 /// How many calls the first turn a branch regenerated made — the first
 /// assistant message past the `seeded` prefix — when that can be read back
 /// faithfully; see [`ReplayReport::decision_turn_calls`]. Checked against the
-/// trace rather than trusted: the turn's calls must open it, name for name,
-/// or the count is `None`, never a guess.
+/// trace rather than trusted: the turn's calls must be the trace's first
+/// entries, name for name, or the count is `None`, never a guess.
+///
+/// **As a multiset, not in block order.** `agent::dispatch` traces a call
+/// settled at the gate (denied, unknown, refused by the phase, staged)
+/// while it approves, ahead of the calls it then executes, so a turn mixing
+/// the two traces out of block order — and a positional check discarded
+/// every such turn (found on review of #729). Every one of the turn's calls
+/// is traced before the next turn's, so the first `n` entries are this
+/// turn's, in some order; the window [`crate::counterfactual`] grades is a
+/// set either way.
 fn decision_turn(
     messages: &[Message],
     seeded: usize,
@@ -1067,12 +1076,14 @@ fn decision_turn(
         .iter()
         .find(|m| m.role == crate::message::Role::Assistant && !m.harness)?;
     let uses = turn.tool_uses();
-    let opens = uses.len() <= trace.len()
-        && uses
-            .iter()
-            .zip(trace)
-            .all(|((_, name, _), call)| *name == call.name);
-    opens.then_some(uses.len())
+    // Names, not inputs: a staged call's trace may carry the defaults the
+    // loop pinned into it, which the message's block does not.
+    let head = trace.get(..uses.len())?;
+    let mut issued: Vec<&str> = uses.iter().map(|(_, name, _)| *name).collect();
+    let mut traced: Vec<&str> = head.iter().map(|c| c.name.as_str()).collect();
+    issued.sort_unstable();
+    traced.sort_unstable();
+    (issued == traced).then_some(uses.len())
 }
 
 #[cfg(test)]
@@ -3375,8 +3386,13 @@ mod decision_turn_tests {
                 0,
                 &[call("fs_read"), call("fs_list")]
             ),
+            Some(2),
+            "a gate-settled call is traced ahead of an executed one (review of #729)"
+        );
+        assert_eq!(
+            decision_turn(&messages, seed.len(), 0, &[call("fs_list"), call("todo")]),
             None,
-            "a turn whose calls do not open the trace"
+            "a trace this turn's calls do not open"
         );
         assert_eq!(decision_turn(&seed, seed.len(), 0, &[]), None, "no turn");
         let mut ended = seed.clone();
