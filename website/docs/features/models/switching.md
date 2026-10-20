@@ -79,7 +79,8 @@ on a yes (`--yes` is the yes, given ahead). Every file is checked against the
 sha256 pinned in mecha. The uncensored Qwen3.6 is downloaded with the
 production model's draft head already grafted on, from mecha's own Hugging
 Face repository, so it drafts like the production model. The router is restarted only after the
-downloads, and only once no run is using it, the same wait a switch makes.
+downloads, and only once no run is using it: `add` waits for the runs
+using it to finish (Ctrl-C stops the wait, and the files are kept).
 
 In the web chat the model chip lists catalog models it does not serve yet
 under **Available to download**. Tapping one shows the same figures and an
