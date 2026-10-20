@@ -8,8 +8,9 @@
 //! [`pointwise::ARMS_MAX`] policies — the prompt the run carried, the rules
 //! deployed today for its situation, and none — driven through
 //! [`probe::drive_arm_within`] a short horizon ([`pointwise::HORIZON_TURNS`])
-//! from the point, and graded by the owner's recorded verdict through a
-//! structural validator. Every comparison goes through
+//! from the point, and graded through a structural validator — by the
+//! owner's recorded verdict, or for a repeat by the recording's own
+//! results. Every comparison goes through
 //! [`ComparisonStore::record`], the store's one provenance door.
 //!
 //! **What it costs, and who waits.** Nothing is driven for a point no

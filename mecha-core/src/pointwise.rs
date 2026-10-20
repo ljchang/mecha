@@ -841,7 +841,7 @@ mod tests {
         let points: Vec<Point> = (0..12)
             .map(|i| Point {
                 session_id: format!("s-{}", i % 3),
-                kind: PointKind::ALL[i % 6],
+                kind: PointKind::ALL[i % PointKind::ALL.len()],
                 message_index: i,
                 locator: Locator::Step { step: i },
                 tools_before: vec!["todo".into()],
@@ -865,7 +865,7 @@ mod tests {
         let points: Vec<Point> = (0..12)
             .map(|i| Point {
                 session_id: format!("s-{}", i % 3),
-                kind: PointKind::ALL[i % 6],
+                kind: PointKind::ALL[i % PointKind::ALL.len()],
                 message_index: i,
                 locator: Locator::Step { step: i },
                 tools_before: vec!["todo".into()],
