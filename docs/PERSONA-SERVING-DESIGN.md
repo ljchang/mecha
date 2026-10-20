@@ -135,8 +135,8 @@ operator's home.
 **The seat directory** (`hyperstudy/seats/<seat>/`) holds four things side
 by side, none inside another: `home/` (the guest home, `MECHA_HOME`),
 `workspace/` (the jail, which contains no part of `home/` — `setup`'s rule
-that a workspace never contains the mecha home), `run/` (the sockets, §3
-below) and the manifest.
+that a workspace never contains the mecha home), `run/` (the sockets, under
+*The agent loop is its own process* below) and the manifest.
 
 **It holds:** the named persona's voice — its voice settings and reference
 audio, copied in, read-only — and nothing of its text: who the agent is
@@ -154,11 +154,15 @@ as the owner's and nothing is inferred from them; `[sandbox]` is not the owner's
 at all but written by the wiring as a seat property, as `trifecta` is
 enforced (below, after the launch);
 `[providers]` names only the loopback router, with no key, and carries
-the three fields the seat depends on from the owner's router entry:
+the four fields the seat depends on from the owner's router entry:
 `context_window` (it must equal the router's `-c / -np`, as everywhere —
 without it compaction never fires and the output budget falls back to a
 ceiling too large for the slot), `vision` (without it every study image is
-replaced by a text placeholder while still arming `private`), and
+replaced by a text placeholder while still arming `private`),
+`structured_output` (it defaults to `Disabled`, and the crisis judge sends
+its `response_schema` only when it is on, so without it §7's forced-on
+judge runs without its schema; IMAGE-DESIGN §9's 2026-10-08 ruling sets
+`llama_json` on every router-served provider), and
 `follow_loaded = false`, set as a seat property rather than inherited, as
 `trial_env` sets it for every arm — following whatever the owner last
 loaded would change a seat's model mid-conversation, the other half of §5's
@@ -231,8 +235,10 @@ out.** Nothing confines a whole mecha process today — `shell`, MCP servers
 and two document helpers are wrapped, and experiment trials, the closest
 precedent, get a cleared environment and their own home but no jail. The
 guest facade is the first, through `Sandbox::wrap_argv_with_env` (built for
-long-lived MCP children), with the seat directory as the workspace and
-`MECHA_HOME` in its environment, since bwrap clears it.
+long-lived MCP children). The seat directory is the bind root, because
+bwrap's bound directory must include `run/` and its sockets. The path jail
+is narrower: `ToolCtx::resolve`'s root is the `workspace/` inside it.
+`MECHA_HOME` goes in the environment, since bwrap clears it.
 
 bwrap's network is all or nothing — with the host's network the jail
 reaches the LAN and the tailnet, and with `--unshare-net` it reaches not
