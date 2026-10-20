@@ -186,7 +186,14 @@ the explicit source list; what keeps them out of the *process* is the
 launch: the guest facade is spawned with its environment cleared first and
 an explicit allowlist added back, in `Sandbox::child_env`'s shape — the
 `mcp.rs` `env_clear()` rule, since `Command::envs()` alone layers on an
-inherited environment and hands the child the owner's provider keys. That
+inherited environment and hands the child the owner's provider keys. The
+load path is decided beside it: the facade loads with `global_config_only`
+set, as `voice-serve` sets it a few lines from the `system_extra` this
+design inherits, so a project config in whatever directory it starts in
+never layers in. Today the start directory would be an empty `workspace/`,
+so nothing would load either way, but a layered config is a load-path
+decision and is made here rather than left to where the process happens to
+start. That
 holds whether or not the bwrap question in §9 is settled either way. The guard on the home's *location* is the trial home's,
 `experiment::refuse_unsafe_home` — it refuses a home that is or contains
 the real one and allows one inside it, which is where §3 keeps seats — not
@@ -229,18 +236,22 @@ their `http://127.0.0.1` URLs through a forwarder on the jail's own `lo`;
 the first is less moving parts. The result is a seat with no route to any
 host, so egress no longer rests on the tool catalogue alone (§4a).
 
-**The bridge runs both ways, and a voice seat needs the other way.** Those
-two sockets are the facade's way *out*; a voice seat also needs a way *in*,
-because the worker — unconfined, the owner's — is the facade's HTTP client:
+**The bridge runs both ways, and every seat needs the other way.** Those
+two sockets are the facade's way *out*; every seat also needs a way *in*,
+because the facade is served, not a client. In a text seat its client is
+the wiring, which speaks HRP itself (§2) and drives the facade over HTTP —
+reqwest's `unix_socket` again, the same check step 2 makes first. In a
+voice seat the worker is a second client, unconfined and the owner's:
 completions go to `FACADE_URL` (`MECHA_VOICE_LLM`), and the affect and
 direction reads to `AFFECT_URL` and `DIRECT_URL`, derived from it at
 import. A facade listening on loopback inside `--unshare-net` listens on
-the jail's own `lo`, which the host cannot reach, so without a third leg a
-voice seat's every reply, affect read and direction call has no route. The
-third leg is the same pathname trick reversed: the facade listens on
-`seat/run/facade.sock`, created inside the bound seat directory by the
-facade itself, and the worker connects to it from outside. The worker's
-side is real work, not a URL change. Its `httpx` (0.28.1 in the worker's
+the jail's own `lo`, which the host cannot reach, so without a third leg no
+seat's turn has a route — a text seat's no more than a voice seat's reply,
+affect read or direction call. The third leg is the same pathname trick
+reversed: the facade listens on `seat/run/facade.sock`, created inside the
+bound seat directory by the facade itself, and the wiring (and in a voice
+seat the worker) connects to it from outside. It lands with the confined
+launch in step 2, not with voice in step 4. The worker's side is real work, not a URL change. Its `httpx` (0.28.1 in the worker's
 environment) takes a socket through `AsyncHTTPTransport(uds=…)`, which
 covers the affect and direction clients. Completions go through Pipecat's
 `OpenAILLMService`, whose `create_client` (pipecat-ai 1.7.0,
@@ -673,7 +684,17 @@ seat work has to undo it: persona calls are hosted only inside serve
 worker reads its facade URL once, process-wide (`FACADE_URL` from
 `MECHA_VOICE_LLM`). So a guest facade is built on `voice`'s `Facade` and
 `Mount` with a seat's own `SessionHost`, which means exposing them beyond
-serve; the worker takes the facade's address per call — a URL for the
+serve. Two `Mount` fields are pinned for a seat, not inherited from
+`voice-serve`'s mount. `approve_all` is `false`: it is the owner-present
+posture, a mounted facade allowing every call, and a seat's approver is the
+catalogue's (§4a). `inject_voice_block` takes neither existing spelling,
+because both name the owner. `false` would put `VOICE_BLOCK` in the system
+prompt, which S10 gives wholly to the study. `true` adds the per-request
+voice note (`VOICE_NOTE`), which says the reply is read "to the owner, who
+hears it". A seat needs a third spelling: a spoken-turn note naming no
+listener — the same length and pacing guidance, with the listener left out
+for the reason `BASE` is (§1). It is a per-request note like the clock,
+never in the system prompt; the worker takes the facade's address per call — a URL for the
 owner's calls, `seat/run/facade.sock` for a confined seat (§3) — and with
 it the affect and direction endpoints derived from it at import
 (`AFFECT_URL`, `DIRECT_URL`), carried by the wiring's relay as a trusted
@@ -798,7 +819,12 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    question; an uncatalogued tool is refused), context folding at a
    mid-round boundary and on a closing turn, unfolded items recorded, the
    crisis handover and the degraded state, a seat refusing to open without
-   its crisis path, the facade's environment holding only the allowlist, the
+   its crisis path, the facade's environment holding only the allowlist and
+   its config loaded `global_config_only`, `facade.sock` answering the wiring
+   from a confined facade (a text seat's only route in), `approve_all` pinned
+   false with the approver test driven *through* the facade's mount so it
+   fails if the mount allows everything, no seat request containing "owner"
+   in any note, voice or text, the
    calendar head note present with a verbatim study prompt and rendered
    in `UTC` under an owner config with another zone, the guest
    config holding no `[[hook]]`, skill, charter or subagent, the owner's
@@ -878,8 +904,9 @@ accepted socket instead.
 - Whether the Unix-socket bridge (§3) lands with step 2 or follows a
   filesystem-only first cut — before any real participant either way. The
   bridge is three legs, not two: `model.sock` and `parent.sock` out of the
-  facade, and `facade.sock` into it for a voice seat's worker, which is
-  Python work in step 4 that the interim does not need.
+  facade, and `facade.sock` into it, for the wiring in every seat (step 2)
+  and for a voice seat's worker too (Python work in step 4). The interim
+  needs none of the three.
 - Latency, measured on this box: OpenAI's Realtime models are
   speech-to-speech and mecha is a cascade, so vendor figures are not ours.
   End-of-turn to first audio is recorded per turn-detection mode, with the
