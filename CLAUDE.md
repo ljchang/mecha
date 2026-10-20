@@ -505,7 +505,7 @@ re-deriving the rule. Each has at least one named incident in
 it has one — and where a section above condensed something (provider notes,
 the model server, the security model), the full text with its measurements is
 there: interruption and steering · provider notes · the local model server ·
-images ·
+the chat model catalog · images ·
 the security model in full · the front door · web search · mecha-mail ·
 documents · the task board · the unified queue (`/queues`) · skills ·
 mecha-slack · the remote control · hooks · the outbox · the work directory ·

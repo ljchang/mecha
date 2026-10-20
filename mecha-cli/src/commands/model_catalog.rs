@@ -253,7 +253,10 @@ impl Drop for ProgressGuard<'_> {
 /// Wait until no run holds the router at `base`, as the plan promised:
 /// `router_unit::install` declines rather than waits (the gate's §10.3), and
 /// a decline after a 20 GB download is not what the owner approved (review
-/// of #727). Ctrl-C stops the wait with the files kept; a run that starts in
+/// of #727). Ctrl-C ends the process with the files kept and nothing on the
+/// router or in the record changed (both are edited after this) — SIGINT is
+/// deliberately not captured here, since a handler outliving the wait would
+/// leave the restart below unstoppable (the #350 trap). A run that starts in
 /// the instant before the restart still meets the gate's decline, which says
 /// to run this again.
 ///
@@ -279,13 +282,7 @@ async fn wait_quiet(cfg: &Config, naming: &Naming, say: &mut dyn FnMut(&str)) ->
             say(&now);
             said = now;
         }
-        tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
-            _ = tokio::signal::ctrl_c() => bail!(
-                "stopped waiting; nothing on the router changed — the files are kept, and running \
-                 this again picks up from here"
-            ),
-        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
 
@@ -559,7 +556,8 @@ pub(super) async fn add(
     if json {
         println!(
             "{}",
-            serde_json::json!({ "installed": id, "provider": e.provider, "not_switched": unswitched })
+            // `warning`: the key `serve` records for the chip's outcome line.
+            serde_json::json!({ "installed": id, "provider": e.provider, "warning": unswitched })
         );
     } else if let Some(why) = unswitched {
         println!("\n{id} is installed, and {why}.");
