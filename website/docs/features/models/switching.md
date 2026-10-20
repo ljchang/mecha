@@ -74,7 +74,8 @@ mecha model remove qwen3.8-27b    # off the router; the files stay in the cache
 
 `add` prints what it will do before anything is fetched — the download,
 the memory in place of the loaded model, the provider entry it writes, and
-`follow_loaded = true` on your default if it is not set — and installs only
+`follow_loaded = true` on your default if it names this router and does not
+have it yet — and installs only
 on a yes (`--yes` is the yes, given ahead). Every file is checked against the
 sha256 pinned in mecha. The uncensored Qwen3.6 is downloaded with the
 production model's draft head already grafted on, from mecha's own Hugging

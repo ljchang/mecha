@@ -15,8 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each would download and hold in memory on this machine, and whether its
   memory tier is offered it. `mecha model add <id>` shows that, asks, then
   fetches every file against its pinned sha256, restarts the router once no
-  run is using it, and writes the provider entry — and `follow_loaded = true` on the
-  default, so the model chip has something to switch between. In the web
+  run is using it, and writes the provider entry — and `follow_loaded = true` on a
+  default that names the router, so the model chip has something to switch between. In the web
   chat the chip lists them under **Available to download**, with **Install and
   switch** behind the download and memory figures. `mecha model remove`
   takes one back off. Catalog models now survive `mecha setup chat`. The

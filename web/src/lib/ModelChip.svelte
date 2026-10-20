@@ -236,6 +236,10 @@
               <span class="id">{o.id}</span>
               <span class="word" class:bad={o.disabled}>{o.unfit ? 'not offered here' : o.disabled ? 'not here' : gib(o.download)}</span>
             </button>
+            <!-- A title on a disabled button never shows on touch, and desktop
+                 browsers suppress it too: the tier reason is said as a line
+                 (review of #727). -->
+            {#if o.unfit && o.why}<p class="line why">{o.why}</p>{/if}
           {/if}
         {/each}
       {:else if catalogTrouble(data)}
