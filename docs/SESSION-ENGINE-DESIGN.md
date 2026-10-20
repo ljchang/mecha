@@ -214,9 +214,19 @@ when the session opens, which is the header's granularity; `Record::Config`
 is per-attach because flags can differ on resume, and these cannot. They
 also have to be in the header to be read at all by the corpus filter:
 `Scan::admits` takes `&SessionMeta`, and `SessionIndex::load` decides
-admission from headers alone without opening a transcript. So the
-fail-closed degrade rules below live in the header's deserializer, next to
-`de_lenient_kind`. The header is a wire format: a principal that fails to parse loads as `Guest`, never as
+admission from headers alone without opening a transcript. Resolution is
+split across two places, because the deserializer cannot see the file's
+path and the absent rule (§3) is decided by location. The deserializer,
+next to `de_lenient_kind`, yields a raw three-state value per axis:
+*absent*, *parsed*, or *unparseable*. The location-aware loader then
+resolves those into the effective axes, beside where `list_counting`
+already applies `marks.apply` after `peek_meta`. The resolved values are
+a type whose admitting variants are constructible only through that
+loader. So `Scan::admits`' eleven call sites and
+`SessionMeta::admitted_by_default()`, which has no path by construction,
+can read only resolved axes, and a meta that skipped resolution does not
+type-check rather than admitting or silently dropping. The header is a
+wire format: a principal that fails to parse loads as `Guest`, never as
 `Owner`, and specifically as `Guest { issuer: Issuer::Unknown, label:
 "(unreadable principal)" }`. That label cannot be mistaken for a person's
 name, and `Issuer::Unknown` opens no profile, so the session reads back
@@ -301,18 +311,24 @@ which persona by reference, text or voice, a display label for the human.
 switch, the approval mode, the provider or its keys. An owner door adds
 the approval mode and nothing else from that second list.
 
-**What an owner door's caller fixes at open.** Three per-session values
+**What an owner door's caller fixes at open.** Five per-session values
 reach a session today from the door's caller, as `SessionInit`'s fields:
-`workspace`, `withheld` and `title`. The workspace is a fifth kind,
+`resume_from`, `workspace`, `title`, `withheld` and `task`. `resume_from`
+is §4's resume rule. The workspace is a fifth kind,
 owner-only like the approval mode, chosen by §4's rules and re-proved
 against the mecha home rather than trusted. `withheld` is a per-session
 capability narrowing (the safe direction, so it sits in the setup layer
 under "capabilities only narrow"). Its one live case is D6: a task chat
 withholds `kg_task_update`, set on create and, on resume, derived by
-`task_withholding` from the `"task: "` title prefix. It is coupled: a
-non-empty `withheld` is also what installs the `ParkingAsker`, so a task
-chat parks questions instead of asking. Both move in step 4 with
-`cx.withheld`.
+`task_withholding` from the `"task: "` title prefix. It is coupled to
+parking, since a task chat parks questions instead of asking, by two
+paths. On resume a non-empty `withheld` installs the `ParkingAsker` (with no task
+attached), and on create `task` does (with `Some(task)`, which is what a
+parked question is attributed to). `task` is load-bearing in four places
+on create: the header's kind (`SessionKind::Task` rather than `Web`, which
+changes corpus population), the goal anchor (`task:<id>`, §5's "task"
+goal source), the turn budget (`TASK_MAX_TURNS` rather than 40), and that
+asker. All of it moves in step 4 with `cx.withheld`.
 
 **E3 for configuration:** no *existing* field of `Config` or `ConfigLayer`
 changes, no key of `persona.toml` changes, the `~/.mecha` layout does not move,
@@ -390,6 +406,13 @@ I/O inside that root (`workspace_files.rs`), so the host owns the root and
 the doors only carry bytes. For a guest, where the jail is rooted is a
 security answer, not a detail: a seat's root sits inside its sealed home,
 and `HostedSession::open` refuses a root outside it.
+
+**A subagent is not a `HostedSession`.** It is a child conversation inside
+its parent's session, as today: it inherits the parent's principal and
+taint (CLAUDE.md: delegation does not create a clean boundary), and only
+the Assistant profile has subagents. The core-internal `run_in` callers
+(`subagent.rs`, `gossip.rs`, `mismatch.rs`, `planning.rs`, `face.rs`) stay
+where they are, already in core and never doors.
 
 **Separate on purpose:**
 
@@ -610,8 +633,12 @@ behaviour visible before it moves.
      transcript that recorded a workspace other than the profile default
      and must keep it; a fresh conversation would snapshot `work/web/<key>`
      identically on both sides and never show a re-rooting. The other's
-     title wears the `"task: "` prefix, so `withheld` and the `ParkingAsker`
-     appear. With all of
+     title wears the `"task: "` prefix and is resumed, so `withheld` and the
+     resume path's `ParkingAsker` appear. A third creates a task chat
+     through `task`, so the create path's kind, goal anchor and asker
+     appear. The run's `Budget` (its `max_turns`) joins the snapshot,
+     since a task chat reverting to 40 turns renders identically and would
+     read to the owner as the model giving up. With all of
      these recorded, plus two facts from `prepare_carrying`, which also
      moves (§9.5): **the outbox route** (whether one is installed, and its
      routed and publish name sets, so a fixture dispatching a routed tool
@@ -707,7 +734,13 @@ means §9.2's two snapshots: the rendered bodies and the security snapshot.
    is admitted, and `Scan::admits`' kind filter is asserted to still do its
    own separate job. With every surface passing `Owner` until step 7, a
    corpus rule that ignored the principal would otherwise stay green for
-   six steps.
+   six steps. Synthetic metas are built with the axes already set, so they
+   cannot catch a call site that never resolved them. So step 1 also loads
+   real files through every loader path (`list_counting`, `Session::read`):
+   one pre-engine file in each of the three locations of §3's absent rule
+   and a fourth elsewhere. They must resolve to Owner × Assistant × Kept,
+   Owner × Persona × Kept, refused, and degraded respectively, with the
+   degraded count reported.
 
 Steps 2–4 are written for O1's first answer, both web chats moving
 together. Under the second (personas first), each of these steps moves the
