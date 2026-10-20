@@ -8,7 +8,8 @@ onto it. The document also says how the move is made without losing a
 behaviour or breaking setup, because that is the risk the owner named (E3).
 
 PERSONA-SERVING-DESIGN.md (PR #724) is the first new door built on this
-engine: a HyperStudy seat is the `Seat` profile behind the HyperStudy
+engine, and this document depends on it: S1–S10 and several sections are
+cited from there, so #724 lands first and this one after it: a HyperStudy seat is the `Seat` profile behind the HyperStudy
 door. That document stays the door's specification, and this one does not
 restate it.
 
@@ -56,7 +57,7 @@ are the same engine written twice. Each copy has:
   `/api/persona-chat/{key}/…` each have `send`, `cancel`, `events`,
   `jobs/order`, `upload` and `file`.
 
-Standalone voice (`voice::SessionHost`), `mecha chat`, the TUI and Slack
+Standalone voice (its `Slot` map in `voice/mod.rs`), `mecha chat`, the TUI and Slack
 each run their own assistant session loop as well. The appraisal readout
 (`appraisal::live_readout`) is wired in three of them: `serve/chat.rs`,
 `tui/mod.rs` and `slack/connector.rs`.
@@ -195,12 +196,17 @@ persona by reference, text or voice, a display label for the human.
 **What it never sets:** the principal, the owner's stores, any security
 switch, approvals, the provider or its keys.
 
-**E3 for configuration:** no field of `Config` or `ConfigLayer` changes,
-no key of `persona.toml` changes, the `~/.mecha` layout does not move,
+**E3 for configuration:** no *existing* field of `Config` or `ConfigLayer`
+changes, no key of `persona.toml` changes, the `~/.mecha` layout does not move,
 and the session file's existing records keep their shape. The principal
 record is the one addition, and a file without it loads as today: `Owner`
 for files under the owner's sessions, and refused for a seat directory,
-where every session is written with one. *Absent* and *unparseable* are
+where every session is written with one. The one new table is
+`[hyperstudy]`, and it arrives with PR #724's feature, not with the engine.
+It is CLAUDE.md's two edits, `Config` and `ConfigLayer`, held by
+`every_field_of_config_is_reachable_from_a_file`; one edit alone would
+make the table a startup parse error while every unit test stayed green.
+*Absent* and *unparseable* are
 separate paths: a single `#[serde(default)]` resolving to `Owner` would
 merge them, and an unparseable seat principal would then load as the
 owner. Absent is decided by where the file sits; unparseable is always
@@ -216,7 +222,7 @@ capabilities never meeting, and free composition is how that breaks.
 | Module | Assistant | Persona | Seat |
 |---|---|---|---|
 | **Prompt source** | config prompt + charter + learned rules | the card + safety lines | the study's instructions, verbatim |
-| **Tool policy** | the full registry, the approver's modes, outbox, hooks, grants | `registry_as` allowlist, read-only | the seat catalogue only (PERSONA-SERVING §4a) |
+| **Tool policy** | the full registry, the approver's modes, outbox, hooks, grants | `registry_as` allowlist, read-only | the seat catalogue only (PERSONA-SERVING §4a); HyperStudy runs the tools, and each result comes back `external`, marked `.from_outside()`, the only tool class whose result never passes through mecha's own code |
 | **Context providers** | brief, homeostat, late notes, voice note | memory, recall, files, re-anchor, variety, scene, call note, late notes | context items, the clock (in UTC) |
 | **Store** | `sessions/`, corpus: yes | `personas/<n>/sessions/`, corpus: no | the seat directory, corpus: never |
 | **Safety** | — | crisis sensor (per-persona switch), dose, lock | crisis sensor, forced on |
@@ -299,7 +305,10 @@ In the engine, `Incognito` is a value of the Recording axis:
 
 ## 7. The host: one turn loop
 
-`SessionHost` in `mecha-core` owns the turn:
+`ConversationHost` in `mecha-core` owns the turn. The name is chosen to
+stay clear of `voice::SessionHost`, the existing CLI trait through which a
+web chat exposes its sessions to calls; the two coexist for the whole
+migration (§9.3). The host's job:
 record → fold → run → `record_run` → roll back on failure → hand back late
 jobs → emit events. It is the only place that does each, with one steer,
 one cancel, one job reorder, one job queue and one event stream. The
@@ -376,7 +385,13 @@ behaviour visible before it moves.
      but only inside core's tests. `provider/mod.rs`'s `Recording` keeps
      only `req.model`, and `agent.rs`'s `Recording` is an `Approver`.
    - **A test-only render for each provider's body**, of which `openai.rs`'s
-     `pub(crate) body_for_test` is the seed.
+     `pub(crate) body_for_test` is the seed on one side. On the other,
+     `anthropic.rs`'s own test module already renders `.body(req, true)` and
+     compares its two encoders' bodies, so the Anthropic render exists and
+     is only module-private.
+   - **Multi-turn fixtures.** A one-turn conversation cannot catch the
+     breakpoint that moves, the one on the last message block. Every
+     fixture runs at least two turns with a tool round between them.
 
    A step meant to change bytes (the principal's wording, say) does it in
    its own PR, with the rendered diff shown.
@@ -425,7 +440,7 @@ means §9.2's assertion.
    against the one implementation.
 3. **Steer, cancel, reorder, barge-in.** Exit: identical; one
    `BARGE_IN_TRIES`.
-4. **The turn body, as `SessionHost`.** Both web chats on it, routes
+4. **The turn body, as `ConversationHost`.** Both web chats on it, routes
    unchanged. This is the big step and the one §9.3 exists for. Exit:
    identical; the persona and chat suites green; lived with for the
    owner's chosen period (§11) before the old bodies are deleted.
