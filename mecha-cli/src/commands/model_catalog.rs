@@ -476,8 +476,17 @@ pub(super) async fn add(
     // fails: a recorded id is rendered by the next router install, whoever
     // runs it, and with no provider table behind it (review of #727).
     let was_recorded = catalog::installed(&home)?.iter().any(|i| i == id);
-    catalog::record_add(&home, id)?;
-    let choice = router_unit::installed_choice(&home)?.context("the router's presets are gone")?;
+    let kept = || {
+        format!(
+            "{id} is downloaded and the router was not restarted — `mecha model add {id}` again \
+             finishes, with nothing fetched twice"
+        )
+    };
+    catalog::record_add(&home, id).with_context(kept)?;
+    let choice = router_unit::installed_choice(&home)
+        .with_context(kept)?
+        .context("the router's presets are gone")
+        .with_context(kept)?;
     let restarted = router_unit::install(
         &here.m,
         cfg,
@@ -590,7 +599,9 @@ async fn load_back(cfg: &Config, base: &str, previous: Option<String>, say: &mut
 /// What still names `[providers.<provider>]` — the default, a fallback, a
 /// subagent, a trigger (`(name, provider)`) — said as what to change first.
 /// Removing a table something names fails every run after, not this one; a
-/// trigger's fails unattended (review of #727).
+/// trigger's fails unattended (review of #727). An experiment's arm or judge
+/// is deliberately not checked: it runs attended, so a missing provider
+/// fails in front of whoever started it.
 fn still_named(
     cfg: &Config,
     triggers: &[(String, Option<String>)],
