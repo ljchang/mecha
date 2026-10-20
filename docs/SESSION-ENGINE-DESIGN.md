@@ -103,7 +103,7 @@ pub enum Profile {
     Seat(SeatSpec),
 }
 
-pub enum Recording {
+pub enum SessionRecording {
     Kept,        // the owner's stores, as today
     Incognito,   // no transcript, by type (INCOGNITO-DESIGN)
     Sealed,      // kept in full, under the guest's own directory (S8)
@@ -115,10 +115,13 @@ pub enum Recording {
   There is no upgrade path: no frame, field or spoken phrase changes it.
 - **The profile** is a closed set defined in code. Config fills in its
   parameters but cannot invent a fourth kind.
-- **Recording** is its own axis. That is what makes an incognito persona
+- **Recording** (`SessionRecording`) is its own axis. The type names are
+  chosen clear of `session::Session`, the public store type the host will
+  hold, and of the `Recording` enum in `serve/chat.rs` that this axis
+  replaces (plus two test-only `Recording` fixtures). It is what makes an incognito persona
   a combination rather than a feature.
 
-`Session::open(principal, profile, recording, setup)` refuses every
+`HostedSession::open(principal, profile, recording, setup)` refuses every
 combination not on this list:
 
 | Principal | Profile | Recording |
@@ -175,6 +178,20 @@ wire format: a principal that fails to parse loads as `Guest`, never as
 name, and `Issuer::Unknown` opens no profile, so the session reads back
 and cannot be resumed. Unknown is never clean. An *absent* record is a different case
 with its own rule (§3), and the two must stay two code paths.
+
+**All three axes degrade fail-closed, not to their defaults.** `Profile`
+and `SessionRecording` ride the same record, and CLAUDE.md's wire-format
+rule would by default degrade an unknown variant to `None` or the default.
+Here the defaults are exactly `Assistant` and `Kept`, the admitted half of
+the corpus gate. So an unparseable `Profile` loads as no profile (it opens
+nothing and is refused the corpus), and an unparseable `SessionRecording`
+loads as `Sealed` (kept, never in the corpus). Neither is ever read as the
+variant that admits.
+
+**And each degrade is reported.** A fallback taken silently would shrink
+the corpus with nothing explaining why. `doctor.rs` already rules that an
+unparseable store is a finding (`Finding::unreadable`), and `mecha
+sessions health` gains a count of sessions loaded under a degraded axis.
 
 ## 3. Settings: where each one lives
 
@@ -246,7 +263,7 @@ owner. Absent is decided by where the file sits; unparseable is always
 ## 4. Modules: what a profile is made of
 
 Inside, a profile is a fixed composition of modules. The composition is
-chosen in code, and `Session::open` checks its invariants. It is never
+chosen in code, and `HostedSession::open` checks its invariants. It is never
 assembled at runtime from parts, because persona safety rests on certain
 capabilities never meeting, and free composition is how that breaks.
 
@@ -280,7 +297,7 @@ tmpfs room. The `upload` and `file` routes (§1) are descriptor-relative
 I/O inside that root (`workspace_files.rs`), so the host owns the root and
 the doors only carry bytes. For a guest, where the jail is rooted is a
 security answer, not a detail: a seat's root sits inside its sealed home,
-and `Session::open` refuses a root outside it.
+and `HostedSession::open` refuses a root outside it.
 
 **Separate on purpose:**
 
@@ -365,8 +382,13 @@ refused* are two paths, as absent and unparseable are for the principal
 `Option` today, each append its own arm), and that is not a failure.
 A `Kept` turn whose append fails stops. One "write, and treat a missing
 write as fine" path would merge them into the silently-degrading guard. It is the only place that does each, with one steer,
-one cancel, one job reorder, one job queue and one event stream. The
-shared `WireEvent` gains profile extensions rather than a second enum.
+one cancel, one job reorder, one job queue and one event stream. That
+stream is core's `AgentEvent`, extended where a profile genuinely needs a
+new event, never the web page's `WireEvent`. `WireEvent` is a serialized
+browser contract derived from `AgentEvent` by `wire_event()`, and it stays
+that door's projection. Every other door keeps its own: the terminal
+renders, and HRP is an adapter over core's events, not over the browser's
+(§8, the standard at the door).
 
 - **Voice** enters through one host entry. The binding (which voice, checked
   how) is the profile's Voice binding module, so persona calls stop
@@ -467,7 +489,12 @@ behaviour visible before it moves.
    - **the conversation's taint axes** after each turn;
    - **the run's jail root** (`RunContext`), **which approver was
      installed**, **the dispatched `withheld` set** and **the installed
-     `HookSet`**, so a moved workspace, the wrong approver, a lost
+     `HookSet`**, **the grant set** (standing, live, and whether
+     `request_access` is requestable: `Grants::none()` and
+     `Grants::standing_only()` are distinct facts, and `resolve_for` admits
+     a path outside the root when a grant covers it), and **the effective
+     `SecurityConfig`** the run was built with, so a seat inheriting an
+     owner's `trifecta = "allow"` shows. That way a moved workspace, the wrong approver, a lost
      incognito allowlist or observer hooks running in incognito each fail
      the step rather than pass it. The last two are set in the very block
      step 4 moves (`cx.withheld`, and `cx.hooks` cleared to a default
@@ -547,8 +574,17 @@ persona chat alone, and the assistant chat repeats steps 2–4 after step 6.
 2. **The job queue and its delivery** into core; both web chats on one
    instance. Exit: identical; the late-job tests of both files green
    against the one implementation.
-3. **Steer, cancel, reorder, barge-in.** Exit: identical; one
-   `BARGE_IN_TRIES`.
+3. **Steer, cancel, reorder, barge-in.** Exit: identical, over two fixtures
+   §9.2 adds for this step (one queues steer text mid-tool-round, one
+   delivers a late job) so the rendered bodies differ if the fold or the
+   appended record is lost; one `BARGE_IN_TRIES`; and the door-side tests
+   green against the one implementation: `chat.rs`'s
+   `a_steer_is_read_back_as_part_of_its_turn`, and `persona_chat.rs`'s
+   `a_steer_is_always_delivered_or_discarded`,
+   `a_steer_is_held_only_if_the_agent_has_not_read_it`,
+   `a_steer_is_judged_too`, `a_steer_the_judge_stops_keeps_its_words`,
+   `speaking_over_a_reply_barges_in` and
+   `the_queue_is_shown_reordered_and_told_to_the_page`.
 4. **The turn body, as `ConversationHost`.** Both web chats on it, routes
    unchanged. This is the big step and the one §9.3 exists for. Exit:
    identical; the persona and chat suites green; lived with for the
