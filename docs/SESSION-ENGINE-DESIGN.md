@@ -353,7 +353,13 @@ Two kinds of setting, resolved differently:
   removes, and none adds. This is today's rule spelled once: a persona's
   `tools.allow` is already intersected with an eligibility each tool
   declares, and an MCP capability override can already only distrust a
-  server more.
+  server more. One owner ruling is the named exception: D11 lifts
+  `block_sends_after_private` for personas over the install's value
+  (`persona::agent::security`), so a persona's blind web search keeps
+  working after a recall, at the cost D11 chose (the query can carry what
+  the persona remembers to the search backends). Under a plain
+  intersection it would vanish, so it rides the Persona profile's code
+  layer as a stated widening, gets a §9.1 row, and moves with its test.
 - **Preferences: the most specific layer wins, falling back up.** Voice,
   speed, model, picture settings. Also today's rule: a persona's picture
   settings fall back to the chat's (#654).
@@ -454,7 +460,15 @@ by `SessionStore::owner()` (from `default_dir()`),
 compared against the store it was loaded from. A caller holding only a
 path calls `SessionStore::locate(path)`, the one place that compares a
 path against `default_dir()` and the persona and seat roots, and which
-returns `SessionStore::Other` for anything else: the store under which
+returns `SessionStore::Other` for anything else. The most specific root
+wins, and the roots can nest, since `default_dir()` honours
+`MECHA_SESSION_DIR` verbatim: a path under a persona or seat root is
+that store even when it is also under `default_dir()`, and a
+`default_dir()` that equals or lies inside a persona or seat root is
+refused and counted, never silently the owner's. A home carrying a seat
+manifest (the sealed child's own) has no owner store at all: there
+`owner()` is refused and `locate` answers `seat`, so a bare-path caller
+in the child cannot read a guest's transcript as the owner's. `Other` is the store under which
 absent axes load degraded, and the one step 1's fourth file goes through. Under `seat` an absent axis
 is refused, not degraded, since every seat session is written with all
 three; it is also the store §5's later seat-appraisal tool would read sealed
@@ -965,12 +979,15 @@ persona chat alone, and the assistant chat repeats steps 2–4 after step 6.
    implementation, with their two job marks (`marked("chat")`,
    `marked("persona")`) kept as two, since `jobs::count_live` over
    `marker_dir_under` feeds `system/measure.rs` and one mark would read two
-   jobs in flight as one. Exit: identical; the late-job tests of both files green
+   jobs in flight as one. Exit: identical, over a fixture that delivers a
+   late job into an armed conversation (a delivery that lost the taint
+   merge renders identically, so the fixture lands with the code it
+   covers, not in step 3); the late-job tests of both files green
    against the one implementation.
 3. **Steer, the waiting line, cancel, reorder, barge-in.** Exit: identical,
-   over three fixtures §9.2 adds for this step (one queues steer text
+   over two fixtures §9.2 adds for this step (one queues steer text
    mid-tool-round, one sends a message during a closing turn so it waits
-   for a turn of its own, one delivers a late job) so the rendered bodies
+   for a turn of its own) and step 2's late-job one, so the rendered bodies
    differ if the fold, the waiting turn or the appended record is lost; one `BARGE_IN_TRIES`; and the door-side tests
    green against the one implementation: `chat.rs`'s
    `a_steer_is_read_back_as_part_of_its_turn`; `serve/mod.rs`'s
