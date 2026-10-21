@@ -470,7 +470,7 @@ can act at all.
 | Talk by voice | §4 | Phase 3 `accept` |
 | Read the study's text | screen text, instructions and typed chat arrive as quoted context items, untrusted like speech | — (sent today as `[context]` items) |
 | Read images | a study image or one a participant shares arrives inline as an image content item and reaches the model as `Block::Image`, capped at the door as every image is; mecha never fetches a URL a session names | images on the session, inline |
-| Act in the study | **ClientTools**: HyperStudy declares its study tools — `send_chat`, and the answer tools for on-screen questions (`answer_choice`, `answer_choices`, `answer_scale`, `answer_ranking`, `answer_text`, `answer_dimensions`); advancing the screen is not an agent capability in HyperStudy yet — the call goes out over the session, `function_call_output` comes back marked `.from_outside()`, a timeout returns `is_error` — so the agent loop never learns where a tool came from | the study tools, declared per session |
+| Act in the study | **ClientTools**: HyperStudy declares its study tools — `send_chat`, and the answer tools for on-screen questions (`answer_choice`, `answer_choices`, `answer_scale`, `answer_ranking`, `answer_text`, `answer_dimensions`); advancing the screen is not an agent capability in HyperStudy yet — the call goes out over the session, `function_call_output` comes back marked `.from_outside()`, a timeout returns `is_error` — so the agent loop never learns where a tool came from. A timeout is the case §4a's restore cannot see: the run did not fail, and the answer may be in the study's data with only its acknowledgement lost. So a timed-out answer tool's `is_error` says the answer may already be recorded and must not be sent again, and the proxy answers any later call to that tool "Not run" until the next screen-change context item, the way `RunPictures` answers a repeat: the tool list never changes, so the cached prefix holds. A timed-out `send_chat` says its line may have been shown. HyperStudy dedupes on each call's `call_id` (§8), so a duplicate that gets past the guard is still written once | the study tools, declared per session |
 
 **Where context lands.** Screen changes, typed chat and images arrive on
 HyperStudy's clock, including while a ClientTool call is in flight — and
@@ -941,7 +941,8 @@ accepted socket, text seats on the same socket, a `connected` engine naming
 the registered token and the persona whose voice speaks, a settings page to
 register a mecha-minted token (stored hashed, revocable), inline images on the
 session, the study tools as a catalogue pinned in HRP, declared once per
-session (§4a), and `instructions` kept to experimenter-authored text, with
+session (§4a), each call's effect written at most once per `call_id`, so a
+call repeated after a timeout is not a second answer (§4a), and `instructions` kept to experimenter-authored text, with
 participant-authored bytes only ever sent as context items (§3). **The frames
 are pinned in its §4.1 before either side builds against them** — with a
 direct connection, HyperStudy's spec is the contract mecha codes to.
