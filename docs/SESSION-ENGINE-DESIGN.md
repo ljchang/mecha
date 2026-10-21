@@ -885,7 +885,14 @@ behaviour visible before it moves.
      `judge_answered` and `crisis_shown` on `PersonaSession`). Step 5's
      "the sensor's tests run against the module" covers only the pure
      functions, the same gap as incognito's above, so at least one fixture's
-     expected outcome is a sensor pause. The dose and call meters and the
+     expected outcome is a sensor pause, and its paused turn carries a
+     picture, with the `Record::Taint` append in its snapshot: the pause is
+     the one door-side arming, since no run starts to arm it
+     (`arm_at_start` covers every other path from inside `agent.rs`), and a
+     text-only pause arms nothing on either side (the #438 shape). More
+     generally, an image is the one content class that arms a leg with no
+     tool call and no `Capabilities` to snapshot, so every fold the host
+     takes over carries one in at least one fixture. The dose and call meters and the
      library lock are snapshotted the same way;
    - **the session records the turn appends**: the `Record::Config` (its
      `RunConfig::levers_off`, since `Fallback`, `StepEscalation` and
