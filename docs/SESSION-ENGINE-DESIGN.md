@@ -22,8 +22,8 @@ restate it.
 | E3 | **Nothing is lost, and setup does not break.** A refactor this size is how behaviours quietly disappear. The migration (§9) is built around making each one visible before anything moves. | owner | 2026-10-20 |
 | E4 | **General text and voice chat without the web page.** A connection can supply the prompt and the session's setup. | owner | 2026-10-19 |
 
-PERSONA-SERVING-DESIGN's S1–S10 hold for seats unchanged. Five rulings
-are still open (§11).
+PERSONA-SERVING-DESIGN's S1–S10 hold for seats unchanged. Five numbered rulings
+are still open (§11), with one open parameter beside them.
 
 ## 1. What is duplicated, and what is different
 
@@ -129,7 +129,7 @@ unrelated to `serve/listen.rs`'s read-aloud `Seat`, which becomes
 
 ```rust
 pub enum Principal {
-    Owner,
+    Owner(OwnerProof),                         // built only by an authentication
     Guest { issuer: Issuer, label: String },   // e.g. Issuer::HyperStudy
 }
 
@@ -149,6 +149,17 @@ pub enum SessionRecording {
 - **The principal** is set by the door from authentication: the tailnet
   login (`owner_guard`), the local OS user, or a HyperStudy `mhs_` token.
   There is no upgrade path: no frame, field or spoken phrase changes it.
+  `Owner` carries an `OwnerProof`, a type with a private field and one
+  named constructor per authentication §8's table lists (the tailnet
+  login, the local OS user, the Slack binding's `owners`) plus one for a
+  store the owner authored, each taking that authentication's evidence.
+  The doors live in `mecha-cli`, so the constructors are `pub`, and the
+  proof cannot make a false `Owner` impossible to write. What it does is
+  make every `Owner` in the tree pass through a named constructor a
+  reviewer can grep for, so a new door's author must choose one by name
+  rather than write a bare variant; and the HyperStudy door's module
+  carries a test that its source never names `OwnerProof`. Door review
+  stays the control; the proof is what it reads.
   A session with no connection (a cron-fired trigger, a `mecha batch`
   item) takes its principal from the store that authored it. The owner
   wrote the trigger in `~/.mecha/`, so it is `Owner` by rule, written into
@@ -234,7 +245,8 @@ feature as §9.2's exported recorder, because the integration tests in
 `mecha-cli/tests/` build metas from outside the crate, where
 `#[cfg(test)]` does not reach. There is no `pub fn owner()` helper, since
 that would let a door assert `Owner` instead of authenticating one, the
-hole E1 exists to close. Outside that feature nothing else can build the
+hole E1 exists to close, and `Principal::Owner` carries an `OwnerProof`
+for the same reason (above). Outside that feature nothing else can build the
 type, so the loader and `open` are the admitting variants' only source.
 `Session::peek_meta` is `pub` and called directly (by
 `persona::writer::pending_chats`, the memory-write gate, by `forget.rs`,
@@ -702,6 +714,16 @@ behaviour visible before it moves.
      functions, the same gap as incognito's above, so at least one fixture's
      expected outcome is a sensor pause. The dose and call meters and the
      library lock are snapshotted the same way;
+   - **the session records the turn appends**: each `Record::Taint` and
+     `record_run`'s `RunStats` outcome, matched old path against new, as
+     the compacting fixture's `rewrite` already is. A host that keeps the
+     taint right in memory but stops appending it renders and snapshots
+     identically, then launders the taint on the next resume. A lost
+     `RunStats` leaves every surface answering while the corpus stops
+     growing. One fixture resumes a transcript whose recorded taint is
+     armed and asserts the conversation comes back armed
+     (`Conversation::resumed`); without it, a resume path that reseeds
+     `Taint::default()` passes every step;
    - **each dispatched tool's `Capabilities`** and its result's `external`
      flag;
    - **at least one fixture whose expected outcome is an interlock
@@ -756,7 +778,8 @@ means §9.2's two snapshots: the rendered bodies and the security snapshot.
 1. **The principal type.** `Principal` in core, recorded per session. The
    taint seed and the approver installed are derived from it, and its veto
    enters memory-write and corpus eligibility, each computed over all three
-   axes (§2), with every existing surface passing `Owner`. Exit:
+   axes (§2), with every existing surface passing `Owner` through the
+   `OwnerProof` constructor for its own authentication. Exit:
    requests and security snapshots identical, every existing test green,
    no `Deny` able to originate under a guest principal, a guest-labelled
    session refused memory writes and spoken confirmations, an
@@ -866,7 +889,9 @@ Slack; a change to any config or store format (E3).
   Realtime protocol too? Decided after step 7.
 - **O5 The front door's principal.** The front door already runs a
   tool-bearing session over a stranger's request (§1). Under step 1 it
-  would pass `Owner` like everything else. Its transcripts land in the
+  would pass `Owner` like everything else, through the owner-store proof
+  since the owner configured it, though no authentication behind it is
+  the owner's: this question showing in the type. Its transcripts land in the
   owner's `sessions/` as `SessionKind::Frontdoor`, which `Scan::admits`
   admits to the corpus today. Whether its sessions take a `Guest`
   principal with their own issuer, and whether they belong in the corpus
