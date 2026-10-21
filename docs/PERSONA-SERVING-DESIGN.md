@@ -57,6 +57,14 @@ code:
   from a disclosure the study may want — which is why a seat uses none of
   it (S10).
 
+**Why not the front door's shape.** The one door that already faces
+strangers, `frontdoor.rs`, quarantines a request and hands the privileged
+run a typed extraction, never the prose. That fits a request to be acted
+on later; a seat's whole job is to converse in prose with the stranger in
+real time, so an extraction would remove the conversation itself. A seat
+answers the same threat the other way: it holds none of the owner's
+stores, so there is nothing for the stranger's prose to reach (§3).
+
 **Why the owner's main chat cannot be served even with every tool off
 (S3).** The trifecta interlock guards tools whose destination the model
 chooses. In a conversation with a stranger, the *reply itself* is a way out:
@@ -554,7 +562,15 @@ extending the last one's prefix. Four cases:
   interrupted the run returns with no reply after it. §3 pins `max_turns`
   so that this is a runaway seat turn's designed exit, so it is expected,
   and the host tells it from the case above by its mark, not by the tail's
-  shape. The seat restores to the **last complete round**, not to the
+  shape. A cancelled run (a barge-in through `interrupt_response`) also
+  returns `Ok`, with one of three tails: a partial reply the loop kept,
+  which is the second case; a completed tool round, which is this one; or
+  the participant turn just sent with nothing after it, also this one.
+  It never takes the voice host's pop: `voice/mod.rs` pops a plain user
+  tail because its front end resends one, which a seat's never does, and
+  popping a tool-result message would orphan its `tool_use`, the 400 that
+  pop once wrote into a slot and every resume of it. §8 step 3 tests a
+  barge-in mid-tool-round. The seat restores to the **last complete round**, not to the
   snapshot taken before the run. A round whose ClientTool calls already ran
   has had effects outside mecha: a rating written into the study's data, a
   chat line shown to the participant, each acknowledged by
@@ -872,6 +888,12 @@ mecha provides; the study decides:
   is spoken or typed into the session, so until HyperStudy reads `hs.flag`
   the trip is still visible to the study in its own record of the
   conversation. Whether a study may turn the handover off is owed (§9).
+  A seat whose judge becomes unreachable mid-session continues on
+  keywords (`Degraded`), at parity with the owner's chats, rather than
+  dropping a participant mid-sentence, while a seat whose sensor cannot be
+  built never opens: the first is a check that went partial and is
+  declared, the second a check that never existed. Whether a study may
+  instead end a seat on `Degraded` is owed (§9) beside the handover.
 - **The check's state is said, whole.** The seat declares its
   `CrisisState` to HyperStudy at session start and on every change, beside
   `hs.flag` rather than through it — all of it, not one variant, so "on",
