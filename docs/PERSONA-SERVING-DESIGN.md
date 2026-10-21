@@ -269,8 +269,11 @@ provider's HTTP clients are built centrally with no socket parameter
 (`provider/mod.rs`), and `base_url` is URL-typed through
 `provider::router`, so a socket would mean a new provider field (two
 edits, `Config` and `ConfigLayer`) and a placeholder `base_url` such as
-`http://seat/v1`. The forwarder needs no core change: the entry keeps
-`http://127.0.0.1:8080`. Which one is built is decided on cost measured
+`http://seat/v1`. The forwarder needs no core change, since the entry keeps
+`http://127.0.0.1:8080`, but it is not free: it runs inside the
+`--unshare-net` namespace, and bwrap execs one child, so it is a second
+in-jail process with its own lifecycle and its own preflight leg, failing
+the seat closed if it is not up. Which one is built is decided on cost measured
 in step 2. Either way `follow_loaded = false` leaves
 `router::followed_bases` empty, so a confined facade sends no `/props`
 probe into a namespace that cannot answer it. The result is a seat with no route to any
@@ -345,7 +348,7 @@ falls through (the silently-degrading guard).
 
 | Surface | Owner's persona chat | Guest seat |
 |---|---|---|
-| Who the human side is | the owner | a stranger. Inbound text arms nothing today, on the premise that the user chose every word (`Taint::arm_for_content`'s comment), and `external` is a tool result's field, not a message's — so a seat sets `Conversation.taint.untrusted` at construction, and the conversation records it, so the seat is armed from the first word |
+| Who the human side is | the owner | a stranger. Inbound text never arms `untrusted` today, on the premise that the user chose every word (`Taint::arm_for_content`'s comment; it can arm `private` off its stems, §4a), and `external` is a tool result's field, not a message's — so a seat sets `Conversation.taint.untrusted` at construction, and the conversation records it, so the seat is armed from the first word |
 | System prompt | `BASE`, the card, plus `DISCLOSED` while `disclosure` is on | HyperStudy's `instructions`, verbatim, and nothing of mecha's persona text (S10), `SINCERE` among it — the persona prompt's one unconditional line (a sincere "am I talking to a person?" gets the truth) is left out because whether an agent answers that truthfully is a disclosure decision, the study's by S2; a study that wants the floor writes it into its own prompt |
 | Persona memory | written and recalled | neither: no writer, no recall over owner stores |
 | Confirmations, outbox | spoken yes can release | none exist: no outbox route, no `parse_answer` path |
@@ -379,7 +382,13 @@ a commit that quotes a conversation, but it reads explicit, non-recursive
 globs (`personas/*/sessions`, `sessions`), so a seat's
 `hyperstudy/seats/*/home/sessions/*.jsonl` would be invisible to it — and
 participants' words, held under someone else's consent and kept in full,
-are the case the guard exists for. Step 2 adds the seat glob. Retention of these records is the
+are the case the guard exists for. Step 2 adds the seat glob to the script's `whole` list, the one it reads
+entire. Its `sessions/` list reads a file whole only when its header's
+`kind` is `voice` and otherwise only for spoken turns, and a seat's new
+`SessionKind` matches neither, so a text seat's transcript joined there
+would contribute nothing while the guard looked applied. The glob follows
+the depth a seat's sessions actually land at, and anything else the seat
+home writes conversation text into joins it. Retention of these records is the
 owner's (S2 hands participants' consent to the study); nothing here deletes
 them on a clock. mecha declares to HyperStudy that the engine keeps
 transcripts (`hs.retention`), so a study can tell its participants.
@@ -931,7 +940,9 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    goes out for the same screen;
    and the wiring's writes there are a closed list of two — the router hold
    (§5) and the crisis record (§7); a seat's session carries its own
-   `SessionKind` and the corpus scan excludes it; `check-private.py` reads the seat
+   `SessionKind` and the corpus scan excludes it, by an arm of its own in
+   `Scan::admits` (which admits any kind it does not name), not by the
+   variant alone; `check-private.py` reads the seat
    transcripts; no dose or call record is written for a seat; a seat's
    config carries `context_window`, `vision` and `structured_output` (so
    the crisis judge's `response_schema` applies, at parity with the owner's
