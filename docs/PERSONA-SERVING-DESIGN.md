@@ -478,7 +478,7 @@ can act at all.
 | Talk by voice | §4 | Phase 3 `accept` |
 | Read the study's text | screen text, instructions and typed chat arrive as quoted context items, untrusted like speech | — (sent today as `[context]` items) |
 | Read images | a study image or one a participant shares arrives inline as an image content item and reaches the model as `Block::Image`, capped at the door as every image is; mecha never fetches a URL a session names | images on the session, inline |
-| Act in the study | **ClientTools**: HyperStudy declares its study tools — `send_chat`, and the answer tools for on-screen questions (`answer_choice`, `answer_choices`, `answer_scale`, `answer_ranking`, `answer_text`, `answer_dimensions`); advancing the screen is not an agent capability in HyperStudy yet — the call goes out over the session, `function_call_output` comes back marked `.from_outside()`, a timeout returns `is_error` — so the agent loop never learns where a tool came from. A timeout is the case §4a's restore cannot see: the run did not fail, and the answer may be in the study's data with only its acknowledgement lost. So a timed-out answer tool's `is_error` says the answer may already be recorded and must not be sent again, and the proxy answers any later call to that tool "Not run" until the next screen-change context item, in that run and every later one: the participant's next turn is a new run, and the likeliest moment to answer again. So the guard is conversation-scoped state on the seat's study tools, carried across a compaction through `Tool::carried_state`, not run-scoped like `RunPictures` (which shares only its "Not run" shape); the tool list never changes, so the cached prefix holds. A timed-out `send_chat` says its line may have been shown. A second answer is a fresh call with a fresh `call_id`, so HyperStudy's backstop (§8) is keyed on the screen's question, not the call | the study tools, declared per session |
+| Act in the study | **ClientTools**: HyperStudy declares its study tools — `send_chat`, and the answer tools for on-screen questions (`answer_choice`, `answer_choices`, `answer_scale`, `answer_ranking`, `answer_text`, `answer_dimensions`); advancing the screen is not an agent capability in HyperStudy yet — the call goes out over the session, `function_call_output` comes back marked `.from_outside()`, a timeout returns `is_error` — so the agent loop never learns where a tool came from. A timeout is the case §4a's restore cannot see: the run did not fail, and the answer may be in the study's data with only its acknowledgement lost. So a timed-out answer tool's `is_error` says the answer may already be recorded and must not be sent again, and the proxy answers any later answer to that same on-screen question "Not run" until the next screen-change context item, in that run and every later one. It is keyed on the question's identifier, which every answer tool's pinned schema carries (§8), the same key HyperStudy dedupes on, and never on the tool: the answer tools are generic by kind, so a guard keyed on `answer_scale` would leave a second scale question on that screen unanswerable with no unlock coming: the participant's next turn is a new run, and the likeliest moment to answer again. So the guard is conversation-scoped state on the seat's study tools, carried across a compaction through `Tool::carried_state`, not run-scoped like `RunPictures` (which shares only its "Not run" shape); the tool list never changes, so the cached prefix holds. A timed-out `send_chat` says its line may have been shown. A second answer is a fresh call with a fresh `call_id`, so HyperStudy's backstop (§8) is keyed on the screen's question, not the call | the study tools, declared per session |
 
 **Where context lands.** Screen changes, typed chat and images arrive on
 HyperStudy's clock, including while a ClientTool call is in flight — and
@@ -543,7 +543,11 @@ extending the last one's prefix. Four cases:
   rewrite records it. Nothing will resend it. The restore is a new helper
   beside `roll_back_failed_turn`, named in step 2. The rolled-back state is
   recorded as a rewrite in the seat's transcript (the helper's contract,
-  and the transcript is kept in full, S8). Whether any of
+  and the transcript is kept in full, S8), followed by a `Record::Taint`
+  with no message between, as every failed-turn arm writes today:
+  `TaintTimeline::from_records` clears its checkpoints on a `Rewrite`, so
+  without it the record would lose that the seat was armed `untrusted`
+  from construction and `private` from its first study image. Whether any of
 it asks for a reply is the study's, by its own `response.create`. Nothing is dropped: an item still queued when the
 seat closes is recorded as unfolded in the seat's transcript. The
 mid-round half is not free either: the steering queue carries text
@@ -888,7 +892,8 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    context endpoint, which parks an item without a run; a run that fails
    after context and a participant turn were folded into its tail restores
    without popping, so both are still in the next request (the test
-   asserts the words survive, not only that a rewrite was recorded); and
+   asserts the words survive, not only that a rewrite was recorded, and
+   that a taint checkpoint follows the rewrite); and
    a run that fails after a forced answer ran keeps that round, so the next
    request carries the `tool_use` and its result and no second answer call
    goes out for the same screen;
@@ -976,7 +981,8 @@ accepted socket, text seats on the same socket, a `connected` engine naming
 the registered token and the persona whose voice speaks, a settings page to
 register a mecha-minted token (stored hashed, revocable), inline images on the
 session, the study tools as a catalogue pinned in HRP, declared once per
-session (§4a), at most one answer recorded per session and on-screen question, keyed
+session (§4a), each answer tool's schema carrying the on-screen question's
+identifier, at most one answer recorded per session and on-screen question, keyed
 on the question rather than the `call_id`, since a model's second answer
 is a new call, so an answer repeated after a timeout is refused (§4a), and `instructions` kept to experimenter-authored text, with
 participant-authored bytes only ever sent as context items (§3). **The frames
