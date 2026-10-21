@@ -897,8 +897,20 @@ Slack; a change to any config or store format (E3).
   since the owner configured it, though no authentication behind it is
   the owner's: this question showing in the type. Its transcripts land in the
   owner's `sessions/` as `SessionKind::Frontdoor`, which `Scan::admits`
-  admits to the corpus today. Whether its sessions take a `Guest`
-  principal with their own issuer, and whether they belong in the corpus
-  at all, is the owner's to rule. It is the live instance of §5's
-  stranger-in-the-corpus argument.
+  admits to the corpus today. Its privileged pass is an ordinary assistant session
+  (`commands/frontdoor.rs` calls `setup::prepare`: the full registry, the owner's
+  workspace, outbox and rules), so `Guest` alone has no admissible
+  answer: Guest × Assistant × Kept is refused by §2's table on two axes,
+  and a guest assistant is out until designed (§11). And excluding its
+  sessions by type while they stay in `sessions/` is the type-only guard
+  §5 rules weaker than the folder. Two shapes would each build: a fourth
+  row, Guest × Assistant × Sealed, with the front door's sessions in a
+  directory of their own, a `~/.mecha` layout change named as E3's one
+  exception; or a `Frontdoor` profile distinct from `Assistant`, narrower
+  than today's registry, with its own store location. Either is a §2
+  change, so it is decided before step 1 derives the taint seed and the
+  approver from the principal. (Today's taint is unaffected: each request
+  seeds a fresh conversation, which an `Owner`-derived clean seed
+  matches.) Which shape, or neither for now, is the owner's to rule. It
+  is the live instance of §5's stranger-in-the-corpus argument.
 - **How long a step is lived with** before its old path is deleted (§9.3).
