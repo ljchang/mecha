@@ -891,7 +891,7 @@
     const t = await res.json();
     if (key !== k || gen !== readGen) return;
     if (queueSeq === qSeq) queue = t.queue ?? [];
-    const settled = withJob(settle(t.entries, run), t.job);
+    const settled = withJob(settle(t.entries, run, t.waiting ?? null), t.job);
     const entries = t.running ? withWorking(settled, t.working) : settled;
     run = { ...emptyRun(entries, t.taint ?? null, t.citations ?? []), running: !!t.running };
     safety = t.safety ?? null;
@@ -1402,8 +1402,8 @@
         );
       }
       // A steer carries text only, so a picture sent into a live run is
-      // named and not shown.
-      if (data.steered && attached.some((p) => /\.(png|jpe?g|gif|webp)$/i.test(p))) {
+      // named and not shown — and so does a message that waits its turn.
+      if ((data.steered || data.waiting) && attached.some((p) => /\.(png|jpe?g|gif|webp)$/i.test(p))) {
         notice(`${chosen.display} was answering, so the picture went in by name only — not shown.`);
       }
     } catch (e) {
@@ -1416,6 +1416,14 @@
       return false;
     }
     return true;
+  }
+
+  // A message that was not sent, sent again as it was: its bubble goes, and
+  // the words come back as the server takes them — a turn, or a wait. One
+  // the server refuses comes back, with the error above it.
+  async function resend(entry) {
+    run = { ...run, entries: run.entries.filter((e) => !(e.queued && e.request_id === entry.request_id)) };
+    if (!(await send({ text: entry.text }))) run = { ...run, entries: [...run.entries, entry] };
   }
 
   // Regenerate (IMAGE-DESIGN.md §5.4): the picture showing, drawn again as
@@ -2010,7 +2018,7 @@
         {#each run.entries as entry, i (i)}
           {#if entry.kind === 'user'}
             <div class="bubble" class:queued={entry.queued}>
-              {ownWords(entry.text)}{#if entry.queued}<span class="queued-tag">{entry.delivery === 'discarded' ? 'not delivered — send again' : entry.delivery === 'delivered' ? 'steered' : 'queued'}</span>{/if}
+              {ownWords(entry.text)}{#if entry.queued}<span class="queued-tag">{#if entry.delivery === 'discarded'}not sent — <button class="resend" onclick={() => resend(entry)}>send again</button>{:else}{entry.delivery === 'delivered' ? 'steered' : 'waiting its turn'}{/if}</span>{/if}
             </div>
           {:else if entry.kind === 'assistant'}
             <!-- Each citation as the harness checked it (§10.4): "quoted" is
@@ -2381,6 +2389,7 @@
   .bubble { align-self: flex-end; max-width: 82%; background: var(--surface); border-radius: var(--radius); padding: 11px 14px; font-size: 14px; line-height: 1.45; white-space: pre-wrap; }
   .bubble.queued { border: 1px solid var(--accent-700); background: var(--bg); }
   .queued-tag { display: block; margin-top: 4px; font-family: var(--mono); font-size: 9px; color: var(--text-muted); }
+  .resend { font: inherit; color: var(--accent-500); background: none; border: 0; padding: 0; text-decoration: underline; cursor: pointer; }
   .answer { max-width: 92%; font-size: 14px; line-height: 1.5; white-space: pre-wrap; }
   .citedsheet { max-height: 75%; }
   .sheetacts { display: flex; gap: 8px; flex-wrap: wrap; }
