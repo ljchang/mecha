@@ -309,7 +309,13 @@ not relabelled as any variant: `Sealed` would assert a guest directory an
 owner file is not in, and a combination §2's table refuses. It loads as
 *degraded*: kept, never in the corpus, readable, and not resumable, which
 is the same consequence the principal degrade states. Neither axis is
-ever read as the variant that admits.
+ever read as the variant that admits. So the resolved type has a variant
+for it on each axis, not an `Option`: `Kept | Incognito | Sealed |
+Degraded` and `Assistant | Persona | Seat | Unreadable`, where `None`
+would merge absent and unparseable, the two paths that must stay apart
+(absent under the owner store resolves to `Kept` and is admitted;
+degraded never is). A `match` then has to answer `Degraded`, rather than
+a sentence in this paragraph.
 
 **And each degrade is reported.** A fallback taken silently would shrink
 the corpus with nothing explaining why. `doctor.rs` already rules that an
@@ -453,6 +459,10 @@ scan a bare `TempDir` and never set `MECHA_SESSION_DIR`; without it
 every such fixture would load degraded and step 1's "every existing test
 green" could not hold. Step 1 prices that: each of those fixtures
 changes one argument, and the test-count delta shows none removed.
+Persona-located files are not one argument: `SessionStore::persona(name)`
+derives from the mecha home, so step 1's persona probe and its
+`pending_chats` probe run under `work::tests::HomeGuard`, which
+serializes a scratch `MECHA_HOME`, rather than a `persona_at`.
 
 ## 4. Modules: what a profile is made of
 
@@ -815,7 +825,10 @@ behaviour visible before it moves.
      functions, the same gap as incognito's above, so at least one fixture's
      expected outcome is a sensor pause. The dose and call meters and the
      library lock are snapshotted the same way;
-   - **the session records the turn appends**: each `Record::Taint` and
+   - **the session records the turn appends**: the `Record::Config` (its
+     `RunConfig::levers_off`, since `Fallback`, `StepEscalation` and
+     `StepChecks` change neither a passing turn's body nor any other fact
+     here, and a lever dropped from the set reads as on), each `Record::Taint` and
      `record_run`'s `RunStats` outcome, matched old path against new, as
      the compacting fixture's `rewrite` already is. A host that keeps the
      taint right in memory but stops appending it renders and snapshots
