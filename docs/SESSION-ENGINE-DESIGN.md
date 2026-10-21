@@ -360,6 +360,14 @@ Two kinds of setting, resolved differently:
   the persona remembers to the search backends). Under a plain
   intersection it would vanish, so it rides the Persona profile's code
   layer as a stated widening, gets a §9.1 row, and moves with its test.
+  A default is not a ceiling, though: `[security]`'s own opt-ins
+  (`trifecta = "allow"` or `"ask"` over the default `block`, and
+  `block_sends_after_private` left off) are the owner widening within what
+  the Assistant and Persona code layers leave open, which is why §9.2's
+  seat-inherits-`allow` fixture can exist. The Seat's code layer pins
+  them (`trifecta = block` whatever the owner sets), and that pin, not the
+  intersection, is what keeps them off a guest. D11 is the one place a
+  code layer widens over the config.
 - **Preferences: the most specific layer wins, falling back up.** Voice,
   speed, model, picture settings. Also today's rule: a persona's picture
   settings fall back to the chat's (#654).
@@ -468,7 +476,16 @@ that store even when it is also under `default_dir()`, and a
 refused and counted, never silently the owner's. A home carrying a seat
 manifest (the sealed child's own) has no owner store at all: there
 `owner()` is refused and `locate` answers `seat`, so a bare-path caller
-in the child cannot read a guest's transcript as the owner's. `Other` is the store under which
+in the child cannot read a guest's transcript as the owner's. Both sides
+are canonicalized before they are compared, as `ToolCtx::resolve` does,
+never matched as raw prefixes: `default_dir()` returns
+`MECHA_SESSION_DIR` verbatim, so a relative value, a trailing slash or a
+symlinked root (macOS's `/var` is `/private/var`) would otherwise send
+the owner's own files to `Other`. A path that cannot be canonicalized is
+refused and counted as its own finding, not `Other`, and step 1 reads back
+files written under a relative and under a symlinked
+`MECHA_SESSION_DIR`, which the fourth file's expected degrade could not
+catch. `Other` is the store under which
 absent axes load degraded, and the one step 1's fourth file goes through. Under `seat` an absent axis
 is refused, not degraded, since every seat session is written with all
 three; it is also the store §5's later seat-appraisal tool would read sealed
@@ -646,6 +663,12 @@ In the engine, `Incognito` is a value of the Recording axis:
   one.
 - **It requires the owner.** A guest cannot ask to leave no record: S8
   keeps every seat in full for investigation.
+- **It is never serialized.** `Incognito` is a door-side value: the
+  session leaves no file, so its header never carries the axis. A file under
+  the owner's store reads as `Kept` by §3's absent rule *because* an
+  incognito session leaves none, so an incognito path that acquires a file
+  (a header-first write, a partial create) is a bug a test refuses, never a
+  `Kept` session.
 - **It switches off, by construction:** appraisal, corpus entry, the
   persona memory writer, learning, and the dose record. Its own audit
   (INCOGNITO-DESIGN §8) moves with it as tests, unchanged.
