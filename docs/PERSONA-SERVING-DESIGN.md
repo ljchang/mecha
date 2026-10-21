@@ -113,7 +113,7 @@ Four pieces, each with one job:
    route beside the offer endpoint. It plays the
    *engine's* side of the Realtime protocol over a loopback relay from the
    wiring, never over the internet: the owner's worker is unconfined, holds
-   the owner's environment and every persona's reference audio, and so does
+   the owner's environment, and so does
    not terminate a stranger's socket or parse its frames — the crate does
    (piece 1). The cost is one loopback hop for audio. Who opens a socket and
    who serves the protocol are separate choices; that separation is what
@@ -138,8 +138,12 @@ by side, none inside another: `home/` (the guest home, `MECHA_HOME`),
 that a workspace never contains the mecha home), `run/` (the sockets, under
 *The agent loop is its own process* below) and the manifest.
 
-**It holds:** the named persona's voice — its voice settings and reference
-audio, copied in, read-only — and nothing of its text: who the agent is
+**It holds:** the named persona's voice settings (the voice name the
+owner's worker is handed, its speed and instructions), copied in,
+read-only, and not its reference audio: a voice is a name on the wire,
+the owner's worker resolves it through the speech server, nothing in a
+seat reads the file, and a seat directory is kept after close (S8). And
+nothing of its text: who the agent is
 comes from the study (S10). Its config is written fresh by the wiring, not
 derived: `[security]` is taken from the owner's field by field — the
 owner's value where it narrows a seat, the strictest value where it would
@@ -515,7 +519,9 @@ extending the last one's prefix. Four cases:
   the item waits, and cannot be acted on in that turn — the consequence the
   steering drain already accepts. When `run_in` returns it is handled as
   below.
-- **The conversation ends on the agent's reply:** the item opens a new user
+- **The conversation is empty, or ends on the agent's reply:** the item
+  (for an empty one, the opening screen's text, the first event in every
+  seat) opens a new user
   message of context alone. This case and the next need a facade path that
   *parks* an item in the conversation without starting a run. Today every
   facade POST runs a turn, and a body with no user message is a 400. So
@@ -631,7 +637,7 @@ grants. Adding one later is a ruling, and the bar is that it reaches no
 destination a stranger could aim and no content a stranger should read:
 `http_fetch` would make this box a fetcher pointed at the owner's LAN and
 tailnet. A file tool aims nowhere outside, and by §3's layout its jail is
-the seat's empty `workspace/`, which holds neither the reference audio nor
+the seat's empty `workspace/`, which holds no audio and not
 the transcript — so it would be dead weight rather than a risk; the bar
 for adding one is that the study has material to put there, and what that
 material may contain.
@@ -945,7 +951,8 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    tools, the steering queue widened to carry `Block`s (§4a), and the
    `CrisisState` declaration on the session (§7). Exit: a scripted study (read a screen, chat, answer a rating
    through a silent forced call) runs end to end, including a context item
-   with no `response.create` followed by the participant speaking — the
+   with no `response.create` followed by the participant speaking, once
+   before any turn and once after one — the
    sequence that would otherwise send two user messages. And a context item
    arriving mid-reply in a turn with no tool call, which must wait for the
    run rather than enter a message already sent. And an image folded
