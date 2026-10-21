@@ -69,14 +69,41 @@ pub async fn switch(State(_state): St, Json(body): Json<UseBody>) -> Response {
     if name.is_empty() {
         return (StatusCode::BAD_REQUEST, "no model named\n").into_response();
     }
+    let mut args = vec!["model", "use", "--json"];
+    if body.now {
+        args.push("--now");
+    }
+    recorded(&args, name).await
+}
+
+#[derive(serde::Deserialize)]
+pub struct AddBody {
+    /// A catalog id (`mecha model catalog`).
+    pub id: String,
+}
+
+/// POST /api/model/add — `mecha model add <id> --yes --use --json`: the
+/// chip's **Install and switch**, whose tap is the approval the CLI asks
+/// for (MODEL-CATALOG-DESIGN C4). Hours of download outlive the request
+/// as a switch does; the page reads the install's progress from `model list
+/// --json` meanwhile, and its outcome from the same record a switch uses.
+pub async fn add(State(_state): St, Json(body): Json<AddBody>) -> Response {
+    let id = body.id.trim().to_string();
+    if id.is_empty() {
+        return (StatusCode::BAD_REQUEST, "no catalog model named\n").into_response();
+    }
+    recorded(&["model", "add", "--yes", "--use", "--json"], id).await
+}
+
+/// Run `mecha <args> -- <name>` as a child, record how it ended in [`LAST`],
+/// and answer with its result if it finishes within [`ANSWER_WITHIN`] — else
+/// `202 {"started": true}`.
+async fn recorded(args: &[&str], name: String) -> Response {
     let mut cmd = tokio::process::Command::new(crate::exe::self_exe());
     if let Some(dir) = super::child_cwd() {
         cmd.current_dir(dir);
     }
-    cmd.args(["model", "use", "--json"]);
-    if body.now {
-        cmd.arg("--now");
-    }
+    cmd.args(args);
     // `--` so a name is never read as a flag.
     cmd.arg("--").arg(&name);
     cmd.stdin(std::process::Stdio::null())

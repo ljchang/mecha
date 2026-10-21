@@ -6,7 +6,7 @@
   // what is loaded, loading, or waiting is the router's own report, read
   // through `model list --json`, never a guess from a timer.
   import { apiFetch as fetch } from './api.js';
-  import { reader, routerOf, unavailable, rows, phase, busy, pollEvery, canHurry, chipLabel, waitingLine, outcomeNote } from './model-chip.js';
+  import { reader, routerOf, unavailable, rows, phase, busy, pollEvery, canHurry, chipLabel, waitingLine, outcomeNote, available, gib, planLine, installing, installLine, pollWhileInstalling, catalogTrouble } from './model-chip.js';
 
   /// `model` is what this chat's agent is bound to — the label until the
   /// router has been read. An incognito chat gets the same picker: every model
@@ -26,12 +26,17 @@
   // page's tap: an outcome that is still that one is not this tap's to report.
   let asked = $state(null);
   let wrapEl = $state(null);
+  // The catalog model whose costs are shown for approval, or null.
+  let confirming = $state(null);
 
   const router = $derived(routerOf(data));
   const ph = $derived(phase(router));
   const list = $derived(rows(router, incognito));
   const note = $derived(busy(ph) ? null : outcomeNote(data, asked));
   const down = $derived(data ? unavailable(data) : readError);
+  // MODEL-CATALOG-DESIGN §1: what can be installed, and an install under way.
+  const offers = $derived(available(data, router));
+  const inst = $derived(installing(data));
 
   // `refresh` for polls, which share a read on the wire; `fresh` for the
   // tap's baseline, which must be a read that starts after it.
@@ -55,7 +60,7 @@
   });
   // A number, so a read that changes nothing but the data does not restart
   // the timer.
-  const every = $derived(pollEvery(ph, open));
+  const every = $derived(pollEvery(ph, open) ?? pollWhileInstalling(inst, open));
   $effect(() => {
     if (!every) return;
     const t = setInterval(refresh, every);
@@ -100,6 +105,17 @@
     post('/api/model/use', { name: row?.name ?? ph.to, now: true });
   }
 
+  // The tap that installs is the approval `model add` asks for: it is
+  // reachable only from the card that shows the download and the memory.
+  async function install(row) {
+    if (row.disabled || acting || inst) return;
+    confirming = null;
+    acting = true;
+    await fresh();
+    asked = { before: data?.last_switch?.at ?? null };
+    post('/api/model/add', { id: row.id });
+  }
+
   // `cancel-switch` withdraws every pending switch on every router — one and
   // the same here, where the chip speaks for the one router there is.
   function cancelSwitch() {
@@ -137,8 +153,12 @@
   </button>
   {#if open}
     <div class="menu" role="menu" aria-label="switch model">
-      {#if down}
+      {#if down && !offers.length}
         <p class="line bad">{down}</p>
+      {:else if down}
+        <!-- No router followed yet (a fresh install): the catalog is the way
+             to a second model, and installing one makes the default follow. -->
+        <p class="line">{down}</p>
       {:else if !router}
         <p class="line">reading…</p>
       {:else}
@@ -186,9 +206,47 @@
           </div>
         {/if}
         <p class="line hint">One model answers every surface — chat, voice, Slack and background work. A switch waits for runs in progress.</p>
-        {#if incognito}
-          <p class="line">Every model here runs on this machine, so this chat stays local whichever you pick.</p>
-        {/if}
+      {/if}
+      {#if inst}
+        <p class="line moving">{installLine(inst)}</p>
+      {/if}
+      {#if offers.length}
+        <p class="line section">Available to download</p>
+        {#if catalogTrouble(data)}<p class="line bad">{catalogTrouble(data)}</p>{/if}
+        {#each offers as o (o.id)}
+          {#if confirming === o.id}
+            <div class="confirm">
+              <p class="line"><span class="id">{o.id}</span><br />{o.label}</p>
+              <p class="line">{o.note}.</p>
+              <p class="line">{planLine(o)}. Every file is checked against its pin; the router restarts once no run is using it.</p>
+              <div class="acts">
+                <button class="act" onclick={() => install(o)} disabled={acting || !!inst}>install and switch</button>
+                <button class="act quiet" onclick={() => (confirming = null)}>cancel</button>
+              </div>
+            </div>
+          {:else}
+            <button
+              class="row"
+              role="menuitem"
+              disabled={o.disabled || acting || !!inst}
+              title={o.why ?? o.label}
+              onclick={() => (confirming = o.id)}
+            >
+              <span class="dot" aria-hidden="true">↓</span>
+              <span class="id">{o.id}</span>
+              <span class="word" class:bad={o.disabled}>{o.unfit ? 'not offered here' : o.disabled ? 'not here' : gib(o.download)}</span>
+            </button>
+            <!-- A title on a disabled button never shows on touch, and desktop
+                 browsers suppress it too: the tier reason is said as a line
+                 (review of #727). -->
+            {#if o.unfit && o.why}<p class="line why">{o.why}</p>{/if}
+          {/if}
+        {/each}
+      {:else if catalogTrouble(data)}
+        <p class="line bad">{catalogTrouble(data)}</p>
+      {/if}
+      {#if incognito && router}
+        <p class="line">Every model here runs on this machine, so this chat stays local whichever you pick.</p>
       {/if}
       {#if actError}<p class="line bad">{actError}</p>{/if}
       {#if note}<p class="line" class:bad={note.tone === 'bad'} class:warn={note.tone === 'warn'}>{note.text}</p>{/if}
@@ -315,6 +373,25 @@
     line-height: 1.45;
     color: var(--text-muted);
     white-space: pre-wrap;
+  }
+  .line.moving {
+    color: var(--accent-300);
+  }
+  .line.section {
+    border-top: 1px solid var(--accent-900);
+    margin-top: 4px;
+    padding-top: 8px;
+    font-size: 11px;
+    text-transform: lowercase;
+    letter-spacing: 0.02em;
+  }
+  .confirm {
+    border: 1px solid var(--accent-900);
+    border-radius: var(--radius-chip);
+    margin: 2px 0;
+  }
+  .confirm .id {
+    color: var(--text);
   }
   .line.hint {
     border-top: 1px solid var(--accent-900);

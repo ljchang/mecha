@@ -58,6 +58,42 @@ numbers in [Serving a local model](/docs/features/models/serving#four-numbers-th
 apply per entry. The keys are in the
 [configuration reference](/docs/reference/configuration).
 
+## Adding models from the catalog
+
+A router installed by `mecha setup chat` serves one model. mecha carries a
+short catalog of others, each a whole serving decision made on the machine
+that runs them every day: the pinned files, the preset's flags, the
+provider entry, and what it holds in memory.
+
+```bash
+mecha model catalog               # each model: download, memory here, whether it is offered
+mecha model add gemma-4-26b-a4b   # shows that, asks, installs
+mecha model add qwen3.8-27b --use # …and loads it once installed
+mecha model remove qwen3.8-27b    # off the router; the files stay in the cache
+```
+
+`add` prints what it will do before anything is fetched — the download,
+the memory in place of the loaded model, the provider entry it writes, and
+`follow_loaded = true` on your default if it names this router and does not
+have it yet — and installs only
+on a yes (`--yes` is the yes, given ahead). Every file is checked against the
+sha256 pinned in mecha. The uncensored Qwen3.6 is downloaded with the
+production model's draft head already grafted on, from mecha's own Hugging
+Face repository, so it drafts like the production model. The router is restarted only after the
+downloads, and only once no run is using it: `add` waits for the runs
+using it to finish (Ctrl-C stops the wait, and the files are kept).
+
+In the web chat the model chip lists catalog models it does not serve yet
+under **Available to download**. Tapping one shows the same figures and an
+**install and switch** button; the menu then shows the download's progress
+until the model is loaded. A model this machine's memory tier is not offered
+stays listed, greyed, with the reason.
+
+The catalog is compiled into mecha, never fetched: adding a model to it is a
+pull request with its pins. A model outside it is still `mecha setup chat`'s
+*a GGUF you already have*. The design is `docs/MODEL-CATALOG-DESIGN.md` in
+the repository.
+
 ## Switching
 
 ```bash

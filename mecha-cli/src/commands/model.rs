@@ -56,6 +56,30 @@ pub enum Cmd {
     /// router would otherwise wait for. A live switch is better stopped with
     /// Ctrl-C where it runs; withdrawn here, it stops at its next check.
     CancelSwitch,
+    /// The chat models in mecha's catalog: for each, whether it is
+    /// installed, what it would download and hold in memory here, and
+    /// whether this machine's tier is offered it.
+    Catalog,
+    /// Install a catalog model onto mecha's router: shows the download, the
+    /// memory and the config it writes, and asks. Then fetches every file
+    /// against its pin, restarts the router once no run is using it, and
+    /// writes the provider entry.
+    Add {
+        id: String,
+        /// The approval, already given: install without asking.
+        #[arg(long, short = 'y')]
+        yes: bool,
+        /// Load it once installed, as `mecha model use` would.
+        #[arg(long = "use")]
+        use_after: bool,
+    },
+    /// Take a catalog model off the router and remove its provider entry.
+    /// Its files stay in the Hugging Face cache.
+    Remove {
+        id: String,
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
 }
 
 #[derive(Serialize)]
@@ -115,10 +139,20 @@ struct Model {
     incognito_refusal: Option<String>,
 }
 
+/// Where `use` says what it did: to a person, as JSON for the chip, or not
+/// at all — `model add` loading the previous model back, whose own answer is
+/// the one on stdout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Out {
+    Text,
+    Json,
+    Quiet,
+}
+
 /// How long `--now` (or a hurried switch) gives the runs it asked to stop.
 pub(crate) const NOW_GRACE: Duration = Duration::from_secs(15);
 
-fn load_config(global: &GlobalOpts) -> Result<Config> {
+pub(super) fn load_config(global: &GlobalOpts) -> Result<Config> {
     if global.global_config_only {
         Config::load_global()
     } else {
@@ -245,8 +279,16 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             name,
             wait_secs,
             now,
-        } => use_(&cfg, &name, wait_secs, now, args.json).await,
+        } => {
+            let out = if args.json { Out::Json } else { Out::Text };
+            use_(&cfg, &name, wait_secs, now, out).await
+        }
         Cmd::CancelSwitch => cancel_switch(),
+        Cmd::Catalog => super::model_catalog::show(args.json).await,
+        Cmd::Add { id, yes, use_after } => {
+            super::model_catalog::add(global, &cfg, &id, yes, use_after, args.json).await
+        }
+        Cmd::Remove { id, yes } => super::model_catalog::remove(global, &cfg, &id, yes).await,
     }
 }
 
@@ -268,16 +310,23 @@ async fn list(cfg: &Config, json: bool) -> Result<()> {
                 None => serde_json::json!({ "base_url": base, "reachable": false }),
             })
             .collect();
+        // The catalog rides along whether or not a router is followed: a fresh
+        // install follows none, and is exactly the machine with something to
+        // add (MODEL-CATALOG-DESIGN §1).
         println!(
             "{}",
-            serde_json::to_string_pretty(&serde_json::json!({ "routers": all }))?
+            serde_json::to_string_pretty(&serde_json::json!({
+                "routers": all,
+                "catalog": super::model_catalog::listing(),
+            }))?
         );
         return Ok(());
     }
     if routers.is_empty() {
         println!(
             "no provider has `follow_loaded = true`, so no router stands for \"whatever is \
-             loaded\" — see REMOTE-SURFACE-DESIGN §14 and scripts/start-router.sh"
+             loaded\" — `mecha model add` sets it when it installs a second model from \
+             `mecha model catalog`; see REMOTE-SURFACE-DESIGN §14"
         );
         return Ok(());
     }
@@ -334,7 +383,13 @@ async fn list(cfg: &Config, json: bool) -> Result<()> {
     Ok(())
 }
 
-async fn use_(cfg: &Config, name: &str, wait_secs: u64, mut now: bool, json: bool) -> Result<()> {
+pub(super) async fn use_(
+    cfg: &Config,
+    name: &str,
+    wait_secs: u64,
+    mut now: bool,
+    out: Out,
+) -> Result<()> {
     let bases = router_bases(cfg);
     // A provider entry on one of the routers, then a model id one serves.
     let target = match cfg.providers.get(name) {
@@ -398,7 +453,7 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, mut now: bool, json: boo
     // Already resident is success — after R4, so the model R4 refuses is
     // refused whatever happens to be loaded (found on review).
     if previous.as_deref() == Some(model.as_str()) {
-        return report(cfg, &base, &model, 0.0, json);
+        return report(cfg, &base, &model, 0.0, out);
     }
 
     // D13 (owner's rulings, 2026-09-27): the switch waits until no *run*
@@ -426,7 +481,7 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, mut now: bool, json: boo
                         "asked the waiting switch to {} (pid {}) to go now",
                         s.to, s.pid
                     );
-                    if json {
+                    if out == Out::Json {
                         println!(
                             "{}",
                             serde_json::json!({
@@ -484,7 +539,7 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, mut now: bool, json: boo
     );
     let previous = router::resident(&list).map(str::to_string);
     if previous.as_deref() == Some(model.as_str()) {
-        return report(cfg, &base, &model, 0.0, json);
+        return report(cfg, &base, &model, 0.0, out);
     }
     // The last check before anything changes. With nothing holding, the wait
     // returns on its first look, so a `cancel-switch` during the re-read was
@@ -555,7 +610,7 @@ async fn use_(cfg: &Config, name: &str, wait_secs: u64, mut now: bool, json: boo
         ),
     };
     match loaded {
-        Ok(()) => report(cfg, &base, &model, started.elapsed().as_secs_f64(), json),
+        Ok(()) => report(cfg, &base, &model, started.elapsed().as_secs_f64(), out),
         // R1: a model that does not come up is replaced by the one it was
         // meant to replace, rather than leaving the next request to load the
         // default.
@@ -743,13 +798,16 @@ fn cancel_switch() -> Result<()> {
 }
 
 /// What `use` did, for a person or for the chip.
-fn report(cfg: &Config, base: &str, model: &str, secs: f64, json: bool) -> Result<()> {
+fn report(cfg: &Config, base: &str, model: &str, secs: f64, out: Out) -> Result<()> {
     let providers: Vec<String> = router::namers(cfg, base, model)
         .map(str::to_string)
         .collect();
     // The same rule `observe` warns with, not a re-derivation of it.
     let warning = router::unfollowable(cfg, base, model);
-    if json {
+    if out == Out::Quiet {
+        return Ok(());
+    }
+    if out == Out::Json {
         println!(
             "{}",
             serde_json::json!({
