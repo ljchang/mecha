@@ -723,12 +723,14 @@ An offer is accepted only when every check passes; each refusal is typed
   `capacity`. The count is kept by the one long-running process that admits
   every seat, in the owner's home. `permit.rs` cannot do this: a seat is
   interactive work, which takes no permit by design, and each seat's guest
-  home would give it a pool of its own. A seat can hold two router slots
-  while it answers: the forced-on crisis judge (§7) is screened beside the
+  home would give it a pool of its own. A text seat can hold two router
+  slots while it answers, and a voice seat three: the forced-on crisis judge (§7) is screened beside the
   reply, not after it (`persona_chat.rs` spawns `judge::screen` while the
-  run goes on, which is how a verdict can stop a run in flight). So the
-  default is set against the router's `-np` at two slots a seat, with one
-  slot left for the owner — measured, not guessed (§9). Counting one would
+  run goes on, which is how a verdict can stop a run in flight), and a
+  voice seat's director (§4) asks a direction per sentence while the reply
+  is still streaming (`voice/direct.rs`: it never waits on the reply). So the
+  default is set against the router's `-np` at two slots a text seat and
+  three a voice seat, with one slot left for the owner — measured, not guessed (§9). Counting one would
   queue the owner's turn behind a participant's judge call, and per-request
   rates hide queue wait, so it would show only as a slow owner chat. Within the cap,
   voice seats are further bounded by GPU room for STT, TTS and the model
@@ -1009,7 +1011,11 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    `[security]` read and never written, budgets.
 3. **A text seat on loopback** — HRP with text-only output against a local
    stand-in for HyperStudy's session: context items, inline images, declared
-   tools, the steering queue widened to carry `Block`s (§4a), and the
+   tools, the steering queue widened to carry `Block`s (§4a), a
+   `ToolChoice` variant forcing one named function (today it has only
+   `Auto` and `None`), rendered by both providers and decided for at
+   `cache_lens`, which hashes `tool_choice` into the prefix identity, for
+   §4's silent forced answer, and the
    `CrisisState` declaration on the session (§7). Exit: a scripted study (read a screen, chat, answer a rating
    through a silent forced call) runs end to end, including a context item
    with no `response.create` followed by the participant speaking, once
