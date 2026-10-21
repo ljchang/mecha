@@ -225,7 +225,13 @@ where a principal-only rule would bite, with every earlier step green.
 The three axes go into the session file's **header** (`SessionMeta`),
 beside `SessionMeta::kind`, not into the body as a `Record`. They are fixed
 when the session opens, which is the header's granularity; `Record::Config`
-is per-attach because flags can differ on resume, and these cannot. They
+is per-attach because flags can differ on resume, and these cannot:
+`HostedSession::open` refuses a resume whose recorded principal is not
+equal to the one its door authenticated, compared whole (for a guest,
+issuer and label, not only the variant), so one participant's token
+cannot reopen another's sealed transcript. No old path has a principal
+to disagree about, so §9.2's comparison cannot catch this, and step 7
+names it as a negative. They
 also have to be in the header to be read at all by the corpus filter:
 `Scan::admits` takes `&SessionMeta`, and `SessionIndex::load` decides
 admission from headers alone without opening a transcript. Resolution is
@@ -396,7 +402,12 @@ by `SessionStore::owner()` (from `default_dir()`),
 compared against the store it was loaded from. Under `seat` an absent axis
 is refused, not degraded, since every seat session is written with all
 three; it is also the store §5's later seat-appraisal tool would read sealed
-transcripts through. The caller is code, not the record, so this is
+transcripts through. A parsed header that contradicts its store is the
+third case beside absent and unparseable, and it is refused and counted
+too: each store admits one combination (owner: Owner × Assistant × Kept;
+persona: Owner × Persona × Kept; seat: Guest × Seat × Sealed), so an
+owner's header on a file in a seat directory is refused rather than
+admitted, and a field in a stranger's file cannot reach the corpus. The caller is code, not the record, so this is
 still location deciding, not data. A third constructor, `owner_at(dir)`,
 rides §2's test-only feature, because core's corpus tests (`runlog.rs`,
 `planning.rs`, `reading.rs`, `tenure.rs`, `success.rs`, `persona.rs`)
@@ -826,7 +837,9 @@ means §9.2's two snapshots: the rendered bodies and the security snapshot.
    one pre-engine file in each of the three locations of §3's absent rule
    and a fourth elsewhere. They must resolve to Owner × Assistant × Kept,
    Owner × Persona × Kept, refused, and degraded respectively, with the
-   degraded count reported.
+   degraded count reported. A fifth, an engine-era file in a seat
+   directory whose header reads Owner × Assistant × Kept, must be
+   refused, not admitted.
 
 Steps 2–4 are written for O1's first answer, both web chats moving
 together. Under the second (personas first), each of these steps moves the
@@ -878,7 +891,8 @@ persona chat alone, and the assistant chat repeats steps 2–4 after step 6.
    session: `HostedSession::open` refuses every combination off §2's
    table; the conversation starts armed `untrusted`; a refused call
    renders `Blocked by policy:` and no `Deny` reaches the loop; `open`
-   refuses a jail root outside the sealed home; a Seat with no Safety
+   refuses a jail root outside the sealed home; `open` refuses a resume
+   under a different guest's label; a Seat with no Safety
    module does not open; a setup-supplied prompt is refused for
    Assistant and Persona; a guest frame carrying an approval-mode field
    is refused as unsupported (§3); and Guest × Seat × Sealed sessions,
