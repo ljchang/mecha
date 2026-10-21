@@ -1788,8 +1788,9 @@ Not legal advice; the law report holds the text and the analysis.
   under roughly half the texts; a child brings in California SB 1119 (signed
   2026-09-10), which has no household exclusion and bans simulating romance
   for minors. So sharing a persona is a deliberate switch, never a default,
-  and a romantic persona must never reach one — which is moot while serving
-  is deferred, and binding when it is designed.
+  and a romantic persona must never reach one. For HyperStudy studies,
+  `PERSONA-SERVING-DESIGN.md` §5 settles it by construction: no persona's
+  character reaches a seat at all.
 - **Publishing the code** is mostly outside the duties, which fall on hosts —
   but California AB 489 reaches whoever "develops or deploys" a system whose
   functionality implies a licensed health professional, even owner-only, and

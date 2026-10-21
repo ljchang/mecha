@@ -612,7 +612,11 @@ tool this repo can read. So ClientTools are a **closed catalogue in mecha's
 code** — `send_chat` and the six answer tools above — each with the
 schema HRP pins for it, each `Blind` because its one recipient is the
 session the seat answers (the party every reply already reaches) and its
-schema has no destination field. A tool HyperStudy declares that is not in
+schema has no destination field. Each one's `Capabilities` are pinned whole,
+not only on the egress axis: `untrusted_input` (its result is the study's,
+marked `.from_outside()`), never `private_data` (it reads none of the
+owner's stores; a study image arms `private` by its content, at the fold,
+whatever a tool declares), never `destructive`. A tool HyperStudy declares that is not in
 the catalogue, or whose schema differs from the pinned one, is refused at
 `session.update`, never registered as `Chosen` and never relabelled. A new
 study tool is a catalogue entry in a reviewed change, on both sides. What
@@ -1037,6 +1041,12 @@ accepted socket instead.
 
 **Owed:**
 
+- Video perception, owned by another session (2026-10-21), not this design:
+  a time-indexed text track of the movie participants watch, released to a
+  seat no further than the playback position. It is expected to arrive
+  through the paths here, as context items (§4a) or a catalogue tool, and
+  any change it needs to HRP events or the catalogue is a reviewed change
+  on both sides, coordinated with that session.
 - Whether a seat's study tools may run when the owner has `block_sends_after_private` on (§4a); conversation only until ruled.
 - What happens when the owner switches the router's model mid-seat (§5):
   wait out the seat, or end it with a reason. `hold.rs` makes the run the
