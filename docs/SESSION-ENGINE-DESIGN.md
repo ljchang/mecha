@@ -150,7 +150,10 @@ pub enum SessionRecording {
   login (`owner_guard`), the local OS user, or a HyperStudy `mhs_` token.
   There is no upgrade path: no frame, field or spoken phrase changes it.
   A guest's `subject` is an opaque id from the authenticated offer
-  (HyperStudy's session token), never a name and never a value the
+  (the participant session HyperStudy's offer names and its session token
+  authenticates, stable across a reconnect of that session, so a
+  participant whose link drops is not refused their own transcript;
+  HyperStudy's §4.1 pins that lifetime), never a name and never a value the
   connection sends: the display label a guest connection may set (§3) is
   a preference, held outside the principal, and enters no comparison.
   `Owner` carries an `OwnerProof`, a type with a private field and one
@@ -387,7 +390,8 @@ hand one to a profile that holds the owner's reach.
   the prompt and cannot add a tool or reach the config.
 
 **What a guest connection may set:** the system prompt (where the profile
-takes one), the tools it runs on its side, voice and speed, turn-taking,
+takes one), which tools it enables, selected from the seat catalogue in
+mecha's code and never a name or schema of its own, voice and speed, turn-taking,
 which persona by reference, text or voice, a display label for the human
 (a preference; the principal's `subject` is the token's, §2).
 **What it never sets:** the principal, the owner's stores, any security
@@ -939,7 +943,9 @@ means §9.2's two snapshots: the rendered bodies and the security snapshot.
    corpus rule that ignored the principal would otherwise stay green for
    six steps. Synthetic metas are built with the axes already set, so they
    cannot catch a call site that never resolved them. So step 1 also loads
-   real files through every loader path (`list_counting`, `Session::read`,
+   real files through every loader path (`list_counting`,
+   `Session::list_headers_counting`, which does its own `read_dir` and has
+   a production caller in `brief/attempts.rs`'s `walk`, `Session::read`,
    and `Session::peek_meta`, the one behind the persona memory-write
    gate):
    one pre-engine file in each of the three locations of §3's absent rule
