@@ -148,7 +148,7 @@ comes from the study (S10). Its config is written fresh by the wiring, not
 derived: `[security]` is taken from the owner's field by field — the
 owner's value where it narrows a seat, the strictest value where it would
 widen one (§4a). "Strictest" is defined only for the three fields that
-bear on a seat: `trifecta` (always enforced), `mark_untrusted_output`
+bear on a seat: `trifecta` (pinned `block`), `mark_untrusted_output`
 (always on) and `block_sends_after_private` (the owner's, §4a — the named
 departure). Of the other three, which guard the fetch and search tools a
 seat does not have: `block_private_ips` is set `true`, its strictest value,
@@ -617,9 +617,11 @@ it): the owner's value where it narrows a seat, the strictest value where it
 would widen one, with one departure. `block_sends_after_private` is the
 one field where the owner's default (off) is the *wider* value, and it is
 taken as the owner's rather than as the strictest, until §9's ruling. So it
-binds a seat when the owner has it on, while `trifecta` is always enforced — an owner's `allow`,
+binds a seat when the owner has it on, while `trifecta` is pinned to `block`, its strictest value — an owner's `allow`,
 set for trusted content on their own network, never reaches a stranger's
-seat — and `mark_untrusted_output` is always on. A seat's floor is a
+seat, and neither does `ask`, which a seat would otherwise refuse only
+because its approver overrides `escalate`, a second mechanism agreeing
+rather than this floor — and `mark_untrusted_output` is always on. A seat's floor is a
 property of the seat code, not of the operator's config. With
 it off (the default) the catalogue works as above; with it on, a seat
 cannot act after its first image, so the engine's hello offers no study
@@ -887,7 +889,9 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    step; nothing behind it yet but `Unready` until a token exists. A test
    on the chained `enable_command`, since `hyperstudy` is the first
    switch-bearing feature with a `requires` edge and that branch of
-   `plan_enable` has never run.
+   `plan_enable` has never run. And `hyperstudy`'s row in `TRIFECTA.md`'s
+   switch table, with what it costs, including the named
+   `block_sends_after_private` departure (§4a).
 2. **The guest facade** — `Facade`, `Mount` and a seat `SessionHost` usable
    outside serve; the confined launch (§3 — the socket bridge with its
    preflight of every leg, or the filesystem-only interim, per §9 — and,
@@ -922,7 +926,8 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    budget and pins its model with
    `follow_loaded = false`; a study's crisis
    resources that fail their bound fall back to `SAFE_MESSAGE`; the `[security]` floor
-   holds against an owner config with `trifecta = "allow"`; the system
+   holds against an owner config with `trifecta = "allow"` and with
+   `trifecta = "ask"`, each refused by the interlock itself; the system
    prompt is the study's `instructions` byte for byte, with no `BASE`, card,
    `SINCERE` or `DISCLOSED` even with the persona's `disclosure` on; a closed seat's
    transcript and manifest are readable afterwards; while a seat is open the
@@ -978,7 +983,10 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    workspace), since a published crate's missing dependency fails the
    publish after earlier crates uploaded, as `mecha-slack` once did. Its
    no-`mecha-core` property gets a test that reads its `Cargo.toml`,
-   rather than resting on review as `mecha-slack`'s does.
+   rather than resting on review as `mecha-slack`'s does. Once the surface
+   exists, `TRIFECTA.md` gains a channel row for the seat: the reply
+   itself as a way out no interlock sees (§1), owned by the sealed home
+   and the closed `Blind` catalogue.
    It is the only code on this box that parses bytes from the internet,
    and steps 3 and 4 were proved against a stand-in that replays what
    this design believes HyperStudy sends. Exit: HyperStudy's conformance
