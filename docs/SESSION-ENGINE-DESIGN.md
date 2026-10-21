@@ -227,9 +227,14 @@ beside `SessionMeta::kind`, not into the body as a `Record`. They are fixed
 when the session opens, which is the header's granularity; `Record::Config`
 is per-attach because flags can differ on resume, and these cannot:
 `HostedSession::open` refuses a resume whose recorded axes are not equal
-to the door's on all three. The principal is compared whole (for a guest,
-issuer and label, not only the variant), so one participant's token
-cannot reopen another's sealed transcript. The profile is compared too:
+to the door's on all three. A guest principal is compared whole, issuer and
+label, not only the variant, so one participant's token cannot reopen
+another's sealed transcript. An owner is compared by variant only: the
+header serializes a bare `Owner`, never its `OwnerProof`, and the loader
+builds the proof through the owner-store constructor, a named one like
+the rest, so `Deserialize` is not a hidden source of proofs. The owner's
+`sessions/` is shared across doors, and a session started in the TUI must
+still resume in the web page and in Slack; step 4 names that positive. The profile is compared too:
 §3's store check compares a header with its store, not with the door, so
 without this an Assistant door resuming a persona transcript would pass
 both checks and continue it with the assistant's reach, which
@@ -715,7 +720,11 @@ behaviour visible before it moves.
    body, compared old path against new in the same way:
    - **the conversation's taint axes** after each turn;
    - **the run's jail root** (`RunContext`), **which approver was
-     installed**, **the dispatched `withheld` set** and **the installed
+     installed** and **the permission state it applies** (the
+     `PermissionMode`, the one setting that widens, and the effective
+     `ExecPolicy` from `[[rule]]` and `[approval]`, which `SecurityConfig`
+     does not reach), since a host that seeded `Allow` or dropped the rules
+     installs the same approver and renders the same body, **the dispatched `withheld` set** and **the installed
      `HookSet`**, **the grant set** (standing, live, and whether
      `request_access` is requestable: `Grants::none()` and
      `Grants::standing_only()` are distinct facts, and `resolve_for` admits
@@ -802,8 +811,9 @@ behaviour visible before it moves.
    - **each dispatched tool's `Capabilities`** and its result's `external`
      flag;
    - **at least one fixture whose expected outcome is an interlock
-     refusal** (an armed conversation calling a `Chosen` tool). A fixture
-     that never trips the interlock cannot notice it has gone.
+     refusal** (an armed conversation calling a `Chosen` tool), and one
+     whose expected outcome is `Blocked by policy:` from a `[[rule]]`
+     prefix. A fixture that never trips a guard cannot notice it has gone.
 
    "Identical" in §10 means both snapshots. A step meant to change bytes
    (the principal's wording, say) does it in its own PR, with the rendered
@@ -919,7 +929,8 @@ persona chat alone, and the assistant chat repeats steps 2–4 after step 6.
    unchanged. This is the big step and the one §9.3 exists for. Exit:
    identical; the persona and chat suites green; `open` refuses an
    Assistant door resuming a persona transcript, and the reverse, since
-   this is the first step with both profiles on one `open`; lived with for the
+   this is the first step with both profiles on one `open`, while a
+   session started under one owner door resumes under another; lived with for the
    owner's chosen period (§11) before the old bodies are deleted.
 5. **Context providers and the Safety module.** The crisis sensor leaves
    `persona_chat.rs`. This is PERSONA-SERVING §8 step 2's prerequisite,
