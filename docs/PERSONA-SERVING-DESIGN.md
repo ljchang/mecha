@@ -858,7 +858,13 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    catalogue's `Blind` labels all rest on the owner having chosen that
    endpoint. A `mecha.toml` arriving with a cloned repository must not
    redirect it, nor raise `max_seats` (`[system]`'s reason); a test that a
-   project layer's `[hyperstudy]` is dropped with a warning. And `mecha hyperstudy token` with setup's
+   project layer's `[hyperstudy]` is dropped with a warning. The same
+   reason puts `hyperstudy` on `trial_env::OPERATOR_ONLY_TABLES`, the
+   decision `ARCHITECTURE.md` §Adding a feature asks of every new table:
+   an experiment environment's `config.toml` also arrives with a checkout,
+   and `[documents]` once sat on the project strip list but not this one.
+   It is inert today only because `switchable_from_environment` is `no`
+   (§6), a second mechanism's accident rather than this table's guard. And `mecha hyperstudy token` with setup's
    step; nothing behind it yet but `Unready` until a token exists. A test
    on the chained `enable_command`, since `hyperstudy` is the first
    switch-bearing feature with a `requires` edge and that branch of
@@ -946,6 +952,12 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
 5. **`mecha-hyperstudy` + wiring + admission** — once HyperStudy's `accept`
    exists; the crate replaces the local stand-in, dialing the control and
    session sockets and validating frames, and nothing behind it changes.
+   The same change adds `mecha-hyperstudy` to `release.yml`'s hand-kept
+   publish list ahead of `mecha-cli` (it depends on nothing in the
+   workspace), since a published crate's missing dependency fails the
+   publish after earlier crates uploaded, as `mecha-slack` once did. Its
+   no-`mecha-core` property gets a test that reads its `Cargo.toml`,
+   rather than resting on review as `mecha-slack`'s does.
    It is the only code on this box that parses bytes from the internet,
    and steps 3 and 4 were proved against a stand-in that replays what
    this design believes HyperStudy sends. Exit: HyperStudy's conformance
