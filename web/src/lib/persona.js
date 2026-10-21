@@ -429,13 +429,24 @@ function pageOnly(e) {
   return e.kind === 'notice' || e.kind === 'crisis' || (e.queued && e.delivery === 'discarded');
 }
 
+// A message no run has read yet, waiting for a turn of its own.
+function stillWaiting(e) {
+  return e.queued && e.delivery == null;
+}
+
 // The transcript after a finished run: the server's, which has the whole
 // answer — the part that streamed before a late subscriber arrived too —
 // with what only the page held carried across, in the order it arrived.
 // Re-reading without this deleted the failure notice and the "not
 // delivered" receipt one round trip after drawing them (review of #415).
-export function settle(serverEntries, local) {
-  return [...(serverEntries ?? []), ...local.entries.filter(pageOnly)];
+// Then the messages still waiting, last, in the order they will be sent:
+// the server's list when the read has one (a reloaded page has nothing of
+// its own), else the page's.
+export function settle(serverEntries, local, waiting = null) {
+  const queued = waiting
+    ? waiting.map((w) => ({ kind: 'user', text: w.text, queued: true, request_id: w.request_id ?? null, delivery: null }))
+    : local.entries.filter(stillWaiting);
+  return [...(serverEntries ?? []), ...local.entries.filter(pageOnly), ...queued];
 }
 
 function markDelivery(state, ids, delivery) {
@@ -450,9 +461,12 @@ function markDelivery(state, ids, delivery) {
 // the server may grow a kind this page does not draw yet.
 export function applyEvent(state, ev) {
   switch (ev?.type) {
+    // A waiting message's turn starting takes its bubble out of the queue:
+    // the same words, now the turn's (matched by receipt).
     case 'user': {
       const s = flush(state);
-      return { ...s, running: true, entries: [...s.entries, { kind: 'user', text: ev.text }] };
+      const entries = ev.request_id ? s.entries.filter((e) => !(e.queued && e.request_id === ev.request_id)) : s.entries;
+      return { ...s, running: true, entries: [...entries, { kind: 'user', text: ev.text }] };
     }
     case 'queued':
       return {
