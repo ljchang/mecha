@@ -279,10 +279,14 @@ for the same reason (above). A cargo feature is weaker than
 `#[cfg(test)]`: features are additive, `--all-features` turns them all
 on, and any crate in the graph can enable one. The workspace has no
 `[features]` table today, so there is no discipline to inherit either.
-So the feature is enabled only from `[dev-dependencies]`, and a CI arm
-asserts that `cargo tree -e normal,features` for each shipped binary never
-lists it, which is what makes its absence from a release checkable rather
-than assumed. In a build that passes that check, the loader and `open` are
+So the feature is enabled only from `[dev-dependencies]` (the workspace
+resolver is `2`, under which a plain build does not activate a dev-only
+feature), and a CI arm asks the artifact rather than the resolve: the
+feature gates an ASCII marker literal, and `strings` over each release
+binary must not find it. A filter on `cargo tree -e normal` could not
+fail, since it prunes the very dev edge a leak would travel. The arm
+gets the breaking test step 0's other exits demand: a build that turns
+the feature on must make it fail. In a build that passes that check, the loader and `open` are
 the admitting variants' only source. `owner_at` (§3) is narrower still,
 `#[cfg(test)]` alone.
 `Session::peek_meta` is `pub` and called directly (by
