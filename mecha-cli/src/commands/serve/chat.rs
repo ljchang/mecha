@@ -211,6 +211,11 @@ struct WebSession {
     /// come back "arrived too late — send again", so a second picture or
     /// clip asked for mid-reply never queued (owner, 2026-10-21).
     waiting: VecDeque<NextTurn>,
+    /// The waiting messages whose turns [`next_turn`] has taken out of the
+    /// line and is starting — a model switch away from a run — by receipt.
+    /// The owner's Stop clears them, and a turn that finds its own gone does
+    /// not begin (review of #731, pass 3).
+    starting: std::collections::HashSet<String>,
 }
 
 /// An owner message waiting for its own turn ([`WebSession::waiting`]).
@@ -493,6 +498,7 @@ impl ChatState {
             WebSession {
                 late: Default::default(),
                 waiting: VecDeque::new(),
+                starting: Default::default(),
                 listen: None,
                 conversation: Some(Conversation::new()),
                 workspace: room.workspace.clone(),
@@ -1820,6 +1826,7 @@ fn ensure_session_as<'a>(
             WebSession {
                 late,
                 waiting: VecDeque::new(),
+                starting: Default::default(),
                 listen: None,
                 conversation: Some(conversation),
                 session: Recording::Kept(Arc::new(session)),
@@ -2202,7 +2209,11 @@ fn next_turn(chat: Arc<ChatState>, key: String) -> futures::future::BoxFuture<'s
                 discard_waiting(ws, "the server is shutting down");
                 return;
             }
-            ws.waiting.pop_front()
+            let next = ws.waiting.pop_front();
+            if let Some(n) = &next {
+                ws.starting.insert(n.request_id.clone());
+            }
+            next
         };
         let Some(next) = next else {
             return;
@@ -2223,6 +2234,7 @@ fn next_turn(chat: Arc<ChatState>, key: String) -> futures::future::BoxFuture<'s
         if let Err((_, why)) = sent {
             let mut sessions = chat.sessions.lock().await;
             if let Some(ws) = sessions.get_mut(&key) {
+                ws.starting.remove(&next.request_id);
                 ws.waiting.push_front(next);
                 discard_waiting(ws, why.trim());
             }
@@ -2337,8 +2349,15 @@ async fn send_text(
             ));
         }
         match sessions.get_mut(key) {
+            // Stopped while its turn was on its way: it does not begin.
+            Some(ws) if carried && !ws.starting.contains(&request_id) => {
+                return Err((StatusCode::CONFLICT, "stopped\n".into()))
+            }
             Some(ws) if waits(ws) && draw.is_some() => return busy(),
-            Some(ws) if waits(ws) => return steer(ws, text, request_id),
+            Some(ws) if waits(ws) => {
+                ws.starting.remove(&request_id);
+                return steer(ws, text, request_id);
+            }
             Some(ws) => Some((ws.events.clone(), ws.workspace.clone())),
             None => None,
         }
@@ -2412,6 +2431,9 @@ async fn send_text(
         Ok(ws) => ws,
         Err(e) => return Err((super::incognito::status_of(&e), format!("{e:#}\n"))),
     };
+    if carried && !ws.starting.remove(&request_id) {
+        return Err((StatusCode::CONFLICT, "stopped\n".into()));
+    }
     // A run that started while this one waited: steer it after all.
     if waits(ws) {
         if draw.is_some() {
@@ -3958,8 +3980,11 @@ pub async fn cancel(
     }
     // And the messages waiting for turns of their own: a Stop that let the
     // next one start at once would not have stopped anything.
+    // A turn on its way out of the line is stopped too: it finds its mark
+    // gone and does not begin.
     let had_waiting = sessions.get_mut(&key).is_some_and(|ws| {
-        let had = !ws.waiting.is_empty();
+        let had = !ws.waiting.is_empty() || !ws.starting.is_empty();
+        ws.starting.clear();
         discard_waiting(ws, "stopped");
         had
     });
@@ -4753,6 +4778,7 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
         WebSession {
             late,
             waiting: VecDeque::new(),
+            starting: Default::default(),
             listen: None,
             conversation: Some(conversation),
             // Resumed from its transcript, so recorded by definition.
@@ -6524,6 +6550,7 @@ mod held_tests {
             WebSession {
                 late: Default::default(),
                 waiting: VecDeque::new(),
+                starting: Default::default(),
                 listen: None,
                 // Still held by a finished run landing: the `Held` return.
                 conversation: None,
@@ -6601,6 +6628,7 @@ mod held_tests {
             WebSession {
                 late: Default::default(),
                 waiting: VecDeque::new(),
+                starting: Default::default(),
                 listen: None,
                 conversation: Some(mecha_core::agent::Conversation::new()),
                 session: Recording::Kept(Arc::clone(&session)),
@@ -6752,6 +6780,7 @@ mod held_tests {
             WebSession {
                 late: Default::default(),
                 waiting: VecDeque::new(),
+                starting: Default::default(),
                 listen: None,
                 conversation: Some(mecha_core::agent::Conversation::new()),
                 session: Recording::Kept(Arc::clone(&session)),
@@ -6977,6 +7006,7 @@ mod held_tests {
             WebSession {
                 late: Default::default(),
                 waiting: VecDeque::new(),
+                starting: Default::default(),
                 listen: None,
                 conversation: None,
                 session: Recording::Incognito(Arc::new(room)),
@@ -7104,6 +7134,7 @@ mod workflow_recording_tests {
                 WebSession {
                     late: Default::default(),
                     waiting: VecDeque::new(),
+                    starting: Default::default(),
                     listen: None,
                     conversation: Some(conversation),
                     session: Recording::Kept(Arc::new(session)),
