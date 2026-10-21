@@ -463,10 +463,14 @@ event. The three wirings go.
 
 | Session | Appraisal | Goal source | Enters the owner's corpus |
 |---|---|---|---|
-| Assistant, owner | on, as today | charter, project, task | yes |
+| Assistant, owner, `Kept` | on, as today | charter, project, task | yes |
+| Assistant, owner, `Incognito` | off (§6) | — | no |
 | Persona, owner | off | — | no |
 | Persona, scripted scenario | later (`GoalRef::Scenario`, PERSONA-DESIGN §7.4, not built) | the scenario | its own store only |
 | Seat | off | — | never |
+
+The table is §2's three-axis conjunction spelled out per row, not a second
+rule: where they seem to differ, §2 governs.
 
 Two rules carry it:
 
@@ -785,8 +789,8 @@ means §9.2's two snapshots: the rendered bodies and the security snapshot.
    session refused memory writes and spoken confirmations, an
    Owner × Persona × Incognito combination refused memory writes, and the
    corpus veto measured over synthetic metas. Guest × Seat × Sealed and
-   Owner × Persona × Kept are refused corpus entry, Owner × Assistant × Kept
-   is admitted, and `Scan::admits`' kind filter is asserted to still do its
+   Owner × Persona × Kept and Owner × Assistant × Incognito are refused
+   corpus entry and appraisal, Owner × Assistant × Kept is admitted, and `Scan::admits`' kind filter is asserted to still do its
    own separate job. With every surface passing `Owner` until step 7, a
    corpus rule that ignored the principal would otherwise stay green for
    six steps. Synthetic metas are built with the axes already set, so they
