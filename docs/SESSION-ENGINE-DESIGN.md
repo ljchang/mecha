@@ -391,9 +391,12 @@ A file anywhere else loads degraded on all three (§2).
 The loaders do not consult `default_dir()` themselves: `Corpus::scan`,
 `Session::list_counting` and the rest take a directory from their caller.
 So the caller hands in the store as a typed value, `SessionStore`, built
-by `SessionStore::owner()` (from `default_dir()`) or
-`SessionStore::persona(name)`, and a file is compared against the store
-it was loaded from. The caller is code, not the record, so this is
+by `SessionStore::owner()` (from `default_dir()`),
+`SessionStore::persona(name)` or `SessionStore::seat(dir)`, and a file is
+compared against the store it was loaded from. Under `seat` an absent axis
+is refused, not degraded, since every seat session is written with all
+three; it is also the store §5's later seat-appraisal tool would read sealed
+transcripts through. The caller is code, not the record, so this is
 still location deciding, not data. A third constructor, `owner_at(dir)`,
 rides §2's test-only feature, because core's corpus tests (`runlog.rs`,
 `planning.rs`, `reading.rs`, `tenure.rs`, `success.rs`, `persona.rs`)
@@ -868,7 +871,19 @@ persona chat alone, and the assistant chat repeats steps 2–4 after step 6.
    call kinds pass their existing tests, and the owner's phone check
    passes (an inventory row).
 7. **The Seat profile and the HyperStudy door:** PERSONA-SERVING §8
-   steps 2–5, now on the host.
+   steps 2–5, now on the host. There is no old path here, so §9.2's
+   comparison is vacuous and named tests stand in for it, one negative
+   per guard, in the shape §4 uses for the seat tools' `Blind` label.
+   Exit: PERSONA-SERVING §8 steps 2–5's own exits, and, on a live guest
+   session: `HostedSession::open` refuses every combination off §2's
+   table; the conversation starts armed `untrusted`; a refused call
+   renders `Blocked by policy:` and no `Deny` reaches the loop; `open`
+   refuses a jail root outside the sealed home; a Seat with no Safety
+   module does not open; a setup-supplied prompt is refused for
+   Assistant and Persona; a guest frame carrying an approval-mode field
+   is refused as unsupported (§3); and Guest × Seat × Sealed sessions,
+   loaded through `SessionStore::seat`, are excluded from the corpus and
+   from appraisal, counted as excluded.
 8. **The rest onto the host:** TUI, `mecha chat`, Slack, scheduled
    triggers and `batch.rs` (which `mecha eval` drives, so its lever-off
    rule, `RunConfig::levers_off`, rides along unchanged), and §1's other
