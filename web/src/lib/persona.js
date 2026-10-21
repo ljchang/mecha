@@ -466,7 +466,7 @@ export function applyEvent(state, ev) {
     case 'user': {
       const s = flush(state);
       const entries = ev.request_id ? s.entries.filter((e) => !(e.queued && e.request_id === ev.request_id)) : s.entries;
-      return { ...s, running: true, entries: [...entries, { kind: 'user', text: ev.text }] };
+      return { ...s, running: true, entries: [...entries, { kind: 'user', text: ev.text, request_id: ev.request_id ?? null }] };
     }
     // Once per receipt: a message that raced into a run and back to the
     // line is announced twice, and is one bubble.

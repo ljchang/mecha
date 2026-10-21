@@ -262,6 +262,23 @@ struct Live {
     working: Arc<StdMutex<Vec<serde_json::Value>>>,
 }
 
+/// A waiting message whose turn found a run live — one that started in the
+/// moment between — back at the front of the line, the oldest message, for
+/// the turn after that run. Its bubble is already drawn, still queued.
+fn back_to_the_front(
+    ps: &mut PersonaSession,
+    text: String,
+    request_id: String,
+    token: Option<&str>,
+) -> serde_json::Value {
+    ps.waiting.push_front(NextTurn {
+        text,
+        request_id,
+        token: token.map(str::to_string),
+    });
+    serde_json::json!({ "steered": false, "waiting": true })
+}
+
 /// The owner's messages no run has read yet, oldest first: the live run's
 /// unread steers, then those waiting for a turn of their own. The steers
 /// still in `queue` are the last `queue.len()` receipts (`take_undrained`).
@@ -3575,10 +3592,11 @@ impl PersonaChats {
                 if edit.as_ref().is_some_and(|e| e.redraw) {
                     return Err(Refusal::Conflict(REGENERATE_WAITS.into()));
                 }
-                // Metered and judged where it first arrived.
+                // Metered and judged where it first arrived; back to the
+                // front of the line, the oldest message, for the turn after.
                 if carried {
                     ps.starting.remove(&request_id);
-                    return steer(ps, text, request_id, token);
+                    return Ok(back_to_the_front(ps, text, request_id, token));
                 }
                 let switches = live_switches.unwrap_or(ps.pinned.settings.safety);
                 let bound = chat.follower.current();
@@ -3746,7 +3764,7 @@ impl PersonaChats {
                 return Err(Refusal::Conflict(REGENERATE_WAITS.into()));
             }
             if carried {
-                return steer(ps, text, request_id, token);
+                return Ok(back_to_the_front(ps, text, request_id, token));
             }
             let switches = live_switches.unwrap_or(ps.pinned.settings.safety);
             let bound = chat.follower.current();
@@ -4846,15 +4864,18 @@ impl PersonaChats {
 }
 
 /// Fold text into the run in flight, as the assistant's chats steer; with no
-/// run, it waits behind the messages already waiting for a turn of its own.
-/// A steer the run never reads waits the same way once it ends.
+/// run, or with messages already waiting, it waits behind them for a turn of
+/// its own — a run the line is draining through must not read a newer
+/// message ahead of older ones (review of #731, pass 4). A steer the run
+/// never reads waits the same way once it ends.
 fn steer(
     ps: &mut PersonaSession,
     text: String,
     request_id: String,
     token: Option<&str>,
 ) -> Result<serde_json::Value, Refusal> {
-    let Some(live) = ps.live.as_mut() else {
+    let waiting = !ps.waiting.is_empty();
+    let Some(live) = ps.live.as_mut().filter(|_| !waiting) else {
         ps.waiting.push_back(NextTurn {
             text: text.clone(),
             request_id: request_id.clone(),
