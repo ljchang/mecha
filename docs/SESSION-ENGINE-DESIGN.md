@@ -47,7 +47,10 @@ are the same engine written twice. Each copy has:
 - a turn body: fold or push the user text, refuse to run if recording
   fails, run `run_in`, `record_run`, `roll_back_failed_turn` on error,
   hand late jobs back;
-- steer, cancel and job reordering;
+- steer, cancel and job reordering, and a line of waiting messages, each
+  given a turn of its own (`chat::next_turn`, `PersonaChats::next_turn`),
+  which #731 (fed60ec0e) added to both files at once, after this survey's
+  commit;
 - a background-job queue (`late::Jobs` `marked("chat")` and
   `marked("persona")`) with its own delivery task;
 - a barge-in loop (`BARGE_IN_TRIES` is defined in both files);
@@ -783,13 +786,24 @@ persona chat alone, and the assistant chat repeats steps 2–4 after step 6.
    `marker_dir_under` feeds `system/measure.rs` and one mark would read two
    jobs in flight as one. Exit: identical; the late-job tests of both files green
    against the one implementation.
-3. **Steer, cancel, reorder, barge-in.** Exit: identical, over two fixtures
-   §9.2 adds for this step (one queues steer text mid-tool-round, one
-   delivers a late job) so the rendered bodies differ if the fold or the
-   appended record is lost; one `BARGE_IN_TRIES`; and the door-side tests
+3. **Steer, the waiting line, cancel, reorder, barge-in.** Exit: identical,
+   over three fixtures §9.2 adds for this step (one queues steer text
+   mid-tool-round, one sends a message during a closing turn so it waits
+   for a turn of its own, one delivers a late job) so the rendered bodies
+   differ if the fold, the waiting turn or the appended record is lost; one `BARGE_IN_TRIES`; and the door-side tests
    green against the one implementation: `chat.rs`'s
-   `a_steer_is_read_back_as_part_of_its_turn`, and `persona_chat.rs`'s
-   `a_steer_is_always_delivered_or_discarded`,
+   `a_steer_is_read_back_as_part_of_its_turn`; `serve/mod.rs`'s
+   `a_steer_the_run_never_read_gets_its_own_turn`,
+   `a_message_typed_while_the_line_drains_keeps_its_place` and
+   `a_stop_does_not_send_the_waiting_messages`; `serve_lifecycle.rs`'s
+   `steering_that_arrives_in_the_final_answer_gets_its_own_turn_on_every_device`;
+   and `persona_chat.rs`'s
+   `a_steer_is_always_delivered_or_given_its_own_turn`,
+   `a_message_typed_while_a_turn_is_on_its_way_goes_behind_it`,
+   `a_stop_does_not_send_the_waiting_messages`,
+   `a_stop_ends_a_waiting_turn_already_on_its_way`,
+   `a_concern_holds_back_a_turn_already_on_its_way`,
+   `a_crisis_message_behind_the_line_is_kept_with_no_run_live`,
    `a_steer_is_held_only_if_the_agent_has_not_read_it`,
    `a_steer_is_judged_too`, `a_steer_the_judge_stops_keeps_its_words`,
    `speaking_over_a_reply_barges_in` and
