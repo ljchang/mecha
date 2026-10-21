@@ -2,7 +2,8 @@
 
 *2026-10-19. Design, not built.* How a mecha persona takes part in a
 HyperStudy experiment — reading what the study shows, talking by text and
-voice, and acting in the study (a rating, the next screen) — for people who
+voice, and acting in the study (a rating, a chat line; advancing the screen
+is not an agent capability in HyperStudy yet) — for people who
 are not the owner, without a public listener on this box and without anything of
 the owner's in reach of the conversation. PERSONA-DESIGN §14 deferred
 serving and listed what it would need; this is the design it asked for.
@@ -268,9 +269,9 @@ crosses a network namespace. The wiring, outside the jail, creates
 `seat/run/parent.sock` (to itself) inside the bound seat directory; the
 facade runs under `--unshare-net` and reaches the model and its parent
 through those and nothing else. The facade's clients either take a socket
-path (reqwest's `ClientBuilder::unix_socket`, present in the locked
-0.12.28 under `cfg(unix)` with no feature flag — checked in the crate's
-registry source) or keep
+path (reqwest's `ClientBuilder::unix_socket`, which the locked 0.12.28's
+source shows under `cfg(unix)` with no feature flag; read, not yet
+compiled, so step 2's first act is the compile check that settles it) or keep
 their `http://127.0.0.1` URLs through a forwarder on the jail's own `lo`.
 The first is cheap on the worker side and not on the facade's: the
 provider's HTTP clients are built centrally with no socket parameter
@@ -819,8 +820,10 @@ posture, a mounted facade allowing every call, and a seat's approver is the
 catalogue's (§4a). `inject_voice_block` takes neither existing value,
 because both name the owner, and it is a `bool`, so the third value means
 widening the field to an enum. That touches `mecha serve`'s and
-`voice-serve`'s mounts too, which keep their two values. `false` would put `VOICE_BLOCK` in the system
-prompt, which S10 gives wholly to the study. `true` adds the per-request
+`voice-serve`'s mounts too, which keep their two values. `false` writes no
+note at all (only `true` appends one; `VOICE_BLOCK` reaches a prompt
+through `voice-serve`'s `system_extra`, which a seat does not set), so a
+voice seat would speak with none of the streaming guidance. `true` adds the per-request
 voice note (`VOICE_NOTE`), which says the reply is read "to the owner, who
 hears it". A seat needs a third spelling, derived from `VOICE_NOTE_STREAMING`, not
 `VOICE_NOTE`. The two are chosen per call by engine, a seat streams (§4),
@@ -828,9 +831,7 @@ and the streaming note carries no length rules by the owner's 2026-10-03
 ruling. So the seat's note is the streaming note's guidance with the
 listener left out, for the reason `BASE` is left out (§1), and it
 re-imposes nothing that ruling removed. It is a per-request note like the
-clock, never in the system prompt. (Strictly, `inject_voice_block: false`
-does not write the system prompt; `voice-serve`'s `opts.system_extra =
-VOICE_BLOCK` does, and a seat sets no `system_extra`.) The worker takes the facade's address per call — a URL for the
+clock, never in the system prompt. The worker takes the facade's address per call — a URL for the
 owner's calls, `seat/run/facade.sock` for a confined seat (§3) — and with
 it the affect and direction endpoints derived from it at import
 (`AFFECT_URL`, `DIRECT_URL`), carried by the wiring's relay as a trusted
