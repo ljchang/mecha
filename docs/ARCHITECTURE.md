@@ -8025,6 +8025,46 @@ a run — which **ships off**.
   only after a measured run (R43). A reflection does not record that it
   was contrasted; the arm does.
 
+### What never becomes a rule, and every reply counted
+
+`HARNESS-EVOLUTION-DESIGN.md` P7, after Hermes's do-not-capture block.
+`REFLECTOR_SYSTEM` (steer, denial, followup, reject) names three kinds of
+moment to skip, as criteria rather than a tone: a failure the
+**environment** caused (a missing program, a server that was down), a
+**negative claim about a tool** drawn from one bad result, and an approach
+**never resolved** in the excerpts. Each hardens into a self-imposed
+constraint that outlives its cause. The writing frame is left alone (an
+edit is shaped by neither tools nor the environment) and the mismatch frame
+carries its own count rule.
+
+- **A skip is kept apart from a reply that could not be used.**
+  `Reflector::reflect_typed` returns `Reflected`: a lesson, `Skipped`
+  (`{"skip": true}`), `Unusable` (no JSON, JSON that does not parse, or
+  `"skip": false` with no lesson), or `NotAsked` (a mismatch whose step is
+  not a learnable failure). `reflect`/`reflect_beside` keep their signature
+  and return the lesson alone. Folded together, the share of skips, which
+  is P7's measure, could not be read.
+- **Every reply is a row** in `reflector_replies.jsonl`
+  (`LearningStore::append_reply`, `ReplyRecord`): trigger, domain, outcome,
+  the lesson's id and `error_type`, the model, **the hash of the system
+  prompt sent**, so one prompt's skip share and category mix can be read
+  apart from another's, and **what the reflector was shown**: the evidence
+  class and whether a contrast success was set beside it. The prompt tells
+  the reflector to prefer a skip when excerpts are withheld, so a skip share
+  is read within an evidence class, never across a mix of them. **No text.** Rows are written with the reflections
+  they belong to: a session's at its all-or-nothing commit, an outbox
+  item's when it is marked mined. A retried pass therefore counts no reply
+  twice. `--remine-untrusted` records none: that backfill never marks a
+  session mined and is keyed by the reflections on file, which a skip does
+  not add, so a rerun would count the same skip again. `ReplyOutcome` is a
+  wire format: an unknown outcome reads as `Unknown` and is counted on its
+  own, never as unusable. `forget` purges the ledger by session and by
+  forgotten reflection, like the validation ledgers.
+- **The baseline before it is partial.** Skips used to be discarded, and
+  only steer and denial skips were ever printed to the learning log
+  (`· [steer] no lesson drawn`). Followup skips, the common case, have no
+  record before this.
+
 ## The goal system
 
 `docs/GOAL-SYSTEM-DESIGN.md` is the design and is deliberately not rewritten as
