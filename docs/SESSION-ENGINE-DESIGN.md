@@ -186,9 +186,16 @@ is designed when it is wanted, not admitted by a missing check. The owner
 never gets Seat: a pilot of a study connects through HyperStudy like a
 participant, so the pilot tests what participants get.
 
+**The principal sets a floor on taint, never a reset.** A guest's
+conversation starts armed `untrusted`; an owner's starts from what the
+record holds, so a resumed transcript comes back with its recorded taint
+(`Conversation::resumed`) unioned with the principal's floor, the way
+`Capabilities::union` takes the wider egress class. No principal clears a recorded axis, and
+step 1 derives the seed by that union, not from the principal alone (§9.2's
+armed-resume fixture holds it).
+
 **The principal alone decides:**
 
-- whether the conversation starts armed untrusted;
 - which approver is installed. A guest's approver never returns
   `Decision::Deny`: it allows a call in the seat's catalogue and returns
   `Blocked` for anything else. Seat tool calls do reach it. They are
@@ -878,7 +885,8 @@ means §9.2's two snapshots: the rendered bodies and the security snapshot.
    and on a tool stripped of `.from_outside()`, each shown by a test that
    breaks it.
 1. **The principal type.** `Principal` in core, recorded per session. The
-   taint seed and the approver installed are derived from it, and its veto
+   taint seed (its floor unioned with any recorded taint, §2) and the
+   approver installed are derived from it, and its veto
    enters memory-write and corpus eligibility, each computed over all three
    axes (§2), with every existing surface passing `Owner` through the
    `OwnerProof` constructor for its own authentication. Exit:
@@ -936,8 +944,15 @@ persona chat alone, and the assistant chat repeats steps 2–4 after step 6.
    `speaking_over_a_reply_barges_in` and
    `the_queue_is_shown_reordered_and_told_to_the_page`.
 4. **The turn body, as `ConversationHost`.** Both web chats on it, routes
-   unchanged. This is the big step and the one §9.3 exists for. Exit:
-   identical; the persona and chat suites green; `open` refuses an
+   unchanged. This is the big step and the one §9.3 exists for. The agent
+   builder moves in it too (`prepare_carrying`, `prepare_tools_carrying`,
+   `persona_agent`, `build_subagent`; §9.5), since `open` fixing the jail
+   root needs it, behind the same names so every door still calling it
+   from `setup.rs` is unchanged until step 8. Exit:
+   identical; the persona and chat suites green; §9.2's builder facts (the
+   MCP environment allowlist, sandbox and preflight, the outbox and
+   mailbox routes, grants, and the child registry) identical for a web
+   chat fixture and for a `mecha run` fixture, the builder's other caller; `open` refuses an
    Assistant door resuming a persona transcript, and the reverse, since
    this is the first step with both profiles on one `open`, while a
    session started under one owner door resumes under another; lived with for the
