@@ -130,7 +130,7 @@ unrelated to `serve/listen.rs`'s read-aloud `Seat`, which becomes
 ```rust
 pub enum Principal {
     Owner(OwnerProof),                         // built only by an authentication
-    Guest { issuer: Issuer, label: String },   // e.g. Issuer::HyperStudy
+    Guest { issuer: Issuer, subject: Subject },   // e.g. Issuer::HyperStudy
 }
 
 pub enum Profile {
@@ -149,6 +149,10 @@ pub enum SessionRecording {
 - **The principal** is set by the door from authentication: the tailnet
   login (`owner_guard`), the local OS user, or a HyperStudy `mhs_` token.
   There is no upgrade path: no frame, field or spoken phrase changes it.
+  A guest's `subject` is an opaque id from the authenticated offer
+  (HyperStudy's session token), never a name and never a value the
+  connection sends: the display label a guest connection may set (§3) is
+  a preference, held outside the principal, and enters no comparison.
   `Owner` carries an `OwnerProof`, a type with a private field and one
   named constructor per authentication §8's table lists (the tailnet
   login, the local OS user, the Slack binding's `owners`) plus one for a
@@ -235,7 +239,7 @@ when the session opens, which is the header's granularity; `Record::Config`
 is per-attach because flags can differ on resume, and these cannot:
 `HostedSession::open` refuses a resume whose recorded axes are not equal
 to the door's on all three. A guest principal is compared whole, issuer and
-label, not only the variant, so one participant's token cannot reopen
+subject, not only the variant, so one participant's token cannot reopen
 another's sealed transcript. An owner is compared by variant only: the
 header serializes a bare `Owner`, never its `OwnerProof`, and the loader
 builds the proof through the owner-store constructor, a named one like
@@ -293,14 +297,14 @@ no persona memory writes at all, a silent E3 loss, so step 1's
 can read only resolved axes, and a meta that skipped resolution does not
 type-check rather than admitting or silently dropping. The header is a
 wire format: a principal that fails to parse loads as `Guest`, never as
-`Owner`, and specifically as `Guest { issuer: Issuer::Unknown, label:
-"(unreadable principal)" }`. That label cannot be mistaken for a person's
-name, and `Issuer::Unknown` opens no profile, so the session reads back
+`Owner`, and specifically as `Guest { issuer: Issuer::Unknown, subject:
+Subject::Unreadable }`. No subject a door builds can equal it, and
+`Issuer::Unknown` opens no profile, so the session reads back
 and cannot be resumed. Unknown is never clean. An *absent* record is a different case
 with its own rule (§3), and the two must stay two code paths. Where that
 rule cannot place the file (`SessionStore::Other`), the absent principal
 degrades to `Guest { issuer: Issuer::Unlocated, .. }`, not to the
-unreadable label: it fails closed the same way and opens no profile, but
+unreadable subject: it fails closed the same way and opens no profile, but
 it asserts no corruption about a field that was never written, and
 `sessions health` counts a corrupt header and an unlocated store apart,
 since they want different fixes.
@@ -384,7 +388,8 @@ hand one to a profile that holds the owner's reach.
 
 **What a guest connection may set:** the system prompt (where the profile
 takes one), the tools it runs on its side, voice and speed, turn-taking,
-which persona by reference, text or voice, a display label for the human.
+which persona by reference, text or voice, a display label for the human
+(a preference; the principal's `subject` is the token's, §2).
 **What it never sets:** the principal, the owner's stores, any security
 switch, the approval mode, the provider or its keys. An owner door adds
 the approval mode and nothing else from that second list.
@@ -859,7 +864,11 @@ behaviour visible before it moves.
    - **at least one fixture whose expected outcome is an interlock
      refusal** (an armed conversation calling a `Chosen` tool), and one
      whose expected outcome is `Blocked by policy:` from a `[[rule]]`
-     prefix. A fixture that never trips a guard cannot notice it has gone.
+     prefix, and a `pre_tool` pair: one hook that denies and one that
+     hangs past its timeout, each asserting the call did not run and its
+     result carries `Blocked by a hook:`. The `HookSet` snapshots
+     identically if the deny path is lost, and step 4 moves the one
+     `cx.hooks` site. A fixture that never trips a guard cannot notice it has gone.
 
    "Identical" in §10 means both snapshots. A step meant to change bytes
    (the principal's wording, say) does it in its own PR, with the rendered
@@ -1003,7 +1012,8 @@ persona chat alone, and the assistant chat repeats steps 2–4 after step 6.
    table; the conversation starts armed `untrusted`; a refused call
    renders `Blocked by policy:` and no `Deny` reaches the loop; `open`
    refuses a jail root outside the sealed home; `open` refuses a resume
-   under a different guest's label; a Seat with no Safety
+   under a different guest's subject, including one whose display label
+   names the other guest; a Seat with no Safety
    module does not open; a setup-supplied prompt is refused for
    Assistant and Persona; a guest frame carrying an approval-mode field
    is refused as unsupported (§3); and Guest × Seat × Sealed sessions,
