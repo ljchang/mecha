@@ -388,6 +388,20 @@ is still the owner's) is Owner × Assistant × Kept, one under
 directory is refused, since every seat session is written with all three.
 A file anywhere else loads degraded on all three (§2).
 
+The loaders do not consult `default_dir()` themselves: `Corpus::scan`,
+`Session::list_counting` and the rest take a directory from their caller.
+So the caller hands in the store as a typed value, `SessionStore`, built
+by `SessionStore::owner()` (from `default_dir()`) or
+`SessionStore::persona(name)`, and a file is compared against the store
+it was loaded from. The caller is code, not the record, so this is
+still location deciding, not data. A third constructor, `owner_at(dir)`,
+rides §2's test-only feature, because core's corpus tests (`runlog.rs`,
+`planning.rs`, `reading.rs`, `tenure.rs`, `success.rs`, `persona.rs`)
+scan a bare `TempDir` and never set `MECHA_SESSION_DIR`; without it
+every such fixture would load degraded and step 1's "every existing test
+green" could not hold. Step 1 prices that: each of those fixtures
+changes one argument, and the test-count delta shows none removed.
+
 ## 4. Modules: what a profile is made of
 
 Inside, a profile is a fixed composition of modules. The composition is
@@ -421,13 +435,20 @@ capabilities never meeting, and free composition is how that breaks.
 
 **The jail root is fixed per session at `HostedSession::open`, by rules in
 code, never by a connection's setup.** It is not fixed per profile. For
-the Assistant it has three sources today: `work/web/<key>` for a new web
+the Assistant it has four sources today: `work/web/<key>` for a new web
 chat; the recorded `meta.workspace` when a transcript is resumed, because
 re-rooting a resumed conversation would be, in the resume handler's own
 words, "the outbox's wrong-bytes release through another door" (and the
 sessions directory is shared, so a `mecha chat --workspace` session
 resumes in the web page under its own root); and `work/<task-id>` for a
-task chat (`work::ensure`). Each is re-proved by
+task chat (`work::ensure`). Every door step 8 moves (`mecha run`, `mecha
+chat`, the TUI, Slack, mail, `tasks work`, the questions resume,
+triggers) uses a fourth: setup's chain in `prepare_tools_carrying`,
+`opts.workspace`, then `cfg.tools.workspace`, then the working
+directory. `diagnose.rs`'s hand copy orders the config keys differently
+(its own comment records the drift), so `open`'s rule keeps setup's
+chain, the one every other door uses, and diagnose's change is named in
+step 8 with a fixture. Each is re-proved by
 `work::ensure_outside_mecha_home` on the way in, because the record is
 data, not authority. `Incognito` replaces any profile's root with its
 tmpfs room. The `upload` and `file` routes (§1) are descriptor-relative
@@ -758,7 +779,8 @@ behaviour visible before it moves.
    `commands/setup_guided.rs`, `setup_chat.rs`, `setup_engine.rs`,
    `features.rs`, `mecha-core/src/onboarding.rs` and `feature.rs` finds
    nothing at `dc00a90b2`. One name misleads: `mecha-cli/src/setup.rs`
-   (`prepare_carrying`, `persona_agent`) is the *agent builder* and does
+   (`prepare_carrying` and the `prepare_tools_carrying` it calls, which
+   resolves the workspace, and `persona_agent`) is the *agent builder* and does
    move into the engine. `mecha setup`, the features registry, the units
    and the config formats (§3) do not change. A new feature
    (`hyperstudy`) follows `ARCHITECTURE.md` §Adding a feature and adds a
@@ -855,7 +877,11 @@ persona chat alone, and the assistant chat repeats steps 2–4 after step 6.
    the TUI and incognito personas exist, both as combinations. Exit:
    identical for every surface moved, and two live checks the synthetic
    ones of step 1 cannot make. A live Owner × Persona × Incognito session
-   is refused memory writes and corpus entry. Each batch item and eval
+   is refused memory writes and corpus entry. One fixture per jail-root
+   source (§4), so a door that re-rooted to `work/<producer>/` fails the
+   security snapshot rather than passing the body comparison, including
+   one for `diagnose.rs`, whose config-key order changes to setup's.
+   Each batch item and eval
    case opens a fresh `HostedSession`, and so a fresh `Conversation`,
    asserted by a fixture whose first item arms the conversation and whose
    second starts clean. CLAUDE.md's taint rule leans on that freshness,
