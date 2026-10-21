@@ -770,7 +770,7 @@ listener left out, for the reason `BASE` is left out (§1), and it
 re-imposes nothing that ruling removed. It is a per-request note like the
 clock, never in the system prompt. (Strictly, `inject_voice_block: false`
 does not write the system prompt; `voice-serve`'s `opts.system_extra =
-VOICE_BLOCK` does, and a seat sets no `system_extra`.); the worker takes the facade's address per call — a URL for the
+VOICE_BLOCK` does, and a seat sets no `system_extra`.) The worker takes the facade's address per call — a URL for the
 owner's calls, `seat/run/facade.sock` for a confined seat (§3) — and with
 it the affect and direction endpoints derived from it at import
 (`AFFECT_URL`, `DIRECT_URL`), carried by the wiring's relay as a trusted
