@@ -149,6 +149,43 @@ assert.deepEqual(s.entries.map((e) => e.delivery), ['delivered', 'discarded']);
   );
 }
 
+// A message no run read waits for a turn of its own: a re-read keeps its
+// bubble, last, from the server's list when it has one — a reloaded page
+// has nothing of its own — and its turn starting takes the bubble back out
+// (owner, 2026-10-21: a second picture asked for mid-reply was lost).
+{
+  let r = emptyRun([{ kind: 'user', text: 'Draw a fox' }]);
+  r = applyEvent(r, { type: 'queued', text: 'and a heron', request_id: 'r-1' });
+  r = applyEvent(r, { type: 'notice', text: 'switching models' });
+  const server = [{ kind: 'user', text: 'Draw a fox' }, { kind: 'assistant', text: 'On its way.' }];
+  assert.deepEqual(
+    settle(server, r).map((e) => [e.kind, e.text, e.queued ?? false]),
+    [['user', 'Draw a fox', false], ['assistant', 'On its way.', false], ['notice', 'switching models', false], ['user', 'and a heron', true]],
+  );
+  assert.deepEqual(
+    settle(server, emptyRun(), [{ text: 'and a heron', request_id: 'r-1' }]).map((e) => [e.text, e.request_id ?? null]),
+    [['Draw a fox', null], ['On its way.', null], ['and a heron', 'r-1']],
+    'a reloaded page draws the server list',
+  );
+  assert.equal(
+    settle(server, r, []).filter((e) => e.queued).length,
+    0,
+    'the server list wins: one it no longer holds is not drawn',
+  );
+  assert.equal(
+    applyEvent(r, { type: 'queued', text: 'and a heron', request_id: 'r-1' }).entries.filter((e) => e.queued).length,
+    1,
+    'one bubble per receipt, however often it is announced',
+  );
+  r = { ...r, entries: settle(server, r) };
+  r = applyEvent(r, { type: 'user', text: 'and a heron', request_id: 'r-1' });
+  assert.deepEqual(
+    r.entries.filter((e) => e.kind === 'user').map((e) => [e.text, e.queued ?? false]),
+    [['Draw a fox', false], ['and a heron', false]],
+    'its turn replaces the waiting bubble, never a second copy',
+  );
+}
+
 // A crisis pause is drawn as its own card and survives a re-read; the run
 // ends, and what it touched is kept for the chip.
 {
