@@ -269,7 +269,8 @@ So the feature is enabled only from `[dev-dependencies]`, and a CI arm
 asserts that `cargo tree -e normal,features` for each shipped binary never
 lists it, which is what makes its absence from a release checkable rather
 than assumed. In a build that passes that check, the loader and `open` are
-the admitting variants' only source; the same holds `owner_at` (§3).
+the admitting variants' only source. `owner_at` (§3) is narrower still,
+`#[cfg(test)]` alone.
 `Session::peek_meta` is `pub` and called directly (by
 `persona::writer::pending_chats`, the memory-write gate, by `forget.rs`,
 and from `commands/sessions.rs`), so it hands back only a resolved meta:
@@ -436,7 +437,10 @@ persona: Owner × Persona × Kept; seat: Guest × Seat × Sealed), so an
 owner's header on a file in a seat directory is refused rather than
 admitted, and a field in a stranger's file cannot reach the corpus. The caller is code, not the record, so this is
 still location deciding, not data. A third constructor, `owner_at(dir)`,
-rides §2's test-only feature, because core's corpus tests (`runlog.rs`,
+is `#[cfg(test)]`, not §2's test-only feature: it is the widest of the
+three, naming an arbitrary directory the owner's store, and every caller
+that needs it is in-crate. Out of the crate, `mecha-cli/tests/` sets
+`MECHA_SESSION_DIR` and is served by `SessionStore::owner()`. Core's corpus tests (`runlog.rs`,
 `planning.rs`, `reading.rs`, `tenure.rs`, `success.rs`, `persona.rs`)
 scan a bare `TempDir` and never set `MECHA_SESSION_DIR`; without it
 every such fixture would load degraded and step 1's "every existing test
@@ -746,7 +750,13 @@ behaviour visible before it moves.
      and must keep it; a fresh conversation would snapshot `work/web/<key>`
      identically on both sides and never show a re-rooting. And an armed
      parent and a clean parent each dispatch a subagent, snapshotting the
-     child's seeded taint both ways. The child seeds from the dispatch
+     child's seeded taint both ways, and the child registry: its tool-name
+     set and each child tool's wrapper. `build_subagent` moves with
+     `prepare_carrying`, and its two narrowings, the refusal of a profile
+     asking for `message_send` and the `ClosedStatusGuard` re-wrap at the
+     clone, both show in neither the rendered body nor the child's
+     `Capabilities` union, since `message_send` declares none and the guard
+     delegates them. The child seeds from the dispatch
      stamp (`ctx.taint`, set by the turn body step 4 moves), and a lost
      stamp falls back to fully armed. That is fail-closed, so nothing
      leaks, but every subagent in a clean conversation would then refuse
