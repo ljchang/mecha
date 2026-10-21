@@ -477,9 +477,10 @@ only way out of a seat is the session it answers. The sealed home keeps the
 arms `private` wherever it sits in a conversation
 (`Taint::arm_for_content`), and with the stranger arming `untrusted` from
 the first word, a seat is fully armed from the moment its first study
-*image* lands. A text-only study arms `untrusted` alone and never
-`private`, so `trifecta_armed()` stays false there, at no cost, since
-every catalogue tool is `Blind`. The image case needs saying at the fold (below), because an image the loop
+*image* lands. A text-only study can arm `private` too, since
+`arm_for_content` arms it off its stems in user-role text, which a
+participant can type; nothing here assumes a text seat stays unarmed, and
+it costs nothing while every catalogue tool is `Blind`. The image case needs saying at the fold (below), because an image the loop
 did not produce is otherwise counted only from the next run. That is
 correct — the interlock cannot know a study image from the owner's — and it
 makes what a ClientTool declares the question that decides whether a seat
@@ -528,12 +529,20 @@ extending the last one's prefix. Four cases:
   the seat's facade gains a context endpoint (append, no run), and §8
   step 2 builds it.
 - **It ends on an unsent user message** (context with no reply yet, or a
-  participant turn not yet sent): the item is appended to it, and a
+  participant turn not yet sent; unsent means the host parked it since the
+  last run returned, a mark the host keeps, since `Conversation` does not
+  record what was sent): the item is appended to it, and a
   participant turn arriving on a context-only tail is appended to that
   message too, so two user messages in a row never occur.
-- **The run failed:** `run_in` does not roll back on `Err`, so the tail is
-  a tool-result message or a user message already sent — neither case
-  above. The seat restores to the **last complete round**, not to the
+- **The run failed, or stopped on a ceiling:** `run_in` does not roll back
+  on `Err`, so the tail is a tool-result message or a user message already
+  sent — neither case above. A ceiling (`max_turns`, a budget, loop
+  detection) is the same tail with `Ok`: it folds `FINAL_ANSWER_NUDGE` into
+  the tool-result message and sends it, and if that request errors or is
+  interrupted the run returns with no reply after it. §3 pins `max_turns`
+  so that this is a runaway seat turn's designed exit, so it is expected,
+  and the host tells it from the case above by its mark, not by the tail's
+  shape. The seat restores to the **last complete round**, not to the
   snapshot taken before the run. A round whose ClientTool calls already ran
   has had effects outside mecha: a rating written into the study's data, a
   chat line shown to the participant, each acknowledged by
