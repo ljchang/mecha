@@ -480,9 +480,11 @@ fold at the next legal boundary through the steering path
 (`ARCHITECTURE.md` §Interruption and steering) mid-round, into the message
 carrying the tool results. The steering path alone is not enough: its one
 drain site skips a closing turn by design — a steer taken there could not
-be acted on, and "the front end says it came too late" — and a seat has no
-front end to say it. So a seat also folds at a boundary of its own, and
-that boundary is in the facade child, not the wiring. The conversation
+be acted on — and leaves what becomes of an unread one to the host. Since
+#731 both chat hosts give each a turn of its own, in the order typed
+(`chat::next_turn`, `PersonaChats::next_turn`). A seat's host decides too,
+by folding at a boundary of its own, and that boundary is in the facade
+child, not the wiring. The conversation
 lives there, in the seat's `SessionHost`, as voice's facade keeps it
 server-side today (`Slot` holds `convo`, and the handler calls `run_in`
 and `roll_back_failed_turn` in-process). The wiring only sends items to
