@@ -153,8 +153,8 @@ strictest value, since an empty list is the *widest*, so they are copied
 as the owner's and nothing is inferred from them; `[sandbox]` is not the owner's
 at all but written by the wiring as a seat property, as `trifecta` is
 enforced (below, after the launch);
-`[providers]` names only the loopback router, with no key, and carries
-the four fields the seat depends on from the owner's router entry:
+`[providers]` names only the loopback router, with no key, and copies
+the three fields the seat depends on from the owner's router entry:
 `context_window` (it must equal the router's `-c / -np`, as everywhere —
 without it compaction never fires and the output budget falls back to a
 ceiling too large for the slot), `vision` (without it every study image is
@@ -162,8 +162,8 @@ replaced by a text placeholder while still arming `private`),
 `structured_output` (it defaults to `Disabled`, and the crisis judge sends
 its `response_schema` only when it is on, so without it §7's forced-on
 judge runs without its schema; IMAGE-DESIGN §9's 2026-10-08 ruling sets
-`llama_json` on every router-served provider), and
-`follow_loaded = false`, set as a seat property rather than inherited, as
+`llama_json` on every router-served provider). It pins a fourth,
+`follow_loaded = false`, as a seat property rather than inherited, as
 `trial_env` sets it for every arm — following whatever the owner last
 loaded would change a seat's model mid-conversation, the other half of §5's
 hold. The agent's model comes from the owner's; its `timezone` is written
