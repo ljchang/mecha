@@ -4318,6 +4318,79 @@ mod boundary_tests {
         );
     }
 
+    /// While the line drains, a newly typed message goes behind the ones
+    /// still waiting rather than into the run a waiting message started —
+    /// a run with a tool round would read it ahead of them (review of #731,
+    /// pass 4).
+    #[tokio::test]
+    async fn a_message_typed_while_the_line_drains_keeps_its_place() {
+        let _home = crate::testenv::HomeGuard::new("drain-order");
+        let go = Arc::new(tokio::sync::Notify::new());
+        let (chat, asked) = chat::test_chat_waiting_counted(go.clone());
+        let app = app(chat.clone());
+        let key = "drainorder";
+        let send = |text: &str, id: &str| {
+            json_post(
+                &format!("/api/chat/{key}/send"),
+                serde_json::json!({ "text": text, "request_id": id }).to_string(),
+            )
+        };
+        body(app.clone().oneshot(send("first", "r-0")).await.unwrap()).await;
+        in_flight(&asked, 1).await;
+        for (text, id) in [("second", "r-1"), ("third", "r-2")] {
+            let steered = body(app.clone().oneshot(send(text, id)).await.unwrap()).await;
+            assert_eq!(steered["steered"], true, "{steered}");
+        }
+        // The first run ends; "second" gets its turn, "third" still waits.
+        go.notify_one();
+        in_flight(&asked, 2).await;
+        let typed = body(app.clone().oneshot(send("fourth", "r-3")).await.unwrap()).await;
+        assert_eq!(
+            typed["waiting"], true,
+            "steered ahead of a waiting message: {typed}"
+        );
+        let v = body(
+            app.clone()
+                .oneshot(get(&format!("/api/chat/{key}")))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let waiting: Vec<&str> = v["waiting"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w["request_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(waiting, ["r-2", "r-3"], "{v}");
+        let mut last = serde_json::Value::Null;
+        for _ in 0..300 {
+            go.notify_one();
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            last = body(
+                app.clone()
+                    .oneshot(get(&format!("/api/chat/{key}")))
+                    .await
+                    .unwrap(),
+            )
+            .await;
+            if last["running"] == false
+                && last["waiting"] == serde_json::json!([])
+                && last["entries"].as_array().is_some_and(|e| e.len() == 8)
+            {
+                break;
+            }
+        }
+        let owner: Vec<&str> = last["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["kind"] == "user")
+            .map(|e| e["text"].as_str().unwrap_or(""))
+            .collect();
+        assert_eq!(owner, ["first", "second", "third", "fourth"], "{last}");
+    }
+
     /// The owner's Stop ends the messages waiting behind the run too — a
     /// Stop that let the next one start at once would not have stopped
     /// anything.

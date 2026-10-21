@@ -224,6 +224,14 @@ struct NextTurn {
     request_id: String,
 }
 
+/// A waiting message whose turn found a run live — one that started in the
+/// moment between — back at the front of the line, the oldest message, for
+/// the turn after that run. Its bubble is already drawn, still queued.
+fn back_to_the_front(ws: &mut WebSession, text: String, request_id: String) -> serde_json::Value {
+    ws.waiting.push_front(NextTurn { text, request_id });
+    serde_json::json!({ "steered": false, "waiting": true })
+}
+
 /// The owner's messages no run has read yet, oldest first: the live run's
 /// unread steers, then those waiting for a turn of their own. The steers
 /// still in `queue` are the last `queue.len()` receipts.
@@ -2153,10 +2161,12 @@ type Sent = Result<serde_json::Value, (StatusCode, String)>;
 
 /// Fold `text` into the run in flight — steering, which the loop puts in the
 /// tool-results turn (never a bare user message: two in a row are invalid).
-/// With no run, it waits behind the messages already waiting for a turn of
-/// its own; a steer the run never reads waits the same way once it ends.
+/// With no run, or with messages already waiting, it waits behind them for a
+/// turn of its own — a run the line is draining through must not read a
+/// newer message ahead of older ones (review of #731, pass 4). A steer the
+/// run never reads waits the same way once it ends.
 fn steer(ws: &mut WebSession, text: String, request_id: String) -> Sent {
-    let Some(live) = &ws.live else {
+    let Some(live) = ws.live.as_ref().filter(|_| ws.waiting.is_empty()) else {
         ws.waiting.push_back(NextTurn {
             text: text.clone(),
             request_id: request_id.clone(),
@@ -2354,10 +2364,13 @@ async fn send_text(
                 return Err((StatusCode::CONFLICT, "stopped\n".into()))
             }
             Some(ws) if waits(ws) && draw.is_some() => return busy(),
-            Some(ws) if waits(ws) => {
+            // A waiting message whose turn found a run live: back to the
+            // front of the line, the oldest message, for the turn after.
+            Some(ws) if carried && waits(ws) => {
                 ws.starting.remove(&request_id);
-                return steer(ws, text, request_id);
+                return Ok(back_to_the_front(ws, text, request_id));
             }
+            Some(ws) if waits(ws) => return steer(ws, text, request_id),
             Some(ws) => Some((ws.events.clone(), ws.workspace.clone())),
             None => None,
         }
@@ -2438,6 +2451,9 @@ async fn send_text(
     if waits(ws) {
         if draw.is_some() {
             return busy();
+        }
+        if carried {
+            return Ok(back_to_the_front(ws, text, request_id));
         }
         return steer(ws, text, request_id);
     }
