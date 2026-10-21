@@ -310,7 +310,10 @@ with a different peer.
 **`parent.sock` is pinned like the catalogue.** It is the one channel from
 the process holding a stranger's conversation into the process holding the
 owner's home, the router hold and the crisis ledger — and §7 needs it, since
-a facade under `--unshare-net` cannot write the owner's ledger itself. So
+the facade's bind root is its seat directory, so the owner's ledger is not
+in its filesystem to write. That holds in §9's filesystem-only interim
+too, which drops the network namespace and keeps the jail, so the crisis
+record's message on `parent.sock` is needed either way. So
 the wiring accepts a closed set of messages on it, checking a ClientTool
 call's name and arguments against the catalogue again on arrival, not only
 at registration: a ClientTool call (and
@@ -1015,9 +1018,13 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    publish after earlier crates uploaded, as `mecha-slack` once did. Its
    no-`mecha-core` property gets a test that reads its `Cargo.toml`,
    rather than resting on review as `mecha-slack`'s does. Once the surface
-   exists, `TRIFECTA.md` gains a channel row for the seat: the reply
-   itself as a way out no interlock sees (§1), owned by the sealed home
-   and the closed `Blind` catalogue.
+   exists, `TRIFECTA.md` gains a row for each channel the seat opens: the
+   reply itself as a way out no interlock sees (§1), owned by the sealed
+   home and the closed `Blind` catalogue; and the `instructions` slot,
+   third-party bytes in the system prompt, which `arm_for_content` never
+   reads and `mark_untrusted_output` never wraps (§3), owned by the bound
+   on its size, the seat being armed `untrusted` from construction, and
+   the experimenter-authored-only contract HyperStudy keeps.
    It is the only code on this box that parses bytes from the internet,
    and steps 3 and 4 were proved against a stand-in that replays what
    this design believes HyperStudy sends. Exit: HyperStudy's conformance
