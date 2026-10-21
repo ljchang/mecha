@@ -486,7 +486,8 @@ for (const route of ROUTES) {
     await pages[0].waitForTimeout(150);
     for (const page of pages) {
       if (await count(page, 'too-late steering') !== 1) throw new Error('retraction duplicated the bubble');
-      if (await page.locator('.bubble').filter({hasText: 'too-late steering'}).locator('.queued-tag').innerText() !== 'not delivered — send again') throw new Error('an undelivered input still claimed delivery');
+      if (await page.locator('.bubble').filter({hasText: 'too-late steering'}).locator('.queued-tag').innerText() !== 'not sent — send again') throw new Error('an undelivered input still claimed delivery');
+      if (await page.locator('.bubble').filter({hasText: 'too-late steering'}).locator('button.resend').count() !== 1) throw new Error('an undelivered input offered no Send again button');
     }
     reject = true;
     await submit(pages[0], 'rejected input');
