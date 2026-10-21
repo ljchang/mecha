@@ -3615,9 +3615,13 @@ fn begin_turn(
             if let Some(why) = not_carried {
                 discard_waiting(ws, why);
             }
-            if offset > 0 {
-                let _ = bcast.send(WireEvent::QueuedDiscarded {
-                    request_ids: ids[..offset].to_vec(),
+            // Read by the run, receipt not yet sent: delivered, never "not
+            // sent" — a Send again under words the model already took would
+            // send them twice. (The forwarder is joined first, so none
+            // should be left; the label must be right if one is.)
+            for request_id in &ids[..offset] {
+                let _ = bcast.send(WireEvent::QueuedDelivered {
+                    request_id: request_id.clone(),
                 });
             }
             next_waits = !ws.waiting.is_empty();

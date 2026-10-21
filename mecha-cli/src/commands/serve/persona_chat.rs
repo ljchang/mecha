@@ -3547,7 +3547,10 @@ impl PersonaChats {
             let ps = sessions.get_mut(key).ok_or(Refusal::NotFound)?;
             // Behind the messages already waiting, too: one typed in the
             // moment between a run's end and the next one's start keeps its
-            // place in the owner's order.
+            // place in the owner's order. Not a spoken turn: a call is owed
+            // an answer of its own to speak, and a line it joined would
+            // answer it `Busy` (as a live run does) — it goes ahead, and the
+            // waiting turn that loses the race steers into it instead.
             let behind = !carried && spoken.is_none() && !ps.waiting.is_empty();
             if ps.live.is_some() || behind {
                 if spoken.is_some() {
@@ -3586,11 +3589,11 @@ impl PersonaChats {
             // What it remembers at chat start (§9.7): material, stored once
             // in the chat's first turn (§5.1), so a chat that carries it needs
             // no read at all.
-            let carried = ps
+            let carries_memory = ps
                 .conversation
                 .as_ref()
                 .is_some_and(|c| mecha_core::persona::recall::carries_chat_start(&c.messages));
-            let remembered = if carried {
+            let remembered = if carries_memory {
                 Some(None)
             } else {
                 ps.memory.clone()
@@ -4399,9 +4402,13 @@ impl PersonaChats {
                 if let Some(why) = not_carried {
                     discard_waiting(ps, why);
                 }
-                if offset > 0 {
-                    let _ = bcast.send(WireEvent::QueuedDiscarded {
-                        request_ids: ids[..offset].to_vec(),
+                // Read by the run, receipt not yet sent: delivered, never "not
+                // sent" — a Send again under words the persona already took
+                // would send them twice. (The forwarder is joined first, so
+                // none should be left; the label must be right if one is.)
+                for request_id in &ids[..offset] {
+                    let _ = bcast.send(WireEvent::QueuedDelivered {
+                        request_id: request_id.clone(),
                     });
                 }
                 // A first turn that failed was rolled back to nothing; the
