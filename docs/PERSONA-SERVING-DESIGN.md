@@ -842,7 +842,12 @@ mecha provides; the study decides:
   safety.jsonl`, which under the guest home would hide every study trip
   from the owner's host report, so the wiring writes a seat's records to the
   owner's store — they carry no words by construction — with the surface
-  named `hyperstudy` rather than today's literal `web`. Its neighbour does
+  named `hyperstudy` rather than today's literal `web`. `CrisisRecord` holds
+  no persona and no seat, so the record alone would say only "a study,
+  somewhere". It gains an optional `seat` field naming the seat directory
+  (a closed, append-only record, so absent loads as `None` and today's
+  lines still read), set by the wiring, and §8 step 2 tests that a seat's
+  trip leads back to its transcript. Its neighbour does
   not travel: `record_dose` and `record_call` — the owner-facing usage
   measures, turns and call minutes, written beside `record_crisis` and by
   `PersonaChats::call_ended` into the owner's store under the persona's
@@ -939,7 +944,9 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    request carries the `tool_use` and its result and no second answer call
    goes out for the same screen;
    and the wiring's writes there are a closed list of two — the router hold
-   (§5) and the crisis record (§7); a seat's session carries its own
+   (§5) and the crisis record (§7) — among the owner's stores, beside the
+   seat directory itself and §5's admission counter, which are the wiring's
+   own state and not stores the owner's sessions read; a seat's session carries its own
    `SessionKind` and the corpus scan excludes it, by an arm of its own in
    `Scan::admits` (which admits any kind it does not name), not by the
    variant alone; `check-private.py` reads the seat
@@ -1052,6 +1059,11 @@ accepted socket instead.
 
 **Owed:**
 
+- A timed-out answer whose acknowledgement was lost and whose answer never
+  landed: §4a's guard then leaves that question unanswerable for the rest
+  of its screen, a datum silently missing from the study. Whether the seat
+  reports it to HyperStudy (so the study can re-ask, or mark it), and how
+  that meets HyperStudy's per-question backstop, is owed before step 3.
 - Video perception, owned by another session (2026-10-21), not this design:
   a time-indexed text track of the movie participants watch, released to a
   seat no further than the playback position. It is expected to arrive
