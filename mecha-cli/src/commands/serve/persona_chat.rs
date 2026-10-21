@@ -286,6 +286,15 @@ fn back_to_the_front(
     serde_json::json!({ "steered": false, "waiting": true })
 }
 
+impl PersonaSession {
+    /// Whether any owner message is in the line: waiting, or its turn on
+    /// its way out (`starting`) — which is older than anything typed now, so
+    /// a new message goes behind it (review of #731, pass 6).
+    fn has_line(&self) -> bool {
+        !self.waiting.is_empty() || !self.starting.is_empty()
+    }
+}
+
 /// The owner's messages no run has read yet, oldest first: the live run's
 /// unread steers, then those waiting for a turn of their own. The steers
 /// still in `queue` are the last `queue.len()` receipts (`take_undrained`).
@@ -3596,7 +3605,7 @@ impl PersonaChats {
             // an answer of its own to speak, and a line it joined would
             // answer it `Busy` (as a live run does) — it goes ahead, and the
             // waiting turn that loses the race steers into it instead.
-            let behind = !carried && spoken.is_none() && !ps.waiting.is_empty();
+            let behind = !carried && spoken.is_none() && ps.has_line();
             // Stopped while its turn was on its way: it does not begin.
             if carried && !ps.starting.contains_key(&request_id) {
                 return Err(Refusal::Conflict(STOPPED_ON_ITS_WAY.into()));
@@ -3770,7 +3779,7 @@ impl PersonaChats {
             return Err(Refusal::Failed("server is shutting down".into()));
         }
         let ps = sessions.get_mut(key).ok_or(Refusal::NotFound)?;
-        let behind = !carried && spoken.is_none() && !ps.waiting.is_empty();
+        let behind = !carried && spoken.is_none() && ps.has_line();
         if carried && ps.starting.remove(&request_id).is_none() {
             return Err(Refusal::Conflict(STOPPED_ON_ITS_WAY.into()));
         }
@@ -4904,7 +4913,7 @@ fn steer(
     request_id: String,
     token: Option<&str>,
 ) -> Result<serde_json::Value, Refusal> {
-    let waiting = !ps.waiting.is_empty();
+    let waiting = ps.has_line();
     let Some(live) = ps.live.as_mut().filter(|_| !waiting) else {
         ps.waiting.push_back(NextTurn {
             text: text.clone(),
@@ -9973,6 +9982,54 @@ mod tests {
         assert!(
             w.seen.lock().unwrap().is_empty(),
             "a held turn reached the model"
+        );
+    }
+
+    /// A message typed while an older one's turn is on its way out of the
+    /// line goes behind it, not ahead: the turn on its way is the older
+    /// message (review of #731, pass 6).
+    #[tokio::test]
+    async fn a_message_typed_while_a_turn_is_on_its_way_goes_behind_it() {
+        let w = world();
+        let key = open_chat(&w).await;
+        let chats = w.personas();
+        chats
+            .sessions
+            .lock()
+            .await
+            .get_mut(&key)
+            .unwrap()
+            .starting
+            .insert("r-1".into(), "and a heron".into());
+        let typed = chats
+            .send(
+                &w.chat,
+                &w.library,
+                &key,
+                "and a crane",
+                Some("r-2".into()),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            typed["waiting"], true,
+            "it took the turn ahead of an older message: {typed}"
+        );
+        let t = chats
+            .transcript(&w.chat, &w.library, &key, None)
+            .await
+            .unwrap();
+        let waiting: Vec<&str> = t["waiting"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w["request_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(waiting, ["r-1", "r-2"], "{t}");
+        assert!(
+            w.seen.lock().unwrap().is_empty(),
+            "a turn started ahead of the line"
         );
     }
 

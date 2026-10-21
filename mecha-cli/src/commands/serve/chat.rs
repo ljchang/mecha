@@ -238,6 +238,15 @@ fn back_to_the_front(ws: &mut WebSession, text: String, request_id: String) -> s
     serde_json::json!({ "steered": false, "waiting": true })
 }
 
+impl WebSession {
+    /// Whether any owner message is in the line: waiting, or its turn on
+    /// its way out (`starting`) — which is older than anything typed now, so
+    /// a new message goes behind it (review of #731, pass 6).
+    fn has_line(&self) -> bool {
+        !self.waiting.is_empty() || !self.starting.is_empty()
+    }
+}
+
 /// The owner's messages no run has read yet, oldest first: the live run's
 /// unread steers, then those waiting for a turn of their own. The steers
 /// still in `queue` are the last `queue.len()` receipts.
@@ -2184,7 +2193,8 @@ type Sent = Result<serde_json::Value, (StatusCode, String)>;
 /// newer message ahead of older ones (review of #731, pass 4). A steer the
 /// run never reads waits the same way once it ends.
 fn steer(ws: &mut WebSession, text: String, request_id: String) -> Sent {
-    let Some(live) = ws.live.as_ref().filter(|_| ws.waiting.is_empty()) else {
+    let in_line = ws.has_line();
+    let Some(live) = ws.live.as_ref().filter(|_| !in_line) else {
         ws.waiting.push_back(NextTurn {
             text: text.clone(),
             request_id: request_id.clone(),
@@ -2372,7 +2382,7 @@ async fn send_text(
     // Behind the messages already waiting, too: one typed in the moment
     // between a run's end and the next one's start keeps its place in the
     // owner's order. A waiting message's own turn is never behind itself.
-    let waits = |ws: &WebSession| ws.live.is_some() || (!carried && !ws.waiting.is_empty());
+    let waits = |ws: &WebSession| ws.live.is_some() || (!carried && ws.has_line());
     let notices = {
         let mut sessions = chat.sessions.lock().await;
         if chat.stopping.is_cancelled() {
