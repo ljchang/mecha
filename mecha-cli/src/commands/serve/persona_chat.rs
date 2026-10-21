@@ -229,10 +229,17 @@ struct PersonaSession {
     waiting: VecDeque<NextTurn>,
     /// The waiting messages whose turns [`PersonaChats::next_turn`] has
     /// taken out of the line and is starting — a model switch or a memory
-    /// read away from a run — by receipt. The owner's Stop clears them, and
-    /// a turn that finds its own gone does not begin (review of #731, pass 3).
-    starting: std::collections::HashSet<String>,
+    /// read away from a run — receipt to words. Still the line's: a Stop, a
+    /// crisis pause or a judge's concern clears them with it
+    /// ([`discard_waiting`]), the judge holds a flagged one back, and a turn
+    /// that finds its own gone does not begin (review of #731, passes 3–5).
+    starting: HashMap<String, String>,
 }
+
+/// The refusal a waiting message's turn meets when its mark in
+/// [`PersonaSession::starting`] was cleared on its way: already answered for
+/// by whoever cleared it, so [`PersonaChats::next_turn`] says nothing more.
+const STOPPED_ON_ITS_WAY: &str = "stopped before its turn began";
 
 /// An owner message waiting for its own turn ([`PersonaSession::waiting`]),
 /// with the unlock it was sent under, which its turn is checked against.
@@ -283,7 +290,13 @@ fn back_to_the_front(
 /// unread steers, then those waiting for a turn of their own. The steers
 /// still in `queue` are the last `queue.len()` receipts (`take_undrained`).
 fn waiting_json(ps: &PersonaSession) -> Vec<serde_json::Value> {
-    let mut out = Vec::new();
+    // A turn on its way out of the line is still waiting, as far as a page
+    // can tell: until its own `user` event, its bubble stays.
+    let mut out: Vec<serde_json::Value> = ps
+        .starting
+        .iter()
+        .map(|(id, text)| serde_json::json!({ "text": text, "request_id": id }))
+        .collect();
     if let Some(live) = &ps.live {
         if let (Ok(queue), Ok(ids)) = (live.queue.lock(), live.queued_ids.lock()) {
             let offset = ids.len().saturating_sub(queue.len());
@@ -299,12 +312,18 @@ fn waiting_json(ps: &PersonaSession) -> Vec<serde_json::Value> {
 }
 
 /// Tell the page these waiting messages will not be sent, and why: each
-/// bubble then offers Send again. Empties `waiting`.
+/// bubble then offers Send again. Empties `waiting`, and `starting` — a turn
+/// on its way out of the line is still the line's, and finds its mark gone.
 fn discard_waiting(ps: &mut PersonaSession, why: &str) {
-    if ps.waiting.is_empty() {
+    if ps.waiting.is_empty() && ps.starting.is_empty() {
         return;
     }
-    let ids: Vec<String> = ps.waiting.drain(..).map(|n| n.request_id).collect();
+    let ids: Vec<String> = ps
+        .starting
+        .drain()
+        .map(|(id, _)| id)
+        .chain(ps.waiting.drain(..).map(|n| n.request_id))
+        .collect();
     tracing::info!(
         count = ids.len(),
         why,
@@ -2966,7 +2985,6 @@ impl PersonaChats {
         // mark gone and does not begin.
         let had_waiting = sessions.get_mut(key).is_some_and(|ps| {
             let had = !ps.waiting.is_empty() || !ps.starting.is_empty();
-            ps.starting.clear();
             discard_waiting(ps, "stopped");
             had
         });
@@ -3580,8 +3598,8 @@ impl PersonaChats {
             // waiting turn that loses the race steers into it instead.
             let behind = !carried && spoken.is_none() && !ps.waiting.is_empty();
             // Stopped while its turn was on its way: it does not begin.
-            if carried && !ps.starting.contains(&request_id) {
-                return Err(Refusal::Conflict("stopped".into()));
+            if carried && !ps.starting.contains_key(&request_id) {
+                return Err(Refusal::Conflict(STOPPED_ON_ITS_WAY.into()));
             }
             if ps.live.is_some() || behind {
                 if spoken.is_some() {
@@ -3753,8 +3771,8 @@ impl PersonaChats {
         }
         let ps = sessions.get_mut(key).ok_or(Refusal::NotFound)?;
         let behind = !carried && spoken.is_none() && !ps.waiting.is_empty();
-        if carried && !ps.starting.remove(&request_id) {
-            return Err(Refusal::Conflict("stopped".into()));
+        if carried && ps.starting.remove(&request_id).is_none() {
+            return Err(Refusal::Conflict(STOPPED_ON_ITS_WAY.into()));
         }
         if ps.live.is_some() || behind {
             if spoken.is_some() {
@@ -4587,7 +4605,7 @@ impl PersonaChats {
                 }
                 let next = ps.waiting.pop_front();
                 if let Some(n) = &next {
-                    ps.starting.insert(n.request_id.clone());
+                    ps.starting.insert(n.request_id.clone(), n.text.clone());
                 }
                 next
             };
@@ -4612,6 +4630,11 @@ impl PersonaChats {
             // write: neither it nor those behind it will be sent, and the
             // page says so, each bubble offering Send again.
             if let Err(refused) = started {
+                // Its mark was cleared — a Stop, a pause, a concern — and
+                // whoever cleared it already said what became of it.
+                if matches!(&refused, Refusal::Conflict(m) if m == STOPPED_ON_ITS_WAY) {
+                    return;
+                }
                 let mut sessions = self.sessions.lock().await;
                 if let Some(ps) = sessions.get_mut(&key) {
                     ps.starting.remove(&next.request_id);
@@ -4667,6 +4690,13 @@ impl PersonaChats {
                             _ => false,
                         };
                         live.cancel.cancel(mecha_core::agent::CancelReason::Stopped);
+                        paused = true;
+                    }
+                    // Or on its way out of the line, its turn not yet begun:
+                    // taken back, so the turn finds its mark gone — the
+                    // persona never answers words the judge flagged.
+                    if !held && ps.starting.remove(&request_id).is_some() {
+                        held = true;
                         paused = true;
                     }
                     // Or already waiting for a turn of its own: taken out of
@@ -9849,7 +9879,7 @@ mod tests {
             .get_mut(&key)
             .unwrap()
             .starting
-            .insert("r-1".into());
+            .insert("r-1".into(), "and a heron".into());
         assert!(
             w.personas()
                 .cancel(&w.library, &key, None, false, None)
@@ -9876,6 +9906,73 @@ mod tests {
         assert!(
             w.seen.lock().unwrap().is_empty(),
             "a stopped turn reached the model"
+        );
+    }
+
+    /// A judge's concern for a message whose turn is already on its way out
+    /// of the line holds it back: the words are kept, the persona pauses,
+    /// and the turn finds its mark gone — the persona never answers words the
+    /// judge flagged, unjudged, as its turn skips the judge (review of #731,
+    /// pass 5). And the pause clears every other turn on its way too.
+    #[tokio::test]
+    async fn a_concern_holds_back_a_turn_already_on_its_way() {
+        let w = world();
+        let key = open_chat(&w).await;
+        let chats = w.personas();
+        {
+            let mut sessions = chats.sessions.lock().await;
+            let ps = sessions.get_mut(&key).unwrap();
+            ps.starting.insert("r-1".into(), "and a heron".into());
+            ps.starting.insert("r-2".into(), "and a crane".into());
+        }
+        chats
+            .apply_verdict(
+                &key,
+                judge::Verdict::Concern,
+                false,
+                Some(("and a heron".into(), "r-1".into())),
+            )
+            .await;
+        {
+            let sessions = chats.sessions.lock().await;
+            let ps = sessions.get(&key).unwrap();
+            assert!(
+                ps.starting.is_empty(),
+                "a turn on its way survived the pause"
+            );
+            assert!(ps.crisis_paused_at.is_some(), "the concern paused nothing");
+            let kept = ps
+                .conversation
+                .as_ref()
+                .unwrap()
+                .messages
+                .iter()
+                .any(|m| m.text().contains("and a heron"));
+            assert!(kept, "the flagged words were not kept");
+        }
+        for id in ["r-1", "r-2"] {
+            let refused = chats
+                .start(
+                    &w.chat,
+                    &w.library,
+                    &key,
+                    "and a heron",
+                    Some(id.into()),
+                    None,
+                    Vec::new(),
+                    None,
+                    None,
+                    true,
+                )
+                .await;
+            assert!(
+                matches!(&refused, Err(Refusal::Conflict(m)) if m == STOPPED_ON_ITS_WAY),
+                "{id}: {refused:?}"
+            );
+        }
+        assert!(
+            w.seen.lock().unwrap().is_empty(),
+            "a held turn reached the model"
         );
     }
 

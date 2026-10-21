@@ -212,11 +212,17 @@ struct WebSession {
     /// clip asked for mid-reply never queued (owner, 2026-10-21).
     waiting: VecDeque<NextTurn>,
     /// The waiting messages whose turns [`next_turn`] has taken out of the
-    /// line and is starting — a model switch away from a run — by receipt.
-    /// The owner's Stop clears them, and a turn that finds its own gone does
-    /// not begin (review of #731, pass 3).
-    starting: std::collections::HashSet<String>,
+    /// line and is starting — a model switch away from a run — receipt to
+    /// words. Still the line's: whatever clears the line clears them
+    /// ([`discard_waiting`]), and a turn that finds its own gone does not
+    /// begin (review of #731, passes 3–5).
+    starting: HashMap<String, String>,
 }
+
+/// The refusal a waiting message's turn meets when its mark in
+/// [`WebSession::starting`] was cleared on its way: already answered for by
+/// whoever cleared it, so [`next_turn`] says nothing more.
+const STOPPED_ON_ITS_WAY: &str = "stopped before its turn began";
 
 /// An owner message waiting for its own turn ([`WebSession::waiting`]).
 struct NextTurn {
@@ -236,7 +242,13 @@ fn back_to_the_front(ws: &mut WebSession, text: String, request_id: String) -> s
 /// unread steers, then those waiting for a turn of their own. The steers
 /// still in `queue` are the last `queue.len()` receipts.
 fn waiting_json(ws: &WebSession) -> Vec<serde_json::Value> {
-    let mut out = Vec::new();
+    // A turn on its way out of the line is still waiting, as far as a page
+    // can tell: until its own `user` event, its bubble stays.
+    let mut out: Vec<serde_json::Value> = ws
+        .starting
+        .iter()
+        .map(|(id, text)| serde_json::json!({ "text": text, "request_id": id }))
+        .collect();
     if let Some(live) = &ws.live {
         if let (Ok(queue), Ok(ids)) = (live.queue.lock(), live.queued_ids.lock()) {
             let offset = ids.len().saturating_sub(queue.len());
@@ -252,12 +264,18 @@ fn waiting_json(ws: &WebSession) -> Vec<serde_json::Value> {
 }
 
 /// Tell the page these waiting messages will not be sent, and why: each
-/// bubble then offers Send again. Empties `waiting`.
+/// bubble then offers Send again. Empties `waiting`, and `starting` — a turn
+/// on its way out of the line is still the line's, and finds its mark gone.
 fn discard_waiting(ws: &mut WebSession, why: &str) {
-    if ws.waiting.is_empty() {
+    if ws.waiting.is_empty() && ws.starting.is_empty() {
         return;
     }
-    let ids: Vec<String> = ws.waiting.drain(..).map(|n| n.request_id).collect();
+    let ids: Vec<String> = ws
+        .starting
+        .drain()
+        .map(|(id, _)| id)
+        .chain(ws.waiting.drain(..).map(|n| n.request_id))
+        .collect();
     tracing::info!(count = ids.len(), why, "waiting chat messages not sent");
     let _ = ws.events.send(WireEvent::Notice {
         text: format!("{} waiting message(s) not sent: {why}", ids.len()),
@@ -2221,7 +2239,7 @@ fn next_turn(chat: Arc<ChatState>, key: String) -> futures::future::BoxFuture<'s
             }
             let next = ws.waiting.pop_front();
             if let Some(n) = &next {
-                ws.starting.insert(n.request_id.clone());
+                ws.starting.insert(n.request_id.clone(), n.text.clone());
             }
             next
         };
@@ -2242,6 +2260,11 @@ fn next_turn(chat: Arc<ChatState>, key: String) -> futures::future::BoxFuture<'s
         // neither it nor those behind it will be sent, and the page says so,
         // each bubble offering Send again.
         if let Err((_, why)) = sent {
+            // Its mark was cleared — a Stop — and whoever cleared it already
+            // said what became of it.
+            if why.trim() == STOPPED_ON_ITS_WAY {
+                return;
+            }
             let mut sessions = chat.sessions.lock().await;
             if let Some(ws) = sessions.get_mut(&key) {
                 ws.starting.remove(&next.request_id);
@@ -2336,7 +2359,7 @@ async fn send_text(
     let busy = || {
         Err((
             StatusCode::CONFLICT,
-            "a reply is running; a picture change waits for it to finish\n".into(),
+            "a reply is running or a message is waiting its turn; a picture change waits for them\n".into(),
         ))
     };
 
@@ -2360,8 +2383,8 @@ async fn send_text(
         }
         match sessions.get_mut(key) {
             // Stopped while its turn was on its way: it does not begin.
-            Some(ws) if carried && !ws.starting.contains(&request_id) => {
-                return Err((StatusCode::CONFLICT, "stopped\n".into()))
+            Some(ws) if carried && !ws.starting.contains_key(&request_id) => {
+                return Err((StatusCode::CONFLICT, format!("{STOPPED_ON_ITS_WAY}\n")))
             }
             Some(ws) if waits(ws) && draw.is_some() => return busy(),
             // A waiting message whose turn found a run live: back to the
@@ -2444,8 +2467,8 @@ async fn send_text(
         Ok(ws) => ws,
         Err(e) => return Err((super::incognito::status_of(&e), format!("{e:#}\n"))),
     };
-    if carried && !ws.starting.remove(&request_id) {
-        return Err((StatusCode::CONFLICT, "stopped\n".into()));
+    if carried && ws.starting.remove(&request_id).is_none() {
+        return Err((StatusCode::CONFLICT, format!("{STOPPED_ON_ITS_WAY}\n")));
     }
     // A run that started while this one waited: steer it after all.
     if waits(ws) {
@@ -4000,7 +4023,6 @@ pub async fn cancel(
     // gone and does not begin.
     let had_waiting = sessions.get_mut(&key).is_some_and(|ws| {
         let had = !ws.waiting.is_empty() || !ws.starting.is_empty();
-        ws.starting.clear();
         discard_waiting(ws, "stopped");
         had
     });
