@@ -226,10 +226,14 @@ The three axes go into the session file's **header** (`SessionMeta`),
 beside `SessionMeta::kind`, not into the body as a `Record`. They are fixed
 when the session opens, which is the header's granularity; `Record::Config`
 is per-attach because flags can differ on resume, and these cannot:
-`HostedSession::open` refuses a resume whose recorded principal is not
-equal to the one its door authenticated, compared whole (for a guest,
+`HostedSession::open` refuses a resume whose recorded axes are not equal
+to the door's on all three. The principal is compared whole (for a guest,
 issuer and label, not only the variant), so one participant's token
-cannot reopen another's sealed transcript. No old path has a principal
+cannot reopen another's sealed transcript. The profile is compared too:
+§3's store check compares a header with its store, not with the door, so
+without this an Assistant door resuming a persona transcript would pass
+both checks and continue it with the assistant's reach, which
+PERSONA-DESIGN §3.3 forbids. No old path has a principal
 to disagree about, so §9.2's comparison cannot catch this, and step 7
 names it as a negative. They
 also have to be in the header to be read at all by the corpus filter:
@@ -252,16 +256,24 @@ feature as §9.2's exported recorder, because the integration tests in
 `#[cfg(test)]` does not reach. There is no `pub fn owner()` helper, since
 that would let a door assert `Owner` instead of authenticating one, the
 hole E1 exists to close, and `Principal::Owner` carries an `OwnerProof`
-for the same reason (above). Outside that feature nothing else can build the
-type, so the loader and `open` are the admitting variants' only source.
+for the same reason (above). A cargo feature is weaker than
+`#[cfg(test)]`: features are additive, `--all-features` turns them all
+on, and any crate in the graph can enable one. The workspace has no
+`[features]` table today, so there is no discipline to inherit either.
+So the feature is enabled only from `[dev-dependencies]`, and a CI arm
+asserts that `cargo tree -e normal,features` for each shipped binary never
+lists it, which is what makes its absence from a release checkable rather
+than assumed. In a build that passes that check, the loader and `open` are
+the admitting variants' only source; the same holds `owner_at` (§3).
 `Session::peek_meta` is `pub` and called directly (by
 `persona::writer::pending_chats`, the memory-write gate, by `forget.rs`,
 and from `commands/sessions.rs`), so it hands back only a resolved meta:
 it takes a `SessionStore` (§3) like the other loaders, a signature change
-at its five call sites that step 1 prices. `pending_chats` builds
+at seven calls in six functions that step 1 prices, plus
+`brief/attempts.rs`'s test caller. `pending_chats` builds
 `SessionStore::persona(name)`; the others (`forget.rs`, and
-`commands/sessions.rs`'s three) hold a bare path and call
-`SessionStore::locate`. Getting the persona one wrong fails closed into
+`commands/sessions.rs`'s `mark`, `forget_config`, `resolve_id` and
+`confirm_delete`) hold a bare path and call `SessionStore::locate`. Getting the persona one wrong fails closed into
 no persona memory writes at all, a silent E3 loss, so step 1's
 `peek_meta` probe goes through `pending_chats` itself. So `Scan::admits`' eleven call sites and
 `SessionMeta::admitted_by_default()`, which has no path by construction,
@@ -836,7 +848,13 @@ means §9.2's two snapshots: the rendered bodies and the security snapshot.
 
 0. **The inventory** (`PARITY.md`), reviewed by the owner, and the parity
    harness of §9.2: the exported recorder, the per-provider render and the
-   security snapshot. Exit: the harness fails on a moved cache breakpoint
+   security snapshot, with every per-run value that reaches the body held
+   fixed on both sides: the clock (`Agent::with_clock` and
+   `clock::TestClock`, since the agent builder appends
+   `date_context::GUIDANCE` to every prompt and `calendar_note` then reads
+   the time per request), the session id and the workspace path. A
+   normalizer that strips them instead would be wide enough to swallow the
+   moved breakpoint this method exists to catch. Exit: the harness fails on a moved cache breakpoint
    and on a tool stripped of `.from_outside()`, each shown by a test that
    breaks it.
 1. **The principal type.** `Principal` in core, recorded per session. The
@@ -899,7 +917,9 @@ persona chat alone, and the assistant chat repeats steps 2–4 after step 6.
    `the_queue_is_shown_reordered_and_told_to_the_page`.
 4. **The turn body, as `ConversationHost`.** Both web chats on it, routes
    unchanged. This is the big step and the one §9.3 exists for. Exit:
-   identical; the persona and chat suites green; lived with for the
+   identical; the persona and chat suites green; `open` refuses an
+   Assistant door resuming a persona transcript, and the reverse, since
+   this is the first step with both profiles on one `open`; lived with for the
    owner's chosen period (§11) before the old bodies are deleted.
 5. **Context providers and the Safety module.** The crisis sensor leaves
    `persona_chat.rs`. This is PERSONA-SERVING §8 step 2's prerequisite,
