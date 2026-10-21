@@ -297,7 +297,13 @@ wire format: a principal that fails to parse loads as `Guest`, never as
 "(unreadable principal)" }`. That label cannot be mistaken for a person's
 name, and `Issuer::Unknown` opens no profile, so the session reads back
 and cannot be resumed. Unknown is never clean. An *absent* record is a different case
-with its own rule (§3), and the two must stay two code paths.
+with its own rule (§3), and the two must stay two code paths. Where that
+rule cannot place the file (`SessionStore::Other`), the absent principal
+degrades to `Guest { issuer: Issuer::Unlocated, .. }`, not to the
+unreadable label: it fails closed the same way and opens no profile, but
+it asserts no corruption about a field that was never written, and
+`sessions health` counts a corrupt header and an unlocated store apart,
+since they want different fixes.
 
 **All three axes degrade fail-closed, not to their defaults.** `Profile`
 and `SessionRecording` ride the same record, and CLAUDE.md's wire-format
@@ -463,6 +469,16 @@ Persona-located files are not one argument: `SessionStore::persona(name)`
 derives from the mecha home, so step 1's persona probe and its
 `pending_chats` probe run under `work::tests::HomeGuard`, which
 serializes a scratch `MECHA_HOME`, rather than a `persona_at`.
+
+Two shipped flags hand a loader an arbitrary directory: `mecha reflect
+--sessions-dir` and `mecha distill --sessions-dir`. Through `locate` they
+would resolve to `Other`, load degraded and mine nothing, with no error,
+which a step-1 exit that wants the fourth file degraded would score as a
+pass. So they build `SessionStore::declared_owner(dir)`: a production
+constructor reached only from a flag the owner types at a local
+terminal, refusing a directory inside the persona or seat roots, since
+it widens what gets mined and is therefore an owner-only setting in this
+section's sense. Both flags get a §9.1 inventory row.
 
 ## 4. Modules: what a profile is made of
 
@@ -922,7 +938,9 @@ means §9.2's two snapshots: the rendered bodies and the security snapshot.
    Owner × Persona × Kept, refused, and degraded respectively, with the
    degraded count reported. A fifth, an engine-era file in a seat
    directory whose header reads Owner × Assistant × Kept, must be
-   refused, not admitted.
+   refused, not admitted. And `reflect --sessions-dir` and `distill
+   --sessions-dir`, each pointed at a directory of pre-engine files, must
+   mine them, so the fourth file's degrade cannot pass for those flags'.
 
 Steps 2–4 are written for O1's first answer, both web chats moving
 together. Under the second (personas first), each of these steps moves the
