@@ -8,8 +8,9 @@
 //! [`pointwise::ARMS_MAX`] policies — the prompt the run carried, the rules
 //! deployed today for its situation, and none — driven through
 //! [`probe::drive_arm_within`] a short horizon ([`pointwise::HORIZON_TURNS`])
-//! from the point, and graded by the owner's recorded verdict through a
-//! structural validator. Every comparison goes through
+//! from the point, and graded through a structural validator — by the
+//! owner's recorded verdict, or for a repeat by the recording's own
+//! results. Every comparison goes through
 //! [`ComparisonStore::record`], the store's one provenance door.
 //!
 //! **What it costs, and who waits.** Nothing is driven for a point no
@@ -323,6 +324,9 @@ pub fn plan(
             };
             probe::prepare_draft_in(path, item)?
         }
+        (PointKind::Repeat, Locator::Repeat { call_id }) => {
+            probe::prepare_repeat_in(path, call_id)?
+        }
         (PointKind::FailedCheck | PointKind::Surprise, Locator::Step { step }) => {
             let transcript = match Session::read(path) {
                 Ok(t) => t,
@@ -581,8 +585,8 @@ pub async fn run(global: &crate::GlobalOpts, opts: Options) -> Result<()> {
     let levers_off = crate::setup::levers_off(global, &cfg);
     let mut seats_gone = false;
     for Drawable { path, point } in &drawn {
-        // A steer, a denial and a draft are always posed, so once nothing
-        // more can be driven they are counted without reading their
+        // A steer, a denial, a draft and a repeat are always posed, so once
+        // nothing more can be driven they are counted without reading their
         // transcripts again; a check or a surprise may be unposed and free,
         // so it is still prepared.
         let always_posed = matches!(
@@ -591,6 +595,7 @@ pub async fn run(global: &crate::GlobalOpts, opts: Options) -> Result<()> {
                 | PointKind::Denial
                 | PointKind::EditedDraft
                 | PointKind::RejectedDraft
+                | PointKind::Repeat
         );
         if always_posed && budget == 0 {
             tally.over_budget += 1;

@@ -621,11 +621,7 @@ pub fn collapse_repeated_failures(messages: &mut [Message]) -> usize {
     // write wins — and the last write is the one kept whole.
     let mut newest: std::collections::HashMap<(String, String), String> = Default::default();
     let key_of = |tool_use_id: &String, content: &String, is_error: bool| {
-        if !is_error || content.starts_with(REPEAT_MARKER) || is_refusal(content) {
-            return None;
-        }
-        let target = target_of_call.get(tool_use_id)?;
-        Some((target.clone(), content.trim().to_string()))
+        same_failure(target_of_call.get(tool_use_id)?.clone(), content, is_error)
     };
     for message in messages.iter() {
         for block in &message.content {
@@ -672,6 +668,23 @@ pub fn collapse_repeated_failures(messages: &mut [Message]) -> usize {
         }
     }
     collapsed
+}
+
+/// What makes two failed results one failure: the call's target
+/// ([`target_of`]) and the exact error text — `None` for a result that is
+/// not a failure of the environment (a success, a person or a policy saying
+/// no, or a marker this module already wrote). The one key
+/// [`collapse_repeated_failures`] folds on and `counterfactual::first_repeats`
+/// finds a repeat by, so "the same failure again" has one spelling.
+pub(crate) fn same_failure(
+    target: String,
+    content: &str,
+    is_error: bool,
+) -> Option<(String, String)> {
+    if !is_error || content.starts_with(REPEAT_MARKER) || is_refusal(content) {
+        return None;
+    }
+    Some((target, content.trim().to_string()))
 }
 
 /// What a call is *about*, for supersession.

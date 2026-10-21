@@ -19,6 +19,15 @@
 //! | rejected draft | an outbox item rejected by the owner (`resolved_by == owner`) | nothing sent | `RejectedDraft` |
 //! | failed check | harness planning feedback: a check failed or was tampered with | an owner-bound criterion's pinned gold, when one was bound | `ArtifactGold`, else `Unposed` |
 //! | surprise | harness planning feedback: a forecast the run's own count missed | none | `Unposed` |
+//! | repeat | a failed call the run repeated unchanged after reading it (`counterfactual::first_repeats`) | **none needed**: the recording says what the call returns | `StructuralRepeat` |
+//!
+//! **A repeat point is verdict-free** (`HARNESS-EVOLUTION-DESIGN.md` P8, the
+//! middle step before live arms). Every other posed kind needs an owner's
+//! act at the point, and those are scarce — the harness gate had decided one
+//! point in total. A dead end the run walked into twice needs no one: an arm
+//! that makes the failing call again has walked into it a third time. It
+//! judges a narrow thing, avoiding a known dead end, at a supply the corpus
+//! already holds.
 //!
 //! A point whose question no structural validator can pose — a surprise, a
 //! check that is the agent's own (one-sided until the owner confirms it,
@@ -88,16 +97,18 @@ pub enum PointKind {
     EditedDraft,
     RejectedDraft,
     Surprise,
+    Repeat,
 }
 
 impl PointKind {
-    pub const ALL: [PointKind; 6] = [
+    pub const ALL: [PointKind; 7] = [
         PointKind::Steer,
         PointKind::Denial,
         PointKind::FailedCheck,
         PointKind::EditedDraft,
         PointKind::RejectedDraft,
         PointKind::Surprise,
+        PointKind::Repeat,
     ];
 
     /// The comparison kind a point of this kind writes.
@@ -109,6 +120,7 @@ impl PointKind {
             PointKind::EditedDraft => Kind::PointEditedDraft,
             PointKind::RejectedDraft => Kind::PointRejectedDraft,
             PointKind::Surprise => Kind::PointSurprise,
+            PointKind::Repeat => Kind::PointRepeat,
         }
     }
 
@@ -124,6 +136,8 @@ impl PointKind {
             PointKind::EditedDraft => "edit",
             PointKind::RejectedDraft => "reject",
             PointKind::Surprise => "surprise",
+            // No miner has a word for it: nothing is mined at a repeat.
+            PointKind::Repeat => "repeat",
         }
     }
 
@@ -136,6 +150,7 @@ impl PointKind {
             PointKind::EditedDraft => "edited-draft",
             PointKind::RejectedDraft => "rejected-draft",
             PointKind::Surprise => "surprise",
+            PointKind::Repeat => "repeat",
         }
     }
 }
@@ -151,6 +166,9 @@ pub enum Locator {
     Draft { item_id: String },
     /// The `step`th entry of the planning feedback on the point's message.
     Step { step: usize },
+    /// The repeat's own `tool_use` id, relocated by
+    /// `counterfactual::locate_repeat`.
+    Repeat { call_id: String },
 }
 
 /// One decision point.
@@ -166,8 +184,9 @@ pub struct Point {
     /// Registry-owned tool names around the point, the focus last — what
     /// its recorded `Situation` is built from, on the miner's construction:
     /// the intervention's window for a steer or denial, the staging turn's
-    /// calls with the staging tool last for a draft, and the call the step
-    /// feedback names for a check or a surprise. Names only, never inputs.
+    /// calls with the staging tool last for a draft or a repeat, and the call
+    /// the step feedback names for a check or a surprise. Names only, never
+    /// inputs.
     pub tools_before: Vec<String>,
 }
 
@@ -179,14 +198,15 @@ impl Point {
             Locator::Intervention { text, .. } => text.clone(),
             Locator::Draft { item_id } => item_id.clone(),
             Locator::Step { step } => format!("{step:08}"),
+            Locator::Repeat { call_id } => call_id.clone(),
         };
         (self.session_id.clone(), self.message_index, self.kind, tail)
     }
 }
 
 /// Every decision point in one recorded session, from its records: the
-/// transcript's interventions and harness planning feedback, and the outbox
-/// items it staged (`drafts`, already narrowed to this session or not —
+/// transcript's interventions, harness planning feedback and repeated
+/// failures, and the outbox items it staged (`drafts`, already narrowed to this session or not —
 /// items naming another session are ignored).
 ///
 /// A draft is a point only when the owner's act says something about the
@@ -306,6 +326,37 @@ pub fn points_in(session_id: &str, messages: &[Message], drafts: &[&OutboxItem])
             message_index: at,
             locator: Locator::Draft {
                 item_id: item.id.clone(),
+            },
+            tools_before,
+        });
+    }
+    let answered = crate::agent::calls_a_tool_answered(messages);
+    for repeat in crate::counterfactual::first_repeats(messages) {
+        let Some(name) = messages[repeat.message_index]
+            .tool_uses()
+            .into_iter()
+            .find(|(id, _, _)| *id == repeat.call_id)
+            .map(|(_, name, _)| name.to_string())
+        else {
+            continue;
+        };
+        // The turn's calls with the repeated tool last, as a draft's; a
+        // sibling no registered tool answered lends no name (#723).
+        let mut tools_before: Vec<String> = Vec::new();
+        for (id, sibling, _) in messages[repeat.message_index].tool_uses() {
+            let sibling = crate::agent::answered_name(&answered, id, sibling);
+            if id != repeat.call_id && !tools_before.iter().any(|t| t == sibling) {
+                tools_before.push(sibling.to_string());
+            }
+        }
+        tools_before.retain(|t| *t != name);
+        tools_before.push(name);
+        out.push(Point {
+            session_id: session_id.to_string(),
+            kind: PointKind::Repeat,
+            message_index: repeat.message_index,
+            locator: Locator::Repeat {
+                call_id: repeat.call_id,
             },
             tools_before,
         });
@@ -523,7 +574,8 @@ mod tests {
     }
 
     /// One session holding a point of every transcript kind: a steer, a
-    /// denial, a staged draft, a failed check and a forecast miss.
+    /// denial, a staged draft, a failed check, a forecast miss and a
+    /// repeated failure.
     fn session() -> Vec<Message> {
         let mut steer = Message::tool_results(vec![result("t1", "q3.csv")]);
         steer
@@ -556,6 +608,18 @@ mod tests {
             Message::tool_results(vec![result("t3", "staged for review")]),
             Message::assistant(vec![tool_use("t5", "todo", json!({"op": "complete"}))]),
             feedback,
+            Message::assistant(vec![tool_use("t6", "fs_read", json!({"path": "q3.md"}))]),
+            Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: "t6".into(),
+                content: "no such file: q3.md".into(),
+                is_error: true,
+            }]),
+            Message::assistant(vec![tool_use("t7", "fs_read", json!({"path": "q3.md"}))]),
+            Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: "t7".into(),
+                content: "no such file: q3.md".into(),
+                is_error: true,
+            }]),
             Message::assistant(vec![Block::text("I believe it went very well")]),
         ]
     }
@@ -660,6 +724,7 @@ mod tests {
                 (PointKind::Surprise, 8),
                 (PointKind::EditedDraft, 5),
                 (PointKind::RejectedDraft, 5),
+                (PointKind::Repeat, 11),
             ],
             "the forecast that held and the draft sent unchanged are not points"
         );
@@ -790,7 +855,7 @@ mod tests {
         let points: Vec<Point> = (0..12)
             .map(|i| Point {
                 session_id: format!("s-{}", i % 3),
-                kind: PointKind::ALL[i % 6],
+                kind: PointKind::ALL[i % PointKind::ALL.len()],
                 message_index: i,
                 locator: Locator::Step { step: i },
                 tools_before: vec!["todo".into()],
@@ -814,7 +879,7 @@ mod tests {
         let points: Vec<Point> = (0..12)
             .map(|i| Point {
                 session_id: format!("s-{}", i % 3),
-                kind: PointKind::ALL[i % 6],
+                kind: PointKind::ALL[i % PointKind::ALL.len()],
                 message_index: i,
                 locator: Locator::Step { step: i },
                 tools_before: vec!["todo".into()],
@@ -844,6 +909,54 @@ mod tests {
         let rest: Vec<&Point> = ranked[4..].iter().collect();
         let uniform_rest: Vec<&Point> = uniform.iter().filter(|p| p.session_id != "s-2").collect();
         assert_eq!(rest, uniform_rest, "equals keep the shuffle's order");
+    }
+
+    /// A failed call repeated after it was read is a point with no owner
+    /// act behind it, anchored at the repeat's own call; its situation is
+    /// the repeating turn's names with the repeated tool last, and a sibling
+    /// no registered tool answered lends none of its own (#723).
+    #[test]
+    fn a_repeated_failure_is_a_point_with_the_repeated_tool_last() {
+        let failed = |id: &str, content: &str| Block::ToolResult {
+            tool_use_id: id.into(),
+            content: content.into(),
+            is_error: true,
+        };
+        let read = || json!({"path": "q3.md"});
+        let messages = vec![
+            Message::user("total the third quarter"),
+            Message::assistant(vec![tool_use("t1", "fs_read", read())]),
+            Message::tool_results(vec![failed("t1", "no such file: q3.md")]),
+            Message::assistant(vec![
+                tool_use("t2", "fs_read", read()),
+                tool_use("t3", "fs_lsit", json!({})),
+                tool_use("t4", "fs_list", json!({})),
+            ]),
+            Message::tool_results(vec![
+                failed("t2", "no such file: q3.md"),
+                failed("t3", "no tool named `fs_lsit`"),
+                result("t4", "q4.md"),
+            ]),
+        ];
+        let points = points_in("s-ada", &messages, &[]);
+        assert_eq!(points.len(), 1, "{points:?}");
+        let p = &points[0];
+        assert_eq!((p.kind, p.message_index), (PointKind::Repeat, 3));
+        assert_eq!(
+            p.locator,
+            Locator::Repeat {
+                call_id: "t2".into()
+            }
+        );
+        assert_eq!(
+            p.tools_before,
+            vec![
+                crate::agent::UNANSWERED_CALL.to_string(),
+                "fs_list".to_string(),
+                "fs_read".to_string()
+            ]
+        );
+        assert_eq!(PointKind::Repeat.comparison_kind(), Kind::PointRepeat);
     }
 
     fn policy(role: Role, system: &str) -> Policy {

@@ -275,6 +275,7 @@ impl ProbePrep {
                     mecha_core::counterfactual::OwnerAct::Released(_) => Validator::ReleasedDraft,
                     mecha_core::counterfactual::OwnerAct::Rejected => Validator::RejectedDraft,
                 },
+                ProbeKind::Repeat { .. } => Validator::StructuralRepeat,
             },
             ProbeMethod::Followup { .. } => Validator::Judge,
             ProbeMethod::Artifact { .. } => Validator::ArtifactGold,
@@ -601,6 +602,28 @@ pub fn prepare_draft_in(
     Ok(Ok(prep))
 }
 
+/// Load the recording behind a repeat point — a failed call the run repeated
+/// unchanged — branched before the turn that repeated it
+/// (`HARNESS-EVOLUTION-DESIGN.md` P8). `call_id` is the repeat's own
+/// `tool_use` id; the failing calls ride in the point for
+/// `counterfactual::repeat_verdict`. `Err(reason)` in the inner result is a
+/// skip, as everywhere else here.
+pub fn prepare_repeat_in(path: &Path, call_id: &str) -> Result<Result<ProbePrep, String>> {
+    let transcript = match Session::read(path) {
+        Ok(t) => t,
+        Err(e) => return Ok(Err(format!("session unreadable: {e:#}"))),
+    };
+    let messages = &transcript.convo.messages;
+    let Some(point) = mecha_core::counterfactual::locate_repeat(messages, call_id) else {
+        return Ok(Err("could not locate the repeated call".into()));
+    };
+    let (method, message_index) = match trace_method(messages, point) {
+        Ok(m) => m,
+        Err(why) => return Ok(Err(why)),
+    };
+    Ok(finish_prep(&transcript, method, message_index))
+}
+
 /// Everything a prepared probe needs past its method: the config covering
 /// the point, the recorded surface, and the keys a stored comparison
 /// carries. `Err(reason)` is a skip.
@@ -654,8 +677,9 @@ fn finish_prep(
                     .checked_sub(1)
                     .and_then(|i| trajectory.calls.get(i))
                     .and_then(|c| CallClass::of(&c.name, &c.input, &recorded_specs)),
-                // The staging call, as the run recorded it.
-                mecha_core::counterfactual::ProbeKind::Draft { .. } => trajectory
+                // The staging call, or the repeat, as the run recorded it.
+                mecha_core::counterfactual::ProbeKind::Draft { .. }
+                | mecha_core::counterfactual::ProbeKind::Repeat { .. } => trajectory
                     .calls
                     .get(point.call_index)
                     .and_then(|c| CallClass::of(&c.name, &c.input, &recorded_specs)),
