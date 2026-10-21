@@ -171,7 +171,15 @@ as `UTC`, never copied, because the calendar head note renders in the
 configured zone (`Agent::calendar_note`) and a participant reading the
 owner's zone learns where the owner is — and a participant may be
 anywhere, so no zone is theirs either; a study that wants local time says
-so in its own instructions. No other
+so in its own instructions. `max_tokens` is copied from the owner's, as
+`context_window` is, since both are facts of the one router: it must sit
+above the preset's `--reasoning-budget`, or the reply is HTTP 200 with
+empty `content`, which in a seat reads as a model-server fault rather
+than the misconfiguration it is. `max_turns` is pinned one above §4a's
+tool-rounds-per-turn budget, so that budget's `is_error` always answers
+first and `max_turns` is only the backstop that ends a runaway run; two
+bounds on one quantity with opposite failure modes must not race. Every
+other `[agent]` field is its default on purpose. No other
 table is written —
 no `[[mcp]]`, `[[hook]]`, `[rule]`, `[approval]` or `[search]`. That is
 deliberately not `trial_env`'s shape: a trial home inherits the operator's
@@ -653,9 +661,14 @@ An offer is accepted only when every check passes; each refusal is typed
   `capacity`. The count is kept by the one long-running process that admits
   every seat, in the owner's home. `permit.rs` cannot do this: a seat is
   interactive work, which takes no permit by design, and each seat's guest
-  home would give it a pool of its own. Every seat holds a router slot while
-  it answers, so the default is set against the router's `-np` with one
-  slot left for the owner — measured, not guessed (§9). Within the cap,
+  home would give it a pool of its own. A seat can hold two router slots
+  while it answers: the forced-on crisis judge (§7) is screened beside the
+  reply, not after it (`persona_chat.rs` spawns `judge::screen` while the
+  run goes on, which is how a verdict can stop a run in flight). So the
+  default is set against the router's `-np` at two slots a seat, with one
+  slot left for the owner — measured, not guessed (§9). Counting one would
+  queue the owner's turn behind a participant's judge call, and per-request
+  rates hide queue wait, so it would show only as a slow owner chat. Within the cap,
   voice seats are further bounded by GPU room for STT, TTS and the model
   beside whatever else holds the card (image and video servers start on
   demand), read from `mecha system`; one at a time until measured.
@@ -879,7 +892,8 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    transcripts; no dose or call record is written for a seat; a seat's
    config carries `context_window`, `vision` and `structured_output` (so
    the crisis judge's `response_schema` applies, at parity with the owner's
-   chats) and pins its model with
+   chats), the owner's `max_tokens`, and `max_turns` one above the round
+   budget and pins its model with
    `follow_loaded = false`; a study's crisis
    resources that fail their bound fall back to `SAFE_MESSAGE`; the `[security]` floor
    holds against an owner config with `trifecta = "allow"`; the system
@@ -932,6 +946,15 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
 5. **`mecha-hyperstudy` + wiring + admission** — once HyperStudy's `accept`
    exists; the crate replaces the local stand-in, dialing the control and
    session sockets and validating frames, and nothing behind it changes.
+   It is the only code on this box that parses bytes from the internet,
+   and steps 3 and 4 were proved against a stand-in that replays what
+   this design believes HyperStudy sends. Exit: HyperStudy's conformance
+   suite passes through the real crate, not the stand-in; and a corpus of
+   malformed and hostile frames (truncated, an `instructions` past its
+   bound, a `sessionUrl` off the control socket's origin, an uncatalogued
+   or mismatched tool, oversized audio, an unknown frame type) each gets a
+   typed rejection, with the seat left closed and nothing reaching the
+   facade.
 6. **`hs.flag`** — once HyperStudy reads it.
 
 **What HyperStudy builds** (its document's Phase 3): connected-agent
