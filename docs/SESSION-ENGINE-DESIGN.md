@@ -257,7 +257,13 @@ type, so the loader and `open` are the admitting variants' only source.
 `Session::peek_meta` is `pub` and called directly (by
 `persona::writer::pending_chats`, the memory-write gate, by `forget.rs`,
 and from `commands/sessions.rs`), so it hands back only a resolved meta:
-it resolves from the path it was given, the same as `list_counting`. So `Scan::admits`' eleven call sites and
+it takes a `SessionStore` (§3) like the other loaders, a signature change
+at its five call sites that step 1 prices. `pending_chats` builds
+`SessionStore::persona(name)`; the others (`forget.rs`, and
+`commands/sessions.rs`'s three) hold a bare path and call
+`SessionStore::locate`. Getting the persona one wrong fails closed into
+no persona memory writes at all, a silent E3 loss, so step 1's
+`peek_meta` probe goes through `pending_chats` itself. So `Scan::admits`' eleven call sites and
 `SessionMeta::admitted_by_default()`, which has no path by construction,
 can read only resolved axes, and a meta that skipped resolution does not
 type-check rather than admitting or silently dropping. The header is a
@@ -399,7 +405,11 @@ The loaders do not consult `default_dir()` themselves: `Corpus::scan`,
 So the caller hands in the store as a typed value, `SessionStore`, built
 by `SessionStore::owner()` (from `default_dir()`),
 `SessionStore::persona(name)` or `SessionStore::seat(dir)`, and a file is
-compared against the store it was loaded from. Under `seat` an absent axis
+compared against the store it was loaded from. A caller holding only a
+path calls `SessionStore::locate(path)`, the one place that compares a
+path against `default_dir()` and the persona and seat roots, and which
+returns `SessionStore::Other` for anything else: the store under which
+absent axes load degraded, and the one step 1's fourth file goes through. Under `seat` an absent axis
 is refused, not degraded, since every seat session is written with all
 three; it is also the store §5's later seat-appraisal tool would read sealed
 transcripts through. A parsed header that contradicts its store is the
@@ -441,11 +451,20 @@ capabilities never meeting, and free composition is how that breaks.
 | Learning store, charter, skills, hooks | on | off | off |
 | Persona memory and recall | — | on, the owner's only | off |
 | Outbox, approvals, `ask_user` | on | off (read-only) | off; study tools only |
+| Mailbox (`message_send`, inbound delivery) | on | off | off |
 | Crisis sensor | off | on (switchable per persona) | forced on |
 | Pictures | on | on | off (S5) |
 | Voice calls | yes | yes | yes, over HRP |
 | Background jobs, steer, cancel | one implementation | the same | the same |
 | Slack | yes | never (Slack's servers would read it) | — |
+
+The mailbox row is a rule, not an accident of the registry.
+`message_send` declares no capabilities and is `read_only`, so it reaches
+neither the interlock nor the approver, on the premise in its own
+comment that the payload lands in `~/.mecha`, owner-only, same uid. That
+is one more door that assumes the owner (§1). Today a guest cannot reach
+it only because `Tool::for_persona` defaults to `None` and a Seat gets
+only its catalogue; the row makes it stated.
 
 **The jail root is fixed per session at `HostedSession::open`, by rules in
 code, never by a connection's setup.** It is not fixed per profile. For
@@ -717,7 +736,7 @@ behaviour visible before it moves.
      appear. The run's `Budget` (its `max_turns`) joins the snapshot,
      since a task chat reverting to 40 turns renders identically and would
      read to the owner as the model giving up. With all of
-     these recorded, plus three facts from `prepare_carrying`, which also
+     these recorded, plus four facts from `prepare_carrying`, which also
      moves (§9.5): **the connected MCP servers**, each with its effective
      `env_passthrough` and capability override (the `env_clear()`
      allowlist `mcp::connect_all` spawns them under, which renders
@@ -725,7 +744,12 @@ behaviour visible before it moves.
      `nosy_mcp_server.py` rather than asserted about an argv); **the
      outbox route** (whether one is installed, and its
      routed and publish name sets, so a fixture dispatching a routed tool
-     must leave a draft rather than an effect), and **the effective
+     must leave a draft rather than an effect), **the mailbox route**
+     (whether one is installed and whether inbound delivery is on; an
+     inbound message's taint merges at the fold, and one not typed at a
+     terminal arrives `private` and `untrusted`; a route that folds it but
+     loses the merge renders identically and
+     shows only in the taint axes, so one fixture delivers one), and **the effective
      `SandboxConfig`, `can_reach_network()`, and whether
      `Sandbox::preflight` ran and passed**. `shell`'s egress label comes
      from `can_reach_network()`, a function of both the backend and
