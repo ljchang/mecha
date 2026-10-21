@@ -2018,7 +2018,7 @@
         {#each run.entries as entry, i (i)}
           {#if entry.kind === 'user'}
             <div class="bubble" class:queued={entry.queued}>
-              {ownWords(entry.text)}{#if entry.queued}<span class="queued-tag">{#if entry.delivery === 'discarded'}not sent — <button class="resend" onclick={() => resend(entry)}>send again</button>{:else}{entry.delivery === 'delivered' ? 'steered' : 'waiting its turn'}{/if}</span>{/if}
+              {ownWords(entry.text)}{#if entry.queued}<span class="queued-tag">{#if entry.delivery === 'discarded'}not sent — <button class="resend" onclick={() => resend(entry)}>send again</button>{:else}{entry.delivery === 'delivered' ? 'steered' : 'queued'}{/if}</span>{/if}
             </div>
           {:else if entry.kind === 'assistant'}
             <!-- Each citation as the harness checked it (§10.4): "quoted" is

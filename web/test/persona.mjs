@@ -172,6 +172,11 @@ assert.deepEqual(s.entries.map((e) => e.delivery), ['delivered', 'discarded']);
     0,
     'the server list wins: one it no longer holds is not drawn',
   );
+  assert.equal(
+    applyEvent(r, { type: 'queued', text: 'and a heron', request_id: 'r-1' }).entries.filter((e) => e.queued).length,
+    1,
+    'one bubble per receipt, however often it is announced',
+  );
   r = { ...r, entries: settle(server, r) };
   r = applyEvent(r, { type: 'user', text: 'and a heron', request_id: 'r-1' });
   assert.deepEqual(
