@@ -1014,7 +1014,8 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    through a silent forced call) runs end to end, including a context item
    with no `response.create` followed by the participant speaking, once
    before any turn and once after one — the
-   sequence that would otherwise send two user messages. And a context item
+   sequence that would otherwise send two user messages. And a barge-in mid-tool-round, after which the next request still
+   carries every `tool_use` with its result. And a context item
    arriving mid-reply in a turn with no tool call, which must wait for the
    run rather than enter a message already sent. And an image folded
    mid-round with `block_sends_after_private` on: the next send in that same
