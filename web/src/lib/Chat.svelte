@@ -373,7 +373,15 @@
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).trim()}`);
       const data = await res.json();
       if (signal?.aborted || sessionKey !== key || gen !== loadGen) return false;
-      const carried = carry ? entries.slice(liveFrom).filter(pageOnly) : [];
+      // The server's waiting list is the truth for a bubble still waiting:
+      // one it no longer holds — its turn started and the page missed the
+      // event — goes, and its receipt is forgotten so a late event draws it.
+      const held = new Set((data.waiting ?? []).map((w) => w.request_id));
+      const carried = (carry ? entries.slice(liveFrom).filter(pageOnly) : []).filter((e) => {
+        const gone = e.kind === 'user' && e.queued && e.delivery !== 'discarded' && !held.has(e.request_id);
+        if (gone) receivedInputs.delete(e.request_id);
+        return !gone;
+      });
       entries = data.entries.map((e) =>
         e.kind === 'tool' ? { ...e, pending: false } : e
       );
@@ -2207,7 +2215,7 @@
       {#if entry.kind === 'user'}
         <div class="bubble" class:queued={entry.queued}>
           {entry.text}
-          {#if entry.queued}<span class="queued-tag">{#if entry.delivery === 'discarded'}not sent — <button class="resend" onclick={() => resend(entry)}>send again</button>{:else}{entry.delivery === 'delivered' ? 'steered' : 'waiting its turn'}{/if}</span>{/if}
+          {#if entry.queued}<span class="queued-tag">{#if entry.delivery === 'discarded'}not sent — <button class="resend" onclick={() => resend(entry)}>send again</button>{:else}{entry.delivery === 'delivered' ? 'steered' : 'queued'}{/if}</span>{/if}
           {#if entry.spoken}<span class="queued-tag">spoken</span>{/if}
         </div>
       {:else if entry.kind === 'assistant'}
