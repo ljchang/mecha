@@ -128,7 +128,8 @@ Four pieces, each with one job:
    documents, and HRP's client events. An unknown event type, an unknown
    field in a closed place, or a value out of bounds is refused with a
    typed error, never passed on. It is the only code on this box that
-   parses bytes from the internet, and it knows nothing about personas or
+   parses the internet's requests and frames (one stream of audio samples
+   passes through it to the worker, piece 3), and it knows nothing about personas or
    runs.
 
    **It runs as its own confined process.** Under S1 the crate would have
@@ -136,8 +137,11 @@ Four pieces, each with one job:
    who learns the address can send bytes before any key is checked. So the
    parser runs where a bug in it reaches nothing. The wiring launches it
    under bwrap with `--unshare-net`, its environment cleared. No part of
-   the owner's home is bound into it except its own run directory and,
-   read-only, the directory that holds the key *hashes* (§5.1). It listens on a pathname
+   the mecha home is bound into it except its own run directory and,
+   read-only, the directory that holds the key *hashes* (§5.1). The
+   `mecha-hyperstudy` binary, wherever it is installed under `$HOME`, and
+   whatever it loads are bound read-only beside them, as §3 names the
+   facade's binary; nothing else of `$HOME` is. It listens on a pathname
    socket, `hyperstudy/run/public.sock`, which `tailscale serve` proxies
    to, and it reaches the wiring only through
    `hyperstudy/run/listener.sock`: the same pathname-socket crossing §3
@@ -191,7 +195,14 @@ Four pieces, each with one job:
    internet: the owner's worker is unconfined and holds the owner's
    environment, so it does not terminate a stranger's socket or parse its
    frames. The listener does (piece 1). The cost is one loopback hop for
-   audio.
+   audio. One seam is accepted rather than closed. The samples an
+   `input_audio_buffer.append` carries are a stranger's bytes, and Silero,
+   SmartTurn and Parakeet decode them inside this unconfined worker, which
+   holds the owner's environment. The listener bounds them and checks the
+   format they claim but cannot validate them. The surface is narrow, raw
+   PCM with no container to parse, on the path the owner's own microphone
+   takes, so this design names it and accepts it. Confining the worker is
+   owed (§9).
 4. **The guest facade** — a voice seat's agent loop, served from the guest
    home over a Unix socket (§3, §4, §4a). A text decision has none: it runs
    no tool and holds no conversation between calls (§2a).
@@ -877,8 +888,10 @@ extending the last one's prefix. Four cases:
   with no message between, as every failed-turn arm writes today:
   `TaintTimeline::from_records` clears its checkpoints on a `Rewrite`, so
   without it the record would lose that the seat was armed `untrusted`
-  from construction and `private` from its first study image. Whether any of
-it asks for a reply is the study's, by its own `response.create`. Nothing is dropped: an item still queued when the
+  from construction and `private` from its first study image.
+
+All four cases fold the item and none asks for a reply: whether any of it
+asks for one is the study's, by its own `response.create`. Nothing is dropped: an item still queued when the
 seat closes is recorded as unfolded in the seat's transcript. The
 mid-round half is not free either: the steering queue carries text
 (`queued_input` is a `VecDeque<String>`), and an image context item needs it
@@ -1625,6 +1638,9 @@ would reach participants the seat's own reply does not.
   worker too (Python work in step 6). The interim needs none of the three.
   The listener has no interim: it is confined, with no network, from its
   first build (§2), because it is what the internet reaches.
+- Confining the voice worker, so a stranger's audio samples (§2 piece 3)
+  are decoded in a process that does not hold the owner's environment;
+  accepted until then, and owed before a study runs voice seats at scale.
 - Latency, measured on this box: OpenAI's Realtime models are
   speech-to-speech and mecha is a cascade, so vendor figures are not ours.
   End-of-turn to first audio is recorded per turn-detection mode, with the
