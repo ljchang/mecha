@@ -179,9 +179,13 @@ pub enum SessionRecording {
   proof cannot make a false `Owner` impossible to write. What it does is
   make every `Owner` in the tree pass through a named constructor a
   reviewer can grep for, so a new door's author must choose one by name
-  rather than write a bare variant; and the HyperStudy door's module
-  carries a test that its source never names `OwnerProof`. Door review
-  stays the control; the proof is what it reads.
+  rather than write a bare variant. What enforces that is one
+  repo-wide CI arm, not a test per door, since a per-door test is the
+  one-patch-per-door shape E1 exists to end: `OwnerProof::` may appear
+  only in an allowlisted set of authenticating modules, and a new name
+  outside it fails the arm whoever wrote the door. The HyperStudy door is
+  outside the set by construction. Door review stays the control; the
+  proof and the arm are what it reads.
   A session with no connection (a cron-fired trigger, a `mecha batch`
   item) takes its principal from the store that authored it. The owner
   wrote the trigger in `~/.mecha/`, so it is `Owner` by rule, written into
@@ -321,7 +325,13 @@ at seven calls in six functions that step 1 prices, plus
 `commands/sessions.rs`'s `mark`, `forget_config`, `resolve_id` and
 `confirm_delete`) hold a bare path and call `SessionStore::locate`. Getting the persona one wrong fails closed into
 no persona memory writes at all, a silent E3 loss, so step 1's
-`peek_meta` probe goes through `pending_chats` itself. `Session::load`
+`peek_meta` probe goes through `pending_chats` itself. The list family
+and `read` are priced the same way, measured with `git grep -F` outside
+`session.rs` at fed60ec0e, test code included: `Session::list` 13 sites (a
+`pub` wrapper over `list_counting`, used among others by `harness_probe.rs`),
+`Session::list_counting` 15 (among them `pointwise_pass.rs`),
+`Session::list_headers_counting` 2, and `Session::read` 53. Step 1 is sized
+from all six loaders, not from the two first counted. `Session::load`
 takes one too, and it is the loader the resolution matters most for: it
 returns `(SessionMeta, Conversation)` and is the resume path of every owner
 door (`commands/chat.rs`, `commands/run.rs`, `tui/mod.rs`,
@@ -1237,6 +1247,21 @@ Slack; a change to any config or store format (E3).
   change, so it is decided before step 1 derives the taint seed and the
   approver from the principal. (Today's taint is unaffected: each request
   seeds a fresh conversation, which an `Owner`-derived clean seed
-  matches.) Which shape, or neither for now, is the owner's to rule. It
-  is the live instance of §5's stranger-in-the-corpus argument.
+  matches.) Which shape, or neither for now, is the owner's to rule. O5
+  is the principal question alone; its corpus exposure is split out
+  below, because fixing that waits on none of this.
+- **A live defect, separate from O5: front-door sessions are in the
+  owner's corpus today.** `Scan::admits` excludes only `Test` and
+  `Experiment`, so a stranger's request, driving a privileged assistant
+  session, lands its `RunStats` where rumination, the diagnostician and
+  learned rules read. That is §5's stranger-in-the-corpus argument in
+  production. Closing it depends on nothing in this document: not the
+  principal type, not `HostedSession`, not the parity harness. The
+  recommendation is its own PR ahead of step 1. It would move the front
+  door's transcripts to a directory of their own, since §5 makes the
+  folder the primary guard and older readers admit an unknown kind
+  regardless. That `~/.mecha` layout change is E3's one named exception,
+  on its own merits. A `Frontdoor` arm in `Scan::admits` is the one-line
+  interim that can land today. The move and its interim are the owner's
+  call; whether to fix it is not open.
 - **How long a step is lived with** before its old path is deleted (§9.3).
