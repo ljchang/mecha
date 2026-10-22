@@ -310,7 +310,17 @@ door (`commands/chat.rs`, `commands/run.rs`, `tui/mod.rs`,
 'Session::load('` at fed60ec0e). It is where `open` gets the recorded axes
 its resume refusal compares and the recorded taint the principal's floor
 is unioned with, so a `load` that handed back an unresolved meta would make
-§2's two sharpest refusals rest on an unchecked read. So `Scan::admits`' eleven call sites and
+§2's two sharpest refusals rest on an unchecked read. The same holds for a
+meta that is not the one `peek_meta` saw. `peek_meta` reads the first
+record only, while `read` and `load` assign on every `Record::Meta`, last
+one wins, the shape the `Title` arm beside it takes on purpose. So a file
+with a second header would show one principal, profile and recording to
+`open` and another to the memory-write gate. Every loader therefore
+resolves the three axes from the *first* `Record::Meta` only, and a later
+one is a finding, counted like §2's degrades and refusing the axes it
+contradicts; step 1's loader probe includes a file with an appended
+header. It is benign today, since only `Session::create` writes a `Meta`
+and no reader takes it as authority; this design is what makes it one. So `Scan::admits`' eleven call sites and
 `SessionMeta::admitted_by_default()`, which has no path by construction,
 can read only resolved axes, and a meta that skipped resolution does not
 type-check rather than admitting or silently dropping. The header is a
@@ -873,8 +883,14 @@ behaviour visible before it moves.
      appear. The run's `Budget` (its `max_turns`) joins the snapshot,
      since a task chat reverting to 40 turns renders identically and would
      read to the owner as the model giving up. With all of
-     these recorded, plus four facts from `prepare_carrying`, which also
-     moves (§9.5): **the connected MCP servers**, each with its effective
+     these recorded, plus five facts from `prepare_carrying`, which also
+     moves (§9.5): **the search chain**, its backends and the one
+     `ResultLedger` `web_search` and `web_open` share (`setup.rs`, found in
+     review of #276), since two ledgers render identically and leave
+     `web_open` opening nothing, an E3 loss invisible to both snapshots,
+     and since `web_search`'s declared egress is a function of
+     `has_blind_backend()`, one fixture dispatches `web_search` and then
+     `web_open` on a handle it returned; **the connected MCP servers**, each with its effective
      `env_passthrough` and capability override (the `env_clear()`
      allowlist `mcp::connect_all` spawns them under, which renders
      identically if lost, measured by a fixture using
