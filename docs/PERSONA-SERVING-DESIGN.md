@@ -269,15 +269,20 @@ this:
   saw it, the response, and the model `served_props` reported. No guest
   home is built for it, since nothing runs: its `home/` holds the
   transcript alone (§3).
-- **A seat is a HyperStudy run.** The seat is named by an opaque per-run
-  identifier HyperStudy sends. Spec 0.2.0 sends none to a model endpoint
-  (its voice engine gets one, as `OpenAI-Safety-Identifier`), so it is on
-  HyperStudy's list (§8): the same opaque value, in the request's
-  `safety_identifier`. Until it exists, every decision is a seat of its
-  own. That is the honest reading, and it is also why no real participant
-  meets a text seat before the identifier exists: the crisis cooldown (§7)
-  and the per-seat budgets (§4a) are per seat, and a seat of one decision
-  has neither.
+- **A seat is a HyperStudy run.** The seat is found by an opaque per-run
+  identifier HyperStudy sends, and named by mecha (§3). Spec 0.2.0 sends
+  none to a model endpoint (its voice engine gets one, as
+  `OpenAI-Safety-Identifier`), so it is on HyperStudy's list (§8): the same
+  opaque value, in the request's `safety_identifier`. A text decision
+  without one is **refused `policy`**, with the reason, as §4 refuses a
+  voice connection without one: the crisis cooldown (§7) and the per-seat
+  budgets (§4a) are per seat, and a check that cannot run must stop the
+  run, not fall through. Until HyperStudy sends the identifier, step 2 runs
+  against its dev server under `[hyperstudy] dev_unidentified_runs = true`,
+  off by default and named by `Unready` while on. In that mode every
+  decision is a seat of its own, with no cooldown and no budget across
+  decisions, which is why it is a switch the owner sets and not a
+  build-order note.
 - **The crisis sensor screens what is new.** Each request repeats the
   recent chat, so the wiring screens only the participant text it has not
   already screened for that seat. On a trip it answers with a `send_chat`
@@ -303,6 +308,18 @@ by side, none inside another: `home/` (the guest home, `MECHA_HOME`),
 `workspace/` (the jail, which contains no part of `home/` — `setup`'s rule
 that a workspace never contains the mecha home), `run/` (the sockets, under
 *The agent loop is its own process* below) and the manifest.
+
+**mecha names the seat.** `<seat>` is minted on this box when a seat
+opens, a random id from the OS source, and is the only name a path or a
+record of the owner's ever carries: the directory, the ledger's `seat`
+field (§7), the hold. HyperStudy's run identifier is kept inside the
+seat's manifest, where the wiring looks it up to find the seat again, and
+is never a path component or a ledger field. In the OpenAI API that header
+is borrowed from, `safety_identifier` is a stable per-user value (OpenAI
+suggests hashing a username or email), and HyperStudy is asked for a
+per-run one. If it ever sends the convention's value instead, nothing on
+this box is named by it, and a study cannot link seats across studies
+through the owner's directory listing or `safety.jsonl`.
 
 **It holds:** the named persona's voice settings (the voice name the
 owner's worker is handed, its speed and instructions), copied in,
@@ -358,6 +375,17 @@ deliberately not `trial_env`'s shape: a trial home inherits the operator's
 `[providers]` and keys along with `[security]`, and a seat inheriting them
 would hand a stranger's conversation a cloud key and a non-local model with
 the seal intact around it.
+
+**The floor is a function, not a list.** The six `[security]` fields named
+above are today's, and a seventh added for the owner's surfaces must not
+reach a seat by default, since the default would be "copy the owner's",
+the widening direction. So the seat's `[security]` is built by one
+function that destructures `SecurityConfig` with no `..` and returns, per
+field, `Owner`, `Strictest` or `Pinned(value)`. A new field does not
+compile until a seat's answer for it is written, which is the shape
+`Feature::switchable_from_environment`'s exhaustive `match` takes for the
+same reason. §8 step 4's floor test runs over every field the function
+returns, not over the two it names.
 
 **It never holds:** the owner's persona memory or chat history with that
 persona; mail, calendar, graph, outbox, learning store or triggers; the
@@ -527,7 +555,7 @@ falls through (the silently-degrading guard).
 
 | Surface | Owner's persona chat | Guest seat |
 |---|---|---|
-| Who the human side is | the owner | a stranger. Inbound text arms `untrusted` today only through a fixed harness stem (`DIGEST_STEM`), on the premise that the user chose every word (`Taint::arm_for_content`'s comment; it can arm `private` off its stems, §4a), and `external` is a tool result's field, not a message's — so a seat sets `Conversation.taint.untrusted` at construction, and the conversation records it, so the seat is armed from the first word |
+| Who the human side is | the owner | a stranger. Inbound text arms `untrusted` today only through harness-written stems (`DIGEST_STEM`, `persona::files::FILES_STEM`, `persona::recall::stem_of`, `scene::stem_of`), on the premise that the user chose every word (`Taint::arm_for_content`'s comment; it can arm `private` off its stems, §4a), and `external` is a tool result's field, not a message's — so a seat sets `Conversation.taint.untrusted` at construction, and the conversation records it, so the seat is armed from the first word |
 | System prompt | `BASE`, the card, plus `DISCLOSED` while `disclosure` is on | HyperStudy's `instructions`, verbatim, and nothing of mecha's persona text (S10), `SINCERE` among it — the persona prompt's one unconditional line (a sincere "am I talking to a person?" gets the truth) is left out because whether an agent answers that truthfully is a disclosure decision, the study's by S2; a study that wants the floor writes it into its own prompt |
 | Persona memory | written and recalled | neither: no writer, no recall over owner stores |
 | Confirmations, outbox | spoken yes can release | none exist: no outbox route, no `parse_answer` path |
@@ -1217,6 +1245,7 @@ mecha provides; the study decides:
   named `hyperstudy` rather than today's literal `web`. `CrisisRecord` holds
   no persona and no seat, so the record alone would say only "a study,
   somewhere". It gains an optional `seat` field naming the seat directory
+  by mecha's own name for it (§3), never HyperStudy's identifier
   (a closed, append-only record, so absent loads as `None` and today's
   lines still read), set by the wiring, and §8 step 2 tests that a seat's
   trip leads back to its transcript. Its neighbour does
@@ -1283,8 +1312,9 @@ build something. Steps 2 and 3 run against what HyperStudy already serves:
 its custom text provider and its v3 persona API.
 
 1. **The feature and the keys** — every item of `ARCHITECTURE.md`
-   §Adding a feature, the `[hyperstudy]` table (`max_seats`, and the
-   HyperStudy `origin` the export writes to) in both `Config` and
+   §Adding a feature, the `[hyperstudy]` table (`max_seats`, the
+   HyperStudy `origin` the export writes to, and `dev_unidentified_runs`,
+   off, §2a) in both `Config` and
    `ConfigLayer`, **stripped from project layers in `merge_text`,
    loudly**, as `[image]`, `[web]` and `[features]` are. A `mecha.toml`
    arriving with a cloned repository must not raise `max_seats`
@@ -1322,8 +1352,10 @@ its custom text provider and its v3 persona API.
    too. `listener.sock`'s closed message set (§2), anything else refused,
    logged, and the connection closed; `GET /v1/models` answered by the
    wiring through it; and a revoked key refused by the wiring while the
-   listener still holds its hash. CLAUDE.md's crate paragraph gains
-   `mecha-hyperstudy` as a fifth crate when it exists. `mecha-hyperstudy` on
+   listener still holds its hash. CLAUDE.md's crate paragraph and module
+   map gain `mecha-hyperstudy` as a fifth crate when it exists, and
+   `ARCHITECTURE.md` a section for the subsystem's invariants, where
+   CLAUDE.md says a new subsystem's belong. `mecha-hyperstudy` on
    `release.yml`'s hand-kept publish list ahead of `mecha-cli` (it depends
    on nothing in the workspace), since a published crate's missing
    dependency fails the publish after earlier crates uploaded, as
@@ -1364,9 +1396,11 @@ its custom text provider and its v3 persona API.
    with an image, chats, and submits a rating. And a corpus of hostile
    requests is each refused with nothing past the listener reaching the
    wiring: no key, a wrong key, a valid key naming another persona's model,
-   a body or an image past its bound, an unknown field, a slow upload. No
-   real participant meets a text seat before HyperStudy sends the run
-   identifier (§2a).
+   a body or an image past its bound, an unknown field, a slow upload, and
+   a decision with no run identifier, refused `policy` unless
+   `dev_unidentified_runs` is on (§2a). Seat names minted locally, with a
+   test that a run identifier holding `../` or a path separator never
+   reaches a path.
 3. **The export** — `mecha hyperstudy export` (§5.2), with `--dry-run`; a
    confirmation that shows the picture and says it becomes public; a later
    export touching only the name, the picture, the voice binding and the
@@ -1415,7 +1449,8 @@ its custom text provider and its v3 persona API.
    `follow_loaded = false`; a study's crisis
    resources that fail their bound fall back to `SAFE_MESSAGE`; the `[security]` floor
    holds against an owner config with `trifecta = "allow"` and with
-   `trifecta = "ask"`, each refused by the interlock itself; the system
+   `trifecta = "ask"`, each refused by the interlock itself, and over every
+   field the floor function of §3 returns; the system
    prompt is the study's `instructions` byte for byte, with no `BASE`, card,
    `SINCERE` or `DISCLOSED` even with the persona's `disclosure` on; a closed seat's
    transcript and manifest are readable afterwards; while a seat is open the
