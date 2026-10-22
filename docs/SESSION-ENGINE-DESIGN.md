@@ -279,7 +279,7 @@ next to `de_lenient_kind`, yields a raw three-state value per axis:
 *absent*, *parsed*, or *unparseable*. The location-aware loader then
 resolves those into the effective axes, beside where `list_counting`
 already applies `marks.apply` after `peek_meta`. The resolved values are
-a type with exactly two constructors. The loader builds one from a file.
+a type with exactly two production constructors. The loader builds one from a file.
 `HostedSession::open` builds one from the principal its door
 authenticated and the profile defined in code, which is the write path:
 the one caller that legitimately has no file to resolve from, and which
@@ -738,6 +738,17 @@ In the engine, `Incognito` is a value of the Recording axis:
 invariants. `ConversationHost` holds the open sessions and runs their
 turns; it is the only caller of `open`.
 
+**The principal is part of what identifies a held session.** A connection
+that finds its session already held never reaches `open`, and a guest's
+reconnect is a designed flow (§2), so the cold check alone would leave the
+common path unguarded. Today's web map (`HashMap<String, WebSession>` in
+`serve/chat.rs`, keyed on the route key) is safe only because every entry
+has one principal; a sealed child holding several participants' sessions
+would make the key the only thing between them. So every attach, warm or
+cold, compares the arriving principal with the held one by §2's rule
+(issuer and subject for a guest, the variant for an owner), and a mismatch
+is refused exactly as `open` refuses it.
+
 `ConversationHost` in `mecha-core` owns the turn. The name is chosen to
 stay clear of `voice::SessionHost`, the existing CLI trait through which a
 web chat exposes its sessions to calls; the two coexist for the whole
@@ -1149,7 +1160,9 @@ persona chat alone, and the assistant chat repeats steps 2–4 after step 6.
    renders `Blocked by policy:` and no `Deny` reaches the loop; `open`
    refuses a jail root outside the sealed home; `open` refuses a resume
    under a different guest's subject, including one whose display label
-   names the other guest; a Seat with no Safety
+   names the other guest, and the host refuses the same attach when the
+   other guest's session is already held, on the warm path that never
+   reaches `open` (§7); a Seat with no Safety
    module does not open; a setup-supplied prompt is refused for
    Assistant and Persona; a guest frame carrying an approval-mode field
    is refused as unsupported (§3); and Guest × Seat × Sealed sessions,
