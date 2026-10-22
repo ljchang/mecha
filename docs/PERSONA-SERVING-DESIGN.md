@@ -288,7 +288,16 @@ this:
   already screened for that seat. On a trip it answers with a `send_chat`
   carrying the handover (§7) in place of the model's response, and
   answers `wait` until the cooldown ends. This also needs the per-run
-  identifier.
+  identifier. But `send_chat` is HyperStudy's to declare per decision, and
+  a screen with no chat may not declare it. A trip on such a decision has
+  no way to speak, and a forced-on check must not fall through to a quiet
+  `wait`. So that decision, and every later one in the seat, is refused
+  `policy` with the reason `crisis handover undeliverable` until a
+  decision declares `send_chat`; the handover then goes out and the
+  cooldown runs from there. The trip is in the owner's ledger at once
+  either way, and the refusals put it in the study's own record. HyperStudy
+  declaring `send_chat` on every request of a study with chat, refusing it
+  itself on a screen without, is on its list (§8).
 - **A decision that cannot start in time is refused at once.** When the
   router has no slot within a share of the request's limit, the answer is
   `capacity` (§5), not a timeout, so HyperStudy's record says why.
@@ -1340,7 +1349,8 @@ its custom text provider and its v3 persona API.
    row in `TRIFECTA.md`'s switch table, with what it costs: a public port,
    and the named `block_sends_after_private` departure (§4a).
 2. **The listener and text decisions** — the `mecha-hyperstudy` crate and
-   binary (§2): the three routes, the key checked before any body is read,
+   binary (§2): the three routes (`/v1/realtime` parse-only until step 7
+   wires it), the key checked before any body is read,
    the bounds, the closed types. Its confined launch: bwrap with
    `--unshare-net`, a cleared environment, the hashes' directory read-only, and
    `public.sock` and `listener.sock` as its only ways in and out, every leg
@@ -1535,7 +1545,9 @@ what mecha needs. In order of need:
 2. An opaque per-run identifier on every model-endpoint request: the value
    its voice engine already gets as `OpenAI-Safety-Identifier`, in the
    request's `safety_identifier`. It is needed before a real participant
-   meets a text seat (§2a).
+   meets a text seat (§2a). With it, `send_chat` declared on every
+   model-endpoint request of a study with chat, refused by HyperStudy on a
+   screen without, so a crisis handover always has a way out (§2a).
 3. A preview-clip field for an engine-owned voice (`preset: null`, which
    its `session.update` already sends as `voice: null`), so the export can
    fill it (§5.2).
