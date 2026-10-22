@@ -991,9 +991,26 @@ behaviour visible before it moves.
    - **the session records the turn appends**: the `Record::Config` (its
      `RunConfig::levers_off`, since `Fallback`, `StepEscalation` and
      `StepChecks` change neither a passing turn's body nor any other fact
-     here, and a lever dropped from the set reads as on), each `Record::Taint` and
+     here, and a lever dropped from the set reads as on), each `Record::Taint`,
+     each `Record::Extend`, and
      `record_run`'s `RunStats` outcome, matched old path against new, as
-     the compacting fixture's `rewrite` already is. A host that keeps the
+     the compacting fixture's `rewrite` already is. `Extend` is appended by
+     the door-side turn bodies steps 3–4 move (`serve/chat.rs` and
+     `serve/persona_chat.rs`, when the harness folds the calendar reference
+     or the situation brief into a recorded user message). A host that
+     lets `record_run` notice the changed head instead gets a whole
+     `Record::Rewrite`, which clears the taint checkpoints and reclassifies
+     clean turns untrusted for `mecha learn`, with the body and the
+     in-memory taint both identical. So one fixture folds the calendar
+     reference and asserts an `Extend` at the right `index` and no
+     `Rewrite`. Beside the records sits **the run marker**
+     (`runmarker`): whether a run wrote its marker and cleared it, and
+     whether a cancel file reached it. Its writers (`trigger.rs`,
+     `tasks.rs`, the Slack connector) move in step 8, and a door that
+     stops writing it renders identically while a trigger fires on top of
+     a live run instead of skipping, `mecha stop` stops nothing, and
+     `system/measure.rs` reads zero runs in flight. One fixture starts a
+     marked run, stops it by its file, and reads the marker gone. A host that keeps the
      taint right in memory but stops appending it renders and snapshots
      identically, then launders the taint on the next resume. A lost
      `RunStats` leaves every surface answering while the corpus stops
