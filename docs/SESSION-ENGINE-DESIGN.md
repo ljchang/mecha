@@ -22,7 +22,8 @@ restate it.
 | E3 | **Nothing is lost, and setup does not break.** A refactor this size is how behaviours quietly disappear. The migration (§9) is built around making each one visible before anything moves. | owner | 2026-10-20 |
 | E4 | **General text and voice chat without the web page.** A connection can supply the prompt and the session's setup. | owner | 2026-10-19 |
 
-PERSONA-SERVING-DESIGN's S1–S10 hold for seats unchanged. Five numbered rulings
+PERSONA-SERVING-DESIGN's S2–S12 hold for seats unchanged (its S11, HyperStudy
+calling mecha, superseded its S1 on 2026-10-22). Five numbered rulings
 are still open (§11), with one open parameter beside them.
 
 ## 1. What is duplicated, and what is different
@@ -147,14 +148,15 @@ pub enum SessionRecording {
 ```
 
 - **The principal** is set by the door from authentication: the tailnet
-  login (`owner_guard`), the local OS user, or a HyperStudy `mhs_` token.
+  login (`owner_guard`), the local OS user, or a HyperStudy `mhs_` key.
   There is no upgrade path: no frame, field or spoken phrase changes it.
-  A guest's `subject` is an opaque id from the authenticated offer
-  (the participant session HyperStudy's offer names and its session token
-  authenticates, stable across a reconnect of that session, so a
-  participant whose link drops is not refused their own transcript;
-  HyperStudy's §4.1 pins that lifetime), never a name and never a value the
-  connection sends: the display label a guest connection may set (§3) is
+  A guest's `subject` is an opaque id from the authenticated request:
+  the per-run identifier HyperStudy sends under the key that authenticated
+  it (`OpenAI-Safety-Identifier` on a voice session, `safety_identifier` on
+  a text decision; PERSONA-SERVING §2a, §4), stable across a reconnect of
+  that run, so a participant whose link drops is not refused their own
+  transcript. That lifetime is HyperStudy's to pin. It is never a name, and
+  never a value the participant's side of the connection sets: the display label a guest connection may set (§3) is
   a preference, held outside the principal, and enters no comparison.
   `Owner` carries an `OwnerProof`, a type with a private field and one
   named constructor per authentication §8's table lists (the tailnet
@@ -242,7 +244,7 @@ when the session opens, which is the header's granularity; `Record::Config`
 is per-attach because flags can differ on resume, and these cannot:
 `HostedSession::open` refuses a resume whose recorded axes are not equal
 to the door's on all three. A guest principal is compared whole, issuer and
-subject, not only the variant, so one participant's token cannot reopen
+subject, not only the variant, so one participant's run cannot reopen
 another's sealed transcript. An owner is compared by variant only: the
 header serializes a bare `Owner`, never its `OwnerProof`, and the loader
 builds the proof through the owner-store constructor, a named one like
@@ -411,7 +413,7 @@ hand one to a profile that holds the owner's reach.
 takes one), which tools it enables, selected from the seat catalogue in
 mecha's code and never a name or schema of its own, voice and speed, turn-taking,
 which persona by reference, text or voice, a display label for the human
-(a preference; the principal's `subject` is the token's, §2).
+(a preference; the principal's `subject` is the run identifier's, §2).
 **What it never sets:** the principal, the owner's stores, any security
 switch, the approval mode, the provider or its keys. An owner door adds
 the approval mode and nothing else from that second list.
@@ -727,7 +729,7 @@ session setup it supplies (§3) and whether it can resend a failed turn
 | Web page | HTTP + SSE, WebRTC for calls, on the tailnet | tailnet login → Owner | the browser UI |
 | CLI and TUI | in process | local OS user → Owner | the terminal |
 | Slack | Socket Mode | the allowlisted user → Owner | Slack messages (Assistant only) |
-| HyperStudy | dial-out WebSocket, HRP | `mhs_` token → Guest | nothing; HyperStudy renders |
+| HyperStudy | inbound through a confined listener on its own Funnel port: the model endpoint (text) and HRP (voice) | `mhs_` key → Guest | nothing; HyperStudy renders |
 
 **The standard sits at the door, not in the engine.** HyperStudy speaks
 HRP, a pinned subset of OpenAI's Realtime API with a conformance suite.
@@ -738,7 +740,8 @@ after HyperStudy has met the protocol from a real outside client.
 
 **Other doors.** The HyperStudy door is also the template for an API to
 other applications: every new client is a door, and the principal rule
-decides what it gets. A guest door gets a sealed profile. An owner door
+decides what it gets. A guest door gets a sealed profile, which is why
+the HyperStudy door can be the one public door (PERSONA-SERVING §5.1). An owner door
 reaching the owner's whole assistant from outside the tailnet is a
 different matter, because it carries the full trifecta: it stays on the
 tailnet (REMOTE-SURFACE-DESIGN: "Funnel is never the answer"), with its own
@@ -1061,10 +1064,12 @@ persona chat alone, and the assistant chat repeats steps 2–4 after step 6.
    call kinds pass their existing tests, and the owner's phone check
    passes (an inventory row).
 7. **The Seat profile and the HyperStudy door:** PERSONA-SERVING §8
-   steps 2–5, now on the host. There is no old path here, so §9.2's
+   steps 2 and 4–7, now on the host. A text decision holds no session
+   (its §2a), so on the host it uses the Safety module and the record,
+   not `open`. There is no old path here, so §9.2's
    comparison is vacuous and named tests stand in for it, one negative
    per guard, in the shape §4 uses for the seat tools' `Blind` label.
-   Exit: PERSONA-SERVING §8 steps 2–5's own exits, and, on a live guest
+   Exit: PERSONA-SERVING §8 steps 2 and 4–7's own exits, and, on a live guest
    session: `HostedSession::open` refuses every combination off §2's
    table; the conversation starts armed `untrusted`; a refused call
    renders `Blocked by policy:` and no `Deny` reaches the loop; `open`
@@ -1097,13 +1102,14 @@ persona chat alone, and the assistant chat repeats steps 2–4 after step 6.
 9. **Optional:** one route set, and the page on the Realtime protocol
    (O4).
 
-PERSONA-SERVING §8 step 1 (the feature and the token) depends on none of
+PERSONA-SERVING §8 step 1 (the feature and the keys) depends on none of
 this and can land at any point.
 
 ## 11. Out of scope, and owed
 
 **Deliberately out:** a guest-assistant profile, until it is designed as
-its own sandboxed instance (S3); any public listener; runtime composition
+its own sandboxed instance (S3); any public listener but PERSONA-SERVING's
+(its S11); runtime composition
 of modules; merging persona memory with the learning store; personas on
 Slack; a change to any config or store format (E3).
 
