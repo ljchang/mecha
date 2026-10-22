@@ -527,7 +527,7 @@ falls through (the silently-degrading guard).
 
 | Surface | Owner's persona chat | Guest seat |
 |---|---|---|
-| Who the human side is | the owner | a stranger. Inbound text never arms `untrusted` today, on the premise that the user chose every word (`Taint::arm_for_content`'s comment; it can arm `private` off its stems, §4a), and `external` is a tool result's field, not a message's — so a seat sets `Conversation.taint.untrusted` at construction, and the conversation records it, so the seat is armed from the first word |
+| Who the human side is | the owner | a stranger. Inbound text arms `untrusted` today only through a fixed harness stem (`DIGEST_STEM`), on the premise that the user chose every word (`Taint::arm_for_content`'s comment; it can arm `private` off its stems, §4a), and `external` is a tool result's field, not a message's — so a seat sets `Conversation.taint.untrusted` at construction, and the conversation records it, so the seat is armed from the first word |
 | System prompt | `BASE`, the card, plus `DISCLOSED` while `disclosure` is on | HyperStudy's `instructions`, verbatim, and nothing of mecha's persona text (S10), `SINCERE` among it — the persona prompt's one unconditional line (a sincere "am I talking to a person?" gets the truth) is left out because whether an agent answers that truthfully is a disclosure decision, the study's by S2; a study that wants the floor writes it into its own prompt |
 | Persona memory | written and recalled | neither: no writer, no recall over owner stores |
 | Confirmations, outbox | spoken yes can release | none exist: no outbox route, no `parse_answer` path |
@@ -1084,10 +1084,13 @@ stays tailnet-only, as that ruling has it.
 an agent persona. It goes through HyperStudy's v3 API (`POST
 /api/v3/personas`, and `PUT` on a later export) with a HyperStudy API key
 the owner creates there (`/api/v3/auth/api-keys`) and gives to mecha. That
-key is an outbound credential, kept in the owner's home beside the
-`mhs_` hashes, owner-readable only, written by setup or `mecha hyperstudy
-export --set-key` from a paste, and never in `[hyperstudy]` or any config
-file. Only the export reads it; the listener and the seats never see it.
+key is an outbound credential, and the one secret here whose theft reaches
+off this box. So it is kept in the owner's home in a directory of its own,
+apart from the directory of `mhs_` hashes, which is the only one bound
+into the listener (§2, §5.1). It is owner-readable only, written by setup
+or `mecha hyperstudy export --set-key` from a paste, and never in
+`[hyperstudy]` or any config file. Only the export reads it; the listener
+and the seats never see it, and no bind reaches it.
 It sends:
 
 - **The name:** the persona's `display` (its folder name when empty), as
@@ -1148,8 +1151,11 @@ listener. The registry already allows that: `requires` puts `web` on
 voice's browser parts only (`dictate`, `calls`, `cloning`), and `voice`
 itself stands alone (FEATURES-DESIGN F3: `mecha voice-serve` is its own
 loopback surface), so no registry edge changes. `hyperstudy` requires
-`personas` only, and the listener checks `voice` at runtime: on a machine
-without it a voice connection is refused `policy`, and text seats work. A
+`personas` only, and the wiring checks `voice` at runtime, when it
+answers a voice session's open over `listener.sock` (§2): on a machine
+without it the open is refused `policy`, and text seats work. The listener
+cannot check it and does not, since it holds no part of the owner's home
+but the hash directory. A
 `requires` edge on `voice` would block text seats on a machine without it.
 
 The coupling to `mecha serve` is in code, not in the registry, and the
@@ -1287,8 +1293,10 @@ its custom text provider and its v3 persona API.
    `[hyperstudy]` is dropped with a warning. The public port is 10000 in
    code, not a config value (§2). Keys are not config at all, layered or
    not: the `mhs_` hashes are minted into the owner's home (§5.1), and the
-   export's HyperStudy API key is kept beside them (§5.2). That is two
-   stores, one per direction. The same reason puts
+   export's HyperStudy API key in a directory of its own (§5.2). That is
+   two stores, one per direction, in two directories, and only the first
+   is bound into the listener; a test asserts the listener's binds name
+   no path under the second. The same reason puts
    `hyperstudy` on `trial_env::OPERATOR_ONLY_TABLES`, the decision
    `ARCHITECTURE.md` §Adding a feature asks of every new table: an
    experiment environment's `config.toml` also arrives with a checkout,
