@@ -155,7 +155,20 @@ pub enum SessionRecording {
   it (`OpenAI-Safety-Identifier` on a voice session, `safety_identifier` on
   a text decision; PERSONA-SERVING §2a, §4), stable across a reconnect of
   that run, so a participant whose link drops is not refused their own
-  transcript. That lifetime is HyperStudy's to pin. It is never a name, and
+  transcript. That lifetime is HyperStudy's to pin. A request that
+  authenticates with a valid key and carries no identifier is refused, at
+  the door and before `open` (PERSONA-SERVING §2a and §4 refuse both
+  kinds), so no subject is ever shared, and no two subject-less runs can
+  resume each other. Its off-by-default development switch
+  (`dev_unidentified_runs`) makes each such decision a session of its own
+  under a freshly minted subject that nothing can present again, so it is
+  never resumable either. That costs nothing a participant
+  could have had: a run with no identifier had no way back to its
+  transcript anyway. A collision, HyperStudy sending one identifier for
+  two runs, is not detectable from mecha's side. It is HyperStudy's
+  failure, bounded to one issuer's participants, since the comparison is
+  over issuer and subject together, and it is named here as the price of
+  an issuer-attested subject. It is never a name, and
   never a value the participant's side of the connection sets: the display label a guest connection may set (§3) is
   a preference, held outside the principal, and enters no comparison.
   `Owner` carries an `OwnerProof`, a type with a private field and one
@@ -561,7 +574,10 @@ pass. So they build `SessionStore::declared_owner(dir)`: a production
 constructor reached only from a flag the owner types at a local
 terminal, refusing a directory inside the persona or seat roots, since
 it widens what gets mined and is therefore an owner-only setting in this
-section's sense. Both flags get a §9.1 inventory row.
+section's sense. Like the owner store, it admits Owner × Assistant × Kept
+alone, so an engine-era seat or persona header found in such a directory
+is refused and counted by the contradiction rule above, never mined. Both
+flags get a §9.1 inventory row.
 
 ## 4. Modules: what a profile is made of
 
