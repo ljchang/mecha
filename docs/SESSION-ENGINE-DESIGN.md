@@ -326,8 +326,10 @@ at seven calls in six functions that step 1 prices, plus
 `confirm_delete`) hold a bare path and call `SessionStore::locate`. Getting the persona one wrong fails closed into
 no persona memory writes at all, a silent E3 loss, so step 1's
 `peek_meta` probe goes through `pending_chats` itself. The list family
-and `read` are priced the same way, measured with `git grep -F` outside
-`session.rs` at fed60ec0e, test code included: `Session::list` 13 sites (a
+and `read` are priced the same way, measured with `git grep -F` over
+`mecha-core/src` and `mecha-cli/src` outside `session.rs` at fed60ec0e, unit
+tests included and `mecha-cli/tests/` excluded (it is served by
+`SessionStore::owner()` and adds five sites): `Session::list` 13 sites (a
 `pub` wrapper over `list_counting`, used among others by `harness_probe.rs`),
 `Session::list_counting` 15 (among them `pointwise_pass.rs`),
 `Session::list_headers_counting` 2, and `Session::read` 53. Step 1 is sized
@@ -754,10 +756,15 @@ reconnect is a designed flow (§2), so the cold check alone would leave the
 common path unguarded. Today's web map (`HashMap<String, WebSession>` in
 `serve/chat.rs`, keyed on the route key) is safe only because every entry
 has one principal; a sealed child holding several participants' sessions
-would make the key the only thing between them. So every attach, warm or
-cold, compares the arriving principal with the held one by §2's rule
-(issuer and subject for a guest, the variant for an owner), and a mismatch
-is refused exactly as `open` refuses it.
+would make the key the only thing between them. So a held session's
+identity is (key, principal, profile, recording), not the route key, and
+every attach, warm or cold, compares all three axes by §2's rule: issuer
+and subject for a guest and the variant for an owner, plus the profile and
+the recording. A mismatch is refused exactly as `open` refuses it. The
+profile matters most for the owner. An owner's principal compares by
+variant alone, so without the profile an assistant-route attach landing on
+a held persona session would continue it with the assistant's reach, the
+failure §2's resume rule names, and from step 4 one host holds both.
 
 `ConversationHost` in `mecha-core` owns the turn. The name is chosen to
 stay clear of `voice::SessionHost`, the existing CLI trait through which a
@@ -1139,7 +1146,9 @@ persona chat alone, and the assistant chat repeats steps 2–4 after step 6.
    MCP environment allowlist, sandbox and preflight, the outbox and
    mailbox routes, grants, and the child registry) identical for a web
    chat fixture and for a `mecha run` fixture, the builder's other caller; `open` refuses an
-   Assistant door resuming a persona transcript, and the reverse, since
+   Assistant door resuming a persona transcript, and the reverse, and the
+   host refuses both on the warm path too, an assistant-route attach to a
+   held persona session and the reverse (§7), since
    this is the first step with both profiles on one `open`, while a
    session started under one owner door resumes under another; lived with for the
    owner's chosen period (§11) before the old bodies are deleted.
@@ -1172,7 +1181,8 @@ persona chat alone, and the assistant chat repeats steps 2–4 after step 6.
    under a different guest's subject, including one whose display label
    names the other guest, and the host refuses the same attach when the
    other guest's session is already held, on the warm path that never
-   reaches `open` (§7); a Seat with no Safety
+   reaches `open` (§7), as it refuses an owner's assistant-route attach to
+   a held persona session there; a Seat with no Safety
    module does not open; a setup-supplied prompt is refused for
    Assistant and Persona; a guest frame carrying an approval-mode field
    is refused as unsupported (§3); and Guest × Seat × Sealed sessions,
