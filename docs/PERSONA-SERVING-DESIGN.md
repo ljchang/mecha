@@ -136,8 +136,8 @@ Four pieces, each with one job:
    who learns the address can send bytes before any key is checked. So the
    parser runs where a bug in it reaches nothing. The wiring launches it
    under bwrap with `--unshare-net`, its environment cleared. No part of
-   the owner's home is bound into it except its own run directory and a
-   read-only file of key *hashes* (§5.1). It listens on a pathname
+   the owner's home is bound into it except its own run directory and,
+   read-only, the directory that holds the key *hashes* (§5.1). It listens on a pathname
    socket, `hyperstudy/run/public.sock`, which `tailscale serve` proxies
    to, and it reaches the wiring only through
    `hyperstudy/run/listener.sock`: the same pathname-socket crossing §3
@@ -157,6 +157,23 @@ Four pieces, each with one job:
    loopback port. That is a change to this paragraph, reviewed as one, not
    a detail of step 2. A box where the confinement cannot run serves
    nothing.
+
+   **What crosses `listener.sock`** is a closed set, enumerated here as
+   `parent.sock`'s is in §3, and the wiring checks the key again on every
+   message that carries one, against the store as it is at that moment
+   (§5.1):
+   - a models query, naming the key that asked, answered by the wiring
+     with the personas that key names; the listener holds no persona
+     names, so `GET /v1/models` is the wiring's answer, carried back;
+   - a text decision: the key, the run identifier when there is one, and
+     the parsed request, answered by the response or a typed refusal (§5);
+   - a voice session's open, with the key and the safety identifier,
+     answered by an admission or a typed refusal; then its frames, each a
+     parsed HRP client event inward or a server event outward; then its
+     close, from either side.
+
+   Anything else is refused, logged, and closes the connection it came
+   on.
 2. **`mecha-cli/src/hyperstudy/`** — the wiring that does know: the keys
    and the personas each one names (§5.1), admission (§5), the seat records
    (§3), the crisis sensor (§7), the export (§5.2), and the two kinds of
@@ -187,11 +204,15 @@ module doc says it is: "deliberately dumb".
 `*.ts.net` name, and it allows three: 443, 8443 and 10000. On this box 443
 and 8443 already serve the owner's page to the tailnet, and Funnel on
 either would publish that page to the internet. So the listener takes
-**10000**. The wiring reads the machine's serve configuration
-(`tailscale serve status --json`) at start and before it admits a seat.
-Funnel on for any port whose handler is not `public.sock` stops the wiring
-with the reason, a silently-degrading guard in the sandbox preflight's
-shape. Funnel itself is a tailnet setting, the `funnel` node attribute in
+**10000**. The wiring reads the machine's serve configuration with one
+command, `tailscale serve status --json`, at start and before it admits a
+seat, and nothing else in this design reads that fact another way. Funnel
+on for any port whose handler is not `public.sock` stops the wiring with
+the reason. So does a configuration it cannot read: `tailscale` missing,
+a non-zero exit, JSON that does not parse, tailscaled down. "No other
+Funnel found" and "could not look" are opposite findings, and only the
+first lets a seat in. This is a silently-degrading guard in the sandbox
+preflight's shape. Funnel itself is a tailnet setting, the `funnel` node attribute in
 the tailnet policy, which the owner turns on once and setup names but
 cannot grant (§6). Another tunnel (`cloudflared`) could stand in front of
 the listener instead; Funnel is the one built, because the box already runs
@@ -297,7 +318,8 @@ bear on a seat: `trifecta` (pinned `block`), `mark_untrusted_output`
 (always on) and `block_sends_after_private` (the owner's, §4a — the named
 departure). Of the other three, which guard the fetch and search tools a
 seat does not have: `block_private_ips` is set `true`, its strictest value,
-by the rule and moot under `--unshare-net`; the two domain lists have no
+by the rule, and inert in a seat under either posture, since only
+`check_url` reads it and only `http_fetch` and `web_open` reach that; the two domain lists have no
 strictest value, since an empty list is the *widest*, so they are copied
 as the owner's and nothing is inferred from them; `[sandbox]` is not the owner's
 at all but written by the wiring as a seat property, as `trifecta` is
@@ -484,8 +506,9 @@ bridge, not of the interim. **What the interim gives up** is the sentence
 that closes the bridge paragraph above. With the host's network the facade
 reaches the owner's loopback services, the LAN and the tailnet, as every
 other mecha surface does, and the closed `Blind` catalogue (§4a) is then
-the only thing between a stranger's conversation and those hosts.
-`block_private_ips = true` stops being moot. So §9's choice is between two
+the only thing between a stranger's conversation and those hosts; no
+config switch stands second, since `block_private_ips` guards tools a seat
+does not have (above). So §9's choice is between two
 described postures: no route to any host, or a route held shut by the
 catalogue alone. Step 4 says which tests each one ships with.
 
@@ -1002,12 +1025,21 @@ bits from the OS random source, prefixed `mhs_` so a leaked one is
 recognisable in a scan. It is printed once. The owner pastes it into
 HyperStudy as the API key of the custom provider (text) and of the custom
 voice engine (voice). mecha keeps only its hash, beside the personas it
-names, owner-readable; the listener gets a read-only copy of the hashes
-and never a key (§2). `--add` and `--remove` change which personas a key
+names, owner-readable. `--add` and `--remove` change which personas a key
 names. `--rotate` mints a replacement, and the old key stops working at
 once. `--revoke` removes it, and its personas stop being reachable through
 it. Revocation is mecha's act now, not HyperStudy's: a leaked key is dead
 the moment the owner says so, on this box.
+
+**The wiring is the authority for that, not the listener.** The listener
+sees the hashes through a read-only bind of their *directory*, never of the
+file. A file bind pins its inode, and the store is written as every store
+here is, a temporary file renamed over the old (`experiment::write_atomic`'s
+shape), which such a bind never follows. It re-reads them when the file
+changes, so its early refusal stays current, but that is an optimisation:
+the claim "at once" rests on the wiring checking the key again on every
+message (§2), against the store it writes itself. A revoked key the
+listener has not yet dropped reaches the wiring and is refused there.
 
 **A key names a set of personas, because HyperStudy keeps one custom
 endpoint per account.** Its custom text provider resolves a single
@@ -1051,8 +1083,12 @@ stays tailnet-only, as that ruling has it.
 `mecha hyperstudy export <persona>` writes the persona into HyperStudy as
 an agent persona. It goes through HyperStudy's v3 API (`POST
 /api/v3/personas`, and `PUT` on a later export) with a HyperStudy API key
-the owner creates there (`/api/v3/auth/api-keys`) and gives to mecha. It
-sends:
+the owner creates there (`/api/v3/auth/api-keys`) and gives to mecha. That
+key is an outbound credential, kept in the owner's home beside the
+`mhs_` hashes, owner-readable only, written by setup or `mecha hyperstudy
+export --set-key` from a paste, and never in `[hyperstudy]` or any config
+file. Only the export reads it; the listener and the seats never see it.
+It sends:
 
 - **The name:** the persona's `display` (its folder name when empty), as
   the HyperStudy persona's name and display name.
@@ -1096,9 +1132,11 @@ off on every install that predates it, so nothing listens until the
 owner says so. Guided setup offers it once personas are on and asks for the
 two things it cannot work without: the public address, and a key for at
 least one persona (§5.1), which setup mints and shows for pasting. The
-address needs Funnel, which is the owner's tailnet setting (§2): setup
-checks it with `tailscale funnel status`, names the policy line it needs,
-and cannot grant it. `Unready` names whichever is missing. The export
+address needs Funnel, which is the owner's tailnet setting (§2). Setup
+turns Funnel on for port 10000 and reads the result back through §2's one
+command. When the tailnet policy lacks the `funnel` attribute, tailscale
+refuses with its own message, and setup shows it beside the policy line
+it needs; it cannot grant it. `Unready` names whichever is missing. The export
 (§5.2) needs a third thing, the HyperStudy origin and a HyperStudy API key,
 and is offered, not required: serving works without it, with the
 HyperStudy persona set up by hand. Voice
@@ -1248,7 +1286,9 @@ its custom text provider and its v3 persona API.
    picture, at another origin; a test that a project layer's
    `[hyperstudy]` is dropped with a warning. The public port is 10000 in
    code, not a config value (§2). Keys are not config at all, layered or
-   not: they are minted into the owner's home (§5.1). The same reason puts
+   not: the `mhs_` hashes are minted into the owner's home (§5.1), and the
+   export's HyperStudy API key is kept beside them (§5.2). That is two
+   stores, one per direction. The same reason puts
    `hyperstudy` on `trial_env::OPERATOR_ONLY_TABLES`, the decision
    `ARCHITECTURE.md` §Adding a feature asks of every new table: an
    experiment environment's `config.toml` also arrives with a checkout,
@@ -1264,14 +1304,18 @@ its custom text provider and its v3 persona API.
 2. **The listener and text decisions** — the `mecha-hyperstudy` crate and
    binary (§2): the three routes, the key checked before any body is read,
    the bounds, the closed types. Its confined launch: bwrap with
-   `--unshare-net`, a cleared environment, the hash file read-only, and
+   `--unshare-net`, a cleared environment, the hashes' directory read-only, and
    `public.sock` and `listener.sock` as its only ways in and out, every leg
    preflighted, no listener where bwrap cannot run, and the step's bwrap
    tests run under `MECHA_TEST_REQUIRE_BACKENDS=1` in CI. Whether Funnel
    carries a WebSocket upgrade through to a `unix:` target, checked on the
    installed tailscale. The Funnel guard, with a test that Funnel on 443 or
-   8443 stops the wiring. `listener.sock`'s closed message set, anything
-   else refused, logged, and the connection closed. `mecha-hyperstudy` on
+   8443 stops the wiring, and one that an unreadable serve status stops it
+   too. `listener.sock`'s closed message set (§2), anything else refused,
+   logged, and the connection closed; `GET /v1/models` answered by the
+   wiring through it; and a revoked key refused by the wiring while the
+   listener still holds its hash. CLAUDE.md's crate paragraph gains
+   `mecha-hyperstudy` as a fifth crate when it exists. `mecha-hyperstudy` on
    `release.yml`'s hand-kept publish list ahead of `mecha-cli` (it depends
    on nothing in the workspace), since a published crate's missing
    dependency fails the publish after earlier crates uploaded, as

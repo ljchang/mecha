@@ -1080,7 +1080,7 @@ manifest maps one-to-one and a later bridge is cheap. A second was claimed
 OpenAI-compatible chat endpoint over the agent loop, the contract
 `hyperstudy-agent` verifies.
 
-> *Correction, 2026-10-19.* It is not a bridge. `voice-serve` binds
+> *Correction, 2026-10-19; revised 2026-10-22.* It is not a bridge. `voice-serve` binds
 > loopback only and HyperStudy's custom endpoint calls in from the
 > internet; and it treats every caller as the owner — a participant's
 > spoken yes could release a staged draft. Serving mecha to HyperStudy
