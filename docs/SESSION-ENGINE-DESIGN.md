@@ -23,7 +23,7 @@ restate it.
 | E4 | **General text and voice chat without the web page.** A connection can supply the prompt and the session's setup. | owner | 2026-10-19 |
 
 PERSONA-SERVING-DESIGN's S2–S12 hold for seats unchanged (its S11, HyperStudy
-calling mecha, superseded its S1 on 2026-10-22). Five numbered rulings
+calling mecha, superseded its S1 on 2026-10-22). Six numbered rulings
 are still open (§11), with one open parameter beside them.
 
 ## 1. What is duplicated, and what is different
@@ -273,10 +273,17 @@ to the door's on all three. A guest principal is compared whole, issuer and
 subject, not only the variant, so one participant's run cannot reopen
 another's sealed transcript. An owner is compared by variant only: the
 header serializes a bare `Owner`, never its `OwnerProof`, and the loader
-builds the proof through the owner-store constructor, a named one like
-the rest, so `Deserialize` is not a hidden source of proofs. The owner's
+yields a `RecordedPrincipal::Owner` that carries no proof at all (above),
+so `Deserialize` is not a source of proofs. The owner's
 `sessions/` is shared across doors, and a session started in the TUI must
-still resume in the web page and in Slack; step 4 names that positive. The profile is compared too:
+still resume in the web page and in Slack; step 4 names that positive.
+Variant-only comparison treats every authentication that reaches `Owner`
+as one principal. The Slack binding's `owners` is a list, so two
+allowlisted Slack users can resume each other's sessions, and either can
+resume a TUI session, as they can today. That is a choice, not a
+consequence of E1, so it is owed as O6 (§11). Until it is ruled, the proof
+keeps each authentication's subject, and the subject is deliberately not
+compared. The profile is compared too:
 §3's store check compares a header with its store, not with the door, so
 without this an Assistant door resuming a persona transcript would pass
 both checks and continue it with the assistant's reach, which
@@ -365,18 +372,21 @@ and no reader takes it as authority; this design is what makes it one. So `Scan:
 `SessionMeta::admitted_by_default()`, which has no path by construction,
 can read only resolved axes, and a meta that skipped resolution does not
 type-check rather than admitting or silently dropping. The header is a
-wire format: a principal that fails to parse loads as `Guest`, never as
-`Owner`, and specifically as `Guest { issuer: Issuer::Unknown, subject:
-Subject::Unreadable }`. No subject a door builds can equal it, and
-`Issuer::Unknown` opens no profile, so the session reads back
-and cannot be resumed. Unknown is never clean. An *absent* record is a different case
-with its own rule (§3), and the two must stay two code paths. Where that
-rule cannot place the file (`SessionStore::Other`), the absent principal
-degrades to `Guest { issuer: Issuer::Unlocated, .. }`, not to the
-unreadable subject: it fails closed the same way and opens no profile, but
-it asserts no corruption about a field that was never written, and
-`sessions health` counts a corrupt header and an unlocated store apart,
-since they want different fixes.
+wire format, and the recorded principal gets the treatment the other two
+axes get below: a variant of its own for each failure, not a sentence. A
+`RecordedPrincipal` is `Owner | Guest { issuer, subject } | Unreadable |
+Unlocated`. A principal that fails to parse loads as `Unreadable`, never as
+`Owner` and never as an ordinary `Guest`, so a seat-directory file whose
+other two axes parse cleanly cannot resolve to the admitted Guest × Seat ×
+Sealed with a corrupt principal. A `match` has to answer it, and neither
+failure variant opens a profile or equals anything a door builds, so the
+session reads back and cannot be resumed. Unknown is never clean. An
+*absent* record is a different case with its own rule (§3), and the two
+must stay two code paths. Where that rule cannot place the file
+(`SessionStore::Other`), the absent principal resolves to `Unlocated`, not
+`Unreadable`: it fails closed the same way, but it asserts no corruption
+about a field that was never written, and `sessions health` counts the two
+apart off the variant, since they want different fixes.
 
 **All three axes degrade fail-closed, not to their defaults.** `Profile`
 and `SessionRecording` ride the same record, and CLAUDE.md's wire-format
@@ -1120,7 +1130,10 @@ means §9.2's two snapshots: the rendered bodies and the security snapshot.
    requests and security snapshots identical, every existing test green,
    no `Deny` able to originate under a guest principal, a guest-labelled
    session refused memory writes and spoken confirmations, an
-   Owner × Persona × Incognito combination refused memory writes, and the
+   Owner × Persona × Incognito combination refused memory writes, an
+   Owner × Assistant × Kept session refused them too (vacuous today, since
+   no writer exists for the assistant, which is why it is asserted while
+   that is still true), and the
    corpus veto measured over synthetic metas. Guest × Seat × Sealed and
    Owner × Persona × Kept and Owner × Assistant × Incognito are refused
    corpus entry and appraisal, Owner × Assistant × Kept is admitted, and `Scan::admits`' kind filter is asserted to still do its
@@ -1321,4 +1334,15 @@ Slack; a change to any config or store format (E3).
   on its own merits. A `Frontdoor` arm in `Scan::admits` is the one-line
   interim that can land today. The move and its interim are the owner's
   call; whether to fix it is not open.
+- **O6 Is every owner authentication one principal?** `Owner` is
+  reached by more than one authenticated human where an authentication
+  admits a list: the Slack binding's `owners`, and a tailnet login policy
+  that admits more than one person. §2 compares an owner by variant only,
+  so they resume each other's sessions, as today. The owner can rule that
+  they are one principal, with the shared `sessions/` and cross-door
+  resume as the reason, or that the authenticated subject is compared, in
+  which case the TUI's local user and each listed Slack user become
+  distinct owners and cross-door resume needs a mapping between them. The
+  proof keeps the subject either way, so the ruling is a comparison, not
+  a format change.
 - **How long a step is lived with** before its old path is deleted (§9.3).
