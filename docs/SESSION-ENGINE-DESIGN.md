@@ -9,7 +9,7 @@ behaviour or breaking setup, because that is the risk the owner named (E3).
 
 PERSONA-SERVING-DESIGN.md (PR #724) is the first new door built on this
 engine: a HyperStudy seat is the `Seat` profile behind the HyperStudy
-door. This document depends on it, citing S1–S10 and several sections
+door. This document depends on it, citing S2–S12 and several sections
 from there, so #724 lands first and this one after it. That document stays the door's specification, and this one does not
 restate it.
 
@@ -1050,7 +1050,16 @@ behaviour visible before it moves.
      stops writing it renders identically while a trigger fires on top of
      a live run instead of skipping, `mecha stop` stops nothing, and
      `system/measure.rs` reads zero runs in flight. One fixture starts a
-     marked run, stops it by its file, and reads the marker gone. A host that keeps the
+     marked run, stops it by its file, and reads the marker gone. Its
+     sibling is **the permit seat** (`permit.rs`): whether a run took a
+     seat and on what attendedness. `mecha tasks work` takes one for the
+     life of the run only when unattended, since an extra concurrent run
+     costs every turn on the box latency, and an attended run taking one
+     would make a terminal's own run refusable. It moves in step 8, and a
+     door that drops the seat or takes one on the attended path renders
+     identically while the background pool vanishes or the owner's run is
+     refused. Step 8's fixture runs one attended and one unattended `tasks
+     work` and reads the seat taken only for the second. A host that keeps the
      taint right in memory but stops appending it renders and snapshots
      identically, then launders the taint on the next resume. A lost
      `RunStats` leaves every surface answering while the corpus stops
