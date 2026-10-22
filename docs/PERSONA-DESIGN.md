@@ -1746,7 +1746,8 @@ eventual design has to resolve, so it is not rediscovered. *Designed
 option's isolated-home pattern, kept on this box rather than a separate one. Its rulings supersede part of the prerequisite list here: age
 handling, consent, disclosure and what an institution requires are the
 experimenter's (its S2), seats are recorded in full (its S8), and a seat is
-prompted by the study, taking only a persona's voice (its S10) — so
+prompted by the study, taking only a persona's voice and picture (its S10,
+S12) — so
 no persona's character, romantic or otherwise, reaches a participant — and
 the crisis check is forced on in every seat (its §7).*
 

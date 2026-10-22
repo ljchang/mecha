@@ -1,34 +1,44 @@
 # Serving to others: mecha personas as HyperStudy agents
 
-*2026-10-19. Design, not built.* How a mecha persona takes part in a
+*2026-10-19; transport and persona export revised 2026-10-22 (S11, S12).
+Design, not built.* How a mecha persona takes part in a
 HyperStudy experiment — reading what the study shows, talking by text and
 voice, and acting in the study (a rating, a chat line; advancing the screen
 is not an agent capability in HyperStudy yet) — for people who
-are not the owner, without a public listener on this box and without anything of
-the owner's in reach of the conversation. PERSONA-DESIGN §14 deferred
+are not the owner, without anything of the owner's in reach of the
+conversation. PERSONA-DESIGN §14 deferred
 serving and listed what it would need; this is the design it asked for.
 
-The wire contract is HyperStudy's, not this document's: its
-`dev_docs/VOICE_AGENTS_DESIGN.md` defines the HyperStudy Realtime Profile
-(HRP) — a pinned subset of OpenAI's Realtime API with a conformance suite —
-and the `accept` transport mecha uses. This document decides only what mecha
-builds against it, and points there rather than restating it, because two
-copies of a protocol drift into disagreeing.
+The wire contract is HyperStudy's, not this document's: the **Agent Adapter
+Spec**, published at `docs.hyperstudy.io/developers/agent-adapters/` and
+generated from HyperStudy's source, one JSON file per version
+(`agent-spec/<version>/agent-spec.json`). It defines two adapter kinds, and
+mecha serves both: a **model endpoint** for text agents (OpenAI-compatible
+Chat Completions) and a **voice engine** speaking the HyperStudy Realtime
+Profile (HRP), a pinned subset of OpenAI's Realtime API with a conformance
+suite. In both, HyperStudy connects to the adapter. This document is written
+against spec **0.2.0** and conformance suite **6**; it decides only what mecha
+builds against them, and points there rather than restating them, because
+two copies of a protocol drift into disagreeing. HyperStudy's
+`dev_docs/VOICE_AGENTS_DESIGN.md` is the design behind the spec, and where
+the two differ the published spec is what HyperStudy runs.
 
 ## 0. Rulings
 
 | # | Ruling | By | Date |
 |---|---|---|---|
-| S1 | **mecha connects to HyperStudy directly.** No `hyperstudy-agent` in the path: it publishes a local server through a public tunnel, which is the inbound door this design exists to avoid, and an outbound mode added there would be one more process between two ends mecha already owns. | owner | 2026-10-19 |
+| S1 | ~~**mecha connects to HyperStudy directly**~~, dialing out over HyperStudy's `accept` transport. *Superseded by S11:* `accept` is HyperStudy's Phase 3, unbuilt, and its published spec has HyperStudy connect to the adapter. What survives: no `hyperstudy-agent` in the path — mecha serves the contract itself. | owner | 2026-10-19 |
 | S2 | **Study policy is the experimenter's.** Disclosure, concealment, consent, age and institutional review belong to whoever runs the study. mecha builds infrastructure: it provides mechanisms (§7) and takes no position on how a study uses them. | owner | 2026-10-19 |
 | S3 | **Personas only, for now; the owner's live mecha is never served.** A seat runs a persona from a sealed guest home (§3). A general assistant may come later, and when it does it is a sandboxed instance launched for the purpose — never the owner's running mecha, its stores or its main chat (§1). | owner | 2026-10-19 |
 | S4 | **Engine-owned turn-taking for one human and one agent.** The engine decides when a turn ends and when it is interrupted (HRP engine mode); platform mode, for two or more humans, is a later phase on both sides. | owner, via the HyperStudy session | 2026-10-17 |
 | S5 | **What a seat does:** reads text and images the study presents, chats by text and by voice, and takes the study's actions — answering on-screen questions and ratings. **No image generation** for now (§4a). | owner | 2026-10-19 |
 | S6 | **A feature of its own,** off until the owner turns it on in setup (§6). | owner | 2026-10-19 |
-| S7 | **mecha mints the token;** the owner pastes it into HyperStudy (§5.1). | owner | 2026-10-19 |
+| S7 | **mecha mints the key;** the owner pastes it into HyperStudy (§5.1). Since S11 it is a key HyperStudy presents to mecha, naming the personas it serves. | owner | 2026-10-19 |
 | S8 | **A seat is recorded in full.** The point of a local model is that what it did can be investigated afterwards: transcripts, directions and the voice journal are kept as an owner's call's are, not silenced (§3). | owner | 2026-10-19 |
 | S9 | **`max_seats` caps concurrent seats,** so studies cannot slow every conversation on the box, the owner's included (§5). | owner | 2026-10-19 |
-| S10 | **The system prompt is the study's.** A seat is prompted with what HyperStudy sends as its instructions and nothing of the owner's persona text — no `BASE`, no card, no `DISCLOSED`, no `SINCERE`; the persona a seat names contributes its voice (§3). | owner | 2026-10-19 |
+| S10 | **The system prompt is the study's.** A seat is prompted with what HyperStudy sends as its instructions and nothing of the owner's persona text — no `BASE`, no card, no `DISCLOSED`, no `SINCERE`; the persona a seat names contributes its voice (§3) and, since S12, its picture. | owner | 2026-10-19 |
+| S11 | **HyperStudy connects to mecha,** as its published adapter spec has it: an API is registered in HyperStudy and assigned to an agent persona, and HyperStudy calls it — the model endpoint for text, an HRP engine URL for voice. mecha mints the key, and a key names the personas it serves (S7, §5.1). That puts a public address on this box (§5.1); what answers it is a confined listener that holds nothing of the owner's (§2). | owner | 2026-10-22 |
+| S12 | **The persona's voice and picture come from mecha,** exported into HyperStudy's persona (§5.2). For now mecha is their only source; whether HyperStudy's users may edit them there is decided later. The prompt stays the study's (S10). | owner | 2026-10-22 |
 
 ## 1. Why no existing door fits
 
@@ -79,39 +89,70 @@ running mecha never can.
 ## 2. The shape
 
 ```
- HyperStudy backend                         this box (dials out only)
- ──────────────────                         ───────────────────────────────────────
- control socket  ◄──────── wss, held open ── mecha-hyperstudy  (transport crate)
-   hs.session.offer ─────────────────────►     │ offer: origin pin, typed reject
-   hs.session.reject ◄──────────────────────   ▼
-                                            mecha-cli/src/hyperstudy/  (wiring)
-                                               │ admit? build guest home, start guest facade
-                                               ▼
- session socket  ◄──────── wss, per seat ─── mecha-hyperstudy: frames validated here
-   (single-use token, 60 s)                    │ text seat: the wiring itself
-   text · images · PCM16 24 kHz                │ voice seat: loopback relay to the worker's
-                                               │ HRP transport · Silero · SmartTurn · Parakeet · Breeze
-                                               ▼
- LiveKit room ◄─► HyperStudy's voice bridge  guest facade (own process, own home, loopback)
-                                               the persona's loop, untrusted interlocutor
+ HyperStudy backend (the caller)            this box
+ ───────────────────────────────            ─────────────────────────────────────────────
+ text agent:  POST /v1/chat/completions ──┐
+ voice agent: GET  /v1/realtime (wss) ────┤  https://<machine>.ts.net:10000
+   Authorization: Bearer mhs_…            │  Tailscale Funnel, on a port of its own,
+                                          │  never one that serves the owner's page
+                                          ▼
+                              mecha-hyperstudy  (the listener: its own process, bwrap,
+                                no network; key first, then bounds, then closed types;
+                                listens on hyperstudy/run/public.sock)
+                                          │ listener.sock: a closed message set
+                                          ▼
+                              mecha-cli/src/hyperstudy/  (the wiring, in the owner's home)
+                                keys · admission · seat records · crisis sensor · export
+                                  │                                     │
+                    text decision (§2a): one model         voice seat: a guest facade (§3)
+                    call through the router; nothing        and the worker's HRP transport:
+                    runs here, the tool call goes back      Silero · SmartTurn · Parakeet · Breeze
+                                          │
+ LiveKit room ◄─► HyperStudy's voice bridge: the only room presence; mecha never joins
 ```
 
 Four pieces, each with one job:
 
-1. **`mecha-hyperstudy`** — a transport crate, the shape `mecha-slack`
-   already has: it dials out (Slack's Socket Mode there, HyperStudy's control
-   socket here), so no port on this machine is ever exposed, and it has **no
-   `mecha-core` dependency**, checkable in `Cargo.toml`. It holds the control
-   socket, reconnects with backoff, parses offers, refuses an offer whose
-   `sessionUrl` is not on the control socket's origin (HyperStudy §4.1), and
-   sends typed rejections. It also dials and holds every **session** socket,
-   validating each frame against HRP's schema before anything else sees it,
-   so the only code on this box that parses bytes from the internet is this
-   crate. It knows nothing about personas or runs.
-2. **`mecha-cli/src/hyperstudy/`** — the wiring that does know: admission
-   (§5), building the guest home (§3), starting the guest facade, and the
-   seat itself — a text seat speaks HRP with text-only output directly, a
-   voice seat is handed to the worker.
+1. **`mecha-hyperstudy`** — the listener, a crate and a small binary with
+   **no `mecha-core` dependency**, checkable in `Cargo.toml`: the shape
+   `mecha-slack` already has, inbound here where Slack's Socket Mode is
+   outbound. It serves the spec's three routes and nothing else:
+   `GET /v1/models`, `POST /v1/chat/completions`, and `GET /v1/realtime`
+   upgraded to a WebSocket. It checks the bearer key before it reads a
+   body, so a request without a valid key gets a bare 401 whatever its
+   path, and nothing at the address says which personas exist or that
+   mecha is behind it. Then it bounds what it reads: header and body size,
+   images per request, a WebSocket frame's size (from the spec's 2000 ms
+   cap on one audio delta), and connections per key. Then it parses what
+   remains into closed types: the chat-completions request shape the spec
+   documents, and HRP's client events. An unknown event type, an unknown
+   field in a closed place, or a value out of bounds is refused with a
+   typed error, never passed on. It is the only code on this box that
+   parses bytes from the internet, and it knows nothing about personas or
+   runs.
+
+   **It runs as its own confined process.** Under S1 the crate would have
+   parsed bytes only from an origin mecha chose to dial. Under S11 anyone
+   who learns the address can send bytes before any key is checked. So the
+   parser runs where a bug in it reaches nothing. The wiring launches it
+   under bwrap with `--unshare-net`, its environment cleared. No part of
+   the owner's home is bound into it except its own run directory and a
+   read-only file of key *hashes* (§5.1). It listens on a pathname
+   socket, `hyperstudy/run/public.sock`, which `tailscale serve` proxies
+   to (it takes a `unix:` target), and it reaches the wiring only through
+   `hyperstudy/run/listener.sock`: the same pathname-socket crossing §3
+   uses for a seat's facade. With no network namespace it cannot reach
+   the router, the owner's page on loopback, the LAN or the tailnet. A
+   compromise of it is a process that talks to tailscaled's proxy and to
+   one socket whose every message the wiring checks again. Whether Funnel
+   carries the WebSocket upgrade through to a `unix:` target is checked on
+   the installed tailscale in step 2, not assumed. A box where the
+   confinement cannot run serves nothing.
+2. **`mecha-cli/src/hyperstudy/`** — the wiring that does know: the keys
+   and the personas each one names (§5.1), admission (§5), the seat records
+   (§3), the crisis sensor (§7), the export (§5.2), and the two kinds of
+   seat. It answers a text decision itself (§2a) and hands a voice seat to
+   a guest facade and the worker.
 3. **The worker's HRP transport** — a new transport in
    `mecha-core/units/voice/worker.py`, beside `SmallWebRTCTransport` and
    `UplinkTransport`. Below `run_bot` the pipeline is transport-agnostic;
@@ -119,27 +160,105 @@ Four pieces, each with one job:
    subclasses `SmallWebRTCTransport`) and are built at one site inside the
    WebRTC runner's entry, so this is the first non-WebRTC transport: pipecat's
    transport surface implemented from scratch, plus its own entrypoint and
-   route beside the offer endpoint. It plays the
-   *engine's* side of the Realtime protocol over a loopback relay from the
-   wiring, never over the internet: the owner's worker is unconfined, holds
-   the owner's environment, and so does
-   not terminate a stranger's socket or parse its frames — the crate does
-   (piece 1). The cost is one loopback hop for audio. Who opens a socket and
-   who serves the protocol are separate choices; that separation is what
-   lets an engine sit behind NAT with no tunnel.
-4. **The guest facade** — the persona's agent loop, served from the guest
-   home on loopback to the seat (§3, §4, §4a).
+   route beside the offer endpoint. It plays the *engine's* side of the
+   Realtime protocol over a loopback relay from the wiring, never over the
+   internet: the owner's worker is unconfined and holds the owner's
+   environment, so it does not terminate a stranger's socket or parse its
+   frames. The listener does (piece 1). The cost is one loopback hop for
+   audio.
+4. **The guest facade** — a voice seat's agent loop, served from the guest
+   home over a Unix socket (§3, §4, §4a). A text decision has none: it runs
+   no tool and holds no conversation between calls (§2a).
 
-The judgments — is the origin right, may this persona be served, is the box
-free — are made in Rust before a seat opens. The worker stays what its
+The judgments are made in Rust before a seat opens: is the key valid,
+which persona does it bind, is the box free. The worker stays what its
 module doc says it is: "deliberately dumb".
+
+**The public address.** Funnel publishes one HTTPS port of the machine's
+`*.ts.net` name, and it allows three: 443, 8443 and 10000. On this box 443
+and 8443 already serve the owner's page to the tailnet, and Funnel on
+either would publish that page to the internet. So the listener takes
+**10000**. The wiring reads the machine's serve configuration
+(`tailscale serve status --json`) at start and before it admits a seat.
+Funnel on for any port whose handler is not `public.sock` stops the wiring
+with the reason, a silently-degrading guard in the sandbox preflight's
+shape. Funnel itself is a tailnet setting, the `funnel` node attribute in
+the tailnet policy, which the owner turns on once and setup names but
+cannot grant (§6). `cloudflared` can front the same `unix:` socket, and
+nothing behind the listener would know the difference; Funnel is the one
+built, because the box already runs tailscaled.
+
+## 2a. A text decision
+
+HyperStudy's model endpoint is stateless by design. Each call sends the
+whole situation:
+
+- a system message with the agent's persona and instructions;
+- a user message describing the screen, with the recent chat and any
+  images on it as image parts;
+- the tools usable right now: `send_chat`, `wait`, and `submit_response`
+  with that question's value schema.
+
+It expects a tool call back. HyperStudy keeps the agent's state, carries
+out the tool call itself and calls again on the next event, and no tool
+result ever comes back to the endpoint. A failed or late request is a
+failed decision, never retried, inside a 60 s default limit the
+experimenter can set from 10 to 300 s.
+
+So a text seat is not a conversation held here, and needs none of a voice
+seat's machinery: no guest facade, no fold, no ClientTools. One decision is
+this:
+
+- **One model call, made by the wiring.** The listener's parsed request is
+  turned into mecha's own `Message`s and sent through the router entry for
+  the persona the request's `model` names, one of those its key names,
+  with that entry's model pinned (`follow_loaded = false`, as §3 sets for
+  a voice seat). The request's
+  `model` field never reaches the router. On the router that field
+  *selects* a preset, and a stranger's request must not load one.
+- **Nothing runs here.** The declared tools go to the model as declarations
+  only, and the model's tool call goes back to HyperStudy as the response.
+  mecha executes nothing, so a text decision reaches nothing but its own
+  response, the party every reply already reaches (§1). The interlock has
+  no send to judge, and the catalogue's `Blind` labels (§4a) are not
+  needed.
+- **The system message is the study's, verbatim (S10),** under the bound
+  and with the clock head note of §3. mecha adds no persona text. The
+  conversation is armed `untrusted` at construction, as a voice seat's is
+  (§3), so the record says so.
+- **Recorded in full (S8).** Each decision is appended to its seat's
+  transcript under `hyperstudy/seats/<seat>/`: the request as the model
+  saw it, the response, and the model `served_props` reported. No guest
+  home is built for it, since nothing runs: its `home/` holds the
+  transcript alone (§3).
+- **A seat is a HyperStudy run.** The seat is named by an opaque per-run
+  identifier HyperStudy sends. Spec 0.2.0 sends none to a model endpoint
+  (its voice engine gets one, as `OpenAI-Safety-Identifier`), so it is on
+  HyperStudy's list (§8): the same opaque value, in the request's
+  `safety_identifier`. Until it exists, every decision is a seat of its
+  own. That is the honest reading, and it is also why no real participant
+  meets a text seat before the identifier exists: the crisis cooldown (§7)
+  and the per-seat budgets (§4a) are per seat, and a seat of one decision
+  has neither.
+- **The crisis sensor screens what is new.** Each request repeats the
+  recent chat, so the wiring screens only the participant text it has not
+  already screened for that seat. On a trip it answers with a `send_chat`
+  carrying the handover (§7) in place of the model's response, and
+  answers `wait` until the cooldown ends. This also needs the per-run
+  identifier.
+- **A decision that cannot start in time is refused at once.** When the
+  router has no slot within a share of the request's limit, the answer is
+  `capacity` (§5), not a timeout, so HyperStudy's record says why.
 
 ## 3. The sealed guest home
 
 The isolated-home pattern of PERSONA-DESIGN §14's third option, kept on
 this box rather than a separate one, and built with `trial_env`'s: an
 isolated home per seat, assembled from an explicit list, never from the
-operator's home.
+operator's home. The guest home is a voice seat's. A text decision runs
+no loop and keeps nothing between calls (§2a), so a text seat's directory
+holds only its transcript and manifest, and what this section says of the
+interlocutor, the prompt and where a seat is kept holds for it as well.
 
 **The seat directory** (`hyperstudy/seats/<seat>/`) holds four things side
 by side, none inside another: `home/` (the guest home, `MECHA_HOME`),
@@ -248,15 +367,15 @@ seat's audio runs through the owner's running voice worker — the one worker
 on the box, its journal the owner's (S8) — which is part of why a live owner
 call makes a voice seat `busy` (§5): one worker's state, not only GPU room.
 The worker sees a seat only through the wiring's loopback relay of frames
-the crate has already validated (§2); it never holds a socket to
-HyperStudy.
+the listener has already validated (§2); it never holds a socket that
+HyperStudy opened.
 
 **Confinement: bwrap with no network, and Unix sockets as the only way
 out.** Nothing confines a whole mecha process today — `shell`, MCP servers
 and two document helpers are wrapped, and experiment trials, the closest
 precedent, get a cleared environment and their own home but no jail. The
-guest facade is the first, through `Sandbox::wrap_argv_with_env` (built for
-long-lived MCP children). The seat directory is the bind root, because
+listener (§2) and the guest facade are the first, both through
+`Sandbox::wrap_argv_with_env` (built for long-lived MCP children). The seat directory is the bind root, because
 bwrap's bound directory must include `run/` and its sockets. The path jail
 is narrower: `ToolCtx::resolve`'s root is the `workspace/` inside it.
 `MECHA_HOME` goes in the environment, since bwrap clears it.
@@ -271,7 +390,7 @@ facade runs under `--unshare-net` and reaches the model and its parent
 through those and nothing else. The facade's clients either take a socket
 path (reqwest's `ClientBuilder::unix_socket`, which the locked 0.12.28's
 source shows under `cfg(unix)` with no feature flag; read, not yet
-compiled, so step 2's first act is the compile check that settles it) or keep
+compiled, so step 4's first act is the compile check that settles it) or keep
 their `http://127.0.0.1` URLs through a forwarder on the jail's own `lo`.
 The first is cheap on the worker side and not on the facade's: the
 provider's HTTP clients are built centrally with no socket parameter
@@ -283,27 +402,27 @@ edits, `Config` and `ConfigLayer`) and a placeholder `base_url` such as
 `--unshare-net` namespace, and bwrap execs one child, so it is a second
 in-jail process with its own lifecycle and its own preflight leg, failing
 the seat closed if it is not up. Which one is built is decided on cost measured
-in step 2. Either way `follow_loaded = false` leaves
+in step 4. Either way `follow_loaded = false` leaves
 `router::followed_bases` empty, so a confined facade sends no `/props`
 probe into a namespace that cannot answer it. The result is a seat with no route to any
 host, so egress no longer rests on the tool catalogue alone (§4a).
 
 **The bridge runs both ways, and every seat needs the other way.** Those
 two sockets are the facade's way *out*; every seat also needs a way *in*,
-because the facade is served, not a client. In a text seat its client is
-the wiring, which speaks HRP itself (§2) and drives the facade over HTTP —
-reqwest's `unix_socket` again, the same check step 2 makes first. In a
-voice seat the worker is a second client, unconfined and the owner's:
+because the facade is served, not a client. One client is the wiring,
+which relays the session's context, participant turns and tool results
+to it over HTTP: reqwest's `unix_socket` again, the same check step 4
+makes first. The worker is a second client, unconfined and the owner's:
 completions go to `FACADE_URL` (`MECHA_VOICE_LLM`), and the affect and
 direction reads to `AFFECT_URL` and `DIRECT_URL`, derived from it at
 import. A facade listening on loopback inside `--unshare-net` listens on
-the jail's own `lo`, which the host cannot reach, so without a third leg no
-seat's turn has a route — a text seat's no more than a voice seat's reply,
-affect read or direction call. The third leg is the same pathname trick
-reversed: the facade listens on `seat/run/facade.sock`, created inside the
-bound seat directory by the facade itself, and the wiring (and in a voice
-seat the worker) connects to it from outside. It lands with the confined
-launch in step 2, not with voice in step 4. The worker's side is real work, not a URL change. Its `httpx` (0.28.1 in the worker's
+the jail's own `lo`, which the host cannot reach, so without a third leg
+nothing reaches the seat: neither the wiring's relay, nor the worker's
+reply, affect read or direction call. The third leg is the same pathname
+trick reversed: the facade listens on `seat/run/facade.sock`, created
+inside the bound seat directory by the facade itself, and the wiring and
+the worker connect to it from outside. It lands with the confined
+launch in step 4, not with voice in step 6. The worker's side is real work, not a URL change. Its `httpx` (0.28.1 in the worker's
 environment) takes a socket through `AsyncHTTPTransport(uds=…)`, which
 covers the affect and direction clients. Completions go through Pipecat's
 `OpenAILLMService`, whose `create_client` (pipecat-ai 1.7.0,
@@ -339,7 +458,7 @@ go only by port — `8080` would also allow
 the owner's processes' environments included. Docker's `--network none`
 needs the same socket bridge plus an image and a daemon. Filesystem-only
 bwrap with the host network is the cheaper first step if the bridge is not
-ready; whether step 2 ships the bridge or that interim is owed (§9), and
+ready; whether step 4 ships the bridge or that interim is owed (§9), and
 the preflight of every leg belongs to the bridge. The interim needs no
 `facade.sock`: with the host network the facade's loopback is the host's,
 so the worker's URLs reach it unchanged — the third leg is a cost of the
@@ -364,16 +483,18 @@ falls through (the silently-degrading guard).
 | System prompt | `BASE`, the card, plus `DISCLOSED` while `disclosure` is on | HyperStudy's `instructions`, verbatim, and nothing of mecha's persona text (S10), `SINCERE` among it — the persona prompt's one unconditional line (a sincere "am I talking to a person?" gets the truth) is left out because whether an agent answers that truthfully is a disclosure decision, the study's by S2; a study that wants the floor writes it into its own prompt |
 | Persona memory | written and recalled | neither: no writer, no recall over owner stores |
 | Confirmations, outbox | spoken yes can release | none exist: no outbox route, no `parse_answer` path |
-| Approver | the owner's | allows **exactly the ClientTool catalogue** at `approve` — the loop sends every tool that is not `read_only` there, and the answer tools and `send_chat` genuinely act — and refuses every other tool there, and every other door that does not delegate into it (`escalate`, `escalate_access` through it, and `consult` by its own fail-closed default). `permit` delegates to `approve`, so it can allow nothing `approve` would not — and a seat writes no `[approval]` table for it to fire on. Catalogue membership, checked in mecha's code, is what makes a tool runnable, the same place §4a earns `Blind`; no catalogue tool claims `read_only`. What holds a future door is the trait's defaults, which fail closed (`escalate`, `consult` → `Blocked`) or delegate (`escalate_access` → `escalate`, `permit` → `approve`); so the guest approver overrides `approve` and `escalate` and nothing that delegates. Every refusal it returns is `Decision::Blocked`, never `Deny`: `Deny` renders as the owner's correction ("Denied by the user: "), which the learning miner reads from the result string and compaction preserves across a cut, and no human speaks in a seat. A test listing today's doors cannot catch a new one with a default body — exhaustiveness the compiler checks would need a door enum on `Approver`, named in §8 step 2 as a choice, not assumed |
+| Approver | the owner's | allows **exactly the ClientTool catalogue** at `approve` — the loop sends every tool that is not `read_only` there, and the answer tools and `send_chat` genuinely act — and refuses every other tool there, and every other door that does not delegate into it (`escalate`, `escalate_access` through it, and `consult` by its own fail-closed default). `permit` delegates to `approve`, so it can allow nothing `approve` would not — and a seat writes no `[approval]` table for it to fire on. Catalogue membership, checked in mecha's code, is what makes a tool runnable, the same place §4a earns `Blind`; no catalogue tool claims `read_only`. What holds a future door is the trait's defaults, which fail closed (`escalate`, `consult` → `Blocked`) or delegate (`escalate_access` → `escalate`, `permit` → `approve`); so the guest approver overrides `approve` and `escalate` and nothing that delegates. Every refusal it returns is `Decision::Blocked`, never `Deny`: `Deny` renders as the owner's correction ("Denied by the user: "), which the learning miner reads from the result string and compaction preserves across a cut, and no human speaks in a seat. A test listing today's doors cannot catch a new one with a default body — exhaustiveness the compiler checks would need a door enum on `Approver`, named in §8 step 4 as a choice, not assumed |
 | Grants | `[[grant]]` and `/grant` | off by type, as an incognito chat's are |
-| Tools | the persona's eligible set | HyperStudy's declared tools only, as ClientTools — mecha registry tools whose call goes out over the session and whose result HyperStudy sends back (§4a); none of mecha's own |
+| Tools | the persona's eligible set | HyperStudy's declared tools only, as ClientTools — mecha registry tools whose call goes out over the session and whose result HyperStudy sends back (§4a); none of mecha's own. A text decision passes the request's declared tools to the model as declarations and runs none (§2a) |
 | Transcript | the chat's session file | kept in full (S8): the seat's session file, with every record a run writes — tool calls, ClientTool results, context items, spoken directions — and the seat's guest home is left in place when it closes |
 | Voice worker logging | an ordinary call's journal | the same: a seat is an ordinary call to the worker, never incognito |
 
 **Where a seat is kept.** The guest home is built under the owner's home at
 `hyperstudy/seats/<seat>/` and left there when the seat closes — the
-experiment store's pattern, a trial's home kept as its record. The seat's
-manifest names the study's session, the persona whose voice it used, the
+experiment store's pattern, a trial's home kept as its record. A text
+seat's transcript lands at the same depth, `home/sessions/`, in a home that
+holds nothing else, so every reader and the guard below see one layout.
+The seat's manifest names the study's session, the persona whose voice it used, the
 model `served_props` reported, and the HRP settings it ran under, so a seat
 can be read back the way a trial is. Seat transcripts stay out of the
 owner's run corpus and reflection mining by a recorded fact, not only by
@@ -403,7 +524,10 @@ the depth a seat's sessions actually land at, and anything else the seat
 home writes conversation text into joins it. Retention of these records is the
 owner's (S2 hands participants' consent to the study); nothing here deletes
 them on a clock. mecha declares to HyperStudy that the engine keeps
-transcripts (`hs.retention`), so a study can tell its participants.
+transcripts through `hs.retention` once HyperStudy reads it, so a study can
+tell its participants. That is an HRP extension in HyperStudy's design, not
+in spec 0.2.0, and a voice session's alone; a model endpoint has no channel
+for it, so it is on HyperStudy's list (§8).
 
 **The study's prompt is the whole prompt (S10).** HyperStudy builds the
 agent's identity, objective and per-state guidance into `instructions`, and
@@ -419,9 +543,16 @@ the one guarantee in the design that a remote party's discipline keeps,
 not mecha's code — a study that breaks it puts a participant's words in
 the system prompt silently. The blast radius is bounded by everything
 mecha does enforce (no owner stores, no mecha tools, a crisis sensor no
-prompt can turn off), but the contract is HyperStudy's to keep. This is HyperStudy §4.4's
-`persona: "hyperstudy"`, the ownership it builds today. Each replacement
-re-pays the cached prefix once, which is the study's cost to choose.
+prompt can turn off), but the contract is HyperStudy's to keep. A text
+decision's system message is the same slot under the same contract: the
+spec says participant text reaches a model endpoint wrapped in tags, inside
+the user message. This is the `persona: "hyperstudy"` ownership of
+HyperStudy's design (its §4.4), the one it builds today, with the one
+difference S12 makes: the voice is the engine's (§5.2). That design
+describes mecha as a `connected` engine that owns its persona (its §6.2);
+under S10 and S11 mecha is neither, and that text is HyperStudy's to change.
+Each replacement re-pays the cached prefix once, which is the study's cost
+to choose.
 
 **`instructions` is bounded, and an oversized one is refused.** The system
 prompt is the one part of a request compaction cannot cut: the loop's only
@@ -453,27 +584,47 @@ the owner's zone, while the system prompt stays the study's byte for byte.
 ## 4. The voice transport
 
 What the HRP transport must do, by protocol area (the events themselves are
-HyperStudy's to define):
+HyperStudy's to define, in the spec's voice engine page):
 
+- **Connection.** HyperStudy opens one WebSocket per run to
+  `wss://<machine>.ts.net:10000/v1/realtime`, with `Authorization: Bearer
+  mhs_…` and `OpenAI-Safety-Identifier: hs-<opaque>`, an opaque per-session
+  label and never a participant's identity. That label names the seat, and
+  a connection without one is refused `policy`. Today HyperStudy dials
+  `openai` only (`realtimeTarget`). Its `custom` provider is planned for its
+  Phase 2 (`voiceConfig.js`) and needs its SSRF guard extended to
+  WebSocket, so it heads HyperStudy's list (§8).
 - **Session.** Accept `session.update`; map `turn_detection` (below);
-  `instructions` to the system prompt (§3); `tools` to ClientTools;
-  `audio.output.voice` accepted only as null (`preset: null`, since the
-  named persona supplies the voice) and refused otherwise; `instructions`
-  over the seat's bound (§3) refused. A field mecha
-  does not support is **refused, not ignored** —
-  HyperStudy's conformance asks for exactly that.
+  `instructions` to the system prompt (§3), and a later `session.update`
+  carrying only `instructions` replaces it; `tools` to ClientTools, declared
+  once, which the spec now promises. `audio.output.voice` is accepted only
+  as null (`preset: null`, since the persona's voice is the engine's, S12)
+  and refused otherwise; HyperStudy already sends null for a persona with
+  no preset (`voiceAgentSession.js`), which is what the export sets (§5.2).
+  `audio.output.speed` is accepted only when absent, which is how
+  HyperStudy sends a persona with no speed (`sessionUpdate` omits it), and
+  the export sets none: the rate is the persona's `voice_speed`.
+  `instructions` over the seat's bound (§3) are refused. `transcription` is accepted only as null: mecha transcribes
+  every committed turn with Parakeet anyway, and emits
+  `conversation.item.input_audio_transcription.completed` for each turn
+  whatever the field says, since HyperStudy's conversation record reads it.
+  A transcription model by name is refused, since it is not one mecha
+  runs, and HyperStudy's list asks it to send null to an engine that
+  transcribes on its own. A field mecha does not support is **refused, not
+  ignored** — HyperStudy's conformance asks for exactly that.
 - **Silent forced answers.** HyperStudy asks an on-screen question with a
-  `response.create` that is text-only and forces one named tool
-  (`tool_choice: {type: "function", name}`); its suite's `silent_tool`
-  check fails an engine that speaks or skips the call. So that response
-  produces no audio, and the forcing must not change the tool list — the
-  cached prefix (§4a) — whether through llama-server's `tool_choice` for a
-  named function, checked on the installed build rather than assumed, or
-  `required` with any other name refused.
+  `response.create` whose `output_modalities` is `["text"]` and which forces
+  one named tool (`tool_choice: {type: "function", name}`); its suite's
+  `silent_tool` check fails an engine that speaks or skips the call. So that
+  response produces no audio, and the forcing must not change the tool
+  list — the cached prefix (§4a) — whether through llama-server's
+  `tool_choice` for a named function, checked on the installed build rather
+  than assumed, or `required` with any other name refused.
 - **Audio in.** `input_audio_buffer.append` (PCM16, 24 kHz, mono) into the
   existing Silero VAD → SmartTurn v3 → Parakeet chain.
 - **Turns, engine mode (S4).** Two modes, both certified by HyperStudy's
-  suite (version 2 runs every turn-dependent check once per mode):
+  suite (version 6 runs every turn-dependent check once per mode, at
+  `server_vad` with 500 ms of silence and `semantic_vad` at `auto`):
   - `server_vad` — `speech_started` on the VAD edge, the reply in flight
     self-cancelled when `interrupt_response` is set, `speech_stopped` at the
     VAD stop, `committed` at end of turn. `threshold` maps to Silero
@@ -483,25 +634,66 @@ HyperStudy's to define):
   This differs from the owner's calls on purpose: there, a turn starts on a
   transcript (`TranscriptionUserTurnStartStrategy(use_interim=False)`); here
   the protocol pins the VAD edge.
+- **The listening pause.** When the study moves to a screen without the
+  video chat, HyperStudy sends a `session.update` with `turn_detection:
+  null`, then `input_audio_buffer.commit`. Switching detection off ends the
+  turn in progress. The commit keeps what was said so far as that same
+  participant turn, transcribed and recorded, with no reply: a turn the
+  facade parks without a run (§4a's context endpoint). No audio arrives
+  while detection is off. When it comes back on, the next speech is a new
+  turn and the audio clock restarts. `audio_start_ms` counts from the
+  moment detection came back, with the first appended audio at 0. In the
+  worker that edge resets Silero's and SmartTurn's state and the
+  transport's sample counter. The suite checks it twice, mid-speech
+  (`listening_pause`) and in silence (`listening_pause_silent`).
 - **Audio out.** Breeze, streaming, resampled to 24 kHz as
-  `output_audio.delta`; the director runs as in any call, and its
-  directions are recorded in the seat's transcript (S8).
+  `response.output_audio.delta`, each delta at most 2000 ms of audio (the
+  spec ends the session on a larger one), with the spoken text as
+  `response.output_audio_transcript`. The director runs as in any call, and
+  its directions are recorded in the seat's transcript (S8).
 - **Truncate.** `conversation.item.truncate` cuts the reply's text at the
   heard point proportionally to audio played: grade `approximate`.
+- **Context items.** The spec's `[context]` events arrive as user text
+  items, each holding one JSON object, with images attached once per
+  session as `input_image` data URLs: `participants`, `screen`, `question`,
+  `typed` (chat a participant typed, quoted), `timer`,
+  `experimenter_message`, `revealed`, `paused` and `resumed`. All are
+  untrusted, like speech, and all fold through §4a. A `paused` seat is cut
+  off by HyperStudy until `resumed`, so mecha treats both as context and
+  enforces nothing of its own between them.
+
+**Conformance, suite 6.** HyperStudy starts a voice agent only on an engine
+and model that have a stored, passing report at the current suite version.
+So every suite bump is a re-run against this box. The suite is HyperStudy's
+to run; it is not yet packaged for engine authors. Two of its demands bear
+on what is resident here:
+
+- `image_context` asks the engine, silently, which colour fills a solid red
+  image, so the router's model must see images (`vision` in the seat's
+  config, §3).
+- Its thresholds are 1000 ms to onset, 5000 ms to the start of a response,
+  and 1500 ms from cancel to done. On a cascade these are this box's to
+  meet, and §9's latency item measures them before a study depends on them.
+
+The report names a model. The seat's pinned model and the router hold (§5)
+are what keep that name true for a seat's whole session.
 
 ## 4a. What a seat can do (S5)
 
-A seat is mecha's agent loop with no tools of its own: everything it reads
-and everything it does goes through the session HyperStudy opened, so the
-only way out of a seat is the session it answers. The sealed home keeps the
+This section is a voice seat's. A text decision runs no tool and holds no
+conversation (§2a): its one action is the tool call it returns, which
+HyperStudy carries out. A voice seat is mecha's agent loop with no tools of
+its own: everything it reads and everything it does goes through the
+session HyperStudy opened, so the only way out of a seat is the session it
+answers. The sealed home keeps the
 *owner's* data out; it does not keep the private leg from arming. An image
 arms `private` wherever it sits in a conversation
 (`Taint::arm_for_content`), and with the stranger arming `untrusted` from
 the first word, a seat is fully armed from the moment its first study
 *image* lands. A text-only study can arm `private` too, since
 `arm_for_content` arms it off its stems in user-role text, which a
-participant can type; nothing here assumes a text seat stays unarmed, and
-it costs nothing while every catalogue tool is `Blind`. The image case needs saying at the fold (below), because an image the loop
+participant can type; nothing here assumes a study without images stays
+unarmed, and it costs nothing while every catalogue tool is `Blind`. The image case needs saying at the fold (below), because an image the loop
 did not produce is otherwise counted only from the next run. That is
 correct — the interlock cannot know a study image from the owner's — and it
 makes what a ClientTool declares the question that decides whether a seat
@@ -509,11 +701,11 @@ can act at all.
 
 | Capability | How | Needs from HyperStudy |
 |---|---|---|
-| Talk by text | a text seat: HRP with text-only output, no worker; typed chat in a voice seat arrives the same way | text seats on the accepted socket |
-| Talk by voice | §4 | Phase 3 `accept` |
+| Talk by text | a text agent on HyperStudy's model endpoint, one model call per decision (§2a); typed chat in a voice seat arrives as a `typed` context item and gets its reply by the study's `response.create` | a per-run identifier on model-endpoint requests (§2a) |
+| Talk by voice | §4 | the `custom` realtime provider (its Phase 2), with its SSRF guard extended to WebSocket |
 | Read the study's text | screen text, instructions and typed chat arrive as quoted context items, untrusted like speech | — (sent today as `[context]` items) |
-| Read images | a study image or one a participant shares arrives inline as an image content item and reaches the model as `Block::Image`, capped at the door as every image is; mecha never fetches a URL a session names | images on the session, inline |
-| Act in the study | **ClientTools**: HyperStudy declares its study tools — `send_chat`, and the answer tools for on-screen questions (`answer_choice`, `answer_choices`, `answer_scale`, `answer_ranking`, `answer_text`, `answer_dimensions`); advancing the screen is not an agent capability in HyperStudy yet — the call goes out over the session, `function_call_output` comes back marked `.from_outside()`, a timeout returns `is_error` — so the agent loop never learns where a tool came from. A timeout is the case §4a's restore cannot see: the run did not fail, and the answer may be in the study's data with only its acknowledgement lost. So a timed-out answer tool's `is_error` says the answer may already be recorded and must not be sent again, and the proxy answers any later answer to that same on-screen question "Not run" until the next screen-change context item, in that run and every later one. It is keyed on the question's identifier, which every answer tool's pinned schema carries (§8), the same key HyperStudy dedupes on, and never on the tool: the answer tools are generic by kind, so a guard keyed on `answer_scale` would leave a second scale question on that screen unanswerable with no unlock coming: the participant's next turn is a new run, and the likeliest moment to answer again. So the guard is conversation-scoped state held by the seat's study tools themselves, not run-scoped like `RunPictures` (which shares only its "Not run" shape). It survives a cut by construction, since compaction rewrites the messages and never the registry; `Tool::carried_state` only restates the answered questions in the rebuilt prompt so the model does not retry blind, and step 2's test asserts the refusal itself after a compaction, with the carried block as the secondary check; the tool list never changes, so the cached prefix holds. A timed-out `send_chat` says its line may have been shown. A second answer is a fresh call with a fresh `call_id`, so HyperStudy's backstop (§8) is keyed on the screen's question, not the call | the study tools, declared per session |
+| Read images | a study image or one a participant shares arrives inline as an image content item and reaches the model as `Block::Image`, capped at the door as every image is; mecha never fetches a URL a session names | — (inline since spec 0.2.0, each image once per session) |
+| Act in the study | **ClientTools**: HyperStudy declares its study tools — `send_chat`, and the answer tools for on-screen questions (`answer_choice`, `answer_choices`, `answer_scale`, `answer_ranking`, `answer_text`, `answer_dimensions`); advancing the screen is not an agent capability in HyperStudy yet — the call goes out over the session, `function_call_output` comes back marked `.from_outside()`, a timeout returns `is_error` — so the agent loop never learns where a tool came from. A timeout is the case §4a's restore cannot see: the run did not fail, and the answer may be in the study's data with only its acknowledgement lost. So a timed-out answer tool's `is_error` says the answer may already be recorded and must not be sent again, and the proxy answers any later answer to that same on-screen question "Not run" while that question is current, in that run and every later one. It is keyed on the on-screen question, never on the tool. Spec 0.2.0 gives a question no identifier, in its `question` item or its answer tools, and an answer names no question: it answers the current one. So the key is the `question` context item itself, numbered by the seat as it arrives, and the lock holds while that item is the current question; a second question on the same screen arrives as an item of its own and is answerable. HyperStudy's backstop needs an identifier of its own to key on, which is on its list (§8), and once one exists the guard keys on it instead. Never on the tool, because the answer tools are generic by kind, so a guard keyed on `answer_scale` would leave a second scale question on that screen unanswerable with no unlock coming: the participant's next turn is a new run, and the likeliest moment to answer again. So the guard is conversation-scoped state held by the seat's study tools themselves, not run-scoped like `RunPictures` (which shares only its "Not run" shape). It survives a cut by construction, since compaction rewrites the messages and never the registry; `Tool::carried_state` only restates the answered questions in the rebuilt prompt so the model does not retry blind, and step 4's test asserts the refusal itself after a compaction, with the carried block as the secondary check; the tool list never changes, so the cached prefix holds. A timed-out `send_chat` says its line may have been shown. A second answer is a fresh call with a fresh `call_id`, so HyperStudy's backstop (§8) is keyed on the screen's question, not the call | — (declared once per session, as the spec now pins); a question identifier, for HyperStudy's own backstop |
 
 **Where context lands.** Screen changes, typed chat and images arrive on
 HyperStudy's clock, including while a ClientTool call is in flight — and
@@ -548,7 +740,7 @@ extending the last one's prefix. Four cases:
   *parks* an item in the conversation without starting a run. Today every
   facade POST runs a turn, and a body with no user message is a 400. So
   the seat's facade gains a context endpoint (append, no run), and §8
-  step 2 builds it.
+  step 4 builds it.
 - **It ends on an unsent user message** (context with no reply yet, or a
   participant turn not yet sent; unsent means the host parked it since the
   last run returned, a mark the host keeps, since `Conversation` does not
@@ -570,7 +762,7 @@ extending the last one's prefix. Four cases:
   It never takes the voice host's pop: `voice/mod.rs` pops a plain user
   tail because its front end resends one, which a seat's never does, and
   popping a tool-result message would orphan its `tool_use`, the 400 that
-  pop once wrote into a slot and every resume of it. §8 step 3 tests a
+  pop once wrote into a slot and every resume of it. §8 step 5 tests a
   barge-in mid-tool-round. The seat restores to the **last complete round**, not to the
   snapshot taken before the run. A round whose ClientTool calls already ran
   has had effects outside mecha: a rating written into the study's data, a
@@ -594,7 +786,7 @@ extending the last one's prefix. Four cases:
   and the model sees what it has already done. Changing a message the
   failed request carried costs that one request's prefix tail, and the
   rewrite records it. Nothing will resend it. The restore is a new helper
-  beside `roll_back_failed_turn`, named in step 2. The rolled-back state is
+  beside `roll_back_failed_turn`, named in step 4. The rolled-back state is
   recorded as a rewrite in the seat's transcript (the helper's contract,
   and the transcript is kept in full, S8), followed by a `Record::Taint`
   with no message between, as every failed-turn arm writes today:
@@ -606,7 +798,7 @@ seat closes is recorded as unfolded in the seat's transcript. The
 mid-round half is not free either: the steering queue carries text
 (`queued_input` is a `VecDeque<String>`), and an image context item needs it
 to carry `Block`s. That widening is a core change that touches every
-steering caller, the TUI and web chat included, and §8 step 3 names it.
+steering caller, the TUI and web chat included, and §8 step 5 names it.
 
 **A folded image arms at the fold, not at the next run.** Taint is
 recomputed at run start (`Agent::arm_at_start`, over the messages and the
@@ -654,7 +846,7 @@ guarantees is that nothing it sends goes anywhere else. The private leg a
 seat carries is the study's own material shown back to the study, but the
 send-axis leak guard (`block_sends_after_private`, which refuses `Blind`
 too) is a `[security]` switch — a machine fact and the owner's standing
-word. The wiring takes `[security]` field by field (§3; §8 step 2 tests
+word. The wiring takes `[security]` field by field (§3; §8 step 4 tests
 it): the owner's value where it narrows a seat, the strictest value where it
 would widen one, with one departure. `block_sends_after_private` is the
 one field where the owner's default (off) is the *wider* value, and it is
@@ -665,9 +857,14 @@ seat, and neither does `ask`, which a seat would otherwise refuse only
 because its approver overrides `escalate`, a second mechanism agreeing
 rather than this floor — and `mark_untrusted_output` is always on. A seat's floor is a
 property of the seat code, not of the operator's config. With
-it off (the default) the catalogue works as above; with it on, a seat
-cannot act after its first image, so the engine's hello offers no study
-tools and seats are conversation only. Exempting the catalogue from an
+it off (the default) the catalogue works as above. With it on, a seat
+cannot act after its first image, and a study that declares study tools
+would lose its answers mid-run, one refusal at a time. So the seat refuses
+that `session.update` with `policy` and the reason, before the
+participant's first word, and only a study that declares no study tools
+runs, conversation only. A text decision runs no send on this box (§2a),
+so the switch has nothing there to refuse; whether it should bind a text
+seat anyway is part of the same ruling. Exempting the catalogue from an
 owner's guard would be an owner's ruling, not a config value (§9).
 
 **`Blind` reduces risk; it is not safety** (`EGRESS-DESIGN.md` §6). Blind
@@ -699,29 +896,41 @@ per seat and the seat's wall time cannot work that way — a cap whose only
 effect is an error the model talks around bounds nothing, since a turn is
 the participant's to start — so when either runs out the wiring ends the
 seat with a reason sent to HyperStudy, the shape §9 owes for the
-owner-call and model-switch collisions.
+owner-call and model-switch collisions. A text seat has the same two kinds,
+counted in decisions rather than runs: past its bound each later decision
+is refused `policy` with the reason (§5), since there is no session to
+close.
 
-## 5. Offers and admission
+## 5. Admission
 
-An offer is accepted only when every check passes; each refusal is typed
-(`busy | unknown_persona | capacity | policy`):
+HyperStudy opens a seat by calling. A voice seat is one WebSocket for the
+whole run; a text seat is a series of decisions (§2a). Each is admitted
+only when every check passes, and each refusal is typed (`unknown_persona
+| busy | capacity | policy`). It comes back in shapes HyperStudy already
+reads: an HTTP status with an OpenAI-style JSON error body, or for a voice
+seat HRP's `error` event and a close. So HyperStudy's account of why a room's agent could not start
+names the reason to the experimenter.
 
-- **The persona is servable.** A per-persona switch the owner sets, off by
-  default. The engine's hello lists only servable personas, as opaque refs;
-  an offer naming anything else is `unknown_persona`, so the rest of the
-  owner's personas are never confirmed to anyone. Since a seat takes only
-  the persona's voice (S10), servable means "this voice may speak in
-  studies". That also settles PERSONA-DESIGN §15's line that a romantic
+- **The key names a servable persona.** A persona is servable when a key
+  names it, and only the owner mints one (§5.1). A request whose `model`
+  names a persona its key does not is `unknown_persona`, and the rest of
+  the owner's personas are never confirmed to anyone. Since a seat
+  takes only the persona's voice and picture (S10, S12), servable means
+  "this voice and this picture may appear in studies". That also settles PERSONA-DESIGN §15's line that a romantic
   persona must never reach a minor, "binding when it is designed": no
   persona's character — its template, card or relationship — reaches a
   seat at all, so a romantic one cannot reach a participant of any age by
-  construction, not by a check on the switch.
+  construction, not by a check on the key. Its picture does, by the
+  owner's export (§5.2), which shows the picture before it goes.
 - **The owner comes first.** A live owner call is `busy` for a voice seat —
   and an owner call that starts mid-seat does not preempt the seat
   silently; what happens then is owed (§9).
 - **`max_seats`, counted where admission runs (S9).** `[hyperstudy]
-  max_seats` caps text and voice seats together; an offer past it is
-  `capacity`. The count is kept by the one long-running process that admits
+  max_seats` caps text and voice seats together; a seat past it is
+  `capacity`. A voice seat counts for its whole session. A text seat holds
+  router slots only while a decision is in flight, so it counts then and
+  not between decisions: it has no other presence on this box, because
+  HyperStudy holds its state. The count is kept by the one long-running process that admits
   every seat, in the owner's home. `permit.rs` cannot do this: a seat is
   interactive work, which takes no permit by design, and each seat's guest
   home would give it a pool of its own. A text seat can hold two router
@@ -751,51 +960,123 @@ An offer is accepted only when every check passes; each refusal is typed
   time limit, so the owner's `mecha model use` waits on a participant for
   the whole session — or forces the switch and gets the mid-seat swap the
   hold prevents. Which way it goes is owed (§9), beside the owner-call
-  collision.
-- **The credential** for the control socket is a token mecha mints and the
-  owner registers in HyperStudy (§5.1); an offer carries only a single-use,
-  sixty-second session token.
+  collision. A text seat has no open and no close that HyperStudy tells
+  mecha about, so the wiring holds the model for each decision; a switch
+  between two decisions answers one run with two models, which each
+  decision's record shows (`served_props`). Whether a text seat holds the
+  model between decisions is owed too (§9).
+- **The credential** is the persona's key (§5.1), checked by the listener
+  against its hashes before anything else is read, and again by the
+  wiring on the message the listener sends.
 
-### 5.1 The token, and why there is no URL
+### 5.1 The key, and the public address
 
-**mecha mints it (S7).** `mecha hyperstudy token` — and the same step in
-guided setup — generates a connected-agent token: 256 bits from the OS
-random source, prefixed `mhs_` so a leaked one is recognisable in a scan.
-It is printed once, for the owner to paste into HyperStudy's settings, and
-kept in the owner's home with the other credentials, owner-readable only.
-mecha presents it in the control socket's handshake each time it dials;
-HyperStudy keeps only its hash and checks the presented token against it.
-`--rotate` mints a replacement; the old one stops working when the owner
-replaces it in HyperStudy, and revoking it there cuts the connection on
-mecha's next dial. The token is the familiar `hyperstudy-agent` shape — mint
-locally, paste into HyperStudy — and the connection still runs outward:
-which side generates a shared secret is independent of which side dials.
+**mecha mints it (S7).** `mecha hyperstudy key <persona>…`, and the same
+step in guided setup, generates a key naming the personas it serves: 256
+bits from the OS random source, prefixed `mhs_` so a leaked one is
+recognisable in a scan. It is printed once. The owner pastes it into
+HyperStudy as the API key of the custom provider (text) and of the custom
+voice engine (voice). mecha keeps only its hash, beside the personas it
+names, owner-readable; the listener gets a read-only copy of the hashes
+and never a key (§2). `--add` and `--remove` change which personas a key
+names. `--rotate` mints a replacement, and the old key stops working at
+once. `--revoke` removes it, and its personas stop being reachable through
+it. Revocation is mecha's act now, not HyperStudy's: a leaked key is dead
+the moment the owner says so, on this box.
 
-There is no public URL for this box, by any provider:
+**A key names a set of personas, because HyperStudy keeps one custom
+endpoint per account.** Its custom text provider resolves a single
+`{ baseUrl, apiKey }` credential for an experiment's owner or organization
+(`resolveCustomEndpoint`, Settings → API Keys), so every persona that
+account serves through mecha shares the account's key, and each picks its
+mecha persona by its own `model` field, which the export sets (§5.2). A key for
+each persona, as S11 first put it, is the narrowest case of this and the
+default: a key minted with one name serves that persona alone. Choosing
+among a key's personas by `model` grants nothing beyond what the owner
+named for that key. `GET /v1/models` answers with the personas the key
+names. The spec's connection test takes the first one listed as the model
+name, and the export sets each persona's own name, so the test's choice
+decides nothing. A credential per persona on HyperStudy's side would make
+one key per persona possible; it is on its list (§8), and nothing here
+waits on it.
 
-- **A tunnel** — Cloudflare's, which `hyperstudy-agent tunnel` runs, or
-  Tailscale Funnel, which gives a public `*.ts.net` HTTPS address without
-  putting the caller on the tailnet — publishes a listener on this box to
-  the internet. `REMOTE-SURFACE-DESIGN.md` §2 ruled that out for the owner's
-  own page ("Funnel is never the answer"); a door for strangers is the
-  weaker case for it, not the stronger.
-- **What a leaked key costs differs.** Behind a tunnel, a leaked bearer key
-  reaches the engine — the box's model and whatever the endpoint can do.
-  Over the dial-out, a leaked token lets someone pose as this engine to
-  HyperStudy, and HyperStudy revokes it; nothing on this box answers it.
-- **HyperStudy never joins the tailnet,** and needs no custom-URL guard for
-  this engine: it calls nothing of ours.
+**The public address, and what it costs.** S11 puts this box on the
+internet at one HTTPS port. `REMOTE-SURFACE-DESIGN.md` §2 ruled that out
+for the owner's own page ("Funnel is never the answer"), and the two cases
+differ in what answers:
+
+- **Behind the owner's page** is the owner's whole assistant, with mail,
+  calendar and the graph. Behind this port is a listener that holds
+  nothing (§2), then a wiring that admits only a valid key, then a seat
+  that holds none of the owner's stores (§3).
+- **A leaked key** lets a stranger talk to that persona's seat on this
+  box's model. That costs GPU time, bounded by `max_seats` and the per-seat
+  budgets, and it exposes a voice, a picture, and whatever the caller's own
+  prompt says. Nothing of the owner's is reachable through it, and the
+  owner revokes it here.
+- **A bug in the listener** reaches a confined process with no network (§2).
+- **What S1 kept stays true:** HyperStudy never joins the tailnet, and
+  nothing on this box dials HyperStudy except the owner's export (§5.2).
+
+The port is the listener's alone (§2's Funnel guard), and the owner's page
+stays tailnet-only, as that ruling has it.
+
+### 5.2 The export (S12)
+
+`mecha hyperstudy export <persona>` writes the persona into HyperStudy as
+an agent persona. It goes through HyperStudy's v3 API (`POST
+/api/v3/personas`, and `PUT` on a later export) with a HyperStudy API key
+the owner creates there (`/api/v3/auth/api-keys`) and gives to mecha. It
+sends:
+
+- **The name:** the persona's `display` (its folder name when empty), as
+  the HyperStudy persona's name and display name.
+- **The picture:** the persona's portrait (its image-library `character`),
+  cropped as the owner framed it for the avatar (`State`'s `frame`), as the
+  HyperStudy persona's avatar.
+- **The voice, as a binding, not as audio.** The HyperStudy persona's
+  `voice` block names mecha's engine (`engine: "realtime"`, provider
+  `custom`, wherever HyperStudy's Phase 2 puts its URL) with `preset: null`, which means the
+  engine's own voice. The voice itself is rendered on this box, by the
+  persona's voice-library voice at its `voice_speed`, and no reference
+  audio ever leaves (§3). No speed is sent: it is mecha's, and HyperStudy's
+  range (0.25–1.5) is not mecha's (0.5–2.0). Once HyperStudy has a field
+  for an engine-owned voice's preview, a short clip of a fixed, made-up
+  sentence in that voice goes with it, so its "hear a voice before choosing
+  it" works (§8).
+- **The text adapter:** provider `custom`, and this persona's name as the
+  model, which a key that names it accepts. The base URL and the `mhs_`
+  key are the account's custom endpoint in HyperStudy's settings, which the
+  owner sets once by pasting (S7); the export sends neither.
+- **Nothing of the persona's text.** The prompt fields are left as the
+  study writes them (S10): not the card, not a relationship, not a memory.
+
+**Export is the owner's act, one persona at a time, never automatic.** It
+shows exactly what will be sent (the picture itself, the voice's name, each
+field) and sends on the owner's yes; `--dry-run` shows it and sends
+nothing. The avatar becomes a **public file** in HyperStudy's storage,
+served to every participant who sees the agent, and the confirmation says
+so in those words. A later export overwrites the picture and the voice
+binding, since mecha is their source (S12), and touches no other field of
+the HyperStudy persona. Whether HyperStudy's users may edit those two there
+is S12's open half; until it is ruled, an edit made there is overwritten by
+the next export.
 
 ## 6. The feature (S6)
 
 `hyperstudy`, a new variant in the closed registry (`feature.rs`,
 `FEATURES-DESIGN.md`) that requires `personas`: its own switch in
 `[features]`, off by default and
-off on every install that predates it, so nothing dials HyperStudy until the
+off on every install that predates it, so nothing listens until the
 owner says so. Guided setup offers it once personas are on and asks for the
-two things it cannot work without — the HyperStudy origin, and a minted
-token (§5.1), which setup mints and shows for pasting — and `Unready` names
-whichever is missing. Voice
+two things it cannot work without: the public address, and a key for at
+least one persona (§5.1), which setup mints and shows for pasting. The
+address needs Funnel, which is the owner's tailnet setting (§2): setup
+checks it with `tailscale funnel status`, names the policy line it needs,
+and cannot grant it. `Unready` names whichever is missing. The export
+(§5.2) needs a third thing, the HyperStudy origin and a HyperStudy API key,
+and is offered, not required: serving works without it, with the
+HyperStudy persona set up by hand. Voice
 seats additionally need the voice worker installed — `voice`, not
 `calls`: `calls` is what buys `mecha serve`'s relay to the worker (and so
 requires `web`), and a seat reaches the worker through the wiring's own
@@ -804,9 +1085,9 @@ listener. The registry already allows that: `requires` puts `web` on
 voice's browser parts only (`dictate`, `calls`, `cloning`), and `voice`
 itself stands alone (FEATURES-DESIGN F3: `mecha voice-serve` is its own
 loopback surface), so no registry edge changes. `hyperstudy` requires
-`personas` only, and a seat checks `voice` at runtime to decide whether its
-hello offers voice — a `requires` edge on `voice` would block text seats on
-a machine without it. Without `voice` the engine's hello offers text only.
+`personas` only, and the listener checks `voice` at runtime: on a machine
+without it a voice connection is refused `policy`, and text seats work. A
+`requires` edge on `voice` would block text seats on a machine without it.
 
 The coupling to `mecha serve` is in code, not in the registry, and the
 seat work has to undo it: persona calls are hosted only inside serve
@@ -841,8 +1122,8 @@ into the seat wiring. Building it follows `ARCHITECTURE.md` §Adding a
 feature item by item rather than a subset copied here; the one choice the
 checklist leaves to the feature is made here: `switchable_from_environment`
 is **no**, because the credential lives in the owner's home and an
-environment that could switch `hyperstudy` on would be a trial home dialling
-HyperStudy.
+environment that could switch `hyperstudy` on would be a trial home
+answering the internet.
 
 ## 7. Mechanisms, not policy (S2)
 
@@ -878,7 +1159,8 @@ mecha provides; the study decides:
   and §11's call meter exists because voice raises attachment. In a
   seat it keeps the actions it takes today: on a trip the harness steps out
   of character with `SAFE_MESSAGE` and pauses the persona for
-  `CRISIS_COOLDOWN`, and mecha raises HRP's `hs.flag`. Two seat-specific
+  `CRISIS_COOLDOWN`, and in a voice seat mecha raises HRP's `hs.flag` once
+  HyperStudy reads it. Two seat-specific
   differences. The crisis resources come from the study when the session
   supplies them, since a participant may be anywhere and `SAFE_MESSAGE`'s
   numbers are US ones. That field is a second trusted slot, and it speaks in
@@ -887,10 +1169,12 @@ mecha provides; the study decides:
   under the same contract (§3), plain text within a length bound, and it
   supplies only the resources — mecha's own out-of-character sentence
   frames them. Absent, or failing the bound, the shipped `SAFE_MESSAGE`
-  stands. And the handover
-  is spoken or typed into the session, so until HyperStudy reads `hs.flag`
-  the trip is still visible to the study in its own record of the
-  conversation. Whether a study may turn the handover off is owed (§9).
+  stands. Spec 0.2.0 has no field for the resources, so a study's own
+  resources wait on HyperStudy's list (§8), and until then the shipped
+  message stands for every seat. And the handover is spoken into a voice
+  session, or returned from a text decision as a `send_chat` (§2a), so
+  until HyperStudy reads `hs.flag` the trip is still visible to the study
+  in its own record of the conversation. Whether a study may turn the handover off is owed (§9).
   A seat whose judge becomes unreachable mid-session continues on
   keywords (`Degraded`), at parity with the owner's chats, rather than
   dropping a participant mid-sentence, while a seat whose sensor cannot be
@@ -903,14 +1187,17 @@ mecha provides; the study decides:
   "switched off" and "couldn't check" never pass for each other on the far
   end either (`safety.rs`'s own rule). In a seat `Off` cannot occur (the
   check is forced on); `Degraded` — the judge could not answer, keywords
-  only — can, and is said. The declaration needs only the session socket,
-  so it lands with the text seat (§8 step 3), not with `hs.flag`; until
+  only — can, and is said. In a voice seat the declaration needs only the
+  session, so it lands with the HRP session (§8 step 5), not with
+  `hs.flag`. A text decision has no channel for it in spec 0.2.0, so for
+  text it is on HyperStudy's list beside the run identifier. Until
   HyperStudy reads it, a dropped declaration still leaves the state in the
   seat's transcript and manifest, and the study, reading only its own
   record, cannot exclude the session on it — which is why HyperStudy reading
   it is on its build list.
 - **Retention.** Seats are kept in full (S8, §3), and mecha declares that
-  through `hs.retention`, so a study can tell its participants.
+  through `hs.retention` once HyperStudy reads it (§3), so a study can tell
+  its participants.
 - **Disclosure is in the study's prompt.** Whether a participant is told
   the other party is an AI is study design (S2), and the study writes the
   whole system prompt (S10), so it says what the study wants said. mecha
@@ -922,40 +1209,105 @@ mecha provides; the study decides:
 
 ## 8. Build order
 
-Each step is testable before the next; only step 5 waits on HyperStudy.
+Each step is testable before the next. Only step 7 waits on HyperStudy to
+build something. Steps 2 and 3 run against what HyperStudy already serves:
+its custom text provider and its v3 persona API.
 
-1. **The feature and the token** — every item of `ARCHITECTURE.md`
-   §Adding a feature, the `[hyperstudy]` table (origin, `max_seats`) in both
-   `Config` and `ConfigLayer`, **stripped from project layers in
-   `merge_text`, loudly**, as `[image]`, `[web]` and `[features]` are, and
-   for `[image]`'s reason one step worse. `origin` is where mecha presents
-   the owner's minted `mhs_` token, and it is the root of this design's
-   trust chain: the `sessionUrl` origin pin, verbatim `instructions` and the
-   catalogue's `Blind` labels all rest on the owner having chosen that
-   endpoint. A `mecha.toml` arriving with a cloned repository must not
-   redirect it, nor raise `max_seats` (`[system]`'s reason); a test that a
-   project layer's `[hyperstudy]` is dropped with a warning. The same
-   reason puts `hyperstudy` on `trial_env::OPERATOR_ONLY_TABLES`, the
-   decision `ARCHITECTURE.md` §Adding a feature asks of every new table:
-   an experiment environment's `config.toml` also arrives with a checkout,
+1. **The feature and the keys** — every item of `ARCHITECTURE.md`
+   §Adding a feature, the `[hyperstudy]` table (`max_seats`, and the
+   HyperStudy `origin` the export writes to) in both `Config` and
+   `ConfigLayer`, **stripped from project layers in `merge_text`,
+   loudly**, as `[image]`, `[web]` and `[features]` are. A `mecha.toml`
+   arriving with a cloned repository must not raise `max_seats`
+   (`[system]`'s reason), nor point the export, which sends the owner's
+   picture, at another origin; a test that a project layer's
+   `[hyperstudy]` is dropped with a warning. The public port is 10000 in
+   code, not a config value (§2). Keys are not config at all, layered or
+   not: they are minted into the owner's home (§5.1). The same reason puts
+   `hyperstudy` on `trial_env::OPERATOR_ONLY_TABLES`, the decision
+   `ARCHITECTURE.md` §Adding a feature asks of every new table: an
+   experiment environment's `config.toml` also arrives with a checkout,
    and `[documents]` once sat on the project strip list but not this one.
    It is inert today only because `switchable_from_environment` is `no`
-   (§6), a second mechanism's accident rather than this table's guard. And `mecha hyperstudy token` with setup's
-   step; nothing behind it yet but `Unready` until a token exists. A test
-   on the chained `enable_command`, since `hyperstudy` is the first
-   switch-bearing feature with a `requires` edge and that branch of
-   `plan_enable` has never run. And `hyperstudy`'s row in `TRIFECTA.md`'s
-   switch table, with what it costs, including the named
-   `block_sends_after_private` departure (§4a).
-2. **The guest facade** — `Facade`, `Mount` and a seat `SessionHost` usable
+   (§6), a second mechanism's accident rather than this table's guard. And
+   `mecha hyperstudy key` with setup's step; nothing behind it yet but
+   `Unready` until a key exists. A test on the chained `enable_command`,
+   since `hyperstudy` is the first switch-bearing feature with a `requires`
+   edge and that branch of `plan_enable` has never run. And `hyperstudy`'s
+   row in `TRIFECTA.md`'s switch table, with what it costs: a public port,
+   and the named `block_sends_after_private` departure (§4a).
+2. **The listener and text decisions** — the `mecha-hyperstudy` crate and
+   binary (§2): the three routes, the key checked before any body is read,
+   the bounds, the closed types. Its confined launch: bwrap with
+   `--unshare-net`, a cleared environment, the hash file read-only, and
+   `public.sock` and `listener.sock` as its only ways in and out, every leg
+   preflighted, no listener where bwrap cannot run, and the step's bwrap
+   tests run under `MECHA_TEST_REQUIRE_BACKENDS=1` in CI. Whether Funnel
+   carries a WebSocket upgrade through to a `unix:` target, checked on the
+   installed tailscale. The Funnel guard, with a test that Funnel on 443 or
+   8443 stops the wiring. `listener.sock`'s closed message set, anything
+   else refused, logged, and the connection closed. `mecha-hyperstudy` on
+   `release.yml`'s hand-kept publish list ahead of `mecha-cli` (it depends
+   on nothing in the workspace), since a published crate's missing
+   dependency fails the publish after earlier crates uploaded, as
+   `mecha-slack` once did; and its no-`mecha-core` property tested by
+   reading its `Cargo.toml`, rather than resting on review as
+   `mecha-slack`'s does.
+
+   Then the text decision (§2a), and with it everything a seat record
+   needs, which step 4 reuses:
+   - the crisis sensor lifted out of `persona_chat.rs` into something the
+     owner's chats and both kinds of seat call (§7), a trip recorded in the
+     owner's ledger as `hyperstudy` with `CrisisRecord`'s new `seat` field,
+     `Degraded` declared, and no seat served without it;
+   - a seat's own `SessionKind`, excluded by an arm of its own in
+     `Scan::admits` (which admits any kind it does not name), not by the
+     variant alone; the seat glob in `check-private.py`'s `whole` list; and
+     no dose or call record for a seat;
+   - the system message byte for byte, with no `BASE`, card, `SINCERE` or
+     `DISCLOSED` even with the persona's `disclosure` on, under its bound;
+     the calendar head note present and rendered in `UTC` under an owner
+     config with another zone; and no request containing "owner" in any
+     note;
+   - the router entry's `context_window`, `vision`, `structured_output` and
+     `max_tokens`, the model pinned with `follow_loaded = false`, and a
+     request's `model` that never reaches the router.
+
+   `TRIFECTA.md` gains a row for each channel a seat opens, here, where the
+   surface first exists. One is the reply itself, a way out no interlock
+   sees (§1), owned by the sealed home, by a text decision running nothing,
+   and by the closed `Blind` catalogue. The other is the study's slot in the
+   system prompt, third-party bytes that `arm_for_content` never reads and
+   `mark_untrusted_output` never wraps (§3), owned by the bound on its size,
+   the seat being armed `untrusted` from construction, and the
+   experimenter-authored-only contract HyperStudy keeps. Exit: HyperStudy's
+   connection test passes against the public address (`GET /v1/models`
+   and a one-token completion). A text agent on the custom provider runs a
+   scripted study on HyperStudy's dev server end to end: it reads a screen
+   with an image, chats, and submits a rating. And a corpus of hostile
+   requests is each refused with nothing past the listener reaching the
+   wiring: no key, a wrong key, a valid key naming another persona's model,
+   a body or an image past its bound, an unknown field, a slow upload. No
+   real participant meets a text seat before HyperStudy sends the run
+   identifier (§2a).
+3. **The export** — `mecha hyperstudy export` (§5.2), with `--dry-run`; a
+   confirmation that shows the picture and says it becomes public; a later
+   export touching only the name, the picture, the voice binding and the
+   adapter fields; and a test that no persona text is in the request body.
+   The avatar goes up once HyperStudy's v3 API takes one (below). Until
+   then the export sets every other field and names the avatar as the one
+   thing left for the owner to set in HyperStudy's Agent Designer. Exit: an
+   exported persona appears in HyperStudy with its picture, and a text
+   agent using it runs step 2's study.
+4. **The guest facade** — a voice seat's. `Facade`, `Mount` and a seat `SessionHost` usable
    outside serve; the confined launch (§3 — the socket bridge with its
    preflight of every leg, or the filesystem-only interim, per §9 — and,
    first, a one-line compile check that reqwest's
    `ClientBuilder::unix_socket` exists in the locked version, since the
    bridge's shape rests on it); guest home, untrusted run mode, the §3 table as
-   tests (the sensor lifted out of `persona_chat.rs` first, with a seat's
-   trip recorded in the owner's ledger as `hyperstudy`; seat transcripts
-   absent from the owner's corpus; the approver allows the catalogue and nothing else, every refusal
+   tests (the sensor step 2 lifted out, now called from a facade, with a
+   seat's trip recorded in the owner's ledger as `hyperstudy`; seat
+   transcripts absent from the owner's corpus; the approver allows the catalogue and nothing else, every refusal
    rendering `Blocked by policy:` and never the user-denial prefix — and whether `Approver` gains
    a door enum so the compiler holds a future door is decided here; the
    seat is armed untrusted before its first turn; the guest facade process
@@ -1002,7 +1354,7 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    cannot run, with the step's bwrap tests run under
    `MECHA_TEST_REQUIRE_BACKENDS=1` in CI, since a skipped confinement test
    reads like a passing one), `facade.sock` answering the wiring
-   from a confined facade (a text seat's only route in), `approve_all` pinned
+   from a confined facade (the wiring's only route in), `approve_all` pinned
    false with the approver test driven *through* the facade's mount so it
    fails if the mount allows everything, no seat request containing "owner"
    in any note, voice or text, the
@@ -1010,14 +1362,16 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    in `UTC` under an owner config with another zone, the guest
    config holding no `[[hook]]`, skill, charter or subagent, the owner's
    `[security]` read and never written, budgets.
-3. **A text seat on loopback** — HRP with text-only output against a local
-   stand-in for HyperStudy's session: context items, inline images, declared
+5. **The HRP session on loopback, before audio** — HRP's text-only
+   responses, which HyperStudy's silent answers use, against a local
+   stand-in for HyperStudy's voice bridge: context items, inline images, declared
    tools, the steering queue widened to carry `Block`s (§4a), a
    `ToolChoice` variant forcing one named function (today it has only
    `Auto` and `None`), rendered by both providers and decided for at
    `cache_lens`, which hashes `tool_choice` into the prefix identity, for
    §4's silent forced answer, and the
-   `CrisisState` declaration on the session (§7). Exit: a scripted study (read a screen, chat, answer a rating
+   `CrisisState` declaration on the session (§7), and the listening pause's
+   commit parked as a participant turn with no run (§4). Exit: a scripted study (read a screen, chat, answer a rating
    through a silent forced call) runs end to end, including a context item
    with no `response.create` followed by the participant speaking, once
    before any turn and once after one — the
@@ -1029,7 +1383,7 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    run is refused, and the session records the arming in that round; plus
    an `instructions` over the bound refused on its `session.update` with the
    seat still open on its previous instructions.
-4. **The voice transport on loopback** — the first non-WebRTC transport,
+6. **The voice transport on loopback** — the first non-WebRTC transport,
    with its own entrypoint (§2); the worker takes its facade address (and the
    two endpoints derived from it) per call from the relay — over
    `facade.sock` for a confined seat, through an `httpx` socket transport
@@ -1037,62 +1391,71 @@ Each step is testable before the next; only step 5 waits on HyperStudy.
    whose `create_client` hands the OpenAI client the same transport (§3) — and its HRP transport takes
    the wiring's loopback relay, which is its only shape (§2), and
    HyperStudy's conformance suite runs against it through a local stand-in
-   for the crate (its runner takes any HRP client; a URL wrapper is all it
-   needs). Exit: both turn-detection modes pass, truncate `approximate`.
-5. **`mecha-hyperstudy` + wiring + admission** — once HyperStudy's `accept`
-   exists; the crate replaces the local stand-in, dialing the control and
-   session sockets and validating frames, and nothing behind it changes.
-   The same change adds `mecha-hyperstudy` to `release.yml`'s hand-kept
-   publish list ahead of `mecha-cli` (it depends on nothing in the
-   workspace), since a published crate's missing dependency fails the
-   publish after earlier crates uploaded, as `mecha-slack` once did. Its
-   no-`mecha-core` property gets a test that reads its `Cargo.toml`,
-   rather than resting on review as `mecha-slack`'s does. Once the surface
-   exists, `TRIFECTA.md` gains a row for each channel the seat opens: the
-   reply itself as a way out no interlock sees (§1), owned by the sealed
-   home and the closed `Blind` catalogue; and the `instructions` slot,
-   third-party bytes in the system prompt, which `arm_for_content` never
-   reads and `mark_untrusted_output` never wraps (§3), owned by the bound
-   on its size, the seat being armed `untrusted` from construction, and
-   the experimenter-authored-only contract HyperStudy keeps.
-   It is the only code on this box that parses bytes from the internet,
-   and steps 3 and 4 were proved against a stand-in that replays what
-   this design believes HyperStudy sends. Exit: HyperStudy's conformance
-   suite passes through the real crate, not the stand-in; and a corpus of
-   malformed and hostile frames (truncated, an `instructions` past its
-   bound, a `sessionUrl` off the control socket's origin, an uncatalogued
-   or mismatched tool, oversized audio, an unknown frame type) each gets a
-   typed rejection, with the seat left closed and nothing reaching the
-   facade.
-6. **`hs.flag`** — once HyperStudy reads it.
+   for the listener (its runner takes any HRP client; a URL wrapper is all
+   it needs). Exit: suite 6 passes in both turn-detection modes, the
+   listening pause both ways, `image_context` with the router's resident
+   model, and truncate `approximate`.
+7. **Voice over the public address** — once HyperStudy's `custom` realtime
+   provider exists. The listener's `/v1/realtime` route replaces the local
+   stand-in, and nothing behind it changes. Steps 5 and 6 were proved
+   against a stand-in that replays what this design believes HyperStudy
+   sends; this is where that belief meets HyperStudy. Exit: HyperStudy's
+   conformance suite, run by HyperStudy against the public address, passes
+   at suite 6 and its report is stored; and a corpus of malformed and
+   hostile frames each gets a typed rejection, with the seat left closed
+   and nothing reaching the facade: truncated, an `instructions` past its
+   bound, an uncatalogued or mismatched tool, an audio delta past 2000 ms,
+   an unknown event type, a connection with no safety identifier.
+8. **`hs.flag`** — once HyperStudy reads it.
 
-**What HyperStudy builds** (its document's Phase 3): connected-agent
-credentials, the control socket, the engine hello, offers and rejects,
-session tokens, an adapter that gives its voice bridge an HRP client over an
-accepted socket, text seats on the same socket, a `connected` engine naming
-the registered token and the persona whose voice speaks, a settings page to
-register a mecha-minted token (stored hashed, revocable), inline images on the
-session, the study tools as a catalogue pinned in HRP, declared once per
-session (§4a), each answer tool's schema carrying the on-screen question's
-identifier, at most one answer recorded per session and on-screen question, keyed
-on the question rather than the `call_id`, since a model's second answer
-is a new call, so an answer repeated after a timeout is refused (§4a), and `instructions` kept to experimenter-authored text, with
-participant-authored bytes only ever sent as context items (§3). **The frames
-are pinned in its §4.1 before either side builds against them** — with a
-direct connection, HyperStudy's spec is the contract mecha codes to.
+**What HyperStudy builds.** Less than before: S11 takes its Phase 3 (the
+control socket, offers, connected-agent credentials, text seats on HRP) off
+what mecha needs. In order of need:
+
+1. The `custom` realtime provider (its Phase 2), with its SSRF guard
+   extended to WebSocket, so a voice persona can name mecha's address
+   (step 7).
+2. An opaque per-run identifier on every model-endpoint request: the value
+   its voice engine already gets as `OpenAI-Safety-Identifier`, in the
+   request's `safety_identifier`. It is needed before a real participant
+   meets a text seat (§2a).
+3. A preview-clip field for an engine-owned voice (`preset: null`, which
+   its `session.update` already sends as `voice: null`), so the export can
+   fill it (§5.2).
+4. `transcription: null` sent to an engine that transcribes on its own,
+   with its completed transcription events read regardless (§4).
+5. Avatar upload on the v3 API, so the export needs no browser session
+   (§5.2).
+6. A question identifier on the `question` context item and each answer
+   tool, and at most one answer recorded per run and question, keyed on
+   the question rather than the `call_id`, since a model's second answer is
+   a new call (§4a).
+7. The system message and `instructions` kept to experimenter-authored
+   text, with participant-authored bytes only ever sent as tagged data or
+   context items (§3).
+8. Later: a crisis-resources field; reading `hs.flag`, `hs.retention` and
+   the crisis-state declaration on a voice session, and a channel for the
+   last two on the model endpoint (§7).
+9. Its design's §4.4 and §6.2 changed to say mecha is a `custom` realtime
+   engine with HyperStudy's persona and the engine's voice, not a
+   `connected` engine with a persona of its own (§3).
+10. Optional: a custom-endpoint credential per persona rather than per
+    account, so one account can hold a key for each persona (§5.1).
+
+Each lands in the published spec under a version bump, and mecha records
+the spec version it was built against, as this document records 0.2.0.
 
 ## 9. Out of scope, and owed
 
 **Deliberately out:** the owner's running mecha and main chat (S3); a
 general assistant, until it is designed as its own sandboxed instance;
-image generation (S5); any public listener, tunnel or Funnel on this box;
-mecha joining LiveKit — HyperStudy's voice bridge is the only room presence
-and engines never hold room credentials; `hyperstudy-agent` (S1); platform
+image generation (S5); any public listener but §2's, and Funnel on any
+port but its own, the owner's page above all (§5.1); mecha joining LiveKit — HyperStudy's voice bridge is the only room presence
+and engines never hold room credentials; `hyperstudy-agent` (S1's surviving
+clause); HyperStudy's `accept` transport (S11); platform
 mode for two or more humans, until HyperStudy builds it — and then the
 catalogue's `Blind` labels are re-derived, not inherited, since `send_chat`
-would reach participants the seat's own reply does not; HyperStudy's
-inbound chat-completions endpoint for text agents — text seats ride the
-accepted socket instead.
+would reach participants the seat's own reply does not.
 
 **Owed:**
 
@@ -1100,14 +1463,16 @@ accepted socket instead.
   landed: §4a's guard then leaves that question unanswerable for the rest
   of its screen, a datum silently missing from the study. Whether the seat
   reports it to HyperStudy (so the study can re-ask, or mark it), and how
-  that meets HyperStudy's per-question backstop, is owed before step 3.
+  that meets HyperStudy's per-question backstop, is owed before step 5.
 - Video perception, owned by another session (2026-10-21), not this design:
   a time-indexed text track of the movie participants watch, released to a
   seat no further than the playback position. It is expected to arrive
   through the paths here, as context items (§4a) or a catalogue tool, and
   any change it needs to HRP events or the catalogue is a reviewed change
   on both sides, coordinated with that session.
-- Whether a seat's study tools may run when the owner has `block_sends_after_private` on (§4a); conversation only until ruled.
+- Whether a seat's study tools may run when the owner has `block_sends_after_private` on (§4a); until ruled, a voice seat whose study declares them is refused `policy`, and whether the switch binds a text seat, which runs no send here, is part of the same ruling.
+- Whether a text seat holds the router's model between decisions (§5): it has no open or close that HyperStudy reports, so holding it needs the run identifier and an idle end chosen by mecha.
+- Whether HyperStudy's users may edit an exported picture or voice there (S12's open half); until ruled, the next export overwrites an edit made there (§5.2).
 - What happens when the owner switches the router's model mid-seat (§5):
   wait out the seat, or end it with a reason. `hold.rs` makes the run the
   side that yields, and here the wiring holds for the seat, so the answer
@@ -1124,14 +1489,16 @@ accepted socket instead.
 - What a trip does to a seat shorter than `CRISIS_COOLDOWN`'s fifteen
   minutes: a pause that outlasts the seat ends it, which is not today's
   action.
-- Whether the Unix-socket bridge (§3) lands with step 2 or follows a
+- Whether a voice seat's Unix-socket bridge (§3) lands with step 4 or follows a
   filesystem-only first cut — before any real participant either way. The
   bridge is three legs, not two: `model.sock` and `parent.sock` out of the
-  facade, and `facade.sock` into it, for the wiring in every seat (step 2)
-  and for a voice seat's worker too (Python work in step 4). The interim
-  needs none of the three.
+  facade, and `facade.sock` into it, for the wiring (step 4) and for the
+  worker too (Python work in step 6). The interim needs none of the three.
+  The listener has no interim: it is confined, with no network, from its
+  first build (§2), because it is what the internet reaches.
 - Latency, measured on this box: OpenAI's Realtime models are
   speech-to-speech and mecha is a cascade, so vendor figures are not ours.
   End-of-turn to first audio is recorded per turn-detection mode, with the
   router's resident model read from `served_props`, before a study depends
-  on it.
+  on it, against the suite's thresholds (§4); and a text decision's time,
+  against HyperStudy's request limit (§2a).
