@@ -270,7 +270,14 @@ a type with exactly two constructors. The loader builds one from a file.
 `HostedSession::open` builds one from the principal its door
 authenticated and the profile defined in code, which is the write path:
 the one caller that legitimately has no file to resolve from, and which
-the writer then serializes. A third constructor exists for tests and is
+the writer then serializes. That constructor lands in step 1, ahead of
+`open` itself, and takes a whole `Principal`, so an `Owner` arrives only
+with the `OwnerProof` its door built by name and nothing can assert one.
+It is not the `pub fn owner()` ruled out below. In steps 1–3 its callers
+are the existing surfaces' session-create sites, each passing its own
+proof (§10 step 1). From step 4 `open` is its only caller, and each old
+site goes with the turn body it belongs to, which is when §7's "the only
+caller of `open`" starts to hold. A third constructor exists for tests and is
 named so that no shortcut is invented: it rides the same test-only
 feature as §9.2's exported recorder, because the integration tests in
 `mecha-cli/tests/` build metas from outside the crate, where
@@ -1040,7 +1047,13 @@ means §9.2's two snapshots: the rendered bodies and the security snapshot.
    Owner × Persona × Kept, refused, and degraded respectively, with the
    degraded count reported. A fifth, an engine-era file in a seat
    directory whose header reads Owner × Assistant × Kept, must be
-   refused, not admitted. And `reflect --sessions-dir` and `distill
+   refused, not admitted. No door writes that header, so the fifth file
+   is built with the test-only constructor: it tests the reader refusing
+   it, not a writer. The write path in this step is §2's write-path
+   constructor, called from each surface's existing session-create site
+   with that surface's own `OwnerProof`, and the step's exit asserts that
+   every header written in its tests carries the axes its surface
+   authenticated. And `reflect --sessions-dir` and `distill
    --sessions-dir`, each pointed at a directory of pre-engine files, must
    mine them, so the fourth file's degrade cannot pass for those flags'.
 
