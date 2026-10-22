@@ -1085,7 +1085,8 @@ OpenAI-compatible chat endpoint over the agent loop, the contract
 > internet; and it treats every caller as the owner — a participant's
 > spoken yes could release a staged draft. Serving mecha to HyperStudy
 > participants is designed in `PERSONA-SERVING-DESIGN.md`: a sealed guest
-> home, and a connection this box dials out.
+> home, and, since 2026-10-22, HyperStudy's own adapter contract served
+> through a confined listener on a port of its own (its S11).
 
 ### 21.1 Who drives a lifetime, and what a task is — the principal half ruled and built (2026-09-04, #185; release and closure opened by fixture servers 2026-09-05); the task-source half built 2026-09-05 as the recommendation reads
 
