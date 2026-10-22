@@ -301,7 +301,16 @@ at seven calls in six functions that step 1 prices, plus
 `commands/sessions.rs`'s `mark`, `forget_config`, `resolve_id` and
 `confirm_delete`) hold a bare path and call `SessionStore::locate`. Getting the persona one wrong fails closed into
 no persona memory writes at all, a silent E3 loss, so step 1's
-`peek_meta` probe goes through `pending_chats` itself. So `Scan::admits`' eleven call sites and
+`peek_meta` probe goes through `pending_chats` itself. `Session::load`
+takes one too, and it is the loader the resolution matters most for: it
+returns `(SessionMeta, Conversation)` and is the resume path of every owner
+door (`commands/chat.rs`, `commands/run.rs`, `tui/mod.rs`,
+`serve/chat.rs`, `commands/tasks.rs`, `commands/trigger.rs`,
+`commands/sessions.rs`, among 24 call sites in `mecha-cli/src` by `git grep
+'Session::load('` at fed60ec0e). It is where `open` gets the recorded axes
+its resume refusal compares and the recorded taint the principal's floor
+is unioned with, so a `load` that handed back an unresolved meta would make
+§2's two sharpest refusals rest on an unchecked read. So `Scan::admits`' eleven call sites and
 `SessionMeta::admitted_by_default()`, which has no path by construction,
 can read only resolved axes, and a meta that skipped resolution does not
 type-check rather than admitting or silently dropping. The header is a
@@ -505,9 +514,20 @@ still location deciding, not data. A third constructor, `owner_at(dir)`,
 is `#[cfg(test)]`, not §2's test-only feature: it is the widest of the
 three, naming an arbitrary directory the owner's store, and every caller
 that needs it is in-crate. Out of the crate, `mecha-cli/tests/` sets
-`MECHA_SESSION_DIR` and is served by `SessionStore::owner()`. Core's corpus tests (`runlog.rs`,
-`planning.rs`, `reading.rs`, `tenure.rs`, `success.rs`, `persona.rs`)
-scan a bare `TempDir` and never set `MECHA_SESSION_DIR`; without it
+`MECHA_SESSION_DIR` and is served by `SessionStore::owner()`. The list
+of fixtures that need it is derived from `Scan::admits`' eleven call sites
+rather than kept by hand: `sessions.rs` (two), `harness_probe.rs` (two),
+`pointwise_pass.rs`, `planning.rs`, `reading.rs`, `replay_priority.rs`,
+`runlog.rs`, `success.rs` and `tenure.rs`, plus `persona.rs`'s readers.
+Core's corpus tests (`runlog.rs`, `planning.rs`, `reading.rs`,
+`replay_priority.rs`, `tenure.rs`, `success.rs`, `persona.rs`) scan a bare
+`TempDir` or `std::env::temp_dir()` subdirectory and never set
+`MECHA_SESSION_DIR`; `replay_priority.rs`'s `Recurrence::scan` tests are
+the case a hand-kept list missed. `harness_probe.rs` and
+`pointwise_pass.rs` are production sites in `mecha-cli/src`, so they take a
+`SessionStore` like the rest, and a unit test of theirs that scans a bare
+directory is priced the same way, since `mecha-cli/tests/`'s
+`MECHA_SESSION_DIR` does not reach `src` unit tests; without it
 every such fixture would load degraded and step 1's "every existing test
 green" could not hold. Step 1 prices that: each of those fixtures
 changes one argument, and the test-count delta shows none removed.
@@ -997,8 +1017,8 @@ means §9.2's two snapshots: the rendered bodies and the security snapshot.
    real files through every loader path (`list_counting`,
    `Session::list_headers_counting`, which does its own `read_dir` and has
    a production caller in `brief/attempts.rs`'s `walk`, `Session::read`,
-   and `Session::peek_meta`, the one behind the persona memory-write
-   gate):
+   `Session::load`, the resume path, and `Session::peek_meta`, the one
+   behind the persona memory-write gate):
    one pre-engine file in each of the three locations of §3's absent rule
    and a fourth elsewhere. They must resolve to Owner × Assistant × Kept,
    Owner × Persona × Kept, refused, and degraded respectively, with the
@@ -1064,12 +1084,21 @@ persona chat alone, and the assistant chat repeats steps 2–4 after step 6.
    call kinds pass their existing tests, and the owner's phone check
    passes (an inventory row).
 7. **The Seat profile and the HyperStudy door:** PERSONA-SERVING §8
-   steps 2 and 4–7, now on the host. A text decision holds no session
-   (its §2a), so on the host it uses the Safety module and the record,
-   not `open`. There is no old path here, so §9.2's
+   steps 2 and 4–7, now on the host. A text decision holds no
+   conversation between calls (its §2a), but on the host it is still a
+   session of one turn: `open` with a Guest principal (the key's issuer,
+   the per-run identifier as subject), Seat and Sealed, no tools
+   registered, its record under `SessionStore::seat` with all three axes,
+   closed when the turn returns. So every §2 refusal and the principal's
+   taint floor apply to it, and §5's seat-appraisal reader reads it like
+   any sealed transcript. It is not the front door's quarantined shape, for
+   PERSONA-SERVING §1's reason: conversing with the stranger is the job.
+   There is no old path here, so §9.2's
    comparison is vacuous and named tests stand in for it, one negative
    per guard, in the shape §4 uses for the seat tools' `Blind` label.
-   Exit: PERSONA-SERVING §8 steps 2 and 4–7's own exits, and, on a live guest
+   Exit: PERSONA-SERVING §8 steps 2 and 4–7's own exits; a text
+   decision's record carries all three axes, is refused the owner's corpus,
+   and is read by the seat-appraisal reader; and, on a live guest
    session: `HostedSession::open` refuses every combination off §2's
    table; the conversation starts armed `untrusted`; a refused call
    renders `Blocked by policy:` and no `Deny` reaches the loop; `open`
