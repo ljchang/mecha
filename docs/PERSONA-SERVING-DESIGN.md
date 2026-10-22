@@ -139,15 +139,24 @@ Four pieces, each with one job:
    the owner's home is bound into it except its own run directory and a
    read-only file of key *hashes* (§5.1). It listens on a pathname
    socket, `hyperstudy/run/public.sock`, which `tailscale serve` proxies
-   to (it takes a `unix:` target), and it reaches the wiring only through
+   to, and it reaches the wiring only through
    `hyperstudy/run/listener.sock`: the same pathname-socket crossing §3
    uses for a seat's facade. With no network namespace it cannot reach
    the router, the owner's page on loopback, the LAN or the tailnet. A
    compromise of it is a process that talks to tailscaled's proxy and to
-   one socket whose every message the wiring checks again. Whether Funnel
-   carries the WebSocket upgrade through to a `unix:` target is checked on
-   the installed tailscale in step 2, not assumed. A box where the
-   confinement cannot run serves nothing.
+   one socket whose every message the wiring checks again. Two things
+   this rests on are checked on the installed tailscale before step 2
+   commits to `public.sock`, not assumed. First, that `tailscale serve`
+   takes a `unix:` target at all: this box's 1.98.10 says so in `tailscale
+   serve --help` ("you can also specify a Unix domain socket"), but nothing
+   in this repo exercises one yet, and every current `tailscale serve` use
+   here is a loopback TCP origin. Second, that Funnel carries a WebSocket
+   upgrade through to such a target. If either fails, the crossing becomes
+   a loopback forwarder inside the listener's namespace, the second in-jail
+   process §3 already prices for the facade, with tailscaled proxying to a
+   loopback port. That is a change to this paragraph, reviewed as one, not
+   a detail of step 2. A box where the confinement cannot run serves
+   nothing.
 2. **`mecha-cli/src/hyperstudy/`** — the wiring that does know: the keys
    and the personas each one names (§5.1), admission (§5), the seat records
    (§3), the crisis sensor (§7), the export (§5.2), and the two kinds of
@@ -184,9 +193,9 @@ Funnel on for any port whose handler is not `public.sock` stops the wiring
 with the reason, a silently-degrading guard in the sandbox preflight's
 shape. Funnel itself is a tailnet setting, the `funnel` node attribute in
 the tailnet policy, which the owner turns on once and setup names but
-cannot grant (§6). `cloudflared` can front the same `unix:` socket, and
-nothing behind the listener would know the difference; Funnel is the one
-built, because the box already runs tailscaled.
+cannot grant (§6). Another tunnel (`cloudflared`) could stand in front of
+the listener instead; Funnel is the one built, because the box already runs
+tailscaled, and no other is checked here.
 
 ## 2a. A text decision
 
@@ -210,12 +219,20 @@ seat's machinery: no guest facade, no fold, no ClientTools. One decision is
 this:
 
 - **One model call, made by the wiring.** The listener's parsed request is
-  turned into mecha's own `Message`s and sent through the router entry for
-  the persona the request's `model` names, one of those its key names,
-  with that entry's model pinned (`follow_loaded = false`, as §3 sets for
-  a voice seat). The request's
-  `model` field never reaches the router. On the router that field
-  *selects* a preset, and a stranger's request must not load one.
+  turned into mecha's own `Message`s and sent through the seat's one
+  router entry, derived from the owner's as §3 derives a voice seat's,
+  with its model pinned (`follow_loaded = false`). The request's `model`
+  field names a persona, one of those its key names, and that persona
+  contributes its voice and picture and nothing else. Its own provider pin
+  (`persona::Settings::model`) does not travel into a seat, as its prompt
+  does not (S10). So the caller's choice among a key's personas selects no
+  model, and every seat on the box answers on the one model the router has
+  resident, which is what §5's hold protects. The request's `model` field
+  never reaches the router either: on the router that field *selects* a
+  preset, and a stranger's request must not load one, directly or one hop
+  removed. On the session engine (`SESSION-ENGINE-DESIGN.md`) a decision
+  is a session of one turn opened like any seat's, so its record carries
+  all three axes.
 - **Nothing runs here.** The declared tools go to the model as declarations
   only, and the model's tool call goes back to HyperStudy as the response.
   mecha executes nothing, so a text decision reaches nothing but its own
@@ -298,7 +315,8 @@ judge runs without its schema; IMAGE-DESIGN §9's 2026-10-08 ruling sets
 `follow_loaded = false`, as a seat property rather than inherited, as
 `trial_env` sets it for every arm — following whatever the owner last
 loaded would change a seat's model mid-conversation, the other half of §5's
-hold. The agent's model comes from the owner's; its `timezone` is written
+hold. The agent's model comes from the owner's, never from the named
+persona's own `model` pin, which stays with the owner's chats (§2a); its `timezone` is written
 as `UTC`, never copied, because the calendar head note renders in the
 configured zone (`Agent::calendar_note`) and a participant reading the
 owner's zone learns where the owner is — and a participant may be
@@ -462,7 +480,14 @@ ready; whether step 4 ships the bridge or that interim is owed (§9), and
 the preflight of every leg belongs to the bridge. The interim needs no
 `facade.sock`: with the host network the facade's loopback is the host's,
 so the worker's URLs reach it unchanged — the third leg is a cost of the
-bridge, not of the interim.
+bridge, not of the interim. **What the interim gives up** is the sentence
+that closes the bridge paragraph above. With the host's network the facade
+reaches the owner's loopback services, the LAN and the tailnet, as every
+other mecha surface does, and the closed `Blind` catalogue (§4a) is then
+the only thing between a stranger's conversation and those hosts.
+`block_private_ips = true` stops being moot. So §9's choice is between two
+described postures: no route to any host, or a route held shut by the
+catalogue alone. Step 4 says which tests each one ships with.
 
 Three things the build must not miss: the `mecha` binary and any model or
 cache file the facade reads live under the owner's home, which bwrap does
@@ -1354,7 +1379,12 @@ its custom text provider and its v3 persona API.
    cannot run, with the step's bwrap tests run under
    `MECHA_TEST_REQUIRE_BACKENDS=1` in CI, since a skipped confinement test
    reads like a passing one), `facade.sock` answering the wiring
-   from a confined facade (the wiring's only route in), `approve_all` pinned
+   from a confined facade (the wiring's only route in) — under §9's
+   filesystem-only interim there is no `facade.sock` and no namespace, so
+   that test and the one proving a LAN address does not answer give way to
+   the interim's own negative: nothing in the seat's registry has a
+   destination, every registered tool is a catalogue entry, and a scripted
+   seat that asks for a fetch, a search or a file reaches no host — `approve_all` pinned
    false with the approver test driven *through* the facade's mount so it
    fails if the mount allows everything, no seat request containing "owner"
    in any note, voice or text, the
