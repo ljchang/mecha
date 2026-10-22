@@ -184,8 +184,15 @@ pub enum SessionRecording {
   one-patch-per-door shape E1 exists to end: `OwnerProof::` may appear
   only in an allowlisted set of authenticating modules, and a new name
   outside it fails the arm whoever wrote the door. The HyperStudy door is
-  outside the set by construction. Door review stays the control; the
-  proof and the arm are what it reads.
+  outside the set by construction. The arm would miss one route on its
+  own: the loader builds a proof from a file, so a door could resume a
+  session and hand its recorded `Owner` to the write path without naming
+  `OwnerProof::`, and the resume refusal would compare the record against
+  itself. So what a loader yields is a `RecordedPrincipal`, a separate
+  type that `open` can only *compare* against the `Principal` the door
+  built, and the write-path constructor (below) accepts a `Principal`
+  alone. Adopting a recorded owner does not type-check. Door review stays
+  the control; the proof, the arm and the two types are what it reads.
   A session with no connection (a cron-fired trigger, a `mecha batch`
   item) takes its principal from the store that authored it. The owner
   wrote the trigger in `~/.mecha/`, so it is `Owner` by rule, written into
@@ -258,7 +265,9 @@ where a principal-only rule would bite, with every earlier step green.
 The three axes go into the session file's **header** (`SessionMeta`),
 beside `SessionMeta::kind`, not into the body as a `Record`. They are fixed
 when the session opens, which is the header's granularity; `Record::Config`
-is per-attach because flags can differ on resume, and these cannot:
+is per-attach because flags can differ on resume, and is appended again
+mid-conversation when the router's bound generation changes
+(`recorded_generation` in both web chats and voice), while these cannot:
 `HostedSession::open` refuses a resume whose recorded axes are not equal
 to the door's on all three. A guest principal is compared whole, issuer and
 subject, not only the variant, so one participant's run cannot reopen
@@ -743,6 +752,15 @@ In the engine, `Incognito` is a value of the Recording axis:
 - **It switches off, by construction:** appraisal, corpus entry, the
   persona memory writer, learning, and the dose record. Its own audit
   (INCOGNITO-DESIGN §8) moves with it as tests, unchanged.
+- **Its gates are re-derived every turn, not fixed at open.** Today's web
+  chat calls `incognito_gates` over the bound router generation on each
+  turn and refuses the turn when it fails, because a server that was down
+  when the chat opened can register tools after a switch (the graph among
+  them, whose query log would record the chat's words), and a config edit
+  can take the sandbox away. A deny-list computed at `open` would let both
+  through. So in the host it is a second pre-run guard beside recording
+  (§7), and nothing about the three axes being fixed at open makes the
+  gates fixed too.
 
 ## 7. The host: one turn loop
 
@@ -770,8 +788,15 @@ failure §2's resume rule names, and from step 4 one host holds both.
 stay clear of `voice::SessionHost`, the existing CLI trait through which a
 web chat exposes its sessions to calls; the two coexist for the whole
 migration (§9.3). The host's job:
-record → fold → run → `record_run` → roll back on failure → hand back late
-jobs → emit events. Recording comes first and is a guard: a turn whose
+hold the router and follow it → re-derive the per-turn gates → record →
+fold → run → `record_run` → roll back on failure → hand back late jobs →
+emit events. The first two are today's and move with the bodies: both web
+chats open a turn on `Follower::enter` (D13: hold the router first,
+waiting out a switch in progress, which the open page is told about, then
+follow it), the hold lives as long as the run and the run always yields
+(`hold.rs`), and a turn on a new generation appends a `Record::Config`
+before it runs; then the incognito gates are re-derived from that
+generation and a failure refuses the turn (§6). Recording comes first and is a guard: a turn whose
 record cannot be written does not run, as both copies refuse today. A
 guard that cannot run stops the run. *No recorder* and *the recorder
 refused* are two paths, as absent and unparseable are for the principal
@@ -966,7 +991,12 @@ behaviour visible before it moves.
      `Capabilities` must read `Egress::None`. A seat inheriting an owner's `trifecta = "allow"`
      shows, and a moved workspace, the wrong approver, a lost
      incognito allowlist or observer hooks running in incognito each fail
-     the step rather than pass it. The last two are set in the very block
+     the step rather than pass it. A snapshot over one binding cannot see
+     the allowlist computed once instead of per turn, so one fixture
+     switches the router's binding mid-conversation: the turn after the
+     switch takes the hold before it runs, appends a `Record::Config`
+     for the new generation, and in incognito withholds a tool registered
+     only after the switch. The last two are set in the very block
      step 4 moves (`cx.withheld`, and `cx.hooks` cleared to a default
      `HookSet`, its one site in `mecha-cli`). The incognito tests exercise
      the pure functions (`incognito::withheld`, `incognito::hooks_allow`)
