@@ -193,8 +193,10 @@ pub fn references(parts: &Parts, people: &[Person], pins: (bool, bool)) -> Strin
 /// line the guide fixes for the frames given, then the three core fields.
 /// `in_words` describes the library characters who cannot be shown here.
 pub fn frames(parts: &Parts, first: bool, last: bool, in_words: &[(String, String)]) -> String {
+    // A model that wrote the sections itself is sent what it wrote, with
+    // its lines closed as `references` closes them (review of #732).
     if parts.prompt.contains("integrated_multimodal_description:") {
-        return parts.prompt.trim().to_string();
+        return closed_lines(parts.prompt.trim());
     }
     let mut body = with_first_shot(&closed_lines(parts.prompt.trim()));
     for (name, text) in in_words {
@@ -282,16 +284,28 @@ pub fn label_names(text: &str, named: &[(String, usize)]) -> String {
 }
 
 fn label_outside(text: &str, named: &[(String, usize)]) -> String {
+    // Longest form first: in cast order, a name that is a whole word of a
+    // longer one (`ana` beside `ana-sofia`) took its place in "Ana Sofia",
+    // and the longer name's label never appeared (review of #732). Once
+    // replaced, the longer name is a label the shorter cannot match.
+    let mut forms: Vec<(String, usize)> = named
+        .iter()
+        .flat_map(|(name, n)| [(name.clone(), *n), (name.replace('-', " "), *n)])
+        .collect();
+    forms.sort_by_key(|(form, _)| std::cmp::Reverse(form.len()));
+    forms.dedup();
     let mut text = text.to_string();
-    for (name, n) in named {
-        for form in [name.clone(), name.replace('-', " ")] {
-            text = replace_word(&text, &form, &format!("<Subject {n}>"));
-        }
+    for (form, n) in forms {
+        text = replace_word(&text, &form, &format!("<Subject {n}>"));
     }
     text
 }
 
 fn replace_word(text: &str, word: &str, with: &str) -> String {
+    // An empty word is found at every offset and never advances.
+    if word.is_empty() {
+        return text.to_string();
+    }
     let lower = text.to_ascii_lowercase();
     let word = word.to_ascii_lowercase();
     let is_word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
@@ -359,6 +373,33 @@ mod tests {
             "<Subject 1> (S1) says, <d>[English] Hi Mara Lee!</d> <Subject 2> waves at <Subject 1>."
         );
         assert_eq!(label_names("Mayapple jam.", &named), "Mayapple jam.");
+    }
+
+    /// A name that is a whole word of a longer one does not take its place
+    /// (review of #732), and an empty name changes nothing rather than
+    /// looping.
+    #[test]
+    fn a_longer_name_keeps_its_own_label() {
+        let named = [("ana".to_string(), 1), ("ana-sofia".to_string(), 2)];
+        assert_eq!(
+            label_names("Ana Sofia waves at Ana.", &named),
+            "<Subject 2> waves at <Subject 1>."
+        );
+        assert_eq!(
+            label_names("Ana waves.", &[(String::new(), 1)]),
+            "Ana waves."
+        );
+    }
+
+    /// A keyframe prompt the model sectioned itself still has its lines
+    /// closed, as a reference prompt's are (review of #732).
+    #[test]
+    fn a_sectioned_frames_prompt_still_has_its_lines_closed() {
+        let p = "integrated_multimodal_description:\nMaya says, <d>[English] Hello</d>";
+        assert_eq!(
+            frames(&parts(p), false, false, &[]),
+            "integrated_multimodal_description:\nMaya says, <d>[English] Hello.</d>"
+        );
     }
 
     #[test]
