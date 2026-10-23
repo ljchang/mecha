@@ -1747,9 +1747,15 @@ async fn prepare_tools_carrying(
         if asked(mecha_core::videogen::tool::NAME) {
             match mecha_core::videogen::VideoGenerate::new(video) {
                 Ok(tool) => {
-                    let tool = tool
-                        .with_floor(cfg.system.clone())
-                        .with_voices_dir(cfg.voice.voices_dir.clone());
+                    // The voice library is cloning's, part of `voice`:
+                    // with `voice` off no voice is read, and H3 voices the
+                    // lines itself, said in the result (review of #733).
+                    let tool = tool.with_floor(cfg.system.clone()).with_voices_dir(
+                        cfg.voice
+                            .voices_dir
+                            .clone()
+                            .filter(|_| feature_on(Feature::Voice)),
+                    );
                     // A chat's clips keep its last settings, under every
                     // surface that names itself; never under the callers that
                     // name none (eval, batch, a persona replay), where an arm
