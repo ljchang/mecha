@@ -691,11 +691,13 @@ mod tests {
     /// `[[search]]` chain.
     #[test]
     fn every_real_tool_declares_as_the_design_lists() {
-        const ELIGIBLE: [&str; 5] = [
+        const ELIGIBLE: [&str; 7] = [
             "document_read",
             "image_generate",
             "image_library",
             "image_view",
+            "video_generate",
+            "video_prompt_guide",
             "web_search",
         ];
         let dir = scratch();
@@ -716,6 +718,10 @@ mod tests {
             .unwrap(),
         ));
         pool.insert(Arc::new(crate::tool::image_view::ImageView));
+        pool.insert(Arc::new(
+            crate::videogen::VideoGenerate::new(crate::videogen::VideoConfig::default()).unwrap(),
+        ));
+        pool.insert(Arc::new(crate::videogen::VideoPromptGuide));
         pool.insert(Arc::new(crate::tool::image_library::ImageLibrary::new(
             dir.clone(),
         )));
@@ -746,7 +752,7 @@ mod tests {
             .unwrap(),
         )));
         assert!(
-            pool.len() >= 15,
+            pool.len() >= 17,
             "the pool should hold every constructible tool"
         );
         for tool in pool.iter() {

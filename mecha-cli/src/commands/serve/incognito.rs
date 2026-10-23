@@ -508,6 +508,11 @@ mod tests {
             ("persona_propose", true),
             ("research", false),
             ("http_fetch", true),
+            // Not on the allowlist: a clip leaves its uploads, its record
+            // and its output on the video server and under the mecha home,
+            // none of which a room can take back.
+            ("video_generate", true),
+            ("video_prompt_guide", true),
             ("a_tool_added_tomorrow", true),
         ];
         let routed = vec![
@@ -534,6 +539,8 @@ mod tests {
                 "mail__calendar_create_event",
                 "mail__mail_send",
                 "research",
+                "video_generate",
+                "video_prompt_guide",
             ]
         );
     }

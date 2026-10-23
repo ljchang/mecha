@@ -145,6 +145,9 @@ pub const READ_ONLY_WRITERS: &[&str] = &[
     "image_library_reference",
     "message_send",
     "persona_propose",
+    // Renders a clip and writes it under `videos/`, with its record under
+    // the mecha home.
+    "video_generate",
     // Posts a file into a Slack thread. Defined in mecha-cli: a name, not a
     // dependency, and an accepted cost of the list being temporary. The
     // effect class that replaces it is declared where each tool lives.
@@ -1417,6 +1420,18 @@ mod tests {
                 "MessageSendTool",
                 Some("message_send"),
                 WRITES,
+            ),
+            (
+                "mecha-core/src/videogen/tool.rs",
+                "VideoGenerate",
+                Some("video_generate"),
+                WRITES,
+            ),
+            (
+                "mecha-core/src/videogen/tool.rs",
+                "VideoPromptGuide",
+                Some("video_prompt_guide"),
+                PURE,
             ),
             (
                 "mecha-core/src/persona/files.rs",

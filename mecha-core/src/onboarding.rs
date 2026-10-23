@@ -1055,6 +1055,7 @@ pub fn blurb(f: crate::feature::Feature) -> &'static str {
         Feature::Image => {
             "Making pictures on a local image server, with a character and style library."
         }
+        Feature::Video => "Making short clips with sound on a local video server.",
         Feature::Personas => "Characters you write and talk to, apart from the assistant.",
         Feature::Voice => "Talking to mecha: dictation, voice calls and voice cloning.",
         Feature::Frontdoor => {
@@ -2244,6 +2245,7 @@ mod tests {
                 "search",
                 "documents",
                 "image",
+                "video",
                 "personas",
                 "voice",
                 "frontdoor",

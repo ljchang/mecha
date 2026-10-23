@@ -245,8 +245,12 @@ pub fn compile(scene: &Value, default_seconds: f64) -> Result<Compiled> {
         }
     }
 
+    // Only the lines kept: a dropped line's words are not in the clip, and
+    // counting them asked for cuts to words nobody would hear (review of
+    // #732).
     let spoken: usize = lines
         .iter()
+        .filter(kept)
         .filter_map(|l| text(l, "says"))
         .map(|s| s.split_whitespace().count())
         .sum();
@@ -387,7 +391,7 @@ mod tests {
         assert!(
             c.notes
                 .iter()
-                .any(|n| n.starts_with("The lines hold 17 words")),
+                .any(|n| n.starts_with("The lines hold 15 words")),
             "{:?}",
             c.notes
         );

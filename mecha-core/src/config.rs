@@ -2023,6 +2023,22 @@ pub struct VoiceConfig {
     pub voices_dir: Option<PathBuf>,
 }
 
+/// A voice name is a bare filename stem, and the alphabet is closed rather
+/// than denylisted: this string becomes `<voices_dir>/<name>.wav` on one
+/// side and a `voice` field the TTS resolves on the other, so anything
+/// beyond lowercase, digits, `-` and `_` is refused — including `default`,
+/// which names the default voice and must stay unshadowable: on Breeze it is
+/// `default.wav` in this same directory, so a clone of that name would
+/// silently replace it and a delete would leave every call voiceless.
+pub fn valid_voice_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 40
+        && name != "default"
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}
+
 impl VoiceConfig {
     /// Parakeet on this machine; a new install sets its own.
     pub const DEFAULT_STT_URL: &'static str = "http://127.0.0.1:8992/v1";

@@ -235,21 +235,6 @@ fn resolve(store: &Path, arg: &str) -> Result<(PathBuf, String, String)> {
     Ok((path, persona, id))
 }
 
-/// Whether a call is live now, as `mecha system probe voice.live` reads it:
-/// a hold shows only a turn in flight, not a call between turns. No speech
-/// engine here is no call; one whose journal cannot be read is a refusal,
-/// since unknown is not clear.
-fn voice_live() -> Result<bool> {
-    use mecha_core::system::{Measurement, Reader, Reading};
-    match Reader::new().now(Measurement::VoiceLive) {
-        Reading::Observed { value } => Ok(value != 0.0),
-        Reading::NotHere => Ok(false),
-        Reading::Unread { why } => {
-            bail!("a live call cannot be ruled out: {why}")
-        }
-    }
-}
-
 /// Wait while the owner is using the model: a call, or a turn in flight on
 /// the router (a hold some other process took). Checked before every
 /// sample, because a long run outlasts the moment it started in.
@@ -257,7 +242,7 @@ pub(super) async fn wait_for_owner(router: Option<&str>) -> Result<()> {
     let me = std::process::id();
     let mut said = false;
     loop {
-        let call = voice_live()?;
+        let call = mecha_core::system::voice_live()?;
         let turns = match router {
             Some(base) => mecha_core::hold::Holds::open_default()?
                 .live(base)
