@@ -269,14 +269,6 @@ impl VideoGenerate {
         let (input, kept) = args::with_chat_settings(input, last.as_ref());
         let (input, mut notes) = args::with_scene(&input)?;
         notes.extend(kept);
-        let character = self
-            .self_as
-            .as_ref()
-            .and_then(|s| s.character.as_deref())
-            .map(str::trim)
-            .filter(|c| !c.is_empty())
-            .map(args::library_key);
-        let input = args::persona_defaults(&input, character.as_deref());
         let library = self
             .library_dir
             .as_ref()
@@ -290,13 +282,32 @@ impl VideoGenerate {
                 (e.name.clone(), (!text.is_empty()).then_some(text))
             })
             .collect();
+        // The persona's own character, only while the library holds it
+        // approved with a portrait, as `image_generate`'s "self" is: one the
+        // owner unapproved or removed would otherwise be every call's lone
+        // reference, and refuse every call (review of #733).
+        let character = self
+            .self_as
+            .as_ref()
+            .and_then(|s| s.character.as_deref())
+            .map(args::library_key)
+            .filter(|c| {
+                library
+                    .get(crate::imagelib::Kind::Character, c)
+                    .is_some_and(|e| {
+                        e.status == crate::imagelib::Status::Approved && e.portrait.is_some()
+                    })
+            });
+        let input = args::persona_defaults(&input, character.as_deref());
         let names: Vec<String> = characters.iter().map(|(n, _)| n.clone()).collect();
         let named = args::named_in(input["prompt"].as_str().unwrap_or(""), &names);
         // Keyed first, so a reference the model wrote as `Maya` and the
         // name the prompt mentions are one reference, not two.
         let input = args::with_named(&args::keyed_names(&input), &named);
         // A clip without references describes, in words, the persona and
-        // everyone the prompt names.
+        // everyone the prompt names. Rare since the persona and every named
+        // character become references; it is the words a clip falls back to
+        // when the references array held nothing usable.
         let mut in_words: Vec<(String, String)> = Vec::new();
         for n in character.iter().chain(named.iter()) {
             if let Some((_, Some(text))) = characters.iter().find(|(name, _)| name == n) {
@@ -822,8 +833,10 @@ impl VideoGenerate {
                             .and_then(|t| t.elapsed().ok())
                             .is_some_and(|age| age > QUEUE_LIMIT),
                     };
-                    if gone {
-                        let _ = std::fs::remove_file(&path);
+                    // Removed and taken at once; a removal that fails waits
+                    // like a live holder, rather than spinning (review of
+                    // #733).
+                    if gone && std::fs::remove_file(&path).is_ok() {
                         continue;
                     }
                 }
@@ -863,8 +876,10 @@ impl VideoGenerate {
                 }
                 Ok(true) => {}
                 Ok(false) => {
+                    // A queue that cannot be read is busy, not idle: the
+                    // gate waits rather than fails open (review of #733).
                     let queue = self.wire.get_json("queue").await.ok();
-                    let busy = queue.is_some_and(|q| {
+                    let busy = queue.is_none_or(|q| {
                         ["queue_running", "queue_pending"]
                             .iter()
                             .any(|k| q[k].as_array().is_some_and(|a| !a.is_empty()))
