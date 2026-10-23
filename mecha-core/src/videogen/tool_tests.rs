@@ -427,6 +427,40 @@ async fn a_persona_clip_has_her_face_and_her_voice() {
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// A persona whose character the library does not hold approved is not
+/// made every clip's lone reference: the clip is made from words, as her
+/// picture is (review of #733).
+#[tokio::test]
+async fn a_persona_without_a_library_character_still_gets_a_clip() {
+    let home = scratch();
+    let chat = home.join("chat");
+    std::fs::create_dir_all(&chat).unwrap();
+    let cfg = VideoConfig::default();
+    let (url, log) = fake(Fake::default(), &cfg).await;
+    let t = Arc::new(tool(&url, &home, Arc::new(Stub::default())));
+    let form = Arc::clone(&t)
+        .for_persona_as(&PersonaSelf {
+            name: "ada".into(),
+            display: "Ada".into(),
+            character: Some("ada".into()),
+            voice: None,
+        })
+        .unwrap();
+    let out = form
+        .call(json!({"prompt": "Rain on a window."}), &ctx(&chat))
+        .await
+        .unwrap();
+    assert!(out.deferred.is_some(), "{}", out.content);
+    let done = crate::jobs::run_inline(out.deferred.as_ref().unwrap(), None).await;
+    assert!(done.content.contains("frames mode"), "{}", done.content);
+    assert!(!log
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|l| l.starts_with("POST /upload")));
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// A reference written as the model capitalises it and the same name in
 /// the prompt are one reference, not two.
 #[tokio::test]
