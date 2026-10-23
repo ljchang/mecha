@@ -278,10 +278,10 @@ assert.equal(keptCharacter('priya', undefined), '');
   r = applyEvent(r, { type: 'tool_result', id: 't2', name: 'image_generate', is_error: false });
   assert.equal(toolStatus(r.entries, 2), 'done');
   assert.equal(waitingLine(r, 'Maya', 99_000), 'Maya is typing');
-  // A refused call is closed, not waited on for the rest of the run.
   // The built-in video tool says what it is starting.
   const clip = applyEvent(r, { type: 'tool', id: 'v1', name: 'video_generate' });
   assert.ok(waitingLine(clip, 'Maya', Date.now()).startsWith('making a clip…'));
+  // A refused call is closed, not waited on for the rest of the run.
   r = applyEvent(r, { type: 'tool', id: 't3', name: 'web_search' });
   r = applyEvent(r, { type: 'denied', name: 'web_search', reason: 'blocked' });
   assert.equal(waitingLine(r, 'Maya', 99_000), 'Maya is typing');

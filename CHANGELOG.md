@@ -51,7 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it still speaks in it.
 
 - **The assistant's chat shows how long a picture or clip has been running.**
-  A still-out row reads "working on it… 2:14" or "drawing a picture… 0:41",
+  A still-out row reads "making a clip… 2:14" or "drawing a picture… 0:41"
+  ("working on it…" for another tool's background work),
   as a persona chat's already did, and keeps counting across a reload.
 
 - **`[[mcp]] disabled_tools` withholds single tools from a server.** By the
