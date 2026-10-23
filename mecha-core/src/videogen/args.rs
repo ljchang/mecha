@@ -93,8 +93,14 @@ pub fn with_chat_settings(args: &Value, last: Option<&Value>) -> (Value, Vec<Str
 /// What the next clip in a chat keeps: the settings a finished one was made
 /// at, read from its record.
 pub fn kept_settings(record: &Value) -> Value {
+    // The length asked for where the record has it: `seconds` is the
+    // rendered length, snapped up to the frame grid (review of #733).
+    let seconds = match &record["asked_seconds"] {
+        Value::Null => record["seconds"].clone(),
+        asked => asked.clone(),
+    };
     json!({
-        "turbo": record["turbo"], "seconds": record["seconds"],
+        "turbo": record["turbo"], "seconds": seconds,
         "size": record["size"], "aspect": record["aspect"],
     })
 }
