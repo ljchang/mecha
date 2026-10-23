@@ -83,9 +83,17 @@ pub fn compile(scene: &Value, default_seconds: f64) -> Result<Compiled> {
         bail!("`scene.shots` needs at least one shot: its framing and action");
     }
 
-    // Speaker IDs in the order people first speak (the guide's rule).
+    // Speaker IDs in the order people first speak (the guide's rule),
+    // counting only the lines that are kept: a line naming a shot the scene
+    // does not have is dropped below, and numbering its speaker left the
+    // clip with an S2 and no S1 (review of #732).
+    let kept = |l: &&&Value| {
+        l.get("shot")
+            .and_then(Value::as_u64)
+            .is_none_or(|k| k >= 1 && k as usize <= shots.len())
+    };
     let mut speakers: Vec<String> = Vec::new();
-    for l in &lines {
+    for l in lines.iter().filter(kept) {
         if let Some(who) = text(l, "who") {
             if !speakers.iter().any(|s| s.eq_ignore_ascii_case(&who)) {
                 speakers.push(who);
@@ -112,15 +120,26 @@ pub fn compile(scene: &Value, default_seconds: f64) -> Result<Compiled> {
         .collect();
     times[0] = 0.0;
     for i in 1..n {
-        if times[i] <= times[i - 1] || times[i] >= length {
+        let previous = times[i - 1];
+        if times[i] <= previous || times[i] >= length {
+            // The even spot when it still falls after the previous cut;
+            // otherwise an even share of what is left, so every cut stays
+            // after the one before it and inside the clip. The even spot
+            // alone could land on or before a cut already kept: two shots
+            // asked for at 4.0 s of 6 cut twice at 4.0 s (review of #732).
             let even = length * i as f64 / n as f64;
+            let moved = if even > previous && even < length {
+                even
+            } else {
+                previous + (length - previous) / (n - i + 1) as f64
+            };
             notes.push(format!(
                 "Shot {}'s cut at {:.2} s fell outside the clip or before the previous cut, so it was moved to {:.2} s.",
                 i + 1,
                 times[i],
-                even
+                moved
             ));
-            times[i] = even;
+            times[i] = moved;
         }
     }
 
@@ -300,6 +319,51 @@ mod tests {
             Some("Rain drumming on a skylight.")
         );
         assert!(c.notes.is_empty(), "{:?}", c.notes);
+    }
+
+    /// A moved cut lands after the one before it, never on it: two shots
+    /// asked for at 5.2 s of a 7 s clip cut at 5.2 s and then at 6.1 s, not
+    /// twice at 5.2 s (review of #732).
+    #[test]
+    fn every_cut_comes_after_the_one_before_it() {
+        let mut s = workshop();
+        s["shots"] = json!([
+            {"framing": "A wide shot", "action": "Wren comes in"},
+            {"at": 5.2, "framing": "A close-up of Maya", "action": "Maya looks up"},
+            {"at": 5.2, "framing": "A close-up of Wren", "action": "Wren grins"}
+        ]);
+        s["seconds"] = json!(7);
+        let c = compile(&s, 5.0).unwrap();
+        assert!(c.prompt.contains("[Shot 2] At 00:05.200"), "{}", c.prompt);
+        assert!(c.prompt.contains("[Shot 3] At 00:06.100"), "{}", c.prompt);
+        assert!(
+            c.notes
+                .iter()
+                .any(|n| n.starts_with("Shot 3's cut at 5.20 s")),
+            "{:?}",
+            c.notes
+        );
+        // A cut asked for before a late one kept is moved after it, never to
+        // the even spot behind it.
+        s["shots"][1]["at"] = json!(6.3);
+        s["shots"][2]["at"] = json!(1.0);
+        let c = compile(&s, 5.0).unwrap();
+        assert!(c.prompt.contains("[Shot 2] At 00:06.300"), "{}", c.prompt);
+        assert!(c.prompt.contains("[Shot 3] At 00:06.650"), "{}", c.prompt);
+    }
+
+    /// A dropped line's speaker is not numbered: the first line kept is S1
+    /// (review of #732).
+    #[test]
+    fn a_dropped_line_takes_no_speaker_id() {
+        let mut s = workshop();
+        s["lines"] = json!([
+            {"who": "Wren", "says": "Over here.", "shot": 5},
+            {"who": "Maya", "says": "Chain or brakes?"}
+        ]);
+        let c = compile(&s, 5.0).unwrap();
+        assert!(c.prompt.contains("Maya (S1) says"), "{}", c.prompt);
+        assert!(!c.prompt.contains("(S2)"), "{}", c.prompt);
     }
 
     #[test]
