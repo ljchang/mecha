@@ -37,6 +37,9 @@ pub struct Config {
     /// Local image generation — the `image_generate` tool. Absent means no
     /// tool. Global-file only; see [`crate::imagegen::ImageConfig`].
     pub image: Option<crate::imagegen::ImageConfig>,
+    /// Local video generation: clips with sound. Absent means no video tool.
+    /// Global-file only; see [`crate::videogen::VideoConfig`].
+    pub video: Option<crate::videogen::VideoConfig>,
     /// Document extraction — the `document_read` tool and `mecha document`.
     /// Absent means no tool. Global-file only; see
     /// [`crate::document::DocumentsConfig`].
@@ -425,6 +428,7 @@ impl Default for Config {
             subagents: Vec::new(),
             search: Vec::new(),
             image: None,
+            video: None,
             documents: None,
             hooks: Vec::new(),
             rules: Vec::new(),
@@ -1464,6 +1468,11 @@ impl Config {
         if let Some(docs) = &self.documents {
             docs.confine_here()?;
         }
+        // The video tool sends prompts, pictures and voices there: refused
+        // off this machine at load, as `[voice]`'s addresses are.
+        if let Some(video) = &self.video {
+            video.loopback_url()?;
+        }
         // A rule that does not do what its author believes fails on every
         // start, not on the run that needed it. See `policy::ExecPolicy`.
         crate::policy::ExecPolicy::from_config(&self.rules, self.approval.strict_inline_eval)
@@ -1608,6 +1617,15 @@ impl Config {
         if trust == LayerTrust::Project && layer.image.take().is_some() {
             tracing::warn!(
                 "[image] in {} is ignored — image generation loads from the \
+                 global config only",
+                path.display()
+            );
+        }
+        // `[video]` for `[image]`'s reason, with the owner's pictures and
+        // voices sent beside the prompts.
+        if trust == LayerTrust::Project && layer.video.take().is_some() {
+            tracing::warn!(
+                "[video] in {} is ignored — video generation loads from the \
                  global config only",
                 path.display()
             );
@@ -2122,6 +2140,7 @@ struct ConfigLayer {
     #[serde(rename = "search")]
     search: Option<Vec<SearchBackendConfig>>,
     image: Option<crate::imagegen::ImageConfig>,
+    video: Option<crate::videogen::VideoConfig>,
     documents: Option<crate::document::DocumentsConfig>,
     #[serde(rename = "hook")]
     hooks: Option<Vec<HookConfig>>,
@@ -2473,6 +2492,11 @@ impl ConfigLayer {
         // Only ever reached from the global layer — `merge_file` strips it.
         if let Some(v) = self.image {
             cfg.image = Some(v);
+        }
+        // Wholesale, `[image]`'s reason. Only ever reached from the global
+        // layer — `merge_file` strips it.
+        if let Some(v) = self.video {
+            cfg.video = Some(v);
         }
         // Wholesale, `[image]`'s reason: a URL from one layer and a
         // confinement from another is a configuration nobody wrote. Only
@@ -2942,6 +2966,48 @@ mod tests {
             image.diffusion_model,
             crate::imagegen::ImageConfig::default().diffusion_model
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `[video]` is `[image]`'s hazard with the owner's pictures and voices
+    /// sent beside the prompts: ignored from a project layer, applied whole
+    /// from the global one, and refused off this machine at load.
+    #[test]
+    fn a_project_layer_cannot_choose_where_video_prompts_go() {
+        let dir = std::env::temp_dir().join(format!("mecha-video-scope-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("layer.toml");
+        std::fs::write(
+            &path,
+            "[video]\nurl = \"http://127.0.0.1:9997\"\nsteps = 8\n",
+        )
+        .unwrap();
+
+        let mut cfg = Config::default();
+        cfg.merge_file(&path, LayerTrust::Project).unwrap();
+        assert_eq!(cfg.video, None);
+
+        let mut cfg = Config::default();
+        cfg.merge_file(&path, LayerTrust::Global).unwrap();
+        let video = cfg
+            .video
+            .clone()
+            .expect("the operator's own file configures it");
+        assert_eq!(
+            (video.url.as_str(), video.steps),
+            ("http://127.0.0.1:9997", 8)
+        );
+        assert_eq!(
+            video.references_model,
+            crate::videogen::VideoConfig::default().references_model
+        );
+        cfg.validate().unwrap();
+        cfg.video = Some(crate::videogen::VideoConfig {
+            url: "http://video.example:8189".into(),
+            ..video
+        });
+        let err = format!("{:#}", cfg.validate().unwrap_err());
+        assert!(err.contains("[video] url"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3560,6 +3626,20 @@ mod tests {
         assert!(
             parsed.is_ok(),
             "Config has a field ConfigLayer cannot read: {parsed:?}"
+        );
+        // The default leaves its optional tables out, so they are rendered
+        // present too: a table the layer could not read would pass above.
+        let present = Config {
+            image: Some(crate::imagegen::ImageConfig::default()),
+            video: Some(crate::videogen::VideoConfig::default()),
+            documents: Some(crate::document::DocumentsConfig::default()),
+            ..Config::default()
+        };
+        let rendered = toml::to_string(&present).unwrap();
+        let parsed = toml::from_str::<ConfigLayer>(&rendered);
+        assert!(
+            parsed.is_ok(),
+            "Config has an optional table ConfigLayer cannot read: {parsed:?}"
         );
     }
 
