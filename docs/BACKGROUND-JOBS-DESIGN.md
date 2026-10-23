@@ -564,8 +564,9 @@ or reach getting any trust they do not already have?
     cleanly before its server was dropped from config (or failed to connect) loses its player:
     nothing registered can vouch for the tool. That is the default on purpose, not a gap.
 - **Wording follows the tool.** A still-out `image_generate` row keeps "drawing a picture…" and
-  "Stop the picture". Any other deferred row reads "working on it…" (`picture.js` `makingText`,
-  one function for every surface) and "Stop". The loop's closing
+  "Stop the picture", and the built-in `video_generate` reads "making a clip…". Any other
+  deferred row reads "working on it…" (`picture.js` `makingText`, one function for every
+  surface), since the page cannot know what a server's tool makes, and "Stop". The loop's closing
   lines follow the job too: a job may carry its own (`DeferredJob::with_closings`), and an
   MCP tool's does (`WORK_ON_ITS_WAY`, `WORK_STILL_RUNNING`: "what this turn asked for is being
   made…"). A job that carries none closes on the picture's measured lines, so pictures speak
@@ -644,10 +645,10 @@ nothing on the persona's surfaces that assumes the work is a picture.
   events are marked from the persona agent's own registry.
 - **The persona page and the call screen.** The live fold keeps the server's `deferred` mark
   (`persona.js` `applyEvent`). A still-out row says `makingText`: a picture keeps "drawing a
-  picture…", and anything else reads "working on it…". A finished clip plays under its row
+  picture…", a built-in clip reads "making a clip…", and anything else reads "working on it…". A finished clip plays under its row
   (`ClipPlayer`, through the chat's file route, unlock token and all). On a call, the slot says
   the same words, and a finished clip is noted in the call's transcript as "a clip, in the chat".
-  Its one Stop stops everything out, so a picture beside a clip names both (`slotText`). A row
+  Its one Stop stops everything out, so the slot names everything out by kind, never by its first row (`slotText`): "drawing a picture, and making a clip…". A row
   naming a clip an earlier row already plays says so rather than play it twice (`repeatedClips`,
   in both chats). The call screen draws pictures, not clips.
 - **Incognito is unchanged.** An incognito room's folder is not a kept chat's, and the server
