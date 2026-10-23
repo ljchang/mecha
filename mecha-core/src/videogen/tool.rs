@@ -239,6 +239,9 @@ struct Plan {
     width: u32,
     height: u32,
     frames: u32,
+    /// The length the call asked for: what a chat keeps, never the
+    /// rendered length `frames` snaps it up to.
+    seconds: f64,
     size: graph::Size,
     aspect: String,
     turbo: bool,
@@ -305,9 +308,9 @@ impl VideoGenerate {
         // name the prompt mentions are one reference, not two.
         let input = args::with_named(&args::keyed_names(&input), &named);
         // A clip without references describes, in words, the persona and
-        // everyone the prompt names. Rare since the persona and every named
-        // character become references; it is the words a clip falls back to
-        // when the references array held nothing usable.
+        // everyone the prompt names. Reserved: the persona and every named
+        // character become references, so this fills only when `references`
+        // held nothing usable; the private server's path, kept for parity.
         let mut in_words: Vec<(String, String)> = Vec::new();
         for n in character.iter().chain(named.iter()) {
             if let Some((_, Some(text))) = characters.iter().find(|(name, _)| name == n) {
@@ -445,6 +448,7 @@ impl VideoGenerate {
             width,
             height,
             frames: graph::frames(seconds),
+            seconds,
             size,
             aspect,
             turbo,
@@ -796,13 +800,16 @@ async fn pause(step: Duration, cancel: &CancellationToken) -> std::result::Resul
 }
 
 impl VideoGenerate {
-    async fn wait_turn(&self, cancel: &CancellationToken) -> std::result::Result<Turn, Failure> {
+    async fn wait_turn(
+        &self,
+        cancel: &CancellationToken,
+        deadline: std::time::Instant,
+    ) -> std::result::Result<Turn, Failure> {
         let dir = self.video_dir().ok_or_else(|| {
             anyhow!("the mecha home could not be found, so no turn could be taken")
         })?;
         std::fs::create_dir_all(&dir).context("making the video folder")?;
         let path = dir.join("render.turn");
-        let deadline = std::time::Instant::now() + QUEUE_LIMIT;
         loop {
             if cancel.is_cancelled() {
                 return Err(Failure::Cancelled);
@@ -857,8 +864,8 @@ impl VideoGenerate {
         &self,
         size: graph::Size,
         cancel: &CancellationToken,
+        deadline: std::time::Instant,
     ) -> std::result::Result<(), Failure> {
-        let deadline = std::time::Instant::now() + QUEUE_LIMIT;
         loop {
             if cancel.is_cancelled() {
                 return Err(Failure::Cancelled);
@@ -991,7 +998,10 @@ impl VideoGenerate {
         // chats' clips failed with "already rendering"). One renders at a
         // time on this machine: the turn is held until this clip is done,
         // and a waiting clip still answers Stop.
-        let _turn = self.wait_turn(cancel).await?;
+        // One three-hour budget for all the waiting, the turn and the machine
+        // together, so "waited three hours" is true (review of #733).
+        let deadline = std::time::Instant::now() + QUEUE_LIMIT;
+        let _turn = self.wait_turn(cancel, deadline).await?;
         match self.wire.await_server(Some(cancel), SERVER_WAIT).await {
             Err(Failure::Cancelled) => return Err(Failure::Cancelled),
             Err(Failure::Other(_)) => {
@@ -1003,7 +1013,7 @@ impl VideoGenerate {
             }
             Ok(()) => {}
         }
-        self.wait_until_free(plan.size, cancel).await?;
+        self.wait_until_free(plan.size, cancel, deadline).await?;
         let decoder = self.preflight(&plan).await?;
 
         let id = fresh_id();
@@ -1088,6 +1098,11 @@ impl VideoGenerate {
         let mut record = json!({
             "id": id, "prompt_id": asked, "created": now(), "mode": plan.mode.name(),
             "prompt": plan.prompt, "seconds": plan.frames as f64 / graph::FPS as f64,
+            // What the call asked for, which a chat keeps: the rendered length
+            // is snapped up to H3's frame grid, so keeping it drifted every
+            // chat to 5.2 s and wedged one at 15.08 s, past the limit
+            // (review of #733).
+            "asked_seconds": plan.seconds,
             "frames": plan.frames, "width": plan.width, "height": plan.height,
             "aspect": plan.aspect, "size": plan.size.name(), "turbo": plan.turbo,
             "steps": steps, "seed": plan.seed,
