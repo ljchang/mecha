@@ -171,12 +171,17 @@ export function jobStarts(prev, queue, now = Date.now()) {
 // clip a picture or a picture "it" (review of #668, pass 5).
 export function slotText(entries) {
   const out = (entries ?? []).filter(stillOut);
+  // Named by what is out, never by the first row: a clip beside other work
+  // named only the clip while the one Stop stopped both, and read
+  // differently in the other order (review of #734).
   const picture = out.some((e) => e.name === 'image_generate');
-  const others = out.filter((e) => e.name !== 'image_generate');
-  if (picture && others.length && others.every((e) => e.name === 'video_generate')) {
-    return 'drawing a picture, and making a clip…';
-  }
-  if (picture && others.length) return 'drawing a picture, and working on something else…';
+  const clip = out.some((e) => e.name === 'video_generate');
+  const other = out.some((e) => e.name !== 'image_generate' && e.name !== 'video_generate');
+  const parts = [];
+  if (picture) parts.push('drawing a picture');
+  if (clip) parts.push('making a clip');
+  if (other) parts.push('working on something else');
+  if (parts.length > 1) return `${parts.join(', and ')}…`;
   return makingText(out[0]);
 }
 

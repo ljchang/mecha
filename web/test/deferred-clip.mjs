@@ -96,6 +96,9 @@ is(makingText({ name: 'mail__draft' }), 'working on it…', 'anything else is no
   is(slotText([clip, picture]), 'drawing a picture, and making a clip…', 'a picture beside a clip names both');
   const other = row(making, { name: 'mail__draft' });
   is(slotText([other, picture]), 'drawing a picture, and working on something else…', 'and beside other work says so');
+  is(slotText([clip, other]), 'making a clip, and working on something else…', 'a clip beside other work names both');
+  is(slotText([other, clip]), 'making a clip, and working on something else…', 'in either order');
+  is(slotText([other, clip, picture]), 'drawing a picture, and making a clip, and working on something else…', 'and all three are named');
   is(slotText([row('video: videos/v1.mp4'), picture]), 'drawing a picture…', 'a finished clip is not out');
 }
 
