@@ -1130,6 +1130,56 @@ edits ran 118–150 s while read-aloud was synthesising speech and 82–88 s
 when nothing else ran: Breeze TTS and the diffusion model share the GB10's
 compute and memory bandwidth, and nothing queues one behind the other.
 
+## Video generation
+
+`videogen.rs` is the port of the private H3 server into mecha, in seam
+order. What has landed is the part that is a function of its inputs: the
+`[video]` table, the clip's graph (`videogen::graph`), its compiled prompt
+(`videogen::compose`) and the typed scene that writes the timeline
+(`videogen::scene`). The tool, its job and its gates come next. The rules
+are §Image generation's, and where they need a reason of their own it is
+given here:
+
+- **One transport, two tools.** `comfy.rs` holds what both say to a
+  ComfyUI: the loopback-only address (`comfy::loopback_url`), a client that
+  follows no redirect and uses no proxy, the wait for a server that is
+  restarting, uploads into the server's temp directory only, taking a job
+  back off the server (`/interrupt` only when this job is the one running),
+  and reading back what a job wrote. What a job is stays with its tool:
+  `imagegen` keeps its trail, its held-model record and its PNG check. The
+  client never starts a server: the private server started its unit when
+  it found it down, and a model call has no business starting services on
+  the owner's machine.
+- **`[video]` is `[image]`'s hazard, with the owner's pictures and voices
+  added.** It is stripped from project layers, sits in
+  `trial_env::OPERATOR_ONLY_TABLES`, and its `url` is refused off this
+  machine at load (`Config::validate`), not only when the tool is built.
+  It is its own server too (`:8189` by default): a clip holds ~30 GB while
+  it renders, and a picture should not queue behind one.
+- **The graph is fixed, and the diffusion model reaches the sampler through
+  a LoRA chain** (`graph::lora_chain`). Turbo is the one link today, a
+  `LoraLoaderModelOnly` paired with the steps it was distilled for, so a LoRA
+  the owner adds later is one more entry in that chain and no other change.
+  mecha ships no weights, no licence text and no LoRA. The file names in
+  `VideoConfig::default` are the names MiniMax's ComfyUI release gives them,
+  as `[image]`'s are Qwen's.
+- **The preflight asks for every file the graph names** (`graph::needs`),
+  and a test builds each graph shape and holds the two lists equal. A file
+  in the graph and not the preflight fails mid-render, as a node validation
+  error the model cannot act on.
+- **The prompt is compiled in two halves** (`compose`). The model writes
+  what varies: the shot timeline, the speakers, the sound. The code writes
+  what persists: who each reference picture is, what of them is kept, and
+  whose voice each audio clip is. Names become `<Subject N>` everywhere but
+  inside dialogue. A library character's clothing is the description's,
+  never the portrait's. The owner's experiment of 2026-10-13 found portrait
+  outfits leaking into every clip when retention said `fully_preserved`, so
+  a character is `partially_preserved`.
+- **A scene's problems are notes, never refusals** (`scene::compile`): a
+  cut outside the clip moves, a missing `wearing` is said, and so is a
+  script longer than the clip can speak. A draft that renders is worth more than a
+  lecture. The notes reach the model, so they are worded for it.
+
 ## Image library
 
 > **Superseded 2026-10-08 for `image_generate`'s call (`IMAGE-DESIGN.md`; see §Image generation
