@@ -204,13 +204,11 @@ pub fn looks_like_name(given: &str) -> bool {
     !given.contains('/') && !given.contains('.')
 }
 
-/// A character's name as the library keys it: `Mara Lee` → `mara-lee`.
+/// A character's name as the library keys it: `Mara Lee` → `mara-lee`, the
+/// library's own spelling rule (`imagelib::spelled_as_name`), so `Mara_Lee`
+/// finds her too (review of #733).
 pub fn library_key(given: &str) -> String {
-    given
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join("-")
-        .to_lowercase()
+    crate::imagelib::spelled_as_name(given)
 }
 
 /// Every reference and pinned frame that names a character, in the
