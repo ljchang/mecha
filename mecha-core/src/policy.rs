@@ -212,6 +212,8 @@ const NON_COMMAND_BUILTINS: &[&str] = &[
     "web_open",
     "image_generate",
     "image_view",
+    "video_generate",
+    "video_prompt_guide",
     "document_read",
     "todo",
     "skill",

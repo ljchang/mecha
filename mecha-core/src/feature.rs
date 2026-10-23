@@ -48,6 +48,8 @@ pub enum Feature {
     Layout,
     Image,
     Library,
+    /// `video_generate`: clips with sound from a local video server.
+    Video,
     Personas,
     Voice,
     Dictate,
@@ -76,6 +78,7 @@ impl Feature {
         Feature::Layout,
         Feature::Image,
         Feature::Library,
+        Feature::Video,
         Feature::Personas,
         Feature::Voice,
         Feature::Dictate,
@@ -102,6 +105,7 @@ impl Feature {
             Feature::Layout => "layout",
             Feature::Image => "image",
             Feature::Library => "library",
+            Feature::Video => "video",
             Feature::Personas => "personas",
             Feature::Voice => "voice",
             Feature::Dictate => "dictate",
@@ -129,6 +133,7 @@ impl Feature {
             Feature::Layout => "Page layout",
             Feature::Image => "Image generation",
             Feature::Library => "Character and style library",
+            Feature::Video => "Video generation",
             Feature::Personas => "Personas",
             Feature::Voice => "Voice",
             Feature::Dictate => "Dictation",
@@ -212,6 +217,7 @@ impl Feature {
             | Feature::Search
             | Feature::Documents
             | Feature::Image
+            | Feature::Video
             | Feature::Slack
             | Feature::Personas
             | Feature::Voice
@@ -249,6 +255,7 @@ impl Feature {
             Feature::Web
             | Feature::Slack
             | Feature::Image
+            | Feature::Video
             | Feature::Documents
             | Feature::Messages
             | Feature::Voice
@@ -834,6 +841,7 @@ fn evidence(facts: &Facts, f: Feature) -> bool {
         Feature::Search => cfg.search.iter().any(|b| !b.disabled),
         Feature::Documents => cfg.documents.is_some(),
         Feature::Image => cfg.image.is_some(),
+        Feature::Video => cfg.video.is_some(),
         Feature::Personas => facts.personas_stored == Some(true),
         Feature::Voice => facts.voice_unit_installed,
         Feature::Frontdoor => facts.has_factory_binary,
@@ -1639,6 +1647,19 @@ fn own_state(facts: &Facts, f: Feature) -> State {
             },
             None => off("no [image] table", "add an [image] table"),
         },
+        // `[video] url` off this machine is refused at load
+        // (`Config::validate`), so this reads an address already vetted;
+        // asked again so the row says why rather than trusting the order.
+        Feature::Video => match &cfg.video {
+            Some(video) => match video.loopback_url() {
+                Ok(url) => on(url.to_string()),
+                Err(e) => State::Unready {
+                    reason: format!("{e:#}"),
+                    fix: None,
+                },
+            },
+            None => off("no [video] table", "add a [video] table"),
+        },
         // The library is the store and the owner's page, on with `image`
         // (the owner's ruling L1, 2026-09-30: there is no reason to want
         // images without it). `[tools]` narrows what the *model* reaches,
@@ -2164,6 +2185,7 @@ mod tests {
                 | Feature::Layout
                 | Feature::Image
                 | Feature::Library
+                | Feature::Video
                 | Feature::Personas
                 | Feature::Voice
                 | Feature::Dictate
@@ -2176,9 +2198,9 @@ mod tests {
                 | Feature::System => {}
             }
         }
-        // The match above lists 22 — raise this with it, and a variant
+        // The match above lists 23 — raise this with it, and a variant
         // added to the match but not to `ALL` fails here.
-        assert_eq!(Feature::ALL.len(), 22);
+        assert_eq!(Feature::ALL.len(), 23);
     }
 
     #[test]

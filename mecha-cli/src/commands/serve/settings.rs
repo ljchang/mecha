@@ -1203,21 +1203,9 @@ pub async fn speak(State(state): St, Json(body): Json<SpeakBody>) -> Response {
     }
 }
 
-/// A voice name is a bare filename stem, and the alphabet is closed rather
-/// than denylisted: this string becomes `<voices_dir>/<name>.wav` on one
-/// side and a `voice` field the TTS resolves on the other, so anything
-/// beyond lowercase, digits, `-` and `_` is refused — including `default`,
-/// which names the default voice and must stay unshadowable: on Breeze it is
-/// `default.wav` in this same directory, so a clone of that name would
-/// silently replace it and a delete would leave every call voiceless.
-fn valid_voice_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 40
-        && name != "default"
-        && name
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
-}
+// A voice-library name (`config::valid_voice_name`, shared with the video
+// tool, which reads `<voices_dir>/<name>.wav` by it).
+use mecha_core::config::valid_voice_name;
 
 /// At most `cap` bytes off the front of a file — enough for any header
 /// walk, never the payload.

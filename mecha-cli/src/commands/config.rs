@@ -103,6 +103,7 @@ pub const FEATURES_STARTER: &str = r#"
 # search = false     # web search and open
 # documents = false  # PDF extraction (OCR and layout are [documents] settings)
 # image = false      # image generation and the character library
+# video = false      # video clips with sound (a [video] table names the server)
 # personas = false   # characters you write and talk to
 # voice = false      # dictation and voice calls
 # frontdoor = false  # inbound requests, polls and publishing
