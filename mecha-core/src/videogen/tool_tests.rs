@@ -209,6 +209,10 @@ fn tool(url: &str, home: &Path, gates: Arc<dyn Gates>) -> VideoGenerate {
     .for_test(home, gates, Duration::from_millis(20))
 }
 
+fn later() -> std::time::Instant {
+    std::time::Instant::now() + Duration::from_secs(60)
+}
+
 fn ctx(dir: &Path) -> ToolCtx {
     ToolCtx {
         workspace: dir.to_path_buf(),
@@ -336,6 +340,37 @@ async fn a_clip_is_rendered_into_the_chats_videos_folder() {
         "{}",
         again.content
     );
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// A chat keeps the length it asked for, not the rendered one: a 15 s clip
+/// snaps to 15.08 s of frames, and keeping that refused every later clip in
+/// the chat (review of #733).
+#[tokio::test]
+async fn a_chat_keeps_the_length_it_asked_for() {
+    let home = scratch();
+    let chat = home.join("chat");
+    std::fs::create_dir_all(&chat).unwrap();
+    let cfg = VideoConfig::default();
+    let (url, _log) = fake(Fake::default(), &cfg).await;
+    let t = tool(&url, &home, Arc::new(Stub::default())).with_chat_settings();
+    let ctx = ctx(&chat);
+    let first = run(&t, json!({"prompt": "p", "seconds": 15}), &ctx).await;
+    assert!(!first.is_error, "{}", first.content);
+    let again = run(&t, json!({"prompt": "p"}), &ctx).await;
+    assert!(!again.is_error, "{}", again.content);
+    assert!(
+        again
+            .content
+            .contains("Kept from this chat's last clip: 15 s."),
+        "{}",
+        again.content
+    );
+    // The default length is not said as a kept one.
+    let five = run(&t, json!({"prompt": "p", "seconds": 5}), &ctx).await;
+    assert!(!five.is_error, "{}", five.content);
+    let after = run(&t, json!({"prompt": "p"}), &ctx).await;
+    assert!(!after.content.contains("Kept from"), "{}", after.content);
     std::fs::remove_dir_all(&home).ok();
 }
 
@@ -666,12 +701,20 @@ async fn a_failed_render_says_why() {
 async fn one_clip_renders_at_a_time_and_a_dead_holder_frees_the_turn() {
     let home = scratch();
     let t = tool("http://127.0.0.1:9", &home, Arc::new(Stub::default()));
-    let first = t.wait_turn(&CancellationToken::new()).await.ok().unwrap();
+    let first = t
+        .wait_turn(&CancellationToken::new(), later())
+        .await
+        .ok()
+        .unwrap();
     let t2 = t.clone();
     let got = Arc::new(AtomicBool::new(false));
     let got2 = Arc::clone(&got);
     let waiter = tokio::spawn(async move {
-        let turn = t2.wait_turn(&CancellationToken::new()).await.ok().unwrap();
+        let turn = t2
+            .wait_turn(&CancellationToken::new(), later())
+            .await
+            .ok()
+            .unwrap();
         got2.store(true, Ordering::SeqCst);
         drop(turn);
     });
@@ -684,12 +727,19 @@ async fn one_clip_renders_at_a_time_and_a_dead_holder_frees_the_turn() {
     let path = home.join("video/render.turn");
     // pid 2^22 + 7 is above Linux's pid_max ceiling: never alive.
     std::fs::write(&path, "4194311 0\n").unwrap();
-    let turn = t.wait_turn(&CancellationToken::new()).await.ok().unwrap();
+    let turn = t
+        .wait_turn(&CancellationToken::new(), later())
+        .await
+        .ok()
+        .unwrap();
     let held = std::fs::read_to_string(&path).unwrap();
     assert!(held.starts_with(&std::process::id().to_string()), "{held}");
     let stop = CancellationToken::new();
     stop.cancel();
-    assert!(matches!(t.wait_turn(&stop).await, Err(Failure::Cancelled)));
+    assert!(matches!(
+        t.wait_turn(&stop, later()).await,
+        Err(Failure::Cancelled)
+    ));
     drop(turn);
     assert!(!path.exists());
     std::fs::remove_dir_all(&home).ok();
