@@ -357,6 +357,8 @@ export function toolStatus(entries, i) {
 
 const DOING = {
   image_generate: 'drawing a picture',
+  video_generate: 'making a clip',
+  video_prompt_guide: 'reading the video guide',
   image_view: 'looking at an image',
   web_search: 'searching the web',
   fs_read: 'reading a file',

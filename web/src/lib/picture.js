@@ -140,10 +140,12 @@ export function stillOut(entry) {
 }
 
 // What a still-out row says it is doing: a picture's measured words for a
-// picture, and a plain one for any other deferring tool, which the page
-// cannot name (§9).
+// picture, a clip's for the built-in video tool, and a plain one for any
+// other deferring tool, which the page cannot name (§9).
 export function makingText(entry) {
-  return entry?.name === 'image_generate' ? 'drawing a picture…' : 'working on it…';
+  if (entry?.name === 'image_generate') return 'drawing a picture…';
+  if (entry?.name === 'video_generate') return 'making a clip…';
+  return 'working on it…';
 }
 
 // When each running job began, by this page's clock, for the clock on its
@@ -170,8 +172,11 @@ export function jobStarts(prev, queue, now = Date.now()) {
 export function slotText(entries) {
   const out = (entries ?? []).filter(stillOut);
   const picture = out.some((e) => e.name === 'image_generate');
-  const other = out.some((e) => e.name !== 'image_generate');
-  if (picture && other) return 'drawing a picture, and working on something else…';
+  const others = out.filter((e) => e.name !== 'image_generate');
+  if (picture && others.length && others.every((e) => e.name === 'video_generate')) {
+    return 'drawing a picture, and making a clip…';
+  }
+  if (picture && others.length) return 'drawing a picture, and working on something else…';
   return makingText(out[0]);
 }
 
