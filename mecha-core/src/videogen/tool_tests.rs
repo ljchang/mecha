@@ -782,6 +782,55 @@ async fn a_failed_render_says_why() {
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// A stale turn is reclaimed only while it is still the one read: a second
+/// waiter that read the same dead holder leaves the first's new turn alone.
+#[test]
+fn a_stale_turn_is_reclaimed_only_while_it_is_the_one_read() {
+    let home = scratch();
+    let path = home.join("render.turn");
+    std::fs::write(&path, "4000000 1\n").unwrap();
+    assert!(reclaim(&path, "4000000 1\n"), "the stale turn, as read");
+    assert!(!path.exists());
+    // The first waiter took the turn; the second still holds the old read.
+    std::fs::write(&path, "1234 2\n").unwrap();
+    assert!(!reclaim(&path, "4000000 1\n"));
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "1234 2\n",
+        "put back"
+    );
+    assert!(!reclaim(&home.join("absent.turn"), ""), "nothing to take");
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// With the library feature off a clip reads no library: a name is not a
+/// character, and nothing is uploaded for it.
+#[tokio::test]
+async fn a_clip_without_the_library_reads_no_portrait() {
+    let home = scratch();
+    let chat = home.join("chat");
+    std::fs::create_dir_all(&chat).unwrap();
+    character(&home.join("imagelib"), "wren", "Freckled, with a red bob");
+    let cfg = VideoConfig::default();
+    let (url, log) = fake(Fake::default(), &cfg).await;
+    let t = tool(&url, &home, Arc::new(Stub::default())).with_library_dir(None);
+    let done = run(
+        &t,
+        json!({"prompt": "Wren waves.", "references": ["wren"]}),
+        &ctx(&chat),
+    )
+    .await;
+    assert!(done.is_error, "{}", done.content);
+    assert!(
+        !log.lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("POST /upload")),
+        "no portrait went up"
+    );
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// One clip at a time across callers: the second waits for the first's
 /// turn and takes it once the first is done; a holder that is gone frees
 /// its turn, and Stop ends a wait.
