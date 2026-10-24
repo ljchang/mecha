@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clip, against 0.45 as it was.
 
 - **The library and persona pages load small pictures.** Grid tiles and
-  avatars now ask for a 512 px JPEG of each portrait (`?size=thumb` on the
+  avatars now ask for a 512 px JPEG of each portrait (`?size=thumb-v1` on the
   picture route), made once and kept beside the face crops, under the same
   lock as the picture. A 1024² portrait is about 1.5 MB; its thumbnail is a
   few tens of KB.

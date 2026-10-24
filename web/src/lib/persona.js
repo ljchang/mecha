@@ -645,10 +645,12 @@ export function frameOf(frame) {
 }
 
 // The picture an avatar `size` CSS pixels wide loads: the library's small
-// JPEG (512 px long) unless the frame zooms it past what that holds at a
-// phone's three device pixels — a 112 px avatar at zoom 4 shows a quarter of
-// the picture across 336 device pixels.
-export const THUMB_AVATAR = 128;
+// JPEG unless the frame zooms it past what that holds at a phone's three
+// device pixels. An avatar is filled by the picture's short side, which in a
+// thumbnail 512 px long is 341 for a 2:3 portrait and 288 for 9:16, so 96 CSS
+// pixels (288 device) is the most it holds for every portrait (review of
+// #736).
+export const THUMB_AVATAR = 96;
 export function avatarSrc(portrait, frame, size) {
   return size * frameOf(frame).zoom > THUMB_AVATAR ? portrait : thumbUrl(portrait);
 }

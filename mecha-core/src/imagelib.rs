@@ -623,6 +623,12 @@ pub const THUMB_SIDE: u32 = 512;
 /// encoding changes, or every picture keeps the thumbnail the old one made.
 const THUMB_VERSION: &str = "v1";
 
+/// What the picture route's `size` asks for to get a thumbnail: the
+/// generation rides in the URL, so a bump changes the browser's cache key as
+/// it does the disk's — a thumbnail is cached `immutable` for a year (review
+/// of #735). `web/src/lib/library.js`'s `THUMB_SIZE` must say the same.
+pub const THUMB_QUERY: &str = "thumb-v1";
+
 fn thumb_path(dir: &Path, blob: &str) -> PathBuf {
     let stem = blob.split('.').next().unwrap_or(blob);
     dir.join("thumbs")
@@ -2384,6 +2390,13 @@ mod tests {
             !thumb_path(dir.path(), &blob).exists(),
             "the thumbnail went too"
         );
+    }
+
+    /// The URL's generation is the disk's, or a bump moves the files and
+    /// leaves every browser on the old ones for a year (review of #737).
+    #[test]
+    fn the_thumbnail_querys_generation_is_the_disks() {
+        assert_eq!(THUMB_QUERY, format!("thumb-{THUMB_VERSION}"));
     }
 
     #[test]

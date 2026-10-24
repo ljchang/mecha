@@ -170,12 +170,12 @@ assert.equal(refApprovable({}), false);
 assert.equal(previewOf('AAAA'), 'data:image/jpeg;base64,AAAA');
 
 
-// A thumbnail is the picture route with `size=thumb`, beside any unlock; any
+// A thumbnail is the picture route with `size=thumb-v1`, beside any unlock; any
 // other picture (a preview, nothing at all) is left alone.
-assert.equal(thumbUrl('/api/library/portrait/sha256-ab.png'), '/api/library/portrait/sha256-ab.png?size=thumb');
+assert.equal(thumbUrl('/api/library/portrait/sha256-ab.png'), '/api/library/portrait/sha256-ab.png?size=thumb-v1');
 assert.equal(
   thumbUrl('/api/library/portrait/sha256-ab.png?unlock=t1'),
-  '/api/library/portrait/sha256-ab.png?unlock=t1&size=thumb',
+  '/api/library/portrait/sha256-ab.png?unlock=t1&size=thumb-v1',
 );
 assert.equal(thumbUrl('data:image/png;base64,AAAA'), 'data:image/png;base64,AAAA');
 assert.equal(thumbUrl(null), null);

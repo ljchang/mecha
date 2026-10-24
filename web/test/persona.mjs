@@ -590,10 +590,12 @@ console.log('persona: ok');
   // An avatar loads the small JPEG until its frame zooms past what it holds.
   const { avatarSrc } = await import('../src/lib/persona.js');
   const url = '/api/library/portrait/sha256-ab.png';
-  assert.equal(avatarSrc(url, null, 48), `${url}?size=thumb`);
-  assert.equal(avatarSrc(url, { x: 0.5, y: 0.2, zoom: 1 }, 112), `${url}?size=thumb`);
+  assert.equal(avatarSrc(url, null, 48), `${url}?size=thumb-v1`);
+  assert.equal(avatarSrc(url, { x: 0.5, y: 0.2, zoom: 1 }, 72), `${url}?size=thumb-v1`);
+  assert.equal(avatarSrc(url, { x: 0.5, y: 0.2, zoom: 1 }, 112), url, 'the largest avatar: the whole picture');
+  assert.equal(avatarSrc(url, { x: 0.5, y: 0.2, zoom: 2 }, 64), url, 'a 2:3 thumbnail holds 341, not 384');
   assert.equal(avatarSrc(url, { x: 0.5, y: 0.2, zoom: 4 }, 112), url, 'zoomed in: the whole picture');
-  assert.equal(avatarSrc(url, { x: 0.5, y: 0.2, zoom: 4 }, 32), `${url}?size=thumb`);
+  assert.equal(avatarSrc(url, { x: 0.5, y: 0.2, zoom: 3 }, 32), `${url}?size=thumb-v1`);
   // Unplaced leans to the top, where a portrait's face is.
   assert.equal(frameStyle(null), 'object-position:50% 20%;transform-origin:50% 20%;transform:scale(1)');
   assert.equal(frameStyle({ x: 0.25, y: 0.1, zoom: 1.5 }), 'object-position:25% 10%;transform-origin:25% 10%;transform:scale(1.5)');
