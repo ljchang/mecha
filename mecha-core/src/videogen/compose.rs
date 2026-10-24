@@ -7,6 +7,12 @@
 //! voice each audio clip is. A name in the model's text becomes its
 //! `<Subject N>` label everywhere but inside dialogue, so a line that says a
 //! name is still said.
+//!
+//! A model that wrote H3's sections itself (`detailed_description:` or
+//! `integrated_multimodal_description:` in its text) is sent what it wrote,
+//! labelled and with its lines closed. The call's `soundscape` and `music`,
+//! and a reference prompt's pin sentences, are dropped on that path on
+//! purpose: the sections it wrote are the ones that would carry them.
 
 /// One reference image, as the prompt describes it.
 pub struct Person {
@@ -69,11 +75,13 @@ pub fn references(parts: &Parts, people: &[Person], pins: (bool, bool)) -> Strin
     }
     let mut body = with_first_shot(&labelled);
     // A pinned frame, said where it applies (the guide's "the shot begins
-    // from …"); it carries no <Picture> label, so it takes no slot.
+    // from …"); it carries no <Picture> label, so it takes no slot. After the
+    // tag, whatever follows it: a model that wrote `[Shot 1]` and a newline
+    // lost the sentence to a match on the tag and a space (review of #732).
     if pins.0 {
         body = body.replacen(
-            "[Shot 1] ",
-            "[Shot 1] The shot begins exactly on the provided opening frame and continues from it. ",
+            "[Shot 1]",
+            "[Shot 1] The shot begins exactly on the provided opening frame and continues from it.",
             1,
         );
     }
@@ -474,6 +482,12 @@ mod tests {
         );
         assert!(
             pinned.contains("[Shot 1] The shot begins exactly on the provided opening frame and continues from it. <Subject 1> waves."),
+            "{pinned}"
+        );
+        // A newline after the tag keeps the sentence too (review of #732).
+        let pinned = references(&parts("[Shot 1]\nMaya waves."), &people, (true, false));
+        assert!(
+            pinned.contains("[Shot 1] The shot begins exactly on the provided opening frame and continues from it.\n<Subject 1> waves."),
             "{pinned}"
         );
     }

@@ -27,9 +27,13 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod args;
 pub mod compose;
 pub mod graph;
 pub mod scene;
+pub mod tool;
+
+pub use tool::{VideoGenerate, VideoPromptGuide};
 
 /// `[video]`: where the local video server is and what it should load.
 ///

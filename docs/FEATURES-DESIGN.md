@@ -737,6 +737,7 @@ A `(parent)` in the Requires column is `part_of`, not a `requires` edge:
 | ↳ `layout` | Region-by-region layout | `[documents] layout` | `ocr` (parent) | its row in `features` |
 | `image` | Image generation | an `[image]` table | — | `image_generate` |
 | ↳ `library` | Characters and styles | — | `image` (parent) | Library tab and Home card, `image_library*` (registered only inside `[image]`), `mecha imagelib` writes. Its reads — `mecha imagelib list`/`show` — are store reads and stay ungated |
+| `video` | Video generation | a `[video]` table | — | `video_generate`, `video_prompt_guide` (its own switch, not a part of `image`: its own server, and a clip is not a picture; no installer, the operator runs the server) |
 | `personas` | Characters the owner talks to | — (a **new** `[personas]` table later holds its safety settings) | — (web for the tab) | Personas tab, `/api/personas*`, `mecha persona` |
 | `voice` | Talking to mecha | a **new** `[voice]` table (below) | — (`mecha voice-serve` is its own loopback surface) | `mecha voice-serve` |
 | ↳ `dictate` | Speech to text in the browser | `[voice] stt_url` | `voice` (parent), `web` | Dictate |

@@ -261,6 +261,16 @@ impl Client {
         filename: &str,
         label: &str,
     ) -> Result<String> {
+        // The name goes into a header unescaped: a quote, a backslash or a
+        // control character would end it early or start a header of its own.
+        // Refused here rather than promised by every caller (review of #732).
+        if filename.is_empty()
+            || filename
+                .chars()
+                .any(|c| c.is_control() || c == '"' || c == '\\')
+        {
+            bail!("uploading {label}: `{filename}` is not a name the upload can carry");
+        }
         let boundary = format!("mecha-{}", uuid::Uuid::new_v4().simple());
         let mut body = Vec::with_capacity(bytes.len() + 512);
         body.extend_from_slice(
@@ -467,6 +477,23 @@ mod tests {
                 loopback_url("[video] url", "the video tool", bad).unwrap_err()
             );
             assert!(err.starts_with("[video] url"), "{bad}: {err}");
+        }
+    }
+
+    /// A name that would break out of its header is refused before anything
+    /// is sent (review of #732).
+    #[tokio::test]
+    async fn an_upload_name_that_could_end_its_header_is_refused() {
+        let c = client_at(closed_port());
+        for bad in ["a\".png", "a\r\nX-Evil: 1.png", "a\\b.png", ""] {
+            let err = format!(
+                "{:#}",
+                c.upload_temp(b"x", bad, "a test file").await.unwrap_err()
+            );
+            assert!(
+                err.contains("not a name the upload can carry"),
+                "{bad:?}: {err}"
+            );
         }
     }
 

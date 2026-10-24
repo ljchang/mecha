@@ -467,6 +467,7 @@ setup` asks about it. `mecha features enable <id>` writes `true` in place; a
 # search = false     # web search and open
 # documents = false  # PDF extraction (OCR and layout are [documents] settings)
 # image = false      # image generation and the character library
+# video = false      # video clips with sound (a [video] table names the server)
 # personas = false   # characters you write and talk to
 # voice = false      # dictation and voice calls
 # frontdoor = false  # inbound requests, polls and publishing
@@ -865,6 +866,47 @@ Global file only — a project layer's `[image]` is ignored with a warning.
 `image_generate` declares no capabilities at all: what comes back is a file name
 and a seed, and the prompt goes only to a server on this machine. That is why
 the address must be loopback — the declaration is only true while it is.
+
+## `[video]`
+
+Registers the `video_generate` tool and its prompting guide,
+`video_prompt_guide`, when `video = true` in `[features]`: short clips with
+sound from MiniMax H3, rendered by a ComfyUI on this machine. Absent means no
+tool. Global file only — a project layer's `[video]` is ignored with a
+warning. mecha ships no model files and no LoRA: the defaults are the file
+names of MiniMax's ComfyUI release, which the server's operator downloads
+under its licence.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `url` | string | `http://127.0.0.1:8189` | The server. Must be on this machine (`127.0.0.1`, `::1` or `localhost`); anything else fails the load. Its own server, not `[image]`'s: a clip holds about 30 GB while it renders. |
+| `frames_model` | string | `minimax_h3_fl2va_pruned_int8_convrot.safetensors` | The diffusion model for a clip from words, optionally pinned to a first or last frame. |
+| `references_model` | string | `minimax_h3_ref2va_pruned_int8_convrot.safetensors` | The diffusion model for a clip from reference pictures and voices. |
+| `frames_turbo_lora` | string | `minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors` | The turbo LoRA for `frames_model`. |
+| `frames_turbo_steps` | integer | `6` | Its steps. |
+| `references_turbo_lora` | string | `minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors` | The turbo LoRA for `references_model`. |
+| `references_turbo_steps` | integer | `4` | Its steps. |
+| `text_encoder` | string | `qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors` | |
+| `vae` | string | `minimax_h3_video_vae_fp16.safetensors` | Encodes the references and pinned frames, and decodes the clip unless `decoder` names another. |
+| `audio_vae` | string | `minimax_h3_audio_vae_fp32.safetensors` | |
+| `decoder` | string | unset | A VAE that decodes the clip in place of `vae`, used only when the server lists it. |
+| `steps` | integer | `20` | Sampling steps without turbo. |
+
+Before anything is uploaded, every file the clip's graph names is asked of the
+video server, and a missing one is named in the result. The tool never starts the
+server. A clip waits its turn (one renders at a time on the machine, across
+every chat), then waits while a voice call is live and until the [memory
+floor](#system) admits it: 28 GB for a draft, 32 GB at full size, plus the
+floor's reserve. A voice the clip carries comes from `[voice] voices_dir`
+(`<name>.wav`): a persona's own voice for her character, then
+`~/.mecha/video/voices.toml` (`character = "voice"`), then the voice of the
+persona that links the character.
+
+`video_generate` declares no capabilities, for `image_generate`'s reason: what
+comes back is a file name and what the clip was rendered at, and everything
+sent goes only to a server on this machine. An `[[mcp]]` server that lists a
+tool of the same name with `prefix_tools = false` fails the start by name, so
+switch `video` on after removing such a server.
 
 ## `[documents]`
 

@@ -259,7 +259,12 @@ rebuilds a child's registry today — but the allowlist is intersected with an
   from (`ImageGenerate::capabilities` is a bare default). Today the set is
   `web_search` (always through the blind path — below), `image_generate`,
   `image_view`, read access to the image library (the owner's approved
-  characters, shared on purpose — §8.6), `document_read` over the chat's own
+  characters, shared on purpose — §8.6), `video_generate` and
+  `video_prompt_guide` (built in since the H3 port, on `image_generate`'s
+  footing: the loopback video server only; beyond the chat it reads the
+  library's approved characters, the voice library and which voice each
+  persona speaks in, all shared with personas on purpose; the private
+  server's MCP form had needed `personas = true`), `document_read` over the chat's own
   workspace (D24), the file tools over the persona's `files/` roots (§10.2),
   and the persona's own memory tools (§9).
 - **An MCP server's tools, only on the owner's word** (2026-10-12,
