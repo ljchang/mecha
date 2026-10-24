@@ -1756,6 +1756,21 @@ async fn prepare_tools_carrying(
                             .clone()
                             .filter(|_| feature_on(Feature::Voice)),
                     );
+                    // So are the image library and the persona store: with
+                    // either feature off its tools are unregistered, and a
+                    // clip reads no portrait, description or persona voice
+                    // from it (review of #733, pass 4).
+                    let tool = tool
+                        .with_library_dir(
+                            mecha_core::imagelib::Library::default_dir()
+                                .ok()
+                                .filter(|_| feature_on(Feature::Library)),
+                        )
+                        .with_personas_dir(
+                            mecha_core::persona::Store::default_dir()
+                                .ok()
+                                .filter(|_| feature_on(Feature::Personas)),
+                        );
                     // A chat's clips keep its last settings, under every
                     // surface that names itself; never under the callers that
                     // name none (eval, batch, a persona replay), where an arm
