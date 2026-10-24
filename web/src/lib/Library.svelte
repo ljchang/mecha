@@ -4,7 +4,7 @@
   import { features } from './features.svelte.js';
   import { opens, isShown } from './features.js';
   import {
-    PANES, paneOf, entriesFor, counts, pendingLine, refApprovable, originLabel, listUrl, tameName,
+    PANES, paneOf, entriesFor, counts, pendingLine, refApprovable, originLabel, listUrl, thumbUrl, tameName,
     TEXT_MAX, PORTRAIT_EDGE, fitWithin, formProblem, formBody, previewOf,
     REF_KINDS, REF_TITLE, LABEL_MAX, refNote, refAddable, refProblem, refBody, refRemoveBody,
   } from './library.js';
@@ -595,7 +595,7 @@
         {/if}
         {#each shown as e (e.kind + e.name)}
           <button class="tile" onclick={() => (open = e)}>
-            {#if e.portrait}<img src={e.portrait} alt={e.name} loading="lazy" />{:else}<span class="noimg">{e.kind}</span>{/if}
+            {#if e.portrait}<img src={thumbUrl(e.portrait)} alt={e.name} loading="lazy" />{:else}<span class="noimg">{e.kind}</span>{/if}
             <span class="tname">{e.name}{#if e.locked}<span class="lockmark"> · locked</span>{/if}</span>
           </button>
         {/each}

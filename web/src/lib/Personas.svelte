@@ -30,8 +30,9 @@
     taintLabel, doseLine, authoringUrl, personaName, keptCharacter, OWNER_FILES, keptEdits,
     toolStatus, waitingLine, withWorking, withJob, clockOf, unsavedFiles, lockWaits, fileUrl, uploadUrl, sourceLine, sourceState, fileKind,
     citeEntries, citeOpens, citedUrl, ownWords, toolRun, sourceFileUrl, chatHeadline,
-    frameOf, frameStyle, dragFrame, MAX_FRAME_ZOOM,
+    frameOf, frameStyle, dragFrame, MAX_FRAME_ZOOM, avatarSrc,
   } from './persona.js';
+  import { thumbUrl } from './library.js';
   import PictureSettings from './PictureSettings.svelte';
   import { historyLines } from './call-lines.js';
   // The Personas tab (PERSONA-DESIGN.md §8; the owner's ruling of
@@ -1518,7 +1519,7 @@
 
 {#snippet avatar(p, size)}
   <span class="avatar" style="width:{size}px;height:{size}px;font-size:{Math.round(size * 0.42)}px">
-    {#if p.portrait}<img src={p.portrait} alt="" style={frameStyle(p.frame)} />{:else}{p.display.slice(0, 1).toUpperCase()}{/if}
+    {#if p.portrait}<img src={avatarSrc(p.portrait, p.frame, size)} alt="" style={frameStyle(p.frame)} />{:else}{p.display.slice(0, 1).toUpperCase()}{/if}
   </span>
 {/snippet}
 
@@ -1883,7 +1884,7 @@
               <div class="reviewmeta">tools: {review.tools?.length ? review.tools.join(', ') : 'none'}</div>
               {#if review.character}
                 <div class="reviewchar">
-                  {#if review.character.portrait}<img src={review.character.portrait} alt="" />{/if}
+                  {#if review.character.portrait}<img src={thumbUrl(review.character.portrait)} alt="" />{/if}
                   <div>
                     <div class="reviewcharname">
                       {review.character.name}{#if review.character.waiting}<span class="badge">portrait waiting too</span>{/if}

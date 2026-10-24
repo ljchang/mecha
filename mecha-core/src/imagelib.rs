@@ -560,6 +560,34 @@ impl Library {
         self.read_checked(blob, &format!("`{}`'s reference", entry.name))
     }
 
+    /// [`Library::read_named`]'s picture at most [`THUMB_SIDE`] on its long
+    /// side, as a JPEG: what a page shows in a grid or an avatar. Made once
+    /// and kept under `thumbs/`, named by the blob, so it is as permanent as
+    /// the content-addressed picture it shrinks; derived and regenerable,
+    /// like the face crops beside it.
+    pub fn thumbnail_named(&self, entry: &Entry, blob: &str) -> Result<Vec<u8>> {
+        // Named first, so the cache is never a way around the lookup.
+        if entry.portrait.as_deref() != Some(blob)
+            && !entry.references.iter().any(|r| r.blob == blob)
+        {
+            bail!("`{}` names no picture `{blob}`", entry.name);
+        }
+        let path = thumb_path(&self.dir, blob);
+        if let Ok(bytes) = std::fs::read(&path) {
+            return Ok(bytes);
+        }
+        let (bytes, _) = self.read_named(entry, blob)?;
+        let jpeg = thumbnail(&bytes)?;
+        // A thumbnail that cannot be kept is still shown: the page should
+        // not pay for a full disk, only the next request.
+        let kept = make_private_dir(path.parent().unwrap_or(&self.dir))
+            .and_then(|()| write_atomic_mode(&path, &jpeg, Some(0o600)));
+        if let Err(e) = kept {
+            tracing::warn!("thumbnail cache: {e:#}");
+        }
+        Ok(jpeg)
+    }
+
     fn read_checked(&self, blob: &str, what: &str) -> Result<(Vec<u8>, &'static str)> {
         let bytes =
             std::fs::read(self.blob_path(blob)).with_context(|| format!("reading {what}"))?;
@@ -569,6 +597,63 @@ impl Library {
         }
         Ok((bytes, ext))
     }
+}
+
+/// A derived store's directory and any parent it lacks, owner-only like
+/// the library's own files: the face crops and the thumbnails are faces.
+pub(crate) fn make_private_dir(dir: &Path) -> Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder
+        .create(dir)
+        .with_context(|| format!("creating {}", dir.display()))
+}
+
+/// The long side of a library thumbnail, in pixels. The largest place one is
+/// shown is a library grid tile, about 170 CSS pixels wide on a phone at
+/// three device pixels each; an avatar zoomed in by its framing is smaller.
+pub const THUMB_SIDE: u32 = 512;
+
+/// The thumbnail cache's generation: bump it when [`THUMB_SIDE`] or the
+/// encoding changes, or every picture keeps the thumbnail the old one made.
+const THUMB_VERSION: &str = "v1";
+
+fn thumb_path(dir: &Path, blob: &str) -> PathBuf {
+    let stem = blob.split('.').next().unwrap_or(blob);
+    dir.join("thumbs")
+        .join(THUMB_VERSION)
+        .join(format!("{stem}.jpg"))
+}
+
+/// A picture as a JPEG at most [`THUMB_SIDE`] on its long side, upright as
+/// a browser shows it, any transparency laid over white. A smaller picture
+/// keeps its size; only its encoding changes.
+pub fn thumbnail(bytes: &[u8]) -> Result<Vec<u8>> {
+    let rgba = crate::image::decode_upright(bytes, "the picture")?.to_rgba8();
+    // Over white before the resize: a resampler averages a transparent
+    // pixel's colour, often black, into its neighbours (review of #735).
+    let rgb = image::RgbImage::from_fn(rgba.width(), rgba.height(), |x, y| {
+        let [r, g, b, a] = rgba.get_pixel(x, y).0;
+        let over = |c: u8| ((c as u16 * a as u16 + 255 * (255 - a as u16)) / 255) as u8;
+        image::Rgb([over(r), over(g), over(b)])
+    });
+    let rgb = if rgb.width().max(rgb.height()) > THUMB_SIDE {
+        image::DynamicImage::ImageRgb8(rgb)
+            .thumbnail(THUMB_SIDE, THUMB_SIDE)
+            .to_rgb8()
+    } else {
+        rgb
+    };
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 85)
+        .encode_image(&rgb)
+        .context("encoding the thumbnail")?;
+    Ok(out)
 }
 
 fn load_entry(kind: Kind, dir: &Path) -> Result<Entry> {
@@ -2216,6 +2301,54 @@ mod tests {
             missing(&lib, Kind::Character, "ivo"),
             "No approved character named `ivo`."
         );
+    }
+
+    /// A thumbnail is the picture at most `THUMB_SIDE` long, as a JPEG,
+    /// made once and kept; only a picture the entry names is shrunk.
+    #[test]
+    fn a_thumbnail_is_small_kept_and_only_of_a_named_picture() {
+        let dir = scratch();
+        let mut wide = character("wren", Origin::Owner);
+        // Transparent black on the left, opaque red on the right.
+        let img = image::RgbaImage::from_fn(1200, 800, |x, _| {
+            if x < 600 {
+                image::Rgba([0, 0, 0, 0])
+            } else {
+                image::Rgba([255, 0, 0, 255])
+            }
+        });
+        let mut png = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        wide.portrait = Some(png.into_inner());
+        create(dir.path(), wide).unwrap();
+        create(dir.path(), character("ivo", Origin::Owner)).unwrap();
+        let lib = Library::load(dir.path()).0;
+        let wren = lib.get(Kind::Character, "wren").unwrap();
+        let blob = wren.portrait.clone().unwrap();
+        let jpeg = lib.thumbnail_named(wren, &blob).unwrap();
+        let small = image::load_from_memory(&jpeg).unwrap();
+        assert_eq!((small.width(), small.height()), (THUMB_SIDE, 341));
+        assert_eq!(&jpeg[..3], b"\xff\xd8\xff", "a JPEG");
+        // Transparent pixels are laid over white, not the black JPEG keeps
+        // under a dropped alpha, and before the resize: at the edge, red
+        // meets white, never the transparent pixels' black (no dark fringe).
+        let rgb = small.to_rgb8();
+        assert!(rgb.get_pixel(10, 10).0.iter().all(|c| *c > 240));
+        assert!(
+            (0..THUMB_SIDE).all(|x| rgb.get_pixel(x, 170).0[0] > 235),
+            "no fringe"
+        );
+        assert!(thumb_path(dir.path(), &blob).exists(), "kept");
+        assert_eq!(lib.thumbnail_named(wren, &blob).unwrap(), jpeg);
+        // Another entry's picture is not this one's to shrink.
+        let ivo = lib.get(Kind::Character, "ivo").unwrap();
+        assert!(lib.thumbnail_named(ivo, &blob).is_err());
+        // A small picture keeps its size.
+        let tiny = lib
+            .thumbnail_named(ivo, ivo.portrait.as_deref().unwrap())
+            .unwrap();
+        let tiny = image::load_from_memory(&tiny).unwrap();
+        assert_eq!((tiny.width(), tiny.height()), (2, 2));
     }
 
     #[test]
