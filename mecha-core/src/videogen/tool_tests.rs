@@ -524,6 +524,43 @@ async fn a_name_given_twice_is_one_reference() {
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// A voice found but past H3's slots is said at the result, like one not
+/// found: the speech it was for is in a voice of the model's own.
+#[tokio::test]
+async fn a_voice_past_the_slots_is_said() {
+    let home = scratch();
+    let chat = home.join("chat");
+    std::fs::create_dir_all(&chat).unwrap();
+    let voices = home.join("voices");
+    std::fs::create_dir_all(&voices).unwrap();
+    std::fs::create_dir_all(home.join("video")).unwrap();
+    let names = ["ada", "bo", "cy", "di"];
+    let mut map = String::new();
+    for n in names {
+        character(&home.join("imagelib"), n, "Someone");
+        std::fs::write(voices.join(format!("{n}-v.wav")), wav(6)).unwrap();
+        map.push_str(&format!("{n} = \"{n}-v\"\n"));
+    }
+    std::fs::write(home.join("video/voices.toml"), map).unwrap();
+    let cfg = VideoConfig::default();
+    let (url, _log) = fake(Fake::default(), &cfg).await;
+    let t = tool(&url, &home, Arc::new(Stub::default())).with_voices_dir(Some(voices));
+    let done = run(
+        &t,
+        json!({"prompt": "Ada, Bo, Cy and Di talk.", "references": names}),
+        &ctx(&chat),
+    )
+    .await;
+    assert!(!done.is_error, "{}", done.content);
+    assert!(
+        done.content
+            .contains("H3 takes 3 voices, so `di-v` went unused"),
+        "{}",
+        done.content
+    );
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// The library's face crop stands in for a portrait only when it is big
 /// enough to carry a face; a smaller one gives way to the portrait.
 #[tokio::test]
