@@ -524,6 +524,57 @@ async fn a_name_given_twice_is_one_reference() {
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// The library's face crop stands in for a portrait only when it is big
+/// enough to carry a face; a smaller one gives way to the portrait.
+#[tokio::test]
+async fn a_face_crop_too_small_gives_way_to_the_portrait() {
+    let home = scratch();
+    let chat = home.join("chat");
+    std::fs::create_dir_all(&chat).unwrap();
+    let lib = home.join("imagelib");
+    character(&lib, "wren", "Freckled, with a red bob");
+    let blob = crate::imagelib::Library::load(&lib)
+        .0
+        .get(crate::imagelib::Kind::Character, "wren")
+        .and_then(|e| e.portrait.clone())
+        .unwrap();
+    let crop = crate::face::cache_paths(&lib, &blob).0;
+    std::fs::create_dir_all(crop.parent().unwrap()).unwrap();
+    let cfg = VideoConfig::default();
+    let (url, log) = fake(Fake::default(), &cfg).await;
+    let t = tool(&url, &home, Arc::new(Stub::default()));
+    let mut prompts = Vec::new();
+    for side in [MIN_FACE_CROP - 1, MIN_FACE_CROP] {
+        let img = image::RgbImage::from_pixel(side, side, image::Rgb([40, 10, 10]));
+        img.save(&crop).unwrap();
+        let done = run(
+            &t,
+            json!({"prompt": "Wren waves.", "references": ["wren"]}),
+            &ctx(&chat),
+        )
+        .await;
+        assert!(!done.is_error, "{}", done.content);
+        let seen = log.lock().unwrap().clone();
+        prompts.push(
+            seen.iter()
+                .rfind(|l| l.starts_with("POST /prompt"))
+                .unwrap()
+                .clone(),
+        );
+    }
+    assert!(
+        prompts[0].contains("whose face, hair, skin and build come from"),
+        "the portrait: {}",
+        prompts[0]
+    );
+    assert!(
+        prompts[1].contains("whose face comes from"),
+        "the crop: {}",
+        prompts[1]
+    );
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// A voice call holds a clip until it ends; a call that cannot be ruled out
 /// refuses, since unknown is not "no".
 #[tokio::test]
