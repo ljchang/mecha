@@ -5213,7 +5213,8 @@ A persona may be given such a tool only on the owner's word: `personas =
 true` in the server's `[[mcp]]` entry, global layer only. Its persona form
 tells a background call which persona is asking (`mecha-factory.ai/persona`:
 folder name, linked character and voice name), and the persona page and call screen say
-"working on it…" for anything but a picture (design §9).
+"working on it…" for anything but a picture or a built-in clip (design §8 and §9 hold the
+words).
 
 `Tool::defers` is what the hosts key on, never the words: the restart repair
 (a non-picture orphan reads `not made: the server restarted`, not external),
