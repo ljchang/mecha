@@ -1387,12 +1387,17 @@ mecha-a3, 2026-10-09). An answer that gives nobody a part still fails. It feeds 
   `[[trigger]]` reason: a cloned repository must not bring a character into
   a trusted session.
 - **Pages load thumbnails, made behind the lock** (`Library::thumbnail_named`,
-  `?size=thumb` on the picture route). A 1024² portrait is about 1.5 MB, and
+  `?size=thumb-v1` on the picture route). A 1024² portrait is about 1.5 MB, and
   a screen of avatars on a phone loaded every one whole. The thumbnail is
   looked up as its picture is — some entry the owner may see now names it —
   and cached by the same rule, so a locked entry's is the same 404 and never
-  `immutable`. Kept under `thumbs/v1/` beside `faces/`: derived, regenerable,
-  never walked by blob collection.
+  `immutable`. Kept under `thumbs/v1/` beside `faces/`: derived and
+  regenerable. Blob collection's walk reads only `.toml`, so a thumbnail
+  never makes its blob look referenced, and a blob nothing names is deleted
+  with its thumbnails (`forget_blob`); a stand-in for one that cannot be
+  made is never cached. The generation rides in the URL too
+  (`THUMB_QUERY`, `size=thumb-v1`), so a bump reaches browsers that cached
+  the old one for a year.
 - **`mecha imagelib upscale` redraws, then judges, then versions.** A video
   reference is scaled down to the clip's area and never up, so a small
   portrait is a small face to H3: a 401 px portrait matched its character at

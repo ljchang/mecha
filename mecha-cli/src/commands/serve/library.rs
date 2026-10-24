@@ -187,8 +187,9 @@ pub struct UnlockQuery {
     unlock: Option<String>,
 }
 
-/// The picture route's query: the unlock token, and `size=thumb` for the
-/// small JPEG a grid or an avatar shows ([`Library::thumbnail_named`]).
+/// The picture route's query: the unlock token, and `size=thumb-v1`
+/// ([`imagelib::THUMB_QUERY`]) for the small JPEG a grid or an avatar shows
+/// ([`Library::thumbnail_named`]).
 #[derive(Deserialize, Default)]
 pub struct PictureQuery {
     #[serde(default)]
@@ -438,7 +439,7 @@ fn valid_blob(name: &str) -> bool {
 }
 
 /// GET /api/library/portrait/{blob} — a portrait or a typed reference, only
-/// as some entry the owner may see now names it; `?size=thumb` answers it as
+/// as some entry the owner may see now names it; `?size=thumb-v1` answers it as
 /// a small JPEG, under the same lookup and cache rule. Everything else, including a
 /// blob only a superseded version names, is the same 404. Both halves of
 /// #385's answer cover every picture an entry names, not only its portrait
@@ -455,8 +456,14 @@ pub async fn portrait(
     }
     let thumb = match q.size.as_deref() {
         None => false,
-        Some("thumb") => true,
-        Some(_) => return (StatusCode::BAD_REQUEST, "size is thumb or absent\n").into_response(),
+        Some(s) if s == imagelib::THUMB_QUERY => true,
+        Some(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("size is {} or absent\n", imagelib::THUMB_QUERY),
+            )
+                .into_response()
+        }
     };
     let unlocked = state.library.unlocked(q.unlock.as_deref());
     let dir = state.library.dir.clone();
@@ -477,10 +484,14 @@ pub async fn portrait(
         if thumb {
             // One that cannot be made shows the picture itself rather than
             // a broken tile (review of #735).
+            // That stand-in is never cached: it would sit under the
+            // thumbnail's URL for a year, whole (review of #735).
             match lib.thumbnail_named(entry, &blob) {
                 Ok(jpeg) => return Some((jpeg, "jpg", open)),
                 Err(e) => tracing::warn!("thumbnail of {blob}: {e:#}"),
             }
+            let (bytes, ext) = lib.read_named(entry, &blob).ok()?;
+            return Some((bytes, ext, false));
         }
         let (bytes, ext) = lib.read_named(entry, &blob).ok()?;
         Some((bytes, ext, open))
@@ -2175,7 +2186,7 @@ mod route_tests {
         let r = f
             .app
             .clone()
-            .oneshot(get(&format!("{maya}?size=thumb")))
+            .oneshot(get(&format!("{maya}?size={}", imagelib::THUMB_QUERY)))
             .await
             .unwrap();
         assert_eq!(r.status(), StatusCode::OK);
@@ -2198,7 +2209,10 @@ mod route_tests {
             .unwrap()
             .clone();
         let blob = theo.portrait.as_deref().unwrap();
-        let bare = format!("/api/library/portrait/{blob}?size=thumb");
+        let bare = format!(
+            "/api/library/portrait/{blob}?size={}",
+            imagelib::THUMB_QUERY
+        );
         let r = f.app.clone().oneshot(get(&bare)).await.unwrap();
         assert_eq!(r.status(), StatusCode::NOT_FOUND);
         let r = f
@@ -2218,6 +2232,57 @@ mod route_tests {
             .await
             .unwrap();
         assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(r.headers()[header::CACHE_CONTROL], "no-store");
+        // The page asks for the generation the server makes.
+        assert!(
+            include_str!("../../../../web/src/lib/library.js")
+                .contains(&format!("THUMB_SIZE = '{}'", imagelib::THUMB_QUERY)),
+            "web/src/lib/library.js's THUMB_SIZE is not imagelib::THUMB_QUERY"
+        );
+        // An old generation's URL is not this one's.
+        let r = f
+            .app
+            .clone()
+            .oneshot(get(&format!("{maya}?size=thumb")))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+
+        // A picture whose header reads but whose pixels do not: the
+        // thumbnail cannot be made, so the picture itself stands in, and is
+        // never cached under the thumbnail's URL.
+        let mut torn = png(90);
+        // A byte of the pixel data's checksum flipped: the header still
+        // reads, the pixels do not.
+        let at = torn.len() - 16;
+        torn[at] ^= 0xff;
+        imagelib::create(
+            &f.dir,
+            mecha_core::imagelib::NewEntry {
+                kind: Kind::Character,
+                name: "torn".into(),
+                text: "torn, a memorable face".into(),
+                portrait: Some(torn),
+                source_seed: None,
+                origin: mecha_core::imagelib::Origin::Owner,
+                locked: false,
+            },
+        )
+        .unwrap();
+        let blob = Library::load(&f.dir)
+            .0
+            .get(Kind::Character, "torn")
+            .unwrap()
+            .portrait
+            .clone()
+            .unwrap();
+        let url = format!(
+            "/api/library/portrait/{blob}?size={}",
+            imagelib::THUMB_QUERY
+        );
+        let r = f.app.clone().oneshot(get(&url)).await.unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(r.headers()[header::CONTENT_TYPE], "image/png");
         assert_eq!(r.headers()[header::CACHE_CONTROL], "no-store");
     }
 
