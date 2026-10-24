@@ -525,50 +525,70 @@ async fn upscale(
         .upscale(&portrait, seed)
         .await
         .map_err(|why| anyhow::anyhow!("{key}'s portrait was not redrawn: {why}"))?;
-    let judged = match (face::weights()?, face_id::weights()?) {
-        (Some(detector), Some(arcface)) => {
-            let reader = face_id::Reader::load(&detector, &arcface)?;
-            let first = |bytes: &[u8], what: &str| -> Result<Vec<f32>> {
-                reader
-                    .read_bytes(bytes, what)?
-                    .into_iter()
-                    .next()
-                    .map(|(_, e)| e)
-                    .with_context(|| format!("no face was found in {what}"))
-            };
-            Some(face_id::similarity(
-                &first(&portrait, "the portrait")?,
-                &first(&redraw, "the redraw")?,
-            ))
-        }
-        _ => None,
+    // ArcFace against the old portrait: `None` when it is not installed.
+    let judge = || -> Result<Option<f32>> {
+        let (Some(detector), Some(arcface)) = (face::weights()?, face_id::weights()?) else {
+            return Ok(None);
+        };
+        let reader = face_id::Reader::load(&detector, &arcface)?;
+        let first = |bytes: &[u8], what: &str| -> Result<Vec<f32>> {
+            reader
+                .read_bytes(bytes, what)?
+                .into_iter()
+                .next()
+                .map(|(_, e)| e)
+                .with_context(|| format!("no face was found in {what}"))
+        };
+        Ok(Some(face_id::similarity(
+            &first(&portrait, "the portrait")?,
+            &first(&redraw, "the redraw")?,
+        )))
     };
-    let said = match judged {
+    let said = |judged: Option<f32>| match judged {
         Some(s) => format!("ArcFace {s:.3} against the portrait"),
         None => "not compared: ArcFace is not installed (`mecha imagelib face compare` fetches it)"
             .to_string(),
     };
     if let Some(out) = out {
-        // Created, never replaced, as `face crop` writes.
+        // Written before the judge, whose score is only advice here: a
+        // judge that cannot answer (no face found, say) costs the score,
+        // never the minute of drawing (review of #735).
         std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&out)
             .and_then(|mut f| std::io::Write::write_all(&mut f, &redraw))
             .with_context(|| format!("writing {}", out.display()))?;
+        let said = judge()
+            .map(said)
+            .unwrap_or_else(|e| format!("not compared: {e:#}"));
         println!(
             "{} ({said}). Nothing was saved to the library.",
             out.display()
         );
         return Ok(());
     }
+    // Saving, the judge is the guard: one that cannot run stops the save.
+    let judged = judge()?;
     if let Some(s) = judged.filter(|s| *s < SAME_FACE) {
         bail!(
             "the redraw is not the same face (ArcFace {s:.3}, under {SAME_FACE}); nothing was \
              saved. Try another --seed, or --out to look at it."
         );
     }
-    let updated = imagelib::update(dir, Kind::Character, &key, None, Some(redraw), None)?;
+    let said = said(judged);
+    // A scene naming the character is never sampled at its portrait's
+    // drawing seed, so one is kept (review of #735): the seed that drew the
+    // original, whose face and pose the redraw keeps, else the redraw's.
+    let drawn_at = entry.source_seed.unwrap_or(seed);
+    let updated = imagelib::update(
+        dir,
+        Kind::Character,
+        &key,
+        None,
+        Some(redraw),
+        Some(drawn_at),
+    )?;
     println!(
         "`{key}` is now v{}, redrawn larger ({said}).",
         updated.version

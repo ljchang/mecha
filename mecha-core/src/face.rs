@@ -391,27 +391,12 @@ fn cached(
     };
     // A crop that cannot be cached is still used: the edit should not pay
     // for a full disk, only the next one.
-    let saved = make_private_dir(path.parent().unwrap_or(library.dir()))
+    let saved = crate::imagelib::make_private_dir(path.parent().unwrap_or(library.dir()))
         .and_then(|()| crate::imagelib::write_atomic_mode(&path, &bytes, Some(0o600)));
     if let Err(e) = saved {
         tracing::warn!("face crop cache: {e:#}");
     }
     anchor
-}
-
-/// The cache directory and any parent it lacks, owner-only like the
-/// library's own files: a crop is a face.
-pub(crate) fn make_private_dir(dir: &Path) -> Result<()> {
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
-    }
-    builder
-        .create(dir)
-        .with_context(|| format!("creating {}", dir.display()))
 }
 
 /// Anchors, decoded boxes and landmarks, NMS: py-feat's `generate_priors`,

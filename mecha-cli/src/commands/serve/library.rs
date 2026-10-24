@@ -475,7 +475,12 @@ pub async fn portrait(
         // After the lock's lookup, as the full picture is: a thumbnail is
         // the same face.
         if thumb {
-            return Some((lib.thumbnail_named(entry, &blob).ok()?, "jpg", open));
+            // One that cannot be made shows the picture itself rather than
+            // a broken tile (review of #735).
+            match lib.thumbnail_named(entry, &blob) {
+                Ok(jpeg) => return Some((jpeg, "jpg", open)),
+                Err(e) => tracing::warn!("thumbnail of {blob}: {e:#}"),
+            }
         }
         let (bytes, ext) = lib.read_named(entry, &blob).ok()?;
         Some((bytes, ext, open))
