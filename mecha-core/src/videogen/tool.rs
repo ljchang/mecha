@@ -576,7 +576,12 @@ impl VideoGenerate {
             // no word of it (review of #733).
             .filter_map(|(c, v)| Some((args::library_key(&c), v.as_str()?.to_string())))
             .filter(|(_, v)| crate::config::valid_voice_name(v))
-            .collect()
+            // Two spellings of one name: the first read wins, as a persona's
+            // does below (review of #737).
+            .fold(HashMap::new(), |mut map, (c, v)| {
+                map.entry(c).or_insert(v);
+                map
+            })
     }
 
     /// Each approved persona's library character and voice; the first
