@@ -401,7 +401,7 @@ fn cached(
 
 /// The cache directory and any parent it lacks, owner-only like the
 /// library's own files: a crop is a face.
-fn make_private_dir(dir: &Path) -> Result<()> {
+pub(crate) fn make_private_dir(dir: &Path) -> Result<()> {
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]

@@ -1,7 +1,7 @@
 // The image library page's pure logic, imported from the shipped module.
 import assert from 'node:assert/strict';
 import {
-  PANES, paneOf, entriesFor, counts, pendingLine, refApprovable, originLabel, listUrl, validName, tameName, voicesUrl, voiceLine,
+  PANES, paneOf, entriesFor, counts, pendingLine, refApprovable, originLabel, listUrl, thumbUrl, validName, tameName, voicesUrl, voiceLine,
   sampleUrl, cloneUrl, chatVoices, VOICE_ENDPOINTS,
   TEXT_MAX, fitWithin, formProblem, formBody, previewOf,
   REF_KINDS, REF_LIMIT, refNote, refAddable, refProblem, refBody, refRemoveBody, LABEL_MAX,
@@ -168,5 +168,16 @@ assert.equal(refApprovable({}), false);
 // A picked picture's preview is a data: URL, which serve's CSP allows
 // (img-src 'self' data:); a blob: URL rendered broken until saved.
 assert.equal(previewOf('AAAA'), 'data:image/jpeg;base64,AAAA');
+
+
+// A thumbnail is the picture route with `size=thumb`, beside any unlock; any
+// other picture (a preview, nothing at all) is left alone.
+assert.equal(thumbUrl('/api/library/portrait/sha256-ab.png'), '/api/library/portrait/sha256-ab.png?size=thumb');
+assert.equal(
+  thumbUrl('/api/library/portrait/sha256-ab.png?unlock=t1'),
+  '/api/library/portrait/sha256-ab.png?unlock=t1&size=thumb',
+);
+assert.equal(thumbUrl('data:image/png;base64,AAAA'), 'data:image/png;base64,AAAA');
+assert.equal(thumbUrl(null), null);
 
 console.log('library.mjs: ok');

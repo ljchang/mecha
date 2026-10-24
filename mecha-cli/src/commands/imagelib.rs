@@ -11,7 +11,8 @@
 //! It builds no provider and connects to nothing, so the library can be
 //! inspected and edited with the model and the image server both down. The
 //! exceptions fetch pinned weights once: `install-face-detector`, and
-//! `face compare`'s first run, which fetches ArcFace as a judge does.
+//! `face compare`'s first run, which fetches ArcFace as a judge does. And
+//! `upscale` asks the image server for its redraw.
 
 use anyhow::{bail, Context, Result};
 use mecha_core::imagelib::{self, Entry, Kind, Library, NewEntry, Origin, RefKind, Status};
@@ -155,6 +156,20 @@ pub enum Cmd {
         portrait: Option<PathBuf>,
         #[arg(long)]
         seed: Option<u64>,
+    },
+    /// Redraw a character's small portrait at about a megapixel with the
+    /// image model, as a new version; the old one is kept in its history. A
+    /// small portrait reaches a video clip as a small face. When ArcFace is
+    /// installed the redraw is compared with the portrait and kept only if
+    /// it is the same face.
+    Upscale {
+        name: String,
+        /// The image model's seed; a fresh one when not given.
+        #[arg(long)]
+        seed: Option<u64>,
+        /// Write the redraw here instead of saving it, to look first.
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     /// Fetch the face detector a persona's edits are anchored with
     /// (py-feat's RetinaFace-R34, 89 MB, checked against its pin). Without
@@ -454,6 +469,10 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
         super::features::require(mecha_core::feature::Feature::Image)?;
         return install_face_detector().await;
     }
+    if let Cmd::Upscale { name, seed, out } = args.cmd {
+        super::features::require(mecha_core::feature::Feature::Image)?;
+        return upscale(&Library::default_dir()?, &name, seed, out).await;
+    }
     // Reads only: pictures on disk, and a character's face for `compare`.
     // The detector is the image feature's, as its install is.
     if let Cmd::Face { cmd } = args.cmd {
@@ -462,6 +481,127 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
     }
     let dir = Library::default_dir()?;
     run(&dir, args.cmd)
+}
+
+/// A redraw closer to its portrait than this is the same face. Two redraws
+/// of one 401 px portrait scored 0.95 and 0.947 against it, and ArcFace puts
+/// two different people well under 0.5.
+const SAME_FACE: f32 = 0.8;
+
+/// `mecha imagelib upscale`: the portrait redrawn larger by the image
+/// server, compared with the portrait when ArcFace is here, then saved as a
+/// new version or written to `out`. ArcFace is never fetched for this: it is
+/// a judge's download, said and agreed to at `face compare`.
+async fn upscale(
+    dir: &std::path::Path,
+    name: &str,
+    seed: Option<u64>,
+    out: Option<PathBuf>,
+) -> Result<()> {
+    use mecha_core::{face, face_id};
+    let (lib, _) = Library::load(dir);
+    let key = name.trim().to_lowercase();
+    let entry = lib
+        .get(Kind::Character, &key)
+        .filter(|e| e.status == Status::Approved)
+        .with_context(|| format!("no approved character `{key}`"))?;
+    let (portrait, _) = lib.read_portrait(entry)?;
+    let cfg = mecha_core::config::Config::load_global()?;
+    let image = cfg
+        .image
+        .clone()
+        .context("no [image] server is configured: `mecha features enable image`")?;
+    let mut tool = mecha_core::imagegen::ImageGenerate::new(image)?.with_floor(cfg.system.clone());
+    if let Ok(home) = mecha_core::work::mecha_home() {
+        // Which model the image server holds, shared with every process
+        // that draws, as `setup` records it.
+        tool = tool.with_model_record(home.join("image").join("held-model.json"));
+    }
+    let seed = seed.unwrap_or_else(|| uuid::Uuid::new_v4().as_u64_pair().0);
+    eprintln!(
+        "Redrawing {key}'s portrait at seed {seed}; about a minute once the model is loaded…"
+    );
+    let redraw = tool
+        .upscale(&portrait, seed)
+        .await
+        .map_err(|why| anyhow::anyhow!("{key}'s portrait was not redrawn: {why}"))?;
+    let judged = match (face::weights()?, face_id::weights()?) {
+        (Some(detector), Some(arcface)) => {
+            let reader = face_id::Reader::load(&detector, &arcface)?;
+            let first = |bytes: &[u8], what: &str| -> Result<Vec<f32>> {
+                reader
+                    .read_bytes(bytes, what)?
+                    .into_iter()
+                    .next()
+                    .map(|(_, e)| e)
+                    .with_context(|| format!("no face was found in {what}"))
+            };
+            Some(face_id::similarity(
+                &first(&portrait, "the portrait")?,
+                &first(&redraw, "the redraw")?,
+            ))
+        }
+        _ => None,
+    };
+    let said = match judged {
+        Some(s) => format!("ArcFace {s:.3} against the portrait"),
+        None => "not compared: ArcFace is not installed (`mecha imagelib face compare` fetches it)"
+            .to_string(),
+    };
+    if let Some(out) = out {
+        // Created, never replaced, as `face crop` writes.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&out)
+            .and_then(|mut f| std::io::Write::write_all(&mut f, &redraw))
+            .with_context(|| format!("writing {}", out.display()))?;
+        println!(
+            "{} ({said}). Nothing was saved to the library.",
+            out.display()
+        );
+        return Ok(());
+    }
+    if let Some(s) = judged.filter(|s| *s < SAME_FACE) {
+        bail!(
+            "the redraw is not the same face (ArcFace {s:.3}, under {SAME_FACE}); nothing was \
+             saved. Try another --seed, or --out to look at it."
+        );
+    }
+    let updated = imagelib::update(dir, Kind::Character, &key, None, Some(redraw), None)?;
+    println!(
+        "`{key}` is now v{}, redrawn larger ({said}).",
+        updated.version
+    );
+    unframe(&updated.name);
+    // The face crop an edit and a clip are anchored to, cut now rather than
+    // at the next edit, so a clip made before then is not given the whole
+    // portrait and its outfit.
+    if face::weights()?.is_some() {
+        use mecha_core::face::FaceAnchors;
+        let (lib, _) = Library::load(dir);
+        if let Some(e) = lib.get(Kind::Character, &key) {
+            if let face::Anchor::Unavailable(why) = face::CachedRetinaFace.anchor(&lib, e) {
+                eprintln!("mecha: the new portrait's face crop was not cut: {why}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A new picture under the same name: a persona framed against the old one
+/// starts unframed (review of #491). After the update has landed, so a
+/// failure costs only the framing, and is said.
+fn unframe(name: &str) {
+    let cleared = mecha_core::persona::Store::default_dir()
+        .and_then(|personas| mecha_core::persona::clear_frames_for(&personas, name));
+    match cleared {
+        Ok(names) if !names.is_empty() => {
+            println!("Its new picture is unframed in {}.", names.join(", "))
+        }
+        Ok(_) => {}
+        Err(e) => eprintln!("mecha: a persona's old framing was not cleared: {e:#}"),
+    }
 }
 
 async fn install_face_detector() -> Result<()> {
@@ -670,6 +810,7 @@ fn run(dir: &std::path::Path, cmd: Cmd) -> Result<()> {
         // Async, so `execute` runs it before reaching here.
         Cmd::InstallFaceDetector => anyhow::bail!("install-face-detector runs from `execute`"),
         Cmd::Face { .. } => anyhow::bail!("face runs from `execute`"),
+        Cmd::Upscale { .. } => anyhow::bail!("upscale runs from `execute`"),
         Cmd::List { all, json } => {
             let entries: Vec<&Entry> = lib
                 .all()
@@ -908,23 +1049,11 @@ fn run(dir: &std::path::Path, cmd: Cmd) -> Result<()> {
             let portrait = portrait.as_ref().map(read_picture).transpose()?;
             let updated = imagelib::update(dir, e.kind, &e.name, text, portrait, seed)?;
             println!("`{}` is now v{}.", updated.name, updated.version);
-            // A new picture under the same name: a persona framed against the
-            // old one starts unframed (review of #491). Compared, not "a
-            // --portrait was passed": portraits are content-addressed, so the
-            // same file passed again changes nothing to reframe. After the
-            // update has landed, so a failure costs only the framing, and is
-            // said.
+            // Compared, not "a --portrait was passed": portraits are
+            // content-addressed, so the same file passed again changes
+            // nothing to reframe.
             if updated.portrait != e.portrait {
-                let cleared = mecha_core::persona::Store::default_dir().and_then(|personas| {
-                    mecha_core::persona::clear_frames_for(&personas, &updated.name)
-                });
-                match cleared {
-                    Ok(names) if !names.is_empty() => {
-                        println!("Its new picture is unframed in {}.", names.join(", "))
-                    }
-                    Ok(_) => {}
-                    Err(e) => eprintln!("mecha: a persona's old framing was not cleared: {e:#}"),
-                }
+                unframe(&updated.name);
             }
         }
     }

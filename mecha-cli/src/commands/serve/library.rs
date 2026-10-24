@@ -187,6 +187,16 @@ pub struct UnlockQuery {
     unlock: Option<String>,
 }
 
+/// The picture route's query: the unlock token, and `size=thumb` for the
+/// small JPEG a grid or an avatar shows ([`Library::thumbnail_named`]).
+#[derive(Deserialize, Default)]
+pub struct PictureQuery {
+    #[serde(default)]
+    unlock: Option<String>,
+    #[serde(default)]
+    size: Option<String>,
+}
+
 pub(super) fn no_store(mut response: Response) -> Response {
     response.headers_mut().insert(
         header::CACHE_CONTROL,
@@ -428,7 +438,8 @@ fn valid_blob(name: &str) -> bool {
 }
 
 /// GET /api/library/portrait/{blob} — a portrait or a typed reference, only
-/// as some entry the owner may see now names it. Everything else, including a
+/// as some entry the owner may see now names it; `?size=thumb` answers it as
+/// a small JPEG, under the same lookup and cache rule. Everything else, including a
 /// blob only a superseded version names, is the same 404. Both halves of
 /// #385's answer cover every picture an entry names, not only its portrait
 /// (`IMAGE-COMPILER-DESIGN.md` §9.5): the lookup that answers 404, and the
@@ -437,11 +448,16 @@ fn valid_blob(name: &str) -> bool {
 pub async fn portrait(
     State(state): St,
     UrlPath(blob): UrlPath<String>,
-    Query(q): Query<UnlockQuery>,
+    Query(q): Query<PictureQuery>,
 ) -> Response {
     if !valid_blob(&blob) {
         return (StatusCode::NOT_FOUND, "no such portrait\n").into_response();
     }
+    let thumb = match q.size.as_deref() {
+        None => false,
+        Some("thumb") => true,
+        Some(_) => return (StatusCode::BAD_REQUEST, "size is thumb or absent\n").into_response(),
+    };
     let unlocked = state.library.unlocked(q.unlock.as_deref());
     let dir = state.library.dir.clone();
     let read = tokio::task::spawn_blocking(move || {
@@ -456,6 +472,11 @@ pub async fn portrait(
             .collect();
         let open = naming.iter().any(|e| !e.locked);
         let entry = naming.into_iter().find(|e| !e.locked || unlocked)?;
+        // After the lock's lookup, as the full picture is: a thumbnail is
+        // the same face.
+        if thumb {
+            return Some((lib.thumbnail_named(entry, &blob).ok()?, "jpg", open));
+        }
         let (bytes, ext) = lib.read_named(entry, &blob).ok()?;
         Some((bytes, ext, open))
     })
@@ -2131,6 +2152,66 @@ mod route_tests {
         let url = theo["references"][0]["picture"].as_str().unwrap();
         assert!(url.contains(&format!("unlock={token}")), "{url}");
         let r = f.app.clone().oneshot(get(url)).await.unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(r.headers()[header::CACHE_CONTROL], "no-store");
+    }
+
+    /// A thumbnail rides the picture route under the same lock and cache
+    /// rules as the picture: a JPEG cached for good when its entry is open,
+    /// the same 404 for a locked one until unlocked, and never cached then.
+    #[tokio::test]
+    async fn a_thumbnail_follows_its_picture_through_the_lock_and_the_cache() {
+        let f = fixture();
+        let list = json(f.app.clone().oneshot(get("/api/library")).await.unwrap()).await;
+        let maya = list["entries"].as_array().unwrap()[0]["portrait"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let r = f
+            .app
+            .clone()
+            .oneshot(get(&format!("{maya}?size=thumb")))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(r.headers()[header::CONTENT_TYPE], "image/jpeg");
+        assert!(r.headers()[header::CACHE_CONTROL]
+            .to_str()
+            .unwrap()
+            .contains("immutable"));
+        let r = f
+            .app
+            .clone()
+            .oneshot(get(&format!("{maya}?size=huge")))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+
+        let theo = Library::load(&f.dir)
+            .0
+            .get(Kind::Character, "theo")
+            .unwrap()
+            .clone();
+        let blob = theo.portrait.as_deref().unwrap();
+        let bare = format!("/api/library/portrait/{blob}?size=thumb");
+        let r = f.app.clone().oneshot(get(&bare)).await.unwrap();
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
+        let r = f
+            .app
+            .clone()
+            .oneshot(post(
+                "/api/library/unlock",
+                serde_json::json!({"password": "correct horse"}),
+            ))
+            .await
+            .unwrap();
+        let token = json(r).await["token"].as_str().unwrap().to_string();
+        let r = f
+            .app
+            .clone()
+            .oneshot(get(&format!("{bare}&unlock={token}")))
+            .await
+            .unwrap();
         assert_eq!(r.status(), StatusCode::OK);
         assert_eq!(r.headers()[header::CACHE_CONTROL], "no-store");
     }

@@ -1297,6 +1297,22 @@ mecha-a3, 2026-10-09). An answer that gives nobody a part still fails. It feeds 
 - **Global only, no config key.** `~/.mecha/imagelib/`, for the skills and
   `[[trigger]]` reason: a cloned repository must not bring a character into
   a trusted session.
+- **Pages load thumbnails, made behind the lock** (`Library::thumbnail_named`,
+  `?size=thumb` on the picture route). A 1024² portrait is about 1.5 MB, and
+  a screen of avatars on a phone loaded every one whole. The thumbnail is
+  looked up as its picture is — some entry the owner may see now names it —
+  and cached by the same rule, so a locked entry's is the same 404 and never
+  `immutable`. Kept under `thumbs/v1/` beside `faces/`: derived, regenerable,
+  never walked by blob collection.
+- **`mecha imagelib upscale` redraws, then judges, then versions.** A video
+  reference is scaled down to the clip's area and never up, so a small
+  portrait is a small face to H3: a 401 px portrait matched its character at
+  0.45 in a clip and its 1024² redraw at 0.53 (2026-10-24). The redraw is a
+  one-reference standard-model edit on the encoder's own canvas
+  (`ImageGenerate::upscale`, admitted against memory like any picture), kept
+  only when ArcFace, where installed, scores it at 0.8 or more against the
+  old portrait. ArcFace is never fetched for it: that download is a judge's,
+  said at `face compare`.
 - **The lock is a browse filter** (the owner's ruling, 2026-09-28): generation
   ignores it. Incognito chats may call `image_library` and generate with a
   cast. Three writers reach outside the room on purpose, all staged locked
