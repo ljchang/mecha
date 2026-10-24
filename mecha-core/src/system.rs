@@ -531,6 +531,19 @@ pub(crate) fn unit_counters(slice: &Path) -> Result<Vec<UnitCounters>> {
     Ok(units)
 }
 
+/// Whether a voice call is live now, as `mecha system probe voice.live`
+/// reads it: a hold shows only a turn in flight, not a call between turns.
+/// No speech engine here is no call; one whose journal cannot be read is an
+/// error, since unknown is not clear. The one reading the persona replay
+/// and the video tool wait on, in place of shelling out to the probe.
+pub fn voice_live() -> Result<bool> {
+    match Reader::new().now(Measurement::VoiceLive) {
+        Reading::Observed { value } => Ok(value != 0.0),
+        Reading::NotHere => Ok(false),
+        Reading::Unread { why } => anyhow::bail!("a live call cannot be ruled out: {why}"),
+    }
+}
+
 // ---- the store ----
 
 const MINUTE_KEEP_DAYS: i64 = 7;

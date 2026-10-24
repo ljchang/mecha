@@ -1133,12 +1133,12 @@ compute and memory bandwidth, and nothing queues one behind the other.
 ## Video generation
 
 `videogen.rs` is the port of the private H3 server into mecha, in seam
-order. What has landed is the part that is a function of its inputs: the
-`[video]` table, the clip's graph (`videogen::graph`), its compiled prompt
-(`videogen::compose`) and the typed scene that writes the timeline
-(`videogen::scene`). The tool, its job and its gates come next. The rules
-are §Image generation's, and where they need a reason of their own it is
-given here:
+order: the `[video]` table, the clip's graph (`videogen::graph`), its
+compiled prompt (`videogen::compose`), the typed scene that writes the
+timeline (`videogen::scene`), and `video_generate` itself
+(`videogen::tool`) behind `Feature::Video`, its own switch. The rules are
+§Image generation's, and where they need a reason of their own it is given
+here:
 
 - **One transport, two tools.** `comfy.rs` holds what both say to a
   ComfyUI: the loopback-only address (`comfy::loopback_url`), a client that
@@ -1179,6 +1179,45 @@ given here:
   cut outside the clip moves, a missing `wearing` is said, and so is a
   script longer than the clip can speak. A draft that renders is worth more than a
   lecture. The notes reach the model, so they are worded for it.
+- **The call decides; the job renders** (`VideoGenerate::plan`, then the
+  `DeferredJob`). Everything a bad argument could cost — the chat's kept
+  settings, the scene, the persona's own character, the library characters
+  the prompt names, each picture through the path jail and each portrait
+  under the library's hash check, each voice — is read and refused at the
+  call, before a turn is taken. The private server found a bad name only
+  after it had queued.
+- **Nothing shells out, and nothing starts a server.** The private server
+  ran `mecha system admit`, `mecha system probe voice.live`, `mecha
+  imagelib show`, `ffmpeg` and `systemctl`. Here the memory gate is
+  `system::floor::admit_now`, the call gate is `system::voice_live` (moved
+  out of the persona replay, which reads the same one), the library is its
+  own API, and a voice is trimmed by `trim_wav`. A server that is down is
+  said to be down; it is the operator's to start.
+- **One clip renders at a time on the machine** (`render.turn` under
+  `~/.mecha/video/`, holding its holder's pid). The chat's job queue keeps
+  one job per conversation; this keeps one clip per machine, across chats,
+  surfaces and the private server, which takes the same file while both are
+  installed. A clip waits rather than refuses: for its turn, then while a
+  call is live, while the server has other work, and until memory is
+  admitted, for up to three hours. A call that cannot be ruled out refuses,
+  since unknown is not "no".
+- **The clip is fetched, never copied by host path.** `/view` returns the
+  bytes, an `ftyp` box is checked, and the file is created new under
+  `videos/` through `ToolCtx::resolve`, never through a link. The result's
+  first line is `video: videos/<id>.mp4`, which the page's clip player
+  reads; the immediate answer is the background MCP tool's own words, so
+  the page and the restart repair (`late::RESTARTED`) read a built-in clip
+  exactly as they read the private server's.
+- **What a clip leaves under the mecha home is the private server's.** Each
+  clip's record (`video/jobs/<id>.json`) feeds the next one's estimate, and
+  a chat's kept settings sit beside the records
+  (`video/chat-settings/<chat>.json`), outside the chat's folder, so the
+  model can neither list nor rewrite them. The same paths and shapes, so
+  the estimate and every chat's settings carry over from the private server.
+- **Withheld from incognito, eligible for a persona.** Incognito's allowlist
+  does not name it: a clip leaves its uploads and output on the server and
+  its record under the mecha home. A persona may be given it on
+  `image_generate`'s footing (`PERSONA-DESIGN.md` §3.3).
 
 ## Image library
 
