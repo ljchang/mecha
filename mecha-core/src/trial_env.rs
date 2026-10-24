@@ -62,11 +62,11 @@ pub const MACHINE_TABLES: [&str; 7] = [
     "search",
 ];
 
-/// Tables a checked-out file may never set: the nine a project layer is
+/// Tables a checked-out file may never set: the ten a project layer is
 /// stripped of (`Config::merge_file`), for the reason given there — a file
 /// that arrives with a cloned repository must not name the Slack surface,
-/// the web surface, the mailbox, the image server model-written prompts go
-/// to, the OCR server the owner's documents go to or the PDF parser's
+/// the web surface, the mailbox, the image or video server model-written
+/// prompts go to, the OCR server the owner's documents go to or the PDF parser's
 /// confinement (`[documents]`: its `ocr_url` and `confine`, missing from this
 /// list while `merge_file` stripped it — FEATURES-DESIGN.md §5.1),
 /// `[harness] source_dir`, the authority a `ruminate` stage's
@@ -79,7 +79,7 @@ pub const MACHINE_TABLES: [&str; 7] = [
 /// SYSTEM-STATE-DESIGN.md §3.7). An environment directory is resolved against a checkout,
 /// so it is refused them outright rather than stripped with a warning
 /// (found on review).
-pub const OPERATOR_ONLY_TABLES: [&str; 9] = [
+pub const OPERATOR_ONLY_TABLES: [&str; 10] = [
     "documents",
     "harness",
     "image",
@@ -87,6 +87,7 @@ pub const OPERATOR_ONLY_TABLES: [&str; 9] = [
     "personas",
     "slack",
     "system",
+    "video",
     "voice",
     "web",
 ];

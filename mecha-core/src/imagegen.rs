@@ -52,6 +52,7 @@
 //! like ComfyUI's graphs, because that shape is model-agnostic and a second
 //! backend should be an adapter, not a new tool.
 
+use crate::comfy::{clip, Failure, SERVER_WAIT};
 use crate::tool::{Capabilities, Tool, ToolCtx, ToolOutput};
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
@@ -165,42 +166,13 @@ impl Default for ImageConfig {
     }
 }
 
-/// Whether a URL's host is this machine: a loopback IP, or `localhost`.
-/// The one statement of that rule — [`loopback_url`] and the point-wise
-/// pass's R29 check (`pointwise::on_this_machine`) both ask it.
-pub fn is_loopback(url: &reqwest::Url) -> bool {
-    // `host_str` brackets an IPv6 literal; an IP parses, anything else is a
-    // name, and the only name that is this machine by definition is localhost.
-    match url
-        .host_str()
-        .map(|h| h.trim_start_matches('[').trim_end_matches(']'))
-    {
-        Some(host) => match host.parse::<std::net::IpAddr>() {
-            Ok(ip) => ip.is_loopback(),
-            Err(_) => host.eq_ignore_ascii_case("localhost"),
-        },
-        None => false,
-    }
-}
+pub use crate::comfy::is_loopback;
 
-/// The image server's URL, if it is on this machine.
-///
-/// The tool declares no egress, and this is what makes that true: a host that
-/// is not loopback is refused, so the declaration cannot be configured into a
-/// lie. A tunnel listening on loopback (`ssh -L`) still passes — the operator
-/// built that on purpose, and no URL can reveal it.
+/// The image server's URL, if it is on this machine
+/// ([`crate::comfy::loopback_url`]): the tool declares no egress, and this is
+/// what makes that true.
 pub fn loopback_url(raw: &str) -> Result<reqwest::Url> {
-    let url = reqwest::Url::parse(raw).with_context(|| format!("[image] url `{raw}`"))?;
-    if !matches!(url.scheme(), "http" | "https") {
-        bail!("[image] url `{raw}` must be http or https");
-    }
-    if !is_loopback(&url) {
-        bail!(
-            "[image] url `{raw}` is not on this machine — the image tool sends model-written \
-             prompts to it, so it must be loopback (127.0.0.1, ::1 or localhost)"
-        );
-    }
-    Ok(url)
+    crate::comfy::loopback_url("[image] url", "the image tool", raw)
 }
 
 /// The sizes the tool offers. Closed, because every size is a memory and time
@@ -380,10 +352,6 @@ pub(crate) const PROMPT_CAP: usize = 4_000;
 /// Consecutive failed status polls before a job is abandoned.
 const POLL_FAILURES: u32 = 3;
 
-/// How many polls to wait for an interrupted job to reach the server's
-/// history before deleting it from there.
-const FORGET_WAIT_POLLS: u32 = 10;
-
 /// One line of an image trail (`ToolCtx::image_trail`): a job the tool is
 /// about to submit, or a file the server is about to hold or has said it
 /// holds. Written before the thing exists on the server, so a process that
@@ -557,6 +525,7 @@ pub async fn forget_trail(cfg: &ImageConfig, entries: &[TrailEntry]) -> Result<(
     // Every step below is best effort, so ask first whether anyone is there:
     // otherwise a server that is down reads as a trail that was cleared.
     server
+        .wire
         .get_json("queue")
         .await
         .context("the image server did not answer")?;
@@ -928,17 +897,10 @@ fn fresh_seed() -> u64 {
     h.finish() & 0xFFFF_FFFF
 }
 
-/// The ComfyUI adapter.
+/// The ComfyUI adapter: the shared transport ([`crate::comfy::Client`])
+/// and what this tool keeps about the server beyond it.
 struct ComfyUi {
-    base: reqwest::Url,
-    http: reqwest::Client,
-    poll: Duration,
-    /// Whether the server has answered this process at least once. One that
-    /// has, and now does not, is restarting and is waited for in full
-    /// ([`SERVER_WAIT`]); one never seen may simply not be running, and gets
-    /// only [`UNSEEN_WAIT`] - enough for a restart already under way, not a
-    /// minute and a half of every picture against a stopped service.
-    answered: std::sync::atomic::AtomicBool,
+    wire: crate::comfy::Client,
     /// Where the model each server holds is written for every process that
     /// draws (`ImageGenerate::with_model_record`): a serve restarted after a
     /// turbo picture, or a replay beside serve, otherwise read an unused
@@ -948,57 +910,6 @@ struct ComfyUi {
     /// The server has been seen able to segment ([`ComfyUi::segments`]).
     /// Only a yes is kept: an install that adds SAM is seen on the next ask.
     segments: std::sync::atomic::AtomicBool,
-}
-
-/// Why a generation did not produce an image.
-enum Failure {
-    Cancelled,
-    Other(anyhow::Error),
-}
-
-/// How long a job waits for an image server that is not answering yet
-/// (`ComfyUi::await_server`), and how often it asks meanwhile. Tests wait
-/// two seconds, so the ones aimed at a closed port stay fast.
-///
-/// **A Mac waits as long as its proxy gives ComfyUI to start** (180 s, with
-/// margin): this is the ceiling `UNSEEN_WAIT` is clamped under, so the two
-/// move together — 90 s here made a 200 s unseen wait unreachable (review of
-/// #689, pass 4).
-#[cfg(not(test))]
-const SERVER_WAIT: Duration = Duration::from_secs(if cfg!(target_os = "macos") { 200 } else { 90 });
-#[cfg(test)]
-const SERVER_WAIT: Duration = Duration::from_secs(2);
-const SERVER_WAIT_STEP: Duration = Duration::from_millis(500);
-/// The wait for a server this process has never had an answer from. The
-/// processes that meet a restart are the unseen ones - a one-shot `mecha
-/// run`, the first picture after a `serve` restart - so it covers the slowest
-/// start measured (40 s once; 4-10 s usually), while a stopped service is
-/// still reported in half of [`SERVER_WAIT`] (review of #515).
-///
-/// **A Mac waits as long as its proxy does.** Its ComfyUI starts on demand
-/// (`comfyui_unit::for_mac`) and nothing is forwarded until it is ready, so
-/// an unseen server there is one being started, which the proxy gives 180 s
-/// — 45 s gave up on a cold start that would have answered (review of #689).
-#[cfg(not(test))]
-const UNSEEN_WAIT: Duration = Duration::from_secs(if cfg!(target_os = "macos") { 200 } else { 45 });
-#[cfg(test)]
-const UNSEEN_WAIT: Duration = Duration::from_secs(1);
-
-impl From<anyhow::Error> for Failure {
-    fn from(e: anyhow::Error) -> Self {
-        Failure::Other(e)
-    }
-}
-
-/// The first stretch of a server's error body — enough to name the problem,
-/// never a page of it in the model's context.
-fn clip(s: &str) -> String {
-    const CAP: usize = 600;
-    if s.chars().count() <= CAP {
-        s.to_string()
-    } else {
-        format!("{}…", s.chars().take(CAP).collect::<String>())
-    }
 }
 
 /// What the server holds of one job, as far as this call knows: the files it
@@ -1104,7 +1015,7 @@ impl ComfyUi {
             // write that failed), what this process sent last, never the
             // standard model by default (review of #648, pass 5).
             Some(path) => read_held(path)
-                .remove(self.base.as_str())
+                .remove(self.wire.base().as_str())
                 .or_else(|| self.held_here()),
             None => self.held_here(),
         }
@@ -1115,7 +1026,7 @@ impl ComfyUi {
         LAST_MODEL
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .get(self.base.as_str())
+            .get(self.wire.base().as_str())
             .cloned()
     }
 
@@ -1125,10 +1036,10 @@ impl ComfyUi {
         LAST_MODEL
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(self.base.to_string(), file.to_string());
+            .insert(self.wire.base().to_string(), file.to_string());
         if let Some(path) = self.model_record.get() {
             let mut held = read_held(path);
-            held.insert(self.base.to_string(), file.to_string());
+            held.insert(self.wire.base().to_string(), file.to_string());
             if let Err(e) = write_held(path, &held) {
                 tracing::warn!("image_generate: the held-model record: {e:#}");
             }
@@ -1149,106 +1060,11 @@ impl ComfyUi {
                 );
             }
         }
-        let mut base = loopback_url(&cfg.url)?;
-        // `join` replaces the last path segment unless the base ends in `/`.
-        if !base.path().ends_with('/') {
-            base.set_path(&format!("{}/", base.path()));
-        }
-        // The vetted address is the only one this client may reach. A
-        // redirect would walk it elsewhere — a 307/308 on `/prompt` re-sends
-        // the body, prompt and all — while the tool goes on declaring no
-        // egress; an inherited proxy setting would route the loopback call
-        // through someone else. `fetch_vetted` treats a redirect as fatal for
-        // the same reason (found on review of #303).
-        let http = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .no_proxy()
-            .build()
-            .context("building the image server's HTTP client")?;
         Ok(ComfyUi {
-            base,
-            http,
-            poll: Duration::from_secs(1),
-            answered: std::sync::atomic::AtomicBool::new(false),
+            wire: crate::comfy::Client::new(loopback_url(&cfg.url)?, "the image server")?,
             model_record: std::sync::OnceLock::new(),
             segments: std::sync::atomic::AtomicBool::new(false),
         })
-    }
-
-    fn endpoint(&self, path: &str) -> Result<reqwest::Url> {
-        Ok(self.base.join(path)?)
-    }
-
-    async fn get_json(&self, path: &str) -> Result<Value> {
-        let res = self
-            .http
-            .get(self.endpoint(path)?)
-            .timeout(Duration::from_secs(30))
-            .send()
-            .await?;
-        let status = res.status();
-        let body = res.text().await?;
-        if !status.is_success() {
-            bail!("{path} answered {status}: {}", clip(&body));
-        }
-        Ok(serde_json::from_str(&body)?)
-    }
-
-    async fn post_json(&self, path: &str, body: &Value) -> Result<(reqwest::StatusCode, String)> {
-        let res = self
-            .http
-            .post(self.endpoint(path)?)
-            .timeout(Duration::from_secs(30))
-            .json(body)
-            .send()
-            .await?;
-        let status = res.status();
-        Ok((status, res.text().await?))
-    }
-
-    /// Wait out a server that is restarting: the first request after one
-    /// meets a closed port or a slow answer, and that is a few seconds of
-    /// start, not a server that is gone. ComfyUI is restarted on purpose when
-    /// it sits idle holding a model (`scripts/comfyui/comfyui-idle-reset`,
-    /// measured 4-10 s, once 40 s), and by every deploy; failing the picture
-    /// at the first refused connect told the model the server was down.
-    /// Only a connect or timeout failure is waited on - a server that
-    /// answers, even with an error, is answered - and a cancel ends the wait.
-    async fn await_server(
-        &self,
-        cancel: Option<&CancellationToken>,
-        wait: Duration,
-    ) -> std::result::Result<(), Failure> {
-        let wait = if self.answered.load(Ordering::Relaxed) {
-            wait
-        } else {
-            wait.min(UNSEEN_WAIT)
-        };
-        let deadline = Instant::now() + wait;
-        loop {
-            let attempt = self
-                .http
-                .get(self.endpoint("queue")?)
-                .timeout(Duration::from_secs(5))
-                .send();
-            let err = match attempt.await {
-                Ok(_) => {
-                    self.answered.store(true, Ordering::Relaxed);
-                    return Ok(());
-                }
-                Err(e) if (e.is_connect() || e.is_timeout()) && Instant::now() < deadline => e,
-                Err(e) => return Err(Failure::Other(e.into())),
-            };
-            tracing::debug!("image server not answering yet, waiting: {err}");
-            let pause = tokio::time::sleep(SERVER_WAIT_STEP);
-            match cancel {
-                Some(token) => tokio::select! {
-                    _ = token.cancelled() => return Err(Failure::Cancelled),
-                    _ = pause => {}
-                },
-                None => pause.await,
-            }
-        }
     }
 
     /// Every file the graph names is one the server can load, checked before
@@ -1280,7 +1096,7 @@ impl ComfyUi {
             let info = match fetched.get(node) {
                 Some(info) => info.clone(),
                 None => {
-                    let info = self.get_json(&format!("object_info/{node}")).await?;
+                    let info = self.wire.get_json(&format!("object_info/{node}")).await?;
                     fetched.insert(node, info.clone());
                     info
                 }
@@ -1331,61 +1147,26 @@ impl ComfyUi {
                 );
             }
         }
-        let info = self.get_json("object_info/TextEncodeQwenImage21").await?;
+        let info = self
+            .wire
+            .get_json("object_info/TextEncodeQwenImage21")
+            .await?;
         if info.get("TextEncodeQwenImage21").is_none() {
             bail!("the image server's ComfyUI predates Qwen-Image 2.1 support; update it");
         }
         Ok(())
     }
 
-    /// Stop a job wherever it is: out of the queue if it has not started,
-    /// interrupted if it has. Best effort — the caller is already failing.
-    ///
-    /// `/interrupt` is sent only when *this* job is the one running. Current
-    /// ComfyUI honours the `prompt_id` in the body, but older servers ignore
-    /// it and stop whatever is executing — which would let cancelling a
-    /// queued image kill another call's running one. Asking the queue first
-    /// makes it right on either (found on review of #303).
+    /// Stop a job wherever it is ([`crate::comfy::Client::take_off`]), and
+    /// say what it wrote: a job that finished as it was stopped also wrote
+    /// its preview, which only its record names — so it is read before the
+    /// record is forgotten.
     async fn abandon(&self, id: &str, trail: Option<&std::path::Path>) -> Wrote {
-        let _ = self.post_json("queue", &json!({"delete": [id]})).await;
-        let running = self
-            .get_json("queue")
-            .await
-            .ok()
-            .and_then(|q| q.get("queue_running")?.as_array().cloned())
-            .unwrap_or_default();
-        // Each entry is `[number, prompt_id, prompt, extra, outputs]`.
-        if running
-            .iter()
-            .any(|job| job.get(1).and_then(Value::as_str) == Some(id))
-        {
-            let _ = self.post_json("interrupt", &json!({"prompt_id": id})).await;
-            // `/interrupt` answers when the flag is set, not when the job has
-            // stopped; the server writes the interrupted job into its history
-            // as it unwinds, after that. A delete sent now arrives before the
-            // record exists and deletes nothing, leaving the prompt behind
-            // (found on review of #306). So wait, briefly, for the record.
-            for _ in 0..FORGET_WAIT_POLLS {
-                let recorded = self
-                    .get_json(&format!("history/{id}"))
-                    .await
-                    .ok()
-                    .is_some_and(|h| h.get(id).is_some());
-                if recorded {
-                    break;
-                }
-                tokio::time::sleep(self.poll).await;
-            }
-        }
-        // A cancelled or interrupted job is still recorded, prompt and all. A
-        // job taken off the queue before it ran never reaches the history.
-        // One that finished as it was stopped also wrote its preview, which
-        // only the record names — so read it before forgetting it.
         let wrote = self
-            .get_json(&format!("history/{id}"))
+            .wire
+            .take_off(id)
             .await
-            .ok()
-            .and_then(|h| h.get(id).map(outputs))
+            .map(|entry| outputs(&entry))
             .unwrap_or_default();
         // Onto the trail before the record naming them is forgotten, as the
         // polling path does: a death between here and the caller's delete
@@ -1395,83 +1176,17 @@ impl ComfyUi {
                 tracing::debug!("a preview's name did not reach the image trail: {e:#}");
             }
         }
-        self.forget(id).await;
+        self.wire.forget(id).await;
         wrote
     }
 
     /// Put one reference in the server's temp directory as `filename` (a
     /// random name the caller has already written to the trail), and return
-    /// the name the server filed it under. Multipart by hand: one file and one
-    /// field do not justify a crate feature.
+    /// the name the server filed it under.
     async fn upload(&self, reference: &Reference, filename: &str) -> Result<String> {
-        let boundary = format!("mecha-{:08x}{:08x}", fresh_seed(), fresh_seed());
-        let mut body = Vec::with_capacity(reference.bytes.len() + 512);
-        body.extend_from_slice(
-            format!(
-                "--{boundary}\r\nContent-Disposition: form-data; name=\"image\"; \
-                 filename=\"{filename}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
-            )
-            .as_bytes(),
-        );
-        body.extend_from_slice(&reference.bytes);
-        body.extend_from_slice(
-            format!(
-                "\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"type\"\r\n\r\n\
-                 temp\r\n--{boundary}--\r\n"
-            )
-            .as_bytes(),
-        );
-        let res = self
-            .http
-            .post(self.endpoint("upload/image")?)
-            .timeout(Duration::from_secs(60))
-            .header(
-                reqwest::header::CONTENT_TYPE,
-                format!("multipart/form-data; boundary={boundary}"),
-            )
-            .body(body)
-            .send()
-            .await?;
-        let status = res.status();
-        let text = res.text().await?;
-        if !status.is_success() {
-            bail!(
-                "uploading {} failed ({status}): {}",
-                reference.path,
-                clip(&text)
-            );
-        }
-        let answer: Value = serde_json::from_str(&text)?;
-        // The server says which directory it used. Only temp is emptied when
-        // it starts; anywhere else, a private photo would outlive this call
-        // with nothing to clear it (found on review of #306).
-        let kind = answer.get("type").and_then(Value::as_str).unwrap_or("");
-        if kind != "temp" {
-            bail!(
-                "the image server filed {} as `{kind}` rather than temp, where nothing clears it",
-                reference.path
-            );
-        }
-        if answer
-            .get("subfolder")
-            .and_then(Value::as_str)
-            .is_some_and(|s| !s.is_empty())
-        {
-            bail!(
-                "the image server filed {} under a subfolder",
-                reference.path
-            );
-        }
-        answer
-            .get("name")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .ok_or_else(|| {
-                anyhow!(
-                    "the image server did not name the upload of {}",
-                    reference.path
-                )
-            })
+        self.wire
+            .upload_temp(&reference.bytes, filename, &reference.path)
+            .await
     }
 
     /// One job, and then its temp files deleted however it ended.
@@ -1528,7 +1243,7 @@ impl ComfyUi {
         &self,
         cancel: Option<&CancellationToken>,
     ) -> std::result::Result<(), Option<String>> {
-        match self.await_server(cancel, SERVER_WAIT).await {
+        match self.wire.await_server(cancel, SERVER_WAIT).await {
             Err(Failure::Cancelled) => Err(None),
             Err(Failure::Other(_)) => Err(Some("the image server is not answering".into())),
             Ok(()) => self.can_segment().await.map_err(Some),
@@ -1540,6 +1255,7 @@ impl ComfyUi {
     /// which the result says (`docs/SEGMENTATION-DESIGN.md` §5).
     async fn can_segment(&self) -> std::result::Result<(), String> {
         let sam = self
+            .wire
             .get_json("object_info/SAM3_Detect")
             .await
             .map_err(|_| SEGMENT_UNASKED.to_string())?;
@@ -1547,6 +1263,7 @@ impl ComfyUi {
             return Err("the image server's ComfyUI has no SAM 3 node".into());
         }
         let ckpt = self
+            .wire
             .get_json("object_info/CheckpointLoaderSimple")
             .await
             .map_err(|_| SEGMENT_UNASKED.to_string())?;
@@ -1590,7 +1307,7 @@ impl ComfyUi {
         }
         let mut held = Held::default();
         let got = async {
-            self.await_server(cancel, SERVER_WAIT).await?;
+            self.wire.await_server(cancel, SERVER_WAIT).await?;
             let asked = format!(
                 "mecha-{:08x}{:08x}.{}",
                 fresh_seed(),
@@ -1655,7 +1372,7 @@ impl ComfyUi {
                 Failure::Other(e.context("the image job could not be recorded for cleanup"))
             })
         };
-        self.await_server(cancel, SERVER_WAIT).await?;
+        self.wire.await_server(cancel, SERVER_WAIT).await?;
         let model = cfg.model_file(req.sampling.model);
         self.preflight(cfg, &req.sampling).await?;
         // The other model out first, so the two are never resident at once.
@@ -1744,6 +1461,7 @@ impl ComfyUi {
         let asked = uuid::Uuid::new_v4().to_string();
         record(TrailEntry::Job(asked.clone()))?;
         let submitted = self
+            .wire
             .post_json(
                 "prompt",
                 &json!({"prompt": graph, "client_id": "mecha", "prompt_id": asked}),
@@ -1784,7 +1502,7 @@ impl ComfyUi {
         let started = Instant::now();
         let mut failed_polls = 0u32;
         let image = loop {
-            let tick = tokio::time::sleep(self.poll);
+            let tick = tokio::time::sleep(self.wire.poll);
             match cancel {
                 Some(token) => tokio::select! {
                     _ = token.cancelled() => {
@@ -1809,7 +1527,7 @@ impl ComfyUi {
             // before giving up — returning with it still queued would leave a
             // generation holding the GPU with no client to reap it (found on
             // review of #303).
-            let history = match self.get_json(&format!("history/{id}")).await {
+            let history = match self.wire.get_json(&format!("history/{id}")).await {
                 Ok(history) => {
                     failed_polls = 0;
                     history
@@ -1845,7 +1563,7 @@ impl ComfyUi {
             }
             held.take(wrote);
             if entry.pointer("/status/status_str").and_then(Value::as_str) == Some("error") {
-                self.forget(&id).await;
+                self.wire.forget(&id).await;
                 let why = entry
                     .pointer("/status/messages")
                     .map(|m| clip(&m.to_string()))
@@ -1865,7 +1583,7 @@ impl ComfyUi {
                 None if entry.pointer("/status/completed").and_then(Value::as_bool)
                     == Some(true) =>
                 {
-                    self.forget(&id).await;
+                    self.wire.forget(&id).await;
                     return Err(
                         anyhow!("the image server finished the job without an image").into(),
                     );
@@ -1878,74 +1596,29 @@ impl ComfyUi {
         // job's prompt and file names in memory until it restarts, and the
         // copy that matters is the one in the workspace (or none at all).
         let fetched = self.fetch(&image).await;
-        self.forget(&id).await;
+        self.wire.forget(&id).await;
         Ok(fetched?)
     }
 
     /// The finished image's bytes, checked to be a PNG.
     async fn fetch(&self, image: &Value) -> Result<Vec<u8>> {
-        let field = |k: &str| {
-            image
-                .get(k)
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string()
-        };
-        let mut url = self.endpoint("view")?;
-        url.query_pairs_mut()
-            .append_pair("filename", &field("filename"))
-            .append_pair("subfolder", &field("subfolder"))
-            .append_pair("type", &field("type"));
-        let res = self
-            .http
-            .get(url)
-            .timeout(Duration::from_secs(60))
-            .send()
-            .await?;
-        if !res.status().is_success() {
-            bail!("fetching the finished image failed ({})", res.status());
-        }
-        let bytes = res.bytes().await?.to_vec();
+        let bytes = self.wire.view(image, "the finished image").await?;
         if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
             bail!("the image server returned something that is not a PNG");
         }
         Ok(bytes)
     }
 
-    /// Drop a job from the server's history. Best effort.
-    async fn forget(&self, id: &str) {
-        let _ = self.post_json("history", &json!({"delete": [id]})).await;
-    }
-
     /// Whether the server has loaded a model since it started
     /// ([`loaded_from_stats`]); `None` if it cannot say - including a server
     /// that is restarting, which is then asked for the cold cost.
     async fn loaded(&self) -> Option<bool> {
-        let res = self
-            .http
-            .get(self.endpoint("system_stats").ok()?)
-            .timeout(Duration::from_secs(5))
-            .send()
-            .await
-            .ok()?;
-        // Any answer, even an error, is a server that is up.
-        self.answered.store(true, Ordering::Relaxed);
-        if !res.status().is_success() {
-            return None;
-        }
-        let stats: Value = res.json().await.ok()?;
-        loaded_from_stats(&stats)
+        loaded_from_stats(&self.wire.stats().await?)
     }
 
     /// Ask the server to drop its models and free the memory they held.
-    /// Whether the server took it: an answer that is not a success is no
-    /// unload, and must not be recorded as one (review of #648, pass 5).
     async fn release(&self) -> bool {
-        matches!(
-            self.post_json("free", &json!({"unload_models": true, "free_memory": true}))
-                .await,
-            Ok((status, _)) if status.is_success()
-        )
+        self.wire.release().await
     }
 
     /// An idle release: the server is marked empty only when it took the
@@ -2821,6 +2494,7 @@ impl ImageGenerate {
     fn polling_every(mut self, poll: Duration) -> Self {
         Arc::get_mut(&mut self.backend)
             .expect("unshared in tests")
+            .wire
             .poll = poll;
         self
     }
@@ -6346,37 +6020,6 @@ mod tests {
         .unwrap()
     }
 
-    /// A server restarting under a job (the idle reset, a deploy) is waited
-    /// for: the job asks again until the port answers, rather than telling
-    /// the model the image server is not running. Never seen before, it is
-    /// met within the short wait an idle reset fits in.
-    #[tokio::test]
-    async fn a_restarting_server_is_waited_for_not_reported_down() {
-        let addr = closed_port();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(300)).await;
-            let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-            while let Ok((mut sock, _)) = listener.accept().await {
-                tokio::spawn(async move {
-                    let mut buf = [0u8; 2048];
-                    let _ = sock.read(&mut buf).await;
-                    let _ = sock
-                        .write_all(
-                            b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}",
-                        )
-                        .await;
-                });
-            }
-        });
-        let started = Instant::now();
-        let waited = server_at(addr).await_server(None, SERVER_WAIT).await;
-        assert!(waited.is_ok(), "a server that came up was reported down");
-        assert!(
-            started.elapsed() >= Duration::from_millis(250),
-            "answered before the server existed"
-        );
-    }
-
     /// Segmenting inside a job waits out a restart as a render does: a
     /// word mask asked during the idle reset keeps its mask rather than
     /// drawing the whole picture (review of #710, pass 3).
@@ -6444,71 +6087,6 @@ mod tests {
     #[tokio::test]
     async fn a_server_that_cannot_be_asked_is_charged_for_segmentation() {
         assert!(server_at(closed_port()).segments().await);
-    }
-
-    /// The wait is bounded: a server that never comes is reported, with the
-    /// connection error the tool turns into "Is the image server running?".
-    #[tokio::test]
-    async fn a_server_that_never_comes_is_reported_after_the_wait() {
-        let started = Instant::now();
-        let waited = server_at(closed_port())
-            .await_server(None, Duration::from_millis(800))
-            .await;
-        match waited {
-            Err(Failure::Other(e)) => assert!(
-                e.chain().any(|c| c.is::<reqwest::Error>()),
-                "not a connection error: {e:#}"
-            ),
-            Err(Failure::Cancelled) => panic!("reported as cancelled"),
-            Ok(()) => panic!("a closed port answered"),
-        }
-        assert!(started.elapsed() >= Duration::from_millis(700));
-    }
-
-    /// A server never seen by this process gets the short wait, not the full
-    /// one: a stopped service is reported in seconds. One that has answered
-    /// before is waited for in full, since it is restarting.
-    #[tokio::test]
-    async fn only_a_server_seen_before_is_waited_for_in_full() {
-        let unseen = server_at(closed_port());
-        let started = Instant::now();
-        assert!(unseen
-            .await_server(None, Duration::from_secs(60))
-            .await
-            .is_err());
-        assert!(
-            started.elapsed() < UNSEEN_WAIT + Duration::from_secs(2),
-            "a never-seen server was waited on for {:?}",
-            started.elapsed()
-        );
-
-        let seen = server_at(closed_port());
-        seen.answered.store(true, Ordering::Relaxed);
-        let started = Instant::now();
-        assert!(seen.await_server(None, UNSEEN_WAIT * 3).await.is_err());
-        assert!(
-            started.elapsed() >= UNSEEN_WAIT * 2,
-            "a server seen before was given up on after {:?}",
-            started.elapsed()
-        );
-    }
-
-    /// A cancel ends the wait at once: a stopped picture does not sit out
-    /// the rest of a 90 s window.
-    #[tokio::test]
-    async fn a_cancel_ends_the_wait() {
-        let token = CancellationToken::new();
-        let stop = token.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(300)).await;
-            stop.cancel();
-        });
-        let started = Instant::now();
-        let waited = server_at(closed_port())
-            .await_server(Some(&token), Duration::from_secs(60))
-            .await;
-        assert!(matches!(waited, Err(Failure::Cancelled)));
-        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     fn ctx(dir: &std::path::Path) -> ToolCtx {
@@ -12371,7 +11949,7 @@ mod tests {
         assert!(server.switching(standard, standard), "still turbo");
         assert_eq!(
             read_held(&record)
-                .get(server.base.as_str())
+                .get(server.wire.base().as_str())
                 .map(String::as_str),
             Some(turbo)
         );
