@@ -580,7 +580,7 @@ impl Library {
         let jpeg = thumbnail(&bytes)?;
         // A thumbnail that cannot be kept is still shown: the page should
         // not pay for a full disk, only the next request.
-        let kept = crate::face::make_private_dir(path.parent().unwrap_or(&self.dir))
+        let kept = make_private_dir(path.parent().unwrap_or(&self.dir))
             .and_then(|()| write_atomic_mode(&path, &jpeg, Some(0o600)));
         if let Err(e) = kept {
             tracing::warn!("thumbnail cache: {e:#}");
@@ -597,6 +597,21 @@ impl Library {
         }
         Ok((bytes, ext))
     }
+}
+
+/// A derived store's directory and any parent it lacks, owner-only like
+/// the library's own files: the face crops and the thumbnails are faces.
+pub(crate) fn make_private_dir(dir: &Path) -> Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder
+        .create(dir)
+        .with_context(|| format!("creating {}", dir.display()))
 }
 
 /// The long side of a library thumbnail, in pixels. The largest place one is
@@ -619,18 +634,21 @@ fn thumb_path(dir: &Path, blob: &str) -> PathBuf {
 /// a browser shows it, any transparency laid over white. A smaller picture
 /// keeps its size; only its encoding changes.
 pub fn thumbnail(bytes: &[u8]) -> Result<Vec<u8>> {
-    let img = crate::image::decode_upright(bytes, "the picture")?;
-    let img = if img.width().max(img.height()) > THUMB_SIDE {
-        img.thumbnail(THUMB_SIDE, THUMB_SIDE)
-    } else {
-        img
-    };
-    let rgba = img.to_rgba8();
+    let rgba = crate::image::decode_upright(bytes, "the picture")?.to_rgba8();
+    // Over white before the resize: a resampler averages a transparent
+    // pixel's colour, often black, into its neighbours (review of #735).
     let rgb = image::RgbImage::from_fn(rgba.width(), rgba.height(), |x, y| {
         let [r, g, b, a] = rgba.get_pixel(x, y).0;
         let over = |c: u8| ((c as u16 * a as u16 + 255 * (255 - a as u16)) / 255) as u8;
         image::Rgb([over(r), over(g), over(b)])
     });
+    let rgb = if rgb.width().max(rgb.height()) > THUMB_SIDE {
+        image::DynamicImage::ImageRgb8(rgb)
+            .thumbnail(THUMB_SIDE, THUMB_SIDE)
+            .to_rgb8()
+    } else {
+        rgb
+    };
     let mut out = Vec::new();
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 85)
         .encode_image(&rgb)
@@ -2291,7 +2309,14 @@ mod tests {
     fn a_thumbnail_is_small_kept_and_only_of_a_named_picture() {
         let dir = scratch();
         let mut wide = character("wren", Origin::Owner);
-        let img = image::RgbaImage::from_pixel(1200, 800, image::Rgba([200, 10, 10, 0]));
+        // Transparent black on the left, opaque red on the right.
+        let img = image::RgbaImage::from_fn(1200, 800, |x, _| {
+            if x < 600 {
+                image::Rgba([0, 0, 0, 0])
+            } else {
+                image::Rgba([255, 0, 0, 255])
+            }
+        });
         let mut png = std::io::Cursor::new(Vec::new());
         img.write_to(&mut png, image::ImageFormat::Png).unwrap();
         wide.portrait = Some(png.into_inner());
@@ -2305,8 +2330,14 @@ mod tests {
         assert_eq!((small.width(), small.height()), (THUMB_SIDE, 341));
         assert_eq!(&jpeg[..3], b"\xff\xd8\xff", "a JPEG");
         // Transparent pixels are laid over white, not the black JPEG keeps
-        // under a dropped alpha.
-        assert!(small.to_rgb8().get_pixel(10, 10).0.iter().all(|c| *c > 240));
+        // under a dropped alpha, and before the resize: at the edge, red
+        // meets white, never the transparent pixels' black (no dark fringe).
+        let rgb = small.to_rgb8();
+        assert!(rgb.get_pixel(10, 10).0.iter().all(|c| *c > 240));
+        assert!(
+            (0..THUMB_SIDE).all(|x| rgb.get_pixel(x, 170).0[0] > 235),
+            "no fringe"
+        );
         assert!(thumb_path(dir.path(), &blob).exists(), "kept");
         assert_eq!(lib.thumbnail_named(wren, &blob).unwrap(), jpeg);
         // Another entry's picture is not this one's to shrink.
