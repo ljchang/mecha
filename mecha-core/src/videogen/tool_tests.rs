@@ -539,7 +539,13 @@ async fn a_voice_past_the_slots_is_said() {
     for n in names {
         character(&home.join("imagelib"), n, "Someone");
         std::fs::write(voices.join(format!("{n}-v.wav")), wav(6)).unwrap();
-        map.push_str(&format!("{n} = \"{n}-v\"\n"));
+        // As the library shows the name: the map is keyed as the lookup is.
+        let key = if n == "ada" {
+            "Ada".to_string()
+        } else {
+            n.to_string()
+        };
+        map.push_str(&format!("{key} = \"{n}-v\"\n"));
     }
     std::fs::write(home.join("video/voices.toml"), map).unwrap();
     let cfg = VideoConfig::default();
