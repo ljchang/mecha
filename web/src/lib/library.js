@@ -63,6 +63,14 @@ export function listUrl(token) {
   return token ? `/api/library?unlock=${encodeURIComponent(token)}` : '/api/library';
 }
 
+// A library picture's small JPEG (`?size=thumb`, at most 512 px long): what a
+// grid tile or an avatar loads, where the whole portrait can be megabytes.
+// Anything that is not the picture route is left as it is.
+export function thumbUrl(url) {
+  if (typeof url !== 'string' || !url.startsWith('/api/library/portrait/')) return url;
+  return `${url}${url.includes('?') ? '&' : '?'}size=thumb`;
+}
+
 // The voice library (Library → Voices), with the unlock when there is one:
 // "used by" names a locked persona only for an unlock.
 export function voicesUrl(token) {

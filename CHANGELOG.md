@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`mecha imagelib upscale`: redraw a small portrait larger.** The image
+  model draws the same photograph again at about a megapixel, saved as a new
+  version with the old one kept. With ArcFace installed the redraw is kept
+  only when it is the same face (`--out` writes it to a file instead). A
+  401 px portrait redrawn this way matched its character at 0.53 in a video
+  clip, against 0.45 as it was.
+
+- **The library and persona pages load small pictures.** Grid tiles and
+  avatars now ask for a 512 px JPEG of each portrait (`?size=thumb` on the
+  picture route), made once and kept beside the face crops, under the same
+  lock as the picture. A 1024² portrait is about 1.5 MB; its thumbnail is a
+  few tens of KB.
+
 - **`mecha-mail auth` takes a sign-in app you already have.** Before the
   registration pages it asks whether you have one, from another machine for
   instance. On a yes, Google wants only the client file (drag it in, or Enter
