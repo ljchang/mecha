@@ -49,6 +49,9 @@ const MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
 /// 142 px crop is a 9×9 face: that character's clips matched his portrait
 /// at 0.26, against 0.45 with the whole 401 px portrait in the same clip
 /// (2026-10-24). Every other crop in the library measured was 253 px or more.
+/// 224 is the round 14-token side between the two: low enough that none of
+/// those falls back to a whole portrait and its outfit, high enough that the
+/// failing size never passes.
 const MIN_FACE_CROP: u32 = 224;
 
 /// Whether a face crop is large enough to give a clip in place of its
@@ -1366,6 +1369,14 @@ fn result_text(record: &Value, saved: &str, plan: &Plan) -> String {
         .filter(|v| v.clip.is_none())
         .map(|v| format!("`{}`", v.name))
         .collect();
+    // So is one found past H3's voice slots, which `plan` leaves out.
+    let over: Vec<String> = plan
+        .voices
+        .iter()
+        .filter(|v| v.clip.is_some())
+        .skip(graph::MAX_VOICES)
+        .map(|v| format!("`{}`", v.name))
+        .collect();
     let mut tail = if missing.is_empty() {
         String::new()
     } else {
@@ -1374,6 +1385,13 @@ fn result_text(record: &Value, saved: &str, plan: &Plan) -> String {
             missing.join(", ")
         )
     };
+    if !over.is_empty() {
+        tail.push_str(&format!(
+            " H3 takes {} voices, so {} went unused and that speech is in a voice of the model's own.",
+            graph::MAX_VOICES,
+            over.join(", ")
+        ));
+    }
     if !plan.notes.is_empty() {
         tail.push_str(&format!(" Notes: {}", plan.notes.join(" ")));
     }

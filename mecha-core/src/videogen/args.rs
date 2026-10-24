@@ -56,13 +56,20 @@ pub fn with_chat_settings(args: &Value, last: Option<&Value>) -> (Value, Vec<Str
         if given || last[key].is_null() {
             continue;
         }
-        out[key] = last[key].clone();
+        // A kept length is held to the range a call is: the private server
+        // shares this file and writes the length it rendered, a frame or so
+        // past what was asked (15.08 s for 15), which `plan` would refuse
+        // with no word of where it came from.
+        let kept = match (key, last[key].as_f64()) {
+            ("seconds", Some(s)) => json!(s.clamp(graph::MIN_SECONDS, graph::MAX_SECONDS)),
+            ("seconds", None) => continue,
+            _ => last[key].clone(),
+        };
+        out[key] = kept.clone();
         match key {
-            "turbo" if last[key] == json!(false) => {
-                said.push("full quality (turbo off)".to_string())
-            }
+            "turbo" if kept == json!(false) => said.push("full quality (turbo off)".to_string()),
             "seconds" => {
-                if let Some(s) = last[key].as_f64().filter(|s| (s - 5.0).abs() > 0.01) {
+                if let Some(s) = kept.as_f64().filter(|s| (s - 5.0).abs() > 0.01) {
                     said.push(if s.fract() == 0.0 {
                         format!("{s:.0} s")
                     } else {
@@ -365,6 +372,14 @@ mod tests {
         assert_eq!(
             said,
             ["Kept from this chat's last clip: 4.5 s. Say otherwise to change it."]
+        );
+        // A length the private server wrote, a frame past the range, is
+        // held to it rather than refused at the next prompt-only call.
+        let (out, said) = with_chat_settings(&json!({}), Some(&json!({"seconds": 15.083})));
+        assert_eq!(out["seconds"], json!(graph::MAX_SECONDS));
+        assert_eq!(
+            said,
+            ["Kept from this chat's last clip: 15 s. Say otherwise to change it."]
         );
         let (odd, said) = with_chat_settings(&json!([1]), Some(&last));
         assert_eq!(
