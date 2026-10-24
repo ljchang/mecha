@@ -256,6 +256,23 @@ pub struct Request {
 /// the result is laid back over the original pixel for pixel.
 pub const EDIT_REFERENCE_SIZE: u32 = 1024;
 
+/// What [`ImageGenerate::upscale`] draws at, in pixels: the encoder's canvas
+/// at [`EDIT_REFERENCE_SIZE`]. A picture with this many already gains
+/// nothing. A video reference is scaled down to the clip's area, about the
+/// same, and never up, so a smaller portrait reaches a clip as fewer
+/// tokens: a 401 px portrait redrawn here matched its character at 0.53 in
+/// a clip, against 0.45 as it was (2026-10-24).
+pub const UPSCALE_PIXELS: u32 = EDIT_REFERENCE_SIZE * EDIT_REFERENCE_SIZE;
+
+/// The redraw's words: the same photograph, larger, and nothing else.
+/// Glasses and jewellery are "any", so a face without them is not asked
+/// for them.
+const UPSCALE_PROMPT: &str = "Recreate this exact photograph at high resolution. The same person \
+    with the identical face, facial structure, eyes, nose, mouth, hair, expression, any glasses or \
+    jewellery, skin tone, clothing, background, lighting and framing as <image1>. Sharp focus, fine \
+    natural skin texture with visible pores, crisp detail in the eyes and hair. Change nothing \
+    else.";
+
 /// The reference size for every other edit-shaped render (placed, restaged
 /// on a photo, edited with a head crop for everyone in the picture; an edit
 /// of the picture where anyone has no crop keeps [`EDIT_REFERENCE_SIZE`],
@@ -2792,6 +2809,53 @@ impl ImageGenerate {
             steps,
             left: joined(left),
         })
+    }
+
+    /// `picture` drawn again as itself at about a megapixel
+    /// ([`UPSCALE_PIXELS`]): `mecha imagelib upscale`. A one-reference edit
+    /// on the standard model, the canvas the encoder's own at
+    /// [`EDIT_REFERENCE_SIZE`], so the picture keeps its shape. Admitted
+    /// against memory as any picture is; the caller judges the face.
+    pub async fn upscale(&self, picture: &[u8], seed: u64) -> std::result::Result<Vec<u8>, String> {
+        let ext = sniff_image(picture).ok_or("not a PNG, JPEG or WebP image")?;
+        let img =
+            crate::image::decode_upright(picture, "the picture").map_err(|e| format!("{e:#}"))?;
+        let (w, h) = (img.width(), img.height());
+        // Nine tenths, so a 1024² picture the encoder rounded is not redrawn.
+        if u64::from(w) * u64::from(h) >= u64::from(UPSCALE_PIXELS) * 9 / 10 {
+            return Err(format!(
+                "it is already {w}×{h}; a redraw at about a megapixel adds nothing"
+            ));
+        }
+        self.memory_guard(crate::sampling::Model::Standard, false)
+            .await?;
+        let req = Request {
+            prompt: UPSCALE_PROMPT.to_string(),
+            size: None,
+            sampling: crate::sampling::Sampling::reference(self.cfg.steps),
+            seed,
+            references: vec![Reference {
+                path: "portrait".into(),
+                bytes: picture.to_vec(),
+                ext,
+            }],
+            reference_size: EDIT_REFERENCE_SIZE,
+            mask: None,
+        };
+        let timeout = Duration::from_secs(self.cfg.timeout_secs);
+        let out = self
+            .backend
+            .generate(&self.cfg, &req, None, timeout, None)
+            .await;
+        self.arm_unload();
+        if let Some(left) = out.left {
+            tracing::warn!("image server temp copies not removed: {left}");
+        }
+        match out.image {
+            Ok(bytes) => Ok(bytes),
+            Err(Failure::Cancelled) => Err("cancelled".into()),
+            Err(Failure::Other(e)) => Err(format!("{e:#}")),
+        }
     }
 
     fn arm_unload(&self) {
@@ -6581,6 +6645,60 @@ mod tests {
             );
             assert_eq!(unet_loader(file).0, node, "{file}");
         }
+    }
+
+    /// An upscale is the picture as the one reference of a standard-model
+    /// edit at the edit canvas's size, with nothing else asked; the server's
+    /// picture comes back as it is.
+    #[tokio::test]
+    async fn an_upscale_redraws_the_picture_as_its_only_reference() {
+        let red = image::RgbImage::from_pixel(64, 64, image::Rgb([200, 20, 20]));
+        let mut result = std::io::Cursor::new(Vec::new());
+        red.write_to(&mut result, image::ImageFormat::Png).unwrap();
+        let result = result.into_inner();
+        let (url, log) = fake_with(Fake {
+            history: vec![done()],
+            views: vec![result.clone()],
+            ..Fake::default()
+        })
+        .await;
+        let out = tool(&url)
+            .upscale(&picture(8, [240, 220, 40]), 7)
+            .await
+            .unwrap();
+        assert_eq!(out, result);
+        let seen = log.lock().unwrap().clone();
+        let uploads = seen
+            .iter()
+            .filter(|l| l.starts_with("POST /upload/image"))
+            .count();
+        assert_eq!(uploads, 1, "the picture alone");
+        let submitted = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+        assert!(
+            submitted.contains("Recreate this exact photograph"),
+            "{submitted}"
+        );
+        assert!(submitted.contains("\"resolution\":1024"), "{submitted}");
+        assert!(!submitted.contains("images.image_2"), "{submitted}");
+        assert!(
+            !submitted.contains("EmptyLatentImage"),
+            "the encoder's canvas: {submitted}"
+        );
+        let before = seen.len();
+        assert!(
+            tool(&url).upscale(b"not a picture", 7).await.is_err(),
+            "refused before the server"
+        );
+        let big = image::RgbImage::from_pixel(1024, 1024, image::Rgb([9, 9, 9]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        big.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let why = tool(&url).upscale(&png.into_inner(), 7).await.unwrap_err();
+        assert!(why.contains("already 1024×1024"), "{why}");
+        assert_eq!(
+            log.lock().unwrap().len(),
+            before,
+            "neither reached the server"
+        );
     }
 
     /// The operator's `[system]` floor reaches the persona form, which is
