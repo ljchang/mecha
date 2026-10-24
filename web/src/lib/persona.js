@@ -10,6 +10,7 @@
 import { changesOf } from './tomlform.js';
 import { isDirty as mdDirty } from './mdform.js';
 import { stillOut } from './picture.js';
+import { thumbUrl } from './library.js';
 
 // A persona chat key, exactly as the server mints one: `p-` and twelve hex.
 const KEY = /^p-[0-9a-f]{12}$/;
@@ -641,6 +642,15 @@ export function frameOf(frame) {
   const ok = (v) => typeof v === 'number' && Number.isFinite(v);
   if (!frame || !ok(frame.x) || !ok(frame.y) || !ok(frame.zoom)) return { ...DEFAULT_FRAME };
   return { x: clamp(frame.x, 0, 1), y: clamp(frame.y, 0, 1), zoom: clamp(frame.zoom, 1, MAX_FRAME_ZOOM) };
+}
+
+// The picture an avatar `size` CSS pixels wide loads: the library's small
+// JPEG (512 px long) unless the frame zooms it past what that holds at a
+// phone's three device pixels — a 112 px avatar at zoom 4 shows a quarter of
+// the picture across 336 device pixels.
+export const THUMB_AVATAR = 128;
+export function avatarSrc(portrait, frame, size) {
+  return size * frameOf(frame).zoom > THUMB_AVATAR ? portrait : thumbUrl(portrait);
 }
 
 // The `<img>`'s style for a frame.
