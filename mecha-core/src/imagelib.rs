@@ -955,10 +955,25 @@ pub fn reject(dir: &Path, kind: Kind, name: &str) -> Result<()> {
     std::fs::remove_dir_all(entry_dir(dir, kind, name))?;
     if let Some(blob) = &entry.portrait {
         if !blob_referenced(dir, blob) {
-            let _ = std::fs::remove_file(dir.join("blobs").join(blob));
+            forget_blob(dir, blob);
         }
     }
     Ok(())
+}
+
+/// A blob nothing names any more, gone with every thumbnail made of it: a
+/// candidate's portrait is shown on the candidates pane, so a rejected one
+/// left its thumbnail behind with nothing naming it (review of #736).
+fn forget_blob(dir: &Path, blob: &str) {
+    let _ = std::fs::remove_file(dir.join("blobs").join(blob));
+    let stem = blob.split('.').next().unwrap_or(blob);
+    for generation in std::fs::read_dir(dir.join("thumbs"))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let _ = std::fs::remove_file(generation.path().join(format!("{stem}.jpg")));
+    }
 }
 
 /// Whether any entry — current, historical, or removed — names `blob`.
@@ -1359,7 +1374,7 @@ pub fn reject_reference(dir: &Path, id: &str) -> Result<()> {
     std::fs::remove_file(pending_dir(dir).join(format!("{id}.toml")))?;
     if let Some(blob) = &p.blob {
         if !blob_referenced(dir, blob) {
-            let _ = std::fs::remove_file(dir.join("blobs").join(blob));
+            forget_blob(dir, blob);
         }
     }
     Ok(())
@@ -2349,6 +2364,26 @@ mod tests {
             .unwrap();
         let tiny = image::load_from_memory(&tiny).unwrap();
         assert_eq!((tiny.width(), tiny.height()), (2, 2));
+        // A rejected candidate takes its thumbnail with its portrait.
+        let mut sam = character("sam", Origin::ModelUntrusted);
+        sam.portrait = Some({
+            let img = image::RgbImage::from_pixel(3, 3, image::Rgb([1, 2, 3]));
+            let mut out = std::io::Cursor::new(Vec::new());
+            img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+            out.into_inner()
+        });
+        create(dir.path(), sam).unwrap();
+        let lib = Library::load(dir.path()).0;
+        let sam = lib.get(Kind::Character, "sam").unwrap();
+        let blob = sam.portrait.clone().unwrap();
+        lib.thumbnail_named(sam, &blob).unwrap();
+        assert!(thumb_path(dir.path(), &blob).exists());
+        reject(dir.path(), Kind::Character, "sam").unwrap();
+        assert!(!dir.path().join("blobs").join(&blob).exists());
+        assert!(
+            !thumb_path(dir.path(), &blob).exists(),
+            "the thumbnail went too"
+        );
     }
 
     #[test]
