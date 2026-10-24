@@ -44,6 +44,23 @@ const VOICE_SECONDS: f64 = 5.0;
 /// The largest picture or voice file read for a clip.
 const MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
 
+/// The smallest face crop a clip is given, in pixels on its shorter side.
+/// H3 scales a reference down but never up, at 16 pixels a token, so a
+/// 142 px crop is a 9×9 face: that character's clips matched his portrait
+/// at 0.26, against 0.45 with the whole 401 px portrait in the same clip
+/// (2026-10-24). Every other crop in the library measured was 253 px or more.
+const MIN_FACE_CROP: u32 = 224;
+
+/// Whether a face crop is large enough to give a clip in place of its
+/// portrait; one whose header does not read is not.
+fn big_enough(crop: &[u8]) -> bool {
+    image::ImageReader::new(std::io::Cursor::new(crop))
+        .with_guessed_format()
+        .ok()
+        .and_then(|r| r.into_dimensions().ok())
+        .is_some_and(|(w, h)| w.min(h) >= MIN_FACE_CROP)
+}
+
 /// Consecutive failed status polls before a render is given up on: a
 /// server restarting under a job loses the job anyway.
 const POLL_FAILURES: u32 = 10;
@@ -484,13 +501,15 @@ impl VideoGenerate {
             // The portrait under its hash check, then the library's face
             // crop of it when one was made: a whole portrait carried its
             // outfit into every clip, even when the prompt said not to; the
-            // face alone did not (the owner's experiment, 2026-10-13).
+            // face alone did not (the owner's experiment, 2026-10-13). A
+            // crop under MIN_FACE_CROP gives way to the portrait.
             let (bytes, ext) = library.read_portrait(entry)?;
             let crop = entry
                 .portrait
                 .as_deref()
                 .map(|blob| crate::face::cache_paths(library.dir(), blob).0)
-                .and_then(|p| std::fs::read(p).ok());
+                .and_then(|p| std::fs::read(p).ok())
+                .filter(|crop| big_enough(crop));
             let description =
                 Some(entry.text.trim().trim_end_matches('.').to_string()).filter(|t| !t.is_empty());
             return Ok(match crop {
