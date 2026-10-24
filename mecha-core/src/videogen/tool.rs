@@ -184,9 +184,17 @@ impl VideoGenerate {
         self
     }
 
-    /// Resolve characters against this library instead of the mecha home's.
-    pub fn with_library_dir(mut self, dir: PathBuf) -> Self {
-        self.library_dir = Some(dir);
+    /// Resolve characters against this library instead of the mecha home's;
+    /// `None` reads no library at all, as with the `library` feature off.
+    pub fn with_library_dir(mut self, dir: Option<PathBuf>) -> Self {
+        self.library_dir = dir;
+        self
+    }
+
+    /// Read personas' characters and voices from this store; `None` reads
+    /// none, as with the `personas` feature off.
+    pub fn with_personas_dir(mut self, dir: Option<PathBuf>) -> Self {
+        self.personas_dir = dir;
         self
     }
 
@@ -799,6 +807,27 @@ impl Drop for Turn {
     }
 }
 
+/// Take a stale turn out of the way, only if it is still the one read as
+/// `held`. Two waiters behind one dead holder both find it stale; with a
+/// plain remove, the second deleted the turn the first had just taken, and
+/// both rendered (review of #733, pass 4). The turn is moved aside to a name
+/// of this process's own first, so only one waiter moves any given file, and
+/// what was moved is checked: a new holder's turn goes back where it was.
+fn reclaim(path: &Path, held: &str) -> bool {
+    let aside = path.with_extension(format!("stale.{}", std::process::id()));
+    if std::fs::rename(path, &aside).is_err() {
+        return false;
+    }
+    if std::fs::read_to_string(&aside).is_ok_and(|now| now == held) {
+        let _ = std::fs::remove_file(&aside);
+        return true;
+    }
+    // Back only if the name is still free: a link fails where a file is.
+    let _ = std::fs::hard_link(&aside, path);
+    let _ = std::fs::remove_file(&aside);
+    false
+}
+
 /// Whether a process is alive: `kill(pid, 0)` reaches it, or exists but is
 /// another user's.
 fn alive(pid: u32) -> bool {
@@ -866,10 +895,10 @@ impl VideoGenerate {
                             .and_then(|t| t.elapsed().ok())
                             .is_some_and(|age| age > QUEUE_LIMIT),
                     };
-                    // Removed and taken at once; a removal that fails waits
-                    // like a live holder, rather than spinning (review of
-                    // #733).
-                    if gone && std::fs::remove_file(&path).is_ok() {
+                    // Reclaimed and taken at once; a reclaim that fails
+                    // waits like a live holder, rather than spinning (review
+                    // of #733).
+                    if gone && reclaim(&path, &held) {
                         continue;
                     }
                 }
