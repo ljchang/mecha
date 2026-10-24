@@ -569,7 +569,10 @@ async fn upscale(
         return Ok(());
     }
     // Saving, the judge is the guard: one that cannot run stops the save.
-    let judged = judge()?;
+    let judged = judge().context(
+        "the redraw could not be compared with the portrait, so it was not saved; \
+         --out writes it to a file to look at instead",
+    )?;
     if let Some(s) = judged.filter(|s| *s < SAME_FACE) {
         bail!(
             "the redraw is not the same face (ArcFace {s:.3}, under {SAME_FACE}); nothing was \
