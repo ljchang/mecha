@@ -2392,6 +2392,13 @@ mod tests {
         );
     }
 
+    /// The URL's generation is the disk's, or a bump moves the files and
+    /// leaves every browser on the old ones for a year (review of #737).
+    #[test]
+    fn the_thumbnail_querys_generation_is_the_disks() {
+        assert_eq!(THUMB_QUERY, format!("thumb-{THUMB_VERSION}"));
+    }
+
     #[test]
     fn a_failed_install_leaves_no_temp_file_behind() {
         let dir = scratch();
