@@ -140,10 +140,12 @@ export function stillOut(entry) {
 }
 
 // What a still-out row says it is doing: a picture's measured words for a
-// picture, and a plain one for any other deferring tool, which the page
-// cannot name (§9).
+// picture, a clip's for the built-in video tool, and a plain one for any
+// other deferring tool, which the page cannot name (§9).
 export function makingText(entry) {
-  return entry?.name === 'image_generate' ? 'drawing a picture…' : 'working on it…';
+  if (entry?.name === 'image_generate') return 'drawing a picture…';
+  if (entry?.name === 'video_generate') return 'making a clip…';
+  return 'working on it…';
 }
 
 // When each running job began, by this page's clock, for the clock on its
@@ -169,9 +171,17 @@ export function jobStarts(prev, queue, now = Date.now()) {
 // clip a picture or a picture "it" (review of #668, pass 5).
 export function slotText(entries) {
   const out = (entries ?? []).filter(stillOut);
+  // Named by what is out, never by the first row: a clip beside other work
+  // named only the clip while the one Stop stopped both, and read
+  // differently in the other order (review of #734).
   const picture = out.some((e) => e.name === 'image_generate');
-  const other = out.some((e) => e.name !== 'image_generate');
-  if (picture && other) return 'drawing a picture, and working on something else…';
+  const clip = out.some((e) => e.name === 'video_generate');
+  const other = out.some((e) => e.name !== 'image_generate' && e.name !== 'video_generate');
+  const parts = [];
+  if (picture) parts.push('drawing a picture');
+  if (clip) parts.push('making a clip');
+  if (other) parts.push('working on something else');
+  if (parts.length > 1) return `${parts.join(', and ')}…`;
   return makingText(out[0]);
 }
 
