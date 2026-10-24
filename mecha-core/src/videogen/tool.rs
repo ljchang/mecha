@@ -843,8 +843,12 @@ impl VideoGenerate {
             {
                 Ok(mut f) => {
                     use std::io::Write;
+                    // Owned before it is written: a failed write would
+                    // otherwise leave a turn nothing removes, and an empty
+                    // one is stale only after QUEUE_LIMIT.
+                    let turn = Turn(path.clone());
                     writeln!(f, "{} {}", std::process::id(), now()).context("taking the turn")?;
-                    return Ok(Turn(path));
+                    return Ok(turn);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                     let held = std::fs::read_to_string(&path).unwrap_or_default();
