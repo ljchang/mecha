@@ -860,9 +860,16 @@ name = "broken"
     );
     let seen = log.lock().unwrap().clone();
     let prompt = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
-    let grain = prompt.find("grain_fl.safetensors").expect("always-on LoRA");
-    let wave = prompt.find("wave.safetensors").expect("picked LoRA");
-    assert!(grain < wave || prompt.contains("\"lora1\""), "{prompt}");
+    // The chain, link by link: turbo, then the always-on, then the pick.
+    let body: Value =
+        serde_json::from_str(&prompt[prompt.find('{').expect("a JSON body")..]).unwrap();
+    let graph = &body["prompt"];
+    assert_eq!(
+        graph["lora1"]["inputs"]["lora_name"],
+        "grain_fl.safetensors"
+    );
+    assert_eq!(graph["lora2"]["inputs"]["lora_name"], "wave.safetensors");
+    assert_eq!(graph["lora2"]["inputs"]["model"], json!(["lora1", 0]));
     assert!(prompt.contains("waving hello. "), "{prompt}");
 
     // No file for frames mode: refused with what would work, nothing sent.
