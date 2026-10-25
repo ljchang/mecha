@@ -1745,7 +1745,7 @@ async fn prepare_tools_carrying(
                 && cfg.tools.registers(name)
         };
         if asked(mecha_core::videogen::tool::NAME) {
-            match mecha_core::videogen::VideoGenerate::new(video) {
+            match mecha_core::videogen::VideoGenerate::new(video.clone()) {
                 Ok(tool) => {
                     // A LoRA entry left out is said at start, once: a clip
                     // the owner expects to carry it would otherwise just
@@ -1792,12 +1792,9 @@ async fn prepare_tools_carrying(
             }
         }
         if asked(mecha_core::videogen::tool::GUIDE_NAME) {
-            registry.insert(Arc::new(
-                cfg.video
-                    .as_ref()
-                    .map(mecha_core::videogen::VideoPromptGuide::new)
-                    .unwrap_or_default(),
-            ));
+            registry.insert(Arc::new(mecha_core::videogen::VideoPromptGuide::new(
+                &video,
+            )));
         }
     }
     // `persona_propose` rides with the Personas switch: it stages a candidate
