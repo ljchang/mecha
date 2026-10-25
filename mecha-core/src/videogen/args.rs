@@ -153,6 +153,9 @@ pub fn with_scene(args: &Value) -> Result<(Value, Vec<String>)> {
     if !c.pov.is_empty() {
         out["pov"] = json!(c.pov);
     }
+    if !c.silent_pov.is_empty() {
+        out["pov_silent"] = json!(c.silent_pov);
+    }
     for (key, value) in [
         ("soundscape", c.soundscape),
         ("music", c.music),
