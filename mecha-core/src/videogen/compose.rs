@@ -179,8 +179,15 @@ pub fn references(parts: &Parts, people: &[Person], pins: (bool, bool)) -> Strin
         ));
     }
 
+    // People are featured; a place is where it is set, never one of them
+    // (review of #740).
     let subjects: Vec<String> = (1..=people.len())
+        .filter(|n| !people[n - 1].place)
         .map(|n| format!("<Subject {n}>"))
+        .collect();
+    let set_in: Vec<String> = (1..=people.len())
+        .filter(|n| people[n - 1].place)
+        .map(|n| format!(", set in <Subject {n}>"))
         .collect();
     let mut summary = format!(
         "[{}reference generation{}] The target video is a {:.1}-second clip featuring {}{}{}.",
@@ -195,7 +202,7 @@ pub fn references(parts: &Parts, people: &[Person], pins: (bool, bool)) -> Strin
             " + audio reference"
         },
         parts.seconds,
-        crate::imagelib::join_and(&subjects),
+        crate::imagelib::join_and(&subjects) + &set_in.concat(),
         if pins.0 {
             ", starting from the provided opening frame"
         } else {
@@ -653,7 +660,8 @@ mod tests {
         assert!(out.contains("<Subject 2> (the setting): fully_preserved - the place in <Picture 2> is where the clip happens"), "{out}");
         assert!(!out.contains("<Subject 2> (appears in the clip)"), "{out}");
         assert!(
-            out.contains("The scene takes place in <Subject 2>."),
+            out.contains("The scene takes place in <Subject 2>.")
+                && out.contains("clip featuring <Subject 1>, set in <Subject 2>."),
             "{out}"
         );
     }

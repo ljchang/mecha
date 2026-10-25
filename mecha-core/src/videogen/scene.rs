@@ -298,7 +298,9 @@ pub fn compile(scene: &Value, default_seconds: f64) -> Result<Compiled> {
                 if let Some(place) = text(setting, "location") {
                     out.push_str(&format!(
                         " The scene takes place in {}.",
-                        super::compose::title_case(&place)
+                        // As the library keys it, so `compose` can label it:
+                        // `Boat_House` stayed literal (review of #740).
+                        super::compose::title_case(&place.replace('_', "-"))
                     ));
                 }
                 if let Some(d) = text(setting, "description") {
