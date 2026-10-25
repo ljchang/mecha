@@ -65,13 +65,35 @@ fn capital(s: &str) -> String {
     }
 }
 
+/// One person however a name is spelled: any case, and hyphens, underscores
+/// and spaces alike, as the library keys names (`args::library_key`). A pov
+/// speaker cast as "Mara Lee" and given lines as `mara-lee` was classed
+/// silent and lost her voice (review of #738).
+fn same_name(a: &str, b: &str) -> bool {
+    let words = |s: &str| -> Vec<String> {
+        s.split(|c: char| c == '-' || c == '_' || c.is_whitespace())
+            .filter(|w| !w.is_empty())
+            .map(str::to_lowercase)
+            .collect()
+    };
+    words(a) == words(b)
+}
+
+/// Five-letter-and-longer verbs that end in -ing without being one: "bring
+/// her a towel" read "is bring her a towel" (review of #738).
+const NOT_PROGRESSIVE: [&str; 6] = ["bring", "swing", "cling", "fling", "sting", "string"];
+
 /// A `doing` that opens on an -ing word takes `is`: "Luke wears nothing and
 /// lying on his back" was the compiled sentence (2026-10-25); "kneels beside
 /// an upturned bike" reads as written.
 fn as_predicate(doing: &str) -> String {
     let first = doing.split_whitespace().next().unwrap_or("");
     let word: String = first.chars().filter(|c| c.is_alphabetic()).collect();
-    if word.chars().count() > 4 && word.to_lowercase().ends_with("ing") {
+    let lower = word.to_lowercase();
+    if word.chars().count() > 4
+        && lower.ends_with("ing")
+        && !NOT_PROGRESSIVE.contains(&lower.as_str())
+    {
         format!("is {}", lower_first(doing))
     } else {
         doing.to_string()
@@ -141,7 +163,7 @@ pub fn compile(scene: &Value, default_seconds: f64) -> Result<Compiled> {
     let mut speakers: Vec<String> = Vec::new();
     for l in lines.iter().filter(kept) {
         if let Some(who) = text(l, "who") {
-            if !speakers.iter().any(|s| s.eq_ignore_ascii_case(&who)) {
+            if !speakers.iter().any(|s| same_name(s, &who)) {
                 speakers.push(who);
             }
         }
@@ -149,7 +171,7 @@ pub fn compile(scene: &Value, default_seconds: f64) -> Result<Compiled> {
     let id_of = |who: &str| {
         speakers
             .iter()
-            .position(|s| s.eq_ignore_ascii_case(who))
+            .position(|s| same_name(s, who))
             .map(|i| i + 1)
     };
 
@@ -360,8 +382,8 @@ pub fn compile(scene: &Value, default_seconds: f64) -> Result<Compiled> {
             let listeners: Vec<String> = cast
                 .iter()
                 .filter_map(|c| text(c, "name"))
-                .filter(|n| !n.eq_ignore_ascii_case(&who))
-                .filter(|n| !pov.iter().any(|p| p.eq_ignore_ascii_case(n)))
+                .filter(|n| !same_name(n, &who))
+                .filter(|n| !pov.iter().any(|p| same_name(p, n)))
                 .collect();
             if !listeners.is_empty() {
                 let one = listeners.len() == 1;
@@ -652,6 +674,22 @@ mod tests {
         let c = compile(&s, 5.0).unwrap();
         assert!(!c.prompt.contains("Wren listens"), "{}", c.prompt);
         assert!(!c.prompt.contains("listens with"), "{}", c.prompt);
+        // Spelled another way, still the speaker (review of #738).
+        s["lines"] = json!([{"who": "WREN", "says": "Over here."}]);
+        assert!(compile(&s, 5.0).unwrap().silent_pov.is_empty());
+        let mut hyphened = s.clone();
+        hyphened["cast"][1]["name"] = json!("Wren Ash");
+        hyphened["lines"] = json!([{"who": "wren-ash", "says": "Over here."}]);
+        assert!(compile(&hyphened, 5.0).unwrap().silent_pov.is_empty());
+        // A base verb ending in -ing is not made progressive.
+        s["cast"][0]["doing"] = json!("bring the towels in");
+        assert!(
+            compile(&s, 5.0)
+                .unwrap()
+                .prompt
+                .contains("and bring the towels in."),
+            "base verb"
+        );
         // An -ing doing written with a capital reads mid-sentence.
         s["cast"][0]["doing"] = json!("Kneeling on the tile floor");
         assert!(
