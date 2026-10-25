@@ -1300,6 +1300,7 @@ impl ConfigLayer {
         }
         if let Some(v) = self.video.as_mut() {
             opt(&mut v.guide_addendum);
+            opt(&mut v.loras);
         }
         if let Some(h) = self.harness.as_mut() {
             opt(&mut h.source_dir);
@@ -3888,6 +3889,7 @@ mod tests {
              [outbox]\ndir = \"~/.mecha/outbox\"\n\
              [sandbox]\nwritable = [\"~/scratch\", \"/abs\"]\n\
              [video]\nguide_addendum = \"~/.mecha/video-guide.md\"\n\
+             loras = \"~/.mecha/video-loras.toml\"\n\
              [[mcp]]\nname = \"mail\"\ncommand = \"~/.cargo/bin/mecha-mail\"\n\
              args = [\"serve\", \"~/notes\", \"a~b\", \"~other/x\"]\n",
         )
@@ -3900,6 +3902,10 @@ mod tests {
         assert_eq!(
             cfg.video.as_ref().and_then(|v| v.guide_addendum.clone()),
             Some(home.join(".mecha/video-guide.md"))
+        );
+        assert_eq!(
+            cfg.video.as_ref().and_then(|v| v.loras.clone()),
+            Some(home.join(".mecha/video-loras.toml"))
         );
         assert_eq!(
             cfg.sandbox.writable,

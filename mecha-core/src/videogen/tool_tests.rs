@@ -50,6 +50,8 @@ struct Fake {
     missing: Vec<String>,
     /// Never finishes.
     forever: bool,
+    /// Files listed beside the configured ones, such as the owner's LoRAs.
+    extra_files: Vec<String>,
 }
 
 type Log = Arc<Mutex<Vec<String>>>;
@@ -71,6 +73,7 @@ async fn fake(opts: Fake, cfg: &VideoConfig) -> (String, Log) {
     ]
     .iter()
     .map(|s| s.to_string())
+    .chain(opts.extra_files.iter().cloned())
     .filter(|f| !opts.missing.contains(f))
     .collect();
     tokio::spawn(async move {
@@ -771,6 +774,159 @@ async fn a_missing_model_file_is_named_before_any_upload() {
         .unwrap()
         .iter()
         .any(|l| l.starts_with("POST /upload") || l.starts_with("POST /prompt")));
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// The owner's LoRA registry: the schema offers what may be picked and
+/// hides the always-on ones; a pick and the always-on LoRA are chained in
+/// that order, the pick's trigger leads the prompt, and the result names
+/// them; a pick with no file for the clip's mode, or one the server lacks,
+/// is refused before anything is uploaded.
+#[tokio::test]
+async fn the_owners_loras_ride_the_clip_and_a_wrong_one_is_refused_first() {
+    let home = scratch();
+    let chat = home.join("chat");
+    std::fs::create_dir_all(&chat).unwrap();
+    let registry = home.join("loras.toml");
+    std::fs::write(
+        &registry,
+        r#"
+[[lora]]
+name = "wave"
+about = "a friendly wave"
+file = "wave.safetensors"
+strength = 0.7
+trigger = "waving hello"
+
+[[lora]]
+name = "spin"
+about = "a gentle sideways tilt"
+references = "spin_ref.safetensors"
+
+[[lora]]
+name = "grain"
+about = "film grain"
+frames = "grain_fl.safetensors"
+always = true
+
+[[lora]]
+name = "broken"
+"#,
+    )
+    .unwrap();
+    let cfg = VideoConfig {
+        loras: Some(registry.clone()),
+        ..VideoConfig::default()
+    };
+    let files = [
+        "wave.safetensors",
+        "spin_ref.safetensors",
+        "grain_fl.safetensors",
+    ]
+    .map(String::from)
+    .to_vec();
+    let (url, log) = fake(
+        Fake {
+            extra_files: files.clone(),
+            ..Fake::default()
+        },
+        &cfg,
+    )
+    .await;
+    let t = VideoGenerate::new(VideoConfig {
+        url: url.clone(),
+        ..cfg.clone()
+    })
+    .unwrap()
+    .for_test(&home, Arc::new(Stub::default()), Duration::from_millis(20));
+    assert_eq!(t.lora_problems().len(), 1, "{:?}", t.lora_problems());
+    let schema = t.input_schema();
+    assert_eq!(
+        schema["properties"]["motion"]["items"]["enum"],
+        json!(["wave", "spin"])
+    );
+
+    let done = run(
+        &t,
+        json!({"prompt": "Maya at the harbour.", "motion": ["wave"]}),
+        &ctx(&chat),
+    )
+    .await;
+    assert!(!done.is_error, "{}", done.content);
+    assert!(
+        done.content.contains("LoRAs: grain, wave."),
+        "{}",
+        done.content
+    );
+    let seen = log.lock().unwrap().clone();
+    let prompt = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+    // The chain, link by link: turbo, then the always-on, then the pick.
+    let body: Value =
+        serde_json::from_str(&prompt[prompt.find('{').expect("a JSON body")..]).unwrap();
+    let graph = &body["prompt"];
+    assert_eq!(
+        graph["lora1"]["inputs"]["lora_name"],
+        "grain_fl.safetensors"
+    );
+    assert_eq!(graph["lora2"]["inputs"]["lora_name"], "wave.safetensors");
+    assert_eq!(graph["lora2"]["inputs"]["model"], json!(["lora1", 0]));
+    assert!(prompt.contains("waving hello. "), "{prompt}");
+
+    // No file for frames mode: refused with what would work, nothing sent.
+    let (url, log) = fake(
+        Fake {
+            extra_files: files.clone(),
+            ..Fake::default()
+        },
+        &cfg,
+    )
+    .await;
+    let t = VideoGenerate::new(VideoConfig { url, ..cfg.clone() })
+        .unwrap()
+        .for_test(&home, Arc::new(Stub::default()), Duration::from_millis(20));
+    let out =
+        <VideoGenerate as Tool>::call(&t, json!({"prompt": "p", "motion": ["spin"]}), &ctx(&chat))
+            .await;
+    let said = match out {
+        Ok(o) => o.content,
+        Err(e) => format!("{e:#}"),
+    };
+    assert!(said.contains("no frames file"), "{said}");
+    assert!(!log
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|l| l.starts_with("POST /upload") || l.starts_with("POST /prompt")));
+
+    // A LoRA the server does not have is named before any upload.
+    let (url, log) = fake(
+        Fake {
+            extra_files: files,
+            missing: vec!["wave.safetensors".into()],
+            ..Fake::default()
+        },
+        &cfg,
+    )
+    .await;
+    let t = VideoGenerate::new(VideoConfig { url, ..cfg })
+        .unwrap()
+        .for_test(&home, Arc::new(Stub::default()), Duration::from_millis(20));
+    let done = run(&t, json!({"prompt": "p", "motion": ["wave"]}), &ctx(&chat)).await;
+    assert!(done.is_error, "{}", done.content);
+    assert!(
+        done.content.contains("wave.safetensors"),
+        "{}",
+        done.content
+    );
+    assert!(!log
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|l| l.starts_with("POST /prompt")));
+
+    // Without a registry the schema has no `motion` at all.
+    let plain = VideoGenerate::new(VideoConfig::default()).unwrap();
+    assert!(plain.input_schema()["properties"].get("motion").is_none());
     std::fs::remove_dir_all(&home).ok();
 }
 

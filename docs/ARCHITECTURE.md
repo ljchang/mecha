@@ -1163,6 +1163,16 @@ here:
   mecha ships no weights, no licence text and no LoRA. The file names in
   `VideoConfig::default` are the names MiniMax's ComfyUI release gives them,
   as `[image]`'s are Qwen's.
+- **The owner's LoRAs are the owner's** (`videogen::loras`, `[video]
+  loras`). mecha ships and names none (the owner's ruling of 2026-10-23):
+  the registry is a file the owner writes, read when the tool is built
+  because its names and `about` lines sit in the schema's `motion`, which
+  is in the cached prefix. Each entry names its file per H3 checkpoint,
+  since a LoRA trained on the other one broke clips (2026-10-24); a pick
+  is refused at the call when its mode has no file, and always-on entries
+  chain first, after turbo. One bad entry costs only itself, said at
+  start. A per-chat allowlist and a picker are later work (the owner,
+  2026-10-25: the registry applies everywhere for now).
 - **The preflight asks for every file the graph names** (`graph::needs`),
   and a test builds each graph shape and holds the two lists equal. A file
   in the graph and not the preflight fails mid-render, as a node validation
