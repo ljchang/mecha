@@ -379,8 +379,14 @@ fn resolve<'a>(lib: &'a Library, name: &str, kind: Option<KindArg>) -> Result<&'
         [] => bail!("nothing in the image library is named `{name}`"),
         [one] => Ok(one),
         several => {
-            let kinds: Vec<&str> = several.iter().map(|e| e.kind.with_article()).collect();
-            bail!("`{name}` names {}; pass --kind", kinds.join(" and "))
+            let kinds: Vec<String> = several
+                .iter()
+                .map(|e| e.kind.with_article().to_string())
+                .collect();
+            bail!(
+                "`{name}` names {}; pass --kind",
+                mecha_core::imagelib::join_and(&kinds)
+            )
         }
     }
 }
