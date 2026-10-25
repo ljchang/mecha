@@ -31,6 +31,7 @@ pub enum KindArg {
     Character,
     Style,
     Location,
+    Outfit,
 }
 
 /// A reference's kind, as `--as` spells it (`--kind` is the entry's kind).
@@ -40,7 +41,7 @@ pub enum RefArg {
     #[value(name = "full_body")]
     FullBody,
     Detail,
-    /// A location's picture.
+    /// A location's or an outfit's picture.
     View,
 }
 
@@ -56,12 +57,13 @@ impl From<RefArg> for RefKind {
 }
 
 impl RefArg {
-    /// The entry kind this reference goes on: a view on a location, the
-    /// rest on a character.
-    fn entry_kind(self) -> KindArg {
+    /// The entry kind this reference goes on: the rest on a character, a
+    /// view on a location or an outfit — `--kind` when given, else whichever
+    /// holds the name (`resolve` asks for `--kind` when both do).
+    fn entry_kind(self, kind: Option<KindArg>) -> Option<KindArg> {
         match self {
-            RefArg::View => KindArg::Location,
-            RefArg::Face | RefArg::FullBody | RefArg::Detail => KindArg::Character,
+            RefArg::View => kind,
+            RefArg::Face | RefArg::FullBody | RefArg::Detail => Some(KindArg::Character),
         }
     }
 }
@@ -72,6 +74,7 @@ impl From<KindArg> for Kind {
             KindArg::Character => Kind::Character,
             KindArg::Style => Kind::Style,
             KindArg::Location => Kind::Location,
+            KindArg::Outfit => Kind::Outfit,
         }
     }
 }
@@ -111,6 +114,17 @@ pub enum Cmd {
     /// Add a style — yours, so approved at once.
     AddStyle {
         name: String,
+        #[arg(long)]
+        text: String,
+        #[arg(long)]
+        locked: bool,
+    },
+    /// Add an outfit — yours, so approved at once. Its picture, the garment
+    /// alone with no one wearing it, goes on with `add-reference <name> --as
+    /// view`; video sends it as what its wearer has on.
+    AddOutfit {
+        name: String,
+        /// What it is: garment, colour, cut, neckline.
         #[arg(long)]
         text: String,
         #[arg(long)]
@@ -222,6 +236,10 @@ pub enum Cmd {
         /// What it shows; required for a detail ("left-forearm tattoo").
         #[arg(long)]
         label: Option<String>,
+        /// For a view: the location or outfit it goes on, when both have
+        /// the name.
+        #[arg(long, value_enum)]
+        kind: Option<KindArg>,
     },
     /// Take a typed picture off a character; `--label` says which detail.
     /// A new version; the picture stays in the store for the history.
@@ -231,6 +249,8 @@ pub enum Cmd {
         as_kind: RefArg,
         #[arg(long)]
         label: Option<String>,
+        #[arg(long, value_enum)]
+        kind: Option<KindArg>,
     },
     /// Reference changes a model staged for you: from a conversation that
     /// had read outside content, or an incognito chat.
@@ -358,7 +378,16 @@ fn resolve<'a>(lib: &'a Library, name: &str, kind: Option<KindArg>) -> Result<&'
     match lib.find(&name).as_slice() {
         [] => bail!("nothing in the image library is named `{name}`"),
         [one] => Ok(one),
-        _ => bail!("both a character and a style are named `{name}`; pass --kind"),
+        several => {
+            let kinds: Vec<String> = several
+                .iter()
+                .map(|e| e.kind.with_article().to_string())
+                .collect();
+            bail!(
+                "`{name}` names {}; pass --kind",
+                mecha_core::imagelib::join_and(&kinds)
+            )
+        }
     }
 }
 
@@ -979,6 +1008,24 @@ fn run(dir: &std::path::Path, cmd: Cmd) -> Result<()> {
             )?;
             println!("Added style `{}`.", e.name);
         }
+        Cmd::AddOutfit { name, text, locked } => {
+            let e = imagelib::create(
+                dir,
+                NewEntry {
+                    kind: Kind::Outfit,
+                    name,
+                    text,
+                    portrait: None,
+                    source_seed: None,
+                    origin: Origin::Owner,
+                    locked,
+                },
+            )?;
+            println!(
+                "Added outfit `{}`. Add a picture of the garment alone with `mecha imagelib add-reference {} --as view <file>`.",
+                e.name, e.name
+            );
+        }
         Cmd::AddLocation { name, text, locked } => {
             let e = imagelib::create(
                 dir,
@@ -1072,8 +1119,9 @@ fn run(dir: &std::path::Path, cmd: Cmd) -> Result<()> {
             as_kind,
             file,
             label,
+            kind,
         } => {
-            let e = resolve(&lib, &name, Some(as_kind.entry_kind()))?;
+            let e = resolve(&lib, &name, as_kind.entry_kind(kind))?;
             let bytes = read_picture(&file)?;
             let kind: RefKind = as_kind.into();
             let updated =
@@ -1096,8 +1144,9 @@ fn run(dir: &std::path::Path, cmd: Cmd) -> Result<()> {
             name,
             as_kind,
             label,
+            kind,
         } => {
-            let e = resolve(&lib, &name, Some(as_kind.entry_kind()))?;
+            let e = resolve(&lib, &name, as_kind.entry_kind(kind))?;
             let kind: RefKind = as_kind.into();
             let updated =
                 imagelib::remove_reference_from(dir, e.kind, &e.name, kind, label.as_deref())?;

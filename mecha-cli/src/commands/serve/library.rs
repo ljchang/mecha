@@ -666,7 +666,11 @@ fn parse_kind(kind: &str) -> Option<Kind> {
     Kind::ALL.into_iter().find(|k| k.label() == kind)
 }
 
-const KIND_REFUSAL: &str = "kind is character, style or location\n";
+/// Said from `Kind::ALL`, as `parse_kind` reads it (review of #741).
+fn kind_refusal() -> String {
+    let labels: Vec<&str> = Kind::ALL.iter().map(|k| k.label()).collect();
+    format!("kind is one of {}\n", labels.join(", "))
+}
 
 #[derive(Deserialize, Default)]
 pub struct ActBody {
@@ -686,7 +690,7 @@ pub async fn act(
     body: Option<Json<ActBody>>,
 ) -> Response {
     let Some(kind) = parse_kind(&kind) else {
-        return (StatusCode::BAD_REQUEST, KIND_REFUSAL).into_response();
+        return (StatusCode::BAD_REQUEST, kind_refusal()).into_response();
     };
     if imagelib::validate_name(&name).is_err() {
         return (StatusCode::BAD_REQUEST, "not an entry name\n").into_response();
@@ -807,7 +811,7 @@ pub struct AddBody {
 /// creation.
 pub async fn add(State(state): St, Json(body): Json<AddBody>) -> Response {
     let Some(kind) = parse_kind(&body.kind) else {
-        return (StatusCode::BAD_REQUEST, KIND_REFUSAL).into_response();
+        return (StatusCode::BAD_REQUEST, kind_refusal()).into_response();
     };
     if imagelib::validate_name(&body.name).is_err() {
         return (
@@ -820,7 +824,7 @@ pub async fn add(State(state): St, Json(body): Json<AddBody>) -> Response {
     // flag (review of #385).
     let text = match kind {
         Kind::Character => format!("--description={}", body.text),
-        Kind::Style | Kind::Location => format!("--text={}", body.text),
+        Kind::Style | Kind::Location | Kind::Outfit => format!("--text={}", body.text),
     };
     let staged = match (kind.has_portrait(), body.portrait.as_deref()) {
         (true, Some(b64)) => match stage_portrait(b64, "portrait").await {
@@ -833,7 +837,7 @@ pub async fn add(State(state): St, Json(body): Json<AddBody>) -> Response {
         (false, Some(_)) => {
             return (
                 StatusCode::BAD_REQUEST,
-                format!("a {} has no portrait\n", kind.label()),
+                format!("{} has no portrait\n", kind.with_article()),
             )
                 .into_response()
         }
@@ -845,6 +849,7 @@ pub async fn add(State(state): St, Json(body): Json<AddBody>) -> Response {
     let mut args = match (&portrait, kind) {
         (Some(path), _) => vec!["imagelib", "add-character", &body.name, "--portrait", path],
         (None, Kind::Location) => vec!["imagelib", "add-location", &body.name],
+        (None, Kind::Outfit) => vec!["imagelib", "add-outfit", &body.name],
         (None, Kind::Character | Kind::Style) => vec!["imagelib", "add-style", &body.name],
     };
     args.push(&text);
@@ -877,7 +882,7 @@ pub struct EditBody {
 /// the entry's recorded seed goes with the old portrait.
 pub async fn edit(State(state): St, Json(body): Json<EditBody>) -> Response {
     let Some(kind) = parse_kind(&body.kind) else {
-        return (StatusCode::BAD_REQUEST, KIND_REFUSAL).into_response();
+        return (StatusCode::BAD_REQUEST, kind_refusal()).into_response();
     };
     if imagelib::validate_name(&body.name).is_err() {
         return (StatusCode::BAD_REQUEST, "not an entry name\n").into_response();
@@ -888,7 +893,7 @@ pub async fn edit(State(state): St, Json(body): Json<EditBody>) -> Response {
     if !kind.has_portrait() && body.portrait.is_some() {
         return (
             StatusCode::BAD_REQUEST,
-            format!("a {} has no portrait\n", kind.label()),
+            format!("{} has no portrait\n", kind.with_article()),
         )
             .into_response();
     }
@@ -1353,7 +1358,7 @@ mod tests {
             assert_eq!(super::parse_kind(kind.label()), Some(kind));
         }
         assert_eq!(super::parse_kind("Character"), None);
-        assert_eq!(super::parse_kind("outfit"), None);
+        assert_eq!(super::parse_kind("costume"), None);
     }
 
     use super::*;

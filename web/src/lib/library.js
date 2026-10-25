@@ -1,13 +1,13 @@
 // The image library page's pure logic, kept out of the component so the
 // tests exercise the shipped code (web/test/library.mjs).
 
-export const PANES = ['characters', 'styles', 'locations', 'voices', 'candidates'];
+export const PANES = ['characters', 'styles', 'locations', 'outfits', 'voices', 'candidates'];
 
 // The entry kind each library pane lists. A kind with no pane (a later
 // build's) is listed nowhere and counted nowhere, never as a character: a
 // Character fallback here showed a location in no pane and counted it among
 // the characters (review of #740).
-const PANE_KIND = { characters: 'character', styles: 'style', locations: 'location' };
+const PANE_KIND = { characters: 'character', styles: 'style', locations: 'location', outfits: 'outfit' };
 
 // Which pane a hash sub names; anything else is the characters pane.
 export function paneOf(sub) {
@@ -29,7 +29,7 @@ export function entriesFor(pane, entries) {
 // A model's staged reference changes wait in the candidates pane too, so the
 // chip counts them (docs/IMAGE-COMPILER-DESIGN.md §9.3, 2026-10-14).
 export function counts(entries, pending = []) {
-  const out = { characters: 0, styles: 0, locations: 0, candidates: (pending ?? []).length };
+  const out = { characters: 0, styles: 0, locations: 0, outfits: 0, candidates: (pending ?? []).length };
   for (const e of entries ?? []) {
     if (e.status === 'candidate') out.candidates += 1;
     else {
@@ -169,7 +169,7 @@ export function tameName(typed) {
 
 // The store's caps on an entry's text (imagelib.rs MAX_DESCRIPTION,
 // MAX_STYLE_TEXT): the form says so before the server has to.
-export const TEXT_MAX = { character: 400, style: 1000, location: 400 };
+export const TEXT_MAX = { character: 400, style: 1000, location: 400, outfit: 300 };
 
 // A portrait's longest edge as the page sends it. Generation sends every
 // portrait at 512² (research E10), so a phone's 4000-pixel photo buys
