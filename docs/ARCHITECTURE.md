@@ -1226,7 +1226,8 @@ here:
   set no `pov`, and quoted its lines inside an action with no `lines`: the
   camera person was then defined with a face that appears, the lines had no
   speaker tag (no voice, no lip sync), and a name inside them was labelled.
-  So a shot's "<name>'s POV/point of view/eyes" makes that cast member
+  So a shot's "<name>'s POV/point of view" (not "eyes": a close-up of
+  someone's eyes is a shot of them) makes that one cast member
   `pov` unless the scene set it either way, and a library character the
   shots name but `cast` omits (that scene listed no cast) is added as the
   camera when so described; with no `lines`, a quote after

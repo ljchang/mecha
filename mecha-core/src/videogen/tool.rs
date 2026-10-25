@@ -539,8 +539,9 @@ impl VideoGenerate {
             graph::Mode::References
         };
 
-        // The owner's LoRAs, refused here with what would work: an unknown
-        // name or a file for the other checkpoint costs nothing yet.
+        // The owner's LoRAs: an unknown name or a repeat is refused here,
+        // with what would work, before anything is sent; a pick with no file
+        // for this clip's mode is left out, said in a note.
         let (picked, mut left_out) = self.loras.pick(&input["motion"], mode)?;
         notes.append(&mut left_out);
         let triggered = super::loras::with_triggers(prompt, &picked) + &place_words;

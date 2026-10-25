@@ -783,7 +783,7 @@ async fn a_missing_model_file_is_named_before_any_upload() {
 /// them; a pick with no file for the clip's mode, or one the server lacks,
 /// is refused before anything is uploaded.
 #[tokio::test]
-async fn the_owners_loras_ride_the_clip_and_a_wrong_one_is_refused_first() {
+async fn the_owners_loras_ride_the_clip_and_a_wrong_one_is_left_out_or_refused() {
     let home = scratch();
     let chat = home.join("chat");
     std::fs::create_dir_all(&chat).unwrap();
