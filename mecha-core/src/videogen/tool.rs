@@ -1694,6 +1694,19 @@ impl Tool for VideoPromptGuide {
         Some(self)
     }
 
+    /// The shipped guide is public text; the owner's addendum is the owner's
+    /// own file, kept out of the repository because of what it says, and
+    /// returned verbatim, so with one the answer arms `private` as
+    /// `image_library`'s owner text does (review of #738). Without one,
+    /// nothing changes.
+    fn capabilities(&self) -> Capabilities {
+        if self.addendum.is_some() {
+            Capabilities::default().private()
+        } else {
+            Capabilities::default()
+        }
+    }
+
     async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
         Ok(ToolOutput::ok(self.text()))
     }

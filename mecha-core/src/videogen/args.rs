@@ -120,7 +120,13 @@ pub fn with_scene(args: &Value) -> Result<(Value, Vec<String>)> {
         if args["prompt"].as_str().is_none_or(|p| p.trim().is_empty()) {
             bail!("give `scene` (typed; see video_prompt_guide) or `prompt`");
         }
-        return Ok((args.clone(), Vec::new()));
+        // Only the compiler writes these, on this path too (review of #738).
+        let mut out = args.clone();
+        if let Some(o) = out.as_object_mut() {
+            o.remove("pov");
+            o.remove("pov_silent");
+        }
+        return Ok((out, Vec::new()));
     };
     let default = args["seconds"].as_f64().unwrap_or(5.0);
     let c = scene::compile(scene_args, default)?;
@@ -423,6 +429,10 @@ mod tests {
         }))
         .unwrap();
         assert!(out.get("pov").is_none(), "{out}");
+        assert!(out.get("pov_silent").is_none(), "{out}");
+        // On the prompt-only path too (review of #738).
+        let (out, _) =
+            with_scene(&json!({"prompt": "Maya waves.", "pov_silent": ["maya"]})).unwrap();
         assert!(out.get("pov_silent").is_none(), "{out}");
         // The scene's own are kept.
         let mut seen = scene.clone();
