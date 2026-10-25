@@ -419,7 +419,7 @@ mod tests {
     /// scene says what it took with it.
     #[test]
     fn only_the_compiler_says_who_the_camera_is() {
-        let scene = json!({"shots": [{"framing": "A wide shot", "action": "Maya waves"}],
+        let scene = json!({"shots": [{"framing": "A long view down the hall", "action": "Maya waves"}],
                            "cast": [{"name": "Maya", "wearing": "a coat"}]});
         // A call's own `pov` and `pov_silent` are dropped, not passed on.
         let (out, _) = with_scene(&json!({
