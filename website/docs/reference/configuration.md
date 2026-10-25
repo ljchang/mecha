@@ -891,6 +891,7 @@ under its licence.
 | `audio_vae` | string | `minimax_h3_audio_vae_fp32.safetensors` | |
 | `decoder` | string | unset | A VAE that decodes the clip in place of `vae`, used only when the server lists it. |
 | `steps` | integer | `20` | Sampling steps without turbo. |
+| `guide_addendum` | path | unset | A Markdown file of your own notes for writing clips, appended to `video_prompt_guide`'s answer under its own heading, and read on each call, so an edit applies to the next conversation's first clip. Over 32 KB is cut, and a file that cannot be read is said in the answer. |
 
 Before anything is uploaded, every file the clip's graph names is asked of the
 video server, and a missing one is named in the result. The tool never starts the

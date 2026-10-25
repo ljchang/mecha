@@ -27,6 +27,8 @@ pub struct Compiled {
     pub aspect: Option<String>,
     /// Timing and wording problems, said back with the clip.
     pub notes: Vec<String>,
+    /// The cast members the clip is seen through (`pov`), as written.
+    pub pov: Vec<String>,
 }
 
 fn text(v: &Value, key: &str) -> Option<String> {
@@ -44,6 +46,43 @@ fn sentence(s: &str) -> String {
     } else {
         format!("{s}.")
     }
+}
+
+/// A sentence the scene opens with its first letter up: `flat overhead
+/// light` stood lower-case mid-timeline after a full stop.
+fn capital(s: &str) -> String {
+    let mut c = s.trim().chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().chain(c).collect(),
+        None => String::new(),
+    }
+}
+
+/// A `doing` that opens on an -ing word takes `is`: "Luke wears nothing and
+/// lying on his back" was the compiled sentence (2026-10-25); "kneels beside
+/// an upturned bike" reads as written.
+fn as_predicate(doing: &str) -> String {
+    let first = doing.split_whitespace().next().unwrap_or("");
+    let word: String = first.chars().filter(|c| c.is_alphabetic()).collect();
+    if word.len() > 4 && word.to_ascii_lowercase().ends_with("ing") {
+        format!("is {doing}")
+    } else {
+        doing.to_string()
+    }
+}
+
+/// Words in an action that say someone talks there: where a line without a
+/// `shot` belongs. A clip whose second shot read "…gazes into the camera and
+/// speaks" had both its lines compiled into the first (2026-10-25).
+const SPEECH_CUES: [&str; 9] = [
+    "says", "speaks", "asks", "whispers", "replies", "answers", "shouts", "calls", "murmurs",
+];
+
+fn speech_cues(action: &str) -> usize {
+    action
+        .split(|c: char| !c.is_alphabetic())
+        .filter(|w| SPEECH_CUES.contains(&w.to_ascii_lowercase().as_str()))
+        .count()
 }
 
 /// `1.5` → `00:01.500`.
@@ -143,9 +182,72 @@ pub fn compile(scene: &Value, default_seconds: f64) -> Result<Compiled> {
         }
     }
 
+    // Each line's shot: its own `shot`, else the next place an action says
+    // someone speaks, in order, else the first shot. A cue an explicitly
+    // placed line already fills is not offered again.
+    let explicit = |l: &Value| {
+        l.get("shot")
+            .and_then(Value::as_u64)
+            .map(|k| k as usize)
+            .filter(|&k| k >= 1 && k <= n)
+    };
+    let mut free: Vec<usize> = shots
+        .iter()
+        .map(|s| text(s, "action").map_or(0, |a| speech_cues(&a)))
+        .collect();
+    for l in &lines {
+        if let Some(k) = explicit(l) {
+            free[k - 1] = free[k - 1].saturating_sub(1);
+        }
+    }
+    let slots: Vec<usize> = free
+        .iter()
+        .enumerate()
+        .flat_map(|(i, &c)| std::iter::repeat_n(i + 1, c))
+        .collect();
+    // Lines are spoken in the order given, so an inferred line never lands
+    // in a shot before the line ahead of it.
+    let mut next = 0;
+    let mut floor = 1;
+    let mut moved = Vec::new();
+    let mut placed: Vec<usize> = Vec::with_capacity(lines.len());
+    for (j, l) in lines.iter().enumerate() {
+        if l.get("shot").is_some() {
+            // Out of range stays out of range: dropped below, with a note.
+            let k = l
+                .get("shot")
+                .and_then(Value::as_u64)
+                .map_or(1, |k| k as usize);
+            if explicit(l).is_some() {
+                floor = floor.max(k);
+            }
+            placed.push(k);
+            continue;
+        }
+        while slots.get(next).is_some_and(|&s| s < floor) {
+            next += 1;
+        }
+        let shot = slots
+            .get(next)
+            .copied()
+            .unwrap_or_else(|| slots.last().copied().unwrap_or(1).max(floor));
+        next += 1;
+        floor = shot;
+        if shot != 1 {
+            moved.push(format!("line {} in shot {shot}", j + 1));
+        }
+        placed.push(shot);
+    }
+    if !moved.is_empty() {
+        notes.push(format!(
+            "Lines without a `shot` went where the actions say someone speaks: {}. Give `shot` to place a line yourself.",
+            moved.join(", ")
+        ));
+    }
+
     let mut out = String::new();
     if let Some(style) = text(scene, "style") {
-        out.push_str(&sentence(&style));
+        out.push_str(&sentence(&capital(&style)));
         out.push(' ');
     }
     for (i, shot) in shots.iter().enumerate() {
@@ -156,17 +258,25 @@ pub fn compile(scene: &Value, default_seconds: f64) -> Result<Compiled> {
             if let Some(setting) = scene.get("setting") {
                 if let Some(d) = text(setting, "description") {
                     out.push(' ');
-                    out.push_str(&sentence(&d));
+                    out.push_str(&sentence(&capital(&d)));
                 }
                 if let Some(l) = text(setting, "light") {
                     out.push(' ');
-                    out.push_str(&sentence(&l));
+                    out.push_str(&sentence(&capital(&l)));
                 }
             }
             for c in &cast {
                 let Some(name) = text(c, "name") else {
                     continue;
                 };
+                // Seen through, never seen: said before anything else about
+                // them, so the hands and body the action names are theirs
+                // and no face is drawn for them.
+                if c.get("pov").and_then(Value::as_bool) == Some(true) {
+                    out.push_str(&format!(
+                        " The clip is seen through {name}'s eyes: the camera is {name}'s point of view, so {name}'s face never appears, and only {name}'s hands, arms and body are seen."
+                    ));
+                }
                 let mut said = name.clone();
                 match text(c, "wearing") {
                     Some(w) => said.push_str(&format!(" wears {w}")),
@@ -176,7 +286,7 @@ pub fn compile(scene: &Value, default_seconds: f64) -> Result<Compiled> {
                 }
                 if let Some(d) = text(c, "doing") {
                     let join = if said == name { " " } else { " and " };
-                    said.push_str(&format!("{join}{d}"));
+                    said.push_str(&format!("{join}{}", as_predicate(&d)));
                 }
                 if said != name {
                     out.push(' ');
@@ -184,7 +294,7 @@ pub fn compile(scene: &Value, default_seconds: f64) -> Result<Compiled> {
                 }
                 if let Some(extra) = text(c, "notes") {
                     out.push(' ');
-                    out.push_str(&sentence(&extra));
+                    out.push_str(&sentence(&capital(&extra)));
                 }
             }
         } else {
@@ -203,10 +313,12 @@ pub fn compile(scene: &Value, default_seconds: f64) -> Result<Compiled> {
             out.push(' ');
             out.push_str(&sentence(&camera));
         }
-        // This shot's lines: a line names its shot, or belongs to the first.
+        // This shot's lines, as placed above.
         for l in lines
             .iter()
-            .filter(|l| l.get("shot").and_then(Value::as_u64).unwrap_or(1) as usize == i + 1)
+            .zip(&placed)
+            .filter(|(_, k)| **k == i + 1)
+            .map(|(l, _)| l)
         {
             let (Some(who), Some(says)) = (text(l, "who"), text(l, "says")) else {
                 continue;
@@ -268,6 +380,11 @@ pub fn compile(scene: &Value, default_seconds: f64) -> Result<Compiled> {
         seconds,
         aspect: text(scene, "aspect"),
         notes,
+        pov: cast
+            .iter()
+            .filter(|c| c.get("pov").and_then(Value::as_bool) == Some(true))
+            .filter_map(|c| text(c, "name"))
+            .collect(),
     })
 }
 
@@ -409,6 +526,84 @@ mod tests {
         );
         assert!(!c.prompt.contains("Both, probably"), "{}", c.prompt);
         assert!(compile(&json!({"cast": []}), 5.0).is_err());
+    }
+
+    /// A line without a `shot` goes where an action says someone speaks:
+    /// both lines of a two-shot clip whose second shot "speaks" were compiled
+    /// into the first (2026-10-25). An explicit `shot` keeps its place and
+    /// its cue, and with no cue anywhere every line stays in the first.
+    #[test]
+    fn a_line_goes_to_the_shot_whose_action_speaks() {
+        let mut s = workshop();
+        s["shots"] = json!([
+            {"framing": "A wide two-shot", "action": "Maya looks up and speaks"},
+            {"at": 3.0, "framing": "A close-up of Wren", "action": "Wren grins, then says something"}
+        ]);
+        let c = compile(&s, 5.0).unwrap();
+        let first = c.prompt.find("[Shot 2]").unwrap();
+        assert!(
+            c.prompt[..first].contains("Chain or brakes")
+                && c.prompt[first..].contains("Both, probably"),
+            "{}",
+            c.prompt
+        );
+        assert!(
+            c.notes.iter().any(|n| n.contains("line 2 in shot 2")),
+            "{:?}",
+            c.notes
+        );
+        // Placed explicitly, a line takes its shot's cue.
+        s["lines"][0]["shot"] = json!(2);
+        let c = compile(&s, 5.0).unwrap();
+        let first = c.prompt.find("[Shot 2]").unwrap();
+        assert!(
+            c.prompt[first..].contains("Chain or brakes"),
+            "{}",
+            c.prompt
+        );
+        assert!(c.prompt[first..].contains("Both, probably"), "{}", c.prompt);
+        // No cue anywhere: the first shot, as before, and no note.
+        let c = compile(&workshop(), 5.0).unwrap();
+        assert!(
+            !c.notes.iter().any(|n| n.starts_with("Lines without")),
+            "{:?}",
+            c.notes
+        );
+    }
+
+    /// A first-person cast member is said to be the camera, ahead of what
+    /// they wear and do; `doing` that opens on an -ing word reads as a
+    /// sentence; and the setting's sentences open with a capital.
+    #[test]
+    fn the_camera_person_and_the_cast_sentences_read_as_written() {
+        let s = json!({
+            "setting": {"description": "a small changing room", "light": "flat overhead light"},
+            "cast": [
+                {"name": "Maya", "wearing": "a green raincoat", "doing": "kneeling on the tile floor"},
+                {"name": "Wren", "pov": true, "wearing": "nothing", "doing": "standing over her"}
+            ],
+            "shots": [{"framing": "A first-person shot looking down", "action": "Maya looks up"}]
+        });
+        let c = compile(&s, 5.0).unwrap();
+        assert!(
+            c.prompt
+                .contains("A small changing room. Flat overhead light."),
+            "{}",
+            c.prompt
+        );
+        assert!(
+            c.prompt
+                .contains("Maya wears a green raincoat and is kneeling on the tile floor."),
+            "{}",
+            c.prompt
+        );
+        assert!(
+            c.prompt.contains("The clip is seen through Wren's eyes: the camera is Wren's point of view, so Wren's face never appears, and only Wren's hands, arms and body are seen. Wren wears nothing and is standing over her."),
+            "{}",
+            c.prompt
+        );
+        assert_eq!(c.pov, vec!["Wren".to_string()]);
+        assert!(compile(&workshop(), 5.0).unwrap().pov.is_empty());
     }
 
     #[test]

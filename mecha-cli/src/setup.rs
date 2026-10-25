@@ -1786,7 +1786,12 @@ async fn prepare_tools_carrying(
             }
         }
         if asked(mecha_core::videogen::tool::GUIDE_NAME) {
-            registry.insert(Arc::new(mecha_core::videogen::VideoPromptGuide));
+            registry.insert(Arc::new(
+                cfg.video
+                    .as_ref()
+                    .map(mecha_core::videogen::VideoPromptGuide::new)
+                    .unwrap_or_default(),
+            ));
         }
     }
     // `persona_propose` rides with the Personas switch: it stages a candidate

@@ -721,7 +721,7 @@ mod tests {
         pool.insert(Arc::new(
             crate::videogen::VideoGenerate::new(crate::videogen::VideoConfig::default()).unwrap(),
         ));
-        pool.insert(Arc::new(crate::videogen::VideoPromptGuide));
+        pool.insert(Arc::new(crate::videogen::VideoPromptGuide::default()));
         pool.insert(Arc::new(crate::tool::image_library::ImageLibrary::new(
             dir.clone(),
         )));

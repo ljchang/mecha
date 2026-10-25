@@ -72,6 +72,11 @@ pub struct VideoConfig {
     pub decoder: Option<String>,
     /// Sampling steps without turbo.
     pub steps: u32,
+    /// The owner's own lessons for writing clips, a Markdown file appended to
+    /// `video_prompt_guide`'s answer: what this machine's renders taught, kept
+    /// out of the shipped guide. Read on each call, so an edit applies to the
+    /// next clip.
+    pub guide_addendum: Option<std::path::PathBuf>,
 }
 
 impl Default for VideoConfig {
@@ -93,6 +98,7 @@ impl Default for VideoConfig {
             audio_vae: "minimax_h3_audio_vae_fp32.safetensors".into(),
             decoder: None,
             steps: 20,
+            guide_addendum: None,
         }
     }
 }
