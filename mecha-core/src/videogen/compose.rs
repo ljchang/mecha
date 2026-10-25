@@ -484,21 +484,33 @@ pub(crate) fn quote_spans(text: &str) -> Vec<(usize, usize)> {
             from = body;
             continue;
         }
+        // The first mark that can close it does; one that can only open
+        // first means this quote never closed, and it pairs with nothing,
+        // so it cannot swallow the words up to a later quote (review of
+        // #742).
         let mut search = body;
         let mut found = None;
-        while let Some(c) = text[search..].find(close_with) {
+        while let Some(c) = text[search..].find(['"', '\u{201c}', '\u{201d}']) {
             let at = search + c;
-            let end = at + text[at..].chars().next().map_or(1, char::len_utf8);
+            let here = text[at..].chars().next().unwrap_or('"');
+            let end = at + here.len_utf8();
             let prev = text[..at].chars().next_back();
             let next = text[end..].chars().next();
-            if prev.is_some_and(|p| !p.is_whitespace())
+            let closes = close_with.contains(&here)
+                && prev.is_some_and(|p| !p.is_whitespace())
                 && next.is_none_or(|n| {
                     n.is_whitespace()
                         || n.is_ascii_punctuation()
                         || "\u{2014}\u{2013}\u{2026}".contains(n)
-                })
-            {
+                });
+            if closes {
                 found = Some(end);
+                break;
+            }
+            let opens_again = here != '\u{201d}'
+                && prev.is_none_or(|p| p.is_whitespace() || "([:\u{2014}\u{2013}".contains(p))
+                && next.is_some_and(|n| !n.is_whitespace());
+            if opens_again {
                 break;
             }
             search = end;
