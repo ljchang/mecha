@@ -418,25 +418,110 @@ pub fn closed_lines(text: &str) -> String {
     out
 }
 
-/// Each library name, outside `<d>…</d>`, as its `<Subject N>` label: a
-/// whole word, any ASCII case, a hyphenated name also in its spaced form.
+/// Each library name, outside `<d>…</d>` and outside quoted speech, as its
+/// `<Subject N>` label: a whole word, any ASCII case, a hyphenated name also
+/// in its spaced form. Quotes are protected as `<d>` is: a model that wrote a
+/// line inside an action, quoting a library name it addressed, had the name
+/// inside the words replaced by a label (2026-10-25).
 pub fn label_names(text: &str, named: &[(String, usize)]) -> String {
     let mut out = String::with_capacity(text.len() + 32);
     let mut rest = text;
     while !rest.is_empty() {
-        let (outside, inside) = match rest.find("<d>") {
-            Some(open) => {
-                let close = rest[open..]
-                    .find("</d>")
-                    .map(|c| open + c + 4)
-                    .unwrap_or(rest.len());
-                (&rest[..open], &rest[open..close])
-            }
+        let (outside, inside) = match protected(rest) {
+            Some((open, close)) => (&rest[..open], &rest[open..close]),
             None => (rest, ""),
         };
         out.push_str(&label_outside(outside, named));
         out.push_str(inside);
         rest = &rest[outside.len() + inside.len()..];
+    }
+    out
+}
+
+/// The first span in `text` a label must not enter, as byte offsets: a
+/// `<d>…</d>` line (to the end when unclosed, as H3 reads it), or a quote
+/// (`quote_spans`).
+fn protected(text: &str) -> Option<(usize, usize)> {
+    let line = text.find("<d>").map(|open| {
+        let close = text[open..]
+            .find("</d>")
+            .map(|c| open + c + 4)
+            .unwrap_or(text.len());
+        (open, close)
+    });
+    let quote = quote_spans(text).into_iter().next();
+    match (line, quote) {
+        (Some(l), Some(q)) => Some(if q.0 < l.0 { q } else { l }),
+        (l, q) => l.or(q),
+    }
+}
+
+/// Every quote in `text`, straight or curly, as byte spans including the
+/// marks. A mark opens only at the start or after whitespace or an opening
+/// bracket, colon or dash, with no space after it; it closes only with no
+/// space before it and at the end or before whitespace or punctuation. So an
+/// inch mark (`6" ruler`) opens nothing, an unclosed quote is no span, and a
+/// stray mark never pairs with the next real quote and swallows the words
+/// between (review of #742).
+pub(crate) fn quote_spans(text: &str) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(i) = text[from..].find(['"', '\u{201c}']) {
+        let open = from + i;
+        let mark = text[open..].chars().next().unwrap_or('"');
+        // A curly quote closes curly or straight: local models mix them.
+        let close_with: &[char] = if mark == '"' {
+            &['"']
+        } else {
+            &['\u{201d}', '"']
+        };
+        let body = open + mark.len_utf8();
+        let before = text[..open].chars().next_back();
+        let after = text[body..].chars().next();
+        let opens = before.is_none_or(|c| c.is_whitespace() || "([:\u{2014}\u{2013}".contains(c))
+            && after.is_some_and(|c| !c.is_whitespace());
+        if !opens {
+            from = body;
+            continue;
+        }
+        // The first mark that can close it does; one that can only open
+        // first means this quote never closed, and it pairs with nothing,
+        // so it cannot swallow the words up to a later quote (review of
+        // #742).
+        let mut search = body;
+        let mut found = None;
+        while let Some(c) = text[search..].find(['"', '\u{201c}', '\u{201d}']) {
+            let at = search + c;
+            let here = text[at..].chars().next().unwrap_or('"');
+            let end = at + here.len_utf8();
+            let prev = text[..at].chars().next_back();
+            let next = text[end..].chars().next();
+            let closes = close_with.contains(&here)
+                && prev.is_some_and(|p| !p.is_whitespace())
+                && next.is_none_or(|n| {
+                    n.is_whitespace()
+                        || n.is_ascii_punctuation()
+                        || "\u{2014}\u{2013}\u{2026}".contains(n)
+                });
+            if closes {
+                found = Some(end);
+                break;
+            }
+            let opens_again = here != '\u{201d}'
+                && prev.is_none_or(|p| p.is_whitespace() || "([:\u{2014}\u{2013}".contains(p))
+                && next.is_some_and(|n| !n.is_whitespace());
+            if opens_again {
+                break;
+            }
+            search = end;
+        }
+        match found {
+            Some(end) => {
+                out.push((open, end));
+                from = end;
+            }
+            None => from = body,
+        }
     }
     out
 }
@@ -531,6 +616,26 @@ mod tests {
             "<Subject 1> (S1) says, <d>[English] Hi Mara Lee!</d> <Subject 2> waves at <Subject 1>."
         );
         assert_eq!(label_names("Mayapple jam.", &named), "Mayapple jam.");
+        // Quoted speech keeps its names, straight or curly; a stray quote
+        // protects nothing after it.
+        assert_eq!(
+            label_names(
+                "Maya turns to Mara Lee: \"Thanks, Maya.\" Mara Lee nods.",
+                &named
+            ),
+            "<Subject 1> turns to <Subject 2>: \"Thanks, Maya.\" <Subject 2> nods."
+        );
+        assert_eq!(
+            label_names(
+                "Maya says \u{201c}Over here, Mara Lee\u{201d} to Mara Lee.",
+                &named
+            ),
+            "<Subject 1> says \u{201c}Over here, Mara Lee\u{201d} to <Subject 2>."
+        );
+        assert_eq!(
+            label_names("A 6\" ruler; Maya waves.", &named),
+            "A 6\" ruler; <Subject 1> waves."
+        );
     }
 
     /// A name that is a whole word of a longer one does not take its place

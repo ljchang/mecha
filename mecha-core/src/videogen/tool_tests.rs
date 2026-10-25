@@ -783,7 +783,7 @@ async fn a_missing_model_file_is_named_before_any_upload() {
 /// them; a pick with no file for the clip's mode, or one the server lacks,
 /// is refused before anything is uploaded.
 #[tokio::test]
-async fn the_owners_loras_ride_the_clip_and_a_wrong_one_is_refused_first() {
+async fn the_owners_loras_ride_the_clip_and_a_wrong_one_is_left_out_or_refused() {
     let home = scratch();
     let chat = home.join("chat");
     std::fs::create_dir_all(&chat).unwrap();
@@ -872,7 +872,8 @@ name = "broken"
     assert_eq!(graph["lora2"]["inputs"]["model"], json!(["lora1", 0]));
     assert!(prompt.contains("waving hello. "), "{prompt}");
 
-    // No file for frames mode: refused with what would work, nothing sent.
+    // No file for this clip's mode: left out and said, the clip still made
+    // (the first real call spent three refusals on it, 2026-10-25).
     let (url, log) = fake(
         Fake {
             extra_files: files.clone(),
@@ -884,19 +885,17 @@ name = "broken"
     let t = VideoGenerate::new(VideoConfig { url, ..cfg.clone() })
         .unwrap()
         .for_test(&home, Arc::new(Stub::default()), Duration::from_millis(20));
-    let out =
-        <VideoGenerate as Tool>::call(&t, json!({"prompt": "p", "motion": ["spin"]}), &ctx(&chat))
-            .await;
-    let said = match out {
-        Ok(o) => o.content,
-        Err(e) => format!("{e:#}"),
-    };
-    assert!(said.contains("no frames file"), "{said}");
-    assert!(!log
-        .lock()
-        .unwrap()
-        .iter()
-        .any(|l| l.starts_with("POST /upload") || l.starts_with("POST /prompt")));
+    let done = run(&t, json!({"prompt": "p", "motion": ["spin"]}), &ctx(&chat)).await;
+    assert!(!done.is_error, "{}", done.content);
+    assert!(
+        done.content
+            .contains("The LoRA `spin` was left out: it has no frames file"),
+        "{}",
+        done.content
+    );
+    let seen = log.lock().unwrap().clone();
+    let prompt = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+    assert!(!prompt.contains("spin_ref.safetensors"), "{prompt}");
 
     // A LoRA the server does not have is named before any upload.
     let (url, log) = fake(

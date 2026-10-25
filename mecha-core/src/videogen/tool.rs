@@ -376,7 +376,14 @@ impl VideoGenerate {
         // outfit with no picture is its text in `wearing` (§9.5). Resolved
         // before the scene compiles, which knows no library.
         let (input, worn, mut outfit_notes) = self.with_outfits(input, &library)?;
-        let (input, mut notes) = args::with_scene(&input)?;
+        // The library's characters, for a scene that names them in its prose
+        // without a `cast` entry.
+        let known: Vec<String> = library
+            .approved()
+            .filter(|e| e.kind == crate::imagelib::Kind::Character)
+            .map(|e| e.name.clone())
+            .collect();
+        let (input, mut notes) = args::with_scene(&input, &known)?;
         notes.append(&mut outfit_notes);
         notes.extend(kept);
         let characters: Vec<(String, Option<String>)> = library
@@ -532,9 +539,11 @@ impl VideoGenerate {
             graph::Mode::References
         };
 
-        // The owner's LoRAs, refused here with what would work: an unknown
-        // name or a file for the other checkpoint costs nothing yet.
-        let picked = self.loras.pick(&input["motion"], mode)?;
+        // The owner's LoRAs: an unknown name or a repeat is refused here,
+        // with what would work, before anything is sent; a pick with no file
+        // for this clip's mode is left out, said in a note.
+        let (picked, mut left_out) = self.loras.pick(&input["motion"], mode)?;
+        notes.append(&mut left_out);
         let triggered = super::loras::with_triggers(prompt, &picked) + &place_words;
         let prompt = triggered.as_str();
         let loras: Vec<(String, String, f64)> = picked
@@ -1759,7 +1768,7 @@ fn input_schema(loras: &super::loras::Registry, locations: &[String], outfits: &
                         "wearing": {"type": "string", "description": "What they have on in this clip. Never leave it out: nothing of a portrait's outfit is kept."},
                         "doing": {"type": "string", "description": "Their activity when the clip starts."},
                         "notes": {"type": "string", "description": "Anything further about them for this clip."},
-                        "pov": {"type": "boolean", "description": "true when the clip is seen through this person's eyes (a first-person shot): their face never appears, only their hands and body; their voice is kept only if they have lines."}
+                        "pov": {"type": "boolean", "description": "Set true whenever the clip is first person — seen through this person's eyes, as in \"from Luke's point of view\" or \"POV\". Their face then never appears, only their hands and body, and their voice is kept only if they have lines. Left unset, their face is described and may be drawn."}
                     }, "required": ["name"]}},
                     "shots": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {
                         "at": {"type": "number", "description": "Second at which this shot begins; not for the first. Omitted, shots share the length evenly."},
@@ -1767,7 +1776,7 @@ fn input_schema(loras: &super::loras::Registry, locations: &[String], outfits: &
                         "camera": {"type": "string", "description": "For instance 'The camera holds still' or 'The camera tracks slowly to the left'."},
                         "action": {"type": "string", "description": "Prose for what happens during the shot, in sequence."}
                     }}},
-                    "lines": {"type": "array", "items": {"type": "object", "properties": {
+                    "lines": {"type": "array", "description": "Every spoken word, one entry per line in speaking order. Never write speech inside `action`: there it has no voice and no lip sync.", "items": {"type": "object", "properties": {
                         "who": {"type": "string"},
                         "says": {"type": "string", "description": "Just the spoken words; roughly 2.5 for each second of clip."},
                         "delivery": {"type": "string", "description": "The manner of speaking, for instance 'dryly, without looking up'."},
