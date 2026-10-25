@@ -34,7 +34,9 @@ pub struct Person {
 /// described mark on whatever skin is in frame, and a forearm tattoo came out
 /// on a lower leg in a clip whose legs filled the frame (2026-10-25).
 fn only_marks(description: &str, who: &str) -> String {
-    if description.to_ascii_lowercase().contains("tattoo") {
+    let lower = description.to_ascii_lowercase();
+    // "No tattoos" names none, so "no other" would imply one somewhere.
+    if lower.contains("tattoo") && !lower.contains("no tattoo") {
         format!(" No tattoo appears anywhere else on {who}'s body.")
     } else {
         String::new()
@@ -583,6 +585,8 @@ mod tests {
         assert!(out2.contains("Wren's skin and build from <Picture 1> are retained for the hands, arms and body in view; the face"), "{out2}");
         assert!(!out.contains("<Subject 2> (appears in the clip)"), "{out}");
         assert!(!out.contains("anywhere else on <Subject 2>"), "{out}");
+        // "No tattoos" claims none, so nothing is added.
+        assert_eq!(only_marks("Freckled, no tattoos", "Maya"), "");
         let words = frames(
             &parts("A beach."),
             false,

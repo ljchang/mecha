@@ -1214,6 +1214,10 @@ async fn the_owners_notes_follow_the_guide() {
         guide_addendum: Some(notes.clone()),
         ..VideoConfig::default()
     });
+    // The owner's own text arms `private`; the shipped guide alone does not
+    // (review of #738).
+    assert!(guide.capabilities().private_data);
+    assert!(!VideoPromptGuide::default().capabilities().private_data);
     let out = guide.call(json!({}), &ToolCtx::default()).await.unwrap();
     assert!(out.content.starts_with(GUIDE), "{}", out.content);
     assert!(
