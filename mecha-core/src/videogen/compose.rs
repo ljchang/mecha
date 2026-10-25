@@ -439,37 +439,74 @@ pub fn label_names(text: &str, named: &[(String, usize)]) -> String {
 }
 
 /// The first span in `text` a label must not enter, as byte offsets: a
-/// `<d>…</d>` line (to the end when unclosed, as H3 reads it), or a quote,
-/// straight or curly, that closes. An unclosed quote protects nothing, so a
-/// stray `"` cannot switch labelling off for the rest of the prompt.
+/// `<d>…</d>` line (to the end when unclosed, as H3 reads it), or a quote
+/// (`quote_spans`).
 fn protected(text: &str) -> Option<(usize, usize)> {
+    let line = text.find("<d>").map(|open| {
+        let close = text[open..]
+            .find("</d>")
+            .map(|c| open + c + 4)
+            .unwrap_or(text.len());
+        (open, close)
+    });
+    let quote = quote_spans(text).into_iter().next();
+    match (line, quote) {
+        (Some(l), Some(q)) => Some(if q.0 < l.0 { q } else { l }),
+        (l, q) => l.or(q),
+    }
+}
+
+/// Every quote in `text`, straight or curly, as byte spans including the
+/// marks. A mark opens only at the start or after whitespace or an opening
+/// bracket, colon or dash, with no space after it; it closes only with no
+/// space before it and at the end or before whitespace or punctuation. So an
+/// inch mark (`6" ruler`) opens nothing, an unclosed quote is no span, and a
+/// stray mark never pairs with the next real quote and swallows the words
+/// between (review of #742).
+pub(crate) fn quote_spans(text: &str) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
     let mut from = 0;
-    loop {
-        let open = text[from..]
-            .find(['<', '"', '\u{201c}'])
-            .map(|i| from + i)?;
-        let rest = &text[open..];
-        if rest.starts_with("<d>") {
-            let close = rest
-                .find("</d>")
-                .map(|c| open + c + 4)
-                .unwrap_or(text.len());
-            return Some((open, close));
-        }
-        let (quote, close_with) = if rest.starts_with('"') {
-            ('"', '"')
-        } else if rest.starts_with('\u{201c}') {
-            ('\u{201c}', '\u{201d}')
-        } else {
-            from = open + 1;
+    while let Some(i) = text[from..].find(['"', '\u{201c}']) {
+        let open = from + i;
+        let mark = text[open..].chars().next().unwrap_or('"');
+        let close_with = if mark == '"' { '"' } else { '\u{201d}' };
+        let body = open + mark.len_utf8();
+        let before = text[..open].chars().next_back();
+        let after = text[body..].chars().next();
+        let opens = before.is_none_or(|c| c.is_whitespace() || "([:\u{2014}\u{2013}".contains(c))
+            && after.is_some_and(|c| !c.is_whitespace());
+        if !opens {
+            from = body;
             continue;
-        };
-        let body = open + quote.len_utf8();
-        match text[body..].find(close_with) {
-            Some(c) => return Some((open, body + c + close_with.len_utf8())),
+        }
+        let mut search = body;
+        let mut found = None;
+        while let Some(c) = text[search..].find(close_with) {
+            let at = search + c;
+            let end = at + close_with.len_utf8();
+            let prev = text[..at].chars().next_back();
+            let next = text[end..].chars().next();
+            if prev.is_some_and(|p| !p.is_whitespace())
+                && next.is_none_or(|n| {
+                    n.is_whitespace()
+                        || n.is_ascii_punctuation()
+                        || "\u{2014}\u{2013}\u{2026}".contains(n)
+                })
+            {
+                found = Some(end);
+                break;
+            }
+            search = end;
+        }
+        match found {
+            Some(end) => {
+                out.push((open, end));
+                from = end;
+            }
             None => from = body,
         }
     }
+    out
 }
 
 fn label_outside(text: &str, named: &[(String, usize)]) -> String {

@@ -244,14 +244,19 @@ impl Registry {
         if names.len() > MAX_PER_CLIP {
             bail!("at most {MAX_PER_CLIP} LoRAs in `motion` on one clip");
         }
+        // Repeats are checked over what was named, not what was kept: a
+        // left-out pick named twice was a silent repeat and a doubled note
+        // (review of #742).
+        let mut named: Vec<&str> = Vec::new();
         for n in names {
             let Some(l) = self.get(n) else {
                 let known: Vec<&str> = self.offered().map(|l| l.name.as_str()).collect();
                 bail!("no LoRA named {n:?} in `motion`; the names are {known:?}");
             };
-            if out.iter().any(|o| o.name == l.name) {
+            if named.contains(&l.name.as_str()) {
                 bail!("LoRA {n:?} is named twice in `motion`");
             }
+            named.push(l.name.as_str());
             if l.file(mode).is_none() {
                 notes.push(format!(
                     "The LoRA `{n}` was left out: it has no {} file, and this clip renders in {} mode{}.",
@@ -388,6 +393,8 @@ strength = 5
             .contains("\"wave\""));
         assert!(r.pick(&json!(["wave", "wave"]), Mode::Frames).is_err());
         assert!(r.pick(&json!(["spin"]), Mode::Frames).unwrap().1[0].contains("has no frames file"));
+        // Named twice, even when left out: refused (review of #742).
+        assert!(r.pick(&json!(["spin", "spin"]), Mode::Frames).is_err());
         assert_eq!(
             r.pick(&json!(["wave", "spin"]), Mode::References)
                 .unwrap()

@@ -126,6 +126,11 @@ fn speech_cues(action: &str) -> usize {
         .count()
 }
 
+/// What after "<name>'s" says the clip is seen through them. Not "eyes" or
+/// "perspective": "a close-up of Maya's eyes" is a shot of her, not from her
+/// (review of #742).
+const POV_WORDS: [&str; 3] = ["pov", "point of view", "point-of-view"];
+
 /// Words that make a quote lettering rather than speech: a sign that reads
 /// "NO ENTRY" is not a line.
 const LETTERING: [&str; 9] = [
@@ -151,27 +156,20 @@ fn name_forms(name: &str) -> Vec<String> {
     }
 }
 
-/// Each closed quote in `text`, straight or curly: its byte span and the
+/// Each quote in `text` (`compose::quote_spans`): its byte span and the
 /// words inside.
 fn quotes(text: &str) -> Vec<(usize, usize, String)> {
-    let mut out = Vec::new();
-    let mut from = 0;
-    while let Some(i) = text[from..].find(['"', '\u{201c}']) {
-        let open = from + i;
-        let close_with = if text[open..].starts_with('"') {
-            '"'
-        } else {
-            '\u{201d}'
-        };
-        let body = open + text[open..].chars().next().map_or(1, char::len_utf8);
-        let Some(c) = text[body..].find(close_with) else {
-            break;
-        };
-        let end = body + c + close_with.len_utf8();
-        out.push((open, end, text[body..body + c].trim().to_string()));
-        from = end;
-    }
-    out
+    super::compose::quote_spans(text)
+        .into_iter()
+        .map(|(open, end)| {
+            let inner = text[open..end]
+                .trim_start_matches(['"', '\u{201c}'])
+                .trim_end_matches(['"', '\u{201d}'])
+                .trim()
+                .to_string();
+            (open, end, inner)
+        })
+        .collect()
 }
 
 /// A scene as a model wrote it, mended where its words say more than its
@@ -228,59 +226,62 @@ fn repair(scene: &Value, known: &[String]) -> (Value, Vec<String>) {
         .filter(|k| !cast.iter().any(|c| same_name(c, k)))
         .map(|k| super::compose::title_case(k))
         .collect();
-    for name in &mentioned {
-        let seen_through = name_forms(name).iter().any(|f| {
-            [
-                "pov",
-                "point of view",
-                "point-of-view",
-                "eyes",
-                "perspective",
-            ]
-            .iter()
-            .any(|w| shot_words.contains(&format!("{f}'s {w}")))
-        });
-        if seen_through {
+    // Who the shots say the clip is seen through: one name only. Two named
+    // as the camera would compile two contradictory sentences, so neither
+    // is taken (review of #742). A cast entry that set `pov` either way is
+    // the model's word and stays.
+    let set_by_scene = |name: &str| {
+        out.get("cast").and_then(Value::as_array).is_some_and(|a| {
+            a.iter().any(|c| {
+                text(c, "name").is_some_and(|n| same_name(&n, name))
+                    && c.get("pov").is_some_and(|v| !v.is_null())
+            })
+        })
+    };
+    let seen_through: Vec<String> = cast
+        .iter()
+        .chain(mentioned.iter())
+        .filter(|name| {
+            name_forms(name).iter().any(|f| {
+                POV_WORDS
+                    .iter()
+                    .any(|w| shot_words.contains(&format!("{f}'s {w}")))
+            })
+        })
+        .cloned()
+        .collect();
+    match seen_through.as_slice() {
+        [name] if !set_by_scene(name) => {
+            let listed = cast.iter().any(|c| same_name(c, name));
             if !out["cast"].is_array() {
                 out["cast"] = json!([]);
             }
             if let Some(members) = out["cast"].as_array_mut() {
-                members.push(json!({"name": name, "pov": true}));
+                match members
+                    .iter_mut()
+                    .find(|c| text(c, "name").is_some_and(|n| same_name(&n, name)))
+                {
+                    Some(member) => member["pov"] = json!(true),
+                    None => members.push(json!({"name": name, "pov": true})),
+                }
             }
             notes.push(format!(
-                "The shots say the clip is seen through {name}'s eyes, so {name} was taken as the camera (`pov`). List them in `cast` with `pov` yourself to say otherwise."
+                "The shots say the clip is seen through {name}'s eyes, so {name} was taken as the camera (`pov`). {} to say otherwise.",
+                if listed {
+                    "Set `pov` yourself"
+                } else {
+                    "List them in `cast` with `pov` yourself"
+                }
             ));
         }
+        [] | [_] => {}
+        several => notes.push(format!(
+            "The shots call {} the camera; set `pov` on the one it is, since none was taken.",
+            crate::imagelib::join_and(several)
+        )),
     }
     cast.extend(mentioned);
 
-    if let Some(members) = out.get_mut("cast").and_then(Value::as_array_mut) {
-        for member in members.iter_mut() {
-            if member.get("pov").is_some_and(|v| !v.is_null()) {
-                continue;
-            }
-            let Some(name) = text(member, "name") else {
-                continue;
-            };
-            let seen_through = name_forms(&name).iter().any(|f| {
-                [
-                    "pov",
-                    "point of view",
-                    "point-of-view",
-                    "eyes",
-                    "perspective",
-                ]
-                .iter()
-                .any(|w| shot_words.contains(&format!("{f}'s {w}")))
-            });
-            if seen_through {
-                member["pov"] = json!(true);
-                notes.push(format!(
-                    "The shots say the clip is seen through {name}'s eyes, so {name} was taken as the camera (`pov`). Set `pov` yourself to say otherwise."
-                ));
-            }
-        }
-    }
     let pov: Vec<String> = out
         .get("cast")
         .and_then(Value::as_array)
@@ -1079,7 +1080,38 @@ mod tests {
         );
         // A library name the scene never mentions is not added.
         assert!(!c.prompt.contains("Theo"), "{}", c.prompt);
-        // Without the library's names, nothing can be mended.
+        // A close-up of someone's eyes is a shot of them, not from them; and
+        // two people called the camera are neither taken (review of #742).
+        let mut eyes = s.clone();
+        eyes["shots"][0]["action"] = json!("An extreme close-up of Maya's eyes. Wren waits.");
+        assert!(compile(&eyes, 5.0, &known).unwrap().pov.is_empty());
+        let mut two = s.clone();
+        two["shots"][1]["action"] = json!("Maya's POV of the door.");
+        let c2 = compile(&two, 5.0, &known).unwrap();
+        assert!(c2.pov.is_empty(), "{:?}", c2.pov);
+        assert!(
+            c2.notes
+                .iter()
+                .any(|n| n.contains("the camera; set `pov` on the one it is")),
+            "{:?}",
+            c2.notes
+        );
+        // An inch mark is not a quote, and does not pair with the line.
+        let mut inch = s.clone();
+        inch["shots"][2]["action"] =
+            json!("A 6\" ruler lies on the bench. Maya speaks to Wren. \"Hold on to me.\"");
+        let c3 = compile(&inch, 5.0, &known).unwrap();
+        assert!(
+            c3.prompt.contains("<d>[English] Hold on to me.</d>"),
+            "{}",
+            c3.prompt
+        );
+        assert!(
+            c3.prompt.contains("A 6\" ruler lies on the bench."),
+            "{}",
+            c3.prompt
+        );
+        // Without the library's names, nothing can be mended.        // Without the library's names, nothing can be mended.
         let bare = compile(&s, 5.0, &[]).unwrap();
         assert!(bare.pov.is_empty());
     }
