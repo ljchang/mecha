@@ -29,6 +29,10 @@ pub struct Compiled {
     pub notes: Vec<String>,
     /// The cast members the clip is seen through (`pov`), as written.
     pub pov: Vec<String>,
+    /// Those of them with no line kept: their voice is a slot H3 may give
+    /// words to. Speakers are matched as the compiler numbers them, in any
+    /// case, so a line `who: "wren"` keeps Wren's voice (review of #738).
+    pub silent_pov: Vec<String>,
 }
 
 fn text(v: &Value, key: &str) -> Option<String> {
@@ -64,7 +68,7 @@ fn capital(s: &str) -> String {
 fn as_predicate(doing: &str) -> String {
     let first = doing.split_whitespace().next().unwrap_or("");
     let word: String = first.chars().filter(|c| c.is_alphabetic()).collect();
-    if word.len() > 4 && word.to_ascii_lowercase().ends_with("ing") {
+    if word.chars().count() > 4 && word.to_lowercase().ends_with("ing") {
         format!("is {doing}")
     } else {
         doing.to_string()
@@ -73,10 +77,10 @@ fn as_predicate(doing: &str) -> String {
 
 /// Words in an action that say someone talks there: where a line without a
 /// `shot` belongs. A clip whose second shot read "…gazes into the camera and
-/// speaks" had both its lines compiled into the first (2026-10-25).
-const SPEECH_CUES: [&str; 9] = [
-    "says", "speaks", "asks", "whispers", "replies", "answers", "shouts", "calls", "murmurs",
-];
+/// speaks" had both its lines compiled into the first (2026-10-25). Only
+/// words that are speech in nearly any sentence: "calls" and "answers" are
+/// as often a kettle or a door (review of #738).
+const SPEECH_CUES: [&str; 6] = ["says", "speaks", "asks", "whispers", "replies", "murmurs"];
 
 fn speech_cues(action: &str) -> usize {
     action
@@ -240,10 +244,16 @@ pub fn compile(scene: &Value, default_seconds: f64) -> Result<Compiled> {
     }
     if !moved.is_empty() {
         notes.push(format!(
-            "Lines without a `shot` went where the actions say someone speaks: {}. Give `shot` to place a line yourself.",
+            "Lines without a `shot` went where the actions say someone speaks, or after the line spoken before them: {}. Give `shot` to place a line yourself.",
             moved.join(", ")
         ));
     }
+
+    let pov: Vec<String> = cast
+        .iter()
+        .filter(|c| c.get("pov").and_then(Value::as_bool) == Some(true))
+        .filter_map(|c| text(c, "name"))
+        .collect();
 
     let mut out = String::new();
     if let Some(style) = text(scene, "style") {
@@ -380,11 +390,8 @@ pub fn compile(scene: &Value, default_seconds: f64) -> Result<Compiled> {
         seconds,
         aspect: text(scene, "aspect"),
         notes,
-        pov: cast
-            .iter()
-            .filter(|c| c.get("pov").and_then(Value::as_bool) == Some(true))
-            .filter_map(|c| text(c, "name"))
-            .collect(),
+        silent_pov: pov.iter().filter(|p| id_of(p).is_none()).cloned().collect(),
+        pov,
     })
 }
 
@@ -603,7 +610,14 @@ mod tests {
             c.prompt
         );
         assert_eq!(c.pov, vec!["Wren".to_string()]);
+        assert_eq!(c.silent_pov, vec!["Wren".to_string()]);
         assert!(compile(&workshop(), 5.0).unwrap().pov.is_empty());
+        // A line in any case makes them a speaker (review of #738).
+        let mut s = s;
+        s["lines"] = json!([{"who": "wren", "says": "Over here."}]);
+        let c = compile(&s, 5.0).unwrap();
+        assert_eq!(c.pov, vec!["Wren".to_string()]);
+        assert!(c.silent_pov.is_empty(), "{:?}", c.silent_pov);
     }
 
     #[test]
