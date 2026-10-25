@@ -923,6 +923,118 @@ name = "broken"
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// A scene's library location sends its first view picture as the setting,
+/// after the people, and the schema offers the approved, unlocked names; an
+/// unknown one is refused before anything is sent, and one with no picture
+/// is described in words, said in a note.
+#[tokio::test]
+async fn a_library_location_is_the_clips_setting() {
+    let home = scratch();
+    let chat = home.join("chat");
+    std::fs::create_dir_all(&chat).unwrap();
+    let lib = home.join("imagelib");
+    character(&lib, "maya", "Tall, with short grey hair");
+    for (name, locked) in [("boathouse", false), ("attic", true), ("pier", false)] {
+        crate::imagelib::create(
+            &lib,
+            crate::imagelib::NewEntry {
+                kind: crate::imagelib::Kind::Location,
+                name: name.into(),
+                text: format!("{name}, timber walls and oars"),
+                portrait: None,
+                source_seed: None,
+                origin: crate::imagelib::Origin::Owner,
+                locked,
+            },
+        )
+        .unwrap();
+    }
+    let img = image::RgbImage::from_pixel(4, 4, image::Rgb([9, 90, 9]));
+    let mut view = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut view, image::ImageFormat::Png).unwrap();
+    crate::imagelib::add_reference_to(
+        &lib,
+        crate::imagelib::Kind::Location,
+        "boathouse",
+        crate::imagelib::RefKind::View,
+        &view.into_inner(),
+        None,
+        None,
+    )
+    .unwrap();
+    let cfg = VideoConfig::default();
+    let scene = |place: &str| {
+        json!({"scene": {
+            "setting": {"location": place, "light": "low evening sun"},
+            "cast": [{"name": "Maya", "wearing": "a yellow raincoat"}],
+            "shots": [{"framing": "A long view down the jetty", "action": "Maya ties up the boat"}]
+        }})
+    };
+    let (url, log) = fake(Fake::default(), &cfg).await;
+    let t = tool(&url, &home, Arc::new(Stub::default()));
+    assert_eq!(
+        t.input_schema()["properties"]["scene"]["properties"]["setting"]["properties"]["location"]
+            ["enum"],
+        json!(["boathouse", "pier"])
+    );
+    let done = run(&t, scene("boathouse"), &ctx(&chat)).await;
+    assert!(!done.is_error, "{}", done.content);
+    let seen = log.lock().unwrap().clone();
+    let uploads = seen
+        .iter()
+        .filter(|l| l.starts_with("POST /upload"))
+        .count();
+    assert_eq!(
+        uploads, 2,
+        "the portrait and the location's picture: {seen:?}"
+    );
+    let prompt = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+    assert!(
+        prompt.contains("is the location Boathouse, shown in <Picture 2>"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("The scene takes place in <Subject 2>."),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("(the setting): fully_preserved"),
+        "{prompt}"
+    );
+
+    // A location the library does not hold approved: refused, nothing sent.
+    let (url, log) = fake(Fake::default(), &cfg).await;
+    let t = tool(&url, &home, Arc::new(Stub::default()));
+    let out = <VideoGenerate as Tool>::call(&t, scene("lighthouse"), &ctx(&chat)).await;
+    let said = match out {
+        Ok(o) => o.content,
+        Err(e) => format!("{e:#}"),
+    };
+    assert!(
+        said.contains("No approved location named `lighthouse`"),
+        "{said}"
+    );
+    assert!(!log.lock().unwrap().iter().any(|l| l.starts_with("POST /")));
+
+    // One with no picture yet: words, and a note.
+    let (url, log) = fake(Fake::default(), &cfg).await;
+    let t = tool(&url, &home, Arc::new(Stub::default()));
+    let done = run(&t, scene("pier"), &ctx(&chat)).await;
+    assert!(!done.is_error, "{}", done.content);
+    assert!(
+        done.content.contains("has no picture yet"),
+        "{}",
+        done.content
+    );
+    let seen = log.lock().unwrap().clone();
+    let prompt = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+    assert!(
+        prompt.contains("Pier looks like this: pier, timber walls and oars."),
+        "{prompt}"
+    );
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// Stop takes a render off the server, frees its memory and gives the turn
 /// back.
 #[tokio::test]

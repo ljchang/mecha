@@ -2517,6 +2517,98 @@ mod tests {
         assert_eq!(lib.candidates().count(), 1);
     }
 
+    /// A location is text plus up to three `view` pictures: no portrait, no
+    /// person's references, and its names are offered as styles' are.
+    #[test]
+    fn a_location_is_text_and_view_pictures() {
+        let dir = scratch();
+        let place = |name: &str, locked| NewEntry {
+            kind: Kind::Location,
+            name: name.into(),
+            text: "a small tiled room with a padded bench".into(),
+            portrait: None,
+            source_seed: None,
+            origin: Origin::Owner,
+            locked,
+        };
+        let e = create(dir.path(), place("boathouse", false)).unwrap();
+        assert_eq!((e.kind, e.status), (Kind::Location, Status::Approved));
+        create(dir.path(), place("attic", true)).unwrap();
+        // A portrait, a face or a body is refused on a location.
+        let with_portrait = NewEntry {
+            portrait: Some(png()),
+            ..place("cellar", false)
+        };
+        let err = create(dir.path(), with_portrait).unwrap_err();
+        assert!(
+            format!("{err}").contains("a location has no portrait"),
+            "{err}"
+        );
+        let err = add_reference_to(
+            dir.path(),
+            Kind::Location,
+            "boathouse",
+            RefKind::Face,
+            &png(),
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(format!("{err}").contains("takes view references"), "{err}");
+        // A text past the location cap is refused.
+        let long = NewEntry {
+            text: "x".repeat(MAX_LOCATION_TEXT + 1),
+            ..place("pier", false)
+        };
+        assert!(create(dir.path(), long).is_err());
+        // Three views, distinct pictures; a fourth is past the limit.
+        for shade in 0..3u8 {
+            let img = image::RgbImage::from_pixel(2, 2, image::Rgb([shade, 1, 2]));
+            let mut b = std::io::Cursor::new(Vec::new());
+            img.write_to(&mut b, image::ImageFormat::Png).unwrap();
+            add_reference_to(
+                dir.path(),
+                Kind::Location,
+                "boathouse",
+                RefKind::View,
+                &b.into_inner(),
+                Some(format!("angle {shade}")),
+                None,
+            )
+            .unwrap();
+        }
+        let err = add_reference_to(
+            dir.path(),
+            Kind::Location,
+            "boathouse",
+            RefKind::View,
+            &png(),
+            Some("angle 9".into()),
+            None,
+        )
+        .unwrap_err();
+        assert!(format!("{err}").contains("already has 3 view"), "{err}");
+        let (lib, errors) = Library::load(dir.path());
+        assert!(errors.is_empty(), "{errors:?}");
+        let boathouse = lib.get(Kind::Location, "boathouse").unwrap();
+        assert_eq!(boathouse.sendable_references().len(), 3);
+        let first = boathouse.sendable_references()[0];
+        assert!(lib.read_reference(boathouse, first).is_ok());
+        // A same-named character is a different entry.
+        assert!(lib.get(Kind::Character, "boathouse").is_none());
+        // Offered names: approved and unlocked only.
+        assert_eq!(location_names(&lib), ["boathouse"]);
+        let removed = remove_reference_from(
+            dir.path(),
+            Kind::Location,
+            "boathouse",
+            RefKind::View,
+            Some("angle 1"),
+        )
+        .unwrap();
+        assert_eq!(removed.references.len(), 2);
+    }
+
     #[test]
     fn a_name_is_claimed_once() {
         let dir = scratch();

@@ -28,6 +28,9 @@ pub struct Person {
     /// The clip is seen through this person's eyes (`scene` cast `pov`):
     /// their face never appears, only their hands and body.
     pub pov: bool,
+    /// Not a person: a library location, whose picture is the setting (V-L,
+    /// ruled passed 2026-10-25).
+    pub place: bool,
 }
 
 /// A description that mentions a tattoo says it is the only one: H3 puts a
@@ -107,6 +110,21 @@ pub fn references(parts: &Parts, people: &[Person], pins: (bool, bool)) -> Strin
     let mut defs = Vec::new();
     for (i, p) in people.iter().enumerate() {
         let n = i + 1;
+        // A place is defined as one: "what <Picture n> shows" read as a
+        // person's line, and the room carried only because the setting text
+        // named the picture by hand (2026-10-25).
+        if p.place {
+            let what = p.name.as_deref().map(title_case).unwrap_or_default();
+            let text = p
+                .description
+                .as_deref()
+                .map(|t| format!(": {t}"))
+                .unwrap_or_default();
+            defs.push(format!(
+                "<Subject {n}> is the location {what}, shown in <Picture {n}>{text}. The clip takes place there: its layout, fixtures, colours and light are kept as <Picture {n}> shows them."
+            ));
+            continue;
+        }
         // What the picture gives: the face alone for a crop, the person for
         // a portrait. Clothing is the description's either way.
         let from = if p.face_only {
@@ -202,6 +220,9 @@ pub fn references(parts: &Parts, people: &[Person], pins: (bool, bool)) -> Strin
     for (i, p) in people.iter().enumerate() {
         let n = i + 1;
         kept.push(match &p.name {
+            _ if p.place => format!(
+                "<Subject {n}> (the setting): fully_preserved - the place in <Picture {n}> is where the clip happens, kept as it appears there."
+            ),
             Some(name) if p.pov => format!(
                 "<Subject {n}> (seen only as the camera's own body): partially_preserved - {}'s {} from <Picture {n}> {} retained for the hands, arms and body in view{}; the face is never shown, and the clothing follows the scene.",
                 title_case(name),
@@ -461,6 +482,7 @@ mod tests {
                 audio: Some(1),
                 face_only: false,
                 pov: false,
+                place: false,
             },
             Person {
                 name: Some("wren".into()),
@@ -468,6 +490,7 @@ mod tests {
                 audio: Some(2),
                 face_only: true,
                 pov: false,
+                place: false,
             },
         ];
         let out = references(
@@ -547,6 +570,7 @@ mod tests {
                 audio: Some(1),
                 face_only: true,
                 pov: false,
+                place: false,
             },
             Person {
                 name: Some("wren".into()),
@@ -554,6 +578,7 @@ mod tests {
                 audio: None,
                 face_only: true,
                 pov: true,
+                place: false,
             },
         ];
         let out = references(&parts("Maya looks up at Wren."), &people, (false, false));
@@ -574,6 +599,7 @@ mod tests {
             audio: None,
             face_only: false,
             pov: true,
+            place: false,
         }];
         let out2 = references(&parts("Wren reaches out."), &whole, (false, false));
         assert!(
@@ -590,6 +616,42 @@ mod tests {
             &[("maya".into(), "A rose tattoo on one ankle".into())],
         );
         assert!(words.contains("Maya looks like this: A rose tattoo on one ankle. No tattoo appears anywhere else on Maya's body."), "{words}");
+    }
+
+    /// A library location is defined and kept as the setting, never as a
+    /// person who appears.
+    #[test]
+    fn a_location_is_the_setting_not_a_person() {
+        let people = [
+            Person {
+                name: Some("maya".into()),
+                description: None,
+                audio: None,
+                face_only: true,
+                pov: false,
+                place: false,
+            },
+            Person {
+                name: Some("boat-house".into()),
+                description: Some("A timber room with oars on the wall".into()),
+                audio: None,
+                face_only: false,
+                pov: false,
+                place: true,
+            },
+        ];
+        let out = references(
+            &parts("Maya waits. The scene takes place in Boat House."),
+            &people,
+            (false, false),
+        );
+        assert!(out.contains("<Subject 2> is the location Boat House, shown in <Picture 2>: A timber room with oars on the wall. The clip takes place there"), "{out}");
+        assert!(out.contains("<Subject 2> (the setting): fully_preserved - the place in <Picture 2> is where the clip happens"), "{out}");
+        assert!(!out.contains("<Subject 2> (appears in the clip)"), "{out}");
+        assert!(
+            out.contains("The scene takes place in <Subject 2>."),
+            "{out}"
+        );
     }
 
     #[test]

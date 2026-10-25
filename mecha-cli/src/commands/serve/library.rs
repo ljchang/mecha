@@ -1345,6 +1345,17 @@ pub(super) fn state_for_tests(dir: PathBuf) -> std::sync::Arc<LibraryState> {
 
 #[cfg(test)]
 mod tests {
+    /// A route's kind parses once, into `Kind`, for every kind there is: a
+    /// location never resolves as a same-named character (§9.5).
+    #[test]
+    fn every_kind_parses_and_nothing_else_does() {
+        for kind in Kind::ALL {
+            assert_eq!(super::parse_kind(kind.label()), Some(kind));
+        }
+        assert_eq!(super::parse_kind("Character"), None);
+        assert_eq!(super::parse_kind("outfit"), None);
+    }
+
     use super::*;
 
     #[test]
