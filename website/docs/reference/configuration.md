@@ -925,8 +925,9 @@ argument and picks up to four per clip; an `always` entry rides every clip
 in a mode it has a file for. Give each H3 checkpoint only files trained for
 it: references mode runs `references_model` (H3's `ref2va`) and frames mode
 `frames_model` (`fl2va`), and a LoRA trained on the other breaks clips. A
-pick with no file for the clip's mode, an unknown name, or a file the server
-does not list is refused before anything is uploaded. An entry that does
+pick with no file for the clip's mode is left out and said in the result: the
+model cannot tell which mode a clip will render in. An unknown name, or a file
+the server does not list, is refused before anything is uploaded. An entry that does
 not read is left out and said once at start, and the rest still load.
 
 `video_generate` declares no capabilities, for `image_generate`'s reason: what

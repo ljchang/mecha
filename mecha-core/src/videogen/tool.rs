@@ -376,7 +376,14 @@ impl VideoGenerate {
         // outfit with no picture is its text in `wearing` (§9.5). Resolved
         // before the scene compiles, which knows no library.
         let (input, worn, mut outfit_notes) = self.with_outfits(input, &library)?;
-        let (input, mut notes) = args::with_scene(&input)?;
+        // The library's characters, for a scene that names them in its prose
+        // without a `cast` entry.
+        let known: Vec<String> = library
+            .approved()
+            .filter(|e| e.kind == crate::imagelib::Kind::Character)
+            .map(|e| e.name.clone())
+            .collect();
+        let (input, mut notes) = args::with_scene(&input, &known)?;
         notes.append(&mut outfit_notes);
         notes.extend(kept);
         let characters: Vec<(String, Option<String>)> = library
@@ -534,7 +541,8 @@ impl VideoGenerate {
 
         // The owner's LoRAs, refused here with what would work: an unknown
         // name or a file for the other checkpoint costs nothing yet.
-        let picked = self.loras.pick(&input["motion"], mode)?;
+        let (picked, mut left_out) = self.loras.pick(&input["motion"], mode)?;
+        notes.append(&mut left_out);
         let triggered = super::loras::with_triggers(prompt, &picked) + &place_words;
         let prompt = triggered.as_str();
         let loras: Vec<(String, String, f64)> = picked
