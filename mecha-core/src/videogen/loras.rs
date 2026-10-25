@@ -217,17 +217,22 @@ impl Registry {
     }
 
     /// The always-on LoRAs that have a file for `mode`, then the model's
-    /// `motion` picks in the order given. Unknown names, repeats, too many,
-    /// or a pick without a file for this mode are refused, with what would
-    /// work; naming an always-on LoRA is a no-op, since it is already there.
-    pub fn pick(&self, motion: &Value, mode: Mode) -> Result<Vec<&Lora>> {
+    /// `motion` picks in the order given, and a note for each pick left out.
+    /// Unknown names, repeats or too many are refused, with what would work;
+    /// a pick with no file for this clip's mode is left out and said, not
+    /// refused: the model cannot know the mode (a library character it names
+    /// makes it references mode), and the first real call spent three
+    /// refusals finding out (2026-10-25). Naming an always-on LoRA is a
+    /// no-op, since it is already there.
+    pub fn pick(&self, motion: &Value, mode: Mode) -> Result<(Vec<&Lora>, Vec<String>)> {
         let mut out: Vec<&Lora> = self
             .loras
             .iter()
             .filter(|l| l.always && l.file(mode).is_some())
             .collect();
+        let mut notes = Vec::new();
         let names: Vec<&str> = match motion {
-            Value::Null => return Ok(out),
+            Value::Null => return Ok((out, notes)),
             Value::Array(a) => a.iter().map(|v| v.as_str().unwrap_or("")).collect(),
             Value::String(s) => vec![s.as_str()],
             _ => bail!("`motion` is a list of LoRA names"),
@@ -239,29 +244,34 @@ impl Registry {
         if names.len() > MAX_PER_CLIP {
             bail!("at most {MAX_PER_CLIP} LoRAs in `motion` on one clip");
         }
+        // Repeats are checked over what was named, not what was kept: a
+        // left-out pick named twice was a silent repeat and a doubled note
+        // (review of #742).
+        let mut named: Vec<&str> = Vec::new();
         for n in names {
             let Some(l) = self.get(n) else {
                 let known: Vec<&str> = self.offered().map(|l| l.name.as_str()).collect();
                 bail!("no LoRA named {n:?} in `motion`; the names are {known:?}");
             };
-            if out.iter().any(|o| o.name == l.name) {
+            if named.contains(&l.name.as_str()) {
                 bail!("LoRA {n:?} is named twice in `motion`");
             }
+            named.push(l.name.as_str());
             if l.file(mode).is_none() {
-                bail!(
-                    "LoRA {n:?} has no {} file{}",
+                notes.push(format!(
+                    "The LoRA `{n}` was left out: it has no {} file, and this clip renders in {} mode{}.",
+                    mode.name(),
                     mode.name(),
                     match mode {
-                        Mode::Frames =>
-                            "; it works on a clip with references, or leave it out",
-                        Mode::References =>
-                            "; it works on a clip from first_frame/last_frame with no references, or leave it out",
+                        Mode::References => " (it has reference pictures)",
+                        Mode::Frames => "",
                     }
-                );
+                ));
+                continue;
             }
             out.push(l);
         }
-        Ok(out)
+        Ok((out, notes))
     }
 }
 
@@ -370,26 +380,25 @@ strength = 5
     fn pick_refuses_unknown_repeated_too_many_and_wrong_mode() {
         let (mut r, _) = Registry::parse(SAMPLE);
         r.loras.retain(|l| !l.always);
-        assert!(r.pick(&Value::Null, Mode::Frames).unwrap().is_empty());
+        assert!(r.pick(&Value::Null, Mode::Frames).unwrap().0.is_empty());
         assert_eq!(
-            r.pick(&json!(["wave"]), Mode::Frames).unwrap()[0].name,
+            r.pick(&json!(["wave"]), Mode::Frames).unwrap().0[0].name,
             "wave"
         );
-        assert_eq!(r.pick(&json!("wave"), Mode::Frames).unwrap().len(), 1);
+        assert_eq!(r.pick(&json!("wave"), Mode::Frames).unwrap().0.len(), 1);
         assert!(r
             .pick(&json!(["nope"]), Mode::Frames)
             .unwrap_err()
             .to_string()
             .contains("\"wave\""));
         assert!(r.pick(&json!(["wave", "wave"]), Mode::Frames).is_err());
-        assert!(r
-            .pick(&json!(["spin"]), Mode::Frames)
-            .unwrap_err()
-            .to_string()
-            .contains("no frames file"));
+        assert!(r.pick(&json!(["spin"]), Mode::Frames).unwrap().1[0].contains("has no frames file"));
+        // Named twice, even when left out: refused (review of #742).
+        assert!(r.pick(&json!(["spin", "spin"]), Mode::Frames).is_err());
         assert_eq!(
             r.pick(&json!(["wave", "spin"]), Mode::References)
                 .unwrap()
+                .0
                 .len(),
             2
         );
@@ -406,16 +415,16 @@ strength = 5
         let (r, _) = Registry::parse(SAMPLE);
         let names = |v: Vec<&Lora>| v.iter().map(|l| l.name.clone()).collect::<Vec<_>>();
         assert_eq!(
-            names(r.pick(&Value::Null, Mode::Frames).unwrap()),
+            names(r.pick(&Value::Null, Mode::Frames).unwrap().0),
             ["detail"]
         );
         assert_eq!(
-            names(r.pick(&json!(["wave"]), Mode::References).unwrap()),
+            names(r.pick(&json!(["wave"]), Mode::References).unwrap().0),
             ["detail", "wave"]
         );
         // Naming it is harmless, and does not count against the cap.
         assert_eq!(
-            names(r.pick(&json!(["detail", "wave"]), Mode::Frames).unwrap()),
+            names(r.pick(&json!(["detail", "wave"]), Mode::Frames).unwrap().0),
             ["detail", "wave"]
         );
         let s = r.schema().unwrap();
@@ -426,7 +435,7 @@ strength = 5
             "[[lora]]\nname = \"d\"\nabout = \"x\"\nfile = \"d.safetensors\"\nalways = true\n",
         );
         assert!(only.schema().is_none());
-        assert_eq!(only.pick(&Value::Null, Mode::Frames).unwrap().len(), 1);
+        assert_eq!(only.pick(&Value::Null, Mode::Frames).unwrap().0.len(), 1);
     }
 
     #[test]
