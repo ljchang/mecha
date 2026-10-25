@@ -17,7 +17,7 @@ Fill `scene` and the tool writes the H3 prompt for you: it numbers speakers, att
 - `setting`: a `description`, plus `light` if it matters. When the owner's library has the place, give its name as `location` (the schema lists them): its picture becomes the setting and its description comes with it, so `description` only needs what is different this time. Name the room's fixtures in the action too ("on the padded table"): the picture keeps the look, the words keep where people are.
 - `cast`: an entry for each person:
   - `name`: their library name, or a few words describing someone not in the library;
-  - **`wearing`, every time.** Nothing of a portrait's outfit survives, so without it H3 dresses them however it likes;
+  - **`wearing`, every time.** Nothing of a portrait's outfit survives, so without it H3 dresses them however it likes. When the owner's library has the outfit, give its name alone as the whole of `wearing` (the schema lists them): its picture of the garment comes with it and holds the exact garment from shot to shot, which words alone do not;
   - `doing`: their activity as the clip starts (optional);
   - `notes`: anything more about them (optional);
   - `pov`: `true` for the person the clip is seen through, in a first-person shot. Their face never appears, only their hands and body, and their voice is attached only if they have lines. Describe what their hands are doing in the action.

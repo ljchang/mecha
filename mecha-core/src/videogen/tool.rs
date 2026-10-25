@@ -152,12 +152,23 @@ pub struct VideoGenerate {
     /// built (and when its library is set): offered in the schema, so they
     /// hold still in the cached prefix, as `image_generate`'s style names do.
     location_names: Vec<String>,
+    /// The approved, unlocked outfits, on the same footing.
+    outfit_names: Vec<String>,
 }
 
-/// The locations a library offers a model (`imagelib::location_names`).
-fn locations_in(dir: Option<&Path>) -> Vec<String> {
-    dir.map(|d| crate::imagelib::location_names(&crate::imagelib::Library::load(d).0))
-        .unwrap_or_default()
+/// The locations and outfits a library offers a model
+/// (`imagelib::location_names`, `imagelib::outfit_names`).
+fn offered_in(dir: Option<&Path>) -> (Vec<String>, Vec<String>) {
+    match dir {
+        Some(d) => {
+            let lib = crate::imagelib::Library::load(d).0;
+            (
+                crate::imagelib::location_names(&lib),
+                crate::imagelib::outfit_names(&lib),
+            )
+        }
+        None => Default::default(),
+    }
 }
 
 impl VideoGenerate {
@@ -169,8 +180,10 @@ impl VideoGenerate {
             None => Default::default(),
         };
         let library_dir = crate::imagelib::Library::default_dir().ok();
+        let (location_names, outfit_names) = offered_in(library_dir.as_deref());
         Ok(VideoGenerate {
-            location_names: locations_in(library_dir.as_deref()),
+            location_names,
+            outfit_names,
             loras: Arc::new(loras),
             lora_problems,
             cfg,
@@ -216,7 +229,7 @@ impl VideoGenerate {
     /// Resolve characters against this library instead of the mecha home's;
     /// `None` reads no library at all, as with the `library` feature off.
     pub fn with_library_dir(mut self, dir: Option<PathBuf>) -> Self {
-        self.location_names = locations_in(dir.as_deref());
+        (self.location_names, self.outfit_names) = offered_in(dir.as_deref());
         self.library_dir = dir;
         self
     }
@@ -232,7 +245,7 @@ impl VideoGenerate {
     fn for_test(mut self, home: &Path, gates: Arc<dyn Gates>, poll: Duration) -> Self {
         self.home = Some(home.to_path_buf());
         self.library_dir = Some(home.join("imagelib"));
-        self.location_names = locations_in(self.library_dir.as_deref());
+        (self.location_names, self.outfit_names) = offered_in(self.library_dir.as_deref());
         self.personas_dir = Some(home.join("personas"));
         self.gates = gates;
         self.poll = poll;
@@ -280,6 +293,9 @@ struct Picture {
     face_only: bool,
     /// A library location's picture: the setting, not a person.
     place: bool,
+    /// A library outfit's picture: clothes, worn by the cast member named
+    /// here (as the scene wrote them), never a person.
+    worn_by: Option<String>,
     character: Option<String>,
     description: Option<String>,
 }
@@ -349,13 +365,20 @@ impl VideoGenerate {
             .and_then(|p| std::fs::read_to_string(p).ok())
             .and_then(|t| serde_json::from_str::<Value>(&t).ok());
         let (input, kept) = args::with_chat_settings(input, last.as_ref());
-        let (input, mut notes) = args::with_scene(&input)?;
-        notes.extend(kept);
         let library = self
             .library_dir
             .as_ref()
             .map(|d| crate::imagelib::Library::load(d).0)
             .unwrap_or_default();
+        // A cast member whose whole `wearing` names a library outfit wears
+        // it: its picture of the garment alone is sent as their clothes
+        // (the owner's ruling, 2026-10-25), its text said with it, and an
+        // outfit with no picture is its text in `wearing` (§9.5). Resolved
+        // before the scene compiles, which knows no library.
+        let (input, worn, mut outfit_notes) = self.with_outfits(input, &library)?;
+        let (input, mut notes) = args::with_scene(&input)?;
+        notes.append(&mut outfit_notes);
+        notes.extend(kept);
         let characters: Vec<(String, Option<String>)> = library
             .approved()
             .filter(|e| e.kind == crate::imagelib::Kind::Character)
@@ -473,6 +496,7 @@ impl VideoGenerate {
                         ext: ext.to_string(),
                         face_only: false,
                         place: true,
+                        worn_by: None,
                         character: Some(key.clone()),
                         description: text,
                     });
@@ -516,6 +540,7 @@ impl VideoGenerate {
             .iter()
             .map(|r| self.picture(r, &library, ctx))
             .chain(place.map(Ok))
+            .chain(worn.into_iter().map(Ok))
             .collect::<Result<Vec<_>>>()?;
         let first = first_asked
             .as_deref()
@@ -599,6 +624,7 @@ impl VideoGenerate {
                         audio: *a,
                         face_only: r.face_only,
                         place: r.place,
+                        worn_by: r.worn_by.clone(),
                         pov: r
                             .character
                             .as_deref()
@@ -637,6 +663,72 @@ impl VideoGenerate {
         })
     }
 
+    /// The call with each library outfit a cast member wears resolved: a
+    /// pictured outfit's name stays in `wearing` (labelled later as the
+    /// subject its picture defines) and its picture is returned; one with no
+    /// picture puts its text in `wearing`. A `wearing` that only mentions an
+    /// outfit stays the model's words (§9.5: it expands only when it fills
+    /// `wearing` whole).
+    fn with_outfits(
+        &self,
+        mut input: Value,
+        library: &crate::imagelib::Library,
+    ) -> Result<(Value, Vec<Picture>, Vec<String>)> {
+        use crate::imagelib::{Kind, RefKind, Status};
+        let mut worn = Vec::new();
+        let mut notes = Vec::new();
+        let Some(cast) = input
+            .get_mut("scene")
+            .and_then(|s| s.get_mut("cast"))
+            .and_then(Value::as_array_mut)
+        else {
+            return Ok((input, worn, notes));
+        };
+        for member in cast.iter_mut() {
+            let Some(wearing) = member.get("wearing").and_then(Value::as_str) else {
+                continue;
+            };
+            let key = args::library_key(wearing);
+            let Some(entry) = library
+                .get(Kind::Outfit, &key)
+                .filter(|e| e.status == Status::Approved)
+            else {
+                continue;
+            };
+            let text = entry.text.trim().trim_end_matches('.').to_string();
+            let who = member
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let view = entry
+                .sendable_references()
+                .into_iter()
+                .find(|r| r.kind == RefKind::View);
+            match view {
+                Some(view) => {
+                    let (bytes, ext) = library.read_reference(entry, view)?;
+                    member["wearing"] = json!(compose::title_case(&key));
+                    worn.push(Picture {
+                        bytes,
+                        ext: ext.to_string(),
+                        face_only: false,
+                        place: false,
+                        worn_by: Some(who.unwrap_or_default()),
+                        character: Some(key),
+                        description: Some(text).filter(|t| !t.is_empty()),
+                    });
+                }
+                None => {
+                    member["wearing"] = json!(text);
+                    notes.push(format!(
+                        "The outfit `{key}` has no picture yet, so it is described in words only."
+                    ));
+                }
+            }
+        }
+        Ok((input, worn, notes))
+    }
+
     /// A character-library name, or a picture in this chat's folder (through
     /// the path jail).
     fn picture(
@@ -672,6 +764,7 @@ impl VideoGenerate {
                     ext: "png".into(),
                     face_only: true,
                     place: false,
+                    worn_by: None,
                     character: Some(given.to_string()),
                     description,
                 },
@@ -680,6 +773,7 @@ impl VideoGenerate {
                     ext: ext.to_string(),
                     face_only: false,
                     place: false,
+                    worn_by: None,
                     character: Some(given.to_string()),
                     description,
                 },
@@ -701,6 +795,7 @@ impl VideoGenerate {
             ext,
             face_only: false,
             place: false,
+            worn_by: None,
             character: None,
             description: None,
         })
@@ -1235,7 +1330,8 @@ impl VideoGenerate {
             let label = match plan.references_asked.get(i) {
                 Some(asked) => asked.clone(),
                 None => format!(
-                    "the location `{}`'s picture",
+                    "the {} `{}`'s picture",
+                    if p.place { "location" } else { "outfit" },
                     p.character.as_deref().unwrap_or("?")
                 ),
             };
@@ -1331,6 +1427,7 @@ impl VideoGenerate {
             "face_crops": plan.references.iter().map(|r| r.face_only).collect::<Vec<_>>(),
             "loras": plan.loras.iter().map(|(name, _, _)| name).collect::<Vec<_>>(),
             "location": plan.location,
+            "outfits": plan.references.iter().filter(|r| r.worn_by.is_some()).filter_map(|r| r.character.clone()).collect::<Vec<_>>(),
             "notes": plan.notes,
             "voices": plan.voices.iter().map(|v| json!({
                 "character": v.character, "voice": v.name,
@@ -1613,7 +1710,7 @@ fn result_text(record: &Value, saved: &str, plan: &Plan) -> String {
     )
 }
 
-fn input_schema(loras: &super::loras::Registry, locations: &[String]) -> Value {
+fn input_schema(loras: &super::loras::Registry, locations: &[String], outfits: &[String]) -> Value {
     let mut schema = json!({
         "type": "object",
         "properties": {
@@ -1668,6 +1765,16 @@ fn input_schema(loras: &super::loras::Registry, locations: &[String]) -> Value {
     if let Some(motion) = loras.schema() {
         schema["properties"]["motion"] = motion;
     }
+    // Only with an outfit to name: the whole of a `wearing`, said there.
+    if !outfits.is_empty() {
+        let wearing = &mut schema["properties"]["scene"]["properties"]["cast"]["items"]
+            ["properties"]["wearing"]["description"];
+        let said = wearing.as_str().unwrap_or_default().to_string();
+        *wearing = json!(format!(
+            "{said} Or exactly the name of one of the owner's outfits, alone, to dress them in it (its picture comes with it): {}.",
+            outfits.join(", ")
+        ));
+    }
     // Only with a location to name, as `motion`.
     if !locations.is_empty() {
         schema["properties"]["scene"]["properties"]["setting"]["properties"]["location"] = json!({
@@ -1713,7 +1820,7 @@ impl Tool for VideoGenerate {
     }
 
     fn input_schema(&self) -> Value {
-        input_schema(&self.loras, &self.location_names)
+        input_schema(&self.loras, &self.location_names, &self.outfit_names)
     }
 
     /// Read-only in the approval gate's sense, as `image_generate` is: what

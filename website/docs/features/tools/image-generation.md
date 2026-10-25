@@ -255,11 +255,17 @@ mecha imagelib add-character maya --portrait maya.png \
 mecha imagelib add-style watercolour --text "loose watercolour, soft washes, paper texture"
 mecha imagelib add-location boathouse --text "a timber boathouse, oars on the walls, a slipway door"
 mecha imagelib add-reference boathouse --as view boathouse.jpg
+mecha imagelib add-outfit red-raincoat --text "a red hooded raincoat, knee length, wooden toggles"
+mecha imagelib add-reference red-raincoat --as view raincoat.png
 ```
 
 A **location** is a place: its text, and up to three pictures added with
 `--as view`. A video clip whose scene names it (`setting.location`) is set
-there, its first picture sent as the setting. Pictures don't use locations
+there, its first picture sent as the setting. An **outfit** is clothes: its
+text, and a picture of the garment alone (`--as view`; no one wearing it). A
+clip that dresses someone in it, by giving its name as their whole
+`wearing`, sends the picture as what they have on, which keeps the exact
+garment from shot to shot. Pictures don't use locations or outfit pictures
 yet.
 
 **A small portrait can be redrawn larger.** `mecha imagelib upscale maya`

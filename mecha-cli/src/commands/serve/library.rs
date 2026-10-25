@@ -820,7 +820,7 @@ pub async fn add(State(state): St, Json(body): Json<AddBody>) -> Response {
     // flag (review of #385).
     let text = match kind {
         Kind::Character => format!("--description={}", body.text),
-        Kind::Style | Kind::Location => format!("--text={}", body.text),
+        Kind::Style | Kind::Location | Kind::Outfit => format!("--text={}", body.text),
     };
     let staged = match (kind.has_portrait(), body.portrait.as_deref()) {
         (true, Some(b64)) => match stage_portrait(b64, "portrait").await {
@@ -833,7 +833,7 @@ pub async fn add(State(state): St, Json(body): Json<AddBody>) -> Response {
         (false, Some(_)) => {
             return (
                 StatusCode::BAD_REQUEST,
-                format!("a {} has no portrait\n", kind.label()),
+                format!("{} has no portrait\n", kind.with_article()),
             )
                 .into_response()
         }
@@ -845,6 +845,7 @@ pub async fn add(State(state): St, Json(body): Json<AddBody>) -> Response {
     let mut args = match (&portrait, kind) {
         (Some(path), _) => vec!["imagelib", "add-character", &body.name, "--portrait", path],
         (None, Kind::Location) => vec!["imagelib", "add-location", &body.name],
+        (None, Kind::Outfit) => vec!["imagelib", "add-outfit", &body.name],
         (None, Kind::Character | Kind::Style) => vec!["imagelib", "add-style", &body.name],
     };
     args.push(&text);
@@ -888,7 +889,7 @@ pub async fn edit(State(state): St, Json(body): Json<EditBody>) -> Response {
     if !kind.has_portrait() && body.portrait.is_some() {
         return (
             StatusCode::BAD_REQUEST,
-            format!("a {} has no portrait\n", kind.label()),
+            format!("{} has no portrait\n", kind.with_article()),
         )
             .into_response();
     }
@@ -1353,7 +1354,7 @@ mod tests {
             assert_eq!(super::parse_kind(kind.label()), Some(kind));
         }
         assert_eq!(super::parse_kind("Character"), None);
-        assert_eq!(super::parse_kind("outfit"), None);
+        assert_eq!(super::parse_kind("costume"), None);
     }
 
     use super::*;

@@ -30,6 +30,9 @@ pub const MAX_STYLE_TEXT: usize = 1000;
 /// A location's text (`IMAGE-COMPILER-DESIGN.md` §9.3): it is added to a
 /// scene's setting once, so it is held to a description's length.
 pub const MAX_LOCATION_TEXT: usize = 400;
+/// An outfit's text: it fills a cast member's `wearing`, so it is held to
+/// `wearing`'s own length (§9.4, `MAX_CAST_FIELD`).
+pub const MAX_OUTFIT_TEXT: usize = MAX_CAST_FIELD;
 /// People per new picture. E3 held four in one pass; five is the owner's
 /// provisional ceiling (IMAGE-DESIGN.md §5.2 and §11, C5).
 pub const MAX_CAST: usize = 5;
@@ -77,16 +80,23 @@ pub enum Kind {
     /// pictures, which video sends as the setting (V-L, ruled passed by the
     /// owner 2026-10-25). Pictures use its text only, until E13.
     Location,
+    /// Clothes: text that fills `wearing`, and a `view` picture of the
+    /// garment alone, which video sends as what its wearer has on (the
+    /// owner's ruling of 2026-10-25, reopening §9's "outfits stay text" for
+    /// video after a garment picture held a swimsuit across a cut that the
+    /// words alone did not). Pictures use its text only.
+    Outfit,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 3] = [Kind::Character, Kind::Style, Kind::Location];
+    pub const ALL: [Kind; 4] = [Kind::Character, Kind::Style, Kind::Location, Kind::Outfit];
 
     fn dir(self) -> &'static str {
         match self {
             Kind::Character => "characters",
             Kind::Style => "styles",
             Kind::Location => "locations",
+            Kind::Outfit => "outfits",
         }
     }
 
@@ -95,6 +105,18 @@ impl Kind {
             Kind::Character => "character",
             Kind::Style => "style",
             Kind::Location => "location",
+            Kind::Outfit => "outfit",
+        }
+    }
+
+    /// The label with its article, as a sentence says it: "an outfit", not
+    /// "a outfit".
+    pub fn with_article(self) -> &'static str {
+        match self {
+            Kind::Character => "a character",
+            Kind::Style => "a style",
+            Kind::Location => "a location",
+            Kind::Outfit => "an outfit",
         }
     }
 
@@ -103,7 +125,7 @@ impl Kind {
     pub fn has_portrait(self) -> bool {
         match self {
             Kind::Character => true,
-            Kind::Style | Kind::Location => false,
+            Kind::Style | Kind::Location | Kind::Outfit => false,
         }
     }
 }
@@ -225,7 +247,7 @@ impl RefKind {
             (
                 Kind::Character,
                 RefKind::Face | RefKind::FullBody | RefKind::Detail
-            ) | (Kind::Location, RefKind::View)
+            ) | (Kind::Location | Kind::Outfit, RefKind::View)
         )
     }
 
@@ -336,17 +358,21 @@ fn validate_text(kind: Kind, text: &str) -> Result<()> {
         Kind::Character => MAX_DESCRIPTION,
         Kind::Style => MAX_STYLE_TEXT,
         Kind::Location => MAX_LOCATION_TEXT,
+        Kind::Outfit => MAX_OUTFIT_TEXT,
     };
     if text.trim().is_empty() {
-        bail!("a {} needs text", kind.label());
+        bail!("{} needs text", kind.with_article());
     }
     if text.chars().count() > cap {
-        bail!("a {}'s text is capped at {cap} characters", kind.label());
+        bail!(
+            "{}'s text is capped at {cap} characters",
+            kind.with_article()
+        );
     }
     if text.chars().any(|c| c.is_control() && c != '\n') {
         bail!(
-            "control characters are not allowed in a {}'s text",
-            kind.label()
+            "control characters are not allowed in {}'s text",
+            kind.with_article()
         );
     }
     Ok(())
@@ -697,7 +723,7 @@ fn load_entry(kind: Kind, dir: &Path) -> Result<Entry> {
     }
     validate_name(&entry.name)?;
     if kind.has_portrait() && entry.portrait.is_none() {
-        bail!("a {} without a portrait", kind.label());
+        bail!("{} without a portrait", kind.with_article());
     }
     // A plain file name, so a hand-edited entry cannot point a reference at
     // anything outside `blobs/`. Every blob the entry names, not only the
@@ -785,8 +811,8 @@ pub fn create(dir: &Path, new: NewEntry) -> Result<Entry> {
     validate_name(&new.name)?;
     validate_text(new.kind, &new.text)?;
     match (new.kind.has_portrait(), &new.portrait) {
-        (true, None) => bail!("a {} needs a portrait", new.kind.label()),
-        (false, Some(_)) => bail!("a {} has no portrait", new.kind.label()),
+        (true, None) => bail!("{} needs a portrait", new.kind.with_article()),
+        (false, Some(_)) => bail!("{} has no portrait", new.kind.with_article()),
         (true, Some(_)) | (false, None) => {}
     }
     let status = if new.origin == Origin::Owner {
@@ -819,7 +845,11 @@ pub fn create(dir: &Path, new: NewEntry) -> Result<Entry> {
     match std::fs::create_dir(&entry_dir) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            bail!("a {} named `{}` already exists", new.kind.label(), new.name)
+            bail!(
+                "{} named `{}` already exists",
+                new.kind.with_article(),
+                new.name
+            )
         }
         Err(e) => return Err(e).context("creating the entry"),
     }
@@ -936,13 +966,13 @@ pub fn update(
     }
     if let Some(bytes) = portrait {
         if !kind.has_portrait() {
-            bail!("a {} has no portrait", kind.label());
+            bail!("{} has no portrait", kind.with_article());
         }
         entry.portrait = Some(store_blob(dir, &bytes)?);
         entry.source_seed = source_seed;
     } else if source_seed.is_some() {
         if !kind.has_portrait() {
-            bail!("a {} has no portrait, so no seed", kind.label());
+            bail!("{} has no portrait, so no seed", kind.with_article());
         }
         entry.source_seed = source_seed;
     }
@@ -1075,7 +1105,7 @@ pub fn add_reference_as(
 fn allowed_references(entry_kind: Kind) -> &'static str {
     match entry_kind {
         Kind::Character => "face, full_body or detail references",
-        Kind::Location => "view references",
+        Kind::Location | Kind::Outfit => "view references",
         Kind::Style => "no references",
     }
 }
@@ -1097,8 +1127,8 @@ pub fn add_reference_to(
     }
     if !kind.allowed_on(entry_kind) {
         bail!(
-            "a {} takes {}, not {}",
-            entry_kind.label(),
+            "{} takes {}, not {}",
+            entry_kind.with_article(),
             allowed_references(entry_kind),
             kind.label()
         );
@@ -1857,6 +1887,15 @@ pub fn location_names(lib: &Library) -> Vec<String> {
         .collect()
 }
 
+/// Approved, unlocked outfits, sorted, as [`location_names`] (§9.5, L5).
+pub fn outfit_names(lib: &Library) -> Vec<String> {
+    lib.all()
+        .iter()
+        .filter(|e| e.kind == Kind::Outfit && e.status == Status::Approved && !e.locked)
+        .map(|e| e.name.clone())
+        .collect()
+}
+
 /// Whether `name` is simply not in the library as `kind`: no entry in any
 /// state, and none that failed to load. A candidate waiting on the owner or
 /// an entry that did not load is a finding, said by [`missing`], never an
@@ -2607,6 +2646,63 @@ mod tests {
         )
         .unwrap();
         assert_eq!(removed.references.len(), 2);
+    }
+
+    /// An outfit is text up to `wearing`'s length and a garment picture; no
+    /// portrait, no person's references.
+    #[test]
+    fn an_outfit_is_text_and_a_garment_picture() {
+        let dir = scratch();
+        let outfit = |name: &str, text: String| NewEntry {
+            kind: Kind::Outfit,
+            name: name.into(),
+            text,
+            portrait: None,
+            source_seed: None,
+            origin: Origin::Owner,
+            locked: false,
+        };
+        create(
+            dir.path(),
+            outfit("red-raincoat", "a red hooded raincoat".into()),
+        )
+        .unwrap();
+        assert!(create(dir.path(), outfit("long", "x".repeat(MAX_OUTFIT_TEXT + 1))).is_err());
+        add_reference_to(
+            dir.path(),
+            Kind::Outfit,
+            "red-raincoat",
+            RefKind::View,
+            &png(),
+            None,
+            None,
+        )
+        .unwrap();
+        let err = add_reference_to(
+            dir.path(),
+            Kind::Outfit,
+            "red-raincoat",
+            RefKind::FullBody,
+            &png(),
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err}").contains("an outfit takes view references"),
+            "{err}"
+        );
+        let (lib, errors) = Library::load(dir.path());
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(outfit_names(&lib), ["red-raincoat"]);
+        assert_eq!(location_names(&lib), Vec::<String>::new());
+        assert_eq!(
+            lib.get(Kind::Outfit, "red-raincoat")
+                .unwrap()
+                .sendable_references()
+                .len(),
+            1
+        );
     }
 
     #[test]
