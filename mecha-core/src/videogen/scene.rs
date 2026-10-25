@@ -1178,7 +1178,7 @@ mod tests {
             c5.notes
         );
         let mut radio = s.clone();
-        radio["shots"] = json!([{"framing": "A wide shot", "action": "Maya listens. The radio says \"Turn left at the bridge.\""}]);
+        radio["shots"] = json!([{"framing": "A long view of the jetty", "action": "Maya listens. The radio says \"Turn left at the bridge.\""}]);
         let c6 = compile(&radio, 5.0, &known).unwrap();
         assert!(
             c6.prompt.contains("\"Turn left at the bridge.\""),
