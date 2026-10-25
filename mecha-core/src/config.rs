@@ -1300,6 +1300,7 @@ impl ConfigLayer {
         }
         if let Some(v) = self.video.as_mut() {
             opt(&mut v.guide_addendum);
+            opt(&mut v.loras);
         }
         if let Some(h) = self.harness.as_mut() {
             opt(&mut h.source_dir);

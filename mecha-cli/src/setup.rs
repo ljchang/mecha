@@ -1747,6 +1747,12 @@ async fn prepare_tools_carrying(
         if asked(mecha_core::videogen::tool::NAME) {
             match mecha_core::videogen::VideoGenerate::new(video) {
                 Ok(tool) => {
+                    // A LoRA entry left out is said at start, once: a clip
+                    // the owner expects to carry it would otherwise just
+                    // look worse.
+                    for problem in tool.lora_problems() {
+                        eprintln!("mecha: [video] loras: {problem}");
+                    }
                     // The voice library is cloning's, part of `voice`:
                     // with `voice` off no voice is read, and H3 voices the
                     // lines itself, said in the result (review of #733).

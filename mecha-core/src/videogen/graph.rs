@@ -147,6 +147,9 @@ pub struct Spec<'a> {
     /// A VAE that decodes the clip in place of `[video] vae`, when the
     /// caller has seen the server list it.
     pub decoder: Option<&'a str>,
+    /// The owner's LoRAs for this clip ([`super::loras`]), chained after
+    /// turbo in this order.
+    pub extra_loras: &'a [Lora<'a>],
 }
 
 impl Spec<'_> {
@@ -159,7 +162,7 @@ impl Spec<'_> {
     }
 
     /// The LoRAs between the diffusion model and the sampler, in order.
-    fn loras<'c>(&self, cfg: &'c VideoConfig) -> Vec<Lora<'c>> {
+    fn loras<'c>(&'c self, cfg: &'c VideoConfig) -> Vec<Lora<'c>> {
         let mut chain = Vec::new();
         if self.turbo {
             chain.push(Lora {
@@ -167,6 +170,7 @@ impl Spec<'_> {
                 strength: 1.0,
             });
         }
+        chain.extend(self.extra_loras.iter().copied());
         chain
     }
 }
@@ -453,6 +457,7 @@ mod tests {
             reference_audios: audios,
             filename_prefix: "mecha/x",
             decoder: None,
+            extra_loras: &[],
         }
     }
 
@@ -596,6 +601,44 @@ mod tests {
         assert!(none.is_empty());
     }
 
+    /// The owner's LoRAs follow turbo in the order given, and the sampler and
+    /// guider take the last link; without turbo they start at the model.
+    #[test]
+    fn the_owners_loras_chain_after_turbo() {
+        let cfg = VideoConfig::default();
+        let refs = vec!["a.png".to_string()];
+        let audios = vec!["v.wav".to_string()];
+        let extras = [
+            Lora {
+                file: "a.safetensors",
+                strength: 0.8,
+            },
+            Lora {
+                file: "b.safetensors",
+                strength: 0.6,
+            },
+        ];
+        let s = Spec {
+            extra_loras: &extras,
+            ..spec(&refs, &audios)
+        };
+        let g = build(&cfg, &s);
+        assert_eq!(
+            g["lora0"]["inputs"]["lora_name"],
+            cfg.references_turbo_lora.as_str()
+        );
+        assert_eq!(g["lora1"]["inputs"]["lora_name"], "a.safetensors");
+        assert_eq!(g["lora1"]["inputs"]["model"], json!(["lora0", 0]));
+        assert_eq!(g["lora2"]["inputs"]["lora_name"], "b.safetensors");
+        assert_eq!(g["lora2"]["inputs"]["strength_model"], 0.6);
+        let full = build(&cfg, &Spec { turbo: false, ..s });
+        assert_eq!(full["lora0"]["inputs"]["lora_name"], "a.safetensors");
+        assert_eq!(full["lora0"]["inputs"]["model"], json!(["unet", 0]));
+        assert!(full.get("lora2").is_none());
+        let wired = serde_json::to_string(&full).unwrap();
+        assert!(wired.contains("[\"lora1\",0]"), "{wired}");
+    }
+
     /// Every model file a built graph names is one [`needs`] asks for, and
     /// nothing else: a file added to the graph and not to the preflight
     /// would fail mid-render, which is what the preflight is for.
@@ -604,8 +647,16 @@ mod tests {
         let cfg = VideoConfig::default();
         let refs = vec!["a.png".to_string()];
         let audios = vec!["v.wav".to_string()];
+        let extras = [Lora {
+            file: "owner-lora.safetensors",
+            strength: 0.8,
+        }];
         for s in [
             spec(&refs, &audios),
+            Spec {
+                extra_loras: &extras,
+                ..spec(&refs, &audios)
+            },
             Spec {
                 turbo: false,
                 decoder: Some("d.safetensors"),
