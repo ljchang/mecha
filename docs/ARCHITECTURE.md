@@ -1217,6 +1217,17 @@ here:
   say the face never appears, and their voice is attached only when they
   speak. A described tattoo is said to be the only one, since H3 puts a
   described mark on whatever skin is in frame.
+- **A scene is mended where its words say more than its fields**
+  (`scene::repair`, before it compiles). The local model's first scene
+  through the built-in tool (2026-10-25) said "Luke's POV" in a shot and
+  set no `pov`, and quoted its lines inside an action with no `lines`: the
+  camera person was then defined with a face that appears, the lines had no
+  speaker tag (no voice, no lip sync), and a name inside them was labelled.
+  So a shot's "<name>'s POV/point of view/eyes" makes that cast member
+  `pov` unless the scene set it either way; with no `lines`, a quote after
+  "<name> says/speaks/…" (or continuing that speaker, with no other name
+  and no lettering word between) becomes their line in that shot. Each mend
+  is a note, and `label_names` leaves quoted words alone as it does `<d>`.
 - **The guide is shipped; the owner's notes are not** (`[video]
   guide_addendum`). What a machine's renders teach about its own content
   stays in a file under the owner's home, appended to `video_prompt_guide`
