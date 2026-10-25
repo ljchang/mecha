@@ -379,8 +379,8 @@ fn resolve<'a>(lib: &'a Library, name: &str, kind: Option<KindArg>) -> Result<&'
         [] => bail!("nothing in the image library is named `{name}`"),
         [one] => Ok(one),
         several => {
-            let kinds: Vec<&str> = several.iter().map(|e| e.kind.label()).collect();
-            bail!("`{name}` names a {}; pass --kind", kinds.join(" and a "))
+            let kinds: Vec<&str> = several.iter().map(|e| e.kind.with_article()).collect();
+            bail!("`{name}` names {}; pass --kind", kinds.join(" and "))
         }
     }
 }

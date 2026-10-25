@@ -666,7 +666,11 @@ fn parse_kind(kind: &str) -> Option<Kind> {
     Kind::ALL.into_iter().find(|k| k.label() == kind)
 }
 
-const KIND_REFUSAL: &str = "kind is character, style or location\n";
+/// Said from `Kind::ALL`, as `parse_kind` reads it (review of #741).
+fn kind_refusal() -> String {
+    let labels: Vec<&str> = Kind::ALL.iter().map(|k| k.label()).collect();
+    format!("kind is one of {}\n", labels.join(", "))
+}
 
 #[derive(Deserialize, Default)]
 pub struct ActBody {
@@ -686,7 +690,7 @@ pub async fn act(
     body: Option<Json<ActBody>>,
 ) -> Response {
     let Some(kind) = parse_kind(&kind) else {
-        return (StatusCode::BAD_REQUEST, KIND_REFUSAL).into_response();
+        return (StatusCode::BAD_REQUEST, kind_refusal()).into_response();
     };
     if imagelib::validate_name(&name).is_err() {
         return (StatusCode::BAD_REQUEST, "not an entry name\n").into_response();
@@ -807,7 +811,7 @@ pub struct AddBody {
 /// creation.
 pub async fn add(State(state): St, Json(body): Json<AddBody>) -> Response {
     let Some(kind) = parse_kind(&body.kind) else {
-        return (StatusCode::BAD_REQUEST, KIND_REFUSAL).into_response();
+        return (StatusCode::BAD_REQUEST, kind_refusal()).into_response();
     };
     if imagelib::validate_name(&body.name).is_err() {
         return (
@@ -878,7 +882,7 @@ pub struct EditBody {
 /// the entry's recorded seed goes with the old portrait.
 pub async fn edit(State(state): St, Json(body): Json<EditBody>) -> Response {
     let Some(kind) = parse_kind(&body.kind) else {
-        return (StatusCode::BAD_REQUEST, KIND_REFUSAL).into_response();
+        return (StatusCode::BAD_REQUEST, kind_refusal()).into_response();
     };
     if imagelib::validate_name(&body.name).is_err() {
         return (StatusCode::BAD_REQUEST, "not an entry name\n").into_response();
