@@ -72,7 +72,7 @@ fn as_predicate(doing: &str) -> String {
     let first = doing.split_whitespace().next().unwrap_or("");
     let word: String = first.chars().filter(|c| c.is_alphabetic()).collect();
     if word.chars().count() > 4 && word.to_lowercase().ends_with("ing") {
-        format!("is {doing}")
+        format!("is {}", lower_first(doing))
     } else {
         doing.to_string()
     }
@@ -219,7 +219,9 @@ pub fn compile(scene: &Value, default_seconds: f64) -> Result<Compiled> {
     let mut moved = Vec::new();
     let mut placed: Vec<usize> = Vec::with_capacity(lines.len());
     for (j, l) in lines.iter().enumerate() {
-        if l.get("shot").is_some() {
+        // `shot: null` is no shot: placed by cue, as an omitted one is
+        // (review of #738).
+        if l.get("shot").is_some_and(|v| !v.is_null()) {
             // Out of range stays out of range: dropped below, with a note.
             let k = l
                 .get("shot")
@@ -352,10 +354,14 @@ pub fn compile(scene: &Value, default_seconds: f64) -> Result<Compiled> {
                 " {who} (S{id}) says{how}, <d>[English] {}</d>",
                 sentence(&says)
             ));
+            // The person the clip is seen through has no mouth in frame:
+            // telling it to stay closed contradicts the face never appearing
+            // (review of #738).
             let listeners: Vec<String> = cast
                 .iter()
                 .filter_map(|c| text(c, "name"))
                 .filter(|n| !n.eq_ignore_ascii_case(&who))
+                .filter(|n| !pov.iter().any(|p| p.eq_ignore_ascii_case(n)))
                 .collect();
             if !listeners.is_empty() {
                 let one = listeners.len() == 1;
@@ -581,6 +587,17 @@ mod tests {
             c.prompt
         );
         assert!(c.prompt[first..].contains("Both, probably"), "{}", c.prompt);
+        // `shot: null` is no shot: placed by cue, not pinned to shot 1.
+        s["lines"][0]["shot"] = json!(null);
+        s["lines"][1]["shot"] = json!(null);
+        let c = compile(&s, 5.0).unwrap();
+        let first = c.prompt.find("[Shot 2]").unwrap();
+        assert!(c.prompt[first..].contains("Both, probably"), "{}", c.prompt);
+        assert!(
+            c.prompt[..first].contains("Chain or brakes"),
+            "{}",
+            c.prompt
+        );
         // No cue anywhere: the first shot, as before, and no note.
         let c = compile(&workshop(), 5.0).unwrap();
         assert!(
@@ -630,6 +647,20 @@ mod tests {
         let c = compile(&s, 5.0).unwrap();
         assert_eq!(c.pov, vec!["Wren".to_string()]);
         assert!(c.silent_pov.is_empty(), "{:?}", c.silent_pov);
+        // Wren speaks, and Maya listens; Wren, never seen, is never told to.
+        s["lines"] = json!([{"who": "Maya", "says": "Over here."}]);
+        let c = compile(&s, 5.0).unwrap();
+        assert!(!c.prompt.contains("Wren listens"), "{}", c.prompt);
+        assert!(!c.prompt.contains("listens with"), "{}", c.prompt);
+        // An -ing doing written with a capital reads mid-sentence.
+        s["cast"][0]["doing"] = json!("Kneeling on the tile floor");
+        assert!(
+            compile(&s, 5.0)
+                .unwrap()
+                .prompt
+                .contains("and is kneeling on the tile floor."),
+            "lower-cased"
+        );
     }
 
     #[test]
