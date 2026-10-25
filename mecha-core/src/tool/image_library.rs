@@ -65,7 +65,7 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// Lists and searches the owner's approved characters and styles.
+/// Lists and searches the owner's approved characters, styles and locations.
 pub struct ImageLibrary {
     dir: PathBuf,
 }
@@ -81,8 +81,9 @@ fn parse_kind(input: &Value) -> std::result::Result<Option<Kind>, String> {
         None | Some("all") => Ok(None),
         Some("character") => Ok(Some(Kind::Character)),
         Some("style") => Ok(Some(Kind::Style)),
+        Some("location") => Ok(Some(Kind::Location)),
         Some(other) => Err(format!(
-            "`kind` must be character, style or all, not `{other}`."
+            "`kind` must be character, style, location or all, not `{other}`."
         )),
     }
 }
@@ -101,16 +102,17 @@ impl Tool for ImageLibrary {
     }
 
     fn description(&self) -> &str {
-        "List the owner's recurring characters and styles for image_generate — each with its name \
-         and description. Put a character's name as a `who` in image_generate's `scene.people` and \
-         a style's in `scene.style`; the library supplies how they look. Optionally filter by kind or search by a word."
+        "List the owner's recurring characters, styles and locations — each with its name and \
+         description. Put a character's name as a `who` in image_generate's `scene.people` and \
+         a style's in `scene.style`; the library supplies how they look. A location's name goes \
+         in video_generate's `scene.setting.location`. Optionally filter by kind or search by a word."
     }
 
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "kind": {"type": "string", "enum": ["character", "style", "all"]},
+                "kind": {"type": "string", "enum": ["character", "style", "location", "all"]},
                 "query": {"type": "string", "description": "Names or words: a name picks that entry; otherwise every word must appear in an entry's name or description."}
             }
         })
@@ -148,8 +150,8 @@ impl Tool for ImageLibrary {
             let what = if query.is_some() || kind.is_some() {
                 "Nothing in the image library matches."
             } else {
-                "The image library is empty. The owner adds characters and styles; you can \
-                 propose one with image_library_propose."
+                "The image library is empty. The owner adds characters, styles and \
+                 locations; you can propose one with image_library_propose."
             };
             return Ok(ToolOutput::ok(what));
         }
@@ -162,7 +164,8 @@ impl Tool for ImageLibrary {
                    `scene.people`, with what they are wearing and doing; their look comes from \
                    their portrait. Do not copy these descriptions into the scene. Anyone else \
                    in it — a waiter, a stranger — is a person too, described in their own \
-                   `who`. Put a style's name in `scene.style`.";
+                   `who`. Put a style's name in `scene.style`, and a location's name in \
+                   video_generate's `scene.setting.location`, which brings its pictures.";
         // A broken entry is said, never silently absent.
         let broken = if errors.is_empty() {
             String::new()
@@ -267,19 +270,20 @@ impl Tool for ImageLibraryPropose {
     }
 
     fn description(&self) -> &str {
-        "Propose a new recurring character or style for the owner's image library. A character \
-         needs a portrait — a front-facing image already in the workspace, usually one you just \
-         generated — and a short description including build and height. A style needs its \
-         text. It waits for the owner's approval and cannot be used until then."
+        "Propose a new recurring character, style or location for the owner's image library. A \
+         character needs a portrait — a front-facing image already in the workspace, usually one \
+         you just generated — and a short description including build and height. A style \
+         needs its text; a location its description (fixtures, layout, light), and the owner \
+         adds its pictures. It waits for the owner's approval and cannot be used until then."
     }
 
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "kind": {"type": "string", "enum": ["character", "style"]},
+                "kind": {"type": "string", "enum": ["character", "style", "location"]},
                 "name": {"type": "string", "description": "Lowercase letters, digits and hyphens."},
-                "text": {"type": "string", "description": "A character's short description, or a style's text."},
+                "text": {"type": "string", "description": "A character's short description, a style's text, or a location's description."},
                 "portrait": {"type": "string", "description": "A character's portrait: a workspace path (images/...)."},
                 "seed": {"type": "integer", "minimum": 0, "description": "The seed that drew the portrait, if you generated it."}
             },
@@ -300,7 +304,12 @@ impl Tool for ImageLibraryPropose {
         let kind = match input.get("kind").and_then(Value::as_str) {
             Some("character") => Kind::Character,
             Some("style") => Kind::Style,
-            _ => return Ok(ToolOutput::err("`kind` must be character or style.")),
+            Some("location") => Kind::Location,
+            _ => {
+                return Ok(ToolOutput::err(
+                    "`kind` must be character, style or location.",
+                ))
+            }
         };
         let field = |k: &str| {
             input
@@ -342,8 +351,13 @@ impl Tool for ImageLibraryPropose {
                     "A character needs a `portrait`: a front-facing image in the workspace.",
                 ))
             }
-            (Kind::Style, Some(_)) => return Ok(ToolOutput::err("A style has no portrait.")),
-            (Kind::Style, None) => None,
+            (Kind::Style | Kind::Location, Some(_)) => {
+                return Ok(ToolOutput::err(format!(
+                    "A {} has no portrait.",
+                    kind.label()
+                )))
+            }
+            (Kind::Style | Kind::Location, None) => None,
         };
         // What the conversation had read before this turn's batch
         // (`ToolCtx::recorded_taint`), not the send gate's union of the

@@ -253,7 +253,14 @@ From a terminal:
 mecha imagelib add-character maya --portrait maya.png \
   --description "a woman in her mid-30s with short curly black hair; slim, average height"
 mecha imagelib add-style watercolour --text "loose watercolour, soft washes, paper texture"
+mecha imagelib add-location boathouse --text "a timber boathouse, oars on the walls, a slipway door"
+mecha imagelib add-reference boathouse --as view boathouse.jpg
 ```
+
+A **location** is a place: its text, and up to three pictures added with
+`--as view`. A video clip whose scene names it (`setting.location`) is set
+there, its first picture sent as the setting. Pictures don't use locations
+yet.
 
 **A small portrait can be redrawn larger.** `mecha imagelib upscale maya`
 asks the image model for the same photograph at about 1024×1024 and saves it

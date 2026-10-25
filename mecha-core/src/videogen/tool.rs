@@ -148,6 +148,16 @@ pub struct VideoGenerate {
     loras: Arc<super::loras::Registry>,
     /// What the registry left out, said once by whoever built the tool.
     lora_problems: Vec<String>,
+    /// The library's approved, unlocked locations, read when the tool is
+    /// built (and when its library is set): offered in the schema, so they
+    /// hold still in the cached prefix, as `image_generate`'s style names do.
+    location_names: Vec<String>,
+}
+
+/// The locations a library offers a model (`imagelib::location_names`).
+fn locations_in(dir: Option<&Path>) -> Vec<String> {
+    dir.map(|d| crate::imagelib::location_names(&crate::imagelib::Library::load(d).0))
+        .unwrap_or_default()
 }
 
 impl VideoGenerate {
@@ -158,13 +168,15 @@ impl VideoGenerate {
             Some(path) => super::loras::Registry::load(path),
             None => Default::default(),
         };
+        let library_dir = crate::imagelib::Library::default_dir().ok();
         Ok(VideoGenerate {
+            location_names: locations_in(library_dir.as_deref()),
             loras: Arc::new(loras),
             lora_problems,
             cfg,
             wire: Arc::new(wire),
             home: crate::work::mecha_home().ok(),
-            library_dir: crate::imagelib::Library::default_dir().ok(),
+            library_dir,
             personas_dir: crate::persona::Store::default_dir().ok(),
             voices_dir: None,
             self_as: None,
@@ -204,6 +216,7 @@ impl VideoGenerate {
     /// Resolve characters against this library instead of the mecha home's;
     /// `None` reads no library at all, as with the `library` feature off.
     pub fn with_library_dir(mut self, dir: Option<PathBuf>) -> Self {
+        self.location_names = locations_in(dir.as_deref());
         self.library_dir = dir;
         self
     }
@@ -219,6 +232,7 @@ impl VideoGenerate {
     fn for_test(mut self, home: &Path, gates: Arc<dyn Gates>, poll: Duration) -> Self {
         self.home = Some(home.to_path_buf());
         self.library_dir = Some(home.join("imagelib"));
+        self.location_names = locations_in(self.library_dir.as_deref());
         self.personas_dir = Some(home.join("personas"));
         self.gates = gates;
         self.poll = poll;
@@ -264,6 +278,8 @@ struct Picture {
     ext: String,
     /// The picture is the library's face crop of the portrait.
     face_only: bool,
+    /// A library location's picture: the setting, not a person.
+    place: bool,
     character: Option<String>,
     description: Option<String>,
 }
@@ -303,6 +319,8 @@ struct Plan {
     /// The owner's LoRAs this clip loads, always-on ones first, as name,
     /// file and strength.
     loras: Vec<(String, String, f64)>,
+    /// The library location the scene named, by key.
+    location: Option<String>,
     notes: Vec<String>,
     settings: Option<PathBuf>,
 }
@@ -423,7 +441,60 @@ impl VideoGenerate {
             .as_str()
             .filter(|s| !s.is_empty())
             .map(str::to_string);
-        let mode = if references_asked.is_empty() {
+        // The scene's library location: its first `view` picture is the
+        // setting, defined as a place (V-L, ruled passed 2026-10-25); one
+        // without a picture is said in words. Refused here when the library
+        // has no such approved location, naming only what was asked.
+        let location = input["location"].as_str().map(args::library_key);
+        let mut place: Option<Picture> = None;
+        let mut place_words = String::new();
+        if let Some(key) = &location {
+            let entry = library
+                .get(crate::imagelib::Kind::Location, key)
+                .filter(|e| e.status == crate::imagelib::Status::Approved)
+                .ok_or_else(|| {
+                    anyhow!(crate::imagelib::missing(
+                        &library,
+                        crate::imagelib::Kind::Location,
+                        key
+                    ))
+                })?;
+            let text =
+                Some(entry.text.trim().trim_end_matches('.').to_string()).filter(|t| !t.is_empty());
+            let view = entry
+                .sendable_references()
+                .into_iter()
+                .find(|r| r.kind == crate::imagelib::RefKind::View);
+            match view {
+                Some(view) => {
+                    let (bytes, ext) = library.read_reference(entry, view)?;
+                    place = Some(Picture {
+                        bytes,
+                        ext: ext.to_string(),
+                        face_only: false,
+                        place: true,
+                        character: Some(key.clone()),
+                        description: text,
+                    });
+                }
+                None => {
+                    if let Some(text) = text {
+                        place_words =
+                            format!(" {} looks like this: {text}.", compose::title_case(key));
+                    }
+                    notes.push(format!(
+                        "The location `{key}` has no picture yet, so it is described in words only."
+                    ));
+                }
+            }
+        }
+        if references_asked.len() + usize::from(place.is_some()) > graph::MAX_REFERENCES {
+            bail!(
+                "at most {} references, the location's picture among them",
+                graph::MAX_REFERENCES
+            );
+        }
+        let mode = if references_asked.is_empty() && place.is_none() {
             graph::Mode::Frames
         } else {
             graph::Mode::References
@@ -432,16 +503,19 @@ impl VideoGenerate {
         // The owner's LoRAs, refused here with what would work: an unknown
         // name or a file for the other checkpoint costs nothing yet.
         let picked = self.loras.pick(&input["motion"], mode)?;
-        let triggered = super::loras::with_triggers(prompt, &picked);
+        let triggered = super::loras::with_triggers(prompt, &picked) + &place_words;
         let prompt = triggered.as_str();
         let loras: Vec<(String, String, f64)> = picked
             .iter()
             .filter_map(|l| Some((l.name.clone(), l.file(mode)?.to_string(), l.strength)))
             .collect();
 
+        // The location's picture follows the people, so their voices keep
+        // the slots `voices_for` numbers from `references_asked`.
         let references = references_asked
             .iter()
             .map(|r| self.picture(r, &library, ctx))
+            .chain(place.map(Ok))
             .collect::<Result<Vec<_>>>()?;
         let first = first_asked
             .as_deref()
@@ -524,6 +598,7 @@ impl VideoGenerate {
                         description: r.description.clone(),
                         audio: *a,
                         face_only: r.face_only,
+                        place: r.place,
                         pov: r
                             .character
                             .as_deref()
@@ -556,6 +631,7 @@ impl VideoGenerate {
             voices,
             audio,
             loras,
+            location,
             notes,
             settings,
         })
@@ -595,6 +671,7 @@ impl VideoGenerate {
                     bytes: crop,
                     ext: "png".into(),
                     face_only: true,
+                    place: false,
                     character: Some(given.to_string()),
                     description,
                 },
@@ -602,6 +679,7 @@ impl VideoGenerate {
                     bytes,
                     ext: ext.to_string(),
                     face_only: false,
+                    place: false,
                     character: Some(given.to_string()),
                     description,
                 },
@@ -622,6 +700,7 @@ impl VideoGenerate {
             bytes: read_capped(&path).with_context(|| format!("no image at {given}"))?,
             ext,
             face_only: false,
+            place: false,
             character: None,
             description: None,
         })
@@ -1151,7 +1230,15 @@ impl VideoGenerate {
         let name = |slot: &str, ext: &str| format!("mecha-video-{id}-{slot}.{ext}");
         let mut refs = Vec::new();
         for (i, p) in plan.references.iter().enumerate() {
-            let label = plan.references_asked[i].clone();
+            // The location's picture follows the asked references, with no
+            // entry of its own there: named by its location.
+            let label = match plan.references_asked.get(i) {
+                Some(asked) => asked.clone(),
+                None => format!(
+                    "the location `{}`'s picture",
+                    p.character.as_deref().unwrap_or("?")
+                ),
+            };
             refs.push(
                 self.wire
                     .upload_temp(&p.bytes, &name(&format!("ref{i}"), &p.ext), &label)
@@ -1243,6 +1330,7 @@ impl VideoGenerate {
             "last_frame": plan.last_asked,
             "face_crops": plan.references.iter().map(|r| r.face_only).collect::<Vec<_>>(),
             "loras": plan.loras.iter().map(|(name, _, _)| name).collect::<Vec<_>>(),
+            "location": plan.location,
             "notes": plan.notes,
             "voices": plan.voices.iter().map(|v| json!({
                 "character": v.character, "voice": v.name,
@@ -1525,7 +1613,7 @@ fn result_text(record: &Value, saved: &str, plan: &Plan) -> String {
     )
 }
 
-fn input_schema(loras: &super::loras::Registry) -> Value {
+fn input_schema(loras: &super::loras::Registry, locations: &[String]) -> Value {
     let mut schema = json!({
         "type": "object",
         "properties": {
@@ -1580,6 +1668,14 @@ fn input_schema(loras: &super::loras::Registry) -> Value {
     if let Some(motion) = loras.schema() {
         schema["properties"]["motion"] = motion;
     }
+    // Only with a location to name, as `motion`.
+    if !locations.is_empty() {
+        schema["properties"]["scene"]["properties"]["setting"]["properties"]["location"] = json!({
+            "type": "string",
+            "enum": locations,
+            "description": "A place from the owner's library: its picture becomes the setting and its description goes with it. Describe only what is different this time in `description`.",
+        });
+    }
     schema
 }
 
@@ -1617,7 +1713,7 @@ impl Tool for VideoGenerate {
     }
 
     fn input_schema(&self) -> Value {
-        input_schema(&self.loras)
+        input_schema(&self.loras, &self.location_names)
     }
 
     /// Read-only in the approval gate's sense, as `image_generate` is: what

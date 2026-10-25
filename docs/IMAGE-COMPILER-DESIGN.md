@@ -358,7 +358,12 @@ The decisions that are this design's rather than the owner's:
 ## 9. Library v2: typed references, locations and wardrobe (ruled 2026-10-13)
 
 **Status:** ruled 2026-10-13 (L1–L7, §9.7); the owner approved the direction
-the same day (the video design's R6). Built: the reference store and CLI
+the same day (the video design's R6). **V-L ruled passed by the owner,
+2026-10-25** (a room photo carried into four of four clips from the private
+H3 server), and the `Location` kind built with video sending its first
+`view` picture (L7 step 4). Still to come: pictures resolving a scene's
+location to its text (§9.5; its images wait on E13), and the web Library
+tab's Locations section. Built: the reference store and CLI
 (step 2a, #684), pictures sending `full_body` (step 2b, #685), the web
 strip (#688) and models' reference writes (#692). Video's bodies are ruled,
 to be built in the video tool.
