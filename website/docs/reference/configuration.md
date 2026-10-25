@@ -891,6 +891,7 @@ under its licence.
 | `audio_vae` | string | `minimax_h3_audio_vae_fp32.safetensors` | |
 | `decoder` | string | unset | A VAE that decodes the clip in place of `vae`, used only when the server lists it. |
 | `steps` | integer | `20` | Sampling steps without turbo. |
+| `loras` | path | unset | Your own LoRA registry for clips (below). Read when the tool is built: a restart picks up an edit. |
 | `guide_addendum` | path | unset | A Markdown file of your own notes for writing clips, appended to `video_prompt_guide`'s answer under its own heading, and read on each call, so an edit applies to the next conversation's first clip. Over 32 KB is cut, and a file that cannot be read is said in the answer. |
 
 Before anything is uploaded, every file the clip's graph names is asked of the
@@ -902,6 +903,31 @@ floor's reserve. A voice the clip carries comes from `[voice] voices_dir`
 (`<name>.wav`): a persona's own voice for her character, then
 `~/.mecha/video/voices.toml` (`character = "voice"`), then the voice of the
 persona that links the character.
+
+**Your own LoRAs.** mecha ships none and names none. `loras` points at a
+registry you write, one `[[lora]]` table per LoRA file you have put in the
+video server's `models/loras`:
+
+```toml
+[[lora]]
+name = "wave"                         # what the model picks it by
+about = "a friendly wave"             # one line: when it applies
+file = "wave_h3.safetensors"          # one file for both H3 checkpoints, or:
+# frames = "wave_fl2va.safetensors"   # a file per checkpoint; an entry
+# references = "wave_ref2va.safetensors" # offers only the modes it names
+strength = 0.8                        # above 0, at most 2; 1 by default
+trigger = "waving hello"              # put ahead of the prompt when absent
+# always = true                       # on every clip; never offered
+```
+
+The model sees the names and `about` lines in `video_generate`'s `motion`
+argument and picks up to four per clip; an `always` entry rides every clip
+in a mode it has a file for. Give each H3 checkpoint only files trained for
+it: references mode runs `references_model` (H3's `ref2va`) and frames mode
+`frames_model` (`fl2va`), and a LoRA trained on the other breaks clips. A
+pick with no file for the clip's mode, an unknown name, or a file the server
+does not list is refused before anything is uploaded. An entry that does
+not read is left out and said once at start, and the rest still load.
 
 `video_generate` declares no capabilities, for `image_generate`'s reason: what
 comes back is a file name and what the clip was rendered at, and everything
