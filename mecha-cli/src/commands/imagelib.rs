@@ -1140,6 +1140,20 @@ mod tests {
         dir
     }
 
+    /// `KindArg` converts into `Kind`, so no match can fail when `Kind`
+    /// grows; this walks `Kind::ALL` instead (§9.5: a kind missing here is
+    /// one the CLI cannot name).
+    #[test]
+    fn every_entry_kind_has_a_cli_spelling() {
+        use clap::ValueEnum;
+        for kind in Kind::ALL {
+            let arg = KindArg::from_str(kind.label(), false)
+                .unwrap_or_else(|_| panic!("no --kind {}", kind.label()));
+            assert_eq!(Kind::from(arg), kind);
+        }
+        assert_eq!(KindArg::value_variants().len(), Kind::ALL.len());
+    }
+
     fn propose(dir: &std::path::Path, name: &str, origin: Origin) {
         imagelib::create(
             dir,

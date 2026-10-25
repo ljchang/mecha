@@ -154,6 +154,10 @@ pub fn with_scene(args: &Value) -> Result<(Value, Vec<String>)> {
     if let Some(o) = out.as_object_mut() {
         o.remove("pov");
         o.remove("pov_silent");
+        o.remove("location");
+    }
+    if let Some(place) = &c.location {
+        out["location"] = json!(place);
     }
     if !c.pov.is_empty() {
         out["pov"] = json!(c.pov);
