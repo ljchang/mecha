@@ -469,7 +469,12 @@ pub(crate) fn quote_spans(text: &str) -> Vec<(usize, usize)> {
     while let Some(i) = text[from..].find(['"', '\u{201c}']) {
         let open = from + i;
         let mark = text[open..].chars().next().unwrap_or('"');
-        let close_with = if mark == '"' { '"' } else { '\u{201d}' };
+        // A curly quote closes curly or straight: local models mix them.
+        let close_with: &[char] = if mark == '"' {
+            &['"']
+        } else {
+            &['\u{201d}', '"']
+        };
         let body = open + mark.len_utf8();
         let before = text[..open].chars().next_back();
         let after = text[body..].chars().next();
@@ -483,7 +488,7 @@ pub(crate) fn quote_spans(text: &str) -> Vec<(usize, usize)> {
         let mut found = None;
         while let Some(c) = text[search..].find(close_with) {
             let at = search + c;
-            let end = at + close_with.len_utf8();
+            let end = at + text[at..].chars().next().map_or(1, char::len_utf8);
             let prev = text[..at].chars().next_back();
             let next = text[end..].chars().next();
             if prev.is_some_and(|p| !p.is_whitespace())
