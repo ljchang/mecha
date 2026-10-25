@@ -605,6 +605,11 @@ async fn the_camera_person_is_faceless_and_silent_unless_they_speak() {
             json!([{"who": "Maya", "says": "Hello."}, {"who": "Wren", "says": "Hi."}]),
             2,
         ),
+        // Spelled in lower case, still a speaker (review of #738).
+        (
+            json!([{"who": "Maya", "says": "Hello."}, {"who": "wren", "says": "Hi."}]),
+            2,
+        ),
     ] {
         let (url, log) = fake(Fake::default(), &cfg).await;
         let t = tool(&url, &home, Arc::new(Stub::default())).with_voices_dir(Some(voices.clone()));

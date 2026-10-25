@@ -418,20 +418,21 @@ impl VideoGenerate {
             .map(str::trim)
             .filter(|v| crate::config::valid_voice_name(v));
         let own = character.as_deref().zip(own_voice);
-        // The scene's first-person cast, as the library keys names.
-        let pov: Vec<String> = input["pov"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(Value::as_str)
-                    .map(args::library_key)
-                    .collect()
-            })
-            .unwrap_or_default();
-        let speaks = |character: &str| {
-            let said = compose::title_case(character);
-            prompt.contains(&format!("{said} (S"))
+        // The scene's first-person cast, and those of them who say nothing,
+        // as the library keys names; the compiler decided who speaks.
+        let keyed = |key: &str| -> Vec<String> {
+            input[key]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .map(args::library_key)
+                        .collect()
+                })
+                .unwrap_or_default()
         };
+        let pov = keyed("pov");
+        let silent = keyed("pov_silent");
         let voices: Vec<Voice> = if mode == graph::Mode::References {
             let owner = self.owner_voices();
             let personas = self.persona_voices();
@@ -440,7 +441,7 @@ impl VideoGenerate {
                 // The person the clip is seen through has a voice slot only
                 // when they speak: a silent one's voice is a slot H3 may give
                 // words to.
-                .filter(|v| !pov.contains(&v.character) || speaks(&v.character))
+                .filter(|v| !silent.contains(&v.character))
                 .map(|v| Voice {
                     clip: self.voice_clip(&v.name),
                     reference: v.reference,

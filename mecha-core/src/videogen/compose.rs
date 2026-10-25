@@ -118,10 +118,12 @@ pub fn references(parts: &Parts, people: &[Person], pins: (bool, bool)) -> Strin
         // view, and the face is said to stay out. A clip seen through a
         // library character's eyes said their face "appears in the clip"
         // while the action said it never would (2026-10-25).
-        let from = if p.pov {
-            "whose skin and build come from"
-        } else {
-            from
+        // A face crop shows skin tone and nothing of the build, so a pov
+        // person from one is promised only that (review of #738).
+        let from = match (p.pov, p.face_only) {
+            (true, true) => "whose skin tone comes from",
+            (true, false) => "whose skin and build come from",
+            (false, _) => from,
         };
         let unseen = if p.pov {
             format!(" The clip is seen through <Subject {n}>'s eyes, so <Subject {n}>'s face never appears.")
@@ -201,8 +203,11 @@ pub fn references(parts: &Parts, people: &[Person], pins: (bool, bool)) -> Strin
         let n = i + 1;
         kept.push(match &p.name {
             Some(name) if p.pov => format!(
-                "<Subject {n}> (seen only as the camera's own body): partially_preserved - {}'s skin and build from <Picture {n}> are retained for the hands, arms and body in view; the face is never shown, and the clothing follows the scene.",
-                title_case(name)
+                "<Subject {n}> (seen only as the camera's own body): partially_preserved - {}'s {} from <Picture {n}> {} retained for the hands, arms and body in view{}; the face is never shown, and the clothing follows the scene.",
+                title_case(name),
+                if p.face_only { "skin tone" } else { "skin and build" },
+                if p.face_only { "is" } else { "are" },
+                if p.face_only { ", the build follows the stored description" } else { "" },
             ),
             Some(name) if p.face_only => format!(
                 "<Subject {n}> (appears in the clip): partially_preserved - {}'s face from <Picture {n}> is retained; hair, build and the rest follow the stored description, and the clothing follows the scene.",
@@ -558,11 +563,24 @@ mod tests {
             ),
             "{out}"
         );
-        assert!(out.contains("<Subject 2> is Wren, whose skin and build come from <Picture 2>: Broad-shouldered. The clothing is not taken from <Picture 2>; it is what the description gives. The clip is seen through <Subject 2>'s eyes, so <Subject 2>'s face never appears."), "{out}");
+        // From a face crop: skin tone only, the build from the words
+        // (review of #738).
+        assert!(out.contains("<Subject 2> is Wren, whose skin tone comes from <Picture 2>: Broad-shouldered. The clothing is not taken from <Picture 2>; it is what the description gives. The clip is seen through <Subject 2>'s eyes, so <Subject 2>'s face never appears."), "{out}");
+        assert!(out.contains("<Subject 2> (seen only as the camera's own body): partially_preserved - Wren's skin tone from <Picture 2> is retained for the hands, arms and body in view, the build follows the stored description; the face"), "{out}");
+        // From a whole portrait: skin and build.
+        let whole = [Person {
+            name: Some("wren".into()),
+            description: Some("Broad-shouldered".into()),
+            audio: None,
+            face_only: false,
+            pov: true,
+        }];
+        let out2 = references(&parts("Wren reaches out."), &whole, (false, false));
         assert!(
-            out.contains("<Subject 2> (seen only as the camera's own body): partially_preserved"),
-            "{out}"
+            out2.contains("<Subject 1> is Wren, whose skin and build come from <Picture 1>"),
+            "{out2}"
         );
+        assert!(out2.contains("Wren's skin and build from <Picture 1> are retained for the hands, arms and body in view; the face"), "{out2}");
         assert!(!out.contains("<Subject 2> (appears in the clip)"), "{out}");
         assert!(!out.contains("anywhere else on <Subject 2>"), "{out}");
         let words = frames(
