@@ -1298,6 +1298,9 @@ impl ConfigLayer {
         if let Some(v) = self.voice.as_mut() {
             opt(&mut v.voices_dir);
         }
+        if let Some(v) = self.video.as_mut() {
+            opt(&mut v.guide_addendum);
+        }
         if let Some(h) = self.harness.as_mut() {
             opt(&mut h.source_dir);
         }

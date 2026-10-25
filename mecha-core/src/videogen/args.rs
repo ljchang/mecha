@@ -148,6 +148,11 @@ pub fn with_scene(args: &Value) -> Result<(Value, Vec<String>)> {
         });
     }
     out["prompt"] = json!(c.prompt);
+    // Who the clip is seen through, for the references `plan` builds: their
+    // face is said to stay out, and a silent one carries no voice.
+    if !c.pov.is_empty() {
+        out["pov"] = json!(c.pov);
+    }
     for (key, value) in [
         ("soundscape", c.soundscape),
         ("music", c.music),

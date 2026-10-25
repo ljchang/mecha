@@ -418,11 +418,29 @@ impl VideoGenerate {
             .map(str::trim)
             .filter(|v| crate::config::valid_voice_name(v));
         let own = character.as_deref().zip(own_voice);
+        // The scene's first-person cast, as the library keys names.
+        let pov: Vec<String> = input["pov"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(args::library_key)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let speaks = |character: &str| {
+            let said = compose::title_case(character);
+            prompt.contains(&format!("{said} (S"))
+        };
         let voices: Vec<Voice> = if mode == graph::Mode::References {
             let owner = self.owner_voices();
             let personas = self.persona_voices();
             args::voices_for(&references_asked, own, &owner, &personas)
                 .into_iter()
+                // The person the clip is seen through has a voice slot only
+                // when they speak: a silent one's voice is a slot H3 may give
+                // words to.
+                .filter(|v| !pov.contains(&v.character) || speaks(&v.character))
                 .map(|v| Voice {
                     clip: self.voice_clip(&v.name),
                     reference: v.reference,
@@ -462,6 +480,10 @@ impl VideoGenerate {
                         description: r.description.clone(),
                         audio: *a,
                         face_only: r.face_only,
+                        pov: r
+                            .character
+                            .as_deref()
+                            .is_some_and(|c| pov.contains(&args::library_key(c))),
                     })
                     .collect();
                 compose::references(&parts, &people, (first.is_some(), last.is_some()))
@@ -1466,7 +1488,8 @@ fn input_schema() -> Value {
                         "name": {"type": "string", "description": "Library name of a character, or a few words describing anyone else."},
                         "wearing": {"type": "string", "description": "What they have on in this clip. Never leave it out: nothing of a portrait's outfit is kept."},
                         "doing": {"type": "string", "description": "Their activity when the clip starts."},
-                        "notes": {"type": "string", "description": "Anything further about them for this clip."}
+                        "notes": {"type": "string", "description": "Anything further about them for this clip."},
+                        "pov": {"type": "boolean", "description": "true when the clip is seen through this person's eyes (a first-person shot): their face never appears, only their hands and body; their voice is kept only if they have lines."}
                     }, "required": ["name"]}},
                     "shots": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {
                         "at": {"type": "number", "description": "Second at which this shot begins; not for the first. Omitted, shots share the length evenly."},
@@ -1598,7 +1621,53 @@ impl Tool for VideoGenerate {
 
 /// `video_prompt_guide`: the prompting guide, on request, so its words ride
 /// in a conversation only when a clip is being written.
-pub struct VideoPromptGuide;
+/// The shipped guide, and the owner's addendum after it when `[video]
+/// guide_addendum` names one.
+#[derive(Default)]
+pub struct VideoPromptGuide {
+    addendum: Option<PathBuf>,
+}
+
+/// An addendum past this is cut, and said to be: it rides in the model's
+/// context on every first clip of a conversation.
+const MAX_ADDENDUM_BYTES: usize = 32 * 1024;
+
+impl VideoPromptGuide {
+    pub fn new(cfg: &VideoConfig) -> Self {
+        VideoPromptGuide {
+            addendum: cfg.guide_addendum.clone(),
+        }
+    }
+
+    /// The guide as a call answers it. An addendum that cannot be read is
+    /// said in the answer, never skipped quietly: the owner's lessons going
+    /// missing would look exactly like the model ignoring them.
+    fn text(&self) -> String {
+        let Some(path) = &self.addendum else {
+            return GUIDE.to_string();
+        };
+        match std::fs::read_to_string(path) {
+            Ok(mut extra) => {
+                let mut cut = "";
+                if extra.len() > MAX_ADDENDUM_BYTES {
+                    let mut end = MAX_ADDENDUM_BYTES;
+                    while !extra.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    extra.truncate(end);
+                    cut = "\n\n(The owner's notes were cut at 32 KB.)";
+                }
+                format!(
+                    "{GUIDE}\n\n## The owner's own notes for this machine\n\nThese come from the owner and override the general advice above where the two differ.\n\n{}{cut}",
+                    extra.trim()
+                )
+            }
+            Err(_) => format!(
+                "{GUIDE}\n\n(The owner keeps further notes for writing clips, at `[video] guide_addendum`, and they could not be read; write from the guide above.)"
+            ),
+        }
+    }
+}
 
 #[async_trait]
 impl Tool for VideoPromptGuide {
@@ -1618,13 +1687,14 @@ impl Tool for VideoPromptGuide {
         true
     }
 
-    /// Fixed text compiled in: nothing read, nothing sent.
+    /// Text compiled in, and the owner's own notes from the global config:
+    /// nothing a conversation can choose, nothing sent.
     fn for_persona(self: Arc<Self>) -> Option<Arc<dyn Tool>> {
         Some(self)
     }
 
     async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
-        Ok(ToolOutput::ok(GUIDE))
+        Ok(ToolOutput::ok(self.text()))
     }
 }
 
