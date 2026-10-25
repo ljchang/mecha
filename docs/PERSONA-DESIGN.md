@@ -1746,7 +1746,15 @@ document's.
 ## 14. Serving to others (R12)
 
 **Deferred by the owner (2026-09-29).** This section records what the
-eventual design has to resolve, so it is not rediscovered.
+eventual design has to resolve, so it is not rediscovered. *Designed
+2026-10-19, and revised 2026-10-22, for HyperStudy studies in `PERSONA-SERVING-DESIGN.md` — the third
+option's isolated-home pattern, kept on this box rather than a separate one. Its rulings supersede part of the prerequisite list here: age
+handling, consent, disclosure and what an institution requires are the
+experimenter's (its S2), seats are recorded in full (its S8), and a seat is
+prompted by the study, taking only a persona's voice and picture (its S10,
+S12) — so
+no persona's character, romantic or otherwise, reaches a participant — and
+the crisis check is forced on in every seat (its §7).*
 
 **The conflict.** `PUBLIC-SURFACE-DESIGN.md` §8 settled that no model runs on
 the public box — "a model on the public box is a provider key on the box we
@@ -1786,15 +1794,20 @@ Not legal advice; the law report holds the text and the analysis.
   under roughly half the texts; a child brings in California SB 1119 (signed
   2026-09-10), which has no household exclusion and bans simulating romance
   for minors. So sharing a persona is a deliberate switch, never a default,
-  and a romantic persona must never reach one — which is moot while serving
-  is deferred, and binding when it is designed.
+  and a romantic persona must never reach one. For HyperStudy studies,
+  `PERSONA-SERVING-DESIGN.md` §5 settles it by construction: no persona's
+  character reaches a seat at all.
 - **Publishing the code** is mostly outside the duties, which fall on hosts —
   but California AB 489 reaches whoever "develops or deploys" a system whose
   functionality implies a licensed health professional, even owner-only, and
   Oregon SB 1546 counts "an application or other combination of software".
 - **The shared baseline** for any host: a not-human disclosure and a
   suicide/self-harm protocol with crisis referral (§12.1, §12.2). The
-  published crate ships both on by default.
+  published crate ships both on by default. Study seats
+  (`PERSONA-SERVING-DESIGN.md`) are the exception for one half: the crisis
+  protocol is forced on in every seat, and disclosure — including the
+  sincere-question line every persona chat carries — is the study's to
+  write into its own prompt (its S2, S10).
 
 **Words and claims.** No shipped starter template or example uses:
 

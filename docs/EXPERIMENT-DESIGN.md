@@ -1074,12 +1074,19 @@ two to five participants, variables, export, analytics, and LLM agent
 participants through `hyperstudy-agent`'s llama-server endpoint; a room is
 the `ensemble` kind — but its runtime is a browser, LiveKit and Firebase
 around synchronised media, which a trial of headless processes writing
-JSONL would carry for nothing. Two things borrowed: its vocabulary, so the
-manifest maps one-to-one and a later bridge is cheap; and the bridge
-itself, which already exists — `mecha voice-serve` is an OpenAI-compatible
-chat endpoint over the agent loop, the contract `hyperstudy-agent`
-verifies, so mecha can be a HyperStudy participant in human-plus-agent
-coordination studies without any work on this side.
+JSONL would carry for nothing. One thing borrowed: its vocabulary, so the
+manifest maps one-to-one and a later bridge is cheap. A second was claimed
+— the bridge itself, thought to exist because `mecha voice-serve` is an
+OpenAI-compatible chat endpoint over the agent loop, the contract
+`hyperstudy-agent` verifies.
+
+> *Correction, 2026-10-19; revised 2026-10-22.* It is not a bridge. `voice-serve` binds
+> loopback only and HyperStudy's custom endpoint calls in from the
+> internet; and it treats every caller as the owner — a participant's
+> spoken yes could release a staged draft. Serving mecha to HyperStudy
+> participants is designed in `PERSONA-SERVING-DESIGN.md`: a sealed guest
+> home, and, since 2026-10-22, HyperStudy's own adapter contract served
+> through a confined listener on a port of its own (its S11).
 
 ### 21.1 Who drives a lifetime, and what a task is — the principal half ruled and built (2026-09-04, #185; release and closure opened by fixture servers 2026-09-05); the task-source half built 2026-09-05 as the recommendation reads
 
