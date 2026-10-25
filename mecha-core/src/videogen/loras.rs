@@ -267,7 +267,9 @@ impl Registry {
 
 /// The prompt with each picked LoRA's trigger words, where the prompt does
 /// not already say them (any case): ahead of the timeline, where H3 reads
-/// the clip's subject.
+/// the clip's subject. A model that wrote H3's sections itself gets them at
+/// the start of its description field, not ahead of the header, where they
+/// would sit outside every field H3 reads (review of #739).
 pub fn with_triggers(prompt: &str, picked: &[&Lora]) -> String {
     let lower = prompt.to_lowercase();
     let missing: Vec<&str> = picked
@@ -276,10 +278,21 @@ pub fn with_triggers(prompt: &str, picked: &[&Lora]) -> String {
         .filter(|t| !lower.contains(&t.to_lowercase()))
         .collect();
     if missing.is_empty() {
-        prompt.to_string()
-    } else {
-        format!("{}. {prompt}", missing.join(", "))
+        return prompt.to_string();
     }
+    let words = format!("{}. ", missing.join(", "));
+    for field in [
+        "detailed_description:",
+        "integrated_multimodal_description:",
+    ] {
+        if let Some(at) = prompt.find(field) {
+            let mut start = at + field.len();
+            // After the header's own spacing, so the field reads on.
+            start += prompt[start..].len() - prompt[start..].trim_start().len();
+            return format!("{}{words}{}", &prompt[..start], &prompt[start..]);
+        }
+    }
+    format!("{words}{prompt}")
 }
 
 #[cfg(test)]
@@ -441,6 +454,15 @@ strength = 5
         assert_eq!(
             with_triggers("A park.", &[r.get("spin").unwrap()]),
             "A park."
+        );
+        // Inside a field the model wrote, never ahead of its header.
+        assert_eq!(
+            with_triggers("detailed_description:\n[Shot 1] A park.", &[wave]),
+            "detailed_description:\nwaving hello. [Shot 1] A park."
+        );
+        assert_eq!(
+            with_triggers("integrated_multimodal_description: A park.", &[wave]),
+            "integrated_multimodal_description: waving hello. A park."
         );
     }
 }
