@@ -1129,6 +1129,101 @@ async fn a_library_outfit_is_worn_with_its_picture() {
         "{prompt}"
     );
 
+    // Worn by someone described in words, not a library character: still
+    // references mode, so the garment is read, not dropped (review of #741).
+    let (url, log) = fake(Fake::default(), &cfg).await;
+    let t = tool(&url, &home, Arc::new(Stub::default()));
+    let described = json!({"scene": {
+        "cast": [{"name": "a lifeguard", "wearing": "red-raincoat"}],
+        "shots": [{"framing": "A long view down the lane", "action": "The lifeguard waves"}]
+    }});
+    let done = run(&t, described, &ctx(&chat)).await;
+    assert!(done.content.contains("references mode"), "{}", done.content);
+    let seen = log.lock().unwrap().clone();
+    assert_eq!(
+        seen.iter()
+            .filter(|l| l.starts_with("POST /upload"))
+            .count(),
+        1
+    );
+    let prompt = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+    assert!(prompt.contains("worn by a lifeguard"), "{prompt}");
+
+    // Two people in one outfit: one picture, worn by both, never a second
+    // slot on the same garment.
+    let (url, log) = fake(Fake::default(), &cfg).await;
+    let t = tool(&url, &home, Arc::new(Stub::default()));
+    let twins = json!({"scene": {
+        "cast": [
+            {"name": "Maya", "wearing": "red-raincoat"},
+            {"name": "a cyclist", "wearing": "red-raincoat"}
+        ],
+        "shots": [{"framing": "A long view down the lane", "action": "Both wave"}]
+    }});
+    let done = run(&t, twins, &ctx(&chat)).await;
+    assert!(!done.is_error, "{}", done.content);
+    let seen = log.lock().unwrap().clone();
+    assert_eq!(
+        seen.iter()
+            .filter(|l| l.starts_with("POST /upload"))
+            .count(),
+        2,
+        "portrait + one garment"
+    );
+    let prompt = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+    assert!(
+        prompt.contains("worn by <Subject 1> and a cyclist"),
+        "{prompt}"
+    );
+    assert!(prompt.contains("a cyclist wears <Subject 2>"), "{prompt}");
+
+    // Garments count against H3's slots with the people: five dressed
+    // characters are ten pictures, refused at the call (review of #741).
+    let names = ["ada", "bo", "cy", "di", "ed"];
+    for (i, n) in names.iter().enumerate() {
+        character(&lib, n, "Someone");
+        let coat = format!("coat-{n}");
+        crate::imagelib::create(
+            &lib,
+            crate::imagelib::NewEntry {
+                kind: crate::imagelib::Kind::Outfit,
+                name: coat.clone(),
+                text: "a long coat".into(),
+                portrait: None,
+                source_seed: None,
+                origin: crate::imagelib::Origin::Owner,
+                locked: false,
+            },
+        )
+        .unwrap();
+        let img = image::RgbImage::from_pixel(4, 4, image::Rgb([i as u8, 50, 50]));
+        let mut b = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut b, image::ImageFormat::Png).unwrap();
+        crate::imagelib::add_reference_to(
+            &lib,
+            crate::imagelib::Kind::Outfit,
+            &coat,
+            crate::imagelib::RefKind::View,
+            &b.into_inner(),
+            None,
+            None,
+        )
+        .unwrap();
+    }
+    let crowd = json!({"scene": {
+        "cast": names.iter().map(|n| json!({"name": n, "wearing": format!("coat-{n}")})).collect::<Vec<_>>(),
+        "shots": [{"framing": "A long view down the lane", "action": "They wave"}]
+    }});
+    let (url, log) = fake(Fake::default(), &cfg).await;
+    let t = tool(&url, &home, Arc::new(Stub::default()));
+    let out = <VideoGenerate as Tool>::call(&t, crowd, &ctx(&chat)).await;
+    let said = match out {
+        Ok(o) => o.content,
+        Err(e) => format!("{e:#}"),
+    };
+    assert!(said.contains("at most 9 references"), "{said}");
+    assert!(!log.lock().unwrap().iter().any(|l| l.starts_with("POST /")));
+
     // Only mentioned, not the whole `wearing`: the model's own words.
     let (url, log) = fake(Fake::default(), &cfg).await;
     let t = tool(&url, &home, Arc::new(Stub::default()));
