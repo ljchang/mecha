@@ -596,7 +596,7 @@ async fn the_camera_person_is_faceless_and_silent_unless_they_speak() {
         json!({"scene": {
             "cast": [
                 {"name": "Maya", "wearing": "a yellow raincoat", "doing": "looking up"},
-                {"name": "Wren", "pov": true, "wearing": "a grey hoodie"}
+                {"name": "Wren", "pov": true, "wearing": "a moss-green cardigan"}
             ],
             "shots": [{"framing": "A first-person shot looking down at Maya", "action": "Maya looks up and speaks"}],
             "lines": lines
