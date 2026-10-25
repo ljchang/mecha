@@ -31,6 +31,37 @@ pub struct Person {
     /// Not a person: a library location, whose picture is the setting (V-L,
     /// ruled passed 2026-10-25).
     pub place: bool,
+    /// Not a person: a library outfit, worn by the cast members named here
+    /// (as the scene wrote them). Its picture is the garment alone (the
+    /// owner's ruling, 2026-10-25).
+    pub worn_by: Option<Vec<String>>,
+}
+
+impl Person {
+    /// Neither a place nor clothes: someone the clip features.
+    fn is_person(&self) -> bool {
+        !self.place && self.worn_by.is_none()
+    }
+}
+
+/// Everyone who wears an outfit, as the prompt names them, joined.
+fn wearers(people: &[Person], who: &[String]) -> String {
+    let named: Vec<String> = who.iter().map(|w| wearer(people, w)).collect();
+    crate::imagelib::join_and(&named)
+}
+
+/// Who wears an outfit, as the prompt names them: their subject label when
+/// they are a reference, else the words the scene used.
+fn wearer(people: &[Person], who: &str) -> String {
+    let key = crate::imagelib::spelled_as_name(who);
+    people
+        .iter()
+        .position(|p| {
+            p.is_person()
+                && p.name.as_deref().map(crate::imagelib::spelled_as_name) == Some(key.clone())
+        })
+        .map(|i| format!("<Subject {}>", i + 1))
+        .unwrap_or_else(|| who.to_string())
 }
 
 /// A description that mentions a tattoo says it is the only one: H3 puts a
@@ -115,6 +146,21 @@ pub fn references(parts: &Parts, people: &[Person], pins: (bool, bool)) -> Strin
         // A place is defined as one: "what <Picture n> shows" read as a
         // person's line, and the room carried only because the setting text
         // named the picture by hand (2026-10-25).
+        // Clothes are defined as clothes, worn: a garment picture read as a
+        // person's would be a stranger, or a swimsuit drawn lying on a bench.
+        if let Some(who) = &p.worn_by {
+            let what = p.name.as_deref().map(title_case).unwrap_or_default();
+            let on = wearers(people, who);
+            let text = p
+                .description
+                .as_deref()
+                .map(|t| format!(": {t}"))
+                .unwrap_or_default();
+            defs.push(format!(
+                "<Subject {n}> is the outfit {what} in <Picture {n}>, worn by {on}{text}. It is clothing, never a person; its colour, cut and details are kept as <Picture {n}> shows them."
+            ));
+            continue;
+        }
         if p.place {
             let what = p.name.as_deref().map(title_case).unwrap_or_default();
             let text = p
@@ -182,24 +228,39 @@ pub fn references(parts: &Parts, people: &[Person], pins: (bool, bool)) -> Strin
     // People are featured; a place is where it is set, never one of them
     // (review of #740).
     let subjects: Vec<String> = (1..=people.len())
-        .filter(|n| !people[n - 1].place)
+        .filter(|n| people[n - 1].is_person())
         .map(|n| format!("<Subject {n}>"))
         .collect();
     let places: Vec<String> = (1..=people.len())
         .filter(|n| people[n - 1].place)
         .map(|n| format!("<Subject {n}>"))
         .collect();
-    // A clip of only described people and a location features no subject:
-    // "featuring , set in …" was the compiled line (review of #740).
-    let what = match (subjects.is_empty(), places.is_empty()) {
-        (false, true) => format!("featuring {}", crate::imagelib::join_and(&subjects)),
-        (false, false) => format!(
-            "featuring {}, set in {}",
-            crate::imagelib::join_and(&subjects),
-            crate::imagelib::join_and(&places)
-        ),
-        (true, false) => format!("set in {}", crate::imagelib::join_and(&places)),
-        (true, true) => "with no reference subject".to_string(),
+    let outfits: Vec<String> = (1..=people.len())
+        .filter(|n| people[n - 1].worn_by.is_some())
+        .map(|n| format!("<Subject {n}>"))
+        .collect();
+    // Each kind of subject said for what it is: people featured, a place
+    // the clip is set in, clothes worn in it. A clip of only described
+    // people and a location read "featuring , set in …" (review of #740),
+    // and one whose only reference was a garment read "with no reference
+    // subject" (review of #741).
+    let mut parts_said = Vec::new();
+    if !subjects.is_empty() {
+        parts_said.push(format!(
+            "featuring {}",
+            crate::imagelib::join_and(&subjects)
+        ));
+    }
+    if !places.is_empty() {
+        parts_said.push(format!("set in {}", crate::imagelib::join_and(&places)));
+    }
+    if !outfits.is_empty() {
+        parts_said.push(format!("with {} worn", crate::imagelib::join_and(&outfits)));
+    }
+    let what = if parts_said.is_empty() {
+        "with no reference subject".to_string()
+    } else {
+        parts_said.join(", ")
     };
     let mut summary = format!(
         "[{}reference generation{}] The target video is a {:.1}-second clip {}{}{}.",
@@ -241,6 +302,11 @@ pub fn references(parts: &Parts, people: &[Person], pins: (bool, bool)) -> Strin
     for (i, p) in people.iter().enumerate() {
         let n = i + 1;
         kept.push(match &p.name {
+            _ if p.worn_by.is_some() => format!(
+                "<Subject {n}> (worn by {on} throughout): fully_preserved - the garment in <Picture {n}> is what {on} {wear} in every shot, exactly as it appears there; it is never shown on its own.",
+                on = wearers(people, p.worn_by.as_deref().unwrap_or_default()),
+                wear = if p.worn_by.as_ref().is_some_and(|w| w.len() > 1) { "wear" } else { "wears" }
+            ),
             _ if p.place => format!(
                 "<Subject {n}> (the setting): fully_preserved - the place in <Picture {n}> is where the clip happens, kept as it appears there."
             ),
@@ -504,6 +570,7 @@ mod tests {
                 face_only: false,
                 pov: false,
                 place: false,
+                worn_by: None,
             },
             Person {
                 name: Some("wren".into()),
@@ -512,6 +579,7 @@ mod tests {
                 face_only: true,
                 pov: false,
                 place: false,
+                worn_by: None,
             },
         ];
         let out = references(
@@ -592,6 +660,7 @@ mod tests {
                 face_only: true,
                 pov: false,
                 place: false,
+                worn_by: None,
             },
             Person {
                 name: Some("wren".into()),
@@ -600,6 +669,7 @@ mod tests {
                 face_only: true,
                 pov: true,
                 place: false,
+                worn_by: None,
             },
         ];
         let out = references(&parts("Maya looks up at Wren."), &people, (false, false));
@@ -621,6 +691,7 @@ mod tests {
             face_only: false,
             pov: true,
             place: false,
+            worn_by: None,
         }];
         let out2 = references(&parts("Wren reaches out."), &whole, (false, false));
         assert!(
@@ -653,6 +724,7 @@ mod tests {
             face_only: false,
             pov: false,
             place: true,
+            worn_by: None,
         }];
         let out = references(&parts("A man rows past."), &alone, (false, false));
         assert!(out.contains("-second clip set in <Subject 1>."), "{out}");
@@ -665,6 +737,7 @@ mod tests {
                 face_only: true,
                 pov: false,
                 place: false,
+                worn_by: None,
             },
             Person {
                 name: Some("boat-house".into()),
@@ -673,6 +746,7 @@ mod tests {
                 face_only: false,
                 pov: false,
                 place: true,
+                worn_by: None,
             },
         ];
         let out = references(
@@ -686,6 +760,64 @@ mod tests {
         assert!(
             out.contains("The scene takes place in <Subject 2>.")
                 && out.contains("clip featuring <Subject 1>, set in <Subject 2>."),
+            "{out}"
+        );
+    }
+
+    /// An outfit is clothes worn by the person it names, kept in every shot,
+    /// and never one of who the clip features.
+    #[test]
+    fn an_outfit_is_worn_not_featured() {
+        let people = [
+            Person {
+                name: Some("maya".into()),
+                description: None,
+                audio: None,
+                face_only: true,
+                pov: false,
+                place: false,
+                worn_by: None,
+            },
+            Person {
+                name: Some("red-raincoat".into()),
+                description: Some("A red hooded raincoat".into()),
+                audio: None,
+                face_only: false,
+                pov: false,
+                place: false,
+                worn_by: Some(vec!["Maya".into()]),
+            },
+        ];
+        let out = references(
+            &parts("Maya wears Red Raincoat and waves."),
+            &people,
+            (false, false),
+        );
+        assert!(out.contains("<Subject 2> is the outfit Red Raincoat in <Picture 2>, worn by <Subject 1>: A red hooded raincoat. It is clothing, never a person"), "{out}");
+        assert!(out.contains("<Subject 2> (worn by <Subject 1> throughout): fully_preserved - the garment in <Picture 2> is what <Subject 1> wears in every shot"), "{out}");
+        assert!(
+            out.contains("clip featuring <Subject 1>, with <Subject 2> worn."),
+            "{out}"
+        );
+        // Worn by someone described in words, the garment is still said
+        // (review of #741).
+        let alone = [Person {
+            name: Some("red-raincoat".into()),
+            description: None,
+            audio: None,
+            face_only: false,
+            pov: false,
+            place: false,
+            worn_by: Some(vec!["a lifeguard".into()]),
+        }];
+        let worn_only = references(&parts("A lifeguard waves."), &alone, (false, false));
+        assert!(
+            worn_only.contains("-second clip with <Subject 1> worn."),
+            "{worn_only}"
+        );
+        assert!(worn_only.contains("worn by a lifeguard"), "{worn_only}");
+        assert!(
+            out.contains("<Subject 1> wears <Subject 2> and waves."),
             "{out}"
         );
     }

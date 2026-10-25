@@ -19,7 +19,7 @@ assert.equal(paneOf('candidates'), 'candidates');
 assert.equal(paneOf('styles'), 'styles');
 assert.equal(paneOf(''), 'characters');
 assert.equal(paneOf('nonsense'), 'characters');
-assert.deepEqual(PANES, ['characters', 'styles', 'locations', 'voices', 'candidates']);
+assert.deepEqual(PANES, ['characters', 'styles', 'locations', 'outfits', 'voices', 'candidates']);
 assert.equal(paneOf('voices'), 'voices');
 assert.deepEqual(entriesFor('voices', entries), []);
 // The voice library's URL carries the unlock only when there is one.
@@ -84,18 +84,20 @@ assert.deepEqual(entriesFor('characters', entries).map((e) => e.name), ['maya'])
 assert.deepEqual(entriesFor('styles', entries).map((e) => e.name), ['noir']);
 assert.deepEqual(entriesFor('candidates', entries).map((e) => e.name), ['sam', 'pastel']);
 assert.deepEqual(entriesFor('characters', null), []);
-assert.deepEqual(counts(entries), { characters: 1, styles: 1, locations: 0, candidates: 2 });
+assert.deepEqual(counts(entries), { characters: 1, styles: 1, locations: 0, outfits: 0, candidates: 2 });
 
 // A location has its own pane and count, and a kind with no pane is
 // counted nowhere, never as a character (review of #740).
 const withPlaces = [
   ...entries,
   { kind: 'location', name: 'boathouse', status: 'approved' },
-  { kind: 'outfit', name: 'later', status: 'approved' },
+  { kind: 'outfit', name: 'raincoat', status: 'approved' },
+  { kind: 'costume', name: 'later', status: 'approved' },
 ];
 assert.deepEqual(entriesFor('locations', withPlaces).map((e) => e.name), ['boathouse']);
 assert.deepEqual(entriesFor('characters', withPlaces).map((e) => e.name), ['maya']);
-assert.deepEqual(counts(withPlaces), { characters: 1, styles: 1, locations: 1, candidates: 2 });
+assert.deepEqual(counts(withPlaces), { characters: 1, styles: 1, locations: 1, outfits: 1, candidates: 2 });
+assert.deepEqual(entriesFor('outfits', withPlaces).map((e) => e.name), ['raincoat']);
 assert.equal(paneOf('locations'), 'locations');
 
 // An origin the page does not know reads as the cautious one.
