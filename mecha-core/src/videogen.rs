@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 pub mod args;
 pub mod compose;
 pub mod graph;
+pub mod loras;
 pub mod scene;
 pub mod tool;
 
@@ -77,6 +78,10 @@ pub struct VideoConfig {
     /// out of the shipped guide. Read on each call, so an edit applies to the
     /// next clip.
     pub guide_addendum: Option<std::path::PathBuf>,
+    /// The owner's LoRA registry ([`loras`]): entries the model may pick per
+    /// clip, and ones on every clip. Read when the tool is built, since the
+    /// names sit in the tool's schema; a restart picks up an edit.
+    pub loras: Option<std::path::PathBuf>,
 }
 
 impl Default for VideoConfig {
@@ -99,6 +104,7 @@ impl Default for VideoConfig {
             decoder: None,
             steps: 20,
             guide_addendum: None,
+            loras: None,
         }
     }
 }

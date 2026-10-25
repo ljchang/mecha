@@ -143,13 +143,24 @@ pub struct VideoGenerate {
     /// How often a render's state is asked for, and the gates re-read.
     poll: Duration,
     wait_step: Duration,
+    /// The owner's LoRAs (`[video] loras`), read when the tool is built:
+    /// their names sit in the schema, so they hold still for its life.
+    loras: Arc<super::loras::Registry>,
+    /// What the registry left out, said once by whoever built the tool.
+    lora_problems: Vec<String>,
 }
 
 impl VideoGenerate {
     /// Refuses a configuration whose server is not on this machine.
     pub fn new(cfg: VideoConfig) -> Result<Self> {
         let wire = Client::new(cfg.loopback_url()?, "the video server")?;
+        let (loras, lora_problems) = match &cfg.loras {
+            Some(path) => super::loras::Registry::load(path),
+            None => Default::default(),
+        };
         Ok(VideoGenerate {
+            loras: Arc::new(loras),
+            lora_problems,
             cfg,
             wire: Arc::new(wire),
             home: crate::work::mecha_home().ok(),
@@ -164,6 +175,12 @@ impl VideoGenerate {
             poll: Duration::from_secs(3),
             wait_step: Duration::from_secs(10),
         })
+    }
+
+    /// Entries of `[video] loras` that were left out, each a line for the
+    /// operator; empty when the registry read whole or none is configured.
+    pub fn lora_problems(&self) -> &[String] {
+        &self.lora_problems
     }
 
     /// Admit clips against the operator's `[system]` floor.
@@ -283,8 +300,24 @@ struct Plan {
     voices: Vec<Voice>,
     /// Each reference's `<Audio j>` slot, when it has a voice here.
     audio: Vec<Option<usize>>,
+    /// The owner's LoRAs this clip loads, always-on ones first, as name,
+    /// file and strength.
+    loras: Vec<(String, String, f64)>,
     notes: Vec<String>,
     settings: Option<PathBuf>,
+}
+
+impl Plan {
+    /// The owner's LoRAs as the graph chains them.
+    fn graph_loras(&self) -> Vec<graph::Lora<'_>> {
+        self.loras
+            .iter()
+            .map(|(_, file, strength)| graph::Lora {
+                file,
+                strength: *strength,
+            })
+            .collect()
+    }
 }
 
 impl VideoGenerate {
@@ -395,6 +428,16 @@ impl VideoGenerate {
         } else {
             graph::Mode::References
         };
+
+        // The owner's LoRAs, refused here with what would work: an unknown
+        // name or a file for the other checkpoint costs nothing yet.
+        let picked = self.loras.pick(&input["motion"], mode)?;
+        let triggered = super::loras::with_triggers(prompt, &picked);
+        let prompt = triggered.as_str();
+        let loras: Vec<(String, String, f64)> = picked
+            .iter()
+            .filter_map(|l| Some((l.name.clone(), l.file(mode)?.to_string(), l.strength)))
+            .collect();
 
         let references = references_asked
             .iter()
@@ -512,6 +555,7 @@ impl VideoGenerate {
             last_asked,
             voices,
             audio,
+            loras,
             notes,
             settings,
         })
@@ -1028,6 +1072,7 @@ impl VideoGenerate {
             reference_audios: &names,
             filename_prefix: "",
             decoder: decoder.as_deref(),
+            extra_loras: &plan.graph_loras(),
         };
         for need in graph::needs(&self.cfg, &spec) {
             if !self
@@ -1166,6 +1211,7 @@ impl VideoGenerate {
             reference_audios: &voices,
             filename_prefix: &prefix,
             decoder: decoder.as_deref(),
+            extra_loras: &plan.graph_loras(),
         };
         let steps = spec.steps(&self.cfg);
         let jobs = self.jobs_dir();
@@ -1196,6 +1242,7 @@ impl VideoGenerate {
             "references": plan.references_asked, "first_frame": plan.first_asked,
             "last_frame": plan.last_asked,
             "face_crops": plan.references.iter().map(|r| r.face_only).collect::<Vec<_>>(),
+            "loras": plan.loras.iter().map(|(name, _, _)| name).collect::<Vec<_>>(),
             "notes": plan.notes,
             "voices": plan.voices.iter().map(|v| json!({
                 "character": v.character, "voice": v.name,
@@ -1456,6 +1503,10 @@ fn result_text(record: &Value, saved: &str, plan: &Plan) -> String {
             over.join(", ")
         ));
     }
+    if !plan.loras.is_empty() {
+        let names: Vec<&str> = plan.loras.iter().map(|(n, _, _)| n.as_str()).collect();
+        tail.push_str(&format!(" LoRAs: {}.", names.join(", ")));
+    }
     if !plan.notes.is_empty() {
         tail.push_str(&format!(" Notes: {}", plan.notes.join(" ")));
     }
@@ -1474,8 +1525,8 @@ fn result_text(record: &Value, saved: &str, plan: &Plan) -> String {
     )
 }
 
-fn input_schema() -> Value {
-    json!({
+fn input_schema(loras: &super::loras::Registry) -> Value {
+    let mut schema = json!({
         "type": "object",
         "properties": {
             "prompt": {"type": "string", "description": "Free-form timeline in H3's layout (video_prompt_guide explains it): open with one line on the look, then [Shot 1] with the framing, who is there by name with their clothes and places, the setting, and what happens in order including any camera move. Each later shot begins [Shot N] At mm:ss.mmm. A speaker is written Name (S1) says, <d>[English] words</d>. Budget roughly 2.5 spoken words for each second."},
@@ -1523,7 +1574,13 @@ fn input_schema() -> Value {
             "seed": {"type": "integer", "minimum": 0, "description": "Reproduce a clip exactly; omitted means random."}
         },
         "required": []
-    })
+    });
+    // Only with something to pick: without a registry the schema reads as
+    // it always has.
+    if let Some(motion) = loras.schema() {
+        schema["properties"]["motion"] = motion;
+    }
+    schema
 }
 
 #[async_trait]
@@ -1560,7 +1617,7 @@ impl Tool for VideoGenerate {
     }
 
     fn input_schema(&self) -> Value {
-        input_schema()
+        input_schema(&self.loras)
     }
 
     /// Read-only in the approval gate's sense, as `image_generate` is: what
