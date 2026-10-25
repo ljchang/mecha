@@ -169,6 +169,30 @@ fn name_forms(name: &str) -> Vec<String> {
     }
 }
 
+/// The words before a quote that moved into `lines`, closed as a sentence:
+/// a trailing comma, colon or dash goes, a dangling "Then" goes, and what is
+/// left ends in a stop.
+fn lead_in(before: &str) -> String {
+    let mut s = before
+        .trim_end()
+        .trim_end_matches([',', ':', ';', '\u{2014}', '\u{2013}', '-'])
+        .trim_end()
+        .to_string();
+    let last_word = s.rsplit(char::is_whitespace).next().unwrap_or("");
+    if last_word.eq_ignore_ascii_case("then") {
+        s.truncate(s.len() - last_word.len());
+        s = s.trim_end().to_string();
+    }
+    if !s.is_empty() && !s.ends_with(['.', '!', '?']) {
+        s.push('.');
+    }
+    if s.is_empty() {
+        s
+    } else {
+        format!("{s} ")
+    }
+}
+
 /// Each quote in `text` (`compose::quote_spans`): its byte span and the
 /// words inside.
 fn quotes(text: &str) -> Vec<(usize, usize, String)> {
@@ -303,6 +327,7 @@ fn repair(scene: &Value, known: &[String]) -> (Value, Vec<String>) {
         if !out["cast"].is_array() {
             out["cast"] = json!([]);
         }
+        let mut added = Vec::new();
         if let Some(members) = out["cast"].as_array_mut() {
             for name in &mentioned {
                 if !members
@@ -310,8 +335,17 @@ fn repair(scene: &Value, known: &[String]) -> (Value, Vec<String>) {
                     .any(|c| text(c, "name").is_some_and(|n| same_name(&n, name)))
                 {
                     members.push(json!({"name": name}));
+                    added.push(name.clone());
                 }
             }
+        }
+        // Said, as every mend is (review of #742).
+        if !added.is_empty() {
+            notes.push(format!(
+                "{} named in the shots {} added to the cast; list everyone in `cast`, with what they wear.",
+                crate::imagelib::join_and(&added),
+                if added.len() == 1 { "was" } else { "were" }
+            ));
         }
     }
     cast.extend(mentioned);
@@ -398,16 +432,25 @@ fn repair(scene: &Value, known: &[String]) -> (Value, Vec<String>) {
                 // A device speaking ("the radio says") is no cast member's
                 // line, whoever else is in the clip (review of #742).
                 let device = words_between.iter().any(|w| DEVICES.contains(w));
-                let who = named.or(goes_on).or_else(|| {
-                    (cued && !lettering && !device && speakers.len() == 1)
-                        .then(|| speakers[0].clone())
-                });
+                // Lettering or a device before the quote rules out every
+                // speaker, a named one too: "Maya speaks to Wren. A banner
+                // reads …" is the banner's (review of #742).
+                let who = if lettering || device {
+                    None
+                } else {
+                    named
+                        .or(goes_on)
+                        .or_else(|| (cued && speakers.len() == 1).then(|| speakers[0].clone()))
+                };
                 let Some(who) = who else {
                     speaking = None;
                     continue;
                 };
                 speaking = Some(who.clone());
-                kept.push_str(&action[last..open]);
+                // What led into the quote ("Maya says," / "Then:") closes as a
+                // sentence of its own: "Maya says,." was the compiled text
+                // (review of #742).
+                kept.push_str(&lead_in(&action[last..open]));
                 last = end;
                 // The quote's own trailing comma or dash is the sentence it sat
                 // in, not the line's: "Hold on," compiled "Hold on,." (review
@@ -1063,7 +1106,9 @@ mod tests {
         // Gone from the action, which still reads; the sign is left alone.
         assert!(!c.prompt.contains("\"Over here"), "{}", c.prompt);
         assert!(
-            second.contains("She laughs, catching her breath. Then: She grins."),
+            second.contains(
+                "Maya speaks, looking back at Wren. She laughs, catching her breath. She grins."
+            ),
             "{}",
             c.prompt
         );
@@ -1209,6 +1254,36 @@ mod tests {
             c8.prompt.contains("\"Not so fast, Wren.\""),
             "lines given: quotes stay: {}",
             c8.prompt
+        );
+        // Pass 3: a banner before the first quote rules out a named
+        // speaker; "Maya says," closes as a sentence; and adding someone to
+        // the cast is said.
+        let mut banner = s.clone();
+        banner["shots"][2]["action"] =
+            json!("Maya speaks to Wren. A banner behind them reads \"WELCOME HOME TONIGHT.\"");
+        let c9 = compile(&banner, 5.0, &known).unwrap();
+        assert!(
+            c9.prompt.contains("\"WELCOME HOME TONIGHT.\""),
+            "{}",
+            c9.prompt
+        );
+        let mut cue = s.clone();
+        cue["shots"][2]["action"] = json!("Maya says, \"Hold on to me.\"");
+        let c10 = compile(&cue, 5.0, &known).unwrap();
+        assert!(
+            c10.prompt
+                .contains("Maya says. Maya (S1) says, <d>[English] Hold on to me.</d>")
+                || !c10.prompt.contains(",."),
+            "{}",
+            c10.prompt
+        );
+        assert!(!c10.prompt.contains(",."), "{}", c10.prompt);
+        assert!(
+            c.notes
+                .iter()
+                .any(|n| n.starts_with("Maya named in the shots was added to the cast")),
+            "{:?}",
+            c.notes
         );
         // Without the library's names, nothing can be mended.
         let bare = compile(&s, 5.0, &[]).unwrap();
