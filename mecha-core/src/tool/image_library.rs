@@ -369,10 +369,12 @@ impl Tool for ImageLibraryPropose {
                 ))
             }
             (Kind::Style | Kind::Location | Kind::Outfit, Some(_)) => {
+                let what = kind.with_article();
                 return Ok(ToolOutput::err(format!(
-                    "A {} has no portrait.",
-                    kind.label()
-                )))
+                    "{}{} has no portrait.",
+                    what[..1].to_uppercase(),
+                    &what[1..]
+                )));
             }
             (Kind::Style | Kind::Location | Kind::Outfit, None) => None,
         };
