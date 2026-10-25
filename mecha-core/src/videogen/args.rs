@@ -120,7 +120,13 @@ pub fn with_scene(args: &Value) -> Result<(Value, Vec<String>)> {
         if args["prompt"].as_str().is_none_or(|p| p.trim().is_empty()) {
             bail!("give `scene` (typed; see video_prompt_guide) or `prompt`");
         }
-        return Ok((args.clone(), Vec::new()));
+        // Only the compiler writes these, on this path too (review of #738).
+        let mut out = args.clone();
+        if let Some(o) = out.as_object_mut() {
+            o.remove("pov");
+            o.remove("pov_silent");
+        }
+        return Ok((out, Vec::new()));
     };
     let default = args["seconds"].as_f64().unwrap_or(5.0);
     let c = scene::compile(scene_args, default)?;
@@ -148,6 +154,19 @@ pub fn with_scene(args: &Value) -> Result<(Value, Vec<String>)> {
         });
     }
     out["prompt"] = json!(c.prompt);
+    // Who the clip is seen through, for the references `plan` builds: their
+    // face is said to stay out, and a silent one carries no voice. Only the
+    // compiler writes these: a call's own are dropped first (review of #738).
+    if let Some(o) = out.as_object_mut() {
+        o.remove("pov");
+        o.remove("pov_silent");
+    }
+    if !c.pov.is_empty() {
+        out["pov"] = json!(c.pov);
+    }
+    if !c.silent_pov.is_empty() {
+        out["pov_silent"] = json!(c.silent_pov);
+    }
     for (key, value) in [
         ("soundscape", c.soundscape),
         ("music", c.music),
@@ -400,6 +419,29 @@ mod tests {
     /// The scene's own length is the clip's, since it times the cuts; a
     /// different top-level `seconds` is said, not rendered. A prompt beside a
     /// scene says what it took with it.
+    #[test]
+    fn only_the_compiler_says_who_the_camera_is() {
+        let scene = json!({"shots": [{"framing": "A long view down the hall", "action": "Maya waves"}],
+                           "cast": [{"name": "Maya", "wearing": "a coat"}]});
+        // A call's own `pov` and `pov_silent` are dropped, not passed on.
+        let (out, _) = with_scene(&json!({
+            "scene": scene, "pov": ["maya"], "pov_silent": ["maya"]
+        }))
+        .unwrap();
+        assert!(out.get("pov").is_none(), "{out}");
+        assert!(out.get("pov_silent").is_none(), "{out}");
+        // On the prompt-only path too (review of #738).
+        let (out, _) =
+            with_scene(&json!({"prompt": "Maya waves.", "pov_silent": ["maya"]})).unwrap();
+        assert!(out.get("pov_silent").is_none(), "{out}");
+        // The scene's own are kept.
+        let mut seen = scene.clone();
+        seen["cast"][0]["pov"] = json!(true);
+        let (out, _) = with_scene(&json!({"scene": seen})).unwrap();
+        assert_eq!(out["pov"], json!(["Maya"]));
+        assert_eq!(out["pov_silent"], json!(["Maya"]));
+    }
+
     #[test]
     fn the_scenes_length_is_the_clips_and_a_lost_prompt_says_what_it_held() {
         let scene = json!({"seconds": 8, "shots": [{"action": "Wren waves."}]});
