@@ -293,9 +293,9 @@ struct Picture {
     face_only: bool,
     /// A library location's picture: the setting, not a person.
     place: bool,
-    /// A library outfit's picture: clothes, worn by the cast member named
+    /// A library outfit's picture: clothes, worn by the cast members named
     /// here (as the scene wrote them), never a person.
-    worn_by: Option<String>,
+    worn_by: Option<Vec<String>>,
     character: Option<String>,
     description: Option<String>,
 }
@@ -512,13 +512,21 @@ impl VideoGenerate {
                 }
             }
         }
-        if references_asked.len() + usize::from(place.is_some()) > graph::MAX_REFERENCES {
+        // Every picture the clip carries counts against H3's slots, the
+        // location's and the garments' with the people's (review of #741).
+        if references_asked.len() + usize::from(place.is_some()) + worn.len()
+            > graph::MAX_REFERENCES
+        {
             bail!(
-                "at most {} references, the location's picture among them",
+                "at most {} references, the location's and outfits' pictures among them",
                 graph::MAX_REFERENCES
             );
         }
-        let mode = if references_asked.is_empty() && place.is_none() {
+        // A garment picture needs references mode as a location's does: in
+        // frames mode the graph reads no references, and an outfit worn by
+        // someone described in words was uploaded and dropped (review of
+        // #741).
+        let mode = if references_asked.is_empty() && place.is_none() && worn.is_empty() {
             graph::Mode::Frames
         } else {
             graph::Mode::References
@@ -699,11 +707,30 @@ impl VideoGenerate {
             let who = member
                 .get("name")
                 .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|w| !w.is_empty())
                 .map(str::to_string);
+            // One picture per outfit, however many wear it, each wearer named
+            // on it; a cast member with no name gets its words instead of a
+            // slot on a subject the prompt cannot attach (review of #741).
+            if let Some(who) = &who {
+                if let Some(shared) = worn
+                    .iter_mut()
+                    .find(|p| p.character.as_deref() == Some(key.as_str()))
+                {
+                    shared
+                        .worn_by
+                        .get_or_insert_with(Vec::new)
+                        .push(who.clone());
+                    member["wearing"] = json!(compose::title_case(&key));
+                    continue;
+                }
+            }
             let view = entry
                 .sendable_references()
                 .into_iter()
-                .find(|r| r.kind == RefKind::View);
+                .find(|r| r.kind == RefKind::View)
+                .filter(|_| who.is_some());
             match view {
                 Some(view) => {
                     let (bytes, ext) = library.read_reference(entry, view)?;
@@ -713,16 +740,22 @@ impl VideoGenerate {
                         ext: ext.to_string(),
                         face_only: false,
                         place: false,
-                        worn_by: Some(who.unwrap_or_default()),
+                        worn_by: who.map(|w| vec![w]),
                         character: Some(key),
                         description: Some(text).filter(|t| !t.is_empty()),
                     });
                 }
                 None => {
                     member["wearing"] = json!(text);
-                    notes.push(format!(
-                        "The outfit `{key}` has no picture yet, so it is described in words only."
-                    ));
+                    if entry
+                        .sendable_references()
+                        .iter()
+                        .all(|r| r.kind != RefKind::View)
+                    {
+                        notes.push(format!(
+                            "The outfit `{key}` has no picture yet, so it is described in words only."
+                        ));
+                    }
                 }
             }
         }
