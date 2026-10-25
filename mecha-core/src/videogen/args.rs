@@ -115,7 +115,7 @@ pub fn kept_settings(record: &Value) -> Value {
 /// A call that gives a typed `scene`: its timeline becomes `prompt`, and its
 /// sound, length and shape fill whatever the call left out. The compiler's
 /// notes ride along to the result.
-pub fn with_scene(args: &Value) -> Result<(Value, Vec<String>)> {
+pub fn with_scene(args: &Value, known: &[String]) -> Result<(Value, Vec<String>)> {
     let Some(scene_args) = args.get("scene").filter(|s| s.is_object()) else {
         if args["prompt"].as_str().is_none_or(|p| p.trim().is_empty()) {
             bail!("give `scene` (typed; see video_prompt_guide) or `prompt`");
@@ -130,7 +130,7 @@ pub fn with_scene(args: &Value) -> Result<(Value, Vec<String>)> {
         return Ok((out, Vec::new()));
     };
     let default = args["seconds"].as_f64().unwrap_or(5.0);
-    let c = scene::compile(scene_args, default)?;
+    let c = scene::compile(scene_args, default, known)?;
     let mut out = args.clone();
     let mut notes = c.notes;
     if let Some(p) = args["prompt"].as_str().filter(|p| !p.trim().is_empty()) {
@@ -429,15 +429,19 @@ mod tests {
         let scene = json!({"shots": [{"framing": "A long view down the hall", "action": "Maya waves"}],
                            "cast": [{"name": "Maya", "wearing": "a coat"}]});
         // A call's own `pov` and `pov_silent` are dropped, not passed on.
-        let (out, _) = with_scene(&json!({
-            "scene": scene, "pov": ["maya"], "pov_silent": ["maya"]
-        }))
+        let (out, _) = with_scene(
+            &json!({
+                "scene": scene, "pov": ["maya"], "pov_silent": ["maya"]
+            }),
+            &[],
+        )
         .unwrap();
         assert!(out.get("pov").is_none(), "{out}");
         assert!(out.get("pov_silent").is_none(), "{out}");
         // On the prompt-only path too (review of #738).
         let (out, _) = with_scene(
             &json!({"prompt": "Maya waves.", "pov_silent": ["maya"], "location": "attic"}),
+            &[],
         )
         .unwrap();
         assert!(out.get("pov_silent").is_none(), "{out}");
@@ -445,7 +449,7 @@ mod tests {
         // The scene's own are kept.
         let mut seen = scene.clone();
         seen["cast"][0]["pov"] = json!(true);
-        let (out, _) = with_scene(&json!({"scene": seen})).unwrap();
+        let (out, _) = with_scene(&json!({"scene": seen}), &[]).unwrap();
         assert_eq!(out["pov"], json!(["Maya"]));
         assert_eq!(out["pov_silent"], json!(["Maya"]));
     }
@@ -453,20 +457,26 @@ mod tests {
     #[test]
     fn the_scenes_length_is_the_clips_and_a_lost_prompt_says_what_it_held() {
         let scene = json!({"seconds": 8, "shots": [{"action": "Wren waves."}]});
-        let (out, notes) = with_scene(&json!({"seconds": 5, "scene": scene})).unwrap();
+        let (out, notes) = with_scene(&json!({"seconds": 5, "scene": scene}), &[]).unwrap();
         assert_eq!(out["seconds"], json!(8.0));
         assert!(
             notes.iter().any(|n| n.contains("scene's own length (8 s)")),
             "{notes:?}"
         );
-        let (_, notes) = with_scene(&json!({
-            "prompt": "Wren (S1) says, <d>[English] Morning.</d>", "scene": scene}))
+        let (_, notes) = with_scene(
+            &json!({
+            "prompt": "Wren (S1) says, <d>[English] Morning.</d>", "scene": scene}),
+            &[],
+        )
         .unwrap();
         assert!(
             notes.iter().any(|n| n.contains("its dialogue")),
             "{notes:?}"
         );
-        assert!(with_scene(&json!({})).is_err(), "neither scene nor prompt");
+        assert!(
+            with_scene(&json!({}), &[]).is_err(),
+            "neither scene nor prompt"
+        );
     }
 
     #[test]

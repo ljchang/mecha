@@ -188,10 +188,10 @@ fn quotes(text: &str) -> Vec<(usize, usize, String)> {
 ///   there had no speaker tag, so no voice and no lip sync, and a name inside
 ///   it was labelled. A quote with no named speaker before it is left alone,
 ///   unless one cue word stands before it and only one cast member can speak.
-fn repair(scene: &Value) -> (Value, Vec<String>) {
+fn repair(scene: &Value, known: &[String]) -> (Value, Vec<String>) {
     let mut out = scene.clone();
     let mut notes = Vec::new();
-    let cast: Vec<String> = scene
+    let mut cast: Vec<String> = scene
         .get("cast")
         .and_then(Value::as_array)
         .map(|a| a.iter().filter_map(|c| text(c, "name")).collect())
@@ -209,6 +209,50 @@ fn repair(scene: &Value) -> (Value, Vec<String>) {
         .unwrap_or_default()
         .to_lowercase()
         .replace('\u{2019}', "'");
+
+    // A library character the shots name but `cast` leaves out is a person
+    // in the clip all the same: the first real scene listed no cast at all
+    // and named both people in its prose (2026-10-25).
+    let mentioned: Vec<String> = known
+        .iter()
+        .filter(|k| {
+            name_forms(k).iter().any(|f| {
+                shot_words.match_indices(f.as_str()).any(|(at, _)| {
+                    let before = shot_words[..at].chars().next_back();
+                    let after = shot_words[at + f.len()..].chars().next();
+                    !before.is_some_and(char::is_alphanumeric)
+                        && !after.is_some_and(char::is_alphanumeric)
+                })
+            })
+        })
+        .filter(|k| !cast.iter().any(|c| same_name(c, k)))
+        .map(|k| super::compose::title_case(k))
+        .collect();
+    for name in &mentioned {
+        let seen_through = name_forms(name).iter().any(|f| {
+            [
+                "pov",
+                "point of view",
+                "point-of-view",
+                "eyes",
+                "perspective",
+            ]
+            .iter()
+            .any(|w| shot_words.contains(&format!("{f}'s {w}")))
+        });
+        if seen_through {
+            if !out["cast"].is_array() {
+                out["cast"] = json!([]);
+            }
+            if let Some(members) = out["cast"].as_array_mut() {
+                members.push(json!({"name": name, "pov": true}));
+            }
+            notes.push(format!(
+                "The shots say the clip is seen through {name}'s eyes, so {name} was taken as the camera (`pov`). List them in `cast` with `pov` yourself to say otherwise."
+            ));
+        }
+    }
+    cast.extend(mentioned);
 
     if let Some(members) = out.get_mut("cast").and_then(Value::as_array_mut) {
         for member in members.iter_mut() {
@@ -358,9 +402,10 @@ fn stamp(at: f64) -> String {
 }
 
 /// Compile `scene` for a clip of `seconds` (the caller's default when the
-/// scene names none).
-pub fn compile(scene: &Value, default_seconds: f64) -> Result<Compiled> {
-    let (repaired, mut notes) = repair(scene);
+/// scene names none). `known` is the library's character names, which a
+/// model may name in its prose without listing them in `cast`.
+pub fn compile(scene: &Value, default_seconds: f64, known: &[String]) -> Result<Compiled> {
+    let (repaired, mut notes) = repair(scene, known);
     let scene = &repaired;
     let seconds = scene.get("seconds").and_then(Value::as_f64);
     let length = seconds.unwrap_or(default_seconds);
@@ -707,7 +752,7 @@ mod tests {
 
     #[test]
     fn a_scene_becomes_the_timeline_in_order() {
-        let c = compile(&workshop(), 5.0).unwrap();
+        let c = compile(&workshop(), 5.0, &[]).unwrap();
         assert_eq!(
             c.prompt,
             "Live-action, cinematic, calm and wry, cool overcast light. [Shot 1] A wide two-shot. A cluttered bicycle workshop. Grey light from a skylight. \
@@ -737,7 +782,7 @@ mod tests {
             {"at": 5.2, "framing": "A close-up of Wren", "action": "Wren grins"}
         ]);
         s["seconds"] = json!(7);
-        let c = compile(&s, 5.0).unwrap();
+        let c = compile(&s, 5.0, &[]).unwrap();
         assert!(c.prompt.contains("[Shot 2] At 00:05.200"), "{}", c.prompt);
         assert!(c.prompt.contains("[Shot 3] At 00:06.100"), "{}", c.prompt);
         assert!(
@@ -751,7 +796,7 @@ mod tests {
         // the even spot behind it.
         s["shots"][1]["at"] = json!(6.3);
         s["shots"][2]["at"] = json!(1.0);
-        let c = compile(&s, 5.0).unwrap();
+        let c = compile(&s, 5.0, &[]).unwrap();
         assert!(c.prompt.contains("[Shot 2] At 00:06.300"), "{}", c.prompt);
         assert!(c.prompt.contains("[Shot 3] At 00:06.650"), "{}", c.prompt);
     }
@@ -765,7 +810,7 @@ mod tests {
             {"who": "Wren", "says": "Over here.", "shot": 5},
             {"who": "Maya", "says": "Chain or brakes?"}
         ]);
-        let c = compile(&s, 5.0).unwrap();
+        let c = compile(&s, 5.0, &[]).unwrap();
         assert!(c.prompt.contains("Maya (S1) says"), "{}", c.prompt);
         assert!(!c.prompt.contains("(S2)"), "{}", c.prompt);
     }
@@ -779,7 +824,7 @@ mod tests {
             json!("Hand me the spanner and the pump, then hold the wheel still while I check");
         s["lines"][1]["shot"] = json!(3);
         s["cast"][1].as_object_mut().unwrap().remove("wearing");
-        let c = compile(&s, 5.0).unwrap();
+        let c = compile(&s, 5.0, &[]).unwrap();
         assert!(c.prompt.contains("[Shot 2] At 00:03.250"), "{}", c.prompt);
         assert!(
             c.notes
@@ -808,7 +853,7 @@ mod tests {
             c.notes
         );
         assert!(!c.prompt.contains("Both, probably"), "{}", c.prompt);
-        assert!(compile(&json!({"cast": []}), 5.0).is_err());
+        assert!(compile(&json!({"cast": []}), 5.0, &[]).is_err());
     }
 
     /// A line without a `shot` goes where an action says someone speaks:
@@ -822,7 +867,7 @@ mod tests {
             {"framing": "A wide two-shot", "action": "Maya looks up and speaks"},
             {"at": 3.0, "framing": "A close-up of Wren", "action": "Wren grins, then says something"}
         ]);
-        let c = compile(&s, 5.0).unwrap();
+        let c = compile(&s, 5.0, &[]).unwrap();
         let first = c.prompt.find("[Shot 2]").unwrap();
         assert!(
             c.prompt[..first].contains("Chain or brakes")
@@ -837,7 +882,7 @@ mod tests {
         );
         // Placed explicitly, a line takes its shot's cue.
         s["lines"][0]["shot"] = json!(2);
-        let c = compile(&s, 5.0).unwrap();
+        let c = compile(&s, 5.0, &[]).unwrap();
         let first = c.prompt.find("[Shot 2]").unwrap();
         assert!(
             c.prompt[first..].contains("Chain or brakes"),
@@ -848,7 +893,7 @@ mod tests {
         // `shot: null` is no shot: placed by cue, not pinned to shot 1.
         s["lines"][0]["shot"] = json!(null);
         s["lines"][1]["shot"] = json!(null);
-        let c = compile(&s, 5.0).unwrap();
+        let c = compile(&s, 5.0, &[]).unwrap();
         let first = c.prompt.find("[Shot 2]").unwrap();
         assert!(c.prompt[first..].contains("Both, probably"), "{}", c.prompt);
         assert!(
@@ -857,7 +902,7 @@ mod tests {
             c.prompt
         );
         // No cue anywhere: the first shot, as before, and no note.
-        let c = compile(&workshop(), 5.0).unwrap();
+        let c = compile(&workshop(), 5.0, &[]).unwrap();
         assert!(
             !c.notes.iter().any(|n| n.starts_with("Lines without")),
             "{:?}",
@@ -878,7 +923,7 @@ mod tests {
             ],
             "shots": [{"framing": "A first-person shot looking down", "action": "Maya looks up"}]
         });
-        let c = compile(&s, 5.0).unwrap();
+        let c = compile(&s, 5.0, &[]).unwrap();
         assert!(
             c.prompt
                 .contains("A small changing room. Flat overhead light."),
@@ -898,35 +943,35 @@ mod tests {
         );
         assert_eq!(c.pov, vec!["Wren".to_string()]);
         assert_eq!(c.silent_pov, vec!["Wren".to_string()]);
-        assert!(compile(&workshop(), 5.0).unwrap().pov.is_empty());
+        assert!(compile(&workshop(), 5.0, &[]).unwrap().pov.is_empty());
         // A line in any case makes them a speaker (review of #738).
         let mut s = s;
         s["lines"] = json!([{"who": "wren", "says": "Over here."}]);
-        let c = compile(&s, 5.0).unwrap();
+        let c = compile(&s, 5.0, &[]).unwrap();
         assert_eq!(c.pov, vec!["Wren".to_string()]);
         assert!(c.silent_pov.is_empty(), "{:?}", c.silent_pov);
         // Wren speaks, and Maya listens; Wren, never seen, is never told to.
         s["lines"] = json!([{"who": "Maya", "says": "Over here."}]);
-        let c = compile(&s, 5.0).unwrap();
+        let c = compile(&s, 5.0, &[]).unwrap();
         assert!(!c.prompt.contains("Wren listens"), "{}", c.prompt);
         assert!(!c.prompt.contains("listens with"), "{}", c.prompt);
         // Spelled another way, still the speaker (review of #738).
         s["lines"] = json!([{"who": "WREN", "says": "Over here."}]);
-        assert!(compile(&s, 5.0).unwrap().silent_pov.is_empty());
+        assert!(compile(&s, 5.0, &[]).unwrap().silent_pov.is_empty());
         let mut hyphened = s.clone();
         hyphened["cast"][1]["name"] = json!("Wren Ash");
         hyphened["lines"] = json!([{"who": "wren-ash", "says": "Over here."}]);
-        assert!(compile(&hyphened, 5.0).unwrap().silent_pov.is_empty());
+        assert!(compile(&hyphened, 5.0, &[]).unwrap().silent_pov.is_empty());
         // Nor is "nothing", the undressed cast's idiom one field over.
         s["cast"][0]["doing"] = json!("nothing in particular");
         assert!(
-            !compile(&s, 5.0).unwrap().prompt.contains("is nothing"),
+            !compile(&s, 5.0, &[]).unwrap().prompt.contains("is nothing"),
             "pronoun"
         );
         // A base verb ending in -ing is not made progressive.
         s["cast"][0]["doing"] = json!("bring the towels in");
         assert!(
-            compile(&s, 5.0)
+            compile(&s, 5.0, &[])
                 .unwrap()
                 .prompt
                 .contains("and bring the towels in."),
@@ -935,7 +980,7 @@ mod tests {
         // An -ing doing written with a capital reads mid-sentence.
         s["cast"][0]["doing"] = json!("Kneeling on the tile floor");
         assert!(
-            compile(&s, 5.0)
+            compile(&s, 5.0, &[])
                 .unwrap()
                 .prompt
                 .contains("and is kneeling on the tile floor."),
@@ -958,7 +1003,7 @@ mod tests {
                 {"at": 4.0, "framing": "A close-up of Maya", "action": "Maya speaks, looking back at Wren. \"Over here, Wren.\" She laughs, catching her breath. Then: \u{201c}Not yet, not yet.\u{201d} She grins. A sign reads \"NO ENTRY HERE\"."}
             ]
         });
-        let c = compile(&s, 8.0).unwrap();
+        let c = compile(&s, 8.0, &[]).unwrap();
         assert_eq!(c.pov, vec!["Wren".to_string()]);
         let second = &c.prompt[c.prompt.find("[Shot 2]").unwrap()..];
         assert!(
@@ -995,9 +1040,48 @@ mod tests {
         let mut set = s.clone();
         set["cast"][1]["pov"] = json!(false);
         set["lines"] = json!([{"who": "Maya", "says": "Hello there."}]);
-        let c = compile(&set, 8.0).unwrap();
+        let c = compile(&set, 8.0, &[]).unwrap();
         assert!(c.pov.is_empty());
         assert!(c.prompt.contains("\"Over here, Wren.\""), "{}", c.prompt);
+    }
+
+    /// The real call's shape (2026-10-25, names changed): no `cast` at all,
+    /// both people named only in the prose, the camera said as "<name>'s
+    /// POV", and two lines quoted in the last shot's action.
+    #[test]
+    fn a_scene_with_no_cast_is_mended_from_the_librarys_names() {
+        let s = json!({
+            "seconds": 10,
+            "shots": [
+                {"framing": "A POV shot from behind Maya", "action": "The camera shakes slightly with each step \u{2014} Wren's POV, his hands on Maya's shoulders. Maya leans on the rail."},
+                {"at": 3.5, "framing": "Close-up of Maya's face over her shoulder", "action": "Maya turns her head back, eyes locked on Wren."},
+                {"at": 5.5, "framing": "Close-up of Maya's face over her shoulder", "action": "Maya speaks, looking back at Wren. \"Hold on to me.\" She laughs, out of breath. Then: \"Not so fast, Wren.\" Her eyes shine."}
+            ]
+        });
+        let known = ["maya".to_string(), "wren".to_string(), "theo".to_string()];
+        let c = compile(&s, 5.0, &known).unwrap();
+        assert_eq!(c.pov, vec!["Wren".to_string()]);
+        assert!(
+            c.prompt.contains("The clip is seen through Wren's eyes"),
+            "{}",
+            c.prompt
+        );
+        let third = &c.prompt[c.prompt.find("[Shot 3]").unwrap()..];
+        assert!(
+            third.contains("Maya (S1) says, <d>[English] Hold on to me.</d>"),
+            "{}",
+            c.prompt
+        );
+        assert!(
+            third.contains("Maya (S1) says, <d>[English] Not so fast, Wren.</d>"),
+            "{}",
+            c.prompt
+        );
+        // A library name the scene never mentions is not added.
+        assert!(!c.prompt.contains("Theo"), "{}", c.prompt);
+        // Without the library's names, nothing can be mended.
+        let bare = compile(&s, 5.0, &[]).unwrap();
+        assert!(bare.pov.is_empty());
     }
 
     #[test]

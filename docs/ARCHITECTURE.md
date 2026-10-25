@@ -1169,7 +1169,10 @@ here:
   because its names and `about` lines sit in the schema's `motion`, which
   is in the cached prefix. Each entry names its file per H3 checkpoint,
   since a LoRA trained on the other one broke clips (2026-10-24); a pick
-  is refused at the call when its mode has no file, and always-on entries
+  with no file for the clip's mode is left out with a note, since the model
+  cannot know the mode (a library character it names makes the clip
+  references mode, and the first real call spent three refusals finding
+  that out), and always-on entries
   chain first, after turbo. One bad entry costs only itself, said at
   start. A per-chat allowlist and a picker are later work (the owner,
   2026-10-25: the registry applies everywhere for now).
@@ -1224,7 +1227,9 @@ here:
   camera person was then defined with a face that appears, the lines had no
   speaker tag (no voice, no lip sync), and a name inside them was labelled.
   So a shot's "<name>'s POV/point of view/eyes" makes that cast member
-  `pov` unless the scene set it either way; with no `lines`, a quote after
+  `pov` unless the scene set it either way, and a library character the
+  shots name but `cast` omits (that scene listed no cast) is added as the
+  camera when so described; with no `lines`, a quote after
   "<name> says/speaks/…" (or continuing that speaker, with no other name
   and no lettering word between) becomes their line in that shot. Each mend
   is a note, and `label_names` leaves quoted words alone as it does `<d>`.
