@@ -76,9 +76,21 @@ fn same_name(a: &str, b: &str) -> bool {
     words(a) == words(b)
 }
 
-/// Five-letter-and-longer verbs that end in -ing without being one: "bring
-/// her a towel" read "is bring her a towel" (review of #738).
-const NOT_PROGRESSIVE: [&str; 6] = ["bring", "swing", "cling", "fling", "sting", "string"];
+/// Five-letter-and-longer words that end in -ing without being a verb's
+/// -ing form: "bring her a towel" read "is bring her a towel", and `doing:
+/// "nothing"` read "is nothing" (review of #738).
+const NOT_PROGRESSIVE: [&str; 10] = [
+    "bring",
+    "swing",
+    "cling",
+    "fling",
+    "sting",
+    "string",
+    "nothing",
+    "something",
+    "anything",
+    "everything",
+];
 
 /// A `doing` that opens on an -ing word takes `is`: "Luke wears nothing and
 /// lying on his back" was the compiled sentence (2026-10-25); "kneels beside
@@ -669,6 +681,12 @@ mod tests {
         hyphened["cast"][1]["name"] = json!("Wren Ash");
         hyphened["lines"] = json!([{"who": "wren-ash", "says": "Over here."}]);
         assert!(compile(&hyphened, 5.0).unwrap().silent_pov.is_empty());
+        // Nor is "nothing", the undressed cast's idiom one field over.
+        s["cast"][0]["doing"] = json!("nothing in particular");
+        assert!(
+            !compile(&s, 5.0).unwrap().prompt.contains("is nothing"),
+            "pronoun"
+        );
         // A base verb ending in -ing is not made progressive.
         s["cast"][0]["doing"] = json!("bring the towels in");
         assert!(
