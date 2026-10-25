@@ -125,6 +125,7 @@ pub fn with_scene(args: &Value) -> Result<(Value, Vec<String>)> {
         if let Some(o) = out.as_object_mut() {
             o.remove("pov");
             o.remove("pov_silent");
+            o.remove("location");
         }
         return Ok((out, Vec::new()));
     };
@@ -435,9 +436,12 @@ mod tests {
         assert!(out.get("pov").is_none(), "{out}");
         assert!(out.get("pov_silent").is_none(), "{out}");
         // On the prompt-only path too (review of #738).
-        let (out, _) =
-            with_scene(&json!({"prompt": "Maya waves.", "pov_silent": ["maya"]})).unwrap();
+        let (out, _) = with_scene(
+            &json!({"prompt": "Maya waves.", "pov_silent": ["maya"], "location": "attic"}),
+        )
+        .unwrap();
         assert!(out.get("pov_silent").is_none(), "{out}");
+        assert!(out.get("location").is_none(), "{out}");
         // The scene's own are kept.
         let mut seen = scene.clone();
         seen["cast"][0]["pov"] = json!(true);

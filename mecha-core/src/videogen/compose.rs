@@ -185,12 +185,24 @@ pub fn references(parts: &Parts, people: &[Person], pins: (bool, bool)) -> Strin
         .filter(|n| !people[n - 1].place)
         .map(|n| format!("<Subject {n}>"))
         .collect();
-    let set_in: Vec<String> = (1..=people.len())
+    let places: Vec<String> = (1..=people.len())
         .filter(|n| people[n - 1].place)
-        .map(|n| format!(", set in <Subject {n}>"))
+        .map(|n| format!("<Subject {n}>"))
         .collect();
+    // A clip of only described people and a location features no subject:
+    // "featuring , set in …" was the compiled line (review of #740).
+    let what = match (subjects.is_empty(), places.is_empty()) {
+        (false, true) => format!("featuring {}", crate::imagelib::join_and(&subjects)),
+        (false, false) => format!(
+            "featuring {}, set in {}",
+            crate::imagelib::join_and(&subjects),
+            crate::imagelib::join_and(&places)
+        ),
+        (true, false) => format!("set in {}", crate::imagelib::join_and(&places)),
+        (true, true) => "with no reference subject".to_string(),
+    };
     let mut summary = format!(
-        "[{}reference generation{}] The target video is a {:.1}-second clip featuring {}{}{}.",
+        "[{}reference generation{}] The target video is a {:.1}-second clip {}{}{}.",
         if pins.0 || pins.1 {
             "keyframe completion + "
         } else {
@@ -202,7 +214,7 @@ pub fn references(parts: &Parts, people: &[Person], pins: (bool, bool)) -> Strin
             " + audio reference"
         },
         parts.seconds,
-        crate::imagelib::join_and(&subjects) + &set_in.concat(),
+        what,
         if pins.0 {
             ", starting from the provided opening frame"
         } else {
@@ -630,9 +642,21 @@ mod tests {
     }
 
     /// A library location is defined and kept as the setting, never as a
-    /// person who appears.
+    /// person who appears; with no library person beside it, the clip is
+    /// only set there.
     #[test]
     fn a_location_is_the_setting_not_a_person() {
+        let alone = [Person {
+            name: Some("boat-house".into()),
+            description: None,
+            audio: None,
+            face_only: false,
+            pov: false,
+            place: true,
+        }];
+        let out = references(&parts("A man rows past."), &alone, (false, false));
+        assert!(out.contains("-second clip set in <Subject 1>."), "{out}");
+        assert!(!out.contains("featuring"), "{out}");
         let people = [
             Person {
                 name: Some("maya".into()),
