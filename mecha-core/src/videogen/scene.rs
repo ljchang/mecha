@@ -160,12 +160,47 @@ const LETTERING: [&str; 9] = [
 
 /// The forms a cast name is written in: as given, and hyphens as spaces.
 fn name_forms(name: &str) -> Vec<String> {
-    let lower = name.trim().to_ascii_lowercase();
+    // Full lowercasing, as the shots' words are, so an accented capital
+    // still matches (review of #742).
+    let lower = name.trim().to_lowercase();
     let spaced = lower.replace(['-', '_'], " ");
     if spaced == lower {
         vec![lower]
     } else {
         vec![lower, spaced]
+    }
+}
+
+/// How many bytes of `after` are an attribution of the quote just before it
+/// ("she says.", ", Maya whispers,"), up to and including its punctuation:
+/// a pronoun or cast name and a speech word, nothing more. Zero otherwise.
+fn attribution(after: &str, cast: &[String]) -> usize {
+    let lead = after.len() - after.trim_start_matches([',', ' ']).len();
+    let rest = &after[lead..];
+    let Some(stop) = rest.find(['.', ',', '!', '?', ';']) else {
+        return 0;
+    };
+    let clause = rest[..stop].to_lowercase();
+    let words: Vec<&str> = clause.split_whitespace().collect();
+    let cue = |w: &str| {
+        SPEECH_CUES.contains(&w)
+            || ["said", "adds", "added", "whispered", "replied", "asked"].contains(&w)
+    };
+    let who = |ws: &[&str]| {
+        let said = ws.join(" ");
+        ["she", "he", "they", "i"].contains(&said.as_str())
+            || cast.iter().any(|n| name_forms(n).contains(&said))
+    };
+    let fits = match words.as_slice() {
+        [] => false,
+        [.., last] if cue(last) => who(&words[..words.len() - 1]),
+        [first, rest @ ..] if cue(first) => who(rest),
+        _ => false,
+    };
+    if fits {
+        lead + stop + 1
+    } else {
+        0
     }
 }
 
@@ -376,14 +411,15 @@ fn repair(scene: &Value, known: &[String]) -> (Value, Vec<String>) {
                 continue;
             };
             // ASCII-lowered, so its byte offsets are the action's own.
-            let lower = action.to_ascii_lowercase();
             let mut kept = String::new();
             let mut last = 0;
             // Where the previous quote ended, and who said it if it moved.
             let mut since = 0;
             let mut speaking: Option<String> = None;
             for (open, end, words) in quotes(&action) {
-                let between = &lower[since..open];
+                // Lowered on its own, so offsets into it are its own.
+                let between_text = action[since..open].to_lowercase();
+                let between = between_text.as_str();
                 since = end;
                 if words.split_whitespace().count() < 2 {
                     speaking = None;
@@ -451,7 +487,10 @@ fn repair(scene: &Value, known: &[String]) -> (Value, Vec<String>) {
                 // sentence of its own: "Maya says,." was the compiled text
                 // (review of #742).
                 kept.push_str(&lead_in(&action[last..open]));
-                last = end;
+                // A short attribution right after the quote (`, she says.`)
+                // went with it: "Maya speaks to Wren. she says." was the
+                // action left behind (review of #742).
+                last = end + attribution(&action[end..], &cast);
                 // The quote's own trailing comma or dash is the sentence it sat
                 // in, not the line's: "Hold on," compiled "Hold on,." (review
                 // of #742).
@@ -1285,6 +1324,34 @@ mod tests {
             "{:?}",
             c.notes
         );
+        // Pass 4: an unclosed quote pairs with nothing, so it cannot carry
+        // the stage directions up to the next quote into a line; and a
+        // short attribution after a moved quote goes with it.
+        let mut open = s.clone();
+        open["shots"][2]["action"] =
+            json!("Maya says, \"Hold on to me. She laughs. Then: \"Not so fast, Wren.\"");
+        let c11 = compile(&open, 5.0, &known).unwrap();
+        assert!(
+            c11.prompt.contains("<d>[English] Not so fast, Wren.</d>"),
+            "{}",
+            c11.prompt
+        );
+        assert!(
+            !c11.prompt
+                .contains("<d>[English] Hold on to me. She laughs"),
+            "{}",
+            c11.prompt
+        );
+        let mut tag = s.clone();
+        tag["shots"][2]["action"] =
+            json!("Maya speaks to Wren. \"Hold on to me,\" she says. Her eyes shine.");
+        let c12 = compile(&tag, 5.0, &known).unwrap();
+        assert!(
+            c12.prompt.contains("Maya speaks to Wren. Her eyes shine."),
+            "{}",
+            c12.prompt
+        );
+        assert!(!c12.prompt.contains("she says"), "{}", c12.prompt);
         // Without the library's names, nothing can be mended.
         let bare = compile(&s, 5.0, &[]).unwrap();
         assert!(bare.pov.is_empty());
