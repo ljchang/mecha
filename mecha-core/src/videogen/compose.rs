@@ -25,6 +25,22 @@ pub struct Person {
     /// The picture is a crop of the face alone: everything below it comes
     /// from the description.
     pub face_only: bool,
+    /// The clip is seen through this person's eyes (`scene` cast `pov`):
+    /// their face never appears, only their hands and body.
+    pub pov: bool,
+}
+
+/// A description that mentions a tattoo says it is the only one: H3 puts a
+/// described mark on whatever skin is in frame, and a forearm tattoo came out
+/// on a lower leg in a clip whose legs filled the frame (2026-10-25).
+fn only_marks(description: &str, who: &str) -> String {
+    let lower = description.to_ascii_lowercase();
+    // "No tattoos" names none, so "no other" would imply one somewhere.
+    if lower.contains("tattoo") && !lower.contains("no tattoo") {
+        format!(" No tattoo appears anywhere else on {who}'s body.")
+    } else {
+        String::new()
+    }
 }
 
 /// What the model wrote, and the clip's length.
@@ -100,13 +116,30 @@ pub fn references(parts: &Parts, people: &[Person], pins: (bool, bool)) -> Strin
         } else {
             "whose face, hair, skin and build come from"
         };
+        // Seen through, never seen: the picture gives the hands and body in
+        // view, and the face is said to stay out. A clip seen through a
+        // library character's eyes said their face "appears in the clip"
+        // while the action said it never would (2026-10-25).
+        // A face crop shows skin tone and nothing of the build, so a pov
+        // person from one is promised only that (review of #738).
+        let from = match (p.pov, p.face_only) {
+            (true, true) => "whose skin tone comes from",
+            (true, false) => "whose skin and build come from",
+            (false, _) => from,
+        };
+        let unseen = if p.pov {
+            format!(" The clip is seen through <Subject {n}>'s eyes, so <Subject {n}>'s face never appears.")
+        } else {
+            String::new()
+        };
         defs.push(match (&p.name, &p.description) {
             (Some(name), Some(text)) => format!(
-                "<Subject {n}> is {}, {from} <Picture {n}>: {text}. The clothing is not taken from <Picture {n}>; it is what the description gives.",
-                title_case(name)
+                "<Subject {n}> is {}, {from} <Picture {n}>: {text}.{} The clothing is not taken from <Picture {n}>; it is what the description gives.{unseen}",
+                title_case(name),
+                only_marks(text, &format!("<Subject {n}>"))
             ),
             (Some(name), None) => format!(
-                "<Subject {n}> is {}, {from} <Picture {n}>. The clothing is not taken from <Picture {n}>; it is what the description gives.",
+                "<Subject {n}> is {}, {from} <Picture {n}>. The clothing is not taken from <Picture {n}>; it is what the description gives.{unseen}",
                 title_case(name)
             ),
             (None, _) => format!("<Subject {n}> is what <Picture {n}> shows, kept as it appears there."),
@@ -171,6 +204,13 @@ pub fn references(parts: &Parts, people: &[Person], pins: (bool, bool)) -> Strin
     for (i, p) in people.iter().enumerate() {
         let n = i + 1;
         kept.push(match &p.name {
+            Some(name) if p.pov => format!(
+                "<Subject {n}> (seen only as the camera's own body): partially_preserved - {}'s {} from <Picture {n}> {} retained for the hands, arms and body in view{}; the face is never shown, and the clothing follows the scene.",
+                title_case(name),
+                if p.face_only { "skin tone" } else { "skin and build" },
+                if p.face_only { "is" } else { "are" },
+                if p.face_only { ", the build follows the stored description" } else { "" },
+            ),
             Some(name) if p.face_only => format!(
                 "<Subject {n}> (appears in the clip): partially_preserved - {}'s face from <Picture {n}> is retained; hair, build and the rest follow the stored description, and the clothing follows the scene.",
                 title_case(name)
@@ -208,7 +248,11 @@ pub fn frames(parts: &Parts, first: bool, last: bool, in_words: &[(String, Strin
     }
     let mut body = with_first_shot(&closed_lines(parts.prompt.trim()));
     for (name, text) in in_words {
-        body.push_str(&format!(" {} looks like this: {text}.", title_case(name)));
+        let who = title_case(name);
+        body.push_str(&format!(
+            " {who} looks like this: {text}.{}",
+            only_marks(text, &who)
+        ));
     }
     let last_shot = shot_count(&body).max(1);
     let secs = format!("{:.2}", parts.seconds);
@@ -418,12 +462,14 @@ mod tests {
                 description: Some("Tall, with short grey hair".into()),
                 audio: Some(1),
                 face_only: false,
+                pov: false,
             },
             Person {
                 name: Some("wren".into()),
                 description: None,
                 audio: Some(2),
                 face_only: true,
+                pov: false,
             },
         ];
         let out = references(
@@ -490,6 +536,64 @@ mod tests {
             pinned.contains("[Shot 1] The shot begins exactly on the provided opening frame and continues from it.\n<Subject 1> waves."),
             "{pinned}"
         );
+    }
+
+    /// The person the clip is seen through is defined and kept as a body
+    /// with no face, and a described tattoo is said to be the only one.
+    #[test]
+    fn the_camera_person_has_no_face_and_a_tattoo_is_the_only_one() {
+        let people = [
+            Person {
+                name: Some("maya".into()),
+                description: Some("Tall, with a small tattoo on her left wrist".into()),
+                audio: Some(1),
+                face_only: true,
+                pov: false,
+            },
+            Person {
+                name: Some("wren".into()),
+                description: Some("Broad-shouldered".into()),
+                audio: None,
+                face_only: true,
+                pov: true,
+            },
+        ];
+        let out = references(&parts("Maya looks up at Wren."), &people, (false, false));
+        assert!(
+            out.contains(
+                "left wrist. No tattoo appears anywhere else on <Subject 1>'s body. The clothing"
+            ),
+            "{out}"
+        );
+        // From a face crop: skin tone only, the build from the words
+        // (review of #738).
+        assert!(out.contains("<Subject 2> is Wren, whose skin tone comes from <Picture 2>: Broad-shouldered. The clothing is not taken from <Picture 2>; it is what the description gives. The clip is seen through <Subject 2>'s eyes, so <Subject 2>'s face never appears."), "{out}");
+        assert!(out.contains("<Subject 2> (seen only as the camera's own body): partially_preserved - Wren's skin tone from <Picture 2> is retained for the hands, arms and body in view, the build follows the stored description; the face"), "{out}");
+        // From a whole portrait: skin and build.
+        let whole = [Person {
+            name: Some("wren".into()),
+            description: Some("Broad-shouldered".into()),
+            audio: None,
+            face_only: false,
+            pov: true,
+        }];
+        let out2 = references(&parts("Wren reaches out."), &whole, (false, false));
+        assert!(
+            out2.contains("<Subject 1> is Wren, whose skin and build come from <Picture 1>"),
+            "{out2}"
+        );
+        assert!(out2.contains("Wren's skin and build from <Picture 1> are retained for the hands, arms and body in view; the face"), "{out2}");
+        assert!(!out.contains("<Subject 2> (appears in the clip)"), "{out}");
+        assert!(!out.contains("anywhere else on <Subject 2>"), "{out}");
+        // "No tattoos" claims none, so nothing is added.
+        assert_eq!(only_marks("Freckled, no tattoos", "Maya"), "");
+        let words = frames(
+            &parts("A beach."),
+            false,
+            false,
+            &[("maya".into(), "A rose tattoo on one ankle".into())],
+        );
+        assert!(words.contains("Maya looks like this: A rose tattoo on one ankle. No tattoo appears anywhere else on Maya's body."), "{words}");
     }
 
     #[test]

@@ -1745,7 +1745,7 @@ async fn prepare_tools_carrying(
                 && cfg.tools.registers(name)
         };
         if asked(mecha_core::videogen::tool::NAME) {
-            match mecha_core::videogen::VideoGenerate::new(video) {
+            match mecha_core::videogen::VideoGenerate::new(video.clone()) {
                 Ok(tool) => {
                     // The voice library is cloning's, part of `voice`:
                     // with `voice` off no voice is read, and H3 voices the
@@ -1786,7 +1786,9 @@ async fn prepare_tools_carrying(
             }
         }
         if asked(mecha_core::videogen::tool::GUIDE_NAME) {
-            registry.insert(Arc::new(mecha_core::videogen::VideoPromptGuide));
+            registry.insert(Arc::new(mecha_core::videogen::VideoPromptGuide::new(
+                &video,
+            )));
         }
     }
     // `persona_propose` rides with the Personas switch: it stages a candidate

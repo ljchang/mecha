@@ -567,6 +567,73 @@ async fn a_voice_past_the_slots_is_said() {
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// The person a scene is seen through (`pov`) keeps their picture, is
+/// defined without a face, and carries no voice unless they speak: a silent
+/// one's voice is a slot H3 may give words to (2026-10-25).
+#[tokio::test]
+async fn the_camera_person_is_faceless_and_silent_unless_they_speak() {
+    let home = scratch();
+    let chat = home.join("chat");
+    std::fs::create_dir_all(&chat).unwrap();
+    let voices = home.join("voices");
+    std::fs::create_dir_all(&voices).unwrap();
+    std::fs::create_dir_all(home.join("video")).unwrap();
+    character(&home.join("imagelib"), "maya", "Tall, with short grey hair");
+    character(&home.join("imagelib"), "wren", "Freckled, with a red bob");
+    for n in ["maya", "wren"] {
+        std::fs::write(voices.join(format!("{n}-v.wav")), wav(6)).unwrap();
+    }
+    std::fs::write(
+        home.join("video/voices.toml"),
+        "maya = \"maya-v\"\nwren = \"wren-v\"\n",
+    )
+    .unwrap();
+    let cfg = VideoConfig::default();
+    let scene = |lines: Value| {
+        json!({"scene": {
+            "cast": [
+                {"name": "Maya", "wearing": "a yellow raincoat", "doing": "looking up"},
+                {"name": "Wren", "pov": true, "wearing": "a moss-green cardigan"}
+            ],
+            "shots": [{"framing": "A first-person shot looking down at Maya", "action": "Maya looks up and speaks"}],
+            "lines": lines
+        }})
+    };
+    for (lines, voiced) in [
+        (json!([{"who": "Maya", "says": "Hello."}]), 1),
+        (
+            json!([{"who": "Maya", "says": "Hello."}, {"who": "Wren", "says": "Hi."}]),
+            2,
+        ),
+        // Spelled in lower case, still a speaker (review of #738).
+        (
+            json!([{"who": "Maya", "says": "Hello."}, {"who": "wren", "says": "Hi."}]),
+            2,
+        ),
+    ] {
+        let (url, log) = fake(Fake::default(), &cfg).await;
+        let t = tool(&url, &home, Arc::new(Stub::default())).with_voices_dir(Some(voices.clone()));
+        let done = run(&t, scene(lines), &ctx(&chat)).await;
+        assert!(!done.is_error, "{}", done.content);
+        let seen = log.lock().unwrap().clone();
+        let heard = seen
+            .iter()
+            .filter(|l| l.starts_with("POST /upload") && l.contains("-voice"))
+            .count();
+        assert_eq!(heard, voiced, "{seen:?}");
+        let prompt = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+        assert!(
+            prompt.contains("seen only as the camera's own body"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("The clip is seen through <Subject 2>'s eyes"),
+            "{prompt}"
+        );
+    }
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// The library's face crop stands in for a portrait only when it is big
 /// enough to carry a face; a smaller one gives way to the portrait.
 #[tokio::test]
@@ -976,12 +1043,47 @@ fn a_voice_is_trimmed_to_a_lines_length() {
 
 #[tokio::test]
 async fn the_guide_is_answered_whole() {
-    let out = VideoPromptGuide
+    let out = VideoPromptGuide::default()
         .call(json!({}), &ToolCtx::default())
         .await
         .unwrap();
     assert!(out.content.starts_with("# Prompting video_generate"));
-    assert!(Arc::new(VideoPromptGuide).for_persona().is_some());
+    assert_eq!(out.content, GUIDE);
+    assert!(Arc::new(VideoPromptGuide::default())
+        .for_persona()
+        .is_some());
+}
+
+/// The owner's addendum follows the shipped guide, read on each call; one
+/// that cannot be read is said, never skipped quietly.
+#[tokio::test]
+async fn the_owners_notes_follow_the_guide() {
+    let home = scratch();
+    let notes = home.join("video-guide.md");
+    std::fs::write(&notes, "- Keep hands in frame.\n").unwrap();
+    let guide = VideoPromptGuide::new(&VideoConfig {
+        guide_addendum: Some(notes.clone()),
+        ..VideoConfig::default()
+    });
+    // The owner's own text arms `private`; the shipped guide alone does not
+    // (review of #738).
+    assert!(guide.capabilities().private_data);
+    assert!(!VideoPromptGuide::default().capabilities().private_data);
+    let out = guide.call(json!({}), &ToolCtx::default()).await.unwrap();
+    assert!(out.content.starts_with(GUIDE), "{}", out.content);
+    assert!(
+        out.content
+            .ends_with("## The owner's own notes for this machine\n\nThese come from the owner and override the general advice above where the two differ.\n\n- Keep hands in frame."),
+        "{}",
+        out.content
+    );
+    std::fs::write(&notes, "- Hold the shot.\n").unwrap();
+    let out = guide.call(json!({}), &ToolCtx::default()).await.unwrap();
+    assert!(out.content.ends_with("- Hold the shot."), "{}", out.content);
+    std::fs::remove_file(&notes).unwrap();
+    let out = guide.call(json!({}), &ToolCtx::default()).await.unwrap();
+    assert!(out.content.contains("could not be read"), "{}", out.content);
+    std::fs::remove_dir_all(&home).ok();
 }
 
 /// The registered names are the constants setup and the docs use.
@@ -989,5 +1091,5 @@ async fn the_guide_is_answered_whole() {
 fn the_names_are_the_constants() {
     let t = VideoGenerate::new(VideoConfig::default()).unwrap();
     assert_eq!(t.name(), NAME);
-    assert_eq!(VideoPromptGuide.name(), GUIDE_NAME);
+    assert_eq!(VideoPromptGuide::default().name(), GUIDE_NAME);
 }

@@ -1298,6 +1298,9 @@ impl ConfigLayer {
         if let Some(v) = self.voice.as_mut() {
             opt(&mut v.voices_dir);
         }
+        if let Some(v) = self.video.as_mut() {
+            opt(&mut v.guide_addendum);
+        }
         if let Some(h) = self.harness.as_mut() {
             opt(&mut h.source_dir);
         }
@@ -3884,6 +3887,7 @@ mod tests {
             "[web]\nassets = \"~/.mecha/web/dist\"\n\
              [outbox]\ndir = \"~/.mecha/outbox\"\n\
              [sandbox]\nwritable = [\"~/scratch\", \"/abs\"]\n\
+             [video]\nguide_addendum = \"~/.mecha/video-guide.md\"\n\
              [[mcp]]\nname = \"mail\"\ncommand = \"~/.cargo/bin/mecha-mail\"\n\
              args = [\"serve\", \"~/notes\", \"a~b\", \"~other/x\"]\n",
         )
@@ -3892,6 +3896,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(cfg.web.assets, Some(home.join(".mecha/web/dist")));
         assert_eq!(cfg.outbox.dir, Some(home.join(".mecha/outbox")));
+        // `[video]` is its own layer type, outside the `*Layer` walk below.
+        assert_eq!(
+            cfg.video.as_ref().and_then(|v| v.guide_addendum.clone()),
+            Some(home.join(".mecha/video-guide.md"))
+        );
         assert_eq!(
             cfg.sandbox.writable,
             vec![home.join("scratch"), PathBuf::from("/abs")]

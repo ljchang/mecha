@@ -1179,6 +1179,19 @@ here:
   cut outside the clip moves, a missing `wearing` is said, and so is a
   script longer than the clip can speak. A draft that renders is worth more than a
   lecture. The notes reach the model, so they are worded for it.
+- **A scene says where its lines fall and who holds the camera**
+  (`scene::compile`). A line without a `shot` goes to the next shot whose
+  action says someone speaks, never back past the line before it: a clip
+  whose second shot "speaks" had both its lines compiled into the first
+  (2026-10-25). A cast member marked `pov` is the camera: their picture
+  still gives the hands and body in view, their definition and retention
+  say the face never appears, and their voice is attached only when they
+  speak. A described tattoo is said to be the only one, since H3 puts a
+  described mark on whatever skin is in frame.
+- **The guide is shipped; the owner's notes are not** (`[video]
+  guide_addendum`). What a machine's renders teach about its own content
+  stays in a file under the owner's home, appended to `video_prompt_guide`
+  on each call. An unreadable file is said in the answer, not skipped.
 - **The call decides; the job renders** (`VideoGenerate::plan`, then the
   `DeferredJob`). Everything a bad argument could cost — the chat's kept
   settings, the scene, the persona's own character, the library characters

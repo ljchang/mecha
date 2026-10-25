@@ -19,7 +19,8 @@ Fill `scene` and the tool writes the H3 prompt for you: it numbers speakers, att
   - `name`: their library name, or a few words describing someone not in the library;
   - **`wearing`, every time.** Nothing of a portrait's outfit survives, so without it H3 dresses them however it likes;
   - `doing`: their activity as the clip starts (optional);
-  - `notes`: anything more about them (optional).
+  - `notes`: anything more about them (optional);
+  - `pov`: `true` for the person the clip is seen through, in a first-person shot. Their face never appears, only their hands and body, and their voice is attached only if they have lines. Describe what their hands are doing in the action.
 - `shots`: an entry for each shot:
   - `framing`, such as `A wide two-shot`;
   - `action`: what happens, as prose, in sequence;
@@ -29,7 +30,7 @@ Fill `scene` and the tool writes the H3 prompt for you: it numbers speakers, att
   - `who`;
   - `says`: only the words;
   - `delivery`: optional, the manner of speaking;
-  - `shot`: optional, the shot it falls in (1 when omitted).
+  - `shot`: optional, the shot it falls in. Without it, a line goes to the next shot whose `action` says someone speaks ("…looks up and speaks"), and to the first shot when no action does. Write "speaks" into the action at the moment each line falls.
 - `soundscape`, `music`, `aspect` and `seconds` work as described further down.
 
 Timing trouble, such as more words than the length allows or a cut after the end, comes back as notes beside the finished clip; it never blocks the render.
@@ -58,6 +59,18 @@ The tool turns that into a timeline that begins:
 ```
 Live-action, cinematic, calm and wry, cool overcast light. [Shot 1] A wide two-shot. A cluttered bicycle workshop. Grey light from a skylight. Maya wears a navy boiler suit with rolled sleeves and kneels beside an upturned bike. Wren wears a yellow raincoat. Wren shakes rain off her hood in the doorway. The camera holds still. Maya (S1) says without looking up, <d>[English] Chain or brakes.</d> Wren listens with mouth closed.
 ```
+
+## What H3 does reliably, and what it does not
+
+Measured on this machine's 10 to 15 s clips (2026-10-25):
+
+- **Expressions change only when the steps are named, in order.** "Her brows draw together, her eyes squeeze shut, her mouth falls open, her head tips back; then her eyes open and lock onto the camera" plays out within one shot. "Her expression changes" leaves the face still.
+- **A push-in or zoom works on a face, not on a whole body.** On a close-up the camera moves in; on a shot showing someone head to knee, H3 moves their head and chest toward the lens instead, and the body comes out the wrong shape. To end close on a face, cut to a close-up (`at` a few seconds before the end) and push in there.
+- **Change a pose at a cut.** Moving from one position to another mid-shot tangles limbs; cut, from the same angle, to the new position.
+- **A face turned away stays away.** In a first-person shot from behind or above, the face hardly shows; give the lines their own close shot with the face turned to the camera.
+- **What hands hold, they keep holding.** State each hand's grip, and say when it lets go if the action needs it free.
+- **A described mark goes on whatever skin is in frame.** Say where it is, and when that part of the body is out of view but other skin is in it, say that skin is bare.
+- **Clothes said only in words drift across a cut.** Repeat a distinctive garment's key features (colour, cut, neckline) in each shot that shows it.
 
 ## Writing `prompt` yourself
 
