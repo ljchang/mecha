@@ -310,9 +310,10 @@ pub fn compile(scene: &Value, default_seconds: f64) -> Result<Compiled> {
                 if let Some(place) = text(setting, "location") {
                     out.push_str(&format!(
                         " The scene takes place in {}.",
-                        // As the library keys it, so `compose` can label it:
-                        // `Boat_House` stayed literal (review of #740).
-                        super::compose::title_case(&place.replace('_', "-"))
+                        // As the library keys it, so `compose` can label it
+                        // and the plan resolves the same name: `Boat_House`
+                        // stayed literal (review of #740).
+                        super::compose::title_case(&crate::imagelib::spelled_as_name(&place))
                     ));
                 }
                 if let Some(d) = text(setting, "description") {

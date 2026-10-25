@@ -36,7 +36,7 @@
   let { initial = '', navigate = () => {} } = $props();
 
   const pane = $derived(paneOf(initial));
-  const label = { characters: 'Characters', styles: 'Styles', voices: 'Voices', candidates: 'Waiting' };
+  const label = { characters: 'Characters', styles: 'Styles', locations: 'Locations', voices: 'Voices', candidates: 'Waiting' };
   // How many voices the Voices pane last read: its own list, not an entry
   // count; a dash until that pane has been opened.
   let voiceCount = $state(null);
