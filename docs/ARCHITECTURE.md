@@ -1183,6 +1183,15 @@ here:
   is described in words, with a note; an unknown one is refused at the call,
   naming only what was asked. The schema offers approved, unlocked names,
   read when the tool is built (L5; `docs/TRIFECTA.md` for the cost).
+- **A library outfit is clothes, sent as a picture of the garment alone**
+  (`Kind::Outfit`, a cast member's whole `wearing`; the owner's ruling of
+  2026-10-25, after a garment picture held a swimsuit across a cut that the
+  words alone let drift into two other designs). It goes after the people
+  and the location, is defined as "the outfit …, worn by `<Subject n>`" and
+  kept as that person's clothing in every shot, never shown on its own, and
+  is not among the subjects the clip features. A `wearing` that only
+  mentions an outfit stays the model's words; one with no picture is its
+  text. Pictures still use outfits as text only.
 - **The preflight asks for every file the graph names** (`graph::needs`),
   and a test builds each graph shape and holds the two lists equal. A file
   in the graph and not the preflight fails mid-render, as a node validation

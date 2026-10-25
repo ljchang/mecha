@@ -36,7 +36,7 @@
   let { initial = '', navigate = () => {} } = $props();
 
   const pane = $derived(paneOf(initial));
-  const label = { characters: 'Characters', styles: 'Styles', locations: 'Locations', voices: 'Voices', candidates: 'Waiting' };
+  const label = { characters: 'Characters', styles: 'Styles', locations: 'Locations', outfits: 'Outfits', voices: 'Voices', candidates: 'Waiting' };
   // How many voices the Voices pane last read: its own list, not an entry
   // count; a dash until that pane has been opened.
   let voiceCount = $state(null);
@@ -453,7 +453,7 @@
         {#if form.mode === 'add'}
           <input
             class="editbox"
-            placeholder={form.kind === 'style' ? 'name, e.g. watercolour' : form.kind === 'location' ? 'name, e.g. boathouse' : 'name, e.g. maya'}
+            placeholder={form.kind === 'style' ? 'name, e.g. watercolour' : form.kind === 'location' ? 'name, e.g. boathouse' : form.kind === 'outfit' ? 'name, e.g. red-raincoat' : 'name, e.g. maya'}
             autocomplete="off"
             value={form.name}
             oninput={(e) => (form.name = tameName(e.currentTarget.value))}
@@ -467,6 +467,8 @@
             ? 'how pictures in this style look — medium, palette, light, texture'
             : form.kind === 'location'
               ? 'what the place looks like — its fixtures, layout, colours and light'
+              : form.kind === 'outfit'
+              ? 'what it is — garment, colour, cut, neckline'
               : 'a short description: age, build and height, hair, anything distinctive — not clothing'}
           bind:value={form.text}
         ></textarea>
@@ -576,11 +578,16 @@
       {/if}
     {:else if data && shown.length === 0 && pane === 'candidates' && pendingRefs.length === 0}
       <div class="empty">Nothing is waiting.</div>
-    {:else if pane === 'styles' || pane === 'locations'}
+    {:else if pane === 'styles' || pane === 'locations' || pane === 'outfits'}
       {#if pane === 'styles'}
         <button class="rowbtn card addrow" onclick={() => startAdd('style')}>
           <span class="topic">+ Add style</span>
           <span class="readingline">A name and a few lines on how the pictures should look.</span>
+        </button>
+      {:else if pane === 'outfits'}
+        <button class="rowbtn card addrow" onclick={() => startAdd('outfit')}>
+          <span class="topic">+ Add outfit</span>
+          <span class="readingline">Clothes for clips: garment, colour, cut. Its picture, the garment alone, is added with <code>mecha imagelib add-reference &lt;name&gt; --as view</code>.</span>
         </button>
       {:else}
         <button class="rowbtn card addrow" onclick={() => startAdd('location')}>

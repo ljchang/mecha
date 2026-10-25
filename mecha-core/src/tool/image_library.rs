@@ -76,15 +76,26 @@ impl ImageLibrary {
     }
 }
 
+/// Every entry kind's label, in `Kind::ALL`'s order: the one list a schema
+/// enum and a refusal spell kinds from, so a new kind needs no edit here
+/// (`IMAGE-COMPILER-DESIGN.md` §9.5; review of #740).
+fn kind_labels() -> Vec<&'static str> {
+    Kind::ALL.iter().map(|k| k.label()).collect()
+}
+
+fn kind_named(label: &str) -> Option<Kind> {
+    Kind::ALL.into_iter().find(|k| k.label() == label)
+}
+
 fn parse_kind(input: &Value) -> std::result::Result<Option<Kind>, String> {
     match input.get("kind").and_then(Value::as_str) {
         None | Some("all") => Ok(None),
-        Some("character") => Ok(Some(Kind::Character)),
-        Some("style") => Ok(Some(Kind::Style)),
-        Some("location") => Ok(Some(Kind::Location)),
-        Some(other) => Err(format!(
-            "`kind` must be character, style, location or all, not `{other}`."
-        )),
+        Some(label) => kind_named(label).map(Some).ok_or_else(|| {
+            format!(
+                "`kind` must be {} or all, not `{label}`.",
+                kind_labels().join(", ")
+            )
+        }),
     }
 }
 
@@ -102,17 +113,18 @@ impl Tool for ImageLibrary {
     }
 
     fn description(&self) -> &str {
-        "List the owner's recurring characters, styles and locations — each with its name and \
-         description. Put a character's name as a `who` in image_generate's `scene.people` and \
-         a style's in `scene.style`; the library supplies how they look. A location's name goes \
-         in video_generate's `scene.setting.location`. Optionally filter by kind or search by a word."
+        "List the owner's recurring characters, styles, locations and outfits — each with its \
+         name and description. Put a character's name as a `who` in image_generate's \
+         `scene.people` and a style's in `scene.style`; the library supplies how they look. In \
+         video_generate, a location's name goes in `scene.setting.location`, and an outfit's \
+         name as a cast member's whole `wearing`. Optionally filter by kind or search by a word."
     }
 
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "kind": {"type": "string", "enum": ["character", "style", "location", "all"]},
+                "kind": {"type": "string", "enum": kind_labels().into_iter().chain(["all"]).collect::<Vec<_>>()},
                 "query": {"type": "string", "description": "Names or words: a name picks that entry; otherwise every word must appear in an entry's name or description."}
             }
         })
@@ -150,8 +162,8 @@ impl Tool for ImageLibrary {
             let what = if query.is_some() || kind.is_some() {
                 "Nothing in the image library matches."
             } else {
-                "The image library is empty. The owner adds characters, styles and \
-                 locations; you can propose one with image_library_propose."
+                "The image library is empty. The owner adds characters, styles, locations \
+                 and outfits; you can propose one with image_library_propose."
             };
             return Ok(ToolOutput::ok(what));
         }
@@ -164,8 +176,9 @@ impl Tool for ImageLibrary {
                    `scene.people`, with what they are wearing and doing; their look comes from \
                    their portrait. Do not copy these descriptions into the scene. Anyone else \
                    in it — a waiter, a stranger — is a person too, described in their own \
-                   `who`. Put a style's name in `scene.style`, and a location's name in \
-                   video_generate's `scene.setting.location`, which brings its pictures.";
+                   `who`. Put a style's name in `scene.style`. In video_generate, a location's \
+                   name in `scene.setting.location` and an outfit's name as someone's whole \
+                   `wearing` bring their pictures.";
         // A broken entry is said, never silently absent.
         let broken = if errors.is_empty() {
             String::new()
@@ -270,20 +283,21 @@ impl Tool for ImageLibraryPropose {
     }
 
     fn description(&self) -> &str {
-        "Propose a new recurring character, style or location for the owner's image library. A \
-         character needs a portrait — a front-facing image already in the workspace, usually one \
-         you just generated — and a short description including build and height. A style \
-         needs its text; a location its description (fixtures, layout, light), and the owner \
-         adds its pictures. It waits for the owner's approval and cannot be used until then."
+        "Propose a new recurring character, style, location or outfit for the owner's image \
+         library. A character needs a portrait — a front-facing image already in the workspace, \
+         usually one you just generated — and a short description including build and height. \
+         A style needs its text; a location its description (fixtures, layout, light); an \
+         outfit what it is (garment, colour, cut, neckline). The owner adds a location's or \
+         outfit's pictures. It waits for the owner's approval and cannot be used until then."
     }
 
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "kind": {"type": "string", "enum": ["character", "style", "location"]},
+                "kind": {"type": "string", "enum": kind_labels()},
                 "name": {"type": "string", "description": "Lowercase letters, digits and hyphens."},
-                "text": {"type": "string", "description": "A character's short description, a style's text, or a location's description."},
+                "text": {"type": "string", "description": "A character's short description, a style's text, a location's description, or what an outfit is."},
                 "portrait": {"type": "string", "description": "A character's portrait: a workspace path (images/...)."},
                 "seed": {"type": "integer", "minimum": 0, "description": "The seed that drew the portrait, if you generated it."}
             },
@@ -301,14 +315,17 @@ impl Tool for ImageLibraryPropose {
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
-        let kind = match input.get("kind").and_then(Value::as_str) {
-            Some("character") => Kind::Character,
-            Some("style") => Kind::Style,
-            Some("location") => Kind::Location,
-            _ => {
-                return Ok(ToolOutput::err(
-                    "`kind` must be character, style or location.",
-                ))
+        let kind = match input
+            .get("kind")
+            .and_then(Value::as_str)
+            .and_then(kind_named)
+        {
+            Some(kind) => kind,
+            None => {
+                return Ok(ToolOutput::err(format!(
+                    "`kind` must be {}.",
+                    kind_labels().join(", ")
+                )))
             }
         };
         let field = |k: &str| {
@@ -351,13 +368,13 @@ impl Tool for ImageLibraryPropose {
                     "A character needs a `portrait`: a front-facing image in the workspace.",
                 ))
             }
-            (Kind::Style | Kind::Location, Some(_)) => {
+            (Kind::Style | Kind::Location | Kind::Outfit, Some(_)) => {
                 return Ok(ToolOutput::err(format!(
                     "A {} has no portrait.",
                     kind.label()
                 )))
             }
-            (Kind::Style | Kind::Location, None) => None,
+            (Kind::Style | Kind::Location | Kind::Outfit, None) => None,
         };
         // What the conversation had read before this turn's batch
         // (`ToolCtx::recorded_taint`), not the send gate's union of the

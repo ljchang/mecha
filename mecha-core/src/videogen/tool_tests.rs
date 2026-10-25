@@ -1042,6 +1042,107 @@ async fn a_library_location_is_the_clips_setting() {
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// A cast member whose whole `wearing` names a library outfit wears it: the
+/// garment picture goes after the people, defined as worn by them, and the
+/// schema offers the name; one with no picture is its text, with a note.
+#[tokio::test]
+async fn a_library_outfit_is_worn_with_its_picture() {
+    let home = scratch();
+    let chat = home.join("chat");
+    std::fs::create_dir_all(&chat).unwrap();
+    let lib = home.join("imagelib");
+    character(&lib, "maya", "Tall, with short grey hair");
+    for name in ["red-raincoat", "green-scarf"] {
+        crate::imagelib::create(
+            &lib,
+            crate::imagelib::NewEntry {
+                kind: crate::imagelib::Kind::Outfit,
+                name: name.into(),
+                text: format!("a {} with deep pockets", name.replace('-', " ")),
+                portrait: None,
+                source_seed: None,
+                origin: crate::imagelib::Origin::Owner,
+                locked: false,
+            },
+        )
+        .unwrap();
+    }
+    let img = image::RgbImage::from_pixel(4, 4, image::Rgb([200, 9, 9]));
+    let mut garment = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut garment, image::ImageFormat::Png).unwrap();
+    crate::imagelib::add_reference_to(
+        &lib,
+        crate::imagelib::Kind::Outfit,
+        "red-raincoat",
+        crate::imagelib::RefKind::View,
+        &garment.into_inner(),
+        None,
+        None,
+    )
+    .unwrap();
+    let cfg = VideoConfig::default();
+    let scene = |wearing: &str| {
+        json!({"scene": {
+            "cast": [{"name": "Maya", "wearing": wearing, "doing": "waving from the gate"}],
+            "shots": [{"framing": "A long view down the lane", "action": "Maya waves"}]
+        }})
+    };
+    let (url, log) = fake(Fake::default(), &cfg).await;
+    let t = tool(&url, &home, Arc::new(Stub::default()));
+    let wearing = t.input_schema()["properties"]["scene"]["properties"]["cast"]["items"]
+        ["properties"]["wearing"]["description"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(wearing.contains("green-scarf, red-raincoat"), "{wearing}");
+    let done = run(&t, scene("Red Raincoat"), &ctx(&chat)).await;
+    assert!(!done.is_error, "{}", done.content);
+    let seen = log.lock().unwrap().clone();
+    let uploads = seen
+        .iter()
+        .filter(|l| l.starts_with("POST /upload"))
+        .count();
+    assert_eq!(uploads, 2, "the portrait and the garment: {seen:?}");
+    let prompt = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+    assert!(
+        prompt.contains("is the outfit Red Raincoat in <Picture 2>, worn by <Subject 1>"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("<Subject 1> wears <Subject 2> and is waving from the gate."),
+        "{prompt}"
+    );
+
+    // No picture: its text, said.
+    let (url, log) = fake(Fake::default(), &cfg).await;
+    let t = tool(&url, &home, Arc::new(Stub::default()));
+    let done = run(&t, scene("green-scarf"), &ctx(&chat)).await;
+    assert!(
+        done.content.contains("has no picture yet"),
+        "{}",
+        done.content
+    );
+    let seen = log.lock().unwrap().clone();
+    let prompt = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+    assert!(
+        prompt.contains("wears a green scarf with deep pockets"),
+        "{prompt}"
+    );
+
+    // Only mentioned, not the whole `wearing`: the model's own words.
+    let (url, log) = fake(Fake::default(), &cfg).await;
+    let t = tool(&url, &home, Arc::new(Stub::default()));
+    run(&t, scene("jeans and a red raincoat"), &ctx(&chat)).await;
+    let seen = log.lock().unwrap().clone();
+    assert_eq!(
+        seen.iter()
+            .filter(|l| l.starts_with("POST /upload"))
+            .count(),
+        1
+    );
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// Stop takes a render off the server, frees its memory and gives the turn
 /// back.
 #[tokio::test]

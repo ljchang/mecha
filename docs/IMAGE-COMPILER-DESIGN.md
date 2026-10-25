@@ -932,7 +932,13 @@ repository, never their names or images.
   and existing manifests stay valid.
 - **L3, each generator's references gated on its measurement** (§9.4), with
   the owner ruling on each result, and the slot-filling order of §9.4.
-- **L4, outfits are text:** an image is for browsing only.
+- **L4, outfits are text:** an image is for browsing only. **Reopened for
+  video by the owner, 2026-10-25**: a picture of the garment alone (never
+  a person wearing it) is sent as the wearer's clothes, after one measured
+  pair — the same seed and scene, words only against words plus the
+  garment picture — held the garment across a cut where the words let it
+  drift into two other designs. Pictures keep outfits as text until a
+  measurement of their own.
 - **L5, names offered to a model:** location and outfit names appear in
   `image_generate`'s description as styles do (approved, unlocked);
   `image_library` lists them, locked included, as it lists everything (§4);
