@@ -1726,7 +1726,7 @@ fn input_schema(loras: &super::loras::Registry, locations: &[String], outfits: &
                         "wearing": {"type": "string", "description": "What they have on in this clip. Never leave it out: nothing of a portrait's outfit is kept."},
                         "doing": {"type": "string", "description": "Their activity when the clip starts."},
                         "notes": {"type": "string", "description": "Anything further about them for this clip."},
-                        "pov": {"type": "boolean", "description": "true when the clip is seen through this person's eyes (a first-person shot): their face never appears, only their hands and body; their voice is kept only if they have lines."}
+                        "pov": {"type": "boolean", "description": "Set true whenever the clip is first person — seen through this person's eyes, as in \"from Luke's point of view\" or \"POV\". Their face then never appears, only their hands and body, and their voice is kept only if they have lines. Left unset, their face is described and may be drawn."}
                     }, "required": ["name"]}},
                     "shots": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {
                         "at": {"type": "number", "description": "Second at which this shot begins; not for the first. Omitted, shots share the length evenly."},
@@ -1734,7 +1734,7 @@ fn input_schema(loras: &super::loras::Registry, locations: &[String], outfits: &
                         "camera": {"type": "string", "description": "For instance 'The camera holds still' or 'The camera tracks slowly to the left'."},
                         "action": {"type": "string", "description": "Prose for what happens during the shot, in sequence."}
                     }}},
-                    "lines": {"type": "array", "items": {"type": "object", "properties": {
+                    "lines": {"type": "array", "description": "Every spoken word, one entry per line in speaking order. Never write speech inside `action`: there it has no voice and no lip sync.", "items": {"type": "object", "properties": {
                         "who": {"type": "string"},
                         "says": {"type": "string", "description": "Just the spoken words; roughly 2.5 for each second of clip."},
                         "delivery": {"type": "string", "description": "The manner of speaking, for instance 'dryly, without looking up'."},

@@ -396,20 +396,17 @@ pub fn closed_lines(text: &str) -> String {
     out
 }
 
-/// Each library name, outside `<d>…</d>`, as its `<Subject N>` label: a
-/// whole word, any ASCII case, a hyphenated name also in its spaced form.
+/// Each library name, outside `<d>…</d>` and outside quoted speech, as its
+/// `<Subject N>` label: a whole word, any ASCII case, a hyphenated name also
+/// in its spaced form. Quotes are protected as `<d>` is: a model that wrote a
+/// line inside an action, quoting a library name it addressed, had the name
+/// inside the words replaced by a label (2026-10-25).
 pub fn label_names(text: &str, named: &[(String, usize)]) -> String {
     let mut out = String::with_capacity(text.len() + 32);
     let mut rest = text;
     while !rest.is_empty() {
-        let (outside, inside) = match rest.find("<d>") {
-            Some(open) => {
-                let close = rest[open..]
-                    .find("</d>")
-                    .map(|c| open + c + 4)
-                    .unwrap_or(rest.len());
-                (&rest[..open], &rest[open..close])
-            }
+        let (outside, inside) = match protected(rest) {
+            Some((open, close)) => (&rest[..open], &rest[open..close]),
             None => (rest, ""),
         };
         out.push_str(&label_outside(outside, named));
@@ -417,6 +414,40 @@ pub fn label_names(text: &str, named: &[(String, usize)]) -> String {
         rest = &rest[outside.len() + inside.len()..];
     }
     out
+}
+
+/// The first span in `text` a label must not enter, as byte offsets: a
+/// `<d>…</d>` line (to the end when unclosed, as H3 reads it), or a quote,
+/// straight or curly, that closes. An unclosed quote protects nothing, so a
+/// stray `"` cannot switch labelling off for the rest of the prompt.
+fn protected(text: &str) -> Option<(usize, usize)> {
+    let mut from = 0;
+    loop {
+        let open = text[from..]
+            .find(['<', '"', '\u{201c}'])
+            .map(|i| from + i)?;
+        let rest = &text[open..];
+        if rest.starts_with("<d>") {
+            let close = rest
+                .find("</d>")
+                .map(|c| open + c + 4)
+                .unwrap_or(text.len());
+            return Some((open, close));
+        }
+        let (quote, close_with) = if rest.starts_with('"') {
+            ('"', '"')
+        } else if rest.starts_with('\u{201c}') {
+            ('\u{201c}', '\u{201d}')
+        } else {
+            from = open + 1;
+            continue;
+        };
+        let body = open + quote.len_utf8();
+        match text[body..].find(close_with) {
+            Some(c) => return Some((open, body + c + close_with.len_utf8())),
+            None => from = body,
+        }
+    }
 }
 
 fn label_outside(text: &str, named: &[(String, usize)]) -> String {
@@ -509,6 +540,26 @@ mod tests {
             "<Subject 1> (S1) says, <d>[English] Hi Mara Lee!</d> <Subject 2> waves at <Subject 1>."
         );
         assert_eq!(label_names("Mayapple jam.", &named), "Mayapple jam.");
+        // Quoted speech keeps its names, straight or curly; a stray quote
+        // protects nothing after it.
+        assert_eq!(
+            label_names(
+                "Maya turns to Mara Lee: \"Thanks, Maya.\" Mara Lee nods.",
+                &named
+            ),
+            "<Subject 1> turns to <Subject 2>: \"Thanks, Maya.\" <Subject 2> nods."
+        );
+        assert_eq!(
+            label_names(
+                "Maya says \u{201c}Over here, Mara Lee\u{201d} to Mara Lee.",
+                &named
+            ),
+            "<Subject 1> says \u{201c}Over here, Mara Lee\u{201d} to <Subject 2>."
+        );
+        assert_eq!(
+            label_names("A 6\" ruler; Maya waves.", &named),
+            "A 6\" ruler; <Subject 1> waves."
+        );
     }
 
     /// A name that is a whole word of a longer one does not take its place
