@@ -5642,13 +5642,7 @@ impl Tool for ImageGenerate {
             let of = picture_path.as_deref().unwrap_or("the picture");
             let with = used
                 .iter()
-                .map(|u| {
-                    let kind = match u.kind {
-                        crate::imagelib::Kind::Character => "character",
-                        crate::imagelib::Kind::Style => "style",
-                    };
-                    format!("{kind} {} (v{})", u.name, u.version)
-                })
+                .map(|u| format!("{} {} (v{})", u.kind.label(), u.name, u.version))
                 .collect::<Vec<_>>();
             let with = if with.is_empty() {
                 String::new()
