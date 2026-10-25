@@ -453,7 +453,7 @@
         {#if form.mode === 'add'}
           <input
             class="editbox"
-            placeholder={form.kind === 'style' ? 'name, e.g. watercolour' : 'name, e.g. maya'}
+            placeholder={form.kind === 'style' ? 'name, e.g. watercolour' : form.kind === 'location' ? 'name, e.g. boathouse' : 'name, e.g. maya'}
             autocomplete="off"
             value={form.name}
             oninput={(e) => (form.name = tameName(e.currentTarget.value))}
@@ -465,7 +465,9 @@
           maxlength={TEXT_MAX[form.kind]}
           placeholder={form.kind === 'style'
             ? 'how pictures in this style look — medium, palette, light, texture'
-            : 'a short description: age, build and height, hair, anything distinctive — not clothing'}
+            : form.kind === 'location'
+              ? 'what the place looks like — its fixtures, layout, colours and light'
+              : 'a short description: age, build and height, hair, anything distinctive — not clothing'}
           bind:value={form.text}
         ></textarea>
         <div class="counter">{form.text.trim().length} / {TEXT_MAX[form.kind]}</div>
@@ -574,11 +576,18 @@
       {/if}
     {:else if data && shown.length === 0 && pane === 'candidates' && pendingRefs.length === 0}
       <div class="empty">Nothing is waiting.</div>
-    {:else if pane === 'styles'}
-      <button class="rowbtn card addrow" onclick={() => startAdd('style')}>
-        <span class="topic">+ Add style</span>
-        <span class="readingline">A name and a few lines on how the pictures should look.</span>
-      </button>
+    {:else if pane === 'styles' || pane === 'locations'}
+      {#if pane === 'styles'}
+        <button class="rowbtn card addrow" onclick={() => startAdd('style')}>
+          <span class="topic">+ Add style</span>
+          <span class="readingline">A name and a few lines on how the pictures should look.</span>
+        </button>
+      {:else}
+        <button class="rowbtn card addrow" onclick={() => startAdd('location')}>
+          <span class="topic">+ Add location</span>
+          <span class="readingline">A place for clips: what it looks like. Its pictures are added with <code>mecha imagelib add-reference &lt;name&gt; --as view</code>.</span>
+        </button>
+      {/if}
       {#each shown as e (e.name)}
         <button class="rowbtn card" onclick={() => (open = e)}>
           <span class="rowtop"><span class="topic">{e.name}</span>{#if e.locked}<span class="badge">locked</span>{/if}<span class="when">v{e.version}</span></span>
