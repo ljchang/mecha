@@ -30,6 +30,7 @@ pub struct Args {
 pub enum KindArg {
     Character,
     Style,
+    Location,
 }
 
 /// A reference's kind, as `--as` spells it (`--kind` is the entry's kind).
@@ -39,6 +40,8 @@ pub enum RefArg {
     #[value(name = "full_body")]
     FullBody,
     Detail,
+    /// A location's picture.
+    View,
 }
 
 impl From<RefArg> for RefKind {
@@ -47,6 +50,18 @@ impl From<RefArg> for RefKind {
             RefArg::Face => RefKind::Face,
             RefArg::FullBody => RefKind::FullBody,
             RefArg::Detail => RefKind::Detail,
+            RefArg::View => RefKind::View,
+        }
+    }
+}
+
+impl RefArg {
+    /// The entry kind this reference goes on: a view on a location, the
+    /// rest on a character.
+    fn entry_kind(self) -> KindArg {
+        match self {
+            RefArg::View => KindArg::Location,
+            RefArg::Face | RefArg::FullBody | RefArg::Detail => KindArg::Character,
         }
     }
 }
@@ -56,13 +71,14 @@ impl From<KindArg> for Kind {
         match k {
             KindArg::Character => Kind::Character,
             KindArg::Style => Kind::Style,
+            KindArg::Location => Kind::Location,
         }
     }
 }
 
 #[derive(clap::Subcommand, Debug)]
 pub enum Cmd {
-    /// Approved characters and styles; `--all` adds candidates.
+    /// Approved characters, styles and locations; `--all` adds candidates.
     List {
         #[arg(long)]
         all: bool,
@@ -95,6 +111,16 @@ pub enum Cmd {
     /// Add a style — yours, so approved at once.
     AddStyle {
         name: String,
+        #[arg(long)]
+        text: String,
+        #[arg(long)]
+        locked: bool,
+    },
+    /// Add a location — yours, so approved at once. Its pictures go on
+    /// with `add-reference <name> --as view`.
+    AddLocation {
+        name: String,
+        /// What the place looks like: its fixtures, layout and light.
         #[arg(long)]
         text: String,
         #[arg(long)]
@@ -184,7 +210,8 @@ pub enum Cmd {
     },
     /// Attach a typed picture to an approved character: a `face`, a
     /// `full_body` in a neutral, square-on stance (its pose carries into
-    /// pictures), or a labelled `detail` such as a tattoo. A new version.
+    /// pictures), or a labelled `detail` such as a tattoo; or a `view` to an
+    /// approved location. A new version.
     AddReference {
         name: String,
         /// What the picture is of.
@@ -952,6 +979,24 @@ fn run(dir: &std::path::Path, cmd: Cmd) -> Result<()> {
             )?;
             println!("Added style `{}`.", e.name);
         }
+        Cmd::AddLocation { name, text, locked } => {
+            let e = imagelib::create(
+                dir,
+                NewEntry {
+                    kind: Kind::Location,
+                    name,
+                    text,
+                    portrait: None,
+                    source_seed: None,
+                    origin: Origin::Owner,
+                    locked,
+                },
+            )?;
+            println!(
+                "Added location `{}`. Add its pictures with `mecha imagelib add-reference {} --as view <file>`.",
+                e.name, e.name
+            );
+        }
         Cmd::Approve { name, kind, yes } => {
             let e = resolve(&lib, &name, kind)?;
             if e.status == Status::Approved {
@@ -1028,10 +1073,11 @@ fn run(dir: &std::path::Path, cmd: Cmd) -> Result<()> {
             file,
             label,
         } => {
-            let e = resolve(&lib, &name, Some(KindArg::Character))?;
+            let e = resolve(&lib, &name, Some(as_kind.entry_kind()))?;
             let bytes = read_picture(&file)?;
             let kind: RefKind = as_kind.into();
-            let updated = imagelib::add_reference(dir, &e.name, kind, &bytes, label)?;
+            let updated =
+                imagelib::add_reference_to(dir, e.kind, &e.name, kind, &bytes, label, None)?;
             println!(
                 "`{}` is now v{} with a {} reference.",
                 updated.name,
@@ -1051,9 +1097,10 @@ fn run(dir: &std::path::Path, cmd: Cmd) -> Result<()> {
             as_kind,
             label,
         } => {
-            let e = resolve(&lib, &name, Some(KindArg::Character))?;
+            let e = resolve(&lib, &name, Some(as_kind.entry_kind()))?;
             let kind: RefKind = as_kind.into();
-            let updated = imagelib::remove_reference(dir, &e.name, kind, label.as_deref())?;
+            let updated =
+                imagelib::remove_reference_from(dir, e.kind, &e.name, kind, label.as_deref())?;
             println!(
                 "`{}` is now v{}, without that {} reference.",
                 updated.name,

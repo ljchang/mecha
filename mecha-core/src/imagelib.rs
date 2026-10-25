@@ -27,6 +27,9 @@ pub const MAX_NAME: usize = 64;
 pub const MAX_DESCRIPTION: usize = 400;
 /// A style's text, pasted verbatim at the end of every prompt that names it.
 pub const MAX_STYLE_TEXT: usize = 1000;
+/// A location's text (`IMAGE-COMPILER-DESIGN.md` §9.3): it is added to a
+/// scene's setting once, so it is held to a description's length.
+pub const MAX_LOCATION_TEXT: usize = 400;
 /// People per new picture. E3 held four in one pass; five is the owner's
 /// provisional ceiling (IMAGE-DESIGN.md §5.2 and §11, C5).
 pub const MAX_CAST: usize = 5;
@@ -70,15 +73,20 @@ pub const MAX_BOUND_IMAGES: usize = 2;
 pub enum Kind {
     Character,
     Style,
+    /// A place: text for the scene's setting and up to three `view`
+    /// pictures, which video sends as the setting (V-L, ruled passed by the
+    /// owner 2026-10-25). Pictures use its text only, until E13.
+    Location,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 2] = [Kind::Character, Kind::Style];
+    pub const ALL: [Kind; 3] = [Kind::Character, Kind::Style, Kind::Location];
 
     fn dir(self) -> &'static str {
         match self {
             Kind::Character => "characters",
             Kind::Style => "styles",
+            Kind::Location => "locations",
         }
     }
 
@@ -86,6 +94,16 @@ impl Kind {
         match self {
             Kind::Character => "character",
             Kind::Style => "style",
+            Kind::Location => "location",
+        }
+    }
+
+    /// Whether an entry of this kind has a portrait: a character must, and
+    /// nothing else may.
+    pub fn has_portrait(self) -> bool {
+        match self {
+            Kind::Character => true,
+            Kind::Style | Kind::Location => false,
         }
     }
 }
@@ -207,7 +225,7 @@ impl RefKind {
             (
                 Kind::Character,
                 RefKind::Face | RefKind::FullBody | RefKind::Detail
-            )
+            ) | (Kind::Location, RefKind::View)
         )
     }
 
@@ -317,6 +335,7 @@ fn validate_text(kind: Kind, text: &str) -> Result<()> {
     let cap = match kind {
         Kind::Character => MAX_DESCRIPTION,
         Kind::Style => MAX_STYLE_TEXT,
+        Kind::Location => MAX_LOCATION_TEXT,
     };
     if text.trim().is_empty() {
         bail!("a {} needs text", kind.label());
@@ -677,8 +696,8 @@ fn load_entry(kind: Kind, dir: &Path) -> Result<Entry> {
         );
     }
     validate_name(&entry.name)?;
-    if kind == Kind::Character && entry.portrait.is_none() {
-        bail!("a character without a portrait");
+    if kind.has_portrait() && entry.portrait.is_none() {
+        bail!("a {} without a portrait", kind.label());
     }
     // A plain file name, so a hand-edited entry cannot point a reference at
     // anything outside `blobs/`. Every blob the entry names, not only the
@@ -765,10 +784,10 @@ pub struct NewEntry {
 pub fn create(dir: &Path, new: NewEntry) -> Result<Entry> {
     validate_name(&new.name)?;
     validate_text(new.kind, &new.text)?;
-    match (new.kind, &new.portrait) {
-        (Kind::Character, None) => bail!("a character needs a portrait"),
-        (Kind::Style, Some(_)) => bail!("a style has no portrait"),
-        _ => {}
+    match (new.kind.has_portrait(), &new.portrait) {
+        (true, None) => bail!("a {} needs a portrait", new.kind.label()),
+        (false, Some(_)) => bail!("a {} has no portrait", new.kind.label()),
+        (true, Some(_)) | (false, None) => {}
     }
     let status = if new.origin == Origin::Owner {
         Status::Approved
@@ -916,14 +935,14 @@ pub fn update(
         entry.text = text.trim().to_string();
     }
     if let Some(bytes) = portrait {
-        if kind != Kind::Character {
-            bail!("a style has no portrait");
+        if !kind.has_portrait() {
+            bail!("a {} has no portrait", kind.label());
         }
         entry.portrait = Some(store_blob(dir, &bytes)?);
         entry.source_seed = source_seed;
     } else if source_seed.is_some() {
-        if kind != Kind::Character {
-            bail!("a style has no portrait, so no seed");
+        if !kind.has_portrait() {
+            bail!("a {} has no portrait, so no seed", kind.label());
         }
         entry.source_seed = source_seed;
     }
@@ -1049,13 +1068,38 @@ pub fn add_reference_as(
     label: Option<String>,
     origin: Option<Origin>,
 ) -> Result<Entry> {
-    let old = current(dir, Kind::Character, name)?;
+    add_reference_to(dir, Kind::Character, name, kind, bytes, label, origin)
+}
+
+/// The reference kinds an entry of `entry_kind` takes, as a refusal says them.
+fn allowed_references(entry_kind: Kind) -> &'static str {
+    match entry_kind {
+        Kind::Character => "face, full_body or detail references",
+        Kind::Location => "view references",
+        Kind::Style => "no references",
+    }
+}
+
+/// [`add_reference_as`] on an entry of any kind: a location's `view`
+/// pictures go on this way (§9.3).
+pub fn add_reference_to(
+    dir: &Path,
+    entry_kind: Kind,
+    name: &str,
+    kind: RefKind,
+    bytes: &[u8],
+    label: Option<String>,
+    origin: Option<Origin>,
+) -> Result<Entry> {
+    let old = current(dir, entry_kind, name)?;
     if old.status != Status::Approved {
         bail!("`{name}` is a candidate; approve it before adding references");
     }
-    if !kind.allowed_on(Kind::Character) {
+    if !kind.allowed_on(entry_kind) {
         bail!(
-            "a character takes face, full_body or detail references, not {}",
+            "a {} takes {}, not {}",
+            entry_kind.label(),
+            allowed_references(entry_kind),
             kind.label()
         );
     }
@@ -1395,7 +1439,18 @@ pub fn remove_reference(
     kind: RefKind,
     label: Option<&str>,
 ) -> Result<Entry> {
-    let old = current(dir, Kind::Character, name)?;
+    remove_reference_from(dir, Kind::Character, name, kind, label)
+}
+
+/// [`remove_reference`] on an entry of any kind.
+pub fn remove_reference_from(
+    dir: &Path,
+    entry_kind: Kind,
+    name: &str,
+    kind: RefKind,
+    label: Option<&str>,
+) -> Result<Entry> {
+    let old = current(dir, entry_kind, name)?;
     // Stored labels are trimmed on the way in, so the lookup is too.
     let label = label.map(str::trim).filter(|l| !l.is_empty());
     let matching: Vec<usize> = old
@@ -1787,6 +1842,17 @@ pub fn style_names(lib: &Library) -> Vec<String> {
     lib.all()
         .iter()
         .filter(|e| e.kind == Kind::Style && e.status == Status::Approved && !e.locked)
+        .map(|e| e.name.clone())
+        .collect()
+}
+
+/// Approved, unlocked locations, sorted: the names a model is offered, as
+/// [`style_names`] offers styles (§9.5, L5). A locked one still resolves by
+/// name; the lock is for browsing.
+pub fn location_names(lib: &Library) -> Vec<String> {
+    lib.all()
+        .iter()
+        .filter(|e| e.kind == Kind::Location && e.status == Status::Approved && !e.locked)
         .map(|e| e.name.clone())
         .collect()
 }
