@@ -659,13 +659,14 @@ pub async fn set_lock_settings(State(state): St, Json(body): Json<LockSettingsBo
     super::review::verb(&state, &["imagelib", "set-autolock", &minutes]).await
 }
 
-fn parse_kind(kind: &str) -> Option<&'static str> {
-    match kind {
-        "character" => Some("character"),
-        "style" => Some("style"),
-        _ => None,
-    }
+/// The entry kind a route names, parsed once into [`Kind`]: a string matched
+/// in one place and re-matched with a fallback in another let a new kind
+/// resolve against a same-named character (`IMAGE-COMPILER-DESIGN.md` §9.5).
+fn parse_kind(kind: &str) -> Option<Kind> {
+    Kind::ALL.into_iter().find(|k| k.label() == kind)
 }
+
+const KIND_REFUSAL: &str = "kind is character, style or location\n";
 
 #[derive(Deserialize, Default)]
 pub struct ActBody {
@@ -685,7 +686,7 @@ pub async fn act(
     body: Option<Json<ActBody>>,
 ) -> Response {
     let Some(kind) = parse_kind(&kind) else {
-        return (StatusCode::BAD_REQUEST, "kind is character or style\n").into_response();
+        return (StatusCode::BAD_REQUEST, KIND_REFUSAL).into_response();
     };
     if imagelib::validate_name(&name).is_err() {
         return (StatusCode::BAD_REQUEST, "not an entry name\n").into_response();
@@ -700,6 +701,7 @@ pub async fn act(
     let Some(entry) = visible(&state, kind, &name, body.unlock.as_deref()).await else {
         return (StatusCode::NOT_FOUND, "no such entry\n").into_response();
     };
+    let kind = kind.label();
     let args: Vec<&str> = match action.as_str() {
         "approve" => {
             let Some(shown) = body.shown else {
@@ -721,18 +723,13 @@ pub async fn act(
 /// exactly as missing does.
 async fn visible(
     state: &super::WebState,
-    kind: &'static str,
+    kind: Kind,
     name: &str,
     unlock: Option<&str>,
 ) -> Option<Entry> {
     let unlocked = state.library.unlocked(unlock);
     let dir = state.library.dir.clone();
     let n = name.to_string();
-    let kind = if kind == "style" {
-        Kind::Style
-    } else {
-        Kind::Character
-    };
     tokio::task::spawn_blocking(move || Library::load(&dir).0.get(kind, &n).cloned())
         .await
         .ok()
@@ -805,11 +802,12 @@ pub struct AddBody {
 }
 
 /// POST /api/library/add — a new character from an uploaded portrait, or a
-/// new style from its text: `mecha imagelib add-character` / `add-style`.
-/// The owner's own act, so approved on creation.
+/// new style or location from its text: `mecha imagelib add-character` /
+/// `add-style` / `add-location`. The owner's own act, so approved on
+/// creation.
 pub async fn add(State(state): St, Json(body): Json<AddBody>) -> Response {
     let Some(kind) = parse_kind(&body.kind) else {
-        return (StatusCode::BAD_REQUEST, "kind is character or style\n").into_response();
+        return (StatusCode::BAD_REQUEST, KIND_REFUSAL).into_response();
     };
     if imagelib::validate_name(&body.name).is_err() {
         return (
@@ -821,28 +819,33 @@ pub async fn add(State(state): St, Json(body): Json<AddBody>) -> Response {
     // `--flag=…` throughout: a text that opens with a dash is text, not a
     // flag (review of #385).
     let text = match kind {
-        "character" => format!("--description={}", body.text),
-        _ => format!("--text={}", body.text),
+        Kind::Character => format!("--description={}", body.text),
+        Kind::Style | Kind::Location => format!("--text={}", body.text),
     };
-    let staged = match (kind, body.portrait.as_deref()) {
-        ("character", Some(b64)) => match stage_portrait(b64, "portrait").await {
+    let staged = match (kind.has_portrait(), body.portrait.as_deref()) {
+        (true, Some(b64)) => match stage_portrait(b64, "portrait").await {
             Ok(dir) => Some(dir),
             Err(refusal) => return *refusal,
         },
-        ("character", None) => {
+        (true, None) => {
             return (StatusCode::BAD_REQUEST, "a character needs a portrait\n").into_response()
         }
-        (_, Some(_)) => {
-            return (StatusCode::BAD_REQUEST, "a style has no portrait\n").into_response()
+        (false, Some(_)) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("a {} has no portrait\n", kind.label()),
+            )
+                .into_response()
         }
-        (_, None) => None,
+        (false, None) => None,
     };
     let portrait = staged
         .as_ref()
         .map(|d| d.file().to_string_lossy().into_owned());
-    let mut args = match &portrait {
-        Some(path) => vec!["imagelib", "add-character", &body.name, "--portrait", path],
-        None => vec!["imagelib", "add-style", &body.name],
+    let mut args = match (&portrait, kind) {
+        (Some(path), _) => vec!["imagelib", "add-character", &body.name, "--portrait", path],
+        (None, Kind::Location) => vec!["imagelib", "add-location", &body.name],
+        (None, Kind::Character | Kind::Style) => vec!["imagelib", "add-style", &body.name],
     };
     args.push(&text);
     if body.locked {
@@ -874,7 +877,7 @@ pub struct EditBody {
 /// the entry's recorded seed goes with the old portrait.
 pub async fn edit(State(state): St, Json(body): Json<EditBody>) -> Response {
     let Some(kind) = parse_kind(&body.kind) else {
-        return (StatusCode::BAD_REQUEST, "kind is character or style\n").into_response();
+        return (StatusCode::BAD_REQUEST, KIND_REFUSAL).into_response();
     };
     if imagelib::validate_name(&body.name).is_err() {
         return (StatusCode::BAD_REQUEST, "not an entry name\n").into_response();
@@ -882,8 +885,12 @@ pub async fn edit(State(state): St, Json(body): Json<EditBody>) -> Response {
     if body.text.is_none() && body.portrait.is_none() {
         return (StatusCode::BAD_REQUEST, "nothing to change\n").into_response();
     }
-    if kind == "style" && body.portrait.is_some() {
-        return (StatusCode::BAD_REQUEST, "a style has no portrait\n").into_response();
+    if !kind.has_portrait() && body.portrait.is_some() {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("a {} has no portrait\n", kind.label()),
+        )
+            .into_response();
     }
     let Some(entry) = visible(&state, kind, &body.name, body.unlock.as_deref()).await else {
         return (StatusCode::NOT_FOUND, "no such entry\n").into_response();
@@ -909,7 +916,7 @@ pub async fn edit(State(state): St, Json(body): Json<EditBody>) -> Response {
         .as_ref()
         .map(|d| d.file().to_string_lossy().into_owned());
     let text = body.text.as_ref().map(|t| format!("--text={t}"));
-    let mut args = vec!["imagelib", "update", &body.name, "--kind", kind];
+    let mut args = vec!["imagelib", "update", &body.name, "--kind", kind.label()];
     if let Some(text) = &text {
         args.push(text);
     }
@@ -969,7 +976,8 @@ async fn reference_target(
             (StatusCode::BAD_REQUEST, "not an entry name\n").into_response(),
         ));
     }
-    let Some(entry) = visible(state, "character", &body.name, body.unlock.as_deref()).await else {
+    let Some(entry) = visible(state, Kind::Character, &body.name, body.unlock.as_deref()).await
+    else {
         return Err(Box::new(
             (StatusCode::NOT_FOUND, "no such entry\n").into_response(),
         ));
@@ -1337,6 +1345,17 @@ pub(super) fn state_for_tests(dir: PathBuf) -> std::sync::Arc<LibraryState> {
 
 #[cfg(test)]
 mod tests {
+    /// A route's kind parses once, into `Kind`, for every kind there is: a
+    /// location never resolves as a same-named character (§9.5).
+    #[test]
+    fn every_kind_parses_and_nothing_else_does() {
+        for kind in Kind::ALL {
+            assert_eq!(super::parse_kind(kind.label()), Some(kind));
+        }
+        assert_eq!(super::parse_kind("Character"), None);
+        assert_eq!(super::parse_kind("outfit"), None);
+    }
+
     use super::*;
 
     #[test]

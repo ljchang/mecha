@@ -29,6 +29,9 @@ pub struct Compiled {
     pub notes: Vec<String>,
     /// The cast members the clip is seen through (`pov`), as written.
     pub pov: Vec<String>,
+    /// The library location the scene names (`setting.location`), as
+    /// written: `plan` sends its picture as the setting.
+    pub location: Option<String>,
     /// Those of them with no line kept: their voice is a slot H3 may give
     /// words to. Speakers are matched as the compiler numbers them, in any
     /// case, so a line `who: "wren"` keeps Wren's voice (review of #738).
@@ -302,6 +305,17 @@ pub fn compile(scene: &Value, default_seconds: f64) -> Result<Compiled> {
             out.push_str(&format!("[Shot 1] {}", sentence(&framing)));
             // The setting and the people, once, at the opening.
             if let Some(setting) = scene.get("setting") {
+                // Named, so `compose` labels it as the subject its picture
+                // defines; the location's own words go with that definition.
+                if let Some(place) = text(setting, "location") {
+                    out.push_str(&format!(
+                        " The scene takes place in {}.",
+                        // As the library keys it, so `compose` can label it
+                        // and the plan resolves the same name: `Boat_House`
+                        // stayed literal (review of #740).
+                        super::compose::title_case(&crate::imagelib::spelled_as_name(&place))
+                    ));
+                }
                 if let Some(d) = text(setting, "description") {
                     out.push(' ');
                     out.push_str(&sentence(&capital(&d)));
@@ -430,6 +444,7 @@ pub fn compile(scene: &Value, default_seconds: f64) -> Result<Compiled> {
         seconds,
         aspect: text(scene, "aspect"),
         notes,
+        location: scene.get("setting").and_then(|s| text(s, "location")),
         silent_pov: pov.iter().filter(|p| id_of(p).is_none()).cloned().collect(),
         pov,
     })

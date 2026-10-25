@@ -1173,6 +1173,16 @@ here:
   chain first, after turbo. One bad entry costs only itself, said at
   start. A per-chat allowlist and a picker are later work (the owner,
   2026-10-25: the registry applies everywhere for now).
+- **A library location is the setting, sent as one** (`Kind::Location`,
+  `scene.setting.location`; V-L ruled passed by the owner 2026-10-25, the
+  room photo having carried in four of four clips). Its first `view`
+  picture goes after the people, so their voice slots keep their numbers,
+  and `compose` defines it as "the location …, shown in `<Picture n>`" and
+  keeps it as "(the setting)", never as someone who "appears". The scene
+  names it, so the label lands where the place is said. One with no picture
+  is described in words, with a note; an unknown one is refused at the call,
+  naming only what was asked. The schema offers approved, unlocked names,
+  read when the tool is built (L5; `docs/TRIFECTA.md` for the cost).
 - **The preflight asks for every file the graph names** (`graph::needs`),
   and a test builds each graph shape and holds the two lists equal. A file
   in the graph and not the preflight fails mid-render, as a node validation
@@ -1446,8 +1456,8 @@ mecha-a3, 2026-10-09). An answer that gives nobody a part still fails. It feeds 
   like the PNG): the scene as written, the compiled prompt, seed, sizes, the
   model files, and each entry's name, version and portrait hash.
 - **The owner adds and edits from the web as from the terminal**
-  (`serve/library.rs` `add`, `edit`): each runs `add-character`, `add-style`
-  or `update` as a child, a portrait arriving base64 in the JSON body under
+  (`serve/library.rs` `add`, `edit`): each runs `add-character`, `add-style`,
+  `add-location` or `update` as a child, a portrait arriving base64 in the JSON body under
   its own body limit (`MAX_WRITE_BODY` — axum's 2 MB default would answer
   413 before the store's cap could) and staged in a private scratch
   directory. Edit honours the lock like every write, and is refused on a

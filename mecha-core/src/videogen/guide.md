@@ -14,7 +14,7 @@ H3 renders brief clips, picture and sound together, and it learned from prompts 
 Fill `scene` and the tool writes the H3 prompt for you: it numbers speakers, attaches voices, ends every line properly, keeps people who are listening quiet, and checks that the timing fits. `shots` is the only required part.
 
 - `style`: a single concrete line covering look and mood. H3 responds to light, colour and pace rather than adjectives about feelings, so prefer `Live-action, cinematic, calm and wry, cool overcast light` to `a cosy vibe`.
-- `setting`: a `description`, plus `light` if it matters.
+- `setting`: a `description`, plus `light` if it matters. When the owner's library has the place, give its name as `location` (the schema lists them): its picture becomes the setting and its description comes with it, so `description` only needs what is different this time. Name the room's fixtures in the action too ("on the padded table"): the picture keeps the look, the words keep where people are.
 - `cast`: an entry for each person:
   - `name`: their library name, or a few words describing someone not in the library;
   - **`wearing`, every time.** Nothing of a portrait's outfit survives, so without it H3 dresses them however it likes;
