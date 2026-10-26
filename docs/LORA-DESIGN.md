@@ -167,7 +167,8 @@ layer, and each persona's `state.toml` overrides it field by field
 - **"Inherit" and "none" are different states.** A persona that inherits
   follows the chat layer as it changes. A persona set to an empty list stays
   empty. `Tuning` already writes an explicit choice and leaves an unset one
-  out, for the same reason.
+  out, for the same reason. Only the LoRA route writes them (§6), so a save
+  of the other picture settings can never turn one into the other.
 - **The LoRA list inherits across a model change.** `Tuning::over` drops
   the whole chat layer when the persona's model differs from the chat's,
   because cfg and steps are tuned per checkpoint. A list of names is not, so
@@ -188,8 +189,9 @@ layer, and each persona's `state.toml` overrides it field by field
   clip entry the layer left off, and every character-tied entry (L6) into
   the model's context, in the refusal for the gate that withheld them. So
   the names a refusal lists are the resolved layer's list, filtered to the
-  clip's family and mode, and a test asserts an off-list name appears in no
-  refusal.
+  clip's family and mode, and less any character-tied entry whose character
+  is not in this clip's cast (L6). A test asserts an off-list name appears
+  in no refusal.
 - **The enum is built per run, from the resolved layer.** Today the schema
   is built once, in `VideoGenerate::new` from `prepare_tools`, and in
   `mecha serve` one instance serves every chat and persona. A run's tools are
@@ -277,8 +279,13 @@ prompt does not already contain it, with the same rule as
     `comfyui_unit` already asks a server what it has, so listing needs no
     path. `loras_dir` is for §2's key check only. The family is read from
     the file and shown. The owner fills in name, about, strength and
-    trigger, and for H3 says which mode the file is for. A second H3 file is attached to an existing entry the same
-    way.
+    trigger, and for H3 says which mode the file is for. A second H3 file
+    is attached to an existing entry the same way. ComfyUI lists files in
+    subfolders of `models/loras` by their relative path, so `file`, `frames`
+    and `references` accept one: each `/`-separated part must pass today's
+    `plain` rule, and the joined path must canonicalize inside its
+    `loras_dir` (§3). The Add list never offers a file the parser would
+    refuse.
   - Edit and remove. Removing an entry also removes it from every layer's
     list, and the page says how many layers held it.
 - **Settings → Images** gains a LoRA list (the chat layer's picture LoRAs).
@@ -300,10 +307,16 @@ prompt does not already contain it, with the same rule as
   depends on the lock (the library ruling, 2026-10-13).
 
 Server routes: `GET /api/loras` (entries, their check, the unused files),
-`POST/PUT/DELETE /api/loras/{name}`, and the layers through the existing
-settings routes, the way `Tuning` already travels. Each write goes through
-the same parser as the file, so the page cannot write an entry the file
-would refuse.
+`POST/PUT/DELETE /api/loras/{name}`, and each layer's LoRA lists through a
+route of their own, `PUT /api/loras/layer/{chat|persona/<name>}`, behind
+the same unlock token. The lists live beside `Tuning` in the same stored
+state, but they are never written by the existing picture-settings route.
+That route replaces `Tuning` whole (`ImageSettingsBody::tuning`, then
+`persona::set_tuning`), so an omitted field reads as unset. A cfg change
+saved while the pane is locked, from a page that cannot hold the LoRA rows,
+would otherwise reset a persona's explicit empty list to inherit. Each
+write goes through the same parser as the file, so the page cannot write
+an entry the file would refuse.
 
 ## 7. Build order
 
