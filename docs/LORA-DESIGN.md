@@ -120,8 +120,11 @@ strength = 0.8
   every model file it fetches), and the link must still read. With the key
   unset,
   every entry for that server is refused, and `mecha doctor` and the page
-  name the key. A file the server lists (§6) that is in none of the folders
-  is a named `doctor` finding, not a silent refusal. On this machine step
+  name the key. A registry entry whose file is in none of the folders is a
+  named `doctor` finding, not a silent refusal: that is a store-and-stat
+  read, which doctor's no-network rule allows. The other half, a file
+  ComfyUI can load that mecha cannot find, needs `/object_info`, so it is
+  shown on the page (§6), which already asks the server for its Add list. On this machine step
   1's deploy sets both keys first, or every clip LoRA would drop. The clip
   turbo LoRA is not one of them: it is a `[video]` config key
   (`frames_turbo_lora`, `references_turbo_lora`), not a registry entry, so
@@ -331,12 +334,17 @@ prompt does not already contain it, with the same rule as
   `banner` and `hiddenLine`, through `App.svelte`. Each of those does
   `rows.get(id)` and reads a miss as shown, not refusing, no banner and no
   line, so an array handed through would fail open in all four with no
-  error. So only the three readers learn lists, and each hands one id on.
-  `featureOf` returns the first listed feature that is on, or the first
-  listed when none is, so `isShown` means **any on** and `banner` speaks for
-  the feature the pane is showing under. `bounceFor` returns an id only when
+  error. So only the readers learn lists, and each hands one id on.
+  Ranking by which feature is on needs `rows`, which `featureOf` does not
+  take: it is a pure function of the two maps, and `web/test/features.mjs`
+  asserts against it with no rows fixture. So `featureOf(view, sub)` stays
+  pure and returns the first listed id, and a new `featureFor(rows, view,
+  sub)` returns the first listed feature that is on, or the first listed
+  when none is. `App.svelte`'s `banner` and `hiddenLine` calls and `opens`
+  move to `featureFor`, so `isShown` means **any on** and `banner` speaks
+  for the feature the pane is showing under. `bounceFor` returns an id only when
   **all** listed features refuse, the first of them, so `hiddenLine` still
-  says why. `opens` follows `featureOf`, and its second clause, which hands
+  says why. `opens` follows `featureFor`, and its second clause, which hands
   the raw map value to `isShown` for a pane in `OPENS_ANYWAY`, resolves it
   the same way first: `library/voices` is in both maps today, so the first
   such pane to take a list would otherwise fail open there. Otherwise an owner with video on and
@@ -403,10 +411,13 @@ an entry the file would refuse.
    `loras`. Without them, a hand-typed `~/…` is read literally and every
    entry for that server is refused. `every_path_field_a_layer_can_read_is_expanded`
    does not catch this, because it walks only the `*Layer` structs in
-   `config.rs`, so step 1 adds a test for these two keys.
+   `config.rs`. So step 1 extends `a_leading_tilde_in_a_config_path_is_the_home_directory`,
+   which already covers `[video]`'s two paths for the same reason.
    `scripts/check-private.py`'s `corpus()` also reads the registry's
    `name`, `file` and `trigger` and refuses them in added text, as it already
-   does for persona names.
+   does for persona names. While the old file is still read, `corpus()`
+   also reads it, at the path `[video] loras` names in the global config,
+   since it is not at a fixed path.
 2. **Layers for clips.** The allowlist on the chat and persona layers,
    enforced in `pick`, and the narrowed `video_generate` per run. This is
    plumbing through where a run's tools are chosen, not a change inside
