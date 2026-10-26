@@ -53,6 +53,14 @@ cleanly by model family:
 The `__metadata__` block is not evidence. Ten of the 41 had no base-model
 field at all, and the field names differ by trainer. So:
 
+- **The read is a bounded prefix read.** The format allows reading the
+  header without loading a tensor, but the only header parse in the repo
+  (`face::read_safetensors`) takes the whole file as `&[u8]`, and a LoRA is
+  100 MB to several GB. The family read takes the 8-byte little-endian
+  length, refuses a length over 8 MiB before using it as a size, and reads
+  that many bytes only. The largest header among the owner's 41 files is
+  75 KB. The length is the file's own claim, so a corrupt or absurd one is
+  refused, never allocated.
 - **Family is read from the keys.** A file whose keys match neither family
   is *unknown*, and unknown is refused, never assumed.
 - **Nothing read from a LoRA file is ever shown or prompted as text.** The
@@ -95,12 +103,24 @@ strength = 0.8
   §1 says this design closes first. Today mecha has no path to a server's
   `models/loras`: the registry holds bare file names, the servers are spoken
   to over loopback HTTP, and only a ComfyUI that `comfyui_unit` installed
-  has a `models/` path mecha knows. So each server's LoRA folder becomes a
+  has a `models/` path mecha knows. So each server's LoRA folders become a
   global config key, `[image] loras_dir` and `[video] loras_dir`, which
   `comfyui_unit` fills for a server it installs and the owner sets for a
-  provided one. With the key unset, every entry for that server is refused,
-  and `mecha doctor` and the page name the key. On this machine step 1's
-  deploy sets both keys first, or every clip LoRA would drop.
+  provided one. Each is a list, because ComfyUI's `extra_model_paths.yaml`
+  can add LoRA folders beyond `models/loras`, and the owner's video server
+  has one. A file is looked up in each folder in turn. With the key unset,
+  every entry for that server is refused, and `mecha doctor` and the page
+  name the key. A file the server lists (§6) that is in none of the folders
+  is a named `doctor` finding, not a silent refusal. On this machine step
+  1's deploy sets both keys first, or every clip LoRA would drop.
+- **The check runs when a file changes, not on every call.** Its result is
+  kept per file by (path, length, mtime): the registry's load checks each
+  entry's file once, and a later read re-checks only a file whose length or
+  mtime moved. An unchanged file keeps its result, so a transient read
+  failure on one cannot change the `motion` enum or re-pay the cached
+  prefix. The reason shown keeps *unreadable* apart from *keys matched
+  neither family*, though both refuse: the first can be a file mid-copy, the
+  second never changes.
 - **Each graph gets only entries of its family.** The picture graph sees
   `qwen-image` entries and the clip graph sees `h3` entries. Today the clip
   path drops a pick with no file for the clip's mode; the family check adds
@@ -151,10 +171,18 @@ layer, and each persona's `state.toml` overrides it field by field
   damaged list reads as inherit, never as an empty override.
 - **The allowlist is enforced in `pick`, not only in the schema.**
   `Registry::pick` resolves a name against the whole registry, so once a
-  layer narrows the enum, a name it did not offer would still load. `pick` takes the resolved layer's list and
-  refuses a name outside it with the same refusal as an unknown name. The
-  enum is the hint, `pick` is the gate, and a test names an off-list entry
-  and expects the refusal: that is the case the enum cannot cover.
+  layer narrows the enum, a name it did not offer would still load. `pick`
+  takes the resolved layer's list and refuses a name outside it. The enum is
+  the hint, `pick` is the gate, and a test names an off-list entry and
+  expects the refusal: that is the case the enum cannot cover.
+- **A refusal names only what the run was offered.** Today's refusal for an
+  unknown name lists `offered()`, which is the whole registry. After §3
+  merges pictures and clips, that list would put every picture entry, every
+  clip entry the layer left off, and every character-tied entry (L6) into
+  the model's context, in the refusal for the gate that withheld them. So
+  the names a refusal lists are the resolved layer's list, filtered to the
+  clip's family and mode, and a test asserts an off-list name appears in no
+  refusal.
 - **The enum is built per run, from the resolved layer.** Today the schema
   is built once, in `VideoGenerate::new` from `prepare_tools`, and in
   `mecha serve` one instance serves every chat and persona. A run's tools are
@@ -165,7 +193,9 @@ layer, and each persona's `state.toml` overrides it field by field
   enum's description, so an edit that leaves the list alone must still reach
   the next turn. The same rendering always gives the same bytes. A change
   in settings applies from the next turn and re-pays the cached prefix once.
-  Nothing changes per turn, and the enum is sorted.
+  Nothing changes per turn. The enum keeps registry file order, as
+  `Registry::schema` renders it today, which is stable; sorting it would
+  re-pay every existing prefix once for nothing.
 - **Settings are written only by the owner's settings route**, as
   `set_tuning` is. No tool writes them, and the model never authors a
   registry entry. An `about` line is owner-written prompt text, so it is
@@ -174,15 +204,14 @@ layer, and each persona's `state.toml` overrides it field by field
   settings, not their names, because the model has no say in them. When
   settings added trigger words to the prompt, the result says that too,
   without the words, so a picture that differs from what the model wrote
-  has a recorded reason. A clip
-  result keeps naming what the model picked, as it does today, so it can say
-  what it chose.
+  has a recorded reason. A clip result keeps naming what the model picked,
+  as it does today, so it can say what it chose.
 
 ## 5. The picture graph
 
 One `LoraLoaderModelOnly` per entry between the diffusion model's loader
-(`imagegen::unet_loader`'s choice) and `KSampler`, in registry order. The clip graph builds its chain the same way
-(`videogen::graph::lora_chain`). A trigger is added to the prompt when the
+(`imagegen::unet_loader`'s choice) and `KSampler`, in registry order. The
+clip graph builds its chain the same way (`videogen::graph::lora_chain`). A trigger is added to the prompt when the
 prompt does not already contain it, with the same rule as
 `loras::with_triggers`. Two things are unknown, so the build waits on them:
 
@@ -212,25 +241,30 @@ prompt does not already contain it, with the same rule as
 ## 6. The web
 
 - **Settings → LoRAs**, shown when the image or video feature is on.
-  `PANE_FEATURE` maps a pane to exactly one feature, and `featureOf` returns
-  one id, so step 4 extends the entry to a list, and this pane is its first
-  caller (ARCHITECTURE §Features, *Adding a feature*). The two readers of
-  the map get opposite rules: `isShown` shows the pane when **any** listed
-  feature is on, and `bounceFor`/`opens` send a deep link home only when
-  **all** of them refuse. Otherwise an owner with video on and image off
-  sees the tab and is bounced from it, the #654 shape. The routes below
-  follow the same rule: `/api/loras` answers when either feature is on, and
-  each entry's write is refused when its own family's feature is off. Each section shows only when its own feature is on:
-  picture entries with `image`, clip entries with `video`.
+  `PANE_FEATURE` maps a pane to exactly one feature, so step 4 extends the
+  map's value to a list, and this pane is its first caller (ARCHITECTURE
+  §Features, *Adding a feature*). Five functions in `web/src/lib/features.js`
+  meet that value: `featureOf`, `opens` and `bounceFor`, which read the map,
+  and `isShown` and `refuses`, which take an id. Both of the latter do
+  `rows.get(id)` and read a miss as shown and not refusing, by design. So an
+  array handed through unchanged makes the pane always shown and never
+  bounced, with no error. All five handle a list, with opposite rules:
+  shown when **any** listed feature is on, bounced only when **all** of them
+  refuse. Otherwise an owner with video on and image off sees the tab and
+  is bounced from it, the #654 shape. A web test covers both directions.
+  The routes follow the same rule: `/api/loras` answers when either feature
+  is on, and each entry's write is refused when its own family's feature is
+  off. Each section shows only when its own feature is on: picture entries
+  with `image`, clip entries with `video`.
   - One row per registry entry: name, family, the mode files for H3, about,
     strength, trigger, `always` (clips), the character an entry is tied to
     (L6), and checked or refused with the reason.
   - **Add** lists the files no entry uses yet, labelled by server. The list
     comes from each server's `/object_info` (`lora_name`'s options), as
     `comfyui_unit` already asks a server what it has, so listing needs no
-    path. `loras_dir` is for §2's key check only. The family is read from the file and shown. The owner fills
-    in name, about, strength and trigger, and for H3 says which mode the
-    file is for. A second H3 file is attached to an existing entry the same
+    path. `loras_dir` is for §2's key check only. The family is read from
+    the file and shown. The owner fills in name, about, strength and
+    trigger, and for H3 says which mode the file is for. A second H3 file is attached to an existing entry the same
     way.
   - Edit and remove. Removing an entry also removes it from every layer's
     list, and the page says how many layers held it.
@@ -284,7 +318,7 @@ Each step is its own PR. The tests and docs use made-up names only. Until
 step 1 puts the registry in `check-private.py`'s corpus, each push is also
 checked by hand for names from the owner's registry.
 
-## 8. Decisions owed
+## 8. Decisions
 
 - **L1. What a new chat or persona starts with. Ruled 2026-10-26:**
   pictures start empty. Clips keep today's set: the chat layer is migrated
