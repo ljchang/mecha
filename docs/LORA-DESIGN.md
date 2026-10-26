@@ -217,8 +217,10 @@ layer, and each persona's `state.toml` overrides it field by field
 
 - **An absent chat layer is not a damaged one.** The chat layer has no
   layer above it, so absent cannot mean inherit. For pictures, absent means
-  empty (L1). For clips, absent means every entry the registry offers,
-  which is v1's behaviour, never empty: a fresh install, or a machine where
+  empty (L1). For clips, absent means every `h3` entry the registry offers
+  **that names no character**, which is v1's behaviour, never empty. A
+  character-tied entry only ever reaches a list because the owner put it
+  there (L6): a fresh install, or a machine where
   step 2's migration has not run, keeps today's clips rather than refusing
   every pick. Damaged still reads as empty, with the finding, because
   damaged means a list was written and cannot be read.
@@ -303,7 +305,10 @@ One `LoraLoaderModelOnly` per entry between the diffusion model's loader
 (`imagegen::unet_loader`'s choice) and `KSampler`, in registry order. The
 clip graph builds its chain the same way (`videogen::graph::lora_chain`). A trigger is added to the prompt when the
 prompt does not already contain it, with the same rule as
-`loras::with_triggers`. Two things are unknown, so the build waits on them:
+`loras::with_triggers`. That function's insertion points are H3's section
+headers, so for a picture prompt it always takes its prefix branch, which
+is what is wanted: there is no picture-side field to insert into. Two
+things are unknown, so the build waits on them:
 
 - **M1. Does a LoRA patch Qwen-Image's int8 file?** Clips already chain
   `LoraLoaderModelOnly` onto H3's int8 ConvRot checkpoints through
@@ -364,10 +369,13 @@ prompt does not already contain it, with the same rule as
   `isShown(features.rows, …)` calls, so the LoRAs entry there is shown on
   `image` or `video`, the way the same list already shows one entry on
   `personas` or `library`.
-  The routes follow the same rule: `/api/loras` answers when either feature
-  is on, and each entry's write is refused when its own family's feature is
-  off. Each section shows only when its own feature is on: picture entries
-  with `image`, clip entries with `video`.
+  The routes do not follow that rule, because a route cannot: `gate::Owner`
+  admits one feature per route (`every_route_is_registered_with_its_owner`,
+  and FEATURES-DESIGN's "every route belongs to exactly one feature or to
+  the core"), and `Owner::Core` would answer with both features off. So
+  each family has its own routes, under its own feature, and the pane calls
+  whichever its features allow. Each section shows only when its own
+  feature is on: picture entries with `image`, clip entries with `video`.
   - One row per registry entry: name, family, the mode files for H3, about,
     strength, trigger, `always` (clips), the character an entry is tied to
     (L6), and checked or refused with the reason. A picture entry before
@@ -389,16 +397,18 @@ prompt does not already contain it, with the same rule as
     list, and the page says how many layers held it.
 - **Settings → Images** gains a LoRA list (the chat layer's picture LoRAs).
   **Settings → Video** is a new pane holding the chat layer's clip
-  allowlist.
+  allowlist, with its own plain `PANE_FEATURE` entry,
+  `'settings/video': 'video'`, so an owner with video off never gets a row
+  opening onto a route that answers `feature_off`.
 - **Each persona's picture settings** gain both lists, each with an
   "Inherit from chat" state.
 - **Locking (L3).** Today the library lock is a per-entry browse filter:
   `serve/library.rs` leaves locked entries out of the list and answers 404
   for their portraits without a live unlock token, enforced at the route,
   not the page. Both tabs stay in the nav. L3 adds a pane-level scope that
-  does not exist yet, and enforces it the same way. `GET /api/loras` and
-  every write under it require the live unlock token. Without one, the route
-  answers *locked* with no names, abouts or triggers, and the pane shows
+  does not exist yet, and enforces it the same way. Every route under
+  `/api/loras/` (below), reads and writes alike, requires the live unlock
+  token. Without one, a route answers *locked* with no names, abouts or triggers, and the pane shows
   only that it is locked. Hiding the pane on the page alone would still ship
   the text to the browser, which `library.rs` refuses to do for the same
   reason. The layer lists in Images, Video and persona settings show their
@@ -406,10 +416,12 @@ prompt does not already contain it, with the same rule as
   depends on the lock (the library ruling of 2026-09-28, reaffirmed
   2026-10-13).
 
-Server routes: `GET /api/loras` (entries, their check, the unused files),
-`POST/PUT/DELETE /api/loras/{name}`, and each layer's LoRA lists through
-routes of their own, `GET` and `PUT /api/loras/layer/{chat|persona/<name>}`,
-both behind the same unlock token. The read needs its own route as much as
+Server routes, one set per family: `GET /api/loras/image` and `GET
+/api/loras/video` (entries, their check, the unused files), under
+`Feature::Image` and `Feature::Video`; `POST/PUT/DELETE
+/api/loras/{image|video}/{name}`; and each layer's lists through `GET` and
+`PUT /api/loras/{image|video}/layer/{chat|persona/<name>}`. Every one is
+behind the same unlock token. The read needs its own route as much as
 the write: `GET /api/settings/images` takes no token today, since the
 chat's other picture settings are behind no lock, so the LoRA rows never
 ride in its body. A locked page renders the Images settings as now, with
@@ -434,7 +446,12 @@ an entry the file would refuse.
    entry for that server is refused. `every_path_field_a_layer_can_read_is_expanded`
    does not catch this, because it walks only the `*Layer` structs in
    `config.rs`. So step 1 extends `a_leading_tilde_in_a_config_path_is_the_home_directory`,
-   which already covers `[video]`'s two paths for the same reason.
+   which already covers `[video]`'s two paths for the same reason. Step 1
+   also adds the `doctor` findings §3 and §4 promise: `loras_dir` unset, an
+   entry's file in none of the folders, the old file ignored, and a
+   registry re-read that failed. Step 2 adds the fifth, a dangling name on
+   a layer list. They are what keeps a refused entry from being a silently
+   refused one.
    `scripts/check-private.py`'s `corpus()` also reads the registry's
    `name`, `file` and `trigger` and refuses them in added text, as it already
    does for persona names. While the old file is still read, `corpus()`
@@ -445,8 +462,9 @@ an entry the file would refuse.
    plumbing through where a run's tools are chosen, not a change inside
    `loras.rs`. It also writes L1's migration: on the first start of the new
    build, a chat settings file with no clip list gets one naming every
-   `h3` entry the registry offers (picture entries, which step 1 already
-   allows, never seed a clip list), so a later entry starts off as L1
+   `h3` entry the registry offers that names no character (picture
+   entries, which step 1 already allows, never seed a clip list, and a
+   character-tied entry stays off until the owner turns it on, L6), so a later entry starts off as L1
    rules. The write is the one irreversible step here, so it runs only
    from a clean read: the registry file read and parsed, `[video]
    loras_dir` set, and no `h3` entry refused for an unreadable or unfound
