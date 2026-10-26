@@ -638,7 +638,10 @@ impl VideoGenerate {
         // (`IMAGE-COMPILER-DESIGN.md` §9.4): bodies, then details. Frames
         // mode takes no references.
         let (extras, extra_pictures) = match mode {
-            graph::Mode::References => self.extras_for(&references, &library, &pov, &mut notes)?,
+            graph::Mode::References => {
+                let pinned = usize::from(first.is_some()) + usize::from(last.is_some());
+                self.extras_for(&references, pinned, &library, &pov, &mut notes)
+            }
             graph::Mode::Frames => (Vec::new(), Vec::new()),
         };
         let prompt = match mode {
@@ -796,13 +799,17 @@ impl VideoGenerate {
     /// - **Details, in cast order, while slots remain**: each labelled mark
     ///   (V-D, owner 2026-10-26). What does not fit is counted in a note,
     ///   never named.
+    ///
+    /// Nothing here refuses a clip: a picture that does not read is left out
+    /// and counted, since the call never asked for it (review of #744).
     fn extras_for(
         &self,
         refs: &[Picture],
+        pinned: usize,
         library: &crate::imagelib::Library,
         pov: &[String],
         notes: &mut Vec<String>,
-    ) -> Result<(Vec<compose::Extra>, Vec<Picture>)> {
+    ) -> (Vec<compose::Extra>, Vec<Picture>) {
         use crate::imagelib::{Kind, RefKind, Status};
         let seen: Vec<(usize, Option<&crate::imagelib::Entry>)> = refs
             .iter()
@@ -824,14 +831,20 @@ impl VideoGenerate {
             .collect();
         let mut extras = Vec::new();
         let mut pictures: Vec<Picture> = Vec::new();
-        let mut slots = graph::MAX_REFERENCES.saturating_sub(refs.len());
+        // Pinned frames take slots too (§9.4: nine "less any pinned or other
+        // reference images"; review of #744).
+        let mut slots = graph::MAX_REFERENCES.saturating_sub(refs.len() + pinned);
+        let mut unreadable = 0;
         let mut add = |subject: usize,
                        entry: &crate::imagelib::Entry,
                        reference: &crate::imagelib::Reference,
                        kind: compose::ExtraKind,
                        what: &str|
-         -> Result<()> {
-            let (bytes, ext) = library.read_reference(entry, reference)?;
+         -> bool {
+            let Ok((bytes, ext)) = library.read_reference(entry, reference) else {
+                unreadable += 1;
+                return false;
+            };
             extras.push(compose::Extra {
                 subject: subject + 1,
                 picture: refs.len() + pictures.len() + 1,
@@ -847,7 +860,7 @@ impl VideoGenerate {
                 character: Some(entry.name.clone()),
                 description: None,
             });
-            Ok(())
+            true
         };
         let bodies: Vec<(usize, &crate::imagelib::Entry, &crate::imagelib::Reference)> = seen
             .iter()
@@ -863,9 +876,10 @@ impl VideoGenerate {
         if (1..=2).contains(&seen.len()) && bodies.len() == seen.len() {
             if bodies.len() <= slots {
                 for (i, e, r) in &bodies {
-                    add(*i, e, r, compose::ExtraKind::Body, "full body")?;
+                    if add(*i, e, r, compose::ExtraKind::Body, "full body") {
+                        slots -= 1;
+                    }
                 }
-                slots -= bodies.len();
             } else {
                 notes.push(
                     "The full-body pictures were left out: the clip's other pictures fill H3's slots."
@@ -888,15 +902,33 @@ impl VideoGenerate {
                     continue;
                 }
                 let label = r.label.clone().unwrap_or_else(|| "mark".to_string());
-                add(
+                if add(
                     *i,
                     e,
                     r,
                     compose::ExtraKind::Detail(label),
                     "detail picture",
-                )?;
-                slots -= 1;
+                ) {
+                    slots -= 1;
+                }
             }
+        }
+        // Bodies go to a whole cast or to no one: said, so the owner can add
+        // the missing one (review of #744). Counted, never named.
+        if !bodies.is_empty() && (bodies.len() < seen.len() || seen.len() > 2) {
+            notes.push(if seen.len() > 2 {
+                "No full-body pictures were sent: they go to a cast of one or two.".to_string()
+            } else {
+                "No full-body pictures were sent: everyone shown needs one for any to go."
+                    .to_string()
+            });
+        }
+        if unreadable > 0 {
+            notes.push(format!(
+                "{unreadable} library picture{} could not be read and {} left out; the owner can check with `mecha imagelib list`.",
+                if unreadable == 1 { "" } else { "s" },
+                if unreadable == 1 { "was" } else { "were" }
+            ));
         }
         if left_out > 0 {
             notes.push(format!(
@@ -905,7 +937,7 @@ impl VideoGenerate {
                 graph::MAX_REFERENCES
             ));
         }
-        Ok((extras, pictures))
+        (extras, pictures)
     }
 
     /// A character-library name, or a picture in this chat's folder (through
