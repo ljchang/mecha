@@ -1,7 +1,7 @@
 # LoRAs for pictures and clips — one registry, one picker
 
-Status: **design, not built** (2026-10-26). §8 holds the decisions the
-build waits on.
+Status: **design, not built** (2026-10-26). §8 holds the decisions: L2,
+L3 and L5 ruled the same day, L1 and L6 owed, L4 decided by M2.
 
 mecha ships no LoRA and names none (the owner's ruling, 2026-10-23). This
 document is the mechanism only. Every name, file and trigger word in it is
@@ -85,9 +85,18 @@ strength = 0.8
 - **`model` is written by the owner and checked against the file.** A file
   whose keys say otherwise costs that entry, with the reason on the page and
   on stderr, never the whole registry. That is the rule `loras.rs` already
-  follows for an entry that does not read. A file mecha cannot read, for
-  example a ComfyUI install it was not told the path of, is kept and marked
-  *unchecked* on the page, never shown as checked.
+  follows for an entry that does not read.
+- **A file mecha cannot read is refused too.** It is in the same state as
+  a file whose keys matched nothing, and applying it anyway is the silence
+  §1 says this design closes first. Today mecha has no path to a server's
+  `models/loras`: the registry holds bare file names, the servers are spoken
+  to over loopback HTTP, and only a ComfyUI that `comfyui_unit` installed
+  has a `models/` path mecha knows. So each server's LoRA folder becomes a
+  global config key, `[image] loras_dir` and `[video] loras_dir`, which
+  `comfyui_unit` fills for a server it installs and the owner sets for a
+  provided one. With the key unset, every entry for that server is refused,
+  and `mecha doctor` and the page name the key. On this machine step 1's
+  deploy sets both keys first, or every clip LoRA would drop.
 - **Each graph gets only entries of its family.** The picture graph sees
   `qwen-image` entries and the clip graph sees `h3` entries. Today the clip
   path drops a pick with no file for the clip's mode; the family check adds
@@ -111,17 +120,33 @@ layer, and each persona's `state.toml` overrides it field by field
 | Chat layer | the LoRAs on every picture | the LoRAs the model may pick |
 | Persona layer | overrides the chat's list, or inherits it | the same |
 | The model sees | nothing (the ruling) | each allowed entry's `name` and `about` in the `motion` enum |
-| Cap | `MAX_PER_PICTURE`, set by measurement M3 | `MAX_PER_CLIP` (4), unchanged |
+| Cap | `MAX_PER_PICTURE`, set by M3, counting `always` entries | `MAX_PER_CLIP` (4), unchanged |
 
 - **"Inherit" and "none" are different states.** A persona that inherits
   follows the chat layer as it changes. A persona set to an empty list stays
   empty. `Tuning` already writes an explicit choice and leaves an unset one
   out, for the same reason.
-- **A setting changes the tool list, so it changes the cached prefix.** The
-  `motion` enum is part of `video_generate`'s schema, at the front of the
-  prefix. A change in settings applies from the next turn and re-pays the
-  prefix once. Nothing changes per turn, and the enum is sorted so the same
-  choice always produces the same bytes.
+- **The LoRA list inherits across a model change.** `Tuning::over` drops
+  the whole chat layer when the persona's model differs from the chat's,
+  because cfg and steps are tuned per checkpoint. A list of names is not, so
+  `loras` resolves on its own: a persona whose only choice is turbo still
+  inherits the chat's list. Whether an entry then applies on turbo is M2's
+  answer, filtered at render time (§5). `Tuning::lenient` gains a branch so a
+  damaged list reads as inherit, never as an empty override.
+- **The allowlist is enforced in `pick`, not only in the schema.** Today
+  `Registry::pick` resolves a name against the whole registry, so a name the
+  enum did not offer still loads. `pick` takes the resolved layer's list and
+  refuses a name outside it with the same refusal as an unknown name. The
+  enum is the hint, `pick` is the gate, and a test names an off-list entry
+  and expects the refusal: that is the case the enum cannot cover.
+- **The enum is built per run, from the resolved layer.** Today the schema
+  is built once, in `VideoGenerate::new` from `prepare_tools`, and in
+  `mecha serve` one instance serves every chat and persona. A run's tools are
+  already chosen from that pool by name (a persona's `[tools] allow`). Step 2
+  adds, at that point, a `video_generate` narrowed to the run's list, kept
+  per distinct list so the same list always gives the same bytes. A change
+  in settings applies from the next turn and re-pays the cached prefix once.
+  Nothing changes per turn, and the enum is sorted.
 - **Settings are written only by the owner's settings route**, as
   `set_tuning` is. No tool writes them, and the model never authors a
   registry entry. An `about` line is owner-written prompt text, so it is
@@ -133,8 +158,8 @@ layer, and each persona's `state.toml` overrides it field by field
 
 ## 5. The picture graph
 
-One `LoraLoaderModelOnly` per entry between `UNETLoader` and `KSampler`, in
-registry order. The clip graph builds its chain the same way
+One `LoraLoaderModelOnly` per entry between the diffusion model's loader
+(`imagegen::unet_loader`'s choice) and `KSampler`, in registry order. The clip graph builds its chain the same way
 (`videogen::graph::lora_chain`). A trigger is added to the prompt when the
 prompt does not already contain it, with the same rule as
 `loras::with_triggers`. Two things are unknown, so the build waits on them:
@@ -142,14 +167,19 @@ prompt does not already contain it, with the same rule as
 - **M1. Does a LoRA patch the int8 checkpoint?** The standard picture model
   is `int8_convrot`. LoRA patching on quantized weights is not given. Test:
   one same-seed pair with and without one LoRA, plus render time and peak
-  memory, against the bf16 checkpoint for the same pair.
+  memory, against the bf16 checkpoint for the same pair. A `.gguf`
+  diffusion model loads through `UnetLoaderGGUF`, a second quantization with
+  its own patching path. Until it is measured the same way, LoRA entries do
+  not apply when `[image] diffusion_model` is a `.gguf`, and the result says
+  they were left out.
 - **M2. Do LoRAs trained on the base model work on picture turbo?** Turbo
   is a distillation, not the base. Test: the same pair on turbo. If they
   fail, entries do not apply to turbo pictures, and the result says which
   were left out.
 - **M3. How many at once?** Two strong action LoRAs broke a clip that each
   passed alone (2026-10-24). Test: one, two and three stacked on one scene;
-  the cap is the largest count that held.
+  the cap is the largest count that held. It is a limit on what the model
+  carries, so unlike `MAX_PER_CLIP` the picture cap counts `always` entries.
 
 ## 6. The web
 
@@ -184,20 +214,26 @@ would refuse.
 
 ## 7. Build order
 
-1. **Registry v2 in core.** The shared file, `model`, the key check, the old
-   file read for one release, the clip path filtered by family. No change in
-   behaviour for a registry that only holds H3 entries.
-2. **Layers for clips.** The allowlist on the chat and persona layers, the
-   enum built from it, results unchanged.
+1. **Registry v2 in core.** The shared file, `model`, the key check,
+   `[image] loras_dir` and `[video] loras_dir`, the old file read for one
+   release, the clip path filtered by family. No change in behaviour for a
+   registry that only holds H3 entries, once `[video] loras_dir` is set.
+   `scripts/check-private.py`'s `corpus()` also reads the registry's
+   `name`, `file` and `trigger` and refuses them in added text, as it already
+   does for persona names.
+2. **Layers for clips.** The allowlist on the chat and persona layers,
+   enforced in `pick`, and the narrowed `video_generate` per run. This is
+   plumbing through where a run's tools are chosen, not a change inside
+   `loras.rs`. Results are unchanged.
 3. **Pictures**, gated on M1–M3. `Tuning` gains `loras`, the graph gains the
    chain, triggers, and the result's count.
 4. **The web.** The LoRAs pane, the lists in Images, Video and persona
    settings, and the lock if L3 says so.
-5. **The real-person guard**, if L5 says build it.
+5. ~~**The real-person guard**~~ deferred (L5).
 
-Each step is its own PR. The tests and docs use made-up names only.
-`scripts/check-private.py` guards conversation text, not LoRA names, so each
-push is also checked by hand for names from the owner's registry.
+Each step is its own PR. The tests and docs use made-up names only. Until
+step 1 puts the registry in `check-private.py`'s corpus, each push is also
+checked by hand for names from the owner's registry.
 
 ## 8. Decisions owed
 
@@ -206,14 +242,15 @@ push is also checked by hand for names from the owner's registry.
   *Recommendation:* migrate the chat layer to today's set, so nothing the
   owner uses changes. Personas inherit. An entry added later starts off
   everywhere until it is turned on.
-- **L2. Where the registry lives.** A fixed `~/.mecha/loras.toml`, or a
-  config path as now.
-  *Recommendation:* fixed, like triggers and skills. A layered config can
-  come from a cloned repository, and a repository should not be able to add
-  a LoRA to a trusted session.
-- **L3. Does the library lock hide the LoRAs pane?**
-  *Recommendation:* yes. The pane lists explicit descriptions, and the lock
-  exists so a glance at the screen does not show them.
+- **L2. Where the registry lives. Ruled 2026-10-26: a fixed
+  `~/.mecha/loras.toml`**, like triggers and skills, not a config path.
+  The reason is consistency with the other owner-written stores, and one
+  path per machine. It is not the cloned repository: `Config::merge_file`
+  already strips `[video]` and `[image]` from a project layer, so a
+  repository cannot point the registry anywhere today.
+- **L3. The library lock hides the LoRAs pane. Ruled 2026-10-26.** The
+  pane lists explicit descriptions, and the lock exists so a glance at the
+  screen does not show them. It hides the pane from browsing only.
 - **L4. Picture LoRAs on turbo:** decided by M2 rather than in advance.
   *Recommendation:* follow what M2 shows.
 - **L5. The real-person guard.** The 10-23 ruling asked for this to be
@@ -221,4 +258,10 @@ push is also checked by hand for names from the owner's registry.
   a `real` mark, registry entries an `explicit` mark, and an explicit entry
   never applies to a picture or clip with a real character in its cast,
   with the result saying which entries were left out.
-  *Options:* build it as step 5, or defer it again.
+  **Ruled 2026-10-26: deferred again.** Step 5 is out of the build until
+  it is raised again.
+- **L6. LoRAs trained on one character.** Some picture LoRAs are trained on
+  one person's likeness. On a chat or persona layer, one would put that face
+  on everyone in every picture. One shape: an entry may name a library
+  character (`character = "<name>"`), and then applies only to pictures and
+  clips with that character in the cast, never through a layer's list.
