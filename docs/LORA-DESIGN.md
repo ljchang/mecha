@@ -108,9 +108,15 @@ strength = 0.8
   `comfyui_unit` fills for a server it installs and the owner sets for a
   provided one. Each is a list, because ComfyUI's `extra_model_paths.yaml`
   can add LoRA folders beyond `models/loras`, and the owner's video server
-  has one. A file is looked up in each folder in turn, and the joined path
-  must canonicalize inside that folder: a name from the registry is a bare
-  file name (`plain`), but one listed by a server can carry subfolders. With the key unset,
+  has one. A file is looked up in each folder in turn. Today a registry
+  name is a bare file name (`plain`); step 1 extends it to a relative path
+  under the folder, since a server lists files in subfolders that way. The
+  guard is lexical, on the relative path: every `/`-separated part passes
+  `plain`, which already rules out `..`, a leading dot and an absolute
+  part. It is not a canonicalize-inside check, because a LoRA linked in
+  from the hub or another disk is mecha's own layout (`comfyui_unit` links
+  every model file it fetches), and the link must still read. With the key
+  unset,
   every entry for that server is refused, and `mecha doctor` and the page
   name the key. A file the server lists (§6) that is in none of the folders
   is a named `doctor` finding, not a silent refusal. On this machine step
@@ -169,13 +175,19 @@ layer, and each persona's `state.toml` overrides it field by field
   empty. `Tuning` already writes an explicit choice and leaves an unset one
   out, for the same reason. Only the LoRA route writes them (§6), so a save
   of the other picture settings can never turn one into the other.
-- **The LoRA list inherits across a model change.** `Tuning::over` drops
-  the whole chat layer when the persona's model differs from the chat's,
-  because cfg and steps are tuned per checkpoint. A list of names is not, so
-  `loras` resolves on its own: a persona whose only choice is turbo still
-  inherits the chat's list. Whether an entry then applies on turbo is M2's
-  answer, filtered at render time (§5). `Tuning::lenient` gains a branch so a
-  damaged list reads as inherit, never as an empty override.
+- **The LoRA list is not a field of `Tuning`.** It sits beside it in the
+  same stored state (`state.image.loras` for a persona, the chat settings
+  file for the chat layer), with its own type, its own lenient read and its
+  own route (§6). Two reasons. `ImageSettingsBody::tuning` builds a whole
+  `Tuning` and `set_tuning` replaces it, so a field inside would be reset by
+  every cfg save, and the natural `loras: None` in that literal compiles.
+  And `Tuning::over` drops the whole chat layer when the persona's model
+  differs from the chat's, because cfg and steps are tuned per checkpoint; a
+  list of names is not, so it resolves on its own, and a persona whose only
+  choice is turbo still inherits the chat's list. Whether an entry then
+  applies on turbo is M2's answer, filtered at render time (§5). A damaged
+  list reads as inherit, never as an empty override, and a test covers a
+  cfg save leaving an explicit empty list explicit.
 - **The allowlist is enforced in `pick`, not only in the schema.**
   `Registry::pick` resolves a name against the whole registry, so once a
   layer narrows the enum, a name it did not offer would still load. `pick`
@@ -263,7 +275,10 @@ prompt does not already contain it, with the same rule as
   listed when none is, so `isShown` means **any on** and `banner` speaks for
   the feature the pane is showing under. `bounceFor` returns an id only when
   **all** listed features refuse, the first of them, so `hiddenLine` still
-  says why. `opens` follows `featureOf`. Otherwise an owner with video on and
+  says why. `opens` follows `featureOf`, and its second clause, which hands
+  the raw map value to `isShown` for a pane in `OPENS_ANYWAY`, resolves it
+  the same way first: `library/voices` is in both maps today, so the first
+  such pane to take a list would otherwise fail open there. Otherwise an owner with video on and
   image off sees the tab and is bounced from it, the #654 shape. A web test
   covers both directions, and asserts that the pane's banner and the Home
   line survive a list value.
@@ -282,10 +297,8 @@ prompt does not already contain it, with the same rule as
     trigger, and for H3 says which mode the file is for. A second H3 file
     is attached to an existing entry the same way. ComfyUI lists files in
     subfolders of `models/loras` by their relative path, so `file`, `frames`
-    and `references` accept one: each `/`-separated part must pass today's
-    `plain` rule, and the joined path must canonicalize inside its
-    `loras_dir` (§3). The Add list never offers a file the parser would
-    refuse.
+    and `references` accept one, under §3's lexical rule. The Add list
+    never offers a file the parser would refuse.
   - Edit and remove. Removing an entry also removes it from every layer's
     list, and the page says how many layers held it.
 - **Settings → Images** gains a LoRA list (the chat layer's picture LoRAs).
@@ -337,8 +350,8 @@ an entry the file would refuse.
    enforced in `pick`, and the narrowed `video_generate` per run. This is
    plumbing through where a run's tools are chosen, not a change inside
    `loras.rs`. Results are unchanged.
-3. **Pictures**, gated on M1–M3. `Tuning` gains `loras`, the graph gains the
-   chain, triggers, and the result's count. Entries tied to a character
+3. **Pictures**, gated on M1–M3. The LoRA list beside `Tuning` (§4), the
+   graph's chain, triggers, and the result's count. Entries tied to a character
    (L6) apply only with that character in the cast, for pictures here and
    for clips in step 2's `pick`.
 4. **The web.** The LoRAs pane and the `PANE_FEATURE` list, the lists in
