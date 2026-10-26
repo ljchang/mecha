@@ -4654,6 +4654,7 @@ impl Tool for ImageGenerate {
                             version: e.version,
                             portrait: e.portrait.clone(),
                             full_body: None,
+                            details: Vec::new(),
                         });
                     }
                 }
@@ -4699,6 +4700,7 @@ impl Tool for ImageGenerate {
                                 version: entry.version,
                                 portrait: None,
                                 full_body: None,
+                                details: Vec::new(),
                             });
                         }
                         None => {
@@ -4911,6 +4913,7 @@ impl Tool for ImageGenerate {
                                                 version: entry_version,
                                                 portrait: entry_portrait.clone(),
                                                 full_body: None,
+                                                details: Vec::new(),
                                             });
                                             Some((crop, "png", true, format!("{shown}'s face")))
                                         }
