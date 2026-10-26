@@ -379,7 +379,7 @@ pub fn references(
                 "<Subject {n}> (the setting): fully_preserved - the place in <Picture {n}> is where the clip happens, kept as it appears there."
             ),
             Some(name) if p.pov => format!(
-                "<Subject {n}> (seen only as the camera's own body): partially_preserved - {}'s {} from <Picture {n}> {} retained for the hands, arms and body in view{}; the face is never shown, and the clothing follows the scene.",
+                "<Subject {n}> (seen only as the camera's own body): partially_preserved - {}'s {} from <Picture {n}> {} retained for the hands, arms and body in view{}{marks}; the face is never shown, and the clothing follows the scene.",
                 title_case(name),
                 if p.face_only { "skin tone" } else { "skin and build" },
                 if p.face_only { "is" } else { "are" },
