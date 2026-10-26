@@ -229,6 +229,15 @@ pub enum RefKind {
 }
 
 impl RefKind {
+    /// Every kind this build can send; `Unknown` is what a later build's
+    /// kind reads as, and is no kind anyone may write.
+    pub const ALL: [RefKind; 4] = [
+        RefKind::Face,
+        RefKind::FullBody,
+        RefKind::Detail,
+        RefKind::View,
+    ];
+
     pub fn label(self) -> &'static str {
         match self {
             RefKind::Face => "face",
@@ -1490,6 +1499,19 @@ pub fn remove_reference_from(
         .filter(|(_, r)| r.kind == kind && label.is_none_or(|l| r.label.as_deref() == Some(l)))
         .map(|(i, _)| i)
         .collect();
+    // With no label and several of the kind, the unlabelled one is meant
+    // when there is exactly one: a location's first view and its `view 2`
+    // left the first unremovable from the page, which sends no label for it
+    // (review of #743).
+    let unlabelled: Vec<usize> = matching
+        .iter()
+        .copied()
+        .filter(|&i| old.references[i].label.is_none())
+        .collect();
+    let matching = match (label, matching.len(), unlabelled.as_slice()) {
+        (None, n, [only]) if n > 1 => vec![*only],
+        _ => matching,
+    };
     let index = match matching.as_slice() {
         [one] => *one,
         [] => bail!(
@@ -2646,6 +2668,34 @@ mod tests {
         )
         .unwrap();
         assert_eq!(removed.references.len(), 2);
+        // An unlabelled view beside labelled ones is removed with no label
+        // (review of #743); with none unlabelled, no label is still refused.
+        let img = image::RgbImage::from_pixel(2, 2, image::Rgb([9, 9, 9]));
+        let mut b = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut b, image::ImageFormat::Png).unwrap();
+        add_reference_to(
+            dir.path(),
+            Kind::Location,
+            "boathouse",
+            RefKind::View,
+            &b.into_inner(),
+            None,
+            None,
+        )
+        .unwrap();
+        let removed =
+            remove_reference_from(dir.path(), Kind::Location, "boathouse", RefKind::View, None)
+                .unwrap();
+        assert_eq!(removed.references.len(), 2);
+        assert!(removed.references.iter().all(|r| r.label.is_some()));
+        assert!(remove_reference_from(
+            dir.path(),
+            Kind::Location,
+            "boathouse",
+            RefKind::View,
+            None
+        )
+        .is_err());
     }
 
     /// An outfit is text up to `wearing`'s length and a garment picture; no

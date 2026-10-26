@@ -7,6 +7,7 @@
     PANES, paneOf, entriesFor, counts, pendingLine, refApprovable, originLabel, listUrl, thumbUrl, tameName,
     TEXT_MAX, PORTRAIT_EDGE, fitWithin, formProblem, formBody, previewOf,
     REF_KINDS, REF_TITLE, LABEL_MAX, refNote, refAddable, refProblem, refBody, refRemoveBody,
+    pictureKinds, useNote, firstPicture,
   } from './library.js';
   import { watchIdle, idleSpan } from './autolock.js';
   import VoicesPane from './VoicesPane.svelte';
@@ -521,11 +522,10 @@
           <button class="abtn" disabled={busy} onclick={() => (sheet = 'remove')}>Remove</button>
         </div>
         <div class="barnote">
-          Lock hides it while browsing; chats can still use it. In a chat, name
-          <code>{open.name}</code> and say what they are wearing and doing.
+          Lock hides it while browsing; chats can still use it. {useNote(open)}
         </div>
-        {#if open.kind === 'character'}
-          <div class="refhead">References</div>
+        {#if pictureKinds(open.kind).length}
+          <div class="refhead">{open.kind === 'character' ? 'References' : 'Pictures'}</div>
           {#if (open.references ?? []).length}
             <div class="refstrip">
               {#each open.references as r, i (i)}
@@ -537,7 +537,7 @@
                   <!-- Only the kinds the page can name: a kind a later build
                        wrote is shown and kept, never offered a remove that
                        would be refused. -->
-                  {#if REF_KINDS.includes(r.kind)}
+                  {#if pictureKinds(open.kind).includes(r.kind)}
                     <button class="refx" disabled={busy} onclick={() => { refPending = r; sheet = 'remref'; }}>Remove</button>
                   {/if}
                 </div>
@@ -546,12 +546,12 @@
           {/if}
           {#if refForm}
             <form class="libform" onsubmit={(e) => { e.preventDefault(); submitRef(); }}>
-              <div class="barnote">{refNote(refForm.kind)}</div>
+              <div class="barnote">{refNote(refForm.kind, open.kind)}</div>
               <label class="drop tall" class:filled={!!refForm.preview}>
                 {#if refForm.preview}
                   <img src={refForm.preview} alt="new {REF_TITLE[refForm.kind].toLowerCase()}" />
                 {:else}
-                  <span class="dropnote">{preparing ? 'reading…' : `choose a ${REF_TITLE[refForm.kind].toLowerCase()} picture`}</span>
+                  <span class="dropnote">{preparing ? 'reading…' : refForm.kind === 'view' ? 'choose a picture' : `choose a ${REF_TITLE[refForm.kind].toLowerCase()} picture`}</span>
                 {/if}
                 <input type="file" accept="image/png,image/jpeg,image/webp" onchange={(e) => pickRef(e.currentTarget.files?.[0])} />
               </label>
@@ -569,7 +569,7 @@
             </form>
           {:else}
             <div class="refadd">
-              {#each REF_KINDS.filter((k) => refAddable(open, k)) as k}
+              {#each pictureKinds(open.kind).filter((k) => refAddable(open, k)) as k}
                 <button class="abtn" disabled={busy} onclick={() => startRef(k)}>+ {REF_TITLE[k]}</button>
               {/each}
             </div>
@@ -587,16 +587,17 @@
       {:else if pane === 'outfits'}
         <button class="rowbtn card addrow" onclick={() => startAdd('outfit')}>
           <span class="topic">+ Add outfit</span>
-          <span class="readingline">Clothes for clips: garment, colour, cut. Its picture, the garment alone, is added with <code>mecha imagelib add-reference &lt;name&gt; --as view</code>.</span>
+          <span class="readingline">Clothes for clips: garment, colour, cut. Open it after to add a picture of the garment alone.</span>
         </button>
       {:else}
         <button class="rowbtn card addrow" onclick={() => startAdd('location')}>
           <span class="topic">+ Add location</span>
-          <span class="readingline">A place for clips: what it looks like. Its pictures are added with <code>mecha imagelib add-reference &lt;name&gt; --as view</code>.</span>
+          <span class="readingline">A place for clips: what it looks like. Open it after to add a photo of the room.</span>
         </button>
       {/if}
       {#each shown as e (e.name)}
-        <button class="rowbtn card" onclick={() => (open = e)}>
+        <button class="rowbtn card" class:withthumb={!!firstPicture(e)} onclick={() => (open = e)}>
+          {#if firstPicture(e)}<img class="rowthumb" src={thumbUrl(firstPicture(e))} alt={e.name} loading="lazy" />{/if}
           <span class="rowtop"><span class="topic">{e.name}</span>{#if e.locked}<span class="badge">locked</span>{/if}<span class="when">v{e.version}</span></span>
           <span class="readingline">{e.text}</span>
         </button>
@@ -762,6 +763,10 @@
   .ref { flex-shrink: 0; width: 120px; display: flex; flex-direction: column; gap: 6px; }
   .ref img { width: 120px; aspect-ratio: 3 / 4; object-fit: contain; background: var(--surface); border: 1px solid var(--accent-900); border-radius: var(--radius); display: block; }
   .refkind { font-family: var(--mono); font-size: 11px; color: var(--text-muted); overflow-wrap: anywhere; }
+  /* A location's or outfit's first picture beside its row: which room or
+     garment it is, at a glance. */
+  .rowbtn.withthumb { display: grid; grid-template-columns: 72px 1fr; column-gap: 12px; align-items: start; }
+  .rowbtn.withthumb .rowthumb { grid-row: 1 / span 2; width: 72px; height: 72px; object-fit: cover; border-radius: 6px; }
   .refx { min-height: 36px; background: none; border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text-muted); font-size: 12px; cursor: pointer; }
   .refadd { display: flex; flex-wrap: wrap; gap: 10px; }
   .pendref { display: flex; gap: 12px; padding: 12px; align-items: flex-start; }

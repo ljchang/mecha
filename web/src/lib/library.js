@@ -224,13 +224,33 @@ export function formBody(form, entry = null, token = null) {
 // RefKind::limit): the page hides an add the store would refuse, and the
 // store still refuses it.
 export const REF_KINDS = ['full_body', 'face', 'detail'];
-export const REF_LIMIT = { face: 1, full_body: 1, detail: 4 };
-export const REF_TITLE = { face: 'Face', full_body: 'Full body', detail: 'Detail' };
+export const REF_LIMIT = { face: 1, full_body: 1, detail: 4, view: 3 };
+export const REF_TITLE = { face: 'Face', full_body: 'Full body', detail: 'Detail', view: 'Picture' };
+
+// The pictures each entry kind takes, as the store allows them
+// (imagelib.rs RefKind::allowed_on): a style takes none.
+export const PICTURE_KINDS = { character: REF_KINDS, location: ['view'], outfit: ['view'] };
+export const pictureKinds = (entryKind) => PICTURE_KINDS[entryKind] ?? [];
+
+// How an entry is used, said on its page.
+export function useNote(entry) {
+  if (!entry) return '';
+  return {
+    character: `In a chat, name ${entry.name} and say what they are wearing and doing.`,
+    style: `In a chat, name ${entry.name} as the look of a picture.`,
+    location: `In a clip, name ${entry.name} as where it happens; its first picture is the setting.`,
+    outfit: `In a clip, dress someone in ${entry.name} by naming it as what they wear; its picture comes with it.`,
+  }[entry.kind] ?? '';
+}
 // A detail's label is sent beside the description, so it is short.
 export const LABEL_MAX = 100;
 
 // What each kind is for and what it does, said where it is added.
-export function refNote(kind) {
+export function refNote(kind, entryKind = 'character') {
+  if (kind === 'view' && entryKind === 'location')
+    return 'A wide photo of the empty room, from about where the camera would stand. Clips are set there; the first picture is the one sent.';
+  if (kind === 'view' && entryKind === 'outfit')
+    return 'The garment alone, laid flat or on an invisible mannequin, with no one wearing it. Clips send it as what the wearer has on.';
   return {
     full_body:
       'Head to toe, standing square-on with arms relaxed: its stance carries into pictures. Sent with a new picture of this person alone; pictures with others use portraits.',
@@ -241,9 +261,10 @@ export function refNote(kind) {
   }[kind];
 }
 
-// Whether another `kind` fits: approved characters only, under the limit.
+// Whether another `kind` fits: an approved entry whose kind takes it, under
+// the limit.
 export function refAddable(entry, kind) {
-  if (!entry || entry.kind !== 'character' || entry.status !== 'approved') return false;
+  if (!entry || !pictureKinds(entry.kind).includes(kind) || entry.status !== 'approved') return false;
   const have = (entry.references ?? []).filter((r) => r.kind === kind).length;
   return have < (REF_LIMIT[kind] ?? 0);
 }
@@ -260,11 +281,23 @@ export function refProblem(form, entry = null) {
   return null;
 }
 
+// The label a picture is sent with: the owner's, or for a second or third
+// view with none, `view 2` / `view 3` — the store tells pictures of one kind
+// apart by label, so two unlabelled views are one too many (review of #743).
+export function sentLabel(form, entry) {
+  const label = (form.label ?? '').trim();
+  if (label || form.kind !== 'view') return label;
+  const taken = new Set((entry?.references ?? []).filter((r) => r.kind === 'view').map((r) => r.label ?? ''));
+  if (!taken.has('')) return '';
+  for (let n = 2; ; n += 1) if (!taken.has(`view ${n}`)) return `view ${n}`;
+}
+
 // The body POST /api/library/reference takes.
 export function refBody(form, entry, token = null) {
-  const label = (form.label ?? '').trim();
+  const label = sentLabel(form, entry);
   return {
     name: entry.name,
+    ...(entry.kind && entry.kind !== 'character' ? { kind: entry.kind } : {}),
     as: form.kind,
     picture: form.picture,
     ...(label ? { label } : {}),
@@ -277,6 +310,7 @@ export function refBody(form, entry, token = null) {
 export function refRemoveBody(entry, ref, token = null) {
   return {
     name: entry.name,
+    ...(entry.kind && entry.kind !== 'character' ? { kind: entry.kind } : {}),
     as: ref.kind,
     ...(ref.label ? { label: ref.label } : {}),
     ...(token ? { unlock: token } : {}),
@@ -289,4 +323,10 @@ export function refRemoveBody(entry, ref, token = null) {
 // image until the save (2026-10-14).
 export function previewOf(b64) {
   return `data:image/jpeg;base64,${b64}`;
+}
+
+// The picture a location or outfit row shows: its first, the one a clip is
+// sent.
+export function firstPicture(entry) {
+  return (entry?.references ?? []).find((r) => r.kind === 'view')?.picture ?? null;
 }
