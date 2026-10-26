@@ -350,14 +350,20 @@ prompt does not already contain it, with the same rule as
   such pane to take a list would otherwise fail open there. Otherwise an owner with video on and
   image off sees the tab and is bounced from it, the #654 shape. A web test
   covers both directions, and asserts that the pane's banner and the Home
-  line survive a list value.
+  line survive a list value. One more site sits outside the map:
+  `Settings.svelte` builds the settings index with hard-coded
+  `isShown(features.rows, …)` calls, so the LoRAs entry there is shown on
+  `image` or `video`, the way the same list already shows one entry on
+  `personas` or `library`.
   The routes follow the same rule: `/api/loras` answers when either feature
   is on, and each entry's write is refused when its own family's feature is
   off. Each section shows only when its own feature is on: picture entries
   with `image`, clip entries with `video`.
   - One row per registry entry: name, family, the mode files for H3, about,
     strength, trigger, `always` (clips), the character an entry is tied to
-    (L6), and checked or refused with the reason.
+    (L6), and checked or refused with the reason. A picture entry before
+    step 3 shows as checked but not applied yet, since the image graph has
+    no LoRA node until then.
   - **Add** lists the files no entry uses yet, labelled by server. The list
     comes from each server's `/object_info` (`lora_name`'s options), as
     `comfyui_unit` already asks a server what it has, so listing needs no
@@ -390,8 +396,12 @@ prompt does not already contain it, with the same rule as
 
 Server routes: `GET /api/loras` (entries, their check, the unused files),
 `POST/PUT/DELETE /api/loras/{name}`, and each layer's LoRA lists through a
-route of their own, `PUT /api/loras/layer/{chat|persona/<name>}`, behind
-the same unlock token. The lists live beside `Tuning` in the same stored
+routes of their own, `GET` and `PUT /api/loras/layer/{chat|persona/<name>}`,
+both behind the same unlock token. The read needs its own route as much as
+the write: `GET /api/settings/images` takes no token today, since the
+chat's other picture settings are behind no lock, so the LoRA rows never
+ride in its body. A locked page renders the Images settings as now, with
+the LoRA list shown as locked. The lists live beside `Tuning` in the same stored
 state, but they are never written by the existing picture-settings route.
 That route replaces `Tuning` whole (`ImageSettingsBody::tuning`, then
 `persona::set_tuning`), so an omitted field reads as unset. A cfg change
@@ -423,7 +433,13 @@ an entry the file would refuse.
    plumbing through where a run's tools are chosen, not a change inside
    `loras.rs`. It also writes L1's migration: on the first start of the new
    build, a chat settings file with no clip list gets one naming every
-   entry the registry offers, so a later entry starts off as L1 rules. mecha
+   entry the registry offers, so a later entry starts off as L1 rules. The
+   write is the one irreversible step here, so it runs only from a clean
+   read: the registry file read and parsed, `loras_dir` set, and no entry
+   refused for an unreadable or unfound file. Otherwise the list stays
+   absent, which §4 reads as every entry offered, `doctor` says why, and a
+   later start tries again. A degraded first start never bakes "off" into
+   the list. mecha
    writes the chat settings file through the same code as the owner's
    settings route; L2's "never writes or moves" is about the registry
    files, not this. Results are unchanged.
@@ -483,8 +499,10 @@ checked by hand for names from the owner's registry.
   a tied pick for a clip without its character is dropped **with a note**,
   as a wrong-mode pick is (2026-10-25: a model that could not see why its
   pick failed spent three calls on it). The note says it applies only with
-  its own character in the clip, without naming the character: library
-  names are the owner's and are never listed in a schema or a note. The
+  its own character in the clip, without naming the character. Location
+  and outfit names do appear in `video_generate`'s schema today; character
+  names never do, since the model types a cast name and is never handed a
+  list of the owner's people, and this keeps it that way. The
   enum's `about` for a tied entry says the same, in the same words. Off by
   default because the owner is still testing this kind of LoRA. A tied
   entry still counts against the cap of a picture it applies to.
