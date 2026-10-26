@@ -1491,6 +1491,14 @@ async fn second_pictures_fit_the_slots_left_and_a_camera_person_gets_no_bodies()
         "{}",
         done.content
     );
+    // The camera person's own detail still goes: their arms are in shot
+    // (review of #744). Bo's wrist tattoo is defined on Bo.
+    let seen = log.lock().unwrap().clone();
+    let prompt = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+    assert!(
+        prompt.contains("<Subject 2>'s star tattoo, left wrist is shown close up"),
+        "{prompt}"
+    );
     let seen = log.lock().unwrap().clone();
     let prompt = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
     assert!(!prompt.contains("the person in <Picture"), "{prompt}");

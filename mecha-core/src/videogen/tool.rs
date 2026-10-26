@@ -829,6 +829,27 @@ impl VideoGenerate {
                 (i, entry)
             })
             .collect();
+        // The camera person's own marks go too: their hands and arms are in
+        // shot, so a forearm tattoo is theirs to keep in place. Only bodies
+        // skip them (review of #744).
+        let camera_people: Vec<(usize, Option<&crate::imagelib::Entry>)> = refs
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| !r.place && r.worn_by.is_none() && r.extra.is_none())
+            .filter(|(_, r)| {
+                r.character
+                    .as_deref()
+                    .is_some_and(|c| pov.contains(&args::library_key(c)))
+            })
+            .map(|(i, r)| {
+                let entry = r.character.as_deref().and_then(|c| {
+                    library
+                        .get(Kind::Character, &args::library_key(c))
+                        .filter(|e| e.status == Status::Approved)
+                });
+                (i, entry)
+            })
+            .collect();
         let mut extras = Vec::new();
         let mut pictures: Vec<Picture> = Vec::new();
         // Pinned frames take slots too (§9.4: nine "less any pinned or other
@@ -911,7 +932,10 @@ impl VideoGenerate {
             }
         }
         let mut left_out = 0;
-        for (i, e) in &seen {
+        let mut in_cast_order: Vec<&(usize, Option<&crate::imagelib::Entry>)> =
+            seen.iter().chain(camera_people.iter()).collect();
+        in_cast_order.sort_by_key(|(i, _)| *i);
+        for (i, e) in in_cast_order {
             let Some(e) = e else {
                 continue;
             };
