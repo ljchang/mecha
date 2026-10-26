@@ -213,6 +213,10 @@ the existing policy retires old threads with no new code — and because entries
 are counted rather than files, a thread's whole directory counts as one. Raise
 `[work] keep` if ten threads of history is too few.
 
+> **Superseded 2026-10-26:** `slack` is a conversation producer now, aged by
+> `[work] retain_conversations` (forever by default) rather than counted —
+> see ARCHITECTURE.md §The work directory.
+
 `work::ensure_outside_mecha_home` is satisfied by construction, as it is for
 triggers.
 
