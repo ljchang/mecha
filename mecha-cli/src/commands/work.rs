@@ -24,11 +24,17 @@ pub enum Cmd {
     /// Print one producer's directory, creating it if absent — for `cd $(...)`
     /// and for a shell script that wants somewhere to write.
     Path { producer: String },
-    /// Remove all but the newest N entries per producer.
+    /// Remove all but the newest N entries per producer, and conversations
+    /// older than `[work] retain_conversations` (kept forever by default).
     Clean {
         /// How many entries survive per producer. Defaults to `[work] keep`.
         #[arg(long)]
         keep: Option<usize>,
+        /// How long a conversation's workspace (web, persona, Slack)
+        /// outlives its newest file: `forever` or a duration like `90d`.
+        /// Defaults to `[work] retain_conversations`.
+        #[arg(long)]
+        retain: Option<work::Retain>,
         /// Only this producer.
         #[arg(long)]
         producer: Option<String>,
@@ -47,9 +53,10 @@ pub async fn execute(args: Args) -> Result<()> {
         }
         Cmd::Clean {
             keep,
+            retain,
             producer,
             dry_run,
-        } => clean(keep, producer.as_deref(), dry_run),
+        } => clean(keep, retain, producer.as_deref(), dry_run),
     }
 }
 
@@ -86,15 +93,25 @@ fn list() -> Result<()> {
     Ok(())
 }
 
-fn clean(keep: Option<usize>, producer: Option<&str>, dry_run: bool) -> Result<()> {
-    let keep = match keep {
-        Some(k) => k,
-        None => {
+fn clean(
+    keep: Option<usize>,
+    retain: Option<work::Retain>,
+    producer: Option<&str>,
+    dry_run: bool,
+) -> Result<()> {
+    let retain_flag = retain.is_some();
+    let (keep, retain) = match (keep, retain) {
+        (Some(k), Some(r)) => (k, r),
+        _ => {
             let cwd = std::env::current_dir().context("cannot determine the working directory")?;
-            mecha_core::config::Config::load(&cwd)?.work.keep
+            let configured = mecha_core::config::Config::load(&cwd)?.work;
+            (
+                keep.unwrap_or(configured.keep),
+                retain.unwrap_or(configured.retain_conversations),
+            )
         }
     };
-    let mut report = work::clean(keep, producer, dry_run)?;
+    let mut report = work::clean(keep, retain, producer, dry_run)?;
     // Spill directories runs left under `$TMPDIR` (`work::stale_spills`). Not
     // a producer, so a sweep narrowed to one producer leaves them alone.
     if producer.is_none() {
@@ -102,8 +119,32 @@ fn clean(keep: Option<usize>, producer: Option<&str>, dry_run: bool) -> Result<(
             .removed
             .extend(work::clean_spills(&std::env::temp_dir(), dry_run)?);
     }
+    // Said every time, so a chat surviving a sweep that removed a brief beside
+    // it is the policy on screen rather than a puzzle.
+    let swept_conversations = producer.is_none_or(|p| work::CONVERSATION_PRODUCERS.contains(&p));
+    if !swept_conversations && retain_flag {
+        eprintln!(
+            "note: --retain applies to {} only; `{}` is counted by --keep",
+            work::CONVERSATION_PRODUCERS.join(", "),
+            producer.unwrap_or_default()
+        );
+    }
+    let conversations = format!(
+        "conversations ({}) are kept {}",
+        work::CONVERSATION_PRODUCERS.join(", "),
+        match retain {
+            work::Retain::Forever => "forever".to_string(),
+            age => format!("until their newest file is {age} old"),
+        }
+    );
     if report.removed.is_empty() && report.protected.is_empty() {
-        println!("nothing to remove: every producer is within the last {keep}");
+        if swept_conversations {
+            println!(
+                "nothing to remove: every producer is within the last {keep}, and {conversations}"
+            );
+        } else {
+            println!("nothing to remove: every producer is within the last {keep}");
+        }
         return Ok(());
     }
     for entry in &report.removed {
@@ -120,6 +161,9 @@ fn clean(keep: Option<usize>, producer: Option<&str>, dry_run: bool) -> Result<(
             "kept (a published bundle names it as a source) {}",
             entry.path.display()
         );
+    }
+    if swept_conversations {
+        println!("{conversations} ([work] retain_conversations)");
     }
     println!(
         "{} {} entr{}, {}",

@@ -155,8 +155,9 @@ of something a link points at is a bad trade against how rarely anyone needs it.
 
 ## What retention will and will not sweep
 
-`mecha work clean` keeps the last `[work] keep` entries per producer (default 10)
-and says what it removed. It runs nightly. It only ever touches
+`mecha work clean` keeps the last `[work] keep` entries per producer (default 10),
+except a chat's workspace, which is kept until `[work] retain_conversations`
+(forever by default), and says what it removed. It runs nightly. It only ever touches
 `~/.mecha/work/`, never `~/.mecha/bundles/`.
 
 There is one guard worth knowing: **retention never removes anything a published

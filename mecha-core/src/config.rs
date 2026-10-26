@@ -263,6 +263,11 @@ pub struct OutboxConfig {
 pub struct WorkConfig {
     /// Entries kept per producer, newest first.
     pub keep: usize,
+    /// How long a conversation's workspace — a chat's pictures and clips, a
+    /// Slack thread's files — outlives its newest file. `forever` by default:
+    /// those are part of a conversation the owner may reopen, not scratch,
+    /// and `keep` does not count them (`work::CONVERSATION_PRODUCERS`).
+    pub retain_conversations: crate::work::Retain,
 }
 
 /// `[slack]` — tunables for the Slack remote control. **Nothing here grants
@@ -329,6 +334,7 @@ impl Default for WorkConfig {
     fn default() -> Self {
         WorkConfig {
             keep: crate::work::DEFAULT_KEEP,
+            retain_conversations: crate::work::Retain::Forever,
         }
     }
 }
@@ -1583,6 +1589,21 @@ impl Config {
                 path.display()
             );
         }
+        // How long a conversation's pictures last is the owner's to say: a
+        // cloned repository's `retain_conversations = "1s"` would empty every
+        // chat's workspace on the next `work clean` run from inside it.
+        if trust == LayerTrust::Project
+            && layer
+                .work
+                .as_mut()
+                .is_some_and(|w| w.retain_conversations.take().is_some())
+        {
+            tracing::warn!(
+                "[work] retain_conversations in {} is ignored — conversation \
+                 retention loads from the global config only",
+                path.display()
+            );
+        }
         // `[slack]` for the same reason, and a stronger one: a project file
         // arrives with a cloned repository, and Slack is the remote control.
         if trust == LayerTrust::Project && layer.slack.take().is_some() {
@@ -2238,6 +2259,7 @@ struct MessagesLayer {
 #[serde(deny_unknown_fields)]
 struct WorkLayer {
     keep: Option<usize>,
+    retain_conversations: Option<crate::work::Retain>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -2564,6 +2586,9 @@ impl ConfigLayer {
         if let Some(x) = self.work {
             if let Some(v) = x.keep {
                 cfg.work.keep = v;
+            }
+            if let Some(v) = x.retain_conversations {
+                cfg.work.retain_conversations = v;
             }
         }
         // Assignment here is the *global* layer's semantics. A project layer
@@ -3595,6 +3620,39 @@ mod tests {
         assert_eq!(
             from_global.messages.inbound,
             Some(crate::mailbox::InboundPolicy::Accept)
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn conversation_retention_is_forever_and_set_from_the_global_file_only() {
+        assert_eq!(
+            Config::default().work.retain_conversations,
+            crate::work::Retain::Forever
+        );
+        let dir = std::env::temp_dir().join(format!("mecha-retain-scope-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("layer.toml");
+        std::fs::write(&path, "[work]\nkeep = 4\nretain_conversations = \"1d\"\n").unwrap();
+
+        let mut from_project = Config::default();
+        from_project.merge_file(&path, LayerTrust::Project).unwrap();
+        assert_eq!(
+            from_project.work.retain_conversations,
+            crate::work::Retain::Forever,
+            "a cloned repository must not age out the owner's chats"
+        );
+        assert_eq!(
+            from_project.work.keep, 4,
+            "the rest of [work] still applies"
+        );
+
+        let mut from_global = Config::default();
+        from_global.merge_file(&path, LayerTrust::Global).unwrap();
+        assert_eq!(
+            from_global.work.retain_conversations,
+            crate::work::Retain::For(std::time::Duration::from_secs(86_400))
         );
 
         let _ = std::fs::remove_dir_all(&dir);

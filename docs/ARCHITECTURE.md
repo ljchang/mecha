@@ -6292,7 +6292,7 @@ because the directory is **stable across runs of the same producer**, and gives
 `mkdir -p ~/.mecha/briefings && cat > …` — a shell redirect into a directory it
 created on the way past, outside every path jail, so nothing could read it back.
 
-Three decisions:
+Four decisions:
 
 - **`mecha trigger add` writes the workspace down** rather than leaving it
   implicit, and the runner resolves the same default when the field is unset — so
@@ -6303,6 +6303,24 @@ Three decisions:
   `[work] keep` entries per producer (default 10) and says exactly what it
   removed; the nightly runs it. Anything without a policy becomes a pile nobody
   opens.
+- **A conversation's workspace is aged, never counted.** `web`, `persona`
+  and `slack` (`work::CONVERSATION_PRODUCERS`) hold one entry per chat or
+  thread, and the pictures and clips in one are part of the
+  conversation — the page fetches them by path when the chat is reopened. A
+  count of ten deleted every picture of every chat past the tenth while the
+  chats themselves stayed (2026-10-26). They go when `[work]
+  retain_conversations` (`forever` by default, or a duration) has passed
+  since the newest file *anywhere* in the entry — a directory's own mtime
+  moves only when a direct child is added — or, for a web chat, when it is
+  forgotten. Persona chats and Slack threads have no forget path
+  (`forget::Roots` walks `~/.mecha/sessions` only), so at the default their
+  workspaces are never removed: losing a picture was judged worse than
+  keeping its bytes. An entry whose age cannot be read (an unreadable directory
+  inside) is kept and warned about, never taken for old. The setting is
+  global-only: a cloned repository's `mecha.toml` setting it to `1s` would
+  empty every chat. `voice` is not on the list: every call shares
+  `work/voice/` itself, so its entries are single files, and `keep` counts
+  them.
 - **It never removes anything a published bundle names as a source**, because
   "regenerate last week's report" must not silently lose its input. The contract
   is one field of data rather than a shared type — a mirrored version directory
