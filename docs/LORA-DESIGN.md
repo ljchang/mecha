@@ -168,6 +168,16 @@ strength = 0.8
   until step 2, clips keep today's read-once. An edit from the page
   applies from the next turn. A change to a clip entry moves the enum and
   re-pays the cached prefix once.
+- **A registry file that does not read keeps the last good registry.**
+  Today `Registry::load` answers an unreadable file with an empty registry
+  and a note, which is safe while it is read once at startup. Re-read per
+  call, the same answer would turn one transient read error into a call
+  with no LoRAs, and collapse the `motion` enum and re-pay the prefix
+  twice. So a re-read that fails keeps the registry the process last read,
+  with a `doctor` finding, and only a file that read and parsed replaces
+  it. At startup, with no last good registry, it is today's loud empty
+  registry. The page's writes are atomic, a temp file renamed over the
+  old one, so a read never sees half a write from the new second writer.
 - **The old file is read for one release.** `[video] loras` keeps working
   and is reported by `mecha doctor` as moved. Its entries become `model =
   "h3"` with no other change. L2 put the new one at `~/.mecha/loras.toml`.
@@ -193,6 +203,13 @@ layer, and each persona's `state.toml` overrides it field by field
 | The model sees | nothing (the ruling) | each allowed entry's `name` and `about` in the `motion` enum |
 | Cap | `MAX_PER_PICTURE`, set by M3; the settings route refuses a longer list | `MAX_PER_CLIP` (4), unchanged |
 
+- **An absent chat layer is not a damaged one.** The chat layer has no
+  layer above it, so absent cannot mean inherit. For pictures, absent means
+  empty (L1). For clips, absent means every entry the registry offers,
+  which is v1's behaviour, never empty: a fresh install, or a machine where
+  step 2's migration has not run, keeps today's clips rather than refusing
+  every pick. Damaged still reads as empty, with the finding, because
+  damaged means a list was written and cannot be read.
 - **"Inherit" and "none" are different states.** A persona that inherits
   follows the chat layer as it changes. A persona set to an empty list stays
   empty. `Tuning` already writes an explicit choice and leaves an unset one
@@ -393,7 +410,12 @@ an entry the file would refuse.
 2. **Layers for clips.** The allowlist on the chat and persona layers,
    enforced in `pick`, and the narrowed `video_generate` per run. This is
    plumbing through where a run's tools are chosen, not a change inside
-   `loras.rs`. Results are unchanged.
+   `loras.rs`. It also writes L1's migration: on the first start of the new
+   build, a chat settings file with no clip list gets one naming every
+   entry the registry offers, so a later entry starts off as L1 rules. mecha
+   writes the chat settings file through the same code as the owner's
+   settings route; L2's "never writes or moves" is about the registry
+   files, not this. Results are unchanged.
 3. **Pictures**, gated on M1–M3. The LoRA list beside `Tuning` (§4), the
    graph's chain, triggers, and the result's count. Entries tied to a character
    (L6) apply only with that character in the cast, for pictures here and
