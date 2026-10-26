@@ -110,9 +110,13 @@ strength = 0.8
   owner sets them. `comfyui_unit::write_image_table` adds `[image]
   loras_dir` only when it writes the whole `[image]` table from nothing,
   since it never edits a table the owner wrote, and nothing writes
-  `[video]`. So on every machine that already generates, step 1's upgrade
-  needs the keys set by hand, or its LoRAs are refused until they are:
-  the release note says so first, and `doctor` and the page name the key. Each is a list, because ComfyUI's `extra_model_paths.yaml`
+  `[video]`. For a ComfyUI that mecha installed itself, an unset key
+  defaults at read time to that install's `models/loras`, since
+  `comfyui_unit` already knows the install and links models under it. A
+  server mecha did not install (`comfyui_unit::someone_elses`) has no
+  default, and its entries are refused until the owner sets the key: the
+  release note says so first, and `doctor` and the page name the key. Each
+  is a list, because ComfyUI's `extra_model_paths.yaml`
   can add LoRA folders beyond `models/loras`, and the owner's video server
   has one. A file is looked up in each folder in turn. Today a registry
   name is a bare file name (`plain`); step 1 extends it to a relative path
@@ -137,9 +141,8 @@ strength = 0.8
 - **The check runs when a file changes, not on every call.** Its result is
   kept per file by (path, length, mtime): the registry's load checks each
   entry's file once, and a later read re-checks only a file whose length or
-  mtime moved. An unchanged file keeps its result, so a transient read
-  failure on one cannot change the `motion` enum or re-pay the cached
-  prefix. The reason shown keeps *unreadable* apart from *keys matched
+  mtime moved. An unchanged file is never re-read, so nothing about it can
+  change the `motion` enum or re-pay the cached prefix. The reason shown keeps *unreadable* apart from *keys matched
   neither family*, though both refuse: the first can be a file mid-copy, the
   second never changes. So an unreadable file is not dropped from the
   registry. Its entry stays, marked unreadable, applied nowhere and not
@@ -147,9 +150,10 @@ strength = 0.8
   stat triple it was refused under is kept, so the next read whose stat has
   moved, or one a minute later when the stat could not be taken at all,
   retries it. A file caught mid-copy recovers once the copy finishes,
-  without waiting for a restart, and joins the enum then. That moves the
-  enum once, when the file's state really changed, never on a transient
-  read, since an unchanged stat keeps the last result. The stat triple is
+  without waiting for a restart, and joins the enum then. A file whose
+  stat moved and still fails to read leaves the enum and rejoins once it
+  reads, so a copy in progress moves the enum out and back. Only a changed
+  file can do that; an unchanged one never moves it. The stat triple is
   a trigger for a re-read, not a
   claim about the content: a same-length swap that keeps the mtime would
   keep its old result. That window is accepted, since the owner's own
@@ -450,8 +454,8 @@ an entry the file would refuse.
    which already covers `[video]`'s two paths for the same reason. Step 1
    also adds the `doctor` findings §3 and §4 promise: `loras_dir` unset, an
    entry's file in none of the folders, the old file ignored, and a
-   registry re-read that failed. Step 2 adds the fifth, a dangling name on
-   a layer list. They are what keeps a refused entry from being a silently
+   registry re-read that failed. Step 2 adds two more, a dangling name on
+   a layer list and a damaged layer list (§4), six in all. They are what keeps a refused entry from being a silently
    refused one.
    `scripts/check-private.py`'s `corpus()` also reads the registry, but not
    into the persona-name set: that set is matched per word, against every
@@ -462,7 +466,10 @@ an entry the file would refuse.
    registry"). Every `file` stem, and every `name` or `trigger` that is
    specific (more than one word, or containing `_`, `-` or a digit), is a
    refusal, matched as a whole phrase. A single plain word is a warning that
-   names which registry field matched, not the word, and does not refuse. While the old file is still read, `corpus()`
+   names which registry field matched, not the word, and does not refuse.
+   A registry file `corpus()` cannot read is a refusal (exit 2), as an
+   unreadable session store is today, never a pass. While the old file is
+   still read, `corpus()`
    also reads it, at the path `[video] loras` names in the global config,
    since it is not at a fixed path.
 2. **Layers for clips.** The allowlist on the chat and persona layers,
@@ -548,9 +555,13 @@ checked by hand for names from the owner's registry.
   owner-written `about`. An owner naming a likeness LoRA after the person,
   or describing it as that person's face, is the first thing to expect. So
   the parser refuses a character-tied entry whose `name` or `about`
-  contains that character's name, or any word of four or more letters from
-  its display words: the same set `check-private.py`'s `corpus()` already
-  reads from each persona. The note on a dropped tied pick is mecha's own
+  contains the library entry's own `name`, or any word of four or more
+  letters from the `display` of a persona whose `character` points at that
+  entry. `display` is a persona setting, the field `corpus()` already
+  reads; a library entry has no display or alias field of its own. A
+  likeness character with no persona has only its library `name` to match,
+  and the doc says so rather than implying a wider guard; adding an alias
+  field to library entries is a later change if one proves needed. The note on a dropped tied pick is mecha's own
   wording, appended after the owner's `about`, and names no one. Off by
   default because the owner is still testing this kind of LoRA. A tied
   entry still counts against the cap of a picture it applies to.
