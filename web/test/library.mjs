@@ -1,11 +1,6 @@
 // The image library page's pure logic, imported from the shipped module.
 import assert from 'node:assert/strict';
-import {
-  PANES, paneOf, entriesFor, counts, pendingLine, refApprovable, originLabel, listUrl, thumbUrl, validName, tameName, voicesUrl, voiceLine,
-  sampleUrl, cloneUrl, chatVoices, VOICE_ENDPOINTS,
-  TEXT_MAX, fitWithin, formProblem, formBody, previewOf,
-  REF_KINDS, REF_LIMIT, refNote, refAddable, refProblem, refBody, refRemoveBody, LABEL_MAX,
-} from '../src/lib/library.js';
+import { PANES, paneOf, entriesFor, counts, pendingLine, refApprovable, originLabel, listUrl, thumbUrl, validName, tameName, voicesUrl, voiceLine, sampleUrl, cloneUrl, chatVoices, VOICE_ENDPOINTS, TEXT_MAX, fitWithin, formProblem, formBody, previewOf, REF_KINDS, REF_LIMIT, refNote, refAddable, refProblem, refBody, refRemoveBody, LABEL_MAX, firstPicture, useNote } from '../src/lib/library.js';
 
 const entries = [
   { kind: 'character', name: 'maya', status: 'approved' },
@@ -98,6 +93,21 @@ assert.deepEqual(entriesFor('locations', withPlaces).map((e) => e.name), ['boath
 assert.deepEqual(entriesFor('characters', withPlaces).map((e) => e.name), ['maya']);
 assert.deepEqual(counts(withPlaces), { characters: 1, styles: 1, locations: 1, outfits: 1, candidates: 2 });
 assert.deepEqual(entriesFor('outfits', withPlaces).map((e) => e.name), ['raincoat']);
+
+// Locations and outfits take a view picture, up to three; a style takes
+// none; the body names the entry kind so the server finds the right entry.
+const place = { kind: 'location', name: 'boathouse', status: 'approved', references: [] };
+assert.ok(refAddable(place, 'view'));
+assert.ok(!refAddable(place, 'face'));
+assert.ok(!refAddable({ kind: 'style', name: 'ink', status: 'approved' }, 'view'));
+const full = { ...place, references: [1, 2, 3].map(() => ({ kind: 'view', picture: '/p' })) };
+assert.ok(!refAddable(full, 'view'));
+assert.equal(firstPicture(full), '/p');
+assert.equal(firstPicture(place), null);
+assert.deepEqual(refBody({ kind: 'view', picture: 'AAA', label: '' }, place), { name: 'boathouse', kind: 'location', as: 'view', picture: 'AAA' });
+assert.deepEqual(refRemoveBody({ kind: 'outfit', name: 'coat' }, { kind: 'view' }), { name: 'coat', kind: 'outfit', as: 'view' });
+assert.equal(refBody({ kind: 'face', picture: 'A', label: '' }, { name: 'maya', kind: 'character' }).kind, undefined);
+assert.match(useNote(place), /where it happens/);
 assert.equal(paneOf('locations'), 'locations');
 
 // An origin the page does not know reads as the cautious one.
@@ -144,8 +154,8 @@ assert.deepEqual(formBody({ ...edit, text: 'a woman of 40' }, entry, 'tok'), {
   kind: 'character', name: 'maya', text: 'a woman of 40', unlock: 'tok',
 });
 
-// References: the store's limits, approved characters only.
-assert.deepEqual(REF_LIMIT, { face: 1, full_body: 1, detail: 4 });
+// References: the store's limits (imagelib.rs RefKind::limit).
+assert.deepEqual(REF_LIMIT, { face: 1, full_body: 1, detail: 4, view: 3 });
 for (const k of REF_KINDS) assert.ok(refNote(k), k);
 const wren = { kind: 'character', name: 'wren', status: 'approved', references: [{ kind: 'full_body', label: null }] };
 assert.equal(refAddable(wren, 'full_body'), false, 'one full body only');

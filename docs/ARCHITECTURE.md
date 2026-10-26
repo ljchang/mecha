@@ -1481,6 +1481,11 @@ mecha-a3, 2026-10-09). An answer that gives nobody a part still fails. It feeds 
 - **Every generation writes a manifest** (`images/<stem>.json`, `create_new`
   like the PNG): the scene as written, the compiled prompt, seed, sizes, the
   model files, and each entry's name, version and portrait hash.
+- **A location's or outfit's pictures are added from the page as a
+  character's are** (`POST /api/library/reference` with the entry's `kind`;
+  absent means a character). Which pictures an entry takes is the store's
+  `RefKind::allowed_on`, asked before a child runs, and a locked entry takes
+  one only while unlocked, through the same `visible` door.
 - **The owner adds and edits from the web as from the terminal**
   (`serve/library.rs` `add`, `edit`): each runs `add-character`, `add-style`,
   `add-location` or `update` as a child, a portrait arriving base64 in the JSON body under
