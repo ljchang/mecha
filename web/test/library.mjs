@@ -105,6 +105,13 @@ assert.ok(!refAddable(full, 'view'));
 assert.equal(firstPicture(full), '/p');
 assert.equal(firstPicture(place), null);
 assert.deepEqual(refBody({ kind: 'view', picture: 'AAA', label: '' }, place), { name: 'boathouse', kind: 'location', as: 'view', picture: 'AAA' });
+// A second unlabelled view is labelled, so the store can tell it apart
+// (review of #743); an owner's label is kept.
+const onePicture = { ...place, references: [{ kind: 'view', label: null, picture: '/p' }] };
+assert.equal(refBody({ kind: 'view', picture: 'B', label: '' }, onePicture).label, 'view 2');
+assert.equal(refBody({ kind: 'view', picture: 'B', label: 'from the door' }, onePicture).label, 'from the door');
+const twoPictures = { ...place, references: [{ kind: 'view', label: null }, { kind: 'view', label: 'view 2' }] };
+assert.equal(refBody({ kind: 'view', picture: 'C', label: '' }, twoPictures).label, 'view 3');
 assert.deepEqual(refRemoveBody({ kind: 'outfit', name: 'coat' }, { kind: 'view' }), { name: 'coat', kind: 'outfit', as: 'view' });
 assert.equal(refBody({ kind: 'face', picture: 'A', label: '' }, { name: 'maya', kind: 'character' }).kind, undefined);
 assert.match(useNote(place), /where it happens/);
