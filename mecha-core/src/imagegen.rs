@@ -5572,6 +5572,10 @@ impl Tool for ImageGenerate {
                         if let Some(blob) = &u.full_body {
                             row["full_body"] = json!(blob);
                         }
+                        // The close-ups that went, by hash, never by label.
+                        if !u.details.is_empty() {
+                            row["details"] = json!(u.details);
+                        }
                         row
                     })
                     .collect::<Vec<_>>(),
@@ -8336,6 +8340,71 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with("sha256-"));
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// §9.4, 2026-10-26: a close-up goes after the faces, bound to its person
+    /// in the prompt, and the manifest keeps its hash. Its label is prompt
+    /// words only and never reaches the result.
+    #[tokio::test]
+    async fn a_close_up_goes_after_the_faces_and_into_the_manifest() {
+        let (url, seen) = fake(vec![done()], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya", "john"]);
+        let img = image::RgbImage::from_pixel(2, 2, image::Rgb([71, 1, 1]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        crate::imagelib::add_reference(
+            &lib,
+            "maya",
+            crate::imagelib::RefKind::Detail,
+            &png.into_inner(),
+            Some("left-forearm tattoo".into()),
+        )
+        .unwrap();
+        let t = tool(&url).with_library_dir(lib.clone());
+        let out = t
+            .call(
+                json!({"scene": {"setting": "a studio", "people": two_people()}, "seed": 5}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(!out.content.contains("tattoo"), "{}", out.content);
+        let seen = seen.lock().unwrap().clone();
+        let uploads = seen
+            .iter()
+            .filter(|l| l.starts_with("POST /upload/image"))
+            .count();
+        assert_eq!(uploads, 3, "two portraits and a close-up");
+        let submitted = seen
+            .iter()
+            .rfind(|l| l.starts_with("POST /prompt"))
+            .unwrap();
+        for words in [
+            "Maya's left-forearm tattoo is shown close up in <image3>",
+            "<image1> and <image2> serve as identity sources only.",
+        ] {
+            assert!(submitted.contains(words), "{words}\n{submitted}");
+        }
+        let png = out
+            .content
+            .lines()
+            .next()
+            .unwrap()
+            .strip_prefix("image: ")
+            .unwrap();
+        let manifest: Value =
+            serde_json::from_slice(&std::fs::read(dir.join(png.replace(".png", ".json"))).unwrap())
+                .unwrap();
+        assert!(manifest["cast"][0]["details"][0]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256-"));
+        assert!(manifest["cast"][1].get("details").is_none());
+        assert!(!manifest.to_string().contains("tattoo"));
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
     }

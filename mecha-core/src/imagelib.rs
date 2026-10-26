@@ -2150,7 +2150,7 @@ pub fn compile_with(
     let identity_images = n * if both { 2 } else { 1 };
     let mut room = MAX_PICTURE_IMAGES.saturating_sub(identity_images);
     let mut details: Vec<Vec<CloseUp>> = (0..n).map(|_| Vec::new()).collect();
-    let (mut no_room, mut unread) = (0, 0);
+    let (mut no_room, mut unread, mut unlabelled) = (0, 0, 0);
     for (i, m) in members.iter().enumerate() {
         for r in m
             .entry
@@ -2170,7 +2170,7 @@ pub fn compile_with(
                 .map(|l| l.trim().trim_end_matches('.'))
                 .filter(|l| !l.is_empty())
             else {
-                unread += 1;
+                unlabelled += 1;
                 continue;
             };
             if room == 0 {
@@ -2223,6 +2223,19 @@ pub fn compile_with(
                 "references were"
             },
             if unread == 1 { "it" } else { "they" }
+        ));
+    }
+    if unlabelled > 0 {
+        notes.push(format!(
+            "{} close-up {} not sent: no label says what {} {}.",
+            capitalize(number(unlabelled)),
+            if unlabelled == 1 {
+                "reference was"
+            } else {
+                "references were"
+            },
+            if unlabelled == 1 { "it" } else { "they" },
+            if unlabelled == 1 { "shows" } else { "show" }
         ));
     }
     let has_details = details.iter().any(|d| !d.is_empty());
@@ -2427,9 +2440,11 @@ pub fn compile_with(
     if prompt.chars().count() > MAX_COMPILED_PROMPT {
         // The binding is prompt-only, so it must never turn a picture that
         // draws from faces into a refusal: past the cap, the faces-only
-        // compile stands, said (review of #685). Its notes are replaced,
-        // since the only one it could carry is the layers note.
-        // Close-ups are prompt words too, so they go with the bodies.
+        // compile stands, said (review of #685). Its own notes are replaced,
+        // since the only ones it could carry are about layers, which this
+        // picture is not; this pass's notes stand, with the cap's beside them
+        // (review of #748). Close-ups are prompt words too, so they go with
+        // the bodies.
         if both || has_details {
             let mut faces = compile_with(lib, scene, cast, given_extras, style, false)?;
             let what = match (both, has_details) {
@@ -2437,9 +2452,10 @@ pub fn compile_with(
                 (true, false) => "Full-figure references were",
                 _ => "Close-up references were",
             };
-            faces.notes = vec![format!(
+            notes.push(format!(
                 "{what} not sent: the prompt would run over its limit with them."
-            )];
+            ));
+            faces.notes = notes;
             return Ok(faces);
         }
         return Err(format!(
@@ -4210,6 +4226,56 @@ mod tests {
         assert_eq!(
             c.notes,
             ["Close-up references were not sent: the prompt would run over its limit with them."]
+        );
+    }
+
+    /// The fallback keeps what this pass found: a cast of two with bodies and
+    /// a close-up, past the cap, still says why the bodies did not go, in the
+    /// wording that stops a retry by attaching more (review of #748).
+    #[test]
+    fn the_prompt_cap_fallback_keeps_the_body_note() {
+        let dir = scratch();
+        with_body(dir.path(), "maya", [7, 7, 1]);
+        with_detail(dir.path(), "maya", [7, 7, 2], "tattoo");
+        with_body(dir.path(), "jo", [7, 7, 3]);
+        let lib = Library::load(dir.path()).0;
+        let two = [member("maya"), member("jo")];
+        let base = compile_with(&lib, "x", &two, &[], None, false)
+            .unwrap()
+            .prompt
+            .chars()
+            .count();
+        let scene = "a".repeat(MAX_COMPILED_PROMPT - 10 - (base - 1));
+        let c = compile(&lib, &scene, &two, &[], None).unwrap();
+        assert_eq!(c.references.len(), 2);
+        assert_eq!(
+            c.notes,
+            [
+                "Full-figure references were not sent: they go only to a picture of one person, \
+                 and this one has two.",
+                "Close-up references were not sent: the prompt would run over its limit with \
+                 them."
+            ]
+        );
+    }
+
+    /// A hand-edited close-up with no label has nothing to bind it by: not
+    /// sent, and said as that, not as a read failure.
+    #[test]
+    fn a_close_up_without_a_label_is_not_sent_and_says_why() {
+        let dir = scratch();
+        create(dir.path(), character("maya", Origin::Owner)).unwrap();
+        with_detail(dir.path(), "maya", [7, 8, 8], "tattoo");
+        let entry = dir.path().join("characters/maya/entry.toml");
+        let text = std::fs::read_to_string(&entry).unwrap();
+        assert!(text.contains("label = \"tattoo\""), "{text}");
+        std::fs::write(&entry, text.replace("label = \"tattoo\"\n", "")).unwrap();
+        let lib = Library::load(dir.path()).0;
+        let c = compile(&lib, "a studio", &[member("maya")], &[], None).unwrap();
+        assert_eq!(c.references.len(), 1);
+        assert_eq!(
+            c.notes,
+            ["One close-up reference was not sent: no label says what it shows."]
         );
     }
 
