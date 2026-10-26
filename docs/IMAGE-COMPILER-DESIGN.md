@@ -656,8 +656,10 @@ kind is derived from its directory (`Entry.kind`).
     owner, 2026-10-14; the table above), as pictures do: the retest
     measured two people, so three with a body each needs its own
     measurement first (review of #693). **Built** (2026-10-26). Video has
-    nine slots, less any pinned or other reference images: two people with
-    a body each leave up to five for details. A clip seen through someone's
+    nine reference slots, less any other reference images (a location, an
+    outfit); a pinned opening or closing frame is not one of them, since it
+    goes through `MiniMaxH3AddGuide` beside the slots (`videogen::graph`).
+    Two people with a body each leave up to five for details. A clip seen through someone's
     eyes (`pov`) sends no bodies: that person is in the cast, with their own
     picture and never a body, so bodies for the others would be the mixed
     shape (review of #744). Three with a body each would

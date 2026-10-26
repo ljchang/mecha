@@ -1411,8 +1411,9 @@ async fn bodies_go_all_or_nothing_and_details_ride_along() {
     std::fs::remove_dir_all(&home).ok();
 }
 
-/// The slots: seven faces and a pinned frame leave one, so of seven people's
-/// details one goes and six are counted; a clip seen through someone's eyes
+/// The slots: seven faces leave two, and a pinned frame takes none (it goes
+/// beside the slots), so of seven people's details two go and five are
+/// counted; a clip seen through someone's eyes
 /// sends no bodies, said (review of #744).
 #[tokio::test]
 async fn second_pictures_fit_the_slots_left_and_a_camera_person_gets_no_bodies() {
@@ -1450,7 +1451,7 @@ async fn second_pictures_fit_the_slots_left_and_a_camera_person_gets_no_bodies()
     .await;
     assert!(!done.is_error, "{}", done.content);
     assert!(
-        done.content.contains("6 detail pictures were left out"),
+        done.content.contains("5 detail pictures were left out"),
         "{}",
         done.content
     );
@@ -1459,8 +1460,8 @@ async fn second_pictures_fit_the_slots_left_and_a_camera_person_gets_no_bodies()
         seen.iter()
             .filter(|l| l.starts_with("POST /upload"))
             .count(),
-        9,
-        "seven faces, the pinned frame and one detail"
+        10,
+        "seven faces, the pinned frame and two details"
     );
 
     // Two people with bodies, one of them the camera: no bodies.

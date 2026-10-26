@@ -1231,7 +1231,7 @@ here:
   described mark on whatever skin is in frame.
 - **A scene is mended where its words say more than its fields**
   (`scene::repair`, before it compiles). The local model's first scene
-  through the built-in tool (2026-10-25) said "Wren's POV" in a shot and
+  through the built-in tool (2026-10-25; names changed here) said "Wren's POV" in a shot and
   set no `pov`, and quoted its lines inside an action with no `lines`: the
   camera person was then defined with a face that appears, the lines had no
   speaker tag (no voice, no lip sync), and a name inside them was labelled.
