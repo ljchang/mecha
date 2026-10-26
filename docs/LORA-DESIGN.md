@@ -186,8 +186,22 @@ layer, and each persona's `state.toml` overrides it field by field
   list of names is not, so it resolves on its own, and a persona whose only
   choice is turbo still inherits the chat's list. Whether an entry then
   applies on turbo is M2's answer, filtered at render time (§5). A damaged
-  list reads as inherit, never as an empty override, and a test covers a
-  cfg save leaving an explicit empty list explicit.
+  list reads as **empty**, not as inherit, and the page and `doctor` say it
+  could not be read. Unknown is never clean, and a LoRA list is a set of
+  things applied: inherit is the direction that applies more, and could
+  apply a character-tied entry (L6) the owner left off this persona. The
+  cost is one re-save. Unlike `Tuning::lenient`, whose damaged numbers
+  inherit because a number has no such risk. A test covers a cfg save
+  leaving an explicit empty list explicit.
+- **A list can name an entry that no longer exists.** The registry is
+  hand-edited (L2), so an entry can be deleted or renamed outside the page,
+  and the layers' lists are not rewritten when that happens. For clips a
+  dangling name just leaves the enum. For pictures, the result names it in
+  a count ("one LoRA in settings is no longer in the registry"), never by
+  name, beside the count of those that applied, and `doctor` names the
+  layer and the name to the owner. Otherwise the applied count would read
+  as correct. A character-tied entry whose library character was removed is
+  refused at parse time, like any entry that does not read (§3).
 - **The allowlist is enforced in `pick`, not only in the schema.**
   `Registry::pick` resolves a name against the whole registry, so once a
   layer narrows the enum, a name it did not offer would still load. `pick`
@@ -227,6 +241,9 @@ layer, and each persona's `state.toml` overrides it field by field
   without the words, so a picture that differs from what the model wrote
   has a recorded reason. A clip result keeps naming what the model picked,
   as it does today, so it can say what it chose.
+- **Names are one namespace across both families.** The registry dedupes
+  by name, so a picture entry and a clip entry cannot share one; the
+  second is refused with that reason.
 
 ## 5. The picture graph
 
