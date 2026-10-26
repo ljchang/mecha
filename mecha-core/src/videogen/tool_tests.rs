@@ -1353,7 +1353,7 @@ async fn bodies_go_all_or_nothing_and_details_ride_along() {
             .filter(|l| l.starts_with("POST /upload"))
             .count(),
         2,
-        "face and body"
+        "one portrait crop, one full body"
     );
     std::fs::remove_dir_all(&home).ok();
 }
