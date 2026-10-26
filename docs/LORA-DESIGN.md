@@ -55,6 +55,10 @@ field at all, and the field names differ by trainer. So:
 
 - **Family is read from the keys.** A file whose keys match neither family
   is *unknown*, and unknown is refused, never assumed.
+- **Nothing read from a LoRA file is ever shown or prompted as text.** The
+  file is third-party content. Its keys decide one value out of a closed set
+  (`qwen-image`, `h3`, unknown) and `__metadata__` is not read at all, so
+  nothing in a file can reach a prompt or a page in its own words.
 - **Mode is declared, never read.** H3's references and frames checkpoints
   share one architecture, so their LoRAs have the same keys. The owner's
   tests on 10-24 showed a LoRA on the other checkpoint breaks clips, so the
@@ -105,7 +109,10 @@ strength = 0.8
   which is its purpose. For pictures the owner is the picker, so an `always`
   entry would override the owner's own list: a persona set to an empty list
   would still get it. The parser refuses `always` on a `qwen-image` entry,
-  and a LoRA wanted on every picture goes in the chat layer's list.
+  and a LoRA wanted on every picture goes in the chat layer's list. It also
+  refuses `always` together with `character` (L6): an always-on clip entry
+  never sits on a layer's list, so the switch that turns a character LoRA on
+  could never reach it.
 - **The registry reaches the running process when it changes.** Today it is
   read once, in `VideoGenerate::new`, and a restart picks up an edit
   (`VideoConfig::loras`). After step 1 it is re-read when its contents
@@ -142,9 +149,9 @@ layer, and each persona's `state.toml` overrides it field by field
   inherits the chat's list. Whether an entry then applies on turbo is M2's
   answer, filtered at render time (§5). `Tuning::lenient` gains a branch so a
   damaged list reads as inherit, never as an empty override.
-- **The allowlist is enforced in `pick`, not only in the schema.** Today
-  `Registry::pick` resolves a name against the whole registry, so a name the
-  enum did not offer still loads. `pick` takes the resolved layer's list and
+- **The allowlist is enforced in `pick`, not only in the schema.**
+  `Registry::pick` resolves a name against the whole registry, so once a
+  layer narrows the enum, a name it did not offer would still load. `pick` takes the resolved layer's list and
   refuses a name outside it with the same refusal as an unknown name. The
   enum is the hint, `pick` is the gate, and a test names an off-list entry
   and expects the refusal: that is the case the enum cannot cover.
@@ -193,7 +200,8 @@ prompt does not already contain it, with the same rule as
   passed alone (2026-10-24). Test: one, two and three stacked on one scene;
   the cap is the largest count that held. Pictures have no `always` entries,
   so the cap is the length of the resolved list, and the settings route
-  refuses a list longer than it. Nothing is dropped at render time.
+  refuses a list longer than it, so the cap never drops an entry at render
+  time. (M1 and M2 can, and the result says so.)
 
 ## 6. The web
 
@@ -235,6 +243,12 @@ would refuse.
    `[image] loras_dir` and `[video] loras_dir`, the old file read for one
    release, the clip path filtered by family. No change in behaviour for a
    registry that only holds H3 entries, once `[video] loras_dir` is set.
+   Both keys need `ConfigLayer::expand_home` arms: today it never opens
+   `[image]`, and its `[video]` arm covers only `guide_addendum` and
+   `loras`. Without them, a hand-typed `~/…` is read literally and every
+   entry for that server is refused. `every_path_field_a_layer_can_read_is_expanded`
+   does not catch this, because it walks only the `*Layer` structs in
+   `config.rs`, so step 1 adds a test for these two keys.
    `scripts/check-private.py`'s `corpus()` also reads the registry's
    `name`, `file` and `trigger` and refuses them in added text, as it already
    does for persona names.
@@ -247,7 +261,10 @@ would refuse.
    (L6) apply only with that character in the cast, for pictures here and
    for clips in step 2's `pick`.
 4. **The web.** The LoRAs pane and the `PANE_FEATURE` list, the lists in
-   Images, Video and persona settings, and the lock (L3).
+   Images, Video and persona settings, and the lock (L3). A list value in
+   `PANE_FEATURE` fails `every_feature_the_web_app_names_is_a_registry_id`,
+   which reads one id per line, so that test grows with the map rather than
+   reading as a regression.
 5. ~~**The real-person guard**~~ deferred (L5).
 
 Each step is its own PR. The tests and docs use made-up names only. Until
