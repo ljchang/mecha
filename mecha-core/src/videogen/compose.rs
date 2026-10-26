@@ -37,6 +37,26 @@ pub struct Person {
     pub worn_by: Option<Vec<String>>,
 }
 
+/// A second picture of a library character, sent after every subject's own
+/// (`IMAGE-COMPILER-DESIGN.md` §9.4): its `<Picture k>` and what it shows.
+pub struct Extra {
+    /// The subject it belongs to, numbered from 1.
+    pub subject: usize,
+    /// Its `<Picture k>`, numbered from 1.
+    pub picture: usize,
+    pub kind: ExtraKind,
+}
+
+pub enum ExtraKind {
+    /// The whole person: sent unbound, "the person in <Picture n> and
+    /// <Picture k>" (V-B's retest, owner 2026-10-14).
+    Body,
+    /// A labelled mark, shown close up (V-D, owner 2026-10-26: a tattoo
+    /// picture kept the tattoo on one forearm where words alone put it on
+    /// both).
+    Detail(String),
+}
+
 impl Person {
     /// Neither a place nor clothes: someone the clip features.
     fn is_person(&self) -> bool {
@@ -111,8 +131,14 @@ fn field(text: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
-/// A full-reference prompt: the six sections, in order.
-pub fn references(parts: &Parts, people: &[Person], pins: (bool, bool)) -> String {
+/// A full-reference prompt: the six sections, in order. `extras` are the
+/// library characters' second pictures, numbered after every subject's own.
+pub fn references(
+    parts: &Parts,
+    people: &[Person],
+    extras: &[Extra],
+    pins: (bool, bool),
+) -> String {
     let named: Vec<(String, usize)> = people
         .iter()
         .enumerate()
@@ -196,14 +222,39 @@ pub fn references(parts: &Parts, people: &[Person], pins: (bool, bool)) -> Strin
         } else {
             String::new()
         };
+        let body = extras
+            .iter()
+            .find(|e| e.subject == n && matches!(e.kind, ExtraKind::Body))
+            .map(|e| e.picture);
+        // With a body, the two pictures are one person, unbound: no
+        // face-from/build-from split, the wording V-B's retest passed with.
+        let pictured = match body {
+            Some(k) => format!("the person in <Picture {n}> and <Picture {k}>"),
+            None => format!("{from} <Picture {n}>"),
+        };
+        let not_from = match body {
+            Some(_) => "The clothing is not taken from either picture".to_string(),
+            None => format!("The clothing is not taken from <Picture {n}>"),
+        };
+        let marks: String = extras
+            .iter()
+            .filter(|e| e.subject == n)
+            .filter_map(|e| match &e.kind {
+                ExtraKind::Detail(label) => Some(format!(
+                    " <Subject {n}>'s {label} is shown close up in <Picture {}>.",
+                    e.picture
+                )),
+                ExtraKind::Body => None,
+            })
+            .collect();
         defs.push(match (&p.name, &p.description) {
             (Some(name), Some(text)) => format!(
-                "<Subject {n}> is {}, {from} <Picture {n}>: {text}.{} The clothing is not taken from <Picture {n}>; it is what the description gives.{unseen}",
+                "<Subject {n}> is {}, {pictured}: {text}.{}{marks} {not_from}; it is what the description gives.{unseen}",
                 title_case(name),
                 only_marks(text, &format!("<Subject {n}>"))
             ),
             (Some(name), None) => format!(
-                "<Subject {n}> is {}, {from} <Picture {n}>. The clothing is not taken from <Picture {n}>; it is what the description gives.{unseen}",
+                "<Subject {n}> is {}, {pictured}.{marks} {not_from}; it is what the description gives.{unseen}",
                 title_case(name)
             ),
             (None, _) => format!("<Subject {n}> is what <Picture {n}> shows, kept as it appears there."),
@@ -301,6 +352,23 @@ pub fn references(parts: &Parts, people: &[Person], pins: (bool, bool)) -> Strin
     let mut kept = Vec::new();
     for (i, p) in people.iter().enumerate() {
         let n = i + 1;
+        let body = extras
+            .iter()
+            .find(|e| e.subject == n && matches!(e.kind, ExtraKind::Body))
+            .map(|e| e.picture);
+        // Each mark shown close up is kept where it is and nowhere else: the
+        // wording V-D measured.
+        let marks: String = extras
+            .iter()
+            .filter(|e| e.subject == n)
+            .filter_map(|e| match &e.kind {
+                ExtraKind::Detail(label) => Some(format!(
+                    "; the {label} in <Picture {}> is kept exactly where it is, and nowhere else",
+                    e.picture
+                )),
+                ExtraKind::Body => None,
+            })
+            .collect();
         kept.push(match &p.name {
             _ if p.worn_by.is_some() => format!(
                 "<Subject {n}> (worn by {on} throughout): fully_preserved - the garment in <Picture {n}> is what {on} {wear} in every shot, exactly as it appears there; it is never shown on its own.",
@@ -317,12 +385,17 @@ pub fn references(parts: &Parts, people: &[Person], pins: (bool, bool)) -> Strin
                 if p.face_only { "is" } else { "are" },
                 if p.face_only { ", the build follows the stored description" } else { "" },
             ),
+            Some(name) if body.is_some() => format!(
+                "<Subject {n}> (appears in the clip): partially_preserved - {}'s face, hair, skin and build from <Picture {n}> and <Picture {}> are retained{marks}; the clothing in them is replaced by the clothing in the description.",
+                title_case(name),
+                body.unwrap_or(n)
+            ),
             Some(name) if p.face_only => format!(
-                "<Subject {n}> (appears in the clip): partially_preserved - {}'s face from <Picture {n}> is retained; hair, build and the rest follow the stored description, and the clothing follows the scene.",
+                "<Subject {n}> (appears in the clip): partially_preserved - {}'s face from <Picture {n}> is retained{marks}; hair, build and the rest follow the stored description, and the clothing follows the scene.",
                 title_case(name)
             ),
             Some(name) => format!(
-                "<Subject {n}> (appears in the clip): partially_preserved - {}'s face, hair, skin and build from <Picture {n}> are retained; the clothing in <Picture {n}> is replaced by the clothing in the description.",
+                "<Subject {n}> (appears in the clip): partially_preserved - {}'s face, hair, skin and build from <Picture {n}> are retained{marks}; the clothing in <Picture {n}> is replaced by the clothing in the description.",
                 title_case(name)
             ),
             None => format!("<Subject {n}> (appears in the clip): fully_preserved - what <Picture {n}> shows is retained."),
@@ -692,6 +765,7 @@ mod tests {
                 "Live-action. Maya (S1) says, <d>[English] The kettle is on.</d> Wren (S2) laughs.",
             ),
             &people,
+            &[],
             (false, false),
         );
         let order = [
@@ -736,7 +810,7 @@ mod tests {
             "{out}"
         );
         assert!(out.ends_with("non_diegetic_music:\nN/A"), "{out}");
-        let pinned = references(&parts("Maya waves."), &people, (true, false));
+        let pinned = references(&parts("Maya waves."), &people, &[], (true, false));
         assert!(
             pinned.contains("[keyframe completion + reference generation + audio reference]"),
             "{pinned}"
@@ -746,7 +820,7 @@ mod tests {
             "{pinned}"
         );
         // A newline after the tag keeps the sentence too (review of #732).
-        let pinned = references(&parts("[Shot 1]\nMaya waves."), &people, (true, false));
+        let pinned = references(&parts("[Shot 1]\nMaya waves."), &people, &[], (true, false));
         assert!(
             pinned.contains("[Shot 1] The shot begins exactly on the provided opening frame and continues from it.\n<Subject 1> waves."),
             "{pinned}"
@@ -777,7 +851,12 @@ mod tests {
                 worn_by: None,
             },
         ];
-        let out = references(&parts("Maya looks up at Wren."), &people, (false, false));
+        let out = references(
+            &parts("Maya looks up at Wren."),
+            &people,
+            &[],
+            (false, false),
+        );
         assert!(
             out.contains(
                 "left wrist. No tattoo appears anywhere else on <Subject 1>'s body. The clothing"
@@ -798,7 +877,7 @@ mod tests {
             place: false,
             worn_by: None,
         }];
-        let out2 = references(&parts("Wren reaches out."), &whole, (false, false));
+        let out2 = references(&parts("Wren reaches out."), &whole, &[], (false, false));
         assert!(
             out2.contains("<Subject 1> is Wren, whose skin and build come from <Picture 1>"),
             "{out2}"
@@ -831,7 +910,7 @@ mod tests {
             place: true,
             worn_by: None,
         }];
-        let out = references(&parts("A man rows past."), &alone, (false, false));
+        let out = references(&parts("A man rows past."), &alone, &[], (false, false));
         assert!(out.contains("-second clip set in <Subject 1>."), "{out}");
         assert!(!out.contains("featuring"), "{out}");
         let people = [
@@ -857,6 +936,7 @@ mod tests {
         let out = references(
             &parts("Maya waits. The scene takes place in Boat House."),
             &people,
+            &[],
             (false, false),
         );
         assert!(out.contains("<Subject 2> is the location Boat House, shown in <Picture 2>: A timber room with oars on the wall. The clip takes place there"), "{out}");
@@ -896,6 +976,7 @@ mod tests {
         let out = references(
             &parts("Maya wears Red Raincoat and waves."),
             &people,
+            &[],
             (false, false),
         );
         assert!(out.contains("<Subject 2> is the outfit Red Raincoat in <Picture 2>, worn by <Subject 1>: A red hooded raincoat. It is clothing, never a person"), "{out}");
@@ -915,7 +996,7 @@ mod tests {
             place: false,
             worn_by: Some(vec!["a lifeguard".into()]),
         }];
-        let worn_only = references(&parts("A lifeguard waves."), &alone, (false, false));
+        let worn_only = references(&parts("A lifeguard waves."), &alone, &[], (false, false));
         assert!(
             worn_only.contains("-second clip with <Subject 1> worn."),
             "{worn_only}"
@@ -925,6 +1006,40 @@ mod tests {
             out.contains("<Subject 1> wears <Subject 2> and waves."),
             "{out}"
         );
+    }
+
+    /// A body binds a second picture to the person, unbound; a detail is
+    /// said close up and kept where it is, nowhere else.
+    #[test]
+    fn a_body_and_a_detail_are_the_same_person() {
+        let people = [Person {
+            name: Some("maya".into()),
+            description: Some("Tall".into()),
+            audio: None,
+            face_only: true,
+            pov: false,
+            place: false,
+            worn_by: None,
+        }];
+        let extras = [
+            Extra {
+                subject: 1,
+                picture: 2,
+                kind: ExtraKind::Body,
+            },
+            Extra {
+                subject: 1,
+                picture: 3,
+                kind: ExtraKind::Detail("rose tattoo, right ankle".into()),
+            },
+        ];
+        let out = references(&parts("Maya waves."), &people, &extras, (false, false));
+        assert!(out.contains("<Subject 1> is Maya, the person in <Picture 1> and <Picture 2>: Tall. <Subject 1>'s rose tattoo, right ankle is shown close up in <Picture 3>. The clothing is not taken from either picture"), "{out}");
+        assert!(out.contains("Maya's face, hair, skin and build from <Picture 1> and <Picture 2> are retained; the rose tattoo, right ankle in <Picture 3> is kept exactly where it is, and nowhere else; the clothing in them is replaced"), "{out}");
+        // A detail alone, beside a face crop.
+        let out = references(&parts("Maya waves."), &people, &extras[1..], (false, false));
+        assert!(out.contains("whose face comes from <Picture 1>: Tall. <Subject 1>'s rose tattoo, right ankle is shown close up in <Picture 3>."), "{out}");
+        assert!(out.contains("Maya's face from <Picture 1> is retained; the rose tattoo, right ankle in <Picture 3> is kept exactly where it is"), "{out}");
     }
 
     #[test]
