@@ -70,10 +70,12 @@ pub const MAX_LABEL: usize = 100;
 /// doubled to 2 of 21 (E14); a cast of one with a body drew no one twice.
 pub const MAX_BOUND_IMAGES: usize = 2;
 /// Reference images a new picture carries at most, faces, bodies and
-/// close-ups together (`IMAGE-COMPILER-DESIGN.md` §9.4): `IMAGE-DESIGN.md`
-/// §5.2's provisional C5, five whole portraits drawing all five people 3/3.
-/// Close-ups are the only images that can reach it, since `MAX_CAST` faces
-/// alone fill it and bodies go to a cast of one.
+/// close-ups together (`IMAGE-COMPILER-DESIGN.md` §9.4). Provisional: the
+/// number is `IMAGE-DESIGN.md` §5.2's C5, which measured five *people*,
+/// five whole portraits drawing all five 3/3; close-ups were measured at
+/// three images, two portraits beside one close-up (2026-10-26). Larger
+/// mixes of people and marks are unmeasured. No new picture carries more
+/// images than five portraits did, since `MAX_CAST` is five too.
 pub const MAX_PICTURE_IMAGES: usize = 5;
 
 /// What an entry is. The directory it lives under.
@@ -2194,6 +2196,9 @@ pub fn compile_with(
             }
         }
     }
+    // Of this pass's notes, the room note is the one the prompt-cap
+    // fallback makes false, since there no close-up goes at all.
+    let mut room_note = None;
     if no_room > 0 {
         let why = if bodies {
             format!(
@@ -2203,6 +2208,7 @@ pub fn compile_with(
         } else {
             "a picture planned in layers is drawn from portraits".to_string()
         };
+        room_note = Some(notes.len());
         notes.push(format!(
             "{} close-up {} not sent: {why}.",
             capitalize(number(no_room)),
@@ -2331,6 +2337,13 @@ pub fn compile_with(
     } else {
         "All images serve as identity sources only.".to_string()
     };
+    // The positive binding names the identity images, never "the images",
+    // once a mark is among them (review of #748, pass 2).
+    let from_identity = if has_details {
+        join_and(&identity)
+    } else {
+        from_image.to_string()
+    };
     let close_words = if close_words.is_empty() {
         String::new()
     } else {
@@ -2411,7 +2424,7 @@ pub fn compile_with(
         )),
         (1, _) => prompt.push_str(&format!(
             " {}.{bound_words} Also in the scene, not from {from_image}: {others}. Exactly {} \
-             people in the image: the one from {from_image}, exactly once, and {new_people} not \
+             people in the image: the one from {from_identity}, exactly once, and {new_people} not \
              from any image. {identity_only}; this is a new image with its own composition, \
              pose and lighting.{close_words}",
             capitalize(&people[0]),
@@ -2452,6 +2465,9 @@ pub fn compile_with(
                 (true, false) => "Full-figure references were",
                 _ => "Close-up references were",
             };
+            if let Some(i) = room_note {
+                notes.remove(i);
+            }
             notes.push(format!(
                 "{what} not sent: the prompt would run over its limit with them."
             ));
@@ -4256,6 +4272,60 @@ mod tests {
                 "Close-up references were not sent: the prompt would run over its limit with \
                  them."
             ]
+        );
+    }
+
+    /// Past the cap no close-up goes, so the note that one was left out for
+    /// room would contradict it, and is dropped (review of #748, pass 2).
+    #[test]
+    fn the_prompt_cap_fallback_drops_the_room_note() {
+        let dir = scratch();
+        with_body(dir.path(), "maya", [7, 9, 1]);
+        for (i, label) in ["tattoo", "scar", "birthmark", "freckles"]
+            .iter()
+            .enumerate()
+        {
+            with_detail(dir.path(), "maya", [7, 9, 2 + i as u8], label);
+        }
+        let lib = Library::load(dir.path()).0;
+        let one = [member("maya")];
+        let with_room = compile(&lib, "a studio", &one, &[], None).unwrap();
+        assert!(with_room.notes[0].contains("at most five images"));
+        let base = compile_with(&lib, "x", &one, &[], None, false)
+            .unwrap()
+            .prompt
+            .chars()
+            .count();
+        let scene = "a".repeat(MAX_COMPILED_PROMPT - 10 - (base - 1));
+        let c = compile(&lib, &scene, &one, &[], None).unwrap();
+        assert_eq!(c.references.len(), 1);
+        assert_eq!(
+            c.notes,
+            [
+                "Full-figure and close-up references were not sent: the prompt would run over \
+                 its limit with them."
+            ]
+        );
+    }
+
+    /// With an extra beside one person, the head count binds that person to
+    /// the numbered portrait, never to "the images", which would take in the
+    /// mark (review of #748, pass 2).
+    #[test]
+    fn a_close_up_beside_an_extra_binds_the_head_count_by_number() {
+        let dir = scratch();
+        create(dir.path(), character("maya", Origin::Owner)).unwrap();
+        with_detail(dir.path(), "maya", [7, 10, 1], "tattoo");
+        let lib = Library::load(dir.path()).0;
+        let extras = ["a waiter in a white apron".to_string()];
+        let c = compile(&lib, "a cafe", &[member("maya")], &extras, None).unwrap();
+        assert!(
+            c.prompt.contains(
+                "Exactly two people in the image: the one from <image1>, exactly once, and one \
+                 new person not from any image."
+            ),
+            "{}",
+            c.prompt
         );
     }
 
