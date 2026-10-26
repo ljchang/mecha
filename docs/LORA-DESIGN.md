@@ -392,7 +392,8 @@ things are unknown, so the build waits on them:
     is attached to an existing entry the same way. ComfyUI lists files in
     subfolders of `models/loras` by their relative path, so `file`, `frames`
     and `references` accept one, under §3's lexical rule. The Add list
-    never offers a file the parser would refuse.
+    never offers a file whose name that rule would refuse. A file mecha
+    cannot read is still listed, with its family unknown and the reason.
   - Edit and remove. Removing an entry also removes it from every layer's
     list, and the page says how many layers held it.
 - **Settings → Images** gains a LoRA list (the chat layer's picture LoRAs).
@@ -452,9 +453,16 @@ an entry the file would refuse.
    registry re-read that failed. Step 2 adds the fifth, a dangling name on
    a layer list. They are what keeps a refused entry from being a silently
    refused one.
-   `scripts/check-private.py`'s `corpus()` also reads the registry's
-   `name`, `file` and `trigger` and refuses them in added text, as it already
-   does for persona names. While the old file is still read, `corpus()`
+   `scripts/check-private.py`'s `corpus()` also reads the registry, but not
+   into the persona-name set: that set is matched per word, against every
+   added line, with the matched words deliberately unprinted, and LoRA
+   names are ordinary nouns, so one entry named after a common word would
+   refuse unrelated commits with no way to find out why. So the registry
+   gets its own matcher and its own label ("text from the owner's LoRA
+   registry"). Every `file` stem, and every `name` or `trigger` that is
+   specific (more than one word, or containing `_`, `-` or a digit), is a
+   refusal, matched as a whole phrase. A single plain word is a warning that
+   names which registry field matched, not the word, and does not refuse. While the old file is still read, `corpus()`
    also reads it, at the path `[video] loras` names in the global config,
    since it is not at a fixed path.
 2. **Layers for clips.** The allowlist on the chat and persona layers,
@@ -534,13 +542,15 @@ checked by hand for names from the owner's registry.
   its own character in the clip, without naming the character. Location
   and outfit names do appear in `video_generate`'s schema today; character
   names never do, since the model types a cast name and is never handed a
-  list of the owner's people. L6 keeps it that way in the tie, the note
-  and the `about`. The one channel left is the entry's own `name`, which
-  the enum carries, and an owner naming a likeness LoRA after the person is
-  the first thing to expect. So the parser refuses a character-tied entry
-  whose `name` contains that character's name, or any word of four or more
-  letters from its display words: the same set `check-private.py`'s
-  `corpus()` already reads from each persona. The
-  enum's `about` for a tied entry says the same, in the same words. Off by
+  list of the owner's people. L6 keeps it that way in the tie and the
+  note. Two channels are left, both rendered into the enum's description
+  by `Registry::schema` (`name — about`): the entry's own `name`, and its
+  owner-written `about`. An owner naming a likeness LoRA after the person,
+  or describing it as that person's face, is the first thing to expect. So
+  the parser refuses a character-tied entry whose `name` or `about`
+  contains that character's name, or any word of four or more letters from
+  its display words: the same set `check-private.py`'s `corpus()` already
+  reads from each persona. The note on a dropped tied pick is mecha's own
+  wording, appended after the owner's `about`, and names no one. Off by
   default because the owner is still testing this kind of LoRA. A tied
   entry still counts against the cap of a picture it applies to.
