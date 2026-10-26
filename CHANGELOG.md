@@ -193,7 +193,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `mecha work clean` counted a chat's workspace like a morning brief and kept
   only the ten newest per surface, so every picture drawn in an older persona
   or web chat was deleted while the chat itself stayed. Conversation
-  workspaces (web, persona, Slack, voice) are no longer counted: they are kept
+  workspaces (web, persona, Slack) are no longer counted: they are kept
   until `[work] retain_conversations` says otherwise, `forever` by default, or
   a duration like `90d` measured from the newest file in the chat. Deleting a
   chat still removes its files. Pictures already removed are not recovered.

@@ -744,7 +744,7 @@ mecha work [list|path|clean] [ARGS]
 |---|---|---|
 | `list` | | What each producer has generated, with entry counts, size, and the newest entry. |
 | `path` | `<PRODUCER>` | Print one producer's directory, creating it if absent. For `cd $(mecha work path x)`. |
-| `clean` | `--keep <N>` | How many entries survive per producer. Defaults to `[work] keep` (10). Conversations (web, persona, Slack, voice) are not counted. |
+| `clean` | `--keep <N>` | How many entries survive per producer. Defaults to `[work] keep` (10). Conversations (web, persona, Slack) are not counted. |
 | `clean` | `--retain <forever\|DURATION>` | How long a conversation's workspace outlives its newest file. Defaults to `[work] retain_conversations` (`forever`). |
 | `clean` | `--producer <NAME>` | Only this producer. |
 | `clean` | `--dry-run` | Say what would go, and remove nothing. |
