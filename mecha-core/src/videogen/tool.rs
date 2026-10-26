@@ -834,7 +834,26 @@ impl VideoGenerate {
         // Pinned frames take slots too (§9.4: nine "less any pinned or other
         // reference images"; review of #744).
         let mut slots = graph::MAX_REFERENCES.saturating_sub(refs.len() + pinned);
+        let bodies: Vec<(usize, &crate::imagelib::Entry, &crate::imagelib::Reference)> = seen
+            .iter()
+            .filter_map(|(i, e)| {
+                let e = (*e)?;
+                let r = e
+                    .sendable_references()
+                    .into_iter()
+                    .find(|r| r.kind == RefKind::FullBody)?;
+                Some((*i, e, r))
+            })
+            .collect();
+        // All or nothing holds for reading too: one body that does not read
+        // sends none, never the other alone beside a face-only person, the
+        // shape V-B failed on (review of #744).
         let mut unreadable = 0;
+        let bodies_read = bodies
+            .iter()
+            .filter(|(_, e, r)| library.read_reference(e, r).is_err())
+            .count();
+        unreadable += bodies_read;
         let mut add = |subject: usize,
                        entry: &crate::imagelib::Entry,
                        reference: &crate::imagelib::Reference,
@@ -862,18 +881,7 @@ impl VideoGenerate {
             });
             true
         };
-        let bodies: Vec<(usize, &crate::imagelib::Entry, &crate::imagelib::Reference)> = seen
-            .iter()
-            .filter_map(|(i, e)| {
-                let e = (*e)?;
-                let r = e
-                    .sendable_references()
-                    .into_iter()
-                    .find(|r| r.kind == RefKind::FullBody)?;
-                Some((*i, e, r))
-            })
-            .collect();
-        if (1..=2).contains(&seen.len()) && bodies.len() == seen.len() {
+        if (1..=2).contains(&seen.len()) && bodies.len() == seen.len() && bodies_read == 0 {
             if bodies.len() <= slots {
                 for (i, e, r) in &bodies {
                     if add(*i, e, r, compose::ExtraKind::Body, "full body") {
@@ -915,8 +923,10 @@ impl VideoGenerate {
         }
         // Bodies go to a whole cast or to no one: said, so the owner can add
         // the missing one (review of #744). Counted, never named.
-        if !bodies.is_empty() && (bodies.len() < seen.len() || seen.len() > 2) {
-            notes.push(if seen.len() > 2 {
+        if !bodies.is_empty() && (bodies.len() < seen.len() || seen.len() > 2 || bodies_read > 0) {
+            notes.push(if bodies_read > 0 {
+                "No full-body pictures were sent: one could not be read.".to_string()
+            } else if seen.len() > 2 {
                 "No full-body pictures were sent: they go to a cast of one or two.".to_string()
             } else {
                 "No full-body pictures were sent: everyone shown needs one for any to go."
