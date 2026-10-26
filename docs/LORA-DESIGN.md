@@ -1,7 +1,7 @@
 # LoRAs for pictures and clips — one registry, one picker
 
 Status: **design, not built** (2026-10-26). §8 holds the decisions: L2,
-L3 and L5 ruled the same day, L1 and L6 owed, L4 decided by M2.
+L3, L5 and L6 ruled the same day, L1 owed, L4 decided by M2.
 
 mecha ships no LoRA and names none (the owner's ruling, 2026-10-23). This
 document is the mechanism only. Every name, file and trigger word in it is
@@ -101,9 +101,18 @@ strength = 0.8
   `qwen-image` entries and the clip graph sees `h3` entries. Today the clip
   path drops a pick with no file for the clip's mode; the family check adds
   the step before that.
-- **`always` stays, and means the same thing for both.** It applies to every
-  picture or clip in its family, outside any per-chat choice, and is never
-  offered to the model.
+- **`always` is for clips only.** For clips it overrides the model's pick,
+  which is its purpose. For pictures the owner is the picker, so an `always`
+  entry would override the owner's own list: a persona set to an empty list
+  would still get it. The parser refuses `always` on a `qwen-image` entry,
+  and a LoRA wanted on every picture goes in the chat layer's list.
+- **The registry reaches the running process when it changes.** Today it is
+  read once, in `VideoGenerate::new`, and a restart picks up an edit
+  (`VideoConfig::loras`). After step 1 it is re-read when its contents
+  change: for pictures on each call, as `Tuning` is now, and for clips where
+  the narrowed `video_generate` is built per run (§4). An edit from the page
+  applies from the next turn. A change to a clip entry moves the enum and
+  re-pays the cached prefix once.
 - **The old file is read for one release.** `[video] loras` keeps working
   and is reported by `mecha doctor` as moved. Its entries become `model =
   "h3"` with no other change. §8, L2 decides where the new one lives.
@@ -120,7 +129,7 @@ layer, and each persona's `state.toml` overrides it field by field
 | Chat layer | the LoRAs on every picture | the LoRAs the model may pick |
 | Persona layer | overrides the chat's list, or inherits it | the same |
 | The model sees | nothing (the ruling) | each allowed entry's `name` and `about` in the `motion` enum |
-| Cap | `MAX_PER_PICTURE`, set by M3, counting `always` entries | `MAX_PER_CLIP` (4), unchanged |
+| Cap | `MAX_PER_PICTURE`, set by M3; the settings route refuses a longer list | `MAX_PER_CLIP` (4), unchanged |
 
 - **"Inherit" and "none" are different states.** A persona that inherits
   follows the chat layer as it changes. A persona set to an empty list stays
@@ -164,33 +173,41 @@ One `LoraLoaderModelOnly` per entry between the diffusion model's loader
 prompt does not already contain it, with the same rule as
 `loras::with_triggers`. Two things are unknown, so the build waits on them:
 
-- **M1. Does a LoRA patch the int8 checkpoint?** The standard picture model
-  is `int8_convrot`. LoRA patching on quantized weights is not given. Test:
+- **M1. Does a LoRA patch Qwen-Image's int8 file?** Clips already chain
+  `LoraLoaderModelOnly` onto H3's int8 ConvRot checkpoints through
+  `UNETLoader`, so int8 patching through ComfyUI's own loader has working
+  evidence. What is unmeasured is Qwen-Image's int8 file specifically. Test:
   one same-seed pair with and without one LoRA, plus render time and peak
-  memory, against the bf16 checkpoint for the same pair. A `.gguf`
-  diffusion model loads through `UnetLoaderGGUF`, a second quantization with
-  its own patching path. Until it is measured the same way, LoRA entries do
-  not apply when `[image] diffusion_model` is a `.gguf`, and the result says
-  they were left out.
+  memory, against the bf16 file for the same pair. A `.gguf` file loads
+  through `UnetLoaderGGUF`, a second quantization with its own patching path.
+  Until that is measured the same way, LoRA entries do not apply to a
+  picture whose loaded file is a `.gguf`, and the result says they were left
+  out. The check is per picture, on the file the picture actually loads
+  (`ImageConfig::model_file(sampling.model)`, which is the turbo file for a
+  turbo picture), never on one config key.
 - **M2. Do LoRAs trained on the base model work on picture turbo?** Turbo
   is a distillation, not the base. Test: the same pair on turbo. If they
   fail, entries do not apply to turbo pictures, and the result says which
   were left out.
 - **M3. How many at once?** Two strong action LoRAs broke a clip that each
   passed alone (2026-10-24). Test: one, two and three stacked on one scene;
-  the cap is the largest count that held. It is a limit on what the model
-  carries, so unlike `MAX_PER_CLIP` the picture cap counts `always` entries.
+  the cap is the largest count that held. Pictures have no `always` entries,
+  so the cap is the length of the resolved list, and the settings route
+  refuses a list longer than it. Nothing is dropped at render time.
 
 ## 6. The web
 
-- **Settings → LoRAs**, shown when the image or video feature is on, with
-  the pane's `PANE_FEATURE` entry (ARCHITECTURE §Features, *Adding a
-  feature*):
+- **Settings → LoRAs**, shown when the image or video feature is on.
+  `PANE_FEATURE` maps a pane to exactly one feature, and `featureOf` returns
+  one id, so step 4 extends the entry to a list, shown when any of its
+  features is on, and this pane is its first caller (ARCHITECTURE §Features,
+  *Adding a feature*). Each section shows only when its own feature is on:
+  picture entries with `image`, clip entries with `video`.
   - One row per registry entry: name, family, the mode files for H3, about,
-    strength, trigger, `always`, and checked, unchecked or refused with the
-    reason.
-  - **Add** lists the files in the server's `models/loras` that no entry
-    uses yet. The family is read from the file and shown. The owner fills
+    strength, trigger, `always` (clips), the character an entry is tied to
+    (L6), and checked or refused with the reason.
+  - **Add** lists the files no entry uses yet, from both `loras_dir`s,
+    labelled by server. The family is read from the file and shown. The owner fills
     in name, about, strength and trigger, and for H3 says which mode the
     file is for. A second H3 file is attached to an existing entry the same
     way.
@@ -226,9 +243,11 @@ would refuse.
    plumbing through where a run's tools are chosen, not a change inside
    `loras.rs`. Results are unchanged.
 3. **Pictures**, gated on M1–M3. `Tuning` gains `loras`, the graph gains the
-   chain, triggers, and the result's count.
-4. **The web.** The LoRAs pane, the lists in Images, Video and persona
-   settings, and the lock if L3 says so.
+   chain, triggers, and the result's count. Entries tied to a character
+   (L6) apply only with that character in the cast, for pictures here and
+   for clips in step 2's `pick`.
+4. **The web.** The LoRAs pane and the `PANE_FEATURE` list, the lists in
+   Images, Video and persona settings, and the lock (L3).
 5. ~~**The real-person guard**~~ deferred (L5).
 
 Each step is its own PR. The tests and docs use made-up names only. Until
@@ -260,8 +279,14 @@ checked by hand for names from the owner's registry.
   with the result saying which entries were left out.
   **Ruled 2026-10-26: deferred again.** Step 5 is out of the build until
   it is raised again.
-- **L6. LoRAs trained on one character.** Some picture LoRAs are trained on
-  one person's likeness. On a chat or persona layer, one would put that face
-  on everyone in every picture. One shape: an entry may name a library
-  character (`character = "<name>"`), and then applies only to pictures and
-  clips with that character in the cast, never through a layer's list.
+- **L6. LoRAs trained on one character. Ruled 2026-10-26: tied to the
+  library entry, and off unless enabled.** Some LoRAs are trained on one
+  person's likeness. On a layer's list, one would put that face on everyone
+  in every picture. So an entry may name a library character
+  (`character = "<name>"`, checked against the library like a cast name).
+  It starts off everywhere and applies only where the owner has turned it on
+  in a chat or persona layer, and even then only to pictures and clips with
+  that character in the cast. With the character absent it is left out
+  without a note, since the setting did not ask for it there. Off by
+  default because the owner is still testing this kind of LoRA. A tied
+  entry still counts against the cap of a picture it applies to.
