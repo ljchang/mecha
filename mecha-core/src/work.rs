@@ -1000,6 +1000,10 @@ pub(crate) mod tests {
     #[test]
     fn a_conversation_whose_age_cannot_be_read_is_kept() {
         use std::os::unix::fs::PermissionsExt;
+        // Mode 000 does not stop root, so the directory would read fine.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
         let _home = HomeGuard::new();
         let chat = ensure("web").unwrap().join("chat-sealed");
         let sealed = chat.join("pictures");
