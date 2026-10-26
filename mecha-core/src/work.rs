@@ -49,14 +49,16 @@ pub const DEFAULT_KEEP: usize = 10;
 
 /// Producers whose top-level entries each belong to a conversation: a web
 /// chat (`web/<key>`), a persona chat (`persona/p-…`), a Slack thread
-/// (`slack/<thread>`), and the files a voice call writes (`voice/`).
+/// (`slack/<thread>`). Not `voice`: every call shares `work/voice/` itself,
+/// so an entry there is one file a call left, not a conversation, and `keep`
+/// still counts them.
 ///
 /// A picture or clip a conversation made is part of it — the page reading the
 /// chat back fetches it by its path — so these are aged by [`Retain`] rather
 /// than counted by `keep`. Counted, the eleventh most recent persona chat lost
 /// every picture it had drawn to the nightly sweep while it was still open
 /// (2026-10-26).
-pub const CONVERSATION_PRODUCERS: [&str; 4] = ["persona", "slack", "voice", "web"];
+pub const CONVERSATION_PRODUCERS: [&str; 3] = ["persona", "slack", "web"];
 
 /// How long a conversation's workspace outlives its newest file —
 /// `[work] retain_conversations`, `forever` unless the owner names a duration
@@ -535,7 +537,15 @@ pub fn clean(
                     .entries
                     .into_iter()
                     .filter(|e| {
-                        let written = last_written(&e.path, e.modified);
+                        // An age that cannot be read is not an old one: the
+                        // entry stays, and says why.
+                        let Some(written) = last_written(&e.path, e.modified) else {
+                            tracing::warn!(
+                                path = %e.path.display(),
+                                "cannot read every file in a conversation's workspace; keeping it"
+                            );
+                            return false;
+                        };
                         now.duration_since(written).unwrap_or_default() >= age
                     })
                     .collect(),
@@ -610,22 +620,28 @@ fn newest_mtime(dir: &Path, own: std::time::SystemTime) -> std::time::SystemTime
 /// has; a chat's workspace nests (`pictures/`, an upload's folder), and a
 /// directory's own mtime moves only when an entry directly in it is added or
 /// removed. Symlinks are not followed: what one points at is not this entry's.
-fn last_written(path: &Path, own: std::time::SystemTime) -> std::time::SystemTime {
-    let Ok(read) = std::fs::read_dir(path) else {
-        return own;
-    };
-    read.flatten().fold(own, |newest, entry| {
-        let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
-            return newest;
-        };
+///
+/// `None` when any directory under it cannot be read: a chat directory's own
+/// mtime is stale by construction, so falling back to it would make the entry
+/// whose age is unknown the one most likely to be removed.
+fn last_written(path: &Path, own: std::time::SystemTime) -> Option<std::time::SystemTime> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if !meta.is_dir() {
+        return Some(own);
+    }
+    let mut newest = own;
+    for entry in std::fs::read_dir(path).ok()? {
+        let entry = entry.ok()?;
+        let meta = std::fs::symlink_metadata(entry.path()).ok()?;
         let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
         let modified = if meta.is_dir() {
-            last_written(&entry.path(), modified)
+            last_written(&entry.path(), modified)?
         } else {
             modified
         };
-        newest.max(modified)
-    })
+        newest = newest.max(modified);
+    }
+    Some(newest)
 }
 
 /// Files in a workspace spill directory older than `max_age` as of `now`.
@@ -917,14 +933,29 @@ pub(crate) mod tests {
             }
         }
 
+        // Every call shares `voice/` itself, so its entries are files, and
+        // counted like any producer's.
+        let voice = ensure("voice").unwrap();
+        for (i, name) in ["a.txt", "b.txt", "c.txt"].iter().enumerate() {
+            write_aged(&voice, name, i as i64 * 100);
+        }
+
         let report = clean(2, Retain::Forever, None, false).unwrap();
-        assert_eq!(report.removed.len(), 2, "only the brief's two oldest");
+        assert_eq!(
+            report.removed.len(),
+            3,
+            "the brief's two oldest, voice's one"
+        );
         for picture in &chats {
             assert!(picture.exists(), "{} was removed", picture.display());
         }
         assert!(
             !morning.join("d.md").exists(),
             "`keep` still counts the rest"
+        );
+        assert!(
+            !voice.join("c.txt").exists(),
+            "`voice` is not a conversation"
         );
     }
 
@@ -961,6 +992,28 @@ pub(crate) mod tests {
             live.join("pictures/drawn.png").exists(),
             "a picture drawn today keeps its chat"
         );
+    }
+
+    /// Unknown is never old: a chat with a directory inside it that cannot be
+    /// read would otherwise be aged by its own stale mtime and removed.
+    #[cfg(unix)]
+    #[test]
+    fn a_conversation_whose_age_cannot_be_read_is_kept() {
+        use std::os::unix::fs::PermissionsExt;
+        let _home = HomeGuard::new();
+        let chat = ensure("web").unwrap().join("chat-sealed");
+        let sealed = chat.join("pictures");
+        std::fs::create_dir_all(&sealed).unwrap();
+        std::fs::write(sealed.join("drawn.png"), "png").unwrap();
+        age(&sealed, 200);
+        age(&chat, 200);
+        std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let one_day = Retain::For(std::time::Duration::from_secs(86_400));
+        let report = clean(10, one_day, Some("web"), false);
+        std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(report.unwrap().removed.is_empty());
+        assert!(sealed.join("drawn.png").exists());
     }
 
     #[test]

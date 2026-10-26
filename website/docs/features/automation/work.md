@@ -92,10 +92,10 @@ retain_conversations = "forever" # or a duration like "90d"
 `mecha work clean` keeps the newest `keep` entries per producer and says
 exactly what it removed. The nightly maintenance run calls it. Four rules:
 
-- **A conversation is aged, not counted.** The web chat, persona chats, Slack
-  threads and voice calls each keep one workspace per conversation, and the
-  pictures and clips in it are part of that conversation: reopen an old chat
-  and the page loads them from there. So `keep` does not count those four.
+- **A conversation is aged, not counted.** The web chat, persona chats and
+  Slack threads each keep one workspace per conversation, and the pictures
+  and clips in it are part of that conversation: reopen an old chat and the
+  page loads them from there. So `keep` does not count those three.
   A conversation's workspace stays until `retain_conversations` has passed
   since its newest file, which by default is never, and deleting the chat
   removes it. Only your global config can set this; a project's

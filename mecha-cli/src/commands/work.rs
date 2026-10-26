@@ -30,7 +30,7 @@ pub enum Cmd {
         /// How many entries survive per producer. Defaults to `[work] keep`.
         #[arg(long)]
         keep: Option<usize>,
-        /// How long a conversation's workspace (web, persona, Slack, voice)
+        /// How long a conversation's workspace (web, persona, Slack)
         /// outlives its newest file: `forever` or a duration like `90d`.
         /// Defaults to `[work] retain_conversations`.
         #[arg(long)]
@@ -99,6 +99,7 @@ fn clean(
     producer: Option<&str>,
     dry_run: bool,
 ) -> Result<()> {
+    let retain_flag = retain.is_some();
     let (keep, retain) = match (keep, retain) {
         (Some(k), Some(r)) => (k, r),
         _ => {
@@ -121,6 +122,13 @@ fn clean(
     // Said every time, so a chat surviving a sweep that removed a brief beside
     // it is the policy on screen rather than a puzzle.
     let swept_conversations = producer.is_none_or(|p| work::CONVERSATION_PRODUCERS.contains(&p));
+    if !swept_conversations && retain_flag {
+        eprintln!(
+            "note: --retain applies to {} only; `{}` is counted by --keep",
+            work::CONVERSATION_PRODUCERS.join(", "),
+            producer.unwrap_or_default()
+        );
+    }
     let conversations = format!(
         "conversations ({}) are kept {}",
         work::CONVERSATION_PRODUCERS.join(", "),
