@@ -122,7 +122,11 @@ strength = 0.8
   every entry for that server is refused, and `mecha doctor` and the page
   name the key. A file the server lists (§6) that is in none of the folders
   is a named `doctor` finding, not a silent refusal. On this machine step
-  1's deploy sets both keys first, or every clip LoRA would drop.
+  1's deploy sets both keys first, or every clip LoRA would drop. The clip
+  turbo LoRA is not one of them: it is a `[video]` config key
+  (`frames_turbo_lora`, `references_turbo_lora`), not a registry entry, so
+  it keeps working, and it also escapes the family check. That gap is out
+  of scope here and noted for a later change.
 - **The check runs when a file changes, not on every call.** Its result is
   kept per file by (path, length, mtime): the registry's load checks each
   entry's file once, and a later read re-checks only a file whose length or
@@ -158,14 +162,22 @@ strength = 0.8
   could never reach it.
 - **The registry reaches the running process when it changes.** Today it is
   read once, in `VideoGenerate::new`, and a restart picks up an edit
-  (`VideoConfig::loras`). After step 1 it is re-read when its contents
-  change: for pictures on each call, as `Tuning` is now, and for clips where
-  the narrowed `video_generate` is built per run (§4). An edit from the page
+  (`VideoConfig::loras`). Once built, it is re-read when its contents
+  change: for pictures on each call (step 3), as `Tuning` is now, and for
+  clips where the narrowed `video_generate` is built per run (step 2, §4);
+  until step 2, clips keep today's read-once. An edit from the page
   applies from the next turn. A change to a clip entry moves the enum and
   re-pays the cached prefix once.
 - **The old file is read for one release.** `[video] loras` keeps working
   and is reported by `mecha doctor` as moved. Its entries become `model =
-  "h3"` with no other change. §8, L2 decides where the new one lives.
+  "h3"` with no other change. L2 put the new one at `~/.mecha/loras.toml`.
+  The two are never merged. When the new file exists it is the registry, and
+  an old one still configured is ignored, with a `doctor` finding naming it,
+  so an entry is never read twice, never half from each, and never
+  shadowed by a name in the other. When only the old one exists, it is
+  read. `mecha` never writes or moves either file: the owner moves the
+  entries, and the page's first write creates the new file only after
+  saying the old one will then stop being read.
 
 ## 4. Who chooses which LoRAs run
 
