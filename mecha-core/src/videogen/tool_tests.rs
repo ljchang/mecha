@@ -1355,6 +1355,59 @@ async fn bodies_go_all_or_nothing_and_details_ride_along() {
         2,
         "one portrait crop, one full body"
     );
+
+    // Two people with a body each: both go. Then one body stops reading:
+    // neither goes, never one beside a face-only person (review of #744).
+    crate::imagelib::add_reference(
+        &lib,
+        "wren",
+        crate::imagelib::RefKind::FullBody,
+        &shade(3),
+        None,
+    )
+    .unwrap();
+    let (url, log) = fake(Fake::default(), &cfg).await;
+    let t = tool(&url, &home, Arc::new(Stub::default()));
+    let done = run(&t, call("Maya waves at Wren."), &ctx(&chat)).await;
+    assert!(!done.is_error, "{}", done.content);
+    let seen = log.lock().unwrap().clone();
+    assert_eq!(
+        seen.iter()
+            .filter(|l| l.starts_with("POST /upload"))
+            .count(),
+        4,
+        "two faces, two bodies"
+    );
+    let wren_body = crate::imagelib::Library::load(&lib)
+        .0
+        .get(crate::imagelib::Kind::Character, "wren")
+        .unwrap()
+        .references
+        .iter()
+        .find(|r| r.kind == crate::imagelib::RefKind::FullBody)
+        .unwrap()
+        .blob
+        .clone();
+    std::fs::write(lib.join("blobs").join(&wren_body), b"not the picture").unwrap();
+    let (url, log) = fake(Fake::default(), &cfg).await;
+    let t = tool(&url, &home, Arc::new(Stub::default()));
+    let done = run(&t, call("Maya waves at Wren."), &ctx(&chat)).await;
+    assert!(!done.is_error, "{}", done.content);
+    assert!(
+        done.content.contains("one could not be read"),
+        "{}",
+        done.content
+    );
+    let seen = log.lock().unwrap().clone();
+    assert_eq!(
+        seen.iter()
+            .filter(|l| l.starts_with("POST /upload"))
+            .count(),
+        2,
+        "two faces only"
+    );
+    let prompt = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+    assert!(!prompt.contains("the person in <Picture"), "{prompt}");
     std::fs::remove_dir_all(&home).ok();
 }
 
