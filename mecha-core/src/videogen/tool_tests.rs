@@ -1237,6 +1237,275 @@ async fn a_library_outfit_is_worn_with_its_picture() {
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// A library character's second pictures ride after every subject's own:
+/// a body only when everyone shown has one (all or nothing, one or two
+/// people), details in cast order; a body is never sent beside someone who
+/// has none, but a detail is.
+#[tokio::test]
+async fn bodies_go_all_or_nothing_and_details_ride_along() {
+    let home = scratch();
+    let chat = home.join("chat");
+    std::fs::create_dir_all(&chat).unwrap();
+    let lib = home.join("imagelib");
+    character(&lib, "maya", "Tall, with short grey hair");
+    character(&lib, "wren", "Freckled, with a red bob");
+    let shade = |v: u8| {
+        let img = image::RgbImage::from_pixel(4, 4, image::Rgb([v, 20, 20]));
+        let mut b = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut b, image::ImageFormat::Png).unwrap();
+        b.into_inner()
+    };
+    crate::imagelib::add_reference(
+        &lib,
+        "maya",
+        crate::imagelib::RefKind::FullBody,
+        &shade(1),
+        None,
+    )
+    .unwrap();
+    crate::imagelib::add_reference(
+        &lib,
+        "maya",
+        crate::imagelib::RefKind::Detail,
+        &shade(2),
+        Some("rose tattoo, right ankle".into()),
+    )
+    .unwrap();
+    let cfg = VideoConfig::default();
+    let call = |prompt: &str| json!({"prompt": prompt});
+
+    // Maya alone: her body and her detail.
+    let (url, log) = fake(Fake::default(), &cfg).await;
+    let t = tool(&url, &home, Arc::new(Stub::default()));
+    let done = run(&t, call("Maya waves from the gate."), &ctx(&chat)).await;
+    assert!(!done.is_error, "{}", done.content);
+    let seen = log.lock().unwrap().clone();
+    assert_eq!(
+        seen.iter()
+            .filter(|l| l.starts_with("POST /upload"))
+            .count(),
+        3
+    );
+    let prompt = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+    assert!(
+        prompt.contains("the person in <Picture 1> and <Picture 2>"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("rose tattoo, right ankle is shown close up in <Picture 3>"),
+        "{prompt}"
+    );
+    assert!(prompt.contains("ref_images.ref_image_2"), "{prompt}");
+
+    // Maya beside Wren, who has no body: no bodies at all, Maya's detail
+    // still goes.
+    let (url, log) = fake(Fake::default(), &cfg).await;
+    let t = tool(&url, &home, Arc::new(Stub::default()));
+    let done = run(&t, call("Maya waves at Wren."), &ctx(&chat)).await;
+    assert!(!done.is_error, "{}", done.content);
+    let seen = log.lock().unwrap().clone();
+    assert_eq!(
+        seen.iter()
+            .filter(|l| l.starts_with("POST /upload"))
+            .count(),
+        3,
+        "two faces and one detail"
+    );
+    let prompt = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+    assert!(!prompt.contains("the person in <Picture"), "{prompt}");
+    assert!(
+        prompt.contains("rose tattoo, right ankle is shown close up in <Picture 3>"),
+        "{prompt}"
+    );
+    // Said, not named (review of #744).
+    assert!(
+        done.content
+            .contains("everyone shown needs one for any to go"),
+        "{}",
+        done.content
+    );
+
+    // A detail whose picture no longer reads is left out and counted; the
+    // clip is still made (review of #744).
+    let detail_blob = crate::imagelib::Library::load(&lib)
+        .0
+        .get(crate::imagelib::Kind::Character, "maya")
+        .unwrap()
+        .references
+        .iter()
+        .find(|r| r.kind == crate::imagelib::RefKind::Detail)
+        .unwrap()
+        .blob
+        .clone();
+    std::fs::write(lib.join("blobs").join(&detail_blob), b"not the picture").unwrap();
+    let (url, log) = fake(Fake::default(), &cfg).await;
+    let t = tool(&url, &home, Arc::new(Stub::default()));
+    let done = run(&t, call("Maya waves from the gate."), &ctx(&chat)).await;
+    assert!(!done.is_error, "{}", done.content);
+    assert!(
+        done.content.contains("1 library picture could not be read"),
+        "{}",
+        done.content
+    );
+    let seen = log.lock().unwrap().clone();
+    assert_eq!(
+        seen.iter()
+            .filter(|l| l.starts_with("POST /upload"))
+            .count(),
+        2,
+        "one portrait crop, one full body"
+    );
+
+    // Two people with a body each: both go. Then one body stops reading:
+    // neither goes, never one beside a face-only person (review of #744).
+    crate::imagelib::add_reference(
+        &lib,
+        "wren",
+        crate::imagelib::RefKind::FullBody,
+        &shade(3),
+        None,
+    )
+    .unwrap();
+    let (url, log) = fake(Fake::default(), &cfg).await;
+    let t = tool(&url, &home, Arc::new(Stub::default()));
+    let done = run(&t, call("Maya waves at Wren."), &ctx(&chat)).await;
+    assert!(!done.is_error, "{}", done.content);
+    let seen = log.lock().unwrap().clone();
+    assert_eq!(
+        seen.iter()
+            .filter(|l| l.starts_with("POST /upload"))
+            .count(),
+        4,
+        "two faces, two bodies"
+    );
+    let wren_body = crate::imagelib::Library::load(&lib)
+        .0
+        .get(crate::imagelib::Kind::Character, "wren")
+        .unwrap()
+        .references
+        .iter()
+        .find(|r| r.kind == crate::imagelib::RefKind::FullBody)
+        .unwrap()
+        .blob
+        .clone();
+    std::fs::write(lib.join("blobs").join(&wren_body), b"not the picture").unwrap();
+    let (url, log) = fake(Fake::default(), &cfg).await;
+    let t = tool(&url, &home, Arc::new(Stub::default()));
+    let done = run(&t, call("Maya waves at Wren."), &ctx(&chat)).await;
+    assert!(!done.is_error, "{}", done.content);
+    assert!(
+        done.content.contains("one could not be read"),
+        "{}",
+        done.content
+    );
+    let seen = log.lock().unwrap().clone();
+    assert_eq!(
+        seen.iter()
+            .filter(|l| l.starts_with("POST /upload"))
+            .count(),
+        2,
+        "two faces only"
+    );
+    let prompt = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+    assert!(!prompt.contains("the person in <Picture"), "{prompt}");
+    std::fs::remove_dir_all(&home).ok();
+}
+
+/// The slots: seven faces leave two, and a pinned frame takes none (it goes
+/// beside the slots), so of seven people's details two go and five are
+/// counted; a clip seen through someone's eyes
+/// sends no bodies, said (review of #744).
+#[tokio::test]
+async fn second_pictures_fit_the_slots_left_and_a_camera_person_gets_no_bodies() {
+    let home = scratch();
+    let chat = home.join("chat");
+    std::fs::create_dir_all(chat.join("images")).unwrap();
+    let lib = home.join("imagelib");
+    let names = ["ada", "bo", "cy", "di", "ed", "fay", "gus"];
+    let shade = |v: u8| {
+        let img = image::RgbImage::from_pixel(4, 4, image::Rgb([v, 40, 40]));
+        let mut b = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut b, image::ImageFormat::Png).unwrap();
+        b.into_inner()
+    };
+    for (i, n) in names.iter().enumerate() {
+        character(&lib, n, "Someone");
+        crate::imagelib::add_reference(
+            &lib,
+            n,
+            crate::imagelib::RefKind::Detail,
+            &shade(i as u8),
+            Some("star tattoo, left wrist".into()),
+        )
+        .unwrap();
+    }
+    std::fs::write(chat.join("images/start.png"), shade(99)).unwrap();
+    let cfg = VideoConfig::default();
+    let (url, log) = fake(Fake::default(), &cfg).await;
+    let t = tool(&url, &home, Arc::new(Stub::default()));
+    let done = run(
+        &t,
+        json!({"prompt": "Ada, Bo, Cy, Di, Ed, Fay and Gus wave.", "first_frame": "images/start.png"}),
+        &ctx(&chat),
+    )
+    .await;
+    assert!(!done.is_error, "{}", done.content);
+    assert!(
+        done.content.contains("5 detail pictures were left out"),
+        "{}",
+        done.content
+    );
+    let seen = log.lock().unwrap().clone();
+    assert_eq!(
+        seen.iter()
+            .filter(|l| l.starts_with("POST /upload"))
+            .count(),
+        10,
+        "seven faces, the pinned frame and two details"
+    );
+
+    // Two people with bodies, one of them the camera: no bodies.
+    for n in ["ada", "bo"] {
+        crate::imagelib::add_reference(
+            &lib,
+            n,
+            crate::imagelib::RefKind::FullBody,
+            &shade(200),
+            None,
+        )
+        .unwrap();
+    }
+    let (url, log) = fake(Fake::default(), &cfg).await;
+    let t = tool(&url, &home, Arc::new(Stub::default()));
+    let done = run(
+        &t,
+        json!({"scene": {
+            "cast": [{"name": "Ada", "wearing": "a coat"}, {"name": "Bo", "wearing": "a coat", "pov": true}],
+            "shots": [{"framing": "A first-person shot", "action": "Ada waves"}]
+        }}),
+        &ctx(&chat),
+    )
+    .await;
+    assert!(!done.is_error, "{}", done.content);
+    assert!(
+        done.content.contains("seen through someone's eyes"),
+        "{}",
+        done.content
+    );
+    // The camera person's own detail still goes: their arms are in shot
+    // (review of #744). Bo's wrist tattoo is defined on Bo.
+    let seen = log.lock().unwrap().clone();
+    let prompt = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+    assert!(
+        prompt.contains("<Subject 2>'s star tattoo, left wrist is shown close up"),
+        "{prompt}"
+    );
+    let seen = log.lock().unwrap().clone();
+    let prompt = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+    assert!(!prompt.contains("the person in <Picture"), "{prompt}");
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// Stop takes a render off the server, frees its memory and gives the turn
 /// back.
 #[tokio::test]

@@ -296,6 +296,9 @@ struct Picture {
     /// A library outfit's picture: clothes, worn by the cast members named
     /// here (as the scene wrote them), never a person.
     worn_by: Option<Vec<String>>,
+    /// A library character's second picture, a full body or a labelled
+    /// detail, as an upload names it: sent after every subject's own.
+    extra: Option<String>,
     character: Option<String>,
     description: Option<String>,
 }
@@ -504,6 +507,7 @@ impl VideoGenerate {
                         face_only: false,
                         place: true,
                         worn_by: None,
+                        extra: None,
                         character: Some(key.clone()),
                         description: text,
                     });
@@ -630,10 +634,18 @@ impl VideoGenerate {
             music: input["music"].as_str(),
             seconds: graph::frames(seconds) as f64 / graph::FPS as f64,
         };
+        // The library characters' second pictures, in the slots left
+        // (`IMAGE-COMPILER-DESIGN.md` §9.4): bodies, then details. Frames
+        // mode takes no references.
+        let (extras, extra_pictures) = match mode {
+            graph::Mode::References => self.extras_for(&references, &library, &pov, &mut notes),
+            graph::Mode::Frames => (Vec::new(), Vec::new()),
+        };
         let prompt = match mode {
             graph::Mode::References => {
                 let people: Vec<compose::Person> = references
                     .iter()
+                    .filter(|r| r.extra.is_none())
                     .zip(&audio)
                     .map(|(r, a)| compose::Person {
                         name: r.character.clone(),
@@ -648,12 +660,14 @@ impl VideoGenerate {
                             .is_some_and(|c| pov.contains(&args::library_key(c))),
                     })
                     .collect();
-                compose::references(&parts, &people, (first.is_some(), last.is_some()))
+                compose::references(&parts, &people, &extras, (first.is_some(), last.is_some()))
             }
             graph::Mode::Frames => {
                 compose::frames(&parts, first.is_some(), last.is_some(), &in_words)
             }
         };
+        let mut references = references;
+        references.extend(extra_pictures);
         Ok(Plan {
             mode,
             prompt,
@@ -750,6 +764,7 @@ impl VideoGenerate {
                         face_only: false,
                         place: false,
                         worn_by: who.map(|w| vec![w]),
+                        extra: None,
                         character: Some(key),
                         description: Some(text).filter(|t| !t.is_empty()),
                     });
@@ -769,6 +784,214 @@ impl VideoGenerate {
             }
         }
         Ok((input, worn, notes))
+    }
+
+    /// The library characters' second pictures for this clip, numbered after
+    /// `refs` (`IMAGE-COMPILER-DESIGN.md` §9.4), and the pictures to send:
+    ///
+    /// - **Bodies, all or nothing**: only when everyone the clip shows (not
+    ///   a place, an outfit or the person it is seen through) is a library
+    ///   character with a `full_body`, there are one or two of them, and
+    ///   they all fit. V-B's retest passed for two; three is unmeasured.
+    /// - **Details, in cast order, while slots remain**: each labelled mark
+    ///   (V-D, owner 2026-10-26). What does not fit is counted in a note,
+    ///   never named.
+    ///
+    /// Nothing here refuses a clip: a picture that does not read is left out
+    /// and counted, since the call never asked for it (review of #744).
+    fn extras_for(
+        &self,
+        refs: &[Picture],
+        library: &crate::imagelib::Library,
+        pov: &[String],
+        notes: &mut Vec<String>,
+    ) -> (Vec<compose::Extra>, Vec<Picture>) {
+        use crate::imagelib::{Kind, RefKind, Status};
+        let seen: Vec<(usize, Option<&crate::imagelib::Entry>)> = refs
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| !r.place && r.worn_by.is_none() && r.extra.is_none())
+            .filter(|(_, r)| {
+                !r.character
+                    .as_deref()
+                    .is_some_and(|c| pov.contains(&args::library_key(c)))
+            })
+            .map(|(i, r)| {
+                let entry = r.character.as_deref().and_then(|c| {
+                    library
+                        .get(Kind::Character, &args::library_key(c))
+                        .filter(|e| e.status == Status::Approved)
+                });
+                (i, entry)
+            })
+            .collect();
+        // The camera person's own marks go too: their hands and arms are in
+        // shot, so a forearm tattoo is theirs to keep in place. Only bodies
+        // skip them (review of #744).
+        let camera_people: Vec<(usize, Option<&crate::imagelib::Entry>)> = refs
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| !r.place && r.worn_by.is_none() && r.extra.is_none())
+            .filter(|(_, r)| {
+                r.character
+                    .as_deref()
+                    .is_some_and(|c| pov.contains(&args::library_key(c)))
+            })
+            .map(|(i, r)| {
+                let entry = r.character.as_deref().and_then(|c| {
+                    library
+                        .get(Kind::Character, &args::library_key(c))
+                        .filter(|e| e.status == Status::Approved)
+                });
+                (i, entry)
+            })
+            .collect();
+        let mut extras = Vec::new();
+        let mut pictures: Vec<Picture> = Vec::new();
+        // Pinned frames are not among the nine: they go through
+        // `MiniMaxH3AddGuide`, beside the reference slots (`graph::build`),
+        // as the budget check in `plan` already counts them (review of #744,
+        // pass 6, correcting pass 1's reading of §9.4).
+        let mut slots = graph::MAX_REFERENCES.saturating_sub(refs.len());
+        let bodies: Vec<(usize, &crate::imagelib::Entry, &crate::imagelib::Reference)> = seen
+            .iter()
+            .filter_map(|(i, e)| {
+                let e = (*e)?;
+                let r = e
+                    .sendable_references()
+                    .into_iter()
+                    .find(|r| r.kind == RefKind::FullBody)?;
+                Some((*i, e, r))
+            })
+            .collect();
+        // The camera person is in the cast too, with a picture of their own
+        // and never a body: a clip seen through someone's eyes sends no
+        // bodies, or the others would be bound to two pictures beside them
+        // bound to one, the shape V-B failed on (review of #744).
+        let camera = refs.iter().any(|r| {
+            r.extra.is_none()
+                && r.character
+                    .as_deref()
+                    .is_some_and(|c| pov.contains(&args::library_key(c)))
+        });
+        let eligible = !camera && (1..=2).contains(&seen.len()) && bodies.len() == seen.len();
+        // All or nothing holds for reading too: one body that does not read
+        // sends none, never the other alone beside a face-only person. Read
+        // only when the bodies could go at all, and said once, as the
+        // reason (review of #744).
+        let bodies_unread = if eligible {
+            bodies
+                .iter()
+                .filter(|(_, e, r)| library.read_reference(e, r).is_err())
+                .count()
+        } else {
+            0
+        };
+        let mut unreadable = 0;
+        let mut add = |subject: usize,
+                       entry: &crate::imagelib::Entry,
+                       reference: &crate::imagelib::Reference,
+                       kind: compose::ExtraKind,
+                       what: &str|
+         -> bool {
+            let Ok((bytes, ext)) = library.read_reference(entry, reference) else {
+                unreadable += 1;
+                return false;
+            };
+            extras.push(compose::Extra {
+                subject: subject + 1,
+                picture: refs.len() + pictures.len() + 1,
+                kind,
+            });
+            pictures.push(Picture {
+                bytes,
+                ext: ext.to_string(),
+                face_only: false,
+                place: false,
+                worn_by: None,
+                extra: Some(format!("`{}`'s {what}", entry.name)),
+                character: Some(entry.name.clone()),
+                description: None,
+            });
+            true
+        };
+        if eligible && bodies_unread == 0 {
+            if bodies.len() <= slots {
+                for (i, e, r) in &bodies {
+                    if add(*i, e, r, compose::ExtraKind::Body, "full body") {
+                        slots -= 1;
+                    }
+                }
+            } else {
+                notes.push(format!(
+                    "The full-body picture{} left out: the clip's other pictures fill H3's slots.",
+                    if bodies.len() == 1 { " was" } else { "s were" }
+                ));
+            }
+        }
+        let mut left_out = 0;
+        let mut in_cast_order: Vec<&(usize, Option<&crate::imagelib::Entry>)> =
+            seen.iter().chain(camera_people.iter()).collect();
+        in_cast_order.sort_by_key(|(i, _)| *i);
+        for (i, e) in in_cast_order {
+            let Some(e) = e else {
+                continue;
+            };
+            for r in e
+                .sendable_references()
+                .into_iter()
+                .filter(|r| r.kind == RefKind::Detail)
+            {
+                if slots == 0 {
+                    left_out += 1;
+                    continue;
+                }
+                let label = r.label.clone().unwrap_or_else(|| "mark".to_string());
+                if add(
+                    *i,
+                    e,
+                    r,
+                    compose::ExtraKind::Detail(label),
+                    "detail picture",
+                ) {
+                    slots -= 1;
+                }
+            }
+        }
+        // Bodies go to a whole cast or to no one: said, so the owner can add
+        // the missing one (review of #744). Counted, never named.
+        // One note, for the first reason that applies: the camera, the cast's
+        // size, a missing body, then one that would not read.
+        if !bodies.is_empty()
+            && (camera || bodies.len() < seen.len() || seen.len() > 2 || bodies_unread > 0)
+        {
+            notes.push(if camera {
+                "No full-body pictures were sent: the clip is seen through someone's eyes."
+                    .to_string()
+            } else if seen.len() > 2 {
+                "No full-body pictures were sent: they go to a cast of one or two.".to_string()
+            } else if bodies.len() < seen.len() {
+                "No full-body pictures were sent: everyone shown needs one for any to go."
+                    .to_string()
+            } else {
+                "No full-body pictures were sent: one could not be read; the owner can check with `mecha imagelib list`.".to_string()
+            });
+        }
+        if unreadable > 0 {
+            notes.push(format!(
+                "{unreadable} library picture{} could not be read and {} left out; the owner can check with `mecha imagelib list`.",
+                if unreadable == 1 { "" } else { "s" },
+                if unreadable == 1 { "was" } else { "were" }
+            ));
+        }
+        if left_out > 0 {
+            notes.push(format!(
+                "{left_out} detail picture{} left out: H3 takes {} reference pictures.",
+                if left_out == 1 { " was" } else { "s were" },
+                graph::MAX_REFERENCES
+            ));
+        }
+        (extras, pictures)
     }
 
     /// A character-library name, or a picture in this chat's folder (through
@@ -807,6 +1030,7 @@ impl VideoGenerate {
                     face_only: true,
                     place: false,
                     worn_by: None,
+                    extra: None,
                     character: Some(given.to_string()),
                     description,
                 },
@@ -816,6 +1040,7 @@ impl VideoGenerate {
                     face_only: false,
                     place: false,
                     worn_by: None,
+                    extra: None,
                     character: Some(given.to_string()),
                     description,
                 },
@@ -838,6 +1063,7 @@ impl VideoGenerate {
             face_only: false,
             place: false,
             worn_by: None,
+            extra: None,
             character: None,
             description: None,
         })
@@ -1369,9 +1595,10 @@ impl VideoGenerate {
         for (i, p) in plan.references.iter().enumerate() {
             // The location's picture follows the asked references, with no
             // entry of its own there: named by its location.
-            let label = match plan.references_asked.get(i) {
-                Some(asked) => asked.clone(),
-                None => format!(
+            let label = match (&p.extra, plan.references_asked.get(i)) {
+                (Some(extra), _) => extra.clone(),
+                (None, Some(asked)) => asked.clone(),
+                (None, None) => format!(
                     "the {} `{}`'s picture",
                     if p.place { "location" } else { "outfit" },
                     p.character.as_deref().unwrap_or("?")
@@ -1447,7 +1674,10 @@ impl VideoGenerate {
                 steps,
                 plan.width,
                 plan.height,
-                plan.references.len(),
+                // As each record keeps it: the references asked for, not the
+                // location, outfit or second pictures the plan added (review
+                // of #744).
+                plan.references_asked.len(),
                 plan.turbo,
             )
         });
@@ -1768,7 +1998,7 @@ fn input_schema(loras: &super::loras::Registry, locations: &[String], outfits: &
                         "wearing": {"type": "string", "description": "What they have on in this clip. Never leave it out: nothing of a portrait's outfit is kept."},
                         "doing": {"type": "string", "description": "Their activity when the clip starts."},
                         "notes": {"type": "string", "description": "Anything further about them for this clip."},
-                        "pov": {"type": "boolean", "description": "Set true whenever the clip is first person — seen through this person's eyes, as in \"from Luke's point of view\" or \"POV\". Their face then never appears, only their hands and body, and their voice is kept only if they have lines. Left unset, their face is described and may be drawn."}
+                        "pov": {"type": "boolean", "description": "Set true whenever the clip is first person — seen through this person's eyes, as in \"from Wren's point of view\" or \"POV\". Their face then never appears, only their hands and body, and their voice is kept only if they have lines. Left unset, their face is described and may be drawn."}
                     }, "required": ["name"]}},
                     "shots": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {
                         "at": {"type": "number", "description": "Second at which this shot begins; not for the first. Omitted, shots share the length evenly."},

@@ -585,7 +585,7 @@ kind is derived from its directory (`Entry.kind`).
 |---|---|---|
 | face | the whole portrait at 512² for a new picture (E10), its crop for an edit, as now | the face crop, as now; from an attached `face` reference when there is one, else from the portrait |
 | full_body | **sent** to a new picture of one person, bound to the portrait (E9b; owner, 2026-10-13); faces only for two or more (E14; owner, 2026-10-19), and on edits | **sent** beside the face crop to a cast of **one or two** when everyone has one, **unbound** (both pictures named as one subject, with no face-from/build-from split): "the person in `<Picture 1>` and `<Picture 2>`", not the face-from/build-from wording, the likely cause of V-B's extra person (V-B's retest passed for a cast of two; owner, 2026-10-14) |
-| detail | not sent; its `label` is appended to the description | sent with its label ("`<Picture k>` shows her left-forearm tattoo"), if V-D passes |
+| detail | not sent; its `label` is appended to the description | **sent** with its label, "`<Subject n>`'s <label> is shown close up in `<Picture k>`", kept "exactly where it is, and nowhere else" (V-D passed; owner, 2026-10-26) |
 | location | its text in the scene | its images as an environment `<Subject>`, if V-L passes |
 | outfit | its text as `wearing` | its text as `wearing` |
 
@@ -649,15 +649,20 @@ kind is derived from its directory (`Entry.kind`).
   2. each person's `full_body`, in cast order;
   3. details, in cast order, then in each character's own order, for video
      only: pictures never send a detail image (the table above), only its
-     label. That's greedy, so it's the mixed shape the next bullets call
-     unmeasured; it waits on V-D, whose arms include that shape.
+     label. That's greedy, so it's the mixed shape the next bullets
+     describe; V-D measured it and passed (owner, 2026-10-26).
+     **Built** (`VideoGenerate::extras_for`, 2026-10-26).
   - **Video sends bodies, unbound, to a cast of one or two** (V-B's retest;
     owner, 2026-10-14; the table above), as pictures do: the retest
     measured two people, so three with a body each needs its own
-    measurement first (review of #693). To be built in the video tool,
-    outside this repository until the port. Video has nine slots, less any
-    pinned or other reference images: two people with a body each leave up
-    to five for details (details wait on V-D). Three with a body each would
+    measurement first (review of #693). **Built** (2026-10-26). Video has
+    nine reference slots, less any other reference images (a location, an
+    outfit); a pinned opening or closing frame is not one of them, since it
+    goes through `MiniMaxH3AddGuide` beside the slots (`videogen::graph`).
+    Two people with a body each leave up to five for details. A clip seen through someone's
+    eyes (`pov`) sends no bodies: that person is in the cast, with their own
+    picture and never a body, so bodies for the others would be the mixed
+    shape (review of #744). Three with a body each would
     leave three, once measured; that is not a rule in force.
   - **Bodies are all or nothing in both generators**: in video from V-B's
     retest (owner, 2026-10-14); in pictures from L7's step 2b (review of
@@ -669,8 +674,8 @@ kind is derived from its directory (`Entry.kind`).
     or four with two pinned images, sends faces only, never four bound
     people beside one unbound.
   - Details also bind a second image to one person, so they're the same
-    mixed shape. V-D's arms must include one person with a detail beside one
-    without, before details ship.
+    mixed shape. V-D's arms included one person with a detail beside one
+    without, and no one was drawn twice (2026-10-26).
   - **Pictures** keep their people budgets (`MAX_CAST`,
     `EDIT_REFERENCE_BUDGET`, `IMAGE-DESIGN.md` §5.2, "Budgets, as measured")
     and gain an **image** cap (review of #680, pass 6). `MAX_CAST` counts
@@ -892,7 +897,7 @@ only says what each one gates:
 | **E9b** | `full_body` for pictures (§9.4), and the two-images-one-person wording |
 | **E14** | `full_body` for pictures of one person only, and the closed foreground count without extras (§9.4; passed 2026-10-18 for the strict wording, 2/21 drawn twice; the foreground one measured 2026-10-19, 3/21, crowds unmeasured) |
 | **V-B's retest** | `full_body` for video: **passed** 2026-10-14, unbound (V-B itself failed, 2026-10-13) |
-| **V-D** | `detail` images for video |
+| **V-D** | `detail` images for video: **passed**, owner 2026-10-26 (one same-seed pair, a cast of one person with a detail beside one without: the tattoo on both forearms without the picture, on the left forearm only with it; no one drawn twice) |
 | **E13** | a location reference for pictures |
 | **V-L** | a location reference for video |
 

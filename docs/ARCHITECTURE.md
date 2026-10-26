@@ -1186,6 +1186,15 @@ here:
   is described in words, with a note; an unknown one is refused at the call,
   naming only what was asked. The schema offers approved, unlocked names,
   read when the tool is built (L5; `docs/TRIFECTA.md` for the cost).
+- **A character's second pictures follow every subject's own**
+  (`VideoGenerate::extras_for`, `compose::Extra`; IMAGE-COMPILER-DESIGN
+  §9.4). Bodies go all or nothing: only when everyone the clip shows (not a
+  place, an outfit or the camera person) is a library character with a
+  `full_body`, there are one or two of them, and all fit; the two pictures
+  are then one person, unbound, as V-B's retest passed. Details follow in
+  cast order while slots remain (V-D, passed 2026-10-26): "<label> is shown
+  close up in `<Picture k>`", kept where it is and nowhere else. What does
+  not fit is counted in a note, never named.
 - **A library outfit is clothes, sent as a picture of the garment alone**
   (`Kind::Outfit`, a cast member's whole `wearing`; the owner's ruling of
   2026-10-25, after a garment picture held a swimsuit across a cut that the
@@ -1222,7 +1231,7 @@ here:
   described mark on whatever skin is in frame.
 - **A scene is mended where its words say more than its fields**
   (`scene::repair`, before it compiles). The local model's first scene
-  through the built-in tool (2026-10-25) said "Luke's POV" in a shot and
+  through the built-in tool (2026-10-25; names changed here) said "Wren's POV" in a shot and
   set no `pov`, and quoted its lines inside an action with no `lines`: the
   camera person was then defined with a face that appears, the lines had no
   speaker tag (no voice, no lip sync), and a name inside them was labelled.
