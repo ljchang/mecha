@@ -281,9 +281,20 @@ export function refProblem(form, entry = null) {
   return null;
 }
 
+// The label a picture is sent with: the owner's, or for a second or third
+// view with none, `view 2` / `view 3` — the store tells pictures of one kind
+// apart by label, so two unlabelled views are one too many (review of #743).
+export function sentLabel(form, entry) {
+  const label = (form.label ?? '').trim();
+  if (label || form.kind !== 'view') return label;
+  const taken = new Set((entry?.references ?? []).filter((r) => r.kind === 'view').map((r) => r.label ?? ''));
+  if (!taken.has('')) return '';
+  for (let n = 2; ; n += 1) if (!taken.has(`view ${n}`)) return `view ${n}`;
+}
+
 // The body POST /api/library/reference takes.
 export function refBody(form, entry, token = null) {
-  const label = (form.label ?? '').trim();
+  const label = sentLabel(form, entry);
   return {
     name: entry.name,
     ...(entry.kind && entry.kind !== 'character' ? { kind: entry.kind } : {}),
