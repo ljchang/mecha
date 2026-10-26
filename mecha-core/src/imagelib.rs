@@ -59,8 +59,8 @@ pub const MAX_PROPOSED_PORTRAIT_BYTES: u64 = 4 * 1024 * 1024;
 /// identity within a few hundredths of a tight face crop.
 pub const REFERENCE_SIZE: u32 = 512;
 /// A reference's label: "left-forearm tattoo", not a paragraph. Only a
-/// `detail`'s is ever sent, appended to the description it rides beside
-/// (`IMAGE-COMPILER-DESIGN.md` §9.3).
+/// `detail`'s is ever sent, named in its person's description beside its
+/// close-up (`IMAGE-COMPILER-DESIGN.md` §9.3, §9.4).
 pub const MAX_LABEL: usize = 100;
 /// Images a new picture carries when each person is bound to two
 /// (`IMAGE-COMPILER-DESIGN.md` §9.4): so full-figure references go to a cast
@@ -69,6 +69,12 @@ pub const MAX_LABEL: usize = 100;
 /// and portraits alone with a closed count took recorded calls from 19 of 21
 /// doubled to 2 of 21 (E14); a cast of one with a body drew no one twice.
 pub const MAX_BOUND_IMAGES: usize = 2;
+/// Reference images a new picture carries at most, faces, bodies and
+/// close-ups together (`IMAGE-COMPILER-DESIGN.md` §9.4): `IMAGE-DESIGN.md`
+/// §5.2's provisional C5, five whole portraits drawing all five people 3/3.
+/// Close-ups are the only images that can reach it, since `MAX_CAST` faces
+/// alone fill it and bodies go to a cast of one.
+pub const MAX_PICTURE_IMAGES: usize = 5;
 
 /// What an entry is. The directory it lives under.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -1806,6 +1812,20 @@ pub struct Used {
     /// (§9.4): the entry's version says it was attached, not that it went.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub full_body: Option<String>,
+    /// The close-up references sent, by blob, never by label: a label
+    /// describes the person, and this record is readable from the jail
+    /// (§9.4).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub details: Vec<String>,
+}
+
+/// A labelled close-up read for a new picture: the label is prompt words
+/// only, the blob is what the record keeps (§9.4).
+struct CloseUp {
+    label: String,
+    bytes: Vec<u8>,
+    ext: &'static str,
+    blob: String,
 }
 
 /// A scene, compiled.
@@ -1948,7 +1968,10 @@ pub(crate) fn blank(s: &str) -> bool {
 /// they are wearing and doing (E8: a reference supplies its own otherwise),
 /// except that `doing` is empty when the scene says what its people do
 /// together: a pose beside that drew a person twice (`imagegen::doing_words`
-/// says a plain pose whenever the scene does not).
+/// says a plain pose whenever the scene does not). A labelled close-up goes
+/// after every face and body while [`MAX_PICTURE_IMAGES`] allows, bound to
+/// its person by name, and then the identity images are numbered rather than
+/// "the images", which would take in the marks as people.
 pub fn compile(
     lib: &Library,
     scene: &str,
@@ -2119,14 +2142,104 @@ pub fn compile_with(
     }
     let both = bound.iter().all(Option::is_some) && n > 0;
 
-    let mut refs = Vec::with_capacity(n * if both { 2 } else { 1 });
+    // Close-ups after every face and body, in cast order and then each
+    // character's own, while there is room (§9.4; the owner, 2026-10-26,
+    // after a same-seed pair on two pictures put a ribcage tattoo on one
+    // side only, where its words alone drew a different design on both).
+    // Said in counts, never labels, as the bodies are.
+    let identity_images = n * if both { 2 } else { 1 };
+    let mut room = MAX_PICTURE_IMAGES.saturating_sub(identity_images);
+    let mut details: Vec<Vec<CloseUp>> = (0..n).map(|_| Vec::new()).collect();
+    let (mut no_room, mut unread) = (0, 0);
+    for (i, m) in members.iter().enumerate() {
+        for r in m
+            .entry
+            .sendable_references()
+            .into_iter()
+            .filter(|r| r.kind == RefKind::Detail)
+        {
+            if !bodies {
+                no_room += 1;
+                continue;
+            }
+            // The store refuses a detail without a label; a hand-edited one
+            // has nothing to bind it by, so it is not sent.
+            let Some(label) = r
+                .label
+                .as_deref()
+                .map(|l| l.trim().trim_end_matches('.'))
+                .filter(|l| !l.is_empty())
+            else {
+                unread += 1;
+                continue;
+            };
+            if room == 0 {
+                no_room += 1;
+                continue;
+            }
+            match lib.read_reference(m.entry, r) {
+                Ok((bytes, ext)) => {
+                    details[i].push(CloseUp {
+                        label: label.to_string(),
+                        bytes,
+                        ext,
+                        blob: r.blob.clone(),
+                    });
+                    room -= 1;
+                }
+                Err(e) => {
+                    tracing::warn!("imagelib: {e:#}");
+                    unread += 1;
+                }
+            }
+        }
+    }
+    if no_room > 0 {
+        let why = if bodies {
+            format!(
+                "a new picture carries at most {} images",
+                number(MAX_PICTURE_IMAGES)
+            )
+        } else {
+            "a picture planned in layers is drawn from portraits".to_string()
+        };
+        notes.push(format!(
+            "{} close-up {} not sent: {why}.",
+            capitalize(number(no_room)),
+            if no_room == 1 {
+                "reference was"
+            } else {
+                "references were"
+            }
+        ));
+    }
+    if unread > 0 {
+        notes.push(format!(
+            "{} close-up {} not sent: {} could not be read.",
+            capitalize(number(unread)),
+            if unread == 1 {
+                "reference was"
+            } else {
+                "references were"
+            },
+            if unread == 1 { "it" } else { "they" }
+        ));
+    }
+    let has_details = details.iter().any(|d| !d.is_empty());
+
+    let mut refs = Vec::with_capacity(identity_images + MAX_PICTURE_IMAGES);
     let mut used = Vec::new();
     let mut source_seeds = Vec::new();
     let mut people = Vec::with_capacity(n);
     let mut bindings = Vec::new();
     let mut figures = Vec::new();
     let mut names = Vec::with_capacity(n);
-    for (i, (m, body)) in members.into_iter().zip(bound).enumerate() {
+    // Close-ups are numbered after every face and body, and pushed after
+    // them in the same order.
+    let mut close = identity_images;
+    let mut close_refs = Vec::new();
+    let mut close_words = Vec::new();
+    for (i, ((m, body), shots)) in members.into_iter().zip(bound).zip(details).enumerate() {
         let shown = crate::imagegen::capitalized(&m.name);
         names.push(shown.clone());
         let who = match &body {
@@ -2139,7 +2252,7 @@ pub fn compile_with(
                 figures.push(format!("<image{figure}>"));
                 format!("the person shown in <image{face}> and <image{figure}>")
             }
-            None if n == 1 => "the person in the image".to_string(),
+            None if n == 1 && !has_details => "the person in the image".to_string(),
             None => format!("the person from <image{}>", i + 1),
         };
         source_seeds.extend(m.entry.source_seed);
@@ -2149,13 +2262,32 @@ pub fn compile_with(
             version: m.entry.version,
             portrait: m.entry.portrait.clone(),
             full_body: body.as_ref().and(m.body.map(|r| r.blob.clone())),
+            details: shots.iter().map(|s| s.blob.clone()).collect(),
         });
         let (bytes, ext) = m.portrait;
         refs.push((m.name.clone(), bytes, ext));
         if let Some((bytes, ext)) = body {
             refs.push((format!("full_body:{}", m.name), bytes, ext));
         }
-        let mut line = format!("{who} ({})", m.entry.text.trim().trim_end_matches('.'));
+        // V-D's binding for video, in this compiler's pointers: the mark is
+        // named inside the person's description, and the closing sentence
+        // says its image is no one.
+        let mut text = m.entry.text.trim().trim_end_matches('.').to_string();
+        for CloseUp {
+            label, bytes, ext, ..
+        } in shots
+        {
+            close += 1;
+            text.push_str(&format!(
+                ". {shown}'s {label} is shown close up in <image{close}>"
+            ));
+            close_words.push(format!(
+                "<image{close}> shows only {shown}'s {label}, not a person: it is kept exactly \
+                 where it is, and nowhere else."
+            ));
+            close_refs.push((format!("detail:{}", m.name), bytes, ext));
+        }
+        let mut line = format!("{who} ({text})");
         if !m.clothes_in_act {
             line.push_str(&format!(", wearing {}", m.wearing));
         }
@@ -2164,6 +2296,33 @@ pub fn compile_with(
         }
         people.push(line);
     }
+    refs.extend(close_refs);
+    // With close-ups, the identity images are named, since "the images" would
+    // take in the marks as people; without, the wording is as measured.
+    let identity: Vec<String> = (1..=identity_images)
+        .map(|k| format!("<image{k}>"))
+        .collect();
+    let from_image = if refs.len() == 1 {
+        "the image"
+    } else {
+        "the images"
+    };
+    let identity_only = match (has_details, identity_images) {
+        (false, 1) => "The image is an identity reference only".to_string(),
+        (false, _) => "The images are identity references only".to_string(),
+        (true, 1) => format!("{} is an identity reference only", identity[0]),
+        (true, _) => format!("{} are identity references only", join_and(&identity)),
+    };
+    let all_identity = if has_details {
+        format!("{} serve as identity sources only.", join_and(&identity))
+    } else {
+        "All images serve as identity sources only.".to_string()
+    };
+    let close_words = if close_words.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", close_words.join(" "))
+    };
     // E9b's binding, then its clothing clause with the colour taken out: the
     // scene states what each person wears, and a figure's own outfit is
     // only its stance's.
@@ -2190,6 +2349,7 @@ pub fn compile_with(
                 version: entry.version,
                 portrait: None,
                 full_body: None,
+                details: Vec::new(),
             });
             Some(entry.text.trim().to_string())
         }
@@ -2226,42 +2386,28 @@ pub fn compile_with(
     match (people.len(), m) {
         (0, 0) => {}
         (0, _) => prompt.push_str(&format!(" Also in the scene: {others}.")),
-        // One person bound to two images: E9b's two-person shape for one,
-        // its pronoun-free singular.
-        (1, 0) if both => prompt.push_str(&format!(
-            " {}.{bound_words} Exactly one person is in the foreground, {}, once; anyone in \
-             the background is a stranger, not from the images. The images are identity \
-             references only; this is a new image with its own composition, pose and lighting.",
-            capitalize(&people[0]),
-            names[0]
-        )),
-        (1, _) if both => prompt.push_str(&format!(
-            " {}.{bound_words} Also in the scene, not from the images: {others}. Exactly {} \
-             people in the image: the one from the images, exactly once, and {new_people} not \
-             from any image. The images are identity references only; this is a new image with \
-             its own composition, pose and lighting.",
-            capitalize(&people[0]),
-            number(1 + m)
-        )),
+        // One person, bound to two images or not: E9b's two-person shape
+        // for one, its pronoun-free singular (`bound_words` is empty
+        // without a body).
         (1, 0) => prompt.push_str(&format!(
-            " {}. Exactly one person is in the foreground, {}, once; anyone in the background \
-             is a stranger, not from the image. The image is an identity reference only; this \
-             is a new image with its own composition, pose and lighting.",
+            " {}.{bound_words} Exactly one person is in the foreground, {}, once; anyone in \
+             the background is a stranger, not from {from_image}. {identity_only}; this is a \
+             new image with its own composition, pose and lighting.{close_words}",
             capitalize(&people[0]),
             names[0]
         )),
         (1, _) => prompt.push_str(&format!(
-            " {}. Also in the scene, not from the image: {others}. Exactly {} people in the \
-             image: the one from the image, exactly once, and {new_people} not from any image. \
-             The image is an identity reference only; this is a new image with its own \
-             composition, pose and lighting.",
+            " {}.{bound_words} Also in the scene, not from {from_image}: {others}. Exactly {} \
+             people in the image: the one from {from_image}, exactly once, and {new_people} not \
+             from any image. {identity_only}; this is a new image with its own composition, \
+             pose and lighting.{close_words}",
             capitalize(&people[0]),
             number(1 + m)
         )),
         (n, 0) => prompt.push_str(&format!(
             " From left to right: {}.{bound_words} Exactly {} people are in the foreground, {}, \
-             each exactly once; anyone in the background is a stranger, not from any image. All \
-             images serve as identity sources only.",
+             each exactly once; anyone in the background is a stranger, not from any image. \
+             {all_identity}{close_words}",
             people.join("; "),
             number(n),
             join_and(&names)
@@ -2269,8 +2415,7 @@ pub fn compile_with(
         (n, _) => prompt.push_str(&format!(
             " From left to right: {}.{bound_words} Also in the scene, not from any image: \
              {others}. Exactly {} people in the image: the {} from the images, each exactly \
-             once, and {new_people} not from any image. All images serve as identity sources \
-             only.",
+             once, and {new_people} not from any image. {all_identity}{close_words}",
             people.join("; "),
             number(n + m),
             number(n)
@@ -2284,13 +2429,17 @@ pub fn compile_with(
         // draws from faces into a refusal: past the cap, the faces-only
         // compile stands, said (review of #685). Its notes are replaced,
         // since the only one it could carry is the layers note.
-        if both {
+        // Close-ups are prompt words too, so they go with the bodies.
+        if both || has_details {
             let mut faces = compile_with(lib, scene, cast, given_extras, style, false)?;
-            faces.notes = vec![
-                "Full-figure references were not sent: the prompt would run over its limit \
-                 with them."
-                    .into(),
-            ];
+            let what = match (both, has_details) {
+                (true, true) => "Full-figure and close-up references were",
+                (true, false) => "Full-figure references were",
+                _ => "Close-up references were",
+            };
+            faces.notes = vec![format!(
+                "{what} not sent: the prompt would run over its limit with them."
+            )];
             return Ok(faces);
         }
         return Err(format!(
@@ -3923,6 +4072,144 @@ mod tests {
         assert_eq!(
             c.notes,
             ["Full-figure references were not sent: it could not be read."]
+        );
+    }
+
+    fn with_detail(dir: &Path, name: &str, rgb: [u8; 3], label: &str) {
+        add_reference(dir, name, RefKind::Detail, &png_of(rgb), Some(label.into())).unwrap();
+    }
+
+    /// The same-seed pair's shape (§9.4, 2026-10-26): a close-up goes after
+    /// every face, is named inside its person's description, and the closing
+    /// sentence names the identity images so the mark is no one.
+    #[test]
+    fn a_close_up_is_sent_after_every_face_and_bound_to_its_person() {
+        let dir = scratch();
+        create(dir.path(), character("maya", Origin::Owner)).unwrap();
+        with_detail(dir.path(), "maya", [7, 1, 1], "left-forearm tattoo.");
+        create(dir.path(), character("jo", Origin::Owner)).unwrap();
+        let lib = Library::load(dir.path()).0;
+        let c = compile(&lib, "a studio", &[member("maya"), member("jo")], &[], None).unwrap();
+        let names: Vec<&str> = c.references.iter().map(|r| r.0.as_str()).collect();
+        assert_eq!(names, ["maya", "jo", "detail:maya"]);
+        assert_eq!(
+            c.prompt,
+            "a studio. From left to right: the person from <image1> (maya, a person with a \
+             memorable face. Maya's left-forearm tattoo is shown close up in <image3>), wearing \
+             a yellow raincoat, laughing; the person from <image2> (jo, a person with a \
+             memorable face), wearing a yellow raincoat, laughing. Exactly two people are in \
+             the foreground, Maya and Jo, each exactly once; anyone in the background is a \
+             stranger, not from any image. <image1> and <image2> serve as identity sources \
+             only. <image3> shows only Maya's left-forearm tattoo, not a person: it is kept \
+             exactly where it is, and nowhere else."
+        );
+        assert!(c.notes.is_empty(), "{:?}", c.notes);
+        let maya = lib.get(Kind::Character, "maya").unwrap();
+        assert_eq!(c.used[0].details, [maya.references[0].blob.clone()]);
+        assert!(c.used[1].details.is_empty());
+    }
+
+    /// One person with a close-up is no longer "the image": the portrait is
+    /// numbered and named as the one identity reference.
+    #[test]
+    fn a_close_up_numbers_a_cast_of_one() {
+        let dir = scratch();
+        create(dir.path(), character("maya", Origin::Owner)).unwrap();
+        with_detail(dir.path(), "maya", [7, 2, 2], "scar on the chin");
+        let lib = Library::load(dir.path()).0;
+        let c = compile(&lib, "a studio", &[member("maya")], &[], None).unwrap();
+        assert_eq!(c.references.len(), 2);
+        for words in [
+            "The person from <image1> (maya, a person with a memorable face. Maya's scar on the \
+             chin is shown close up in <image2>)",
+            "anyone in the background is a stranger, not from the images. <image1> is an \
+             identity reference only; this is a new image",
+            "pose and lighting. <image2> shows only Maya's scar on the chin, not a person",
+        ] {
+            assert!(c.prompt.contains(words), "{words}\n{}", c.prompt);
+        }
+    }
+
+    /// Close-ups fill what faces and bodies leave of five images, in the
+    /// character's own order, and the rest are said in counts, never labels.
+    #[test]
+    fn close_ups_stop_at_five_images_and_say_how_many_did_not_go() {
+        let dir = scratch();
+        with_body(dir.path(), "maya", [7, 3, 3]);
+        for (i, label) in ["tattoo", "scar", "birthmark", "freckles"]
+            .iter()
+            .enumerate()
+        {
+            with_detail(dir.path(), "maya", [7, 4, i as u8], label);
+        }
+        let lib = Library::load(dir.path()).0;
+        let c = compile(&lib, "a studio", &[member("maya")], &[], None).unwrap();
+        let names: Vec<&str> = c.references.iter().map(|r| r.0.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "maya",
+                "full_body:maya",
+                "detail:maya",
+                "detail:maya",
+                "detail:maya"
+            ]
+        );
+        assert!(c
+            .prompt
+            .contains("Maya's birthmark is shown close up in <image5>"));
+        assert!(!c.prompt.contains("freckles"), "{}", c.prompt);
+        assert!(c
+            .prompt
+            .contains("<image1> and <image2> are identity references only"));
+        assert_eq!(
+            c.notes,
+            ["One close-up reference was not sent: a new picture carries at most five images."]
+        );
+        assert_eq!(c.used[0].details.len(), 3);
+    }
+
+    /// A picture planned in layers is drawn from portraits: no close-ups, said.
+    #[test]
+    fn a_layered_picture_sends_no_close_ups() {
+        let dir = scratch();
+        create(dir.path(), character("maya", Origin::Owner)).unwrap();
+        with_detail(dir.path(), "maya", [7, 5, 5], "tattoo");
+        let lib = Library::load(dir.path()).0;
+        let c = compile_with(&lib, "a studio", &[member("maya")], &[], None, false).unwrap();
+        assert_eq!(c.references.len(), 1);
+        assert!(!c.prompt.contains("close up"), "{}", c.prompt);
+        assert!(c.prompt.contains("The image is an identity reference only"));
+        assert_eq!(
+            c.notes,
+            [
+                "One close-up reference was not sent: a picture planned in layers is drawn from \
+                 portraits."
+            ]
+        );
+    }
+
+    /// Close-ups are prompt words: past the cap they go, as bodies do, and
+    /// the picture still draws.
+    #[test]
+    fn close_ups_past_the_prompt_cap_fall_back_to_faces() {
+        let dir = scratch();
+        create(dir.path(), character("maya", Origin::Owner)).unwrap();
+        with_detail(dir.path(), "maya", [7, 6, 6], "tattoo");
+        let lib = Library::load(dir.path()).0;
+        let one = [member("maya")];
+        let base = compile_with(&lib, "x", &one, &[], None, false)
+            .unwrap()
+            .prompt
+            .chars()
+            .count();
+        let scene = "a".repeat(MAX_COMPILED_PROMPT - 10 - (base - 1));
+        let c = compile(&lib, &scene, &one, &[], None).unwrap();
+        assert_eq!(c.references.len(), 1);
+        assert!(c.used[0].details.is_empty());
+        assert_eq!(
+            c.notes,
+            ["Close-up references were not sent: the prompt would run over its limit with them."]
         );
     }
 
