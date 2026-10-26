@@ -259,10 +259,11 @@ mecha imagelib add-outfit red-raincoat --text "a red hooded raincoat, knee lengt
 mecha imagelib add-reference red-raincoat --as view raincoat.png
 ```
 
-A **location** is a place: its text, and up to three pictures added with
-`--as view`. A video clip whose scene names it (`setting.location`) is set
+A **location** is a place: its text, and up to three pictures, added on its
+page in the **Library** tab's Locations pane or with `--as view`. A video clip whose scene names it (`setting.location`) is set
 there, its first picture sent as the setting. An **outfit** is clothes: its
-text, and a picture of the garment alone (`--as view`; no one wearing it). A
+text, and a picture of the garment alone (on its page in the Outfits pane, or
+`--as view`; no one wearing it). A
 clip that dresses someone in it, by giving its name as their whole
 `wearing`, sends the picture as what they have on, which keeps the exact
 garment from shot to shot. Pictures don't use locations or outfit pictures
