@@ -296,6 +296,9 @@ struct Picture {
     /// A library outfit's picture: clothes, worn by the cast members named
     /// here (as the scene wrote them), never a person.
     worn_by: Option<Vec<String>>,
+    /// A library character's second picture, a full body or a labelled
+    /// detail, as an upload names it: sent after every subject's own.
+    extra: Option<String>,
     character: Option<String>,
     description: Option<String>,
 }
@@ -504,6 +507,7 @@ impl VideoGenerate {
                         face_only: false,
                         place: true,
                         worn_by: None,
+                        extra: None,
                         character: Some(key.clone()),
                         description: text,
                     });
@@ -630,10 +634,18 @@ impl VideoGenerate {
             music: input["music"].as_str(),
             seconds: graph::frames(seconds) as f64 / graph::FPS as f64,
         };
+        // The library characters' second pictures, in the slots left
+        // (`IMAGE-COMPILER-DESIGN.md` §9.4): bodies, then details. Frames
+        // mode takes no references.
+        let (extras, extra_pictures) = match mode {
+            graph::Mode::References => self.extras_for(&references, &library, &pov, &mut notes)?,
+            graph::Mode::Frames => (Vec::new(), Vec::new()),
+        };
         let prompt = match mode {
             graph::Mode::References => {
                 let people: Vec<compose::Person> = references
                     .iter()
+                    .filter(|r| r.extra.is_none())
                     .zip(&audio)
                     .map(|(r, a)| compose::Person {
                         name: r.character.clone(),
@@ -648,12 +660,14 @@ impl VideoGenerate {
                             .is_some_and(|c| pov.contains(&args::library_key(c))),
                     })
                     .collect();
-                compose::references(&parts, &people, (first.is_some(), last.is_some()))
+                compose::references(&parts, &people, &extras, (first.is_some(), last.is_some()))
             }
             graph::Mode::Frames => {
                 compose::frames(&parts, first.is_some(), last.is_some(), &in_words)
             }
         };
+        let mut references = references;
+        references.extend(extra_pictures);
         Ok(Plan {
             mode,
             prompt,
@@ -750,6 +764,7 @@ impl VideoGenerate {
                         face_only: false,
                         place: false,
                         worn_by: who.map(|w| vec![w]),
+                        extra: None,
                         character: Some(key),
                         description: Some(text).filter(|t| !t.is_empty()),
                     });
@@ -769,6 +784,128 @@ impl VideoGenerate {
             }
         }
         Ok((input, worn, notes))
+    }
+
+    /// The library characters' second pictures for this clip, numbered after
+    /// `refs` (`IMAGE-COMPILER-DESIGN.md` §9.4), and the pictures to send:
+    ///
+    /// - **Bodies, all or nothing**: only when everyone the clip shows (not
+    ///   a place, an outfit or the person it is seen through) is a library
+    ///   character with a `full_body`, there are one or two of them, and
+    ///   they all fit. V-B's retest passed for two; three is unmeasured.
+    /// - **Details, in cast order, while slots remain**: each labelled mark
+    ///   (V-D, owner 2026-10-26). What does not fit is counted in a note,
+    ///   never named.
+    fn extras_for(
+        &self,
+        refs: &[Picture],
+        library: &crate::imagelib::Library,
+        pov: &[String],
+        notes: &mut Vec<String>,
+    ) -> Result<(Vec<compose::Extra>, Vec<Picture>)> {
+        use crate::imagelib::{Kind, RefKind, Status};
+        let seen: Vec<(usize, Option<&crate::imagelib::Entry>)> = refs
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| !r.place && r.worn_by.is_none() && r.extra.is_none())
+            .filter(|(_, r)| {
+                !r.character
+                    .as_deref()
+                    .is_some_and(|c| pov.contains(&args::library_key(c)))
+            })
+            .map(|(i, r)| {
+                let entry = r.character.as_deref().and_then(|c| {
+                    library
+                        .get(Kind::Character, &args::library_key(c))
+                        .filter(|e| e.status == Status::Approved)
+                });
+                (i, entry)
+            })
+            .collect();
+        let mut extras = Vec::new();
+        let mut pictures: Vec<Picture> = Vec::new();
+        let mut slots = graph::MAX_REFERENCES.saturating_sub(refs.len());
+        let mut add = |subject: usize,
+                       entry: &crate::imagelib::Entry,
+                       reference: &crate::imagelib::Reference,
+                       kind: compose::ExtraKind,
+                       what: &str|
+         -> Result<()> {
+            let (bytes, ext) = library.read_reference(entry, reference)?;
+            extras.push(compose::Extra {
+                subject: subject + 1,
+                picture: refs.len() + pictures.len() + 1,
+                kind,
+            });
+            pictures.push(Picture {
+                bytes,
+                ext: ext.to_string(),
+                face_only: false,
+                place: false,
+                worn_by: None,
+                extra: Some(format!("`{}`'s {what}", entry.name)),
+                character: Some(entry.name.clone()),
+                description: None,
+            });
+            Ok(())
+        };
+        let bodies: Vec<(usize, &crate::imagelib::Entry, &crate::imagelib::Reference)> = seen
+            .iter()
+            .filter_map(|(i, e)| {
+                let e = (*e)?;
+                let r = e
+                    .sendable_references()
+                    .into_iter()
+                    .find(|r| r.kind == RefKind::FullBody)?;
+                Some((*i, e, r))
+            })
+            .collect();
+        if (1..=2).contains(&seen.len()) && bodies.len() == seen.len() {
+            if bodies.len() <= slots {
+                for (i, e, r) in &bodies {
+                    add(*i, e, r, compose::ExtraKind::Body, "full body")?;
+                }
+                slots -= bodies.len();
+            } else {
+                notes.push(
+                    "The full-body pictures were left out: the clip's other pictures fill H3's slots."
+                        .into(),
+                );
+            }
+        }
+        let mut left_out = 0;
+        for (i, e) in &seen {
+            let Some(e) = e else {
+                continue;
+            };
+            for r in e
+                .sendable_references()
+                .into_iter()
+                .filter(|r| r.kind == RefKind::Detail)
+            {
+                if slots == 0 {
+                    left_out += 1;
+                    continue;
+                }
+                let label = r.label.clone().unwrap_or_else(|| "mark".to_string());
+                add(
+                    *i,
+                    e,
+                    r,
+                    compose::ExtraKind::Detail(label),
+                    "detail picture",
+                )?;
+                slots -= 1;
+            }
+        }
+        if left_out > 0 {
+            notes.push(format!(
+                "{left_out} detail picture{} left out: H3 takes {} reference pictures.",
+                if left_out == 1 { " was" } else { "s were" },
+                graph::MAX_REFERENCES
+            ));
+        }
+        Ok((extras, pictures))
     }
 
     /// A character-library name, or a picture in this chat's folder (through
@@ -807,6 +944,7 @@ impl VideoGenerate {
                     face_only: true,
                     place: false,
                     worn_by: None,
+                    extra: None,
                     character: Some(given.to_string()),
                     description,
                 },
@@ -816,6 +954,7 @@ impl VideoGenerate {
                     face_only: false,
                     place: false,
                     worn_by: None,
+                    extra: None,
                     character: Some(given.to_string()),
                     description,
                 },
@@ -838,6 +977,7 @@ impl VideoGenerate {
             face_only: false,
             place: false,
             worn_by: None,
+            extra: None,
             character: None,
             description: None,
         })
@@ -1369,9 +1509,10 @@ impl VideoGenerate {
         for (i, p) in plan.references.iter().enumerate() {
             // The location's picture follows the asked references, with no
             // entry of its own there: named by its location.
-            let label = match plan.references_asked.get(i) {
-                Some(asked) => asked.clone(),
-                None => format!(
+            let label = match (&p.extra, plan.references_asked.get(i)) {
+                (Some(extra), _) => extra.clone(),
+                (None, Some(asked)) => asked.clone(),
+                (None, None) => format!(
                     "the {} `{}`'s picture",
                     if p.place { "location" } else { "outfit" },
                     p.character.as_deref().unwrap_or("?")

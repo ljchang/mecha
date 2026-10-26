@@ -585,7 +585,7 @@ kind is derived from its directory (`Entry.kind`).
 |---|---|---|
 | face | the whole portrait at 512² for a new picture (E10), its crop for an edit, as now | the face crop, as now; from an attached `face` reference when there is one, else from the portrait |
 | full_body | **sent** to a new picture of one person, bound to the portrait (E9b; owner, 2026-10-13); faces only for two or more (E14; owner, 2026-10-19), and on edits | **sent** beside the face crop to a cast of **one or two** when everyone has one, **unbound** (both pictures named as one subject, with no face-from/build-from split): "the person in `<Picture 1>` and `<Picture 2>`", not the face-from/build-from wording, the likely cause of V-B's extra person (V-B's retest passed for a cast of two; owner, 2026-10-14) |
-| detail | not sent; its `label` is appended to the description | sent with its label ("`<Picture k>` shows her left-forearm tattoo"), if V-D passes |
+| detail | not sent; its `label` is appended to the description | **sent** with its label, "`<Subject n>`'s <label> is shown close up in `<Picture k>`", kept "exactly where it is, and nowhere else" (V-D passed; owner, 2026-10-26) |
 | location | its text in the scene | its images as an environment `<Subject>`, if V-L passes |
 | outfit | its text as `wearing` | its text as `wearing` |
 
@@ -892,7 +892,7 @@ only says what each one gates:
 | **E9b** | `full_body` for pictures (§9.4), and the two-images-one-person wording |
 | **E14** | `full_body` for pictures of one person only, and the closed foreground count without extras (§9.4; passed 2026-10-18 for the strict wording, 2/21 drawn twice; the foreground one measured 2026-10-19, 3/21, crowds unmeasured) |
 | **V-B's retest** | `full_body` for video: **passed** 2026-10-14, unbound (V-B itself failed, 2026-10-13) |
-| **V-D** | `detail` images for video |
+| **V-D** | `detail` images for video: **passed**, owner 2026-10-26 (one same-seed pair, a cast of one person with a detail beside one without: the tattoo on both forearms without the picture, on the left forearm only with it; no one drawn twice) |
 | **E13** | a location reference for pictures |
 | **V-L** | a location reference for video |
 

@@ -1237,6 +1237,89 @@ async fn a_library_outfit_is_worn_with_its_picture() {
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// A library character's second pictures ride after every subject's own:
+/// a body only when everyone shown has one (all or nothing, one or two
+/// people), details in cast order; a body is never sent beside someone who
+/// has none, but a detail is.
+#[tokio::test]
+async fn bodies_go_all_or_nothing_and_details_ride_along() {
+    let home = scratch();
+    let chat = home.join("chat");
+    std::fs::create_dir_all(&chat).unwrap();
+    let lib = home.join("imagelib");
+    character(&lib, "maya", "Tall, with short grey hair");
+    character(&lib, "wren", "Freckled, with a red bob");
+    let shade = |v: u8| {
+        let img = image::RgbImage::from_pixel(4, 4, image::Rgb([v, 20, 20]));
+        let mut b = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut b, image::ImageFormat::Png).unwrap();
+        b.into_inner()
+    };
+    crate::imagelib::add_reference(
+        &lib,
+        "maya",
+        crate::imagelib::RefKind::FullBody,
+        &shade(1),
+        None,
+    )
+    .unwrap();
+    crate::imagelib::add_reference(
+        &lib,
+        "maya",
+        crate::imagelib::RefKind::Detail,
+        &shade(2),
+        Some("rose tattoo, right ankle".into()),
+    )
+    .unwrap();
+    let cfg = VideoConfig::default();
+    let call = |prompt: &str| json!({"prompt": prompt});
+
+    // Maya alone: her body and her detail.
+    let (url, log) = fake(Fake::default(), &cfg).await;
+    let t = tool(&url, &home, Arc::new(Stub::default()));
+    let done = run(&t, call("Maya waves from the gate."), &ctx(&chat)).await;
+    assert!(!done.is_error, "{}", done.content);
+    let seen = log.lock().unwrap().clone();
+    assert_eq!(
+        seen.iter()
+            .filter(|l| l.starts_with("POST /upload"))
+            .count(),
+        3
+    );
+    let prompt = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+    assert!(
+        prompt.contains("the person in <Picture 1> and <Picture 2>"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("rose tattoo, right ankle is shown close up in <Picture 3>"),
+        "{prompt}"
+    );
+    assert!(prompt.contains("ref_images.ref_image_2"), "{prompt}");
+
+    // Maya beside Wren, who has no body: no bodies at all, Maya's detail
+    // still goes.
+    let (url, log) = fake(Fake::default(), &cfg).await;
+    let t = tool(&url, &home, Arc::new(Stub::default()));
+    let done = run(&t, call("Maya waves at Wren."), &ctx(&chat)).await;
+    assert!(!done.is_error, "{}", done.content);
+    let seen = log.lock().unwrap().clone();
+    assert_eq!(
+        seen.iter()
+            .filter(|l| l.starts_with("POST /upload"))
+            .count(),
+        3,
+        "two faces and one detail"
+    );
+    let prompt = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+    assert!(!prompt.contains("the person in <Picture"), "{prompt}");
+    assert!(
+        prompt.contains("rose tattoo, right ankle is shown close up in <Picture 3>"),
+        "{prompt}"
+    );
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// Stop takes a render off the server, frees its memory and gives the turn
 /// back.
 #[tokio::test]
