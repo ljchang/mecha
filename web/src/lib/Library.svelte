@@ -551,7 +551,7 @@
                 {#if refForm.preview}
                   <img src={refForm.preview} alt="new {REF_TITLE[refForm.kind].toLowerCase()}" />
                 {:else}
-                  <span class="dropnote">{preparing ? 'reading…' : `choose a ${REF_TITLE[refForm.kind].toLowerCase()} picture`}</span>
+                  <span class="dropnote">{preparing ? 'reading…' : refForm.kind === 'view' ? 'choose a picture' : `choose a ${REF_TITLE[refForm.kind].toLowerCase()} picture`}</span>
                 {/if}
                 <input type="file" accept="image/png,image/jpeg,image/webp" onchange={(e) => pickRef(e.currentTarget.files?.[0])} />
               </label>
@@ -597,7 +597,7 @@
       {/if}
       {#each shown as e (e.name)}
         <button class="rowbtn card" class:withthumb={!!firstPicture(e)} onclick={() => (open = e)}>
-          {#if firstPicture(e)}<img class="rowthumb" src={firstPicture(e)} alt={e.name} loading="lazy" />{/if}
+          {#if firstPicture(e)}<img class="rowthumb" src={thumbUrl(firstPicture(e))} alt={e.name} loading="lazy" />{/if}
           <span class="rowtop"><span class="topic">{e.name}</span>{#if e.locked}<span class="badge">locked</span>{/if}<span class="when">v{e.version}</span></span>
           <span class="readingline">{e.text}</span>
         </button>

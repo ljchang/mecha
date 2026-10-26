@@ -997,7 +997,7 @@ async fn reference_target(
     };
     // Which pictures an entry takes is the store's rule, asked before a
     // child runs: a view on a character or a face on a location is refused
-    // here with the same words the store would use.
+    // here, before the store would refuse it.
     let allowed = imagelib::RefKind::ALL
         .into_iter()
         .find(|r| r.label() == kind)
@@ -2470,12 +2470,57 @@ mod route_tests {
         use imagelib::RefKind;
         let js = include_str!("../../../../web/src/lib/library.js");
         let limits = format!(
-            "export const REF_LIMIT = {{ face: {}, full_body: {}, detail: {} }};",
+            "export const REF_LIMIT = {{ face: {}, full_body: {}, detail: {}, view: {} }};",
             RefKind::Face.limit(),
             RefKind::FullBody.limit(),
-            RefKind::Detail.limit()
+            RefKind::Detail.limit(),
+            RefKind::View.limit()
         );
         assert!(js.contains(&limits), "library.js lacks `{limits}`");
+        // Which pictures each entry kind takes is the store's
+        // `RefKind::allowed_on`, copied into the page; held to it here
+        // (review of #743).
+        let order = ["full_body", "face", "detail"];
+        assert!(
+            js.contains("export const REF_KINDS = ['full_body', 'face', 'detail'];"),
+            "library.js's REF_KINDS moved"
+        );
+        for kind in Kind::ALL {
+            let takes: Vec<&str> = RefKind::ALL
+                .into_iter()
+                .filter(|r| r.allowed_on(kind))
+                .map(|r| r.label())
+                .collect();
+            let said = match kind {
+                Kind::Character => {
+                    assert_eq!(
+                        {
+                            let mut t = takes.clone();
+                            t.sort();
+                            t
+                        },
+                        {
+                            let mut o = order.to_vec();
+                            o.sort();
+                            o
+                        }
+                    );
+                    "character: REF_KINDS".to_string()
+                }
+                Kind::Style => {
+                    assert!(takes.is_empty());
+                    continue;
+                }
+                Kind::Location | Kind::Outfit => {
+                    let quoted: Vec<String> = takes.iter().map(|t| format!("'{t}'")).collect();
+                    format!("{}: [{}]", kind.label(), quoted.join(", "))
+                }
+            };
+            assert!(
+                js.contains(&said),
+                "library.js's PICTURE_KINDS lacks `{said}`"
+            );
+        }
         let label = format!("export const LABEL_MAX = {};", imagelib::MAX_LABEL);
         assert!(js.contains(&label), "library.js lacks `{label}`");
     }
