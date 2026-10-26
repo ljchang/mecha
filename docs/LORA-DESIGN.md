@@ -106,16 +106,22 @@ strength = 0.8
   `models/loras`: the registry holds bare file names, the servers are spoken
   to over loopback HTTP, and only a ComfyUI that `comfyui_unit` installed
   has a `models/` path mecha knows. So each server's LoRA folders become a
-  global config key, `[image] loras_dir` and `[video] loras_dir`. The
+  config key that a project layer cannot set (as L2 notes, `merge_text`
+  strips `[image]` and `[video]` from one), `[image] loras_dir` and
+  `[video] loras_dir`. The
   owner sets them. `comfyui_unit::write_image_table` adds `[image]
   loras_dir` only when it writes the whole `[image]` table from nothing,
   since it never edits a table the owner wrote, and nothing writes
   `[video]`. For a ComfyUI that mecha installed itself, an unset key
   defaults at read time to that install's `models/loras`, since
   `comfyui_unit` already knows the install and links models under it. A
-  server mecha did not install (`comfyui_unit::someone_elses`) has no
-  default, and its entries are refused until the owner sets the key: the
-  release note says so first, and `doctor` and the page name the key. Each
+  server mecha did not install has no default, and its entries are
+  refused until the owner sets the key: the release note says so first,
+  and `doctor` and the page name the key. Whether mecha installed a server
+  is answered from the install record alone, `comfyui_unit`'s manifest
+  (`wrote` naming its unit), which is a store read and fits doctor's
+  no-network rule. `comfyui_unit::someone_elses` also probes the port over
+  TCP, so it serves the page and `features`, never `doctor`. Each
   is a list, because ComfyUI's `extra_model_paths.yaml`
   can add LoRA folders beyond `models/loras`, and the owner's video server
   has one. A file is looked up in each folder in turn. Today a registry
@@ -149,7 +155,9 @@ strength = 0.8
   offered in the `motion` enum, and the
   stat triple it was refused under is kept, so the next read whose stat has
   moved, or one a minute later when the stat could not be taken at all,
-  retries it. A file caught mid-copy recovers once the copy finishes,
+  retries it. That per-minute retry is for refused entries only. For an
+  entry that passed, a stat that cannot be taken is not a change: it keeps
+  its last result, so a flaky mount never flaps the enum. A file caught mid-copy recovers once the copy finishes,
   without waiting for a restart, and joins the enum then. A file whose
   stat moved and still fails to read leaves the enum and rejoins once it
   reads, so a copy in progress moves the enum out and back. Only a changed
