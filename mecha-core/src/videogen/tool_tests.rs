@@ -1411,6 +1411,92 @@ async fn bodies_go_all_or_nothing_and_details_ride_along() {
     std::fs::remove_dir_all(&home).ok();
 }
 
+/// The slots: seven faces and a pinned frame leave one, so of seven people's
+/// details one goes and six are counted; a clip seen through someone's eyes
+/// sends no bodies, said (review of #744).
+#[tokio::test]
+async fn second_pictures_fit_the_slots_left_and_a_camera_person_gets_no_bodies() {
+    let home = scratch();
+    let chat = home.join("chat");
+    std::fs::create_dir_all(chat.join("images")).unwrap();
+    let lib = home.join("imagelib");
+    let names = ["ada", "bo", "cy", "di", "ed", "fay", "gus"];
+    let shade = |v: u8| {
+        let img = image::RgbImage::from_pixel(4, 4, image::Rgb([v, 40, 40]));
+        let mut b = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut b, image::ImageFormat::Png).unwrap();
+        b.into_inner()
+    };
+    for (i, n) in names.iter().enumerate() {
+        character(&lib, n, "Someone");
+        crate::imagelib::add_reference(
+            &lib,
+            n,
+            crate::imagelib::RefKind::Detail,
+            &shade(i as u8),
+            Some("star tattoo, left wrist".into()),
+        )
+        .unwrap();
+    }
+    std::fs::write(chat.join("images/start.png"), shade(99)).unwrap();
+    let cfg = VideoConfig::default();
+    let (url, log) = fake(Fake::default(), &cfg).await;
+    let t = tool(&url, &home, Arc::new(Stub::default()));
+    let done = run(
+        &t,
+        json!({"prompt": "Ada, Bo, Cy, Di, Ed, Fay and Gus wave.", "first_frame": "images/start.png"}),
+        &ctx(&chat),
+    )
+    .await;
+    assert!(!done.is_error, "{}", done.content);
+    assert!(
+        done.content.contains("6 detail pictures were left out"),
+        "{}",
+        done.content
+    );
+    let seen = log.lock().unwrap().clone();
+    assert_eq!(
+        seen.iter()
+            .filter(|l| l.starts_with("POST /upload"))
+            .count(),
+        9,
+        "seven faces, the pinned frame and one detail"
+    );
+
+    // Two people with bodies, one of them the camera: no bodies.
+    for n in ["ada", "bo"] {
+        crate::imagelib::add_reference(
+            &lib,
+            n,
+            crate::imagelib::RefKind::FullBody,
+            &shade(200),
+            None,
+        )
+        .unwrap();
+    }
+    let (url, log) = fake(Fake::default(), &cfg).await;
+    let t = tool(&url, &home, Arc::new(Stub::default()));
+    let done = run(
+        &t,
+        json!({"scene": {
+            "cast": [{"name": "Ada", "wearing": "a coat"}, {"name": "Bo", "wearing": "a coat", "pov": true}],
+            "shots": [{"framing": "A first-person shot", "action": "Ada waves"}]
+        }}),
+        &ctx(&chat),
+    )
+    .await;
+    assert!(!done.is_error, "{}", done.content);
+    assert!(
+        done.content.contains("seen through someone's eyes"),
+        "{}",
+        done.content
+    );
+    let seen = log.lock().unwrap().clone();
+    let prompt = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+    assert!(!prompt.contains("the person in <Picture"), "{prompt}");
+    std::fs::remove_dir_all(&home).ok();
+}
+
 /// Stop takes a render off the server, frees its memory and gives the turn
 /// back.
 #[tokio::test]

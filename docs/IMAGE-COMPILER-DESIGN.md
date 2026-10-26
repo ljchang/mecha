@@ -649,15 +649,18 @@ kind is derived from its directory (`Entry.kind`).
   2. each person's `full_body`, in cast order;
   3. details, in cast order, then in each character's own order, for video
      only: pictures never send a detail image (the table above), only its
-     label. That's greedy, so it's the mixed shape the next bullets call
-     unmeasured; it waits on V-D, whose arms include that shape.
+     label. That's greedy, so it's the mixed shape the next bullets
+     describe; V-D measured it and passed (owner, 2026-10-26).
+     **Built** (`VideoGenerate::extras_for`, 2026-10-26).
   - **Video sends bodies, unbound, to a cast of one or two** (V-B's retest;
     owner, 2026-10-14; the table above), as pictures do: the retest
     measured two people, so three with a body each needs its own
-    measurement first (review of #693). To be built in the video tool,
-    outside this repository until the port. Video has nine slots, less any
-    pinned or other reference images: two people with a body each leave up
-    to five for details (details wait on V-D). Three with a body each would
+    measurement first (review of #693). **Built** (2026-10-26). Video has
+    nine slots, less any pinned or other reference images: two people with
+    a body each leave up to five for details. A clip seen through someone's
+    eyes (`pov`) sends no bodies: that person is in the cast, with their own
+    picture and never a body, so bodies for the others would be the mixed
+    shape (review of #744). Three with a body each would
     leave three, once measured; that is not a rule in force.
   - **Bodies are all or nothing in both generators**: in video from V-B's
     retest (owner, 2026-10-14); in pictures from L7's step 2b (review of
@@ -669,8 +672,8 @@ kind is derived from its directory (`Entry.kind`).
     or four with two pinned images, sends faces only, never four bound
     people beside one unbound.
   - Details also bind a second image to one person, so they're the same
-    mixed shape. V-D's arms must include one person with a detail beside one
-    without, before details ship.
+    mixed shape. V-D's arms included one person with a detail beside one
+    without, and no one was drawn twice (2026-10-26).
   - **Pictures** keep their people budgets (`MAX_CAST`,
     `EDIT_REFERENCE_BUDGET`, `IMAGE-DESIGN.md` §5.2, "Budgets, as measured")
     and gain an **image** cap (review of #680, pass 6). `MAX_CAST` counts

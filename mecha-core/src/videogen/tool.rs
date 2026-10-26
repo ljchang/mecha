@@ -881,7 +881,21 @@ impl VideoGenerate {
             });
             true
         };
-        if (1..=2).contains(&seen.len()) && bodies.len() == seen.len() && bodies_read == 0 {
+        // The camera person is in the cast too, with a picture of their own
+        // and never a body: a clip seen through someone's eyes sends no
+        // bodies, or the others would be bound to two pictures beside them
+        // bound to one, the shape V-B failed on (review of #744).
+        let camera = refs.iter().any(|r| {
+            r.extra.is_none()
+                && r.character
+                    .as_deref()
+                    .is_some_and(|c| pov.contains(&args::library_key(c)))
+        });
+        if !camera
+            && (1..=2).contains(&seen.len())
+            && bodies.len() == seen.len()
+            && bodies_read == 0
+        {
             if bodies.len() <= slots {
                 for (i, e, r) in &bodies {
                     if add(*i, e, r, compose::ExtraKind::Body, "full body") {
@@ -923,8 +937,13 @@ impl VideoGenerate {
         }
         // Bodies go to a whole cast or to no one: said, so the owner can add
         // the missing one (review of #744). Counted, never named.
-        if !bodies.is_empty() && (bodies.len() < seen.len() || seen.len() > 2 || bodies_read > 0) {
-            notes.push(if bodies_read > 0 {
+        if !bodies.is_empty()
+            && (camera || bodies.len() < seen.len() || seen.len() > 2 || bodies_read > 0)
+        {
+            notes.push(if camera {
+                "No full-body pictures were sent: the clip is seen through someone's eyes."
+                    .to_string()
+            } else if bodies_read > 0 {
                 "No full-body pictures were sent: one could not be read.".to_string()
             } else if seen.len() > 2 {
                 "No full-body pictures were sent: they go to a cast of one or two.".to_string()
