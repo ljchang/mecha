@@ -131,11 +131,15 @@ strength = 0.8
   prefix. The reason shown keeps *unreadable* apart from *keys matched
   neither family*, though both refuse: the first can be a file mid-copy, the
   second never changes. So an unreadable file is not dropped from the
-  registry. Its entry stays, marked unreadable and applied nowhere, and the
+  registry. Its entry stays, marked unreadable, applied nowhere and not
+  offered in the `motion` enum, and the
   stat triple it was refused under is kept, so the next read whose stat has
   moved, or one a minute later when the stat could not be taken at all,
   retries it. A file caught mid-copy recovers once the copy finishes,
-  without waiting for a restart. The stat triple is a trigger for a re-read, not a
+  without waiting for a restart, and joins the enum then. That moves the
+  enum once, when the file's state really changed, never on a transient
+  read, since an unchanged stat keeps the last result. The stat triple is
+  a trigger for a re-read, not a
   claim about the content: a same-length swap that keeps the mtime would
   keep its old result. That window is accepted, since the owner's own
   files are the only writers, and every process start reads every header
@@ -427,7 +431,15 @@ checked by hand for names from the owner's registry.
   (`character = "<name>"`, checked against the library like a cast name).
   It starts off everywhere and applies only where the owner has turned it on
   in a chat or persona layer, and even then only to pictures and clips with
-  that character in the cast. With the character absent it is left out
-  without a note, since the setting did not ask for it there. Off by
+  that character in the cast. For a picture, with the character absent,
+  it is left out without a note: the owner picked the list, and the setting
+  did not ask for it there. For a clip the model picks, the enum is built
+  per run while the cast is per clip, and the model cannot see the tie. So
+  a tied pick for a clip without its character is dropped **with a note**,
+  as a wrong-mode pick is (2026-10-25: a model that could not see why its
+  pick failed spent three calls on it). The note says it applies only with
+  its own character in the clip, without naming the character: library
+  names are the owner's and are never listed in a schema or a note. The
+  enum's `about` for a tied entry says the same, in the same words. Off by
   default because the owner is still testing this kind of LoRA. A tied
   entry still counts against the cap of a picture it applies to.
