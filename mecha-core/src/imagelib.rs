@@ -229,6 +229,15 @@ pub enum RefKind {
 }
 
 impl RefKind {
+    /// Every kind this build can send; `Unknown` is what a later build's
+    /// kind reads as, and is no kind anyone may write.
+    pub const ALL: [RefKind; 4] = [
+        RefKind::Face,
+        RefKind::FullBody,
+        RefKind::Detail,
+        RefKind::View,
+    ];
+
     pub fn label(self) -> &'static str {
         match self {
             RefKind::Face => "face",

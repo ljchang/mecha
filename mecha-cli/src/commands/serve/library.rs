@@ -936,7 +936,12 @@ pub async fn edit(State(state): St, Json(body): Json<EditBody>) -> Response {
 #[derive(Deserialize)]
 pub struct ReferenceBody {
     name: String,
-    /// `face`, `full_body` or `detail`.
+    /// The entry it goes on: `character` when absent, or a `location` or
+    /// `outfit` for a `view`.
+    #[serde(default)]
+    kind: Option<String>,
+    /// `face`, `full_body` or `detail` on a character; `view` on a location
+    /// or an outfit.
     #[serde(rename = "as")]
     as_kind: String,
     /// The picture, base64; for adding only.
@@ -957,32 +962,61 @@ fn parse_ref_kind(kind: &str) -> Option<&'static str> {
         "face" => Some("face"),
         "full_body" => Some("full_body"),
         "detail" => Some("detail"),
+        "view" => Some("view"),
         _ => None,
     }
 }
 
-/// What both reference writes check before a child runs: the kind, the
-/// name, and the character as this request may see it, approved.
+/// What both reference writes check before a child runs: the reference kind
+/// and the entry kind it may go on, the name, and the entry as this request
+/// may see it, approved. A location's or outfit's `view` goes through here as
+/// a character's picture does, under the same lock.
 async fn reference_target(
     state: &super::WebState,
     body: &ReferenceBody,
-) -> Result<&'static str, Box<Response>> {
+) -> Result<(&'static str, Kind), Box<Response>> {
     let Some(kind) = parse_ref_kind(&body.as_kind) else {
         return Err(Box::new(
             (
                 StatusCode::BAD_REQUEST,
-                "a reference is a face, full_body or detail\n",
+                "a reference is a face, full_body, detail or view\n",
             )
                 .into_response(),
         ));
     };
+    let entry_kind = match body.kind.as_deref() {
+        None => Kind::Character,
+        Some(k) => match parse_kind(k) {
+            Some(k) => k,
+            None => {
+                return Err(Box::new(
+                    (StatusCode::BAD_REQUEST, kind_refusal()).into_response(),
+                ))
+            }
+        },
+    };
+    // Which pictures an entry takes is the store's rule, asked before a
+    // child runs: a view on a character or a face on a location is refused
+    // here with the same words the store would use.
+    let allowed = imagelib::RefKind::ALL
+        .into_iter()
+        .find(|r| r.label() == kind)
+        .is_some_and(|r| r.allowed_on(entry_kind));
+    if !allowed {
+        return Err(Box::new(
+            (
+                StatusCode::BAD_REQUEST,
+                format!("{} takes no {kind} picture\n", entry_kind.with_article()),
+            )
+                .into_response(),
+        ));
+    }
     if imagelib::validate_name(&body.name).is_err() {
         return Err(Box::new(
             (StatusCode::BAD_REQUEST, "not an entry name\n").into_response(),
         ));
     }
-    let Some(entry) = visible(state, Kind::Character, &body.name, body.unlock.as_deref()).await
-    else {
+    let Some(entry) = visible(state, entry_kind, &body.name, body.unlock.as_deref()).await else {
         return Err(Box::new(
             (StatusCode::NOT_FOUND, "no such entry\n").into_response(),
         ));
@@ -999,15 +1033,15 @@ async fn reference_target(
                 .into_response(),
         ));
     }
-    Ok(kind)
+    Ok((kind, entry_kind))
 }
 
 /// POST /api/library/reference — attach a typed picture to an approved
 /// character: `mecha imagelib add-reference`. The owner's write, as the edit
 /// page's is; the child keeps the store's limits and label rules.
 pub async fn add_reference(State(state): St, Json(body): Json<ReferenceBody>) -> Response {
-    let kind = match reference_target(&state, &body).await {
-        Ok(kind) => kind,
+    let (kind, entry_kind) = match reference_target(&state, &body).await {
+        Ok(kinds) => kinds,
         Err(refusal) => return *refusal,
     };
     let Some(b64) = body.picture.as_deref() else {
@@ -1020,7 +1054,16 @@ pub async fn add_reference(State(state): St, Json(body): Json<ReferenceBody>) ->
     let path = staged.file().to_string_lossy().into_owned();
     // `--label=…`: a label that opens with a dash is a label (review of #385).
     let label = body.label.as_ref().map(|l| format!("--label={l}"));
-    let mut args = vec!["imagelib", "add-reference", &body.name, "--as", kind, &path];
+    let mut args = vec![
+        "imagelib",
+        "add-reference",
+        &body.name,
+        "--as",
+        kind,
+        "--kind",
+        entry_kind.label(),
+        &path,
+    ];
     if let Some(label) = &label {
         args.push(label);
     }
@@ -1032,12 +1075,20 @@ pub async fn add_reference(State(state): St, Json(body): Json<ReferenceBody>) ->
 /// POST /api/library/reference/remove — take one off: `mecha imagelib
 /// remove-reference`, a new version that keeps the picture for the history.
 pub async fn remove_reference(State(state): St, Json(body): Json<ReferenceBody>) -> Response {
-    let kind = match reference_target(&state, &body).await {
-        Ok(kind) => kind,
+    let (kind, entry_kind) = match reference_target(&state, &body).await {
+        Ok(kinds) => kinds,
         Err(refusal) => return *refusal,
     };
     let label = body.label.as_ref().map(|l| format!("--label={l}"));
-    let mut args = vec!["imagelib", "remove-reference", &body.name, "--as", kind];
+    let mut args = vec![
+        "imagelib",
+        "remove-reference",
+        &body.name,
+        "--as",
+        kind,
+        "--kind",
+        entry_kind.label(),
+    ];
     if let Some(label) = &label {
         args.push(label);
     }
@@ -2364,6 +2415,29 @@ mod route_tests {
                 remove,
                 serde_json::json!({"name": "maya", "as": "portrait"}),
                 StatusCode::BAD_REQUEST,
+            ),
+            // A location or outfit takes a view and nothing else; an entry
+            // kind the store does not have is refused; a location nobody
+            // made answers as missing.
+            (
+                add,
+                serde_json::json!({"kind": "location", "name": "maya", "as": "face", "picture": b64}),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                add,
+                serde_json::json!({"kind": "costume", "name": "maya", "as": "view", "picture": b64}),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                add,
+                serde_json::json!({"kind": "location", "name": "nowhere", "as": "view", "picture": b64}),
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                remove,
+                serde_json::json!({"kind": "outfit", "name": "nowhere", "as": "view"}),
+                StatusCode::NOT_FOUND,
             ),
         ] {
             assert_eq!(status(uri, body.clone()).await, want, "{uri} {body}");
