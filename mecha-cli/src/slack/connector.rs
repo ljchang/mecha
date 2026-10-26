@@ -2816,9 +2816,10 @@ fn producer_root() -> Result<std::path::PathBuf> {
     Ok(root)
 }
 
-/// One thread, one jail — under a single `slack` producer so `work clean`'s
-/// per-producer retention retires whole old threads. A producer per thread
-/// would accumulate directories nothing ever sweeps.
+/// One thread, one jail — under the single `slack` producer, one of
+/// `work::CONVERSATION_PRODUCERS`, so `[work] retain_conversations` ages a
+/// thread's directory as a unit. A producer per thread would sit outside that
+/// list and be counted by `keep` per thread, which bounds nothing.
 fn thread_workspace(key: &str) -> Result<std::path::PathBuf> {
     let root = mecha_core::work::producer_dir("slack")?.join(key);
     if root.exists() && !root.is_dir() {
@@ -3363,8 +3364,8 @@ mod tests {
     #[test]
     fn a_threads_jail_sits_under_one_producer_so_retention_reaches_it() {
         // The trap: a producer per thread looks natural and is never swept,
-        // because `work clean` keeps N entries *per producer* and never
-        // removes a producer directory.
+        // because `work clean` ages entries *inside* the `slack` producer and
+        // never removes a producer directory.
         let path = mecha_core::work::producer_dir("slack")
             .unwrap()
             .join("D1-1");

@@ -757,8 +757,9 @@ fn producer_root() -> Result<PathBuf> {
 }
 
 impl ChatState {
-    /// One producer, per-session subdirectories — so `work clean`'s
-    /// retention retires whole old sessions (the Slack thread pattern).
+    /// One producer, per-session subdirectories — so `work clean` ages a
+    /// session's pictures and files as a unit (`[work]
+    /// retain_conversations`), and `forget` finds the one directory to remove.
     pub(super) fn session_workspace(&self, key: &str) -> Result<PathBuf> {
         let dir = self.work_dir.join(key);
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
