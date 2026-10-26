@@ -106,9 +106,13 @@ strength = 0.8
   `models/loras`: the registry holds bare file names, the servers are spoken
   to over loopback HTTP, and only a ComfyUI that `comfyui_unit` installed
   has a `models/` path mecha knows. So each server's LoRA folders become a
-  global config key, `[image] loras_dir` and `[video] loras_dir`, which
-  `comfyui_unit` fills for a server it installs and the owner sets for a
-  provided one. Each is a list, because ComfyUI's `extra_model_paths.yaml`
+  global config key, `[image] loras_dir` and `[video] loras_dir`. The
+  owner sets them. `comfyui_unit::write_image_table` adds `[image]
+  loras_dir` only when it writes the whole `[image]` table from nothing,
+  since it never edits a table the owner wrote, and nothing writes
+  `[video]`. So on every machine that already generates, step 1's upgrade
+  needs the keys set by hand, or its LoRAs are refused until they are:
+  the release note says so first, and `doctor` and the page name the key. Each is a list, because ComfyUI's `extra_model_paths.yaml`
   can add LoRA folders beyond `models/loras`, and the owner's video server
   has one. A file is looked up in each folder in turn. Today a registry
   name is a bare file name (`plain`); step 1 extends it to a relative path
@@ -181,6 +185,11 @@ strength = 0.8
   it. At startup, with no last good registry, it is today's loud empty
   registry. The page's writes are atomic, a temp file renamed over the
   old one, so a read never sees half a write from the new second writer.
+  This runs opposite to §4's damaged layer list, which reads as empty, and
+  on purpose. The registry is the set of LoRAs that exist, and a transient
+  read of it says nothing about the owner's wishes. A layer list is the
+  owner's choice, and a damaged one could otherwise widen into a character
+  LoRA the owner left off.
 - **The old file is read for one release.** `[video] loras` keeps working
   and is reported by `mecha doctor` as moved. Its entries become `model =
   "h3"` with no other change. L2 put the new one at `~/.mecha/loras.toml`.
@@ -368,7 +377,9 @@ prompt does not already contain it, with the same rule as
     comes from each server's `/object_info` (`lora_name`'s options), as
     `comfyui_unit` already asks a server what it has, so listing needs no
     path. `loras_dir` is for §2's key check only. The family is read from
-    the file and shown. The owner fills in name, about, strength and
+    the file and shown; with `loras_dir` unset the list still shows every
+    file, its family as unknown, and names the key as the reason, so an
+    empty pane never hides the cause. The owner fills in name, about, strength and
     trigger, and for H3 says which mode the file is for. A second H3 file
     is attached to an existing entry the same way. ComfyUI lists files in
     subfolders of `models/loras` by their relative path, so `file`, `frames`
@@ -392,10 +403,11 @@ prompt does not already contain it, with the same rule as
   the text to the browser, which `library.rs` refuses to do for the same
   reason. The layer lists in Images, Video and persona settings show their
   LoRA rows only under the same token. What the model is offered never
-  depends on the lock (the library ruling, 2026-10-13).
+  depends on the lock (the library ruling of 2026-09-28, reaffirmed
+  2026-10-13).
 
 Server routes: `GET /api/loras` (entries, their check, the unused files),
-`POST/PUT/DELETE /api/loras/{name}`, and each layer's LoRA lists through a
+`POST/PUT/DELETE /api/loras/{name}`, and each layer's LoRA lists through
 routes of their own, `GET` and `PUT /api/loras/layer/{chat|persona/<name>}`,
 both behind the same unlock token. The read needs its own route as much as
 the write: `GET /api/settings/images` takes no token today, since the
@@ -433,10 +445,12 @@ an entry the file would refuse.
    plumbing through where a run's tools are chosen, not a change inside
    `loras.rs`. It also writes L1's migration: on the first start of the new
    build, a chat settings file with no clip list gets one naming every
-   entry the registry offers, so a later entry starts off as L1 rules. The
-   write is the one irreversible step here, so it runs only from a clean
-   read: the registry file read and parsed, `loras_dir` set, and no entry
-   refused for an unreadable or unfound file. Otherwise the list stays
+   `h3` entry the registry offers (picture entries, which step 1 already
+   allows, never seed a clip list), so a later entry starts off as L1
+   rules. The write is the one irreversible step here, so it runs only
+   from a clean read: the registry file read and parsed, `[video]
+   loras_dir` set, and no `h3` entry refused for an unreadable or unfound
+   file. A picture file's state never blocks it. Otherwise the list stays
    absent, which §4 reads as every entry offered, `doctor` says why, and a
    later start tries again. A degraded first start never bakes "off" into
    the list. mecha
@@ -502,7 +516,13 @@ checked by hand for names from the owner's registry.
   its own character in the clip, without naming the character. Location
   and outfit names do appear in `video_generate`'s schema today; character
   names never do, since the model types a cast name and is never handed a
-  list of the owner's people, and this keeps it that way. The
+  list of the owner's people. L6 keeps it that way in the tie, the note
+  and the `about`. The one channel left is the entry's own `name`, which
+  the enum carries, and an owner naming a likeness LoRA after the person is
+  the first thing to expect. So the parser refuses a character-tied entry
+  whose `name` contains that character's name, or any word of four or more
+  letters from its display words: the same set `check-private.py`'s
+  `corpus()` already reads from each persona. The
   enum's `about` for a tied entry says the same, in the same words. Off by
   default because the owner is still testing this kind of LoRA. A tied
   entry still counts against the cap of a picture it applies to.
