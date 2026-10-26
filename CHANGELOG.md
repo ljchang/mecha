@@ -196,7 +196,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   workspaces (web, persona, Slack) are no longer counted: they are kept
   until `[work] retain_conversations` says otherwise, `forever` by default, or
   a duration like `90d` measured from the newest file in the chat. Deleting a
-  chat still removes its files. Pictures already removed are not recovered.
+  web chat still removes its files; persona chats and Slack threads have no
+  delete yet, so their files are bounded only by this setting. Pictures
+  already removed are not recovered.
 
 - **A new picture of two or more library characters no longer draws one of
   them twice.** It now sends their portraits only, even when they have a

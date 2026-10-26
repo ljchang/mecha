@@ -6311,8 +6311,11 @@ Four decisions:
   chats themselves stayed (2026-10-26). They go when `[work]
   retain_conversations` (`forever` by default, or a duration) has passed
   since the newest file *anywhere* in the entry — a directory's own mtime
-  moves only when a direct child is added — or when the conversation is
-  forgotten. An entry whose age cannot be read (an unreadable directory
+  moves only when a direct child is added — or, for a web chat, when it is
+  forgotten. Persona chats and Slack threads have no forget path
+  (`forget::Roots` walks `~/.mecha/sessions` only), so at the default their
+  workspaces are never removed: losing a picture was judged worse than
+  keeping its bytes. An entry whose age cannot be read (an unreadable directory
   inside) is kept and warned about, never taken for old. The setting is
   global-only: a cloned repository's `mecha.toml` setting it to `1s` would
   empty every chat. `voice` is not on the list: every call shares

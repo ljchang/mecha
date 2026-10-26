@@ -97,9 +97,10 @@ exactly what it removed. The nightly maintenance run calls it. Four rules:
   and clips in it are part of that conversation: reopen an old chat and the
   page loads them from there. So `keep` does not count those three.
   A conversation's workspace stays until `retain_conversations` has passed
-  since its newest file, which by default is never, and deleting the chat
-  removes it. Only your global config can set this; a project's
-  `mecha.toml` cannot.
+  since its newest file, which by default is never. Deleting a web chat
+  removes its workspace; persona chats and Slack threads have no delete yet,
+  so this setting is the only thing that bounds theirs. Only your global
+  config can set this; a project's `mecha.toml` cannot.
 
 - **Entries are counted, not files.** A rendered bundle is a directory, and it
   counts as one entry.
