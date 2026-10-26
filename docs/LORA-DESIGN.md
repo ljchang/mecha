@@ -108,7 +108,9 @@ strength = 0.8
   `comfyui_unit` fills for a server it installs and the owner sets for a
   provided one. Each is a list, because ComfyUI's `extra_model_paths.yaml`
   can add LoRA folders beyond `models/loras`, and the owner's video server
-  has one. A file is looked up in each folder in turn. With the key unset,
+  has one. A file is looked up in each folder in turn, and the joined path
+  must canonicalize inside that folder: a name from the registry is a bare
+  file name (`plain`), but one listed by a server can carry subfolders. With the key unset,
   every entry for that server is refused, and `mecha doctor` and the page
   name the key. A file the server lists (§6) that is in none of the folders
   is a named `doctor` finding, not a silent refusal. On this machine step
@@ -120,7 +122,11 @@ strength = 0.8
   failure on one cannot change the `motion` enum or re-pay the cached
   prefix. The reason shown keeps *unreadable* apart from *keys matched
   neither family*, though both refuse: the first can be a file mid-copy, the
-  second never changes.
+  second never changes. The stat triple is a trigger for a re-read, not a
+  claim about the content: a same-length swap that keeps the mtime would
+  keep its old result. That window is accepted, since the owner's own
+  files are the only writers, and every process start reads every header
+  afresh.
 - **Each graph gets only entries of its family.** The picture graph sees
   `qwen-image` entries and the clip graph sees `h3` entries. Today the clip
   path drops a pick with no file for the clip's mode; the family check adds
@@ -176,7 +182,8 @@ layer, and each persona's `state.toml` overrides it field by field
   the hint, `pick` is the gate, and a test names an off-list entry and
   expects the refusal: that is the case the enum cannot cover.
 - **A refusal names only what the run was offered.** Today's refusal for an
-  unknown name lists `offered()`, which is the whole registry. After §3
+  unknown name lists `offered()`, the whole registry but its `always`
+  entries. After §3
   merges pictures and clips, that list would put every picture entry, every
   clip entry the layer left off, and every character-tied entry (L6) into
   the model's context, in the refusal for the gate that withheld them. So
@@ -243,15 +250,21 @@ prompt does not already contain it, with the same rule as
 - **Settings → LoRAs**, shown when the image or video feature is on.
   `PANE_FEATURE` maps a pane to exactly one feature, so step 4 extends the
   map's value to a list, and this pane is its first caller (ARCHITECTURE
-  §Features, *Adding a feature*). Five functions in `web/src/lib/features.js`
-  meet that value: `featureOf`, `opens` and `bounceFor`, which read the map,
-  and `isShown` and `refuses`, which take an id. Both of the latter do
-  `rows.get(id)` and read a miss as shown and not refusing, by design. So an
-  array handed through unchanged makes the pane always shown and never
-  bounced, with no error. All five handle a list, with opposite rules:
-  shown when **any** listed feature is on, bounced only when **all** of them
-  refuse. Otherwise an owner with video on and image off sees the tab and
-  is bounced from it, the #654 shape. A web test covers both directions.
+  §Features, *Adding a feature*). Three functions in
+  `web/src/lib/features.js` read the map: `featureOf`, `opens` and
+  `bounceFor`. Everything downstream takes one id: `isShown`, `refuses`,
+  `banner` and `hiddenLine`, through `App.svelte`. Each of those does
+  `rows.get(id)` and reads a miss as shown, not refusing, no banner and no
+  line, so an array handed through would fail open in all four with no
+  error. So only the three readers learn lists, and each hands one id on.
+  `featureOf` returns the first listed feature that is on, or the first
+  listed when none is, so `isShown` means **any on** and `banner` speaks for
+  the feature the pane is showing under. `bounceFor` returns an id only when
+  **all** listed features refuse, the first of them, so `hiddenLine` still
+  says why. `opens` follows `featureOf`. Otherwise an owner with video on and
+  image off sees the tab and is bounced from it, the #654 shape. A web test
+  covers both directions, and asserts that the pane's banner and the Home
+  line survive a list value.
   The routes follow the same rule: `/api/loras` answers when either feature
   is on, and each entry's write is refused when its own family's feature is
   off. Each section shows only when its own feature is on: picture entries
@@ -273,10 +286,18 @@ prompt does not already contain it, with the same rule as
   allowlist.
 - **Each persona's picture settings** gain both lists, each with an
   "Inherit from chat" state.
-- **Locking.** The library lock hides the Personas and Library tabs while
-  locked. §8, L3 decides whether it hides this pane too. It would hide the
-  pane from browsing only; what the model is offered never depends on the
-  lock (the library ruling, 2026-10-13).
+- **Locking (L3).** Today the library lock is a per-entry browse filter:
+  `serve/library.rs` leaves locked entries out of the list and answers 404
+  for their portraits without a live unlock token, enforced at the route,
+  not the page. Both tabs stay in the nav. L3 adds a pane-level scope that
+  does not exist yet, and enforces it the same way. `GET /api/loras` and
+  every write under it require the live unlock token. Without one, the route
+  answers *locked* with no names, abouts or triggers, and the pane shows
+  only that it is locked. Hiding the pane on the page alone would still ship
+  the text to the browser, which `library.rs` refuses to do for the same
+  reason. The layer lists in Images, Video and persona settings show their
+  LoRA rows only under the same token. What the model is offered never
+  depends on the lock (the library ruling, 2026-10-13).
 
 Server routes: `GET /api/loras` (entries, their check, the unused files),
 `POST/PUT/DELETE /api/loras/{name}`, and the layers through the existing
