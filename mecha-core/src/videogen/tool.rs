@@ -845,15 +845,30 @@ impl VideoGenerate {
                 Some((*i, e, r))
             })
             .collect();
+        // The camera person is in the cast too, with a picture of their own
+        // and never a body: a clip seen through someone's eyes sends no
+        // bodies, or the others would be bound to two pictures beside them
+        // bound to one, the shape V-B failed on (review of #744).
+        let camera = refs.iter().any(|r| {
+            r.extra.is_none()
+                && r.character
+                    .as_deref()
+                    .is_some_and(|c| pov.contains(&args::library_key(c)))
+        });
+        let eligible = !camera && (1..=2).contains(&seen.len()) && bodies.len() == seen.len();
         // All or nothing holds for reading too: one body that does not read
-        // sends none, never the other alone beside a face-only person, the
-        // shape V-B failed on (review of #744).
+        // sends none, never the other alone beside a face-only person. Read
+        // only when the bodies could go at all, and said once, as the
+        // reason (review of #744).
+        let bodies_unread = if eligible {
+            bodies
+                .iter()
+                .filter(|(_, e, r)| library.read_reference(e, r).is_err())
+                .count()
+        } else {
+            0
+        };
         let mut unreadable = 0;
-        let bodies_read = bodies
-            .iter()
-            .filter(|(_, e, r)| library.read_reference(e, r).is_err())
-            .count();
-        unreadable += bodies_read;
         let mut add = |subject: usize,
                        entry: &crate::imagelib::Entry,
                        reference: &crate::imagelib::Reference,
@@ -881,21 +896,7 @@ impl VideoGenerate {
             });
             true
         };
-        // The camera person is in the cast too, with a picture of their own
-        // and never a body: a clip seen through someone's eyes sends no
-        // bodies, or the others would be bound to two pictures beside them
-        // bound to one, the shape V-B failed on (review of #744).
-        let camera = refs.iter().any(|r| {
-            r.extra.is_none()
-                && r.character
-                    .as_deref()
-                    .is_some_and(|c| pov.contains(&args::library_key(c)))
-        });
-        if !camera
-            && (1..=2).contains(&seen.len())
-            && bodies.len() == seen.len()
-            && bodies_read == 0
-        {
+        if eligible && bodies_unread == 0 {
             if bodies.len() <= slots {
                 for (i, e, r) in &bodies {
                     if add(*i, e, r, compose::ExtraKind::Body, "full body") {
@@ -903,10 +904,10 @@ impl VideoGenerate {
                     }
                 }
             } else {
-                notes.push(
-                    "The full-body pictures were left out: the clip's other pictures fill H3's slots."
-                        .into(),
-                );
+                notes.push(format!(
+                    "The full-body picture{} left out: the clip's other pictures fill H3's slots.",
+                    if bodies.len() == 1 { " was" } else { "s were" }
+                ));
             }
         }
         let mut left_out = 0;
@@ -937,19 +938,21 @@ impl VideoGenerate {
         }
         // Bodies go to a whole cast or to no one: said, so the owner can add
         // the missing one (review of #744). Counted, never named.
+        // One note, for the first reason that applies: the camera, the cast's
+        // size, a missing body, then one that would not read.
         if !bodies.is_empty()
-            && (camera || bodies.len() < seen.len() || seen.len() > 2 || bodies_read > 0)
+            && (camera || bodies.len() < seen.len() || seen.len() > 2 || bodies_unread > 0)
         {
             notes.push(if camera {
                 "No full-body pictures were sent: the clip is seen through someone's eyes."
                     .to_string()
-            } else if bodies_read > 0 {
-                "No full-body pictures were sent: one could not be read.".to_string()
             } else if seen.len() > 2 {
                 "No full-body pictures were sent: they go to a cast of one or two.".to_string()
-            } else {
+            } else if bodies.len() < seen.len() {
                 "No full-body pictures were sent: everyone shown needs one for any to go."
                     .to_string()
+            } else {
+                "No full-body pictures were sent: one could not be read; the owner can check with `mecha imagelib list`.".to_string()
             });
         }
         if unreadable > 0 {
@@ -1649,7 +1652,10 @@ impl VideoGenerate {
                 steps,
                 plan.width,
                 plan.height,
-                plan.references.len(),
+                // As each record keeps it: the references asked for, not the
+                // location, outfit or second pictures the plan added (review
+                // of #744).
+                plan.references_asked.len(),
                 plan.turbo,
             )
         });
