@@ -26,6 +26,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tattoo that words alone put on both forearms stayed on one with its
   picture. What does not fit is counted in the result.
 
+- **Pictures send labelled details too.** A character's close-ups, such as a
+  tattoo, go after the faces and bodies while a new picture's five images
+  last, each tied to its person by name. A tattoo that words alone drew as a
+  different design on both sides came out as the right one, on one side,
+  with its picture. A picture planned in layers is drawn from portraits and
+  sends none; what was left out is counted in the result.
+
 - **Scenes are mended where a model's prose says more than its fields.** A
   line quoted inside an action becomes a spoken line; "Wren's POV" makes Wren
   the camera, whose face never appears; names inside quoted speech stay as
