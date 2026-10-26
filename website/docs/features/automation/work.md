@@ -85,11 +85,22 @@ Anything without one becomes a pile nobody opens.
 
 ```toml
 [work]
-keep = 10          # entries per producer that survive `mecha work clean`
+keep = 10                        # entries per producer that survive `mecha work clean`
+retain_conversations = "forever" # or a duration like "90d"
 ```
 
 `mecha work clean` keeps the newest `keep` entries per producer and says
-exactly what it removed. The nightly maintenance run calls it. Three rules:
+exactly what it removed. The nightly maintenance run calls it. Four rules:
+
+- **A conversation is aged, not counted.** The web chat, persona chats and
+  Slack threads each keep one workspace per conversation, and the pictures
+  and clips in it are part of that conversation: reopen an old chat and the
+  page loads them from there. So `keep` does not count those three.
+  A conversation's workspace stays until `retain_conversations` has passed
+  since its newest file, which by default is never. Deleting a web chat
+  removes its workspace; persona chats and Slack threads have no delete yet,
+  so this setting is the only thing that bounds theirs. Only your global
+  config can set this; a project's `mecha.toml` cannot.
 
 - **Entries are counted, not files.** A rendered bundle is a directory, and it
   counts as one entry.
@@ -101,7 +112,7 @@ exactly what it removed. The nightly maintenance run calls it. Three rules:
   that survive for this reason are *reported*, not silently skipped — an
   unexplained survivor reads as a bug in the sweep.
 
-The default of 10 holds about a week and a half of a daily producer, so both
+The default `keep` of 10 holds about a week and a half of a daily producer, so both
 "what did yesterday's run say" and "what changed since Monday" are still on
 disk. It is a placeholder in the honest sense: it wants a week of real output
 to tune, and `[work] keep` is where that tuning goes.

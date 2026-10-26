@@ -1107,6 +1107,7 @@ publish_tools = ["factory__bundle_publish"]  # reviewed as a page, not as prose
 
 [work]
 keep = 10                          # entries per producer that survive `work clean`
+retain_conversations = "forever"   # a chat's pictures and files, or "90d" (global config only)
 
 # -------------------------------------------------------------------- hooks --
 

@@ -30,9 +30,10 @@
 //!
 //! **Retention is a policy, not an intention.** Anything without one becomes a
 //! pile nobody opens, so [`clean`] keeps the last *N* entries per producer and
-//! says what it removed. One hard rule: it never removes anything a published
-//! bundle names as a source, because "regenerate last week's report" must not
-//! silently lose its input.
+//! says what it removed — except a conversation's workspace, which is aged by
+//! [`Retain`] instead (see [`CONVERSATION_PRODUCERS`]). One hard rule: it
+//! never removes anything a published bundle names as a source, because
+//! "regenerate last week's report" must not silently lose its input.
 
 use anyhow::{Context, Result};
 use std::collections::BTreeSet;
@@ -45,6 +46,68 @@ use std::path::{Path, PathBuf};
 /// disk. A placeholder in the honest sense: it wants a week of real output to
 /// tune, and `[work] keep` in config is where that tuning goes.
 pub const DEFAULT_KEEP: usize = 10;
+
+/// Producers whose top-level entries each belong to a conversation: a web
+/// chat (`web/<key>`), a persona chat (`persona/p-…`), a Slack thread
+/// (`slack/<thread>`). Not `voice`: every call shares `work/voice/` itself,
+/// so an entry there is one file a call left, not a conversation, and `keep`
+/// still counts them.
+///
+/// A picture or clip a conversation made is part of it — the page reading the
+/// chat back fetches it by its path — so these are aged by [`Retain`] rather
+/// than counted by `keep`. Counted, the eleventh most recent persona chat lost
+/// every picture it had drawn to the nightly sweep while it was still open
+/// (2026-10-26).
+pub const CONVERSATION_PRODUCERS: [&str; 3] = ["persona", "slack", "web"];
+
+/// How long a conversation's workspace outlives its newest file —
+/// `[work] retain_conversations`, `forever` unless the owner names a duration
+/// (`90d`). The newest file anywhere under the entry, not the entry's own
+/// mtime, which moves only when something directly inside it is added.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Retain {
+    #[default]
+    Forever,
+    For(std::time::Duration),
+}
+
+impl std::str::FromStr for Retain {
+    type Err = anyhow::Error;
+
+    fn from_str(text: &str) -> Result<Self> {
+        if text.trim().eq_ignore_ascii_case("forever") {
+            return Ok(Retain::Forever);
+        }
+        let age = crate::trigger::parse_duration(text)
+            .with_context(|| format!("`{text}` is neither `forever` nor a duration like `90d`"))?;
+        Ok(Retain::For(age.to_std()?))
+    }
+}
+
+impl std::fmt::Display for Retain {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Retain::Forever => f.write_str("forever"),
+            Retain::For(age) => match chrono::Duration::from_std(*age) {
+                Ok(age) => f.write_str(&crate::trigger::render_duration(age)),
+                Err(_) => write!(f, "{}s", age.as_secs()),
+            },
+        }
+    }
+}
+
+impl serde::Serialize for Retain {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        s.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Retain {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        let text = String::deserialize(d)?;
+        text.parse().map_err(serde::de::Error::custom)
+    }
+}
 
 /// `~/.mecha`, or `$MECHA_HOME`.
 ///
@@ -445,13 +508,20 @@ impl CleanReport {
 }
 
 /// Keep the `keep` most recent entries in each producer's directory and remove
-/// the rest.
+/// the rest — and in a [`CONVERSATION_PRODUCERS`] directory, remove only the
+/// entries `retain` has aged out.
 ///
 /// `only` restricts it to one producer. The producer directories themselves are
 /// never removed: a producer with nothing left in it is an empty directory, not
 /// an absence, and deleting it would make tomorrow's run recreate it.
-pub fn clean(keep: usize, only: Option<&str>, dry_run: bool) -> Result<CleanReport> {
+pub fn clean(
+    keep: usize,
+    retain: Retain,
+    only: Option<&str>,
+    dry_run: bool,
+) -> Result<CleanReport> {
     let protected = protected_sources()?;
+    let now = std::time::SystemTime::now();
     let mut report = CleanReport {
         dry_run,
         ..Default::default()
@@ -460,7 +530,30 @@ pub fn clean(keep: usize, only: Option<&str>, dry_run: bool) -> Result<CleanRepo
         if only.is_some_and(|name| name != producer.name) {
             continue;
         }
-        for entry in producer.entries.into_iter().skip(keep) {
+        let past: Vec<Entry> = if CONVERSATION_PRODUCERS.contains(&producer.name.as_str()) {
+            match retain {
+                Retain::Forever => continue,
+                Retain::For(age) => producer
+                    .entries
+                    .into_iter()
+                    .filter(|e| {
+                        // An age that cannot be read is not an old one: the
+                        // entry stays, and says why.
+                        let Some(written) = last_written(&e.path, e.modified) else {
+                            tracing::warn!(
+                                path = %e.path.display(),
+                                "cannot read every file in a conversation's workspace; keeping it"
+                            );
+                            return false;
+                        };
+                        now.duration_since(written).unwrap_or_default() >= age
+                    })
+                    .collect(),
+            }
+        } else {
+            producer.entries.into_iter().skip(keep).collect()
+        };
+        for entry in past {
             let canonical = entry
                 .path
                 .canonicalize()
@@ -485,7 +578,6 @@ pub fn clean(keep: usize, only: Option<&str>, dry_run: bool) -> Result<CleanRepo
     // too, and is recreated by the next spill. Not a producer, so a sweep
     // narrowed to one producer leaves it alone.
     if only.is_none() {
-        let now = std::time::SystemTime::now();
         let root = mecha_home()?.join(crate::tool::SESSION_SPILL_ROOT);
         if let Ok(read) = std::fs::read_dir(&root) {
             for dir in read.flatten() {
@@ -521,6 +613,35 @@ fn newest_mtime(dir: &Path, own: std::time::SystemTime) -> std::time::SystemTime
     read.flatten()
         .filter_map(|e| e.metadata().ok()?.modified().ok())
         .fold(own, std::cmp::max)
+}
+
+/// The newest modification time anywhere under `path` (`own` for a file).
+/// [`newest_mtime`] looks one level down, which is all a flat spill directory
+/// has; a chat's workspace nests (`pictures/`, an upload's folder), and a
+/// directory's own mtime moves only when an entry directly in it is added or
+/// removed. Symlinks are not followed: what one points at is not this entry's.
+///
+/// `None` when any directory under it cannot be read: a chat directory's own
+/// mtime is stale by construction, so falling back to it would make the entry
+/// whose age is unknown the one most likely to be removed.
+fn last_written(path: &Path, own: std::time::SystemTime) -> Option<std::time::SystemTime> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if !meta.is_dir() {
+        return Some(own);
+    }
+    let mut newest = own;
+    for entry in std::fs::read_dir(path).ok()? {
+        let entry = entry.ok()?;
+        let meta = std::fs::symlink_metadata(entry.path()).ok()?;
+        let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+        let modified = if meta.is_dir() {
+            last_written(&entry.path(), modified)?
+        } else {
+            modified
+        };
+        newest = newest.max(modified);
+    }
+    Some(newest)
 }
 
 /// Files in a workspace spill directory older than `max_age` as of `now`.
@@ -758,14 +879,14 @@ pub(crate) mod tests {
             write_aged(&evening, name, i as i64 * 100);
         }
 
-        let preview = clean(2, None, true).unwrap();
+        let preview = clean(2, Retain::Forever, None, true).unwrap();
         assert_eq!(preview.removed.len(), 4, "two producers, two stale each");
         assert!(
             morning.join("d.md").exists(),
             "a dry run removes nothing at all"
         );
 
-        let report = clean(2, Some("morning"), false).unwrap();
+        let report = clean(2, Retain::Forever, Some("morning"), false).unwrap();
         let removed: Vec<_> = report
             .removed
             .iter()
@@ -791,6 +912,133 @@ pub(crate) mod tests {
             .unwrap();
     }
 
+    /// The bug that made this a policy of its own: the nightly counted a chat's
+    /// workspace like a morning brief and removed the pictures of every chat
+    /// past the tenth. Fails on the old behaviour, which removed all but two.
+    #[test]
+    fn a_conversations_workspace_is_never_counted_out() {
+        let _home = HomeGuard::new();
+        let morning = ensure("morning").unwrap();
+        for (i, name) in ["a.md", "b.md", "c.md", "d.md"].iter().enumerate() {
+            write_aged(&morning, name, i as i64 * 100);
+        }
+        let mut chats = Vec::new();
+        for producer in CONVERSATION_PRODUCERS {
+            let dir = ensure(producer).unwrap();
+            for i in 0..4 {
+                let chat = dir.join(format!("chat-{i}"));
+                std::fs::create_dir_all(&chat).unwrap();
+                write_aged(&chat, "picture.png", 100_000 * (i + 1));
+                chats.push(chat.join("picture.png"));
+            }
+        }
+
+        // Every call shares `voice/` itself, so its entries are files, and
+        // counted like any producer's.
+        let voice = ensure("voice").unwrap();
+        for (i, name) in ["a.txt", "b.txt", "c.txt"].iter().enumerate() {
+            write_aged(&voice, name, i as i64 * 100);
+        }
+
+        let report = clean(2, Retain::Forever, None, false).unwrap();
+        assert_eq!(
+            report.removed.len(),
+            3,
+            "the brief's two oldest, voice's one"
+        );
+        for picture in &chats {
+            assert!(picture.exists(), "{} was removed", picture.display());
+        }
+        assert!(
+            !morning.join("d.md").exists(),
+            "`keep` still counts the rest"
+        );
+        assert!(
+            !voice.join("c.txt").exists(),
+            "`voice` is not a conversation"
+        );
+    }
+
+    /// A duration ages a conversation by the newest file anywhere in it — a
+    /// chat whose own directory is months old but drew a picture today is live.
+    #[test]
+    fn a_retention_ages_a_conversation_by_its_newest_file() {
+        let _home = HomeGuard::new();
+        let persona = ensure("persona").unwrap();
+        let old = persona.join("p-old");
+        let live = persona.join("p-live");
+        for chat in [&old, &live] {
+            std::fs::create_dir_all(chat.join("pictures")).unwrap();
+            std::fs::write(chat.join("upload.pdf"), "pdf").unwrap();
+            std::fs::write(chat.join("pictures/drawn.png"), "png").unwrap();
+            age(&chat.join("upload.pdf"), 200);
+        }
+        age(&old.join("pictures/drawn.png"), 120);
+        // Directories last: writing into one moves its mtime.
+        for dir in [
+            old.join("pictures"),
+            live.join("pictures"),
+            old.clone(),
+            live.clone(),
+        ] {
+            age(&dir, 200);
+        }
+
+        let ninety_days = Retain::For(std::time::Duration::from_secs(90 * 24 * 60 * 60));
+        let report = clean(10, ninety_days, Some("persona"), false).unwrap();
+        assert_eq!(report.removed.len(), 1);
+        assert!(!old.exists(), "four months untouched is past ninety days");
+        assert!(
+            live.join("pictures/drawn.png").exists(),
+            "a picture drawn today keeps its chat"
+        );
+    }
+
+    /// Unknown is never old: a chat with a directory inside it that cannot be
+    /// read would otherwise be aged by its own stale mtime and removed.
+    #[cfg(unix)]
+    #[test]
+    fn a_conversation_whose_age_cannot_be_read_is_kept() {
+        use std::os::unix::fs::PermissionsExt;
+        // Mode 000 does not stop root, so the directory would read fine.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let _home = HomeGuard::new();
+        let chat = ensure("web").unwrap().join("chat-sealed");
+        let sealed = chat.join("pictures");
+        std::fs::create_dir_all(&sealed).unwrap();
+        std::fs::write(sealed.join("drawn.png"), "png").unwrap();
+        age(&sealed, 200);
+        age(&chat, 200);
+        std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let one_day = Retain::For(std::time::Duration::from_secs(86_400));
+        let report = clean(10, one_day, Some("web"), false);
+        std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(report.unwrap().removed.is_empty());
+        assert!(sealed.join("drawn.png").exists());
+    }
+
+    #[test]
+    fn a_retention_is_forever_or_a_duration() {
+        assert_eq!("forever".parse::<Retain>().unwrap(), Retain::Forever);
+        assert_eq!(
+            Retain::default(),
+            Retain::Forever,
+            "nothing ages out unasked"
+        );
+        let ninety: Retain = "90d".parse().unwrap();
+        assert_eq!(
+            ninety,
+            Retain::For(std::time::Duration::from_secs(90 * 86_400))
+        );
+        assert_eq!(ninety.to_string(), "90d");
+        for bad in ["", "never", "0d", "soon", "-3d"] {
+            assert!(bad.parse::<Retain>().is_err(), "`{bad}` parsed");
+        }
+    }
+
     #[test]
     fn session_spills_age_out_by_file() {
         let home = HomeGuard::new();
@@ -800,7 +1048,7 @@ pub(crate) mod tests {
         std::fs::write(spill.join("old.txt"), "old").unwrap();
         std::fs::write(spill.join("new.txt"), "new").unwrap();
         age(&spill.join("old.txt"), 30);
-        let report = clean(10, None, false).unwrap();
+        let report = clean(10, Retain::Forever, None, false).unwrap();
         assert!(
             !spill.join("old.txt").exists(),
             "a month-old spill is removed"
@@ -809,10 +1057,10 @@ pub(crate) mod tests {
         assert_eq!(report.removed.len(), 1);
         // A producer-narrowed sweep leaves spills alone.
         age(&spill.join("new.txt"), 30);
-        clean(10, Some("task-9"), false).unwrap();
+        clean(10, Retain::Forever, Some("task-9"), false).unwrap();
         assert!(spill.join("new.txt").exists());
         // And a directory emptied by the sweep goes too.
-        clean(10, None, false).unwrap();
+        clean(10, Retain::Forever, None, false).unwrap();
         assert!(!spill.exists());
     }
 
@@ -855,7 +1103,7 @@ pub(crate) mod tests {
         )
         .unwrap();
 
-        let report = clean(1, None, false).unwrap();
+        let report = clean(1, Retain::Forever, None, false).unwrap();
         assert!(
             report.removed.is_empty(),
             "nothing was eligible but the source"
