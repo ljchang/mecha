@@ -62,7 +62,9 @@ field at all, and the field names differ by trainer. So:
   75 KB. The length is the file's own claim, so a corrupt or absurd one is
   refused, never allocated.
 - **Family is read from the keys.** A file whose keys match neither family
-  is *unknown*, and unknown is refused, never assumed.
+  is *unknown*, and unknown is refused, never assumed. A file whose keys
+  match both is refused too, as ambiguous. None of the 41 does, but a
+  merged or hand-built file could.
 - **Nothing read from a LoRA file is ever shown or prompted as text.** The
   file is third-party content. Its keys decide one value out of a closed set
   (`qwen-image`, `h3`, unknown) and `__metadata__` is not read at all, so
@@ -128,7 +130,12 @@ strength = 0.8
   failure on one cannot change the `motion` enum or re-pay the cached
   prefix. The reason shown keeps *unreadable* apart from *keys matched
   neither family*, though both refuse: the first can be a file mid-copy, the
-  second never changes. The stat triple is a trigger for a re-read, not a
+  second never changes. So an unreadable file is not dropped from the
+  registry. Its entry stays, marked unreadable and applied nowhere, and the
+  stat triple it was refused under is kept, so the next read whose stat has
+  moved, or one a minute later when the stat could not be taken at all,
+  retries it. A file caught mid-copy recovers once the copy finishes,
+  without waiting for a restart. The stat triple is a trigger for a re-read, not a
   claim about the content: a same-length swap that keeps the mtime would
   keep its old result. That window is accepted, since the owner's own
   files are the only writers, and every process start reads every header
@@ -269,9 +276,13 @@ prompt does not already contain it, with the same rule as
   is a distillation, not the base. Test: the same pair on turbo. If they
   fail, entries do not apply to turbo pictures, and the result says which
   were left out.
-- **M3. How many at once?** Two strong action LoRAs broke a clip that each
-  passed alone (2026-10-24). Test: one, two and three stacked on one scene;
-  the cap is the largest count that held. Pictures have no `always` entries,
+- **M3. How many at once, on Qwen-Image?** Two strong action LoRAs broke a
+  clip that each passed alone (2026-10-24), but that was H3, a different
+  architecture, through a different loader path. The clip cap stays
+  `MAX_PER_CLIP` (4) from that test, and needs nothing new. The picture cap
+  is measured on pictures: one, two and three Qwen-Image LoRAs stacked on one
+  scene, same seed, on the int8 file M1 cleared; the cap is the largest
+  count that held. Pictures have no `always` entries,
   so the cap is the length of the resolved list, and the settings route
   refuses a list longer than it, so the cap never drops an entry at render
   time. (M1 and M2 can, and the result says so.)
