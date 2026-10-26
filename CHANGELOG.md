@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Video clips can use your own LoRAs, places and clothes.** `[video] loras`
+  points at a registry you write (mecha ships and names none): always-on
+  entries ride every clip and the model picks the rest per clip; one with no
+  file for the clip's H3 checkpoint is left out with a note. The image
+  library gains **locations** (a place's text and up to three photos) and
+  **outfits** (clothes, with a picture of the garment alone): a scene names a
+  location as its setting, or an outfit as someone's whole `wearing`, and its
+  picture goes with it. Add and lock both, and their pictures, in the Library
+  tab. `[video] guide_addendum` appends your own notes to the video guide.
+
+- **Clips send a character's full body and labelled details.** After the
+  faces, a full-body picture goes to a cast of one or two when everyone shown
+  has one (none when the clip is seen through someone's eyes), and each
+  labelled detail, such as a tattoo, goes while H3's nine slots last. A
+  tattoo that words alone put on both forearms stayed on one with its
+  picture. What does not fit is counted in the result.
+
+- **Scenes are mended where a model's prose says more than its fields.** A
+  line quoted inside an action becomes a spoken line; "Luke's POV" makes Luke
+  the camera, whose face never appears; names inside quoted speech stay as
+  written; and lines go to the shot whose action says someone speaks.
+
 - **`mecha imagelib upscale`: redraw a small portrait larger.** The image
   model draws the same photograph again at about a megapixel, saved as a new
   version with the old one kept. With ArcFace installed the redraw is kept
