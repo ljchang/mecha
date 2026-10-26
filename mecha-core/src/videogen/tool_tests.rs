@@ -1317,6 +1317,44 @@ async fn bodies_go_all_or_nothing_and_details_ride_along() {
         prompt.contains("rose tattoo, right ankle is shown close up in <Picture 3>"),
         "{prompt}"
     );
+    // Said, not named (review of #744).
+    assert!(
+        done.content
+            .contains("everyone shown needs one for any to go"),
+        "{}",
+        done.content
+    );
+
+    // A detail whose picture no longer reads is left out and counted; the
+    // clip is still made (review of #744).
+    let detail_blob = crate::imagelib::Library::load(&lib)
+        .0
+        .get(crate::imagelib::Kind::Character, "maya")
+        .unwrap()
+        .references
+        .iter()
+        .find(|r| r.kind == crate::imagelib::RefKind::Detail)
+        .unwrap()
+        .blob
+        .clone();
+    std::fs::write(lib.join("blobs").join(&detail_blob), b"not the picture").unwrap();
+    let (url, log) = fake(Fake::default(), &cfg).await;
+    let t = tool(&url, &home, Arc::new(Stub::default()));
+    let done = run(&t, call("Maya waves from the gate."), &ctx(&chat)).await;
+    assert!(!done.is_error, "{}", done.content);
+    assert!(
+        done.content.contains("1 library picture could not be read"),
+        "{}",
+        done.content
+    );
+    let seen = log.lock().unwrap().clone();
+    assert_eq!(
+        seen.iter()
+            .filter(|l| l.starts_with("POST /upload"))
+            .count(),
+        2,
+        "face and body"
+    );
     std::fs::remove_dir_all(&home).ok();
 }
 
