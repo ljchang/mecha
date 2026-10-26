@@ -27,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   picture. What does not fit is counted in the result.
 
 - **Scenes are mended where a model's prose says more than its fields.** A
-  line quoted inside an action becomes a spoken line; "Luke's POV" makes Luke
+  line quoted inside an action becomes a spoken line; "Wren's POV" makes Wren
   the camera, whose face never appears; names inside quoted speech stay as
   written; and lines go to the shot whose action says someone speaks.
 
