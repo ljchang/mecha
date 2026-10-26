@@ -657,7 +657,10 @@ kind is derived from its directory (`Entry.kind`).
      describe; V-D measured it and passed for video, then for pictures
      (owner, 2026-10-26). **Built** (`VideoGenerate::extras_for`, and
      `imagelib::compile_with` for pictures, 2026-10-26). A picture planned in
-     layers sends none, being drawn from portraits, and says how many.
+     layers sends none, being drawn from portraits, and says how many. A
+     close-up with no label (only a hand edit makes one) is not sent to a
+     picture, since a pointer with nothing to bind it by is worse than none;
+     video binds it as "mark" (`extras_for`).
   - **Video sends bodies, unbound, to a cast of one or two** (V-B's retest;
     owner, 2026-10-14; the table above), as pictures do: the retest
     measured two people, so three with a body each needs its own
