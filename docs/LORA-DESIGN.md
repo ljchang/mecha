@@ -1,7 +1,7 @@
 # LoRAs for pictures and clips — one registry, one picker
 
-Status: **design, not built** (2026-10-26). §8 holds the decisions: L2,
-L3, L5 and L6 ruled the same day, L1 owed, L4 decided by M2.
+Status: **design, not built** (2026-10-26). §8 holds the decisions: L1,
+L2, L3, L5 and L6 ruled the same day; L4 is decided by M2.
 
 mecha ships no LoRA and names none (the owner's ruling, 2026-10-23). This
 document is the mechanism only. Every name, file and trigger word in it is
@@ -160,7 +160,10 @@ layer, and each persona's `state.toml` overrides it field by field
   `mecha serve` one instance serves every chat and persona. A run's tools are
   already chosen from that pool by name (a persona's `[tools] allow`). Step 2
   adds, at that point, a `video_generate` narrowed to the run's list, kept
-  per distinct list so the same list always gives the same bytes. A change
+  per distinct rendered `motion` property, never per list of names:
+  `Registry::schema` renders each entry's `about` and its modes into the
+  enum's description, so an edit that leaves the list alone must still reach
+  the next turn. The same rendering always gives the same bytes. A change
   in settings applies from the next turn and re-pays the cached prefix once.
   Nothing changes per turn, and the enum is sorted.
 - **Settings are written only by the owner's settings route**, as
@@ -168,7 +171,10 @@ layer, and each persona's `state.toml` overrides it field by field
   registry entry. An `about` line is owner-written prompt text, so it is
   trusted the way a persona's own text is.
 - **What a result says.** A picture result gives the number of LoRAs from
-  settings, not their names, because the model has no say in them. A clip
+  settings, not their names, because the model has no say in them. When
+  settings added trigger words to the prompt, the result says that too,
+  without the words, so a picture that differs from what the model wrote
+  has a recorded reason. A clip
   result keeps naming what the model picked, as it does today, so it can say
   what it chose.
 
@@ -207,15 +213,22 @@ prompt does not already contain it, with the same rule as
 
 - **Settings → LoRAs**, shown when the image or video feature is on.
   `PANE_FEATURE` maps a pane to exactly one feature, and `featureOf` returns
-  one id, so step 4 extends the entry to a list, shown when any of its
-  features is on, and this pane is its first caller (ARCHITECTURE §Features,
-  *Adding a feature*). Each section shows only when its own feature is on:
+  one id, so step 4 extends the entry to a list, and this pane is its first
+  caller (ARCHITECTURE §Features, *Adding a feature*). The two readers of
+  the map get opposite rules: `isShown` shows the pane when **any** listed
+  feature is on, and `bounceFor`/`opens` send a deep link home only when
+  **all** of them refuse. Otherwise an owner with video on and image off
+  sees the tab and is bounced from it, the #654 shape. The routes below
+  follow the same rule: `/api/loras` answers when either feature is on, and
+  each entry's write is refused when its own family's feature is off. Each section shows only when its own feature is on:
   picture entries with `image`, clip entries with `video`.
   - One row per registry entry: name, family, the mode files for H3, about,
     strength, trigger, `always` (clips), the character an entry is tied to
     (L6), and checked or refused with the reason.
-  - **Add** lists the files no entry uses yet, from both `loras_dir`s,
-    labelled by server. The family is read from the file and shown. The owner fills
+  - **Add** lists the files no entry uses yet, labelled by server. The list
+    comes from each server's `/object_info` (`lora_name`'s options), as
+    `comfyui_unit` already asks a server what it has, so listing needs no
+    path. `loras_dir` is for §2's key check only. The family is read from the file and shown. The owner fills
     in name, about, strength and trigger, and for H3 says which mode the
     file is for. A second H3 file is attached to an existing entry the same
     way.
@@ -273,11 +286,13 @@ checked by hand for names from the owner's registry.
 
 ## 8. Decisions owed
 
-- **L1. What a new chat or persona starts with.** The 10-23 ruling said
-  empty. v1 gives every chat every entry.
-  *Recommendation:* migrate the chat layer to today's set, so nothing the
-  owner uses changes. Personas inherit. An entry added later starts off
-  everywhere until it is turned on.
+- **L1. What a new chat or persona starts with. Ruled 2026-10-26:**
+  pictures start empty. Clips keep today's set: the chat layer is migrated
+  to every entry v1 offers, so nothing the owner uses changes, and personas
+  inherit. An entry added later starts off everywhere until it is turned on.
+  An `always` clip entry is on no layer's list, so it rides every clip
+  whatever a list says, and no layer can turn it off, even one set to an
+  empty list. A LoRA meant per chat is an ordinary entry on the lists.
 - **L2. Where the registry lives. Ruled 2026-10-26: a fixed
   `~/.mecha/loras.toml`**, like triggers and skills, not a config path.
   The reason is consistency with the other owner-written stores, and one
