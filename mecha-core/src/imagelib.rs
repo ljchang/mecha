@@ -2160,10 +2160,6 @@ pub fn compile_with(
             .into_iter()
             .filter(|r| r.kind == RefKind::Detail)
         {
-            if !bodies {
-                no_room += 1;
-                continue;
-            }
             // The store refuses a detail without a label; a hand-edited one
             // has nothing to bind it by, so it is not sent.
             let Some(label) = r
@@ -2175,6 +2171,10 @@ pub fn compile_with(
                 unlabelled += 1;
                 continue;
             };
+            if !bodies {
+                no_room += 1;
+                continue;
+            }
             if room == 0 {
                 no_room += 1;
                 continue;
@@ -2440,7 +2440,7 @@ pub fn compile_with(
         )),
         (n, _) => prompt.push_str(&format!(
             " From left to right: {}.{bound_words} Also in the scene, not from any image: \
-             {others}. Exactly {} people in the image: the {} from the images, each exactly \
+             {others}. Exactly {} people in the image: the {} from {from_identity}, each exactly \
              once, and {new_people} not from any image. {all_identity}{close_words}",
             people.join("; "),
             number(n + m),
@@ -4327,6 +4327,35 @@ mod tests {
             "{}",
             c.prompt
         );
+    }
+
+    /// Two people and an extra: the head count binds the cast to their
+    /// numbered portraits too, so the mark is no one (review of #748, pass 3).
+    #[test]
+    fn a_close_up_beside_two_people_and_an_extra_binds_by_number() {
+        let dir = scratch();
+        create(dir.path(), character("maya", Origin::Owner)).unwrap();
+        with_detail(dir.path(), "maya", [7, 11, 1], "tattoo");
+        create(dir.path(), character("jo", Origin::Owner)).unwrap();
+        let lib = Library::load(dir.path()).0;
+        let extras = ["a waiter in a white apron".to_string()];
+        let c = compile(
+            &lib,
+            "a cafe",
+            &[member("maya"), member("jo")],
+            &extras,
+            None,
+        )
+        .unwrap();
+        assert!(
+            c.prompt.contains(
+                "Exactly three people in the image: the two from <image1> and <image2>, each \
+                 exactly once, and one new person not from any image."
+            ),
+            "{}",
+            c.prompt
+        );
+        assert!(!c.prompt.contains("from the images"), "{}", c.prompt);
     }
 
     /// A hand-edited close-up with no label has nothing to bind it by: not
