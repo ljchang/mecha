@@ -189,6 +189,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Pictures and clips no longer disappear from older chats.** The nightly
+  `mecha work clean` counted a chat's workspace like a morning brief and kept
+  only the ten newest per surface, so every picture drawn in an older persona
+  or web chat was deleted while the chat itself stayed. Conversation
+  workspaces (web, persona, Slack, voice) are no longer counted: they are kept
+  until `[work] retain_conversations` says otherwise, `forever` by default, or
+  a duration like `90d` measured from the newest file in the chat. Deleting a
+  chat still removes its files. Pictures already removed are not recovered.
+
 - **A new picture of two or more library characters no longer draws one of
   them twice.** It now sends their portraits only, even when they have a
   full body attached, and a picture whose scene lists only library
