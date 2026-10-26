@@ -638,10 +638,7 @@ impl VideoGenerate {
         // (`IMAGE-COMPILER-DESIGN.md` §9.4): bodies, then details. Frames
         // mode takes no references.
         let (extras, extra_pictures) = match mode {
-            graph::Mode::References => {
-                let pinned = usize::from(first.is_some()) + usize::from(last.is_some());
-                self.extras_for(&references, pinned, &library, &pov, &mut notes)
-            }
+            graph::Mode::References => self.extras_for(&references, &library, &pov, &mut notes),
             graph::Mode::Frames => (Vec::new(), Vec::new()),
         };
         let prompt = match mode {
@@ -805,7 +802,6 @@ impl VideoGenerate {
     fn extras_for(
         &self,
         refs: &[Picture],
-        pinned: usize,
         library: &crate::imagelib::Library,
         pov: &[String],
         notes: &mut Vec<String>,
@@ -852,9 +848,11 @@ impl VideoGenerate {
             .collect();
         let mut extras = Vec::new();
         let mut pictures: Vec<Picture> = Vec::new();
-        // Pinned frames take slots too (§9.4: nine "less any pinned or other
-        // reference images"; review of #744).
-        let mut slots = graph::MAX_REFERENCES.saturating_sub(refs.len() + pinned);
+        // Pinned frames are not among the nine: they go through
+        // `MiniMaxH3AddGuide`, beside the reference slots (`graph::build`),
+        // as the budget check in `plan` already counts them (review of #744,
+        // pass 6, correcting pass 1's reading of §9.4).
+        let mut slots = graph::MAX_REFERENCES.saturating_sub(refs.len());
         let bodies: Vec<(usize, &crate::imagelib::Entry, &crate::imagelib::Reference)> = seen
             .iter()
             .filter_map(|(i, e)| {
