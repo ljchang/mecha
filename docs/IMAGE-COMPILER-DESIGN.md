@@ -585,7 +585,7 @@ kind is derived from its directory (`Entry.kind`).
 |---|---|---|
 | face | the whole portrait at 512² for a new picture (E10), its crop for an edit, as now | the face crop, as now; from an attached `face` reference when there is one, else from the portrait |
 | full_body | **sent** to a new picture of one person, bound to the portrait (E9b; owner, 2026-10-13); faces only for two or more (E14; owner, 2026-10-19), and on edits | **sent** beside the face crop to a cast of **one or two** when everyone has one, **unbound** (both pictures named as one subject, with no face-from/build-from split): "the person in `<Picture 1>` and `<Picture 2>`", not the face-from/build-from wording, the likely cause of V-B's extra person (V-B's retest passed for a cast of two; owner, 2026-10-14) |
-| detail | not sent; its `label` is appended to the description | **sent** with its label, "`<Subject n>`'s <label> is shown close up in `<Picture k>`", kept "exactly where it is, and nowhere else" (V-D passed; owner, 2026-10-26) |
+| detail | **sent** with its label after every face and body, while five images last (`MAX_PICTURE_IMAGES`): "<Name>'s <label> is shown close up in `<imageK>`" inside the description, the identity images then named by number, and "`<imageK>` shows only <Name>'s <label>, not a person: it is kept exactly where it is, and nowhere else" (V-D for pictures passed; owner, 2026-10-26) | **sent** with its label, "`<Subject n>`'s <label> is shown close up in `<Picture k>`", kept "exactly where it is, and nowhere else" (V-D passed; owner, 2026-10-26) |
 | location | its text in the scene | its images as an environment `<Subject>`, if V-L passes |
 | outfit | its text as `wearing` | its text as `wearing` |
 
@@ -605,6 +605,11 @@ kind is derived from its directory (`Entry.kind`).
   costs no image slot: the description and labels carry the facts in words.
 - **Labels have their own budget per person,** at most 300 characters of
   detail labels appended to one description (review of #680, pass 2).
+  *Never built for pictures, and superseded there on 2026-10-26:* a label
+  now rides only beside its own close-up, so the five-image cap bounds it
+  (at most four, of `MAX_LABEL` each), and past `MAX_COMPILED_PROMPT` the
+  close-ups go with the bodies, said in counts. The counting rules below
+  still hold.
   - Labels past it are dropped, in the character's own order, and the result
     says how many, **never which** (review of #680, pass 20). A label
     describes a person, and `image_generate` declares
@@ -647,11 +652,15 @@ kind is derived from its directory (`Entry.kind`).
   1. every person's face: the portrait for pictures (E10), the face crop for
      video;
   2. each person's `full_body`, in cast order;
-  3. details, in cast order, then in each character's own order, for video
-     only: pictures never send a detail image (the table above), only its
-     label. That's greedy, so it's the mixed shape the next bullets
-     describe; V-D measured it and passed (owner, 2026-10-26).
-     **Built** (`VideoGenerate::extras_for`, 2026-10-26).
+  3. details, in cast order, then in each character's own order, in both
+     generators. That's greedy, so it's the mixed shape the next bullets
+     describe; V-D measured it and passed for video, then for pictures
+     (owner, 2026-10-26). **Built** (`VideoGenerate::extras_for`, and
+     `imagelib::compile_with` for pictures, 2026-10-26). A picture planned in
+     layers sends none, being drawn from portraits, and says how many. A
+     close-up with no label (only a hand edit makes one) is not sent to a
+     picture, since a pointer with nothing to bind it by is worse than none;
+     video binds it as "mark" (`extras_for`).
   - **Video sends bodies, unbound, to a cast of one or two** (V-B's retest;
     owner, 2026-10-14; the table above), as pictures do: the retest
     measured two people, so three with a body each needs its own
@@ -898,6 +907,7 @@ only says what each one gates:
 | **E14** | `full_body` for pictures of one person only, and the closed foreground count without extras (§9.4; passed 2026-10-18 for the strict wording, 2/21 drawn twice; the foreground one measured 2026-10-19, 3/21, crowds unmeasured) |
 | **V-B's retest** | `full_body` for video: **passed** 2026-10-14, unbound (V-B itself failed, 2026-10-13) |
 | **V-D** | `detail` images for video: **passed**, owner 2026-10-26 (one same-seed pair, a cast of one person with a detail beside one without: the tattoo on both forearms without the picture, on the left forearm only with it; no one drawn twice) |
+| **V-D, pictures** | `detail` images for pictures: **passed**, owner 2026-10-26. Two recorded pictures, a cast of two with a close-up for one, each re-rendered at its own seed: a ribcage tattoo given in words alone came out as a different design on both sides, 2/2; with the close-up it was the right design on the right side only, 2/2, first with hand-written wording and then with the compiler's own (`compile_with`'s prompt checked byte for byte against the recorded one with close-ups off). No one drawn twice |
 | **E13** | a location reference for pictures |
 | **V-L** | a location reference for video |
 
