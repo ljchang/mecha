@@ -2000,7 +2000,7 @@ fn input_schema(loras: &super::loras::Registry, locations: &[String], outfits: &
                         "wearing": {"type": "string", "description": "What they have on in this clip. Never leave it out: nothing of a portrait's outfit is kept."},
                         "doing": {"type": "string", "description": "Their activity when the clip starts."},
                         "notes": {"type": "string", "description": "Anything further about them for this clip."},
-                        "pov": {"type": "boolean", "description": "Set true whenever the clip is first person — seen through this person's eyes, as in \"from Luke's point of view\" or \"POV\". Their face then never appears, only their hands and body, and their voice is kept only if they have lines. Left unset, their face is described and may be drawn."}
+                        "pov": {"type": "boolean", "description": "Set true whenever the clip is first person — seen through this person's eyes, as in \"from Wren's point of view\" or \"POV\". Their face then never appears, only their hands and body, and their voice is kept only if they have lines. Left unset, their face is described and may be drawn."}
                     }, "required": ["name"]}},
                     "shots": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {
                         "at": {"type": "number", "description": "Second at which this shot begins; not for the first. Omitted, shots share the length evenly."},

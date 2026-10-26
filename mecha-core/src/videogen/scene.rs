@@ -95,7 +95,7 @@ const NOT_PROGRESSIVE: [&str; 10] = [
     "everything",
 ];
 
-/// A `doing` that opens on an -ing word takes `is`: "Luke wears nothing and
+/// A `doing` that opens on an -ing word takes `is`: "Wren wears nothing and
 /// lying on his back" was the compiled sentence (2026-10-25); "kneels beside
 /// an upturned bike" reads as written.
 fn as_predicate(doing: &str) -> String {
@@ -248,8 +248,8 @@ fn quotes(text: &str) -> Vec<(usize, usize, String)> {
 /// fields, each mend said in a note (2026-10-25: the local model's first
 /// scene through the built-in tool did both):
 ///
-/// - **The camera person.** A shot that says "Luke's POV" (or point of
-///   view) makes Luke `pov`, unless the scene set `pov` for him either way,
+/// - **The camera person.** A shot that says "Wren's POV" (or point of
+///   view) makes Wren `pov`, unless the scene set `pov` for him either way,
 ///   and only when one person is so named. Unset, his face was described and kept as someone
 ///   who appears.
 /// - **Speech written inside an action.** With no `lines` at all, a quote of
