@@ -330,7 +330,12 @@ fn picture_layer_findings(home: &Path, loaded: &crate::loras::Loaded) -> Vec<Fin
         crate::sampling::chat_loras(&crate::sampling::chat_path(home)),
     )];
     for p in crate::persona::Store::load(&home.join("personas")).all() {
-        layers.push((format!("persona `{}`", p.name), p.state.image.loras.clone()));
+        // Read as the turn reads it, so a state.toml that does not parse is
+        // damaged here too, not the store's default (review of #751).
+        layers.push((
+            format!("persona `{}`", p.name),
+            crate::persona::loras(&home.join("personas"), &p.name),
+        ));
     }
     let mut out = Vec::new();
     for (whose, layer) in layers {
@@ -3407,6 +3412,28 @@ mod tests {
             s.contains(
                 &"the picture LoRA list of the chat's picture settings does not read".to_string()
             ),
+            "{s:?}"
+        );
+        // A persona whose state.toml does not parse is damaged here as it is
+        // at render, not the store's default (review of #751).
+        crate::persona::create(
+            &home.join("personas"),
+            &crate::imagelib::Library::default(),
+            crate::persona::NewPersona {
+                name: "mara".into(),
+                display: "Mara".into(),
+                origin: crate::persona::Origin::Owner,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        std::fs::write(home.join("personas/mara/state.toml"), "status = [\n").unwrap();
+        let s: Vec<String> = check_loras(&home, Some(&image), None)
+            .into_iter()
+            .map(|f| f.summary)
+            .collect();
+        assert!(
+            s.contains(&"the picture LoRA list of persona `mara` does not read".to_string()),
             "{s:?}"
         );
         // No image server configured: pictures expect nothing.

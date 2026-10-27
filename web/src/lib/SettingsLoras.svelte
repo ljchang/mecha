@@ -132,6 +132,7 @@
   async function save(createNew = false) {
     busy = true;
     formError = null;
+    removed = null;
     try {
       const editing = form.editing;
       const res = await fetch(editing ? entryUrl(form.route, editing) : `/api/loras/${form.route}`, {

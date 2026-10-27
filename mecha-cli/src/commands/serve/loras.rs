@@ -491,8 +491,28 @@ async fn layer_put(state: St, body: LayerBody, which: Which) -> Response {
             if let Some(why) = &loaded.unreadable {
                 return Err((StatusCode::CONFLICT, format!("the registry {why}")));
             }
+            // A list stored past the cap (hand-written, or before a lower
+            // cap) may be shortened a name at a time without being refused
+            // at every step: a write that only drops names from the stored
+            // list passes the cap (review of #751).
+            let stored = match &which {
+                Which::Chat => {
+                    mecha_core::sampling::chat_loras(&mecha_core::sampling::chat_path(&here.home))
+                }
+                Which::Persona(name) => persona_dir(&here.home, name)
+                    .map(|dir| mecha_core::persona::loras(&dir, name))
+                    .unwrap_or_default(),
+            };
+            let shrinking = matches!(&stored, loras::Layer::Set(old)
+                if body.names.len() < old.len()
+                    && body.names.iter().all(|n| old.contains(n)));
+            let cap = if shrinking {
+                body.names.len().max(loras::MAX_PER_PICTURE)
+            } else {
+                loras::MAX_PER_PICTURE
+            };
             loras::Layer::Set(
-                loras::check_layer(&body.names, &loaded)
+                loras::check_layer_within(&body.names, &loaded, cap)
                     .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))?,
             )
         };
@@ -867,6 +887,40 @@ mod tests {
         assert_eq!(v["names"], json!(["paint"]));
         assert_eq!(v["choices"][0]["name"], "paint");
         assert_eq!(v["choices"].as_array().unwrap().len(), 1, "pictures only");
+        // A list stored past the cap shrinks a name at a time; it never
+        // grows, and a new long list is still refused (review of #751).
+        std::fs::write(
+            mecha_core::sampling::chat_path(&home),
+            "loras = [\"paint\", \"paint2\", \"paint3\", \"paint4\", \"paint5\"]\n",
+        )
+        .unwrap();
+        let mut long = String::new();
+        for n in 2..=5 {
+            long.push_str(&format!(
+                "\n[[lora]]\nname = \"paint{n}\"\nabout = \"x\"\nmodel = \"qwen-image\"\nfile = \"p{n}.safetensors\"\n"
+            ));
+        }
+        let registry = std::fs::read_to_string(home.join(loras::FILE)).unwrap();
+        std::fs::write(home.join(loras::FILE), format!("{registry}{long}")).unwrap();
+        let (code, text) = put(
+            "chat",
+            false,
+            &["paint", "paint2", "paint3", "paint4"],
+            token.clone(),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK, "{text}");
+        let (code, _) = put(
+            "chat",
+            false,
+            &["paint", "paint2", "paint3", "paint5"],
+            token.clone(),
+        )
+        .await;
+        assert_eq!(code, StatusCode::BAD_REQUEST, "a swap is not a shrink");
+        let (code, text) = put("chat", false, &["paint"], token.clone()).await;
+        assert_eq!(code, StatusCode::OK, "{text}");
+        std::fs::write(home.join(loras::FILE), registry).unwrap();
         // A persona starts inheriting, may choose none, and inherits again.
         let (_, text) = get("mara", token.clone()).await;
         let v: Value = serde_json::from_str(&text).unwrap();
