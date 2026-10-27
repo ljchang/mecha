@@ -696,9 +696,31 @@ pub(crate) fn target_of(name: &str, input: &serde_json::Value) -> String {
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or(0),
         ),
-        // `serde_json::Map` is a BTreeMap, so this string is canonical even if
-        // the model orders the arguments differently between calls.
-        None => format!("{name}\u{0}{input}"),
+        // Keys sorted here, so the target is the same call however the model
+        // ordered its arguments: `Map` keeps the order it was written in.
+        None => format!("{name}\u{0}{}", canonical(input)),
+    }
+}
+
+/// A JSON value with every object's keys sorted, at every depth: one
+/// rendering for one call whatever order its arguments arrived in. `Map`
+/// keeps insertion order (`preserve_order`, so a tool schema reaches the
+/// model server as written), so a key built from a rendered call sorts here
+/// rather than relying on the map (review of #755).
+pub(crate) fn canonical(v: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match v {
+        Value::Object(m) => {
+            let sorted: std::collections::BTreeMap<&String, &Value> = m.iter().collect();
+            Value::Object(
+                sorted
+                    .into_iter()
+                    .map(|(k, v)| (k.clone(), canonical(v)))
+                    .collect(),
+            )
+        }
+        Value::Array(a) => Value::Array(a.iter().map(canonical).collect()),
+        other => other.clone(),
     }
 }
 
@@ -757,6 +779,26 @@ pub fn orphaned_tool_results(messages: &[Message]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// One call is one target however the model ordered its arguments, at
+    /// any depth: `Map` keeps the order written, so the sort is
+    /// `target_of`'s job (review of #755).
+    #[test]
+    fn a_target_is_the_same_whatever_order_the_arguments_came_in() {
+        let a: serde_json::Value =
+            serde_json::from_str(r#"{"query":"x","limit":5,"opts":{"b":1,"a":2}}"#).unwrap();
+        let b: serde_json::Value =
+            serde_json::from_str(r#"{"opts":{"a":2,"b":1},"limit":5,"query":"x"}"#).unwrap();
+        assert_ne!(
+            a.to_string(),
+            b.to_string(),
+            "the rendering keeps the order"
+        );
+        assert_eq!(
+            super::target_of("search", &a),
+            super::target_of("search", &b)
+        );
+    }
 
     /// A peer's message is an event; it is not the owner speaking.
     ///

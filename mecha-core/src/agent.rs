@@ -2028,11 +2028,13 @@ impl LoopGuard {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         name.hash(&mut hasher);
-        // `serde_json::Map` is a BTreeMap, so this string is canonical
+        // Keys sorted first (`compact::canonical`), so the digest is the same
         // whatever order the model wrote the arguments in. A 64-bit hash, not
         // a cryptographic one: nothing adversarial is being resisted, and a
         // collision needs two different calls in a window of three.
-        input.to_string().hash(&mut hasher);
+        crate::compact::canonical(input)
+            .to_string()
+            .hash(&mut hasher);
         result.hash(&mut hasher);
         hasher.finish()
     }
@@ -6509,6 +6511,23 @@ mod tests {
     use async_trait::async_trait;
     use serde_json::json;
     use std::sync::Mutex;
+
+    /// The stuck-loop digest is one call however the model ordered its
+    /// arguments (review of #755): a repeat written in a new order still
+    /// counts toward `REFUSED_REPEATS`.
+    #[test]
+    fn a_repeat_in_another_key_order_has_the_same_digest() {
+        let a: Value = serde_json::from_str(r#"{"query":"x","limit":5}"#).unwrap();
+        let b: Value = serde_json::from_str(r#"{"limit":5,"query":"x"}"#).unwrap();
+        assert_eq!(
+            LoopGuard::digest("search", &a, "refused"),
+            LoopGuard::digest("search", &b, "refused")
+        );
+        assert_ne!(
+            LoopGuard::digest("search", &a, "refused"),
+            LoopGuard::digest("search", &json!({"query": "y", "limit": 5}), "refused")
+        );
+    }
 
     /// Replays a fixed script of turns and records what it was asked.
     struct ScriptedProvider {

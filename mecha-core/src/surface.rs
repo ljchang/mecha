@@ -133,8 +133,9 @@ pub fn fingerprint(specs: &[ToolSpec]) -> String {
         rendered.push('\0');
         rendered.push_str(&spec.description);
         rendered.push('\0');
-        // `serde_json::Map` is a `BTreeMap`, so this rendering is canonical
-        // whatever order a schema was built in.
+        // A schema renders in the order it was written (`preserve_order`),
+        // which is the order the model was sent: the same build renders the
+        // same bytes, and a schema reordered in code is a new surface.
         rendered.push_str(&spec.input_schema.to_string());
         rendered.push('\0');
     }
@@ -218,6 +219,32 @@ mod tests {
             description: description.into(),
             input_schema: json!({"type": "object"}),
         }
+    }
+
+    /// Two registries built in one process render the same bytes. Each
+    /// `HashMap` draws its own iteration order, so a map that reached a
+    /// schema `Value` through one would fail here, rather than re-pay the
+    /// cached prefix on alternate runs (review of #755).
+    #[test]
+    fn a_built_surface_renders_the_same_bytes_every_time() {
+        let build = || {
+            crate::tool::Registry::new()
+                .with_builtins(
+                    &crate::config::ToolsConfig::default(),
+                    std::sync::Arc::new(crate::sandbox::Sandbox::new(Default::default())),
+                )
+                .specs()
+        };
+        let render = |specs: Vec<ToolSpec>| {
+            specs
+                .iter()
+                .map(|s| format!("{}\0{}\0{}", s.name, s.description, s.input_schema))
+                .collect::<Vec<_>>()
+        };
+        let (a, b) = (build(), build());
+        assert!(!a.is_empty());
+        assert_eq!(render(a.clone()), render(b));
+        assert_eq!(fingerprint(&a), fingerprint(&build()));
     }
 
     fn scratch() -> SurfaceStore {
