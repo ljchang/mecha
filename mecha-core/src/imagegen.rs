@@ -12655,6 +12655,11 @@ mod tests {
             !prompt.contains("green coat"),
             "the last clothes rode along: {prompt}"
         );
+        // No code path has carried a setting into a new picture (`plan` takes
+        // `base`, and the reader merges only acts and clothes): a place came
+        // back only when the model restated it from the note, which the note
+        // test and the description checks below guard. Kept against a new
+        // channel.
         assert!(
             !prompt.contains("reading room"),
             "the last place rode along: {prompt}"
@@ -12679,6 +12684,13 @@ mod tests {
             "building on it lost the clothes: {prompt}"
         );
         assert_eq!(records.lock().unwrap().last(), Some(&true));
+        // What the model is told, where it decides: a new picture keeps
+        // nothing, and `picture` is for when the owner asks to build on one.
+        assert!(DESCRIPTION.contains("a new picture keeps nothing from earlier ones"));
+        assert!(DESCRIPTION
+            .contains("Only when the user asks to continue, build on, edit or change a picture"));
+        assert!(PICTURE_DESC
+            .contains("only when the user asks to continue, build on, edit or change it"));
     }
 
     /// A persona's bare call is drawn with what the reader found it left
