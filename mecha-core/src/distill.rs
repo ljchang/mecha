@@ -2295,12 +2295,13 @@ mod tests {
             ),
             &board(),
         );
-        let keys: Vec<&str> = meta
+        let mut keys: Vec<&str> = meta
             .as_object()
             .unwrap()
             .keys()
             .map(String::as_str)
             .collect();
+        keys.sort_unstable();
         assert_eq!(
             keys,
             vec![
