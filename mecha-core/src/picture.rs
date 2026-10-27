@@ -630,26 +630,69 @@ fn resolve(
     if let Some(named) = resolve_name(who, approved, me) {
         return named;
     }
+    if let Some((head, said_more)) = leading_name(who) {
+        // Only a resolved name, never the no-character refusal: with words
+        // after the name there is something to draw from, and an over-filled
+        // `who` is absorbed, not refused (review of #756).
+        if let Some(Ok(named)) = resolve_name(head, approved, me) {
+            if said_more {
+                notes.push(format!(
+                    "`who` \"{}\" was read as {}: the library says how they look, so the \
+                     words after the name were left out. Put an act in `doing` and clothes in \
+                     `wearing`.",
+                    who.trim(),
+                    head.trim()
+                ));
+            }
+            return Ok(named);
+        }
+    }
+    Ok(Who::Described(who.trim().to_string()))
+}
+
+/// The words before the first separator (`,` `(` `:` `—` `–` `;` ` - `) of a
+/// `who` that has one, and whether anything worth saying follows ("Maya,"
+/// leaves nothing out). `None` when there is no separator.
+fn leading_name(who: &str) -> Option<(&str, bool)> {
     let head = who
         .split([',', '(', ':', '—', '–', ';'])
         .next()
         .and_then(|h| h.split(" - ").next())
         .unwrap_or_default();
-    if head.trim().len() < who.trim().len() {
-        // Only a resolved name, never the no-character refusal: with words
-        // after the name there is something to draw from, and an over-filled
-        // `who` is absorbed, not refused (review of #756).
-        if let Some(Ok(named)) = resolve_name(head, approved, me) {
-            notes.push(format!(
-                "`who` \"{}\" was read as {}: the library says how they look, so the words \
-                 after the name were left out. Put an act in `doing` and clothes in `wearing`.",
-                who.trim(),
-                head.trim()
-            ));
-            return Ok(named);
+    if head.trim().is_empty() || head.trim().len() >= who.trim().len() {
+        return None;
+    }
+    let said_more = who[head.len()..].chars().any(char::is_alphanumeric);
+    Some((head, said_more))
+}
+
+/// A record written before a name leading a description was read as that
+/// character (#756) holds it as `Described("maya, a potter …")`. Where this
+/// change names `Library("maya")` and the record holds no Maya by name, that
+/// described person is Maya: rewritten here, so an edit does not add her a
+/// second time beside herself, nor a `remove` say she is not there.
+fn migrated(base: &Scene, change: &SceneChange, approved: &dyn Fn(&str) -> bool) -> Option<Scene> {
+    let named: Vec<String> = change
+        .people
+        .iter()
+        .filter(|c| matches!(c.who, Who::Library(_)))
+        .map(|c| c.who.key())
+        .filter(|k| !base.people.iter().any(|p| p.who.key() == *k))
+        .collect();
+    let mut out = base.clone();
+    let mut moved = false;
+    for p in &mut out.people {
+        let Who::Described(d) = &p.who else { continue };
+        let Some((head, _)) = leading_name(d) else {
+            continue;
+        };
+        let key = head.trim().to_lowercase();
+        if named.contains(&key) && approved(&key) {
+            p.who = Who::Library(key);
+            moved = true;
         }
     }
-    Ok(Who::Described(who.trim().to_string()))
+    moved.then_some(out)
 }
 
 /// A `who` that is wholly a name: "self", one of the persona's names, or an
@@ -867,6 +910,8 @@ pub fn plan(
     worn: &dyn Fn(&str) -> Option<(String, crate::scene::Origin)>,
 ) -> Result<Plan, String> {
     let mut change = call.change.clone();
+    let carried = base.and_then(|b| migrated(b, &change, approved));
+    let base = carried.as_ref().or(base);
     let mut notes_ahead: Vec<String> = Vec::new();
     if let (Some(path), Some(hash)) = (&call.setting_photo, setting_photo_hash) {
         change.setting = Some(Setting::Photo {
@@ -1746,6 +1791,41 @@ mod tests {
         assert_eq!(
             c.change.people[0].who,
             Who::Described("Maya, a potter in a clay-flecked apron".into())
+        );
+    }
+
+    /// A record written while a name leading a description read as a
+    /// stranger holds `Described("maya, …")`: an edit naming Maya is that
+    /// person, never a second Maya, and a `remove` finds her (review of #756).
+    /// A name with nothing after its separator leaves nothing out to say.
+    #[test]
+    fn an_old_record_of_a_name_and_description_is_that_character() {
+        let first = planned(
+            &call(json!({"scene": {"setting": "a pottery shed", "people": [
+                {"who": "a potter", "wearing": "an apron", "doing": "throwing a pot"}]}})),
+            None,
+        );
+        let mut base = landed(&first, 3);
+        base.people[0].who = Who::Described("maya, a potter in a clay-flecked apron".into());
+        let p = planned(
+            &call(json!({"picture": "images/a.png", "scene": {"people": [
+                {"who": "Maya", "wearing": "a blue dress"}]}})),
+            Some(&base),
+        );
+        assert_eq!(p.next.people.len(), 1, "{:?}", p.next.people);
+        assert_eq!(p.next.people[0].who, Who::Library("maya".into()));
+        let p = planned(
+            &call(json!({"picture": "images/a.png", "scene": {"people": [
+                {"who": "Maya", "remove": true}]}})),
+            Some(&base),
+        );
+        assert!(p.next.people.is_empty(), "{:?}", p.next.people);
+        let c = call(json!({"scene": {"setting": "a shed", "people": [{"who": "Maya,"}]}}));
+        assert_eq!(c.change.people[0].who, Who::Library("maya".into()));
+        assert!(
+            !c.notes.iter().any(|n| n.contains("left out")),
+            "{:?}",
+            c.notes
         );
     }
 
