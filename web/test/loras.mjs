@@ -1,6 +1,6 @@
 // Behaviour checks for Settings → LoRAs' pure half (src/lib/loras.js): the
 // form an entry is written through, and what a row says about it.
-import { SECTIONS, listUrl, entryUrl, standing, filesOf, rowDetail, others, suggestName, formFor, formFrom, entryOf, unusedLine } from '../src/lib/loras.js';
+import { SECTIONS, listUrl, entryUrl, standing, filesOf, rowDetail, others, suggestName, formFor, formFrom, entryOf, unusedLine, layerUrl, toggled, chatLine, heldLine, LORA_ENDPOINTS } from '../src/lib/loras.js';
 
 let pass = 0;
 let fail = 0;
@@ -19,9 +19,22 @@ console.log('routes');
 t('each section has its own feature', eq(SECTIONS.map((s) => s.feature), ['image', 'video']));
 t('the unlock rides along only when there is one', listUrl('image', null) === '/api/loras/image' && listUrl('video', 'a b') === '/api/loras/video?unlock=a%20b');
 t('a name is escaped in its route', entryUrl('video', 'a/b', 't') === '/api/loras/video/a%2Fb?unlock=t');
+t('the chat layer has its own route', layerUrl(null, null) === '/api/loras/image/layer/chat');
+t('a persona layer is escaped and unlocked', layerUrl('a b', 't') === '/api/loras/image/layer/persona/a%20b?unlock=t');
+t('the demo guard sees the layer routes', LORA_ENDPOINTS.includes('/api/loras/image/layer/persona/X'));
+
+console.log('picture lists');
+t('a tap turns an entry on at the end', eq(toggled(['a'], 'b', 3), ['a', 'b']));
+t('a tap turns an entry off', eq(toggled(['a', 'b'], 'a', 3), ['b']));
+t('a full list takes no more', eq(toggled(['a', 'b', 'c'], 'd', 3), ['a', 'b', 'c']));
+t('inherit names the chat list', chatLine({ chat: ['a', 'b'], chat_damaged: false }) === 'a, b');
+t('an empty chat list is none', chatLine({ chat: [], chat_damaged: false }) === 'none');
+t('a damaged chat list is said', chatLine({ chat: [], chat_damaged: true }).includes('does not read'));
+t('a remove held by no list says nothing', heldLine(0) === null);
+t('a remove says how many lists held it', heldLine(2).includes('2 picture lists') && heldLine(1).includes('one picture list'));
 
 console.log('what a row says');
-t('a checked picture LoRA is not applied yet', standing({ status: 'checked' }, 'qwen-image').text.includes('not applied'));
+t('a checked picture LoRA is checked', standing({ status: 'checked' }, 'qwen-image').text === 'checked');
 t('a checked clip LoRA is checked', standing({ status: 'checked' }, 'h3').text === 'checked');
 t('a left-out entry gives the server\'s reason', eq(standing({ status: 'missing', reason: 'left out: x' }, 'h3'), { text: 'left out: x', bad: true }));
 t('one file for both modes is listed once', eq(filesOf({ frames: 'a.safetensors', references: 'a.safetensors' }), ['a.safetensors']));

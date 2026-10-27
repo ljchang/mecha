@@ -5,7 +5,8 @@
   import { idleSpan, watchIdle } from './autolock.js';
   import { features } from './features.svelte.js';
   import { isShown } from './features.js';
-  import { SECTIONS, listUrl, entryUrl, standing, rowDetail, formFor, formFrom, entryOf, unusedLine, others } from './loras.js';
+  import PictureLoras from './PictureLoras.svelte';
+  import { SECTIONS, listUrl, entryUrl, standing, rowDetail, formFor, formFrom, entryOf, unusedLine, others, heldLine } from './loras.js';
 
   // The owner's LoRA registry (docs/LORA-DESIGN.md §6): one section per
   // model, each shown while its feature is on and read through its own
@@ -29,6 +30,8 @@
   let confirmNew = $state(null);
   // A remove waiting for its second tap: `${route}/${name}`.
   let removing = $state(null);
+  // What the last remove said about the picture lists that held it.
+  let removed = $state(null);
   // Which sections show their server's files for other models too.
   let showOthers = $state({});
 
@@ -167,6 +170,7 @@
       const res = await fetch(entryUrl(s.route, entry.name, token), { method: 'DELETE' });
       if (res.status === 409) throw new Error((await res.json().catch(() => ({}))).message ?? 'refused');
       if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
+      removed = heldLine((await res.json().catch(() => ({}))).layers);
       if (form?.editing === entry.name && form?.route === s.route) form = null;
       await load();
     } catch (e) {
@@ -183,6 +187,7 @@
 </p>
 
 {#if error}<div class="card notice">{error}</div>{/if}
+{#if removed}<div class="card notice">{removed}</div>{/if}
 
 {#if !token}
   <div class="card fields">
@@ -211,10 +216,17 @@
         <h3>{s.title}</h3>
         <p class="tf-help">
           {s.family === 'qwen-image'
-            ? 'Qwen-Image LoRAs. Checked and kept here; pictures do not use them yet.'
+            ? "Qwen-Image LoRAs. The ones turned on below go on every picture in chat; a persona's page can choose its own. A change applies from the next picture."
             : 'MiniMax H3 LoRAs, which the model may pick per clip. A change reaches clips when mecha next restarts.'}
         </p>
       </header>
+      {#if s.family === 'qwen-image'}
+        <!-- Re-read after an edit or remove here, so a removed entry leaves
+             the list on screen too. -->
+        {#key data[s.family]}
+          <div class="layer"><PictureLoras {token} /></div>
+        {/key}
+      {/if}
       {#if !d}
         <div class="tf-row stack"><span class="tf-help">reading…</span></div>
       {:else if d.error}
@@ -375,6 +387,9 @@
   }
   .tf-sec {
     margin-bottom: 14px;
+  }
+  .layer {
+    margin-bottom: 10px;
   }
   .acts {
     display: flex;
