@@ -82,6 +82,11 @@ pub struct VideoConfig {
     /// clip, and ones on every clip. Read when the tool is built, since the
     /// names sit in the tool's schema; a restart picks up an edit.
     pub loras: Option<std::path::PathBuf>,
+    /// The folders the video server loads LoRAs from (its `models/loras`,
+    /// and any `extra_model_paths.yaml` adds), where each clip entry's files
+    /// are looked for and checked (`loras`). Nothing installs the video
+    /// server, so there is no default: unset, every clip LoRA is left out.
+    pub loras_dir: Option<Vec<std::path::PathBuf>>,
 }
 
 impl Default for VideoConfig {
@@ -105,6 +110,7 @@ impl Default for VideoConfig {
             steps: 20,
             guide_addendum: None,
             loras: None,
+            loras_dir: None,
         }
     }
 }

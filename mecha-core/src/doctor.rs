@@ -199,15 +199,122 @@ fn owner_setpoint(
     ))
 }
 
-/// Whether a confined `shell` is confined away from the mecha home. Not a
-/// store, so not in [`examine`]: the caller hands in the loaded `[sandbox]`.
-/// An unconfined `shell` is not a finding: it is the stock default, and a
-/// finding on every install would keep `doctor` exiting 1 forever (review of
-/// #294) — `mecha tools` says it instead. The closure guard (`closure::decide`) and the provenance of
-/// every closure record lean on it — an unconfined `shell` can detach from
-/// its registered parent and edit `~/.mecha` directly, and a sandbox that
-/// mounts the mecha home hands a confined command the shell registry and the
-/// closure store (`APPRAISAL-WIRING-DESIGN.md` 1b-2).
+/// The owner's LoRA registry (`loras`, `docs/LORA-DESIGN.md` §3): every
+/// way an entry is left out, said, so a refused LoRA is never a silently
+/// refused one. A picture or clip the owner expects to carry one would
+/// otherwise just look worse. Not a store under the home alone, so not in
+/// [`examine`]: the caller hands in `[image]` and `[video]`, whose folder
+/// keys decide where each file is looked for. A family whose server is not
+/// configured is not checked: nothing there expects a LoRA. A store-and-stat
+/// read plus each file's header, never the network.
+pub fn check_loras(
+    home: &Path,
+    image: Option<&crate::imagegen::ImageConfig>,
+    video: Option<&crate::videogen::VideoConfig>,
+) -> Vec<Finding> {
+    use crate::loras::{Family, Folders, Loaded, Source, Status};
+    let finding = |severity, summary: String, detail: String| Finding {
+        component: "loras".to_string(),
+        severity,
+        summary,
+        detail,
+        remedy: None,
+    };
+    let legacy = video.and_then(|v| v.loras.as_deref());
+    let folders = Folders::of(home, image, video);
+    let loaded = Loaded::read(home, legacy, &folders);
+    let mut out = Vec::new();
+    let shared = home.join(crate::loras::FILE);
+    if let Some(old) = &loaded.ignored {
+        out.push(finding(
+            Severity::Attention,
+            "the old clip LoRA file is ignored".into(),
+            format!(
+                "{} exists, so it is the registry, and the file `[video] loras` names ({}) is not read. Move any entry still only there, then remove the key.",
+                shared.display(),
+                old.display()
+            ),
+        ));
+    }
+    if let Source::Legacy(old) = &loaded.source {
+        out.push(finding(
+            Severity::Attention,
+            "the LoRA registry has moved".into(),
+            format!(
+                "{} is read for this release only, its entries as `model = \"h3\"`. Move them to {}, adding that line to each, and remove `[video] loras`.",
+                old.display(),
+                shared.display()
+            ),
+        ));
+    }
+    if let Some(why) = &loaded.unreadable {
+        let path = match &loaded.source {
+            Source::Shared(p) | Source::Legacy(p) => p.display().to_string(),
+            Source::None => String::new(),
+        };
+        out.push(finding(
+            Severity::Broken,
+            "the LoRA registry does not read".into(),
+            format!("{path}: {why}. No picture or clip carries a LoRA until it reads."),
+        ));
+    }
+    if !loaded.skipped.is_empty() {
+        out.push(finding(
+            Severity::Attention,
+            format!(
+                "{} LoRA {} not read",
+                loaded.skipped.len(),
+                if loaded.skipped.len() == 1 {
+                    "entry was"
+                } else {
+                    "entries were"
+                }
+            ),
+            loaded.skipped.join("\n"),
+        ));
+    }
+    for family in Family::ALL {
+        let configured = match family {
+            Family::QwenImage => image.is_some(),
+            Family::H3 => video.is_some(),
+        };
+        if !configured {
+            continue;
+        }
+        let of: Vec<_> = loaded
+            .entries
+            .iter()
+            .filter(|(e, _)| e.model == family)
+            .collect();
+        let unset = of.iter().filter(|(_, st)| *st == Status::NoFolder).count();
+        if unset > 0 {
+            out.push(finding(
+                Severity::Broken,
+                format!("{} is not set", family.dir_key()),
+                format!(
+                    "{unset} {} LoRA {} left out, since {} cannot be checked without the folders its server loads LoRAs from. Set it to that server's models/loras (and any folder its extra_model_paths.yaml adds).",
+                    family.as_str(),
+                    if unset == 1 { "entry is" } else { "entries are" },
+                    if unset == 1 { "its file" } else { "their files" },
+                ),
+            ));
+        }
+        for (e, st) in of {
+            if *st == Status::NoFolder {
+                continue;
+            }
+            if let Some(reason) = st.reason(e) {
+                let summary = match st {
+                    Status::Missing(_) => format!("the LoRA `{}` has no file", e.name),
+                    _ => format!("the LoRA `{}` is left out", e.name),
+                };
+                out.push(finding(Severity::Broken, summary, reason));
+            }
+        }
+    }
+    out
+}
+
 /// `path` with its longest existing prefix canonicalized and the rest kept —
 /// so a configured path that does not exist yet compares on the same side of
 /// a symlink as the home does (macOS's `/var` → `/private/var` made a missing
@@ -234,6 +341,15 @@ fn resolve_existing_prefix(path: &Path) -> PathBuf {
 /// and trigger-run markers.
 const GUARD_DIRS: [&str; 4] = ["runs", "closures", "taskruns", "triggers"];
 
+/// Whether a confined `shell` is confined away from the mecha home. Not a
+/// store, so not in [`examine`]: the caller hands in the loaded `[sandbox]`.
+/// An unconfined `shell` is not a finding: it is the stock default, and a
+/// finding on every install would keep `doctor` exiting 1 forever (review of
+/// #294) — `mecha tools` says it instead. The closure guard (`closure::decide`) and the provenance of
+/// every closure record lean on it — an unconfined `shell` can detach from
+/// its registered parent and edit `~/.mecha` directly, and a sandbox that
+/// mounts the mecha home hands a confined command the shell registry and the
+/// closure store (`APPRAISAL-WIRING-DESIGN.md` 1b-2).
 pub fn check_shell_confinement(
     sandbox: &crate::sandbox::SandboxConfig,
     home: &Path,
@@ -3120,6 +3236,87 @@ mod tests {
     use crate::outbox::{OutboxItem, OutboxKind};
     use serde_json::json;
     use std::path::PathBuf;
+
+    /// Every way a LoRA entry is left out is a finding, the old file is
+    /// named while it is read and once it is ignored, and a family whose
+    /// server is not configured says nothing.
+    #[test]
+    fn a_left_out_lora_is_never_a_silent_one() {
+        use crate::loras::{write_test_lora, H3_KEYS, QWEN_KEYS};
+        let home = std::env::temp_dir()
+            .join("mecha-doctor-test")
+            .join(uuid::Uuid::new_v4().to_string());
+        let folder = home.join("video-server-loras");
+        std::fs::create_dir_all(&folder).unwrap();
+        write_test_lora(&folder.join("wave.safetensors"), H3_KEYS);
+        write_test_lora(&folder.join("liar.safetensors"), QWEN_KEYS);
+        let old = home.join("video-loras.toml");
+        std::fs::write(
+            &old,
+            "[[lora]]\nname = \"wave\"\nabout = \"a wave\"\nfile = \"wave.safetensors\"\n\
+             [[lora]]\nname = \"liar\"\nabout = \"x\"\nfile = \"liar.safetensors\"\n\
+             [[lora]]\nname = \"gone\"\nabout = \"x\"\nfile = \"gone.safetensors\"\n\
+             [[lora]]\nname = \"bad\"\n",
+        )
+        .unwrap();
+        let mut video = crate::videogen::VideoConfig {
+            loras: Some(old.clone()),
+            ..Default::default()
+        };
+        let summaries = |f: &[Finding]| f.iter().map(|f| f.summary.clone()).collect::<Vec<_>>();
+
+        // No folders: one finding names the key, and the moved file is said.
+        let f = check_loras(&home, None, Some(&video));
+        let s = summaries(&f);
+        assert!(
+            s.contains(&"[video] loras_dir is not set".to_string()),
+            "{s:?}"
+        );
+        assert!(
+            s.contains(&"the LoRA registry has moved".to_string()),
+            "{s:?}"
+        );
+        assert!(
+            s.contains(&"1 LoRA entry was not read".to_string()),
+            "{s:?}"
+        );
+
+        video.loras_dir = Some(vec![folder.clone()]);
+        let f = check_loras(&home, None, Some(&video));
+        let s = summaries(&f);
+        assert!(
+            s.contains(&"the LoRA `gone` has no file".to_string()),
+            "{s:?}"
+        );
+        assert!(
+            s.contains(&"the LoRA `liar` is left out".to_string()),
+            "{s:?}"
+        );
+        assert!(!s.iter().any(|s| s.contains("`wave`")), "{s:?}");
+        assert!(f.iter().all(|f| f.component == "loras"));
+
+        // No `[video]`: the clip entries expect nothing, and say nothing.
+        assert!(!summaries(&check_loras(&home, None, None))
+            .iter()
+            .any(|s| s.contains("`")));
+
+        // The new file wins whole: the old one is named as ignored.
+        std::fs::write(home.join(crate::loras::FILE), "[[lora]\n").unwrap();
+        let s = summaries(&check_loras(&home, None, Some(&video)));
+        assert!(
+            s.contains(&"the old clip LoRA file is ignored".to_string()),
+            "{s:?}"
+        );
+        assert!(
+            s.contains(&"the LoRA registry does not read".to_string()),
+            "{s:?}"
+        );
+        assert!(
+            !s.contains(&"the LoRA registry has moved".to_string()),
+            "{s:?}"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
 
     /// A commit record older than any commit takes is an interrupted one; a
     /// fresh one is a pass in flight and says nothing.

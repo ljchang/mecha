@@ -49,11 +49,21 @@ pub async fn execute(args: Args) -> Result<()> {
     // wider sandbox for sessions there, and this check does not see it
     // (review of #294) — doctor has no working directory to layer from.
     match mecha_core::config::Config::load_global() {
-        Ok(cfg) => findings.extend(doctor::check_shell_confinement(&cfg.sandbox, &home)),
+        Ok(cfg) => {
+            findings.extend(doctor::check_shell_confinement(&cfg.sandbox, &home));
+            // The LoRA registry's files are checked against the folders
+            // `[image]` and `[video]` name, so it reads the same config.
+            findings.extend(doctor::check_loras(
+                &home,
+                cfg.image.as_ref(),
+                cfg.video.as_ref(),
+            ));
+        }
         Err(e) => findings.push(Finding {
             component: "sandbox".to_string(),
             severity: Severity::Attention,
-            summary: "could not read the config to check shell confinement".to_string(),
+            summary: "could not read the config to check shell confinement or the LoRA registry"
+                .to_string(),
             detail: format!("{e:#}"),
             remedy: None,
         }),
