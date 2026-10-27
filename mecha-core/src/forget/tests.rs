@@ -949,9 +949,9 @@ fn an_assistant_chats_scene_records_go_with_it() {
     .unwrap();
 
     assert!(report.complete, "{:?}", report.errors);
-    // Its copy, its index entry and the latest it wrote.
+    // Its copy and its index entry: no latest is written (2026-10-27).
     assert!(
-        report.removed.contains(&("scene".to_string(), 3)),
+        report.removed.contains(&("scene".to_string(), 2)),
         "{:?}",
         report.removed
     );
