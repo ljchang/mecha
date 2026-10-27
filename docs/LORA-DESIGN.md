@@ -1,7 +1,9 @@
 # LoRAs for pictures and clips — one registry, one picker
 
-Status: **design, not built** (2026-10-26). §8 holds the decisions: L1,
-L2, L3, L5 and L6 ruled the same day; L4 is decided by M2.
+Status: **design; step 1 built** (2026-10-27: the shared registry, the
+family check, the folder keys and the `doctor` findings, in `loras.rs`).
+§8 holds the decisions: L1, L2, L3, L5 and L6 ruled 2026-10-26; L4 is
+decided by M2.
 
 mecha ships no LoRA and names none (the owner's ruling, 2026-10-23). This
 document is the mechanism only. Every name, file and trigger word in it is
@@ -47,8 +49,14 @@ cleanly by model family:
 
 | Family | Key shape |
 |---|---|
-| Qwen-Image | `transformer_blocks.*` (under a `diffusion_model.` or `transformer.` prefix) |
+| Qwen-Image | `transformer_blocks.*` (under a `diffusion_model.`, `transformer.` or `model.diffusion_model.` prefix), and no `single_transformer_blocks.*`, which FLUX's diffusers files carry beside the same name |
 | H3 | `blocks.*` beside `token_refiner.*` or `audio_patch_proj.*`, or the kohya spelling `lora_unet_blocks_*` |
+
+The kohya spelling is taken on its block keys alone. The owner's 7
+kohya-spelled H3 files carry no other key to corroborate with, so a Wan
+LoRA in that spelling reads as H3 too. The check catches the likely
+mistake, a picture LoRA filed as a clip one or the reverse, and not every
+other video model.
 
 The `__metadata__` block is not evidence. Ten of the 41 had no base-model
 field at all, and the field names differ by trainer. So:
@@ -319,7 +327,7 @@ clip graph builds its chain the same way (`videogen::graph::lora_chain`). A trig
 prompt does not already contain it, with the same rule as
 `loras::with_triggers`. That function's insertion points are H3's section
 headers, so for a picture prompt it always takes its prefix branch, which
-is what is wanted: there is no picture-side field to insert into. Two
+is what is wanted: there is no picture-side field to insert into. Three
 things are unknown, so the build waits on them:
 
 - **M1. Does a LoRA patch Qwen-Image's int8 file?** Clips already chain
@@ -347,7 +355,11 @@ things are unknown, so the build waits on them:
   count that held. Pictures have no `always` entries,
   so the cap is the length of the resolved list, and the settings route
   refuses a list longer than it, so the cap never drops an entry at render
-  time. (M1 and M2 can, and the result says so.)
+  time. (M1 and M2 can, and the result says so.) Should M3 set the cap
+  below a list already stored, the stored list wins until it is next
+  saved: the route refuses only a new longer list, and render time applies
+  the stored one whole, with the result's count, so a lowered cap never
+  drops an entry the owner chose without the owner seeing it.
 
 ## 6. The web
 
@@ -506,8 +518,25 @@ an entry the file would refuse.
    Images, Video and persona settings, and the lock (L3). A list value in
    `PANE_FEATURE` fails `every_feature_the_web_app_names_is_a_registry_id`,
    which reads one id per line, so that test grows with the map rather than
-   reading as a regression.
+   reading as a regression. The `/api/loras/*` routes join the list in
+   `the_settings_routes_sit_behind_the_owner_guard`, and `'loras'` and
+   `'video'` join `Settings.svelte`'s `PANES` and `TITLE`, or the index
+   links to a pane that renders nothing.
 5. ~~**The real-person guard**~~ deferred (L5).
+
+**What step 1 built** (2026-10-27). `loras::Loaded::read` is the one read:
+the source (§3's new-wins-whole rule), each entry parsed, and each file
+looked for in its family's folders and checked (`loras::Status`). The clip
+tool takes the checked `h3` entries (`videogen::loras::Registry::from_loaded`)
+and says the rest at start, as before. `doctor::check_loras` reports, for a
+family whose server is configured: the folder key unset, an entry left out
+(its file missing, unreadable, or of another family), entries that did not
+parse, the registry not reading, the old file in use (moved) and the old
+file ignored. Until step 2 builds L6's tie, an entry with `character` is
+refused rather than applied to everyone. An unset `[image] loras_dir` on
+a ComfyUI that mecha installed is resolved at read time
+(`comfyui_unit::installed_here`), so `write_image_table` writes no key for
+it. `check-private.py` reads the registry as above.
 
 Each step is its own PR. The tests and docs use made-up names only. Until
 step 1 puts the registry in `check-private.py`'s corpus, each push is also

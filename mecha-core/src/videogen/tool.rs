@@ -143,8 +143,9 @@ pub struct VideoGenerate {
     /// How often a render's state is asked for, and the gates re-read.
     poll: Duration,
     wait_step: Duration,
-    /// The owner's LoRAs (`[video] loras`), read when the tool is built:
-    /// their names sit in the schema, so they hold still for its life.
+    /// The owner's clip LoRAs (`crate::loras`), read and checked when the
+    /// tool is built: their names sit in the schema, so they hold still for
+    /// its life.
     loras: Arc<super::loras::Registry>,
     /// What the registry left out, said once by whoever built the tool.
     lora_problems: Vec<String>,
@@ -171,14 +172,31 @@ fn offered_in(dir: Option<&Path>) -> (Vec<String>, Vec<String>) {
     }
 }
 
+/// The clip entries of the owner's registry that can apply, and a line for
+/// each one left out. The registry is `~/.mecha/loras.toml`, or for one
+/// release the old file `[video] loras` names; no mecha home is no LoRAs.
+fn clip_loras(cfg: &VideoConfig, home: Option<&Path>) -> (super::loras::Registry, Vec<String>) {
+    let Some(home) = home else {
+        return Default::default();
+    };
+    let folders = crate::loras::Folders::of(home, None, Some(cfg));
+    let loaded = crate::loras::Loaded::read(home, cfg.loras.as_deref(), &folders);
+    let mut problems = loaded.problems(crate::loras::Family::H3);
+    if let Some(old) = &loaded.ignored {
+        problems.push(format!(
+            "{} is ignored: {} is the registry now",
+            old.display(),
+            home.join(crate::loras::FILE).display()
+        ));
+    }
+    (super::loras::Registry::from_loaded(&loaded), problems)
+}
+
 impl VideoGenerate {
     /// Refuses a configuration whose server is not on this machine.
     pub fn new(cfg: VideoConfig) -> Result<Self> {
         let wire = Client::new(cfg.loopback_url()?, "the video server")?;
-        let (loras, lora_problems) = match &cfg.loras {
-            Some(path) => super::loras::Registry::load(path),
-            None => Default::default(),
-        };
+        let (loras, lora_problems) = clip_loras(&cfg, crate::work::mecha_home().ok().as_deref());
         let library_dir = crate::imagelib::Library::default_dir().ok();
         let (location_names, outfit_names) = offered_in(library_dir.as_deref());
         Ok(VideoGenerate {
@@ -244,6 +262,8 @@ impl VideoGenerate {
     #[cfg(test)]
     fn for_test(mut self, home: &Path, gates: Arc<dyn Gates>, poll: Duration) -> Self {
         self.home = Some(home.to_path_buf());
+        let (loras, problems) = clip_loras(&self.cfg, Some(home));
+        (self.loras, self.lora_problems) = (Arc::new(loras), problems);
         self.library_dir = Some(home.join("imagelib"));
         (self.location_names, self.outfit_names) = offered_in(self.library_dir.as_deref());
         self.personas_dir = Some(home.join("personas"));

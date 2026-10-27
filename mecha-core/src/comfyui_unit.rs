@@ -174,6 +174,25 @@ pub fn dir(mecha_home: &Path) -> PathBuf {
     mecha_home.join("sidecars").join(ID)
 }
 
+/// Where this install's ComfyUI looks for LoRAs: what an unset
+/// `[image] loras_dir` means when mecha installed the server
+/// (`loras::Folders`).
+pub fn loras_dir(mecha_home: &Path) -> PathBuf {
+    dir(mecha_home).join("ComfyUI").join("models").join("loras")
+}
+
+/// Whether mecha installed the image server here, from the install record
+/// alone: a finished entry that wrote something. A store read with no port
+/// probe, so `doctor` may ask it; a manifest that does not read is not an
+/// install (`someone_elses` probes the port too, and is for the page).
+pub fn installed_here(mecha_home: &Path) -> bool {
+    Manifest::read(mecha_home).is_ok_and(|m| {
+        m.entries
+            .iter()
+            .any(|e| e.sidecar == ID && !e.incomplete && !e.wrote.is_empty())
+    })
+}
+
 /// What `[image] server_temp_dir` must name for this install: the unit's
 /// `--temp-directory` with `temp` appended, as ComfyUI lays it out.
 pub fn server_temp_dir(mecha_home: &Path) -> PathBuf {
