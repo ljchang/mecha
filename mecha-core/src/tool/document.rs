@@ -224,7 +224,8 @@ mod tests {
         assert!(t.read_only());
         // No destination anywhere in the schema: only a path, pages, a mode.
         let props = t.input_schema()["properties"].as_object().unwrap().clone();
-        let keys: Vec<_> = props.keys().cloned().collect();
+        let mut keys: Vec<_> = props.keys().cloned().collect();
+        keys.sort_unstable();
         assert_eq!(keys, vec!["mode", "pages", "path"]);
     }
 

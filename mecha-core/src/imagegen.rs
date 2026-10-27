@@ -6846,6 +6846,23 @@ mod tests {
         assert!(ImageGenerate::new(remote).is_err());
     }
 
+    /// The schema reaches the model server in the order it is written.
+    /// llama-server builds a grammar from it that fixes the order of
+    /// optional properties, so sorted keys (`doing … wearing, where`) closed
+    /// a person at `where`: 144 of 204 persona calls carried only `who` and
+    /// `where`, and a picture lost the pose its call meant to send.
+    #[test]
+    fn a_person_reaches_the_server_in_written_order() {
+        let t = tool("http://127.0.0.1:1");
+        let wire = serde_json::to_string(&t.input_schema()).unwrap();
+        let person = &wire[wire.find("\"people\"").unwrap()..];
+        let at = |k: &str| person.find(&format!("\"{k}\":")).unwrap();
+        assert!(at("who") < at("where"), "{person}");
+        assert!(at("where") < at("wearing"), "{person}");
+        assert!(at("wearing") < at("doing"), "{person}");
+        assert!(at("doing") < at("expression"), "{person}");
+    }
+
     #[test]
     fn declares_nothing_that_arms_the_interlock() {
         let t = tool("http://127.0.0.1:1");
