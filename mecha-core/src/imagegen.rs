@@ -3991,6 +3991,9 @@ impl Tool for ImageGenerate {
         // for the picture it records, when that one's index entry went
         // missing: never for another, so an upload named in `picture` (never
         // rendered, so never indexed) borrows nothing (review of #753, pass 2).
+        // Belt and braces: `land` writes the index entry before the copy, so
+        // a copy naming a picture implies its entry, and `base` is already
+        // that record; this arm covers an entry lost from the index by hand.
         let carried = match &picture {
             Some(r) => base.clone().or_else(|| {
                 let named = crate::scene::hash(&r.bytes);
@@ -4115,9 +4118,16 @@ impl Tool for ImageGenerate {
         let named = |t: &str| crate::imagelib::named_in(&lib, t);
         // What the chat last drew each person in: clothes a newcomer's call
         // left out come from it (mecha-a3's G1b), on a picture that builds
-        // on another only.
+        // on another only. The chat's copy, not `carried`: a newcomer is by
+        // definition not in the picture built on, so only the chat's last
+        // picture can have drawn them (review of #753, pass 3). A new
+        // picture asks nothing of it.
+        let chat_last = picture
+            .is_some()
+            .then(|| ctx.scene.as_ref().and_then(|s| s.current()))
+            .flatten();
         let worn = |key: &str| {
-            carried.as_ref().and_then(|s| {
+            chat_last.as_ref().and_then(|s| {
                 s.people
                     .iter()
                     .find(|p| p.who.key() == key)
@@ -10721,6 +10731,64 @@ mod tests {
         assert_eq!(
             manifest_of(&dir, &out.content)["clothes_in_act"],
             json!(["Maya"])
+        );
+    }
+
+    /// Someone added to a picture the owner builds on wears what this chat
+    /// last drew them in (mecha-a3's G1b), from the chat's copy, since the
+    /// picture built on does not hold them; a new picture asks nothing of
+    /// it. Fails where `worn` read only the record built on (review of
+    /// #753, pass 3: it could never fire).
+    #[tokio::test]
+    async fn a_newcomer_to_a_picture_built_on_wears_what_the_chat_last_drew() {
+        let (url, seen) = distinct(6).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let cx = clean(scene_ctx(&dir, &store, "chat-a"));
+        let draw = |v: Value| {
+            let (t, cx) = (&t, &cx);
+            async move {
+                let out = t.call(v, cx).await.unwrap();
+                assert!(!out.is_error, "{}", out.content);
+                out
+            }
+        };
+        let first = draw(json!({"scene": {"setting": "a quiet reading room",
+            "people": [{"who": "maya", "wearing": "a green coat", "doing": "reading a book"}]}}))
+        .await;
+        let p1 = picture_of(&first.content);
+        draw(json!({"scene": {"setting": "a bakery at dawn",
+            "people": [{"who": "john", "wearing": "a striped baker's apron", "doing": "kneading dough"}]}}))
+        .await;
+        // A new picture of John alone takes nothing from the bakery.
+        draw(json!({"scene": {"setting": "a harbour wall",
+            "people": [{"who": "john", "doing": "watching the boats"}]}}))
+        .await;
+        assert!(
+            !last_prompt(&seen).contains("striped baker's apron"),
+            "{}",
+            last_prompt(&seen)
+        );
+        // Built on the first picture, John is a newcomer, and wears what the
+        // chat last drew him in: the harbour picture, which gave no clothes,
+        // so the default. Draw him once more in the apron, then add him.
+        draw(json!({"scene": {"setting": "a bakery at dawn",
+            "people": [{"who": "john", "wearing": "a striped baker's apron", "doing": "kneading dough"}]}}))
+        .await;
+        let added = draw(json!({"picture": p1, "scene": {"people": [
+            {"who": "john", "where": "right", "doing": "handing Maya a cup of tea"}]}}))
+        .await;
+        assert!(
+            added
+                .content
+                .contains("John is wearing what this chat last drew them in."),
+            "{}",
+            added.content
+        );
+        assert!(
+            last_prompt(&seen).contains("striped baker's apron"),
+            "{}",
+            last_prompt(&seen)
         );
     }
 

@@ -946,9 +946,11 @@ advances it.
   (`IMAGE-SCENE-DESIGN.md` R10, the owner, 2026-10-27, reversing R7). Only
   a call that names `picture` builds on a record: `carried` in `call` is
   that picture's record (the chat's copy only when it records that very
-  picture), and `None` for a new picture, and the scene reader, a
-  newcomer's clothes and the layered outfit all read it. A fresh chat had
-  drawn a place and a person from another chat's last picture.
+  picture), and `None` for a new picture; the scene reader and the layered
+  outfit read it. A newcomer added to a picture built on takes the clothes
+  this chat last drew them in from the chat's copy (G1b), since the picture
+  built on cannot hold them; a new picture asks nothing of it. A fresh
+  chat had drawn a place and a person from another chat's last picture.
 - **Lookup is by the picture's bytes, through the index**, so a picture
   carried into another chat brings its scene. Nothing reads a scene back out
   of a manifest: a run can write the jail.
