@@ -3848,16 +3848,30 @@ impl Tool for ImageGenerate {
                 }
             }
             Some(BuildOn::Nothing) => {
-                if let Some(p) = call
-                    .picture
-                    .as_deref()
-                    .filter(|p| !plain_path(p).starts_with("inbox/"))
-                {
+                // A photo the owner uploaded, by where the path resolves, so
+                // `inbox/../images/a.png` is the result it names; unknown
+                // (the jail refuses it, or there is no inbox) is not one
+                // (review of #754, pass 1).
+                let uploaded = |p: &str| match (ctx.resolve(p), ctx.resolve("inbox")) {
+                    (Ok(path), Ok(inbox)) => path.starts_with(inbox),
+                    _ => false,
+                };
+                if let Some(p) = call.picture.as_deref().filter(|p| !uploaded(p)) {
                     return Ok(refused(format!(
                         "The owner typed this turn rather than pressing Continue on {p}, so \
                          it is a new picture: leave `picture` out and describe the whole \
                          picture in `scene` from the owner's words, its setting and its \
                          people. Only the owner's Continue on a picture builds on it."
+                    )));
+                }
+                // A room photo is drawn onto, so an earlier result there is the
+                // same building-on by another field.
+                if let Some(p) = call.setting_photo.as_deref().filter(|p| !uploaded(p)) {
+                    return Ok(refused(format!(
+                        "The owner typed this turn, so it is a new picture, and {p} is an \
+                         earlier picture, not a photo they uploaded: describe the place in \
+                         words in `scene.setting`. Only the owner's Continue on a picture \
+                         builds on it."
                     )));
                 }
             }
@@ -12922,7 +12936,7 @@ mod tests {
     /// `picture` was taken as it came.
     #[tokio::test]
     async fn only_the_owners_continue_builds_on_a_picture() {
-        let (url, seen) = distinct(4).await;
+        let (url, seen) = distinct(5).await;
         let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya"]));
         let t = tool(&url).with_library_dir(lib.clone());
         let mut cx = clean(scene_ctx(&dir, &store, "chat-a"));
@@ -12961,6 +12975,18 @@ mod tests {
             typed.content
         );
         assert_eq!(drawn(), before, "a refused call rendered");
+        // Not by another spelling of the path, nor as the room it is drawn
+        // onto (review of #754, pass 1).
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        for sneaked in [
+            json!({"picture": format!("inbox/../{p1}"), "retouch": "Give her a red umbrella."}),
+            json!({"scene": {"setting": {"photo": p1},
+                   "people": [{"who": "maya", "wearing": "a coat", "doing": "standing by the window"}]}}),
+        ] {
+            let out = t.call(sneaked.clone(), &cx).await.unwrap();
+            assert!(out.is_error, "{sneaked}: {}", out.content);
+            assert_eq!(drawn(), before, "{sneaked} rendered");
+        }
         // A photo the owner uploaded is still theirs to name.
         std::fs::create_dir_all(dir.join("inbox")).unwrap();
         std::fs::copy(dir.join(&p1), dir.join("inbox/photo.png")).unwrap();
@@ -12972,6 +12998,19 @@ mod tests {
             .await
             .unwrap();
         assert!(!upload.is_error, "{}", upload.content);
+        let room = t
+            .call(
+                json!({"scene": {"setting": {"photo": "inbox/photo.png"},
+                       "people": [{"who": "maya", "wearing": "a coat", "doing": "standing by the window"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            !room.is_error,
+            "an uploaded room was refused: {}",
+            room.content
+        );
 
         // Continue on the first: a call naming no picture builds on it.
         cx.build_on = Some(BuildOn::Picture(p1.clone()));
