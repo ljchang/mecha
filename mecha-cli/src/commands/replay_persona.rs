@@ -704,9 +704,6 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
         surface,
         work,
         chat: id.clone(),
-        run_start: clock_at
-            .and_then(|t| pr::start_of_day(t, tz))
-            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
         render,
         readers: !args.no_readers,
         layers: args.layers,
@@ -791,13 +788,6 @@ pub struct Sampler {
     work: PathBuf,
     /// The chat's id, which its scene is staged by.
     chat: String,
-    /// A bound the turn's run began after: the start of the day its
-    /// calendar reference names, in the run's zone. The approximate stage
-    /// takes the persona's latest written at or before it, so it can be up
-    /// to a day early, never late: a later bound (noon) staged a scene drawn
-    /// after a morning turn (review of #615). `None` falls back to the last
-    /// recorded config's clock.
-    run_start: Option<String>,
     /// Run the picture call against a scene staged per sample.
     render: bool,
     /// Stamp the scene reader and role splitter when rendering.
@@ -913,7 +903,6 @@ impl Sampler {
                 &self.persona,
                 &self.chat,
                 branch.line - 1,
-                self.run_start.as_deref(),
                 &scratch,
             )?)
         } else {

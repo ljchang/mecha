@@ -11,14 +11,19 @@
 //! model restating everyone costs nothing, and [`Delta`] says what did
 //! change, which is what the planner routes on.
 //!
-//! Three files per chat that keeps scenes, all written by the harness and none
-//! in the model's jail:
+//! Two files per chat that keeps scenes, both written by the harness and
+//! neither in the model's jail:
 //! - **The chat's copy** beside its transcript.
-//! - **The latest** (`scene/latest.json`), which a persona's new chats start
-//!   from (R7). The last render to land wins.
 //! - **The index** (`scene/index/<sha256>.json`): the scene each picture was
 //!   rendered as, keyed by the picture's bytes, never through a workspace
 //!   manifest, which a run can write.
+//!
+//! **A new chat starts with no scene, and a new picture starts from
+//! nothing** (the owner, 2026-10-27, reversing R7): a picture carries what
+//! came before only when its call names the picture it builds on, which the
+//! owner asks for ("continue", "change her top"). A persona's `latest.json`
+//! that seeded her new chats is no longer written or read; one left from
+//! before is only removed by forgetting the chat that wrote it.
 //!
 //! **Origin is per field, and a scene's origin is the union over its
 //! fields.** A clean write over a scene with one untrusted field leaves that
@@ -699,16 +704,22 @@ pub fn note(scene: &Scene, me: Option<&str>) -> Option<String> {
         Origin::Clean => SCENE_STEM,
         Origin::Untrusted => UNTRUSTED_SCENE_STEM,
     };
+    // The middle sentence is the owner's ruling (2026-10-27): what the last
+    // picture showed carries into the next only when the owner asks to build
+    // on it, and then through `picture`, whose record the call starts from.
+    // It used to say clothes and places came from here, and a fresh chat drew
+    // a place and a person the owner had not asked for.
     // The last sentence is mecha-a3's measured line (2026-10-08): on the two
     // turns of a live chat that drew nothing, the persona read this note as
     // the picture already sent, or looped deciding; with the line it called
     // the tool 10 times in 10, against 8 in 10 without, and its reasoning on
     // the looping turn fell from ~8,100 to ~2,500 characters.
     Some(format!(
-        "{stem}: what your last picture showed. Clothes and places come from here now, \
-         not from a remembered day. This is a record of what was drawn before, not a \
-         picture the owner has in front of them now: to show them a picture, call \
-         image_generate.){out}"
+        "{stem}: what your last picture in this chat showed. A new picture starts from \
+         nothing and keeps none of this: only when the owner asks to continue, build on, \
+         edit or change that picture, pass it as `picture`, and say only what changes. \
+         This is a record of what was drawn before, not a picture the owner has in front \
+         of them now: to show them a picture, call image_generate.){out}"
     ))
 }
 
@@ -723,39 +734,25 @@ pub fn hash(bytes: &[u8]) -> String {
 pub struct SceneSlot {
     /// The chat's own copy, beside its transcript.
     pub chat_copy: PathBuf,
-    /// The persona's `scene/` folder: its latest scene and the index.
+    /// The persona's `scene/` folder: the index.
     pub store: PathBuf,
     /// The chat's id, recorded on the scenes it advances.
     pub chat: String,
-    /// Whether a chat with no scene yet starts from the store's latest: a
-    /// persona's chats do (R7, one persona's continuity), the assistant's
-    /// and incognito's never, since their store is shared by unrelated
-    /// conversations (review of #597).
-    pub from_latest: bool,
 }
 
 impl SceneSlot {
-    /// The chat's scene now: its own copy, else the persona's latest, which
-    /// the chat starts from (R7), else none. A copy that exists but cannot
-    /// be read is none, never the latest: that is another chat's scene, and
-    /// a broken copy is not a chat with no scene yet (review of #589, pass 8).
+    /// The chat's scene now: its own copy, else none. Never another chat's:
+    /// a new chat starts with no scene (the owner, 2026-10-27).
     pub fn current(&self) -> Option<Scene> {
-        if self.chat_copy.exists() {
-            read(&self.chat_copy)
-        } else if self.from_latest {
-            read(&self.store.join("latest.json"))
-        } else {
-            None
-        }
+        read(&self.chat_copy)
     }
 
-    /// Record a landed render: the chat's copy, the persona's latest (the
-    /// last to land wins), and the index entry for its picture.
+    /// Record a landed render: the index entry for its picture, then the
+    /// chat's copy.
     ///
     /// The index first: if it cannot be written, nothing is, rather than
-    /// leaving a latest that names a picture no lookup can find (review of
-    /// #589). The other two are not one write: a latest that lands with a
-    /// failed chat copy leaves that chat a render behind, until its next.
+    /// leaving a copy that names a picture no lookup can find (review of
+    /// #589).
     pub fn land(&self, scene: &Scene) -> std::io::Result<()> {
         // The id forgetting accepts, or a record could be written that
         // `forget_chat` refuses, and the chat's memories with it (review of
@@ -770,7 +767,6 @@ impl SceneSlot {
         if let Some(h) = scene.picture.as_deref().filter(|h| is_hash(h)) {
             write_atomic(&self.store.join("index").join(format!("{h}.json")), &bytes)?;
         }
-        write_atomic(&self.store.join("latest.json"), &bytes)?;
         write_atomic(&self.chat_copy, &bytes)
     }
 
@@ -807,7 +803,8 @@ impl SceneSlot {
 
 /// Remove what one chat's renders left: the chat's own copy (or its next
 /// render would land the scene back, review of #589), each index entry that
-/// chat last advanced, and the latest when it was that chat's. `persona_dir`
+/// chat last advanced, and a `latest.json` from before 2026-10-27 when it was
+/// that chat's. `persona_dir`
 /// is the persona's folder. The count removed; nothing there is zero, never
 /// an error. A chat id is a file name here, so it must be one.
 pub fn forget_chat(persona_dir: &Path, chat: &str) -> std::io::Result<SceneForget> {
@@ -825,21 +822,20 @@ pub fn forget_assistant_chat(sessions: &Path, chat: &str) -> std::io::Result<Sce
 }
 
 /// The assistant's kept chats (IMAGE-DESIGN.md §6, one path): each chat's
-/// copy beside its transcript, and the assistant's latest and index in
-/// `scene/` beside the sessions folder — the persona's layout one level up,
+/// copy beside its transcript, and the assistant's index in `scene/` beside
+/// the sessions folder — the persona's layout one level up,
 /// outside every jail, written only by the harness.
 pub fn assistant_slot(sessions: &Path, chat: &str) -> SceneSlot {
     SceneSlot {
         chat_copy: sessions.join(format!("{chat}.scene.json")),
         store: assistant_store(sessions),
         chat: chat.to_string(),
-        from_latest: false,
     }
 }
 
 /// A persona's chat (IMAGE-DESIGN.md §6): its own copy beside its
-/// transcript, and the persona's latest and index in its folder, all
-/// outside the jail. `store` is the personas root (`~/.mecha/personas`), or a
+/// transcript, and the persona's index in its folder, all outside the
+/// jail. `store` is the personas root (`~/.mecha/personas`), or a
 /// replay's scratch copy of it. One place, so the tool's slot and the run's
 /// scene note read the same files.
 pub fn persona_slot(store: &Path, persona: &str, chat: &str) -> SceneSlot {
@@ -850,7 +846,6 @@ pub fn persona_slot(store: &Path, persona: &str, chat: &str) -> SceneSlot {
             .join(format!("{chat}.scene.json")),
         store: persona_dir.join("scene"),
         chat: chat.to_string(),
-        from_latest: true,
     }
 }
 
@@ -862,7 +857,6 @@ pub fn room_slot(room: &Path, chat: &str) -> SceneSlot {
         chat_copy: room.join("scene").join(format!("{chat}.scene.json")),
         store: room.join("scene"),
         chat: chat.to_string(),
-        from_latest: false,
     }
 }
 
@@ -905,6 +899,8 @@ fn forget_in(copies: &Path, store: &Path, chat: &str) -> std::io::Result<SceneFo
         }
         Ok(())
     };
+    // No longer written (the owner, 2026-10-27), but one left from before is
+    // still that chat's to take with it.
     drop_if_theirs(&store.join("latest.json"))?;
     match std::fs::read_dir(store.join("index")) {
         Ok(entries) => {
@@ -1010,7 +1006,6 @@ mod tests {
                 chat_copy: root.join("persona/sessions/c1.scene.json"),
                 store: root.join("persona/scene"),
                 chat: "c1".into(),
-                from_latest: true,
             },
             root,
         )
@@ -1255,21 +1250,19 @@ mod tests {
         let (good, root) = slot();
         let bad = SceneSlot {
             chat: "../c1".into(),
-            from_latest: true,
             ..good
         };
         assert!(bad
             .land(&landed(kitchen(Origin::Clean), "a", "../c1"))
             .is_err());
-        assert!(!root.join("persona/scene/latest.json").exists());
+        assert!(!root.join("persona/sessions/c1.scene.json").exists());
         assert!(!root.join("persona/scene/index").exists());
         std::fs::remove_dir_all(root).ok();
     }
 
-    /// A chat whose own copy is broken has no scene; it does not start from
-    /// another chat's latest.
+    /// A chat whose own copy is broken, or gone, has no scene.
     #[test]
-    fn a_broken_chat_copy_is_no_scene_not_the_latest() {
+    fn a_broken_chat_copy_is_no_scene() {
         let (slot, root) = slot();
         let s = landed(kitchen(Origin::Clean), "a", "c1");
         slot.land(&s).unwrap();
@@ -1277,7 +1270,7 @@ mod tests {
         std::fs::write(&slot.chat_copy, b"{ not json").unwrap();
         assert!(slot.current().is_none());
         std::fs::remove_file(&slot.chat_copy).unwrap();
-        assert_eq!(slot.current(), Some(s), "no copy yet: the latest");
+        assert_eq!(slot.current(), None);
         std::fs::remove_dir_all(root).ok();
     }
 
@@ -1304,11 +1297,12 @@ mod tests {
         assert_eq!(note(&unknown, None), None);
     }
 
-    /// Landing writes the chat's copy, the latest and the index; a chat with
-    /// no copy starts from the latest (R7); a picture's bytes find its scene;
-    /// the last render to land wins the latest.
+    /// Landing writes the chat's copy and the index, and no latest; a new
+    /// chat starts with no scene, even beside a latest left from before
+    /// (the owner, 2026-10-27, reversing R7); a picture's bytes find its
+    /// scene from any chat.
     #[test]
-    fn landing_writes_three_files_and_a_picture_finds_its_scene() {
+    fn landing_writes_two_files_and_a_new_chat_starts_with_no_scene() {
         let (slot, root) = slot();
         let s = landed(kitchen(Origin::Clean), "picture one", "c1");
         slot.land(&s).unwrap();
@@ -1318,14 +1312,20 @@ mod tests {
         let other = SceneSlot {
             chat_copy: root.join("persona/sessions/c2.scene.json"),
             chat: "c2".into(),
-            from_latest: true,
             ..slot.clone()
         };
-        assert_eq!(
-            other.current(),
-            Some(s),
-            "a new chat starts from the latest"
+        assert!(
+            !slot.store.join("latest.json").exists(),
+            "no latest is written"
         );
+        // One written before the ruling seeds nothing.
+        std::fs::write(
+            slot.store.join("latest.json"),
+            serde_json::to_vec(&s).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(other.current(), None, "a new chat starts with no scene");
+        assert_eq!(other.lookup(b"picture one"), Some(s), "found by its bytes");
         let (s2, _) = Scene::apply(
             other.current().as_ref(),
             &SceneChange {
@@ -1340,8 +1340,7 @@ mod tests {
         );
         other.land(&landed(s2, "picture two", "c2")).unwrap();
         assert_eq!(slot.current().unwrap().people[0].wearing, "a red coat");
-        let latest = read(&slot.store.join("latest.json")).unwrap();
-        assert_eq!(latest.chat.as_deref(), Some("c2"), "the last to land wins");
+        assert_eq!(other.current().unwrap().people[0].wearing, "a hat");
         std::fs::remove_dir_all(root).ok();
     }
 
@@ -1394,13 +1393,18 @@ mod tests {
         let other = SceneSlot {
             chat_copy: root.join("persona/sessions/c2.scene.json"),
             chat: "c2".into(),
-            from_latest: true,
             ..slot.clone()
         };
         other
             .land(&landed(kitchen(Origin::Clean), "two", "c2"))
             .unwrap();
         let persona = root.join("persona");
+        // A latest written before 2026-10-27, by c2: still c2's to take.
+        std::fs::copy(
+            root.join("persona/sessions/c2.scene.json"),
+            root.join("persona/scene/latest.json"),
+        )
+        .unwrap();
         // Each chat's saved picture prompts sit beside its copy.
         let prompts = |c: &str| root.join(format!("persona/sessions/{c}.prompts.log"));
         std::fs::write(prompts("c1"), "{}\n").unwrap();
@@ -1418,33 +1422,35 @@ mod tests {
         assert!(prompts("c2").exists(), "another chat's stay");
         assert!(slot.lookup(b"one").is_none());
         assert!(slot.lookup(b"two").is_some());
-        assert_eq!(slot.current().unwrap().chat.as_deref(), Some("c2"));
-        assert_eq!(forget_chat(&persona, "c2").unwrap().removed, 3);
         assert_eq!(slot.current(), None);
+        assert!(root.join("persona/scene/latest.json").exists());
+        assert_eq!(forget_chat(&persona, "c2").unwrap().removed, 3);
+        assert!(!root.join("persona/scene/latest.json").exists());
         assert!(forget_chat(&persona, "../escape").is_err());
         std::fs::remove_dir_all(root).ok();
     }
 
-    /// The assistant's and incognito's chats never start from the store's
-    /// latest: it is shared by unrelated conversations (review of #597). A
-    /// persona's do (R7).
+    /// No chat starts from another's scene, the assistant's or a persona's
+    /// (the owner, 2026-10-27: a persona's did, R7).
     #[test]
-    fn only_a_persona_chat_starts_from_the_latest() {
+    fn no_chat_starts_from_another_chats_scene() {
         let dir = std::env::temp_dir().join(format!("mecha-scene-{}", uuid::Uuid::new_v4()));
         let sessions = dir.join("sessions");
-        let first = assistant_slot(&sessions, "chat-a");
         let s = Scene {
             picture: Some(hash(b"x")),
             ..Scene::default()
         };
+        let first = assistant_slot(&sessions, "chat-a");
         first.land(&s).unwrap();
         assert!(first.current().is_some());
         assert!(assistant_slot(&sessions, "chat-b").current().is_none());
-        let persona = SceneSlot {
-            from_latest: true,
-            ..assistant_slot(&sessions, "chat-c")
-        };
-        assert!(persona.current().is_some());
+        let personas = dir.join("personas");
+        let first = persona_slot(&personas, "mara", "chat-a");
+        first.land(&s).unwrap();
+        assert!(first.current().is_some());
+        assert!(persona_slot(&personas, "mara", "chat-b")
+            .current()
+            .is_none());
         std::fs::remove_dir_all(dir).ok();
     }
 

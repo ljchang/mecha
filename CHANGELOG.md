@@ -202,6 +202,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A new picture starts from nothing, and a new chat starts with no scene.**
+  A persona's new chat no longer continues from her last picture, and within
+  a chat a picture builds on an earlier one only when it names that picture,
+  which the model is told to do only when the owner asks to continue, build
+  on, edit or change it. A new picture takes no place, clothes or people from
+  the chat's record. Reverses ruling R7 (`IMAGE-SCENE-DESIGN.md` R10).
+
 - **Settings → Voice picks from the voice library.** The assistant's voice
   picker lists the library's unlocked voices as they stand, so a voice
   recorded a moment ago is there without a call first. It used to list the
