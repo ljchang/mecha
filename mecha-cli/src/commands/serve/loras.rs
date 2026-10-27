@@ -246,11 +246,23 @@ fn describe(here: &Here, family: Family, files: Result<Vec<String>, String>) -> 
     })
 }
 
+/// Which write the page asked for: with the old file as the registry, only
+/// an add can go ahead (creating the new file, on consent). An edit or a
+/// remove would act on the old file, which mecha never writes (§3), so it
+/// is refused with what to do instead (review of #750).
+#[derive(Clone, Copy, PartialEq)]
+enum Op {
+    Add,
+    Edit,
+    Remove,
+}
+
 /// A write, behind the unlock and the old-file confirmation.
 async fn write(
     state: St,
     token: Option<String>,
     create_new: bool,
+    kind: Op,
     op: impl FnOnce(&std::path::Path) -> Result<(), loras::WriteError> + Send + 'static,
 ) -> Response {
     if !state.library.unlocked(token.as_deref()) {
@@ -258,15 +270,28 @@ async fn write(
     }
     let done = tokio::task::spawn_blocking(move || {
         let here = Here::read().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
-        if let (Source::Legacy(old), false) = (&here.loaded().source, create_new) {
-            return Err((
-                StatusCode::CONFLICT,
-                format!(
-                    "Saving creates {}, and {} stops being read: move its entries there first, or confirm.",
-                    here.home.join(loras::FILE).display(),
-                    old.display()
-                ),
-            ));
+        if let Source::Legacy(old) = &here.loaded().source {
+            let new = here.home.join(loras::FILE);
+            if kind != Op::Add {
+                return Err((
+                    StatusCode::CONFLICT,
+                    format!(
+                        "This entry is in the old file {}, which mecha does not edit: change it there, or move its entries to {} first.",
+                        old.display(),
+                        new.display()
+                    ),
+                ));
+            }
+            if !create_new {
+                return Err((
+                    StatusCode::CONFLICT,
+                    format!(
+                        "Saving creates {}, and {} stops being read: move its entries there first, or confirm.",
+                        new.display(),
+                        old.display()
+                    ),
+                ));
+            }
         }
         op(&here.home).map_err(|e| match e {
             loras::WriteError::NotFound => (StatusCode::NOT_FOUND, e.to_string()),
@@ -288,7 +313,7 @@ async fn add(state: St, body: WriteBody, family: Family) -> Response {
         entry,
         create_new,
     } = body;
-    write(state, unlock, create_new, move |home| {
+    write(state, unlock, create_new, Op::Add, move |home| {
         loras::write_entry(home, family, &entry, None)
     })
     .await
@@ -300,16 +325,14 @@ async fn edit(state: St, name: String, body: WriteBody, family: Family) -> Respo
         entry,
         create_new,
     } = body;
-    write(state, unlock, create_new, move |home| {
+    write(state, unlock, create_new, Op::Edit, move |home| {
         loras::write_entry(home, family, &entry, Some(&name))
     })
     .await
 }
 
 async fn remove(state: St, name: String, q: UnlockQuery, family: Family) -> Response {
-    // Removing from the old file is never a write mecha makes: with it as
-    // the registry there is nothing in the new one to remove.
-    write(state, q.unlock, false, move |home| {
+    write(state, q.unlock, false, Op::Remove, move |home| {
         loras::remove_entry(home, family, &name)
     })
     .await
@@ -490,6 +513,30 @@ mod tests {
         let (code, text) = body(add(State(state.clone()), w(false), Family::QwenImage).await).await;
         assert_eq!(code, StatusCode::CONFLICT, "{text}");
         assert!(text.contains("stops being read"), "{text}");
+        // An old entry is edited or removed in the old file, consent or not.
+        let edit_old = WriteBody {
+            unlock: token.clone(),
+            entry: entry("wave", "w.safetensors"),
+            create_new: true,
+        };
+        let (code, text) =
+            body(edit(State(state.clone()), "wave".into(), edit_old, Family::H3).await).await;
+        assert_eq!(code, StatusCode::CONFLICT, "{text}");
+        assert!(text.contains("does not edit"), "{text}");
+        let (code, text) = body(
+            remove(
+                State(state.clone()),
+                "wave".into(),
+                UnlockQuery {
+                    unlock: token.clone(),
+                },
+                Family::H3,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(code, StatusCode::CONFLICT, "{text}");
+        assert!(text.contains("does not edit"), "{text}");
         assert!(!home.join(loras::FILE).exists());
         let (code, text) = body(add(State(state.clone()), w(true), Family::QwenImage).await).await;
         assert_eq!(code, StatusCode::OK, "{text}");
