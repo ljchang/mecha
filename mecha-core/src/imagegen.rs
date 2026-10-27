@@ -2809,7 +2809,8 @@ impl ImageGenerate {
                     "route": "layered",
                     "step": step,
                     "seed": req.seed,
-                    "prompt": req.prompt,
+                    // As sent: the settings' trigger words included.
+                    "prompt": with_triggers(&req.prompt, &req.loras),
                     "words": lp.words,
                 });
                 if let Err(e) = append_prompt(log, &line) {
@@ -5855,7 +5856,7 @@ impl Tool for ImageGenerate {
                     "loras": manifest["loras"],
                     "roles": manifest["roles"],
                     "reader": manifest["reader"],
-                    "prompt": req.prompt,
+                    "prompt": with_triggers(&req.prompt, &req.loras),
                     // The chat-derived words in it, apart from the compiler's
                     // own sentences: what `check-private` reads, so a prompt
                     // studied here is never pasted into the repository.

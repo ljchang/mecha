@@ -592,8 +592,9 @@ last good registry), and `comfy_graph` chains the entries with their
 triggers ahead of the prompt. The layered build's passes chain them too;
 a clip's reference redraw (`upscale`) does not. The result and the
 manifest count what applied and why the rest did not; the owner's prompt
-log carries the same counts. A removed picture entry leaves every list,
-and the page says how many held it. `doctor` names a damaged list and a
+log carries the same counts and the prompt as sent. A removed picture
+entry leaves every list, and the page says how many held it; a renamed
+one keeps its place on them. `doctor` names a damaged list and a
 name the registry lost, for pictures; the clip half of those findings is
 step 2's. Two departures from §6:
 

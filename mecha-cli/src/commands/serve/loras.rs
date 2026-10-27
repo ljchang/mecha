@@ -347,7 +347,20 @@ async fn edit(state: St, name: String, body: WriteBody, family: Family) -> Respo
         create_new,
     } = body;
     write(state, unlock, create_new, Op::Edit, move |home| {
-        loras::write_entry(home, family, &entry, Some(&name))
+        loras::write_entry(home, family, &entry, Some(&name))?;
+        // A renamed picture entry keeps its place on every list that held
+        // it, rather than silently dropping off them (review of #751).
+        let to = entry.name.trim();
+        if family == Family::QwenImage && to != name {
+            loras::rename_in_layers(
+                &mecha_core::sampling::chat_path(home),
+                &home.join("personas"),
+                &name,
+                Some(to),
+            )
+            .map_err(loras::WriteError::Io)?;
+        }
+        Ok(())
     })
     .await
 }
@@ -937,6 +950,53 @@ mod tests {
         let (code, _) = get("nobody", token.clone()).await;
         assert_eq!(code, StatusCode::NOT_FOUND);
         put("mara", false, &["paint"], token.clone()).await;
+        // A rename keeps its place on both lists (review of #751).
+        let w = WriteBody {
+            unlock: token.clone(),
+            entry: EntryInput {
+                name: "paint".into(),
+                about: "a made-up paint look".into(),
+                file: Some("p.safetensors".into()),
+                ..Default::default()
+            },
+            create_new: false,
+        };
+        let renamed = WriteBody {
+            entry: EntryInput {
+                name: "oils".into(),
+                ..w.entry.clone()
+            },
+            ..w
+        };
+        let (code, text) = body(
+            edit(
+                State(state.clone()),
+                "paint".into(),
+                renamed,
+                Family::QwenImage,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK, "{text}");
+        let (_, text) = get("mara", token.clone()).await;
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).unwrap()["names"],
+            json!(["oils"])
+        );
+        let back = WriteBody {
+            unlock: token.clone(),
+            entry: EntryInput {
+                name: "paint".into(),
+                about: "a made-up paint look".into(),
+                file: Some("p.safetensors".into()),
+                ..Default::default()
+            },
+            create_new: false,
+        };
+        let (code, _) =
+            body(edit(State(state.clone()), "oils".into(), back, Family::QwenImage).await).await;
+        assert_eq!(code, StatusCode::OK);
         // Removing the entry takes it off both lists, and says how many.
         let r = remove(
             State(state.clone()),

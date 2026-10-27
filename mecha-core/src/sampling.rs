@@ -394,7 +394,13 @@ pub fn set_chat(path: &std::path::Path, tuning: Tuning) -> Result<Tuning> {
         toml::Value::Table(t) => t,
         _ => toml::Table::new(),
     };
-    if let Some(v) = chat_table(path)?.and_then(|t| t.get("loras").cloned()) {
+    // A file that is not TOML is replaced, as before the list shared it:
+    // the chat's damaged list and an absent one both apply nothing.
+    if let Some(v) = chat_table(path)
+        .ok()
+        .flatten()
+        .and_then(|t| t.get("loras").cloned())
+    {
         table.insert("loras".into(), v);
     }
     write_chat(path, &table)?;
