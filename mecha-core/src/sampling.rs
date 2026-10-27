@@ -384,14 +384,64 @@ pub fn chat(path: &std::path::Path) -> Tuning {
     }
 }
 
-/// Write the chat's settings, held to their ranges and lists first.
+/// Write the chat's settings, held to their ranges and lists first. The
+/// file's LoRA list is not a setting of this route and is written back as it
+/// was (`docs/LORA-DESIGN.md` §6): a save from a locked page, which cannot
+/// hold the list, must not clear it.
 pub fn set_chat(path: &std::path::Path, tuning: Tuning) -> Result<Tuning> {
     let tuning = tuning.checked()?;
-    let text = toml::to_string(&tuning)?;
-    let tmp = path.with_extension("toml.part");
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, path)?;
+    let mut table = match toml::Value::try_from(&tuning)? {
+        toml::Value::Table(t) => t,
+        _ => toml::Table::new(),
+    };
+    if let Some(v) = chat_table(path)?.and_then(|t| t.get("loras").cloned()) {
+        table.insert("loras".into(), v);
+    }
+    write_chat(path, &table)?;
     Ok(tuning)
+}
+
+/// The chat's picture LoRA list (`loras::Layer`), read like its settings:
+/// a missing file has none. A file that does not read is a damaged list,
+/// never an empty one, so the page and the result can say so.
+pub fn chat_loras(path: &std::path::Path) -> crate::loras::Layer {
+    match chat_table(path) {
+        Ok(t) => crate::loras::Layer::read(t.as_ref().and_then(|t| t.get("loras"))),
+        Err(_) => crate::loras::Layer::Damaged(toml::Value::Boolean(false)),
+    }
+}
+
+/// Write the chat's picture LoRA list and nothing else. A settings file that
+/// is not TOML is refused rather than replaced, since replacing it would
+/// lose the owner's other settings in it.
+pub fn set_chat_loras(path: &std::path::Path, layer: &crate::loras::Layer) -> Result<()> {
+    let mut table = chat_table(path)?.unwrap_or_default();
+    match layer.value() {
+        Some(v) => table.insert("loras".into(), v),
+        None => table.remove("loras"),
+    };
+    write_chat(path, &table)
+}
+
+/// The settings file as a table, `None` when there is none.
+fn chat_table(path: &std::path::Path) -> Result<Option<toml::Table>> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(toml::from_str(&text).map_err(|e| {
+            anyhow::anyhow!(
+                "{} is not TOML ({e}); fix or remove it first",
+                path.display()
+            )
+        })?)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => bail!("{} cannot be read ({e})", path.display()),
+    }
+}
+
+fn write_chat(path: &std::path::Path, table: &toml::Table) -> Result<()> {
+    let tmp = path.with_extension("toml.part");
+    std::fs::write(&tmp, toml::to_string(table)?)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
 }
 
 /// Roughly how long a picture takes on this machine, in seconds: a fixed
@@ -602,5 +652,33 @@ mod tests {
             }),
             11
         );
+    }
+
+    /// The chat's settings file holds its LoRA list too, and each route
+    /// writes only its own half: a settings save keeps the list, and a list
+    /// save keeps the settings. A file that is not TOML is refused by the
+    /// list's route rather than replaced.
+    #[test]
+    fn the_chat_file_keeps_each_routes_half() {
+        use crate::loras::Layer;
+        let dir = std::env::temp_dir().join(format!("mecha-chat-loras-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = chat_path(&dir);
+        assert_eq!(chat_loras(&path), Layer::Inherit);
+        set_chat_loras(&path, &Layer::Set(vec!["paint".into()])).unwrap();
+        let guided = Tuning {
+            cfg: Some(3.0),
+            ..Tuning::default()
+        };
+        set_chat(&path, guided.clone()).unwrap();
+        assert_eq!(chat_loras(&path), Layer::Set(vec!["paint".into()]));
+        set_chat_loras(&path, &Layer::Set(vec![])).unwrap();
+        assert_eq!(chat(&path), guided);
+        assert_eq!(chat_loras(&path), Layer::Set(vec![]));
+        std::fs::write(&path, "cfg = [").unwrap();
+        assert!(matches!(chat_loras(&path), Layer::Damaged(_)));
+        assert!(set_chat_loras(&path, &Layer::Set(vec![])).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "cfg = [");
+        std::fs::remove_dir_all(dir).ok();
     }
 }

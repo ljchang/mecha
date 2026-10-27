@@ -997,6 +997,8 @@ impl Sampler {
             layers: false,
             layers_posed: false,
             image_tuning: Default::default(),
+            // A replay draws with no LoRAs: it has no chat layer.
+            image_loras: Default::default(),
             owner: &branch.owner,
             history: &branch.messages,
             panel: false,

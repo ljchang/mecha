@@ -312,6 +312,58 @@ pub fn check_loras(
             }
         }
     }
+    if image.is_some() {
+        out.extend(picture_layer_findings(home, &loaded));
+    }
+    out
+}
+
+/// The picture layers' lists (`docs/LORA-DESIGN.md` §4): a list that does
+/// not read, which applies nothing, and a name the registry no longer holds
+/// as a picture entry, which a picture's result counts without naming. Both
+/// named here, for the owner. Not read while the registry itself does not
+/// read: every name would look lost.
+fn picture_layer_findings(home: &Path, loaded: &crate::loras::Loaded) -> Vec<Finding> {
+    use crate::loras::{Family, Layer};
+    let mut layers = vec![(
+        "the chat's picture settings".to_string(),
+        crate::sampling::chat_loras(&crate::sampling::chat_path(home)),
+    )];
+    for p in crate::persona::Store::load(&home.join("personas")).all() {
+        layers.push((format!("persona `{}`", p.name), p.state.image.loras.clone()));
+    }
+    let mut out = Vec::new();
+    for (whose, layer) in layers {
+        let finding = |summary: String, detail: String| Finding {
+            component: "loras".to_string(),
+            severity: Severity::Attention,
+            summary,
+            detail,
+            remedy: None,
+        };
+        match layer {
+            Layer::Damaged(_) => out.push(finding(
+                format!("the picture LoRA list of {whose} does not read"),
+                "It applies no LoRA, never the chat's, until it is saved again from the page."
+                    .into(),
+            )),
+            Layer::Set(names) if loaded.unreadable.is_none() => {
+                for n in names {
+                    let held = loaded
+                        .entries
+                        .iter()
+                        .any(|(e, _)| e.name == n && e.model == Family::QwenImage);
+                    if !held {
+                        out.push(finding(
+                            format!("{whose} lists the LoRA `{n}`, which the registry no longer has"),
+                            "Pictures are drawn without it. Remove it from the list, or add the entry back.".into(),
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
     out
 }
 
@@ -3315,6 +3367,50 @@ mod tests {
             !s.contains(&"the LoRA registry has moved".to_string()),
             "{s:?}"
         );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A picture list that does not read, and a name a list holds that the
+    /// registry lost, are each a finding naming the layer and the name: the
+    /// picture's own result only counts them.
+    #[test]
+    fn a_picture_list_that_lost_its_entry_is_named() {
+        use crate::loras::Layer;
+        let home = std::env::temp_dir()
+            .join("mecha-doctor-test")
+            .join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(
+            home.join(crate::loras::FILE),
+            "[[lora]]\nname = \"paint\"\nabout = \"x\"\nmodel = \"qwen-image\"\nfile = \"p.safetensors\"\n",
+        )
+        .unwrap();
+        let chat = crate::sampling::chat_path(&home);
+        crate::sampling::set_chat_loras(&chat, &Layer::Set(vec!["paint".into(), "gone".into()]))
+            .unwrap();
+        let image = crate::imagegen::ImageConfig::default();
+        let s: Vec<String> = check_loras(&home, Some(&image), None)
+            .into_iter()
+            .map(|f| f.summary)
+            .collect();
+        assert!(
+            s.contains(&"the chat's picture settings lists the LoRA `gone`, which the registry no longer has".to_string()),
+            "{s:?}"
+        );
+        assert!(!s.iter().any(|s| s.contains("`paint`, which")), "{s:?}");
+        std::fs::write(&chat, "loras = 3\n").unwrap();
+        let s: Vec<String> = check_loras(&home, Some(&image), None)
+            .into_iter()
+            .map(|f| f.summary)
+            .collect();
+        assert!(
+            s.contains(
+                &"the picture LoRA list of the chat's picture settings does not read".to_string()
+            ),
+            "{s:?}"
+        );
+        // No image server configured: pictures expect nothing.
+        assert!(check_loras(&home, None, None).is_empty());
         let _ = std::fs::remove_dir_all(&home);
     }
 

@@ -66,6 +66,9 @@ pub struct Turn<'a> {
     /// The persona's picture settings (`sampling::Tuning`), read by the host
     /// from the owner's setting, or a replay arm's.
     pub image_tuning: crate::sampling::Tuning,
+    /// The persona's picture LoRA list, read by the host like
+    /// `image_tuning`; a replay arm's is inherit.
+    pub image_loras: crate::loras::Layer,
     /// The owner's words this turn, as typed — not the goal folded ahead of
     /// a first turn.
     pub owner: &'a str,
@@ -116,6 +119,7 @@ pub fn context(agent: &Agent, turn: Turn<'_>) -> RunContext {
     tools.layers = turn.layers;
     tools.layers_posed = turn.layers_posed;
     tools.image_tuning = turn.image_tuning;
+    tools.image_loras = turn.image_loras;
     // `for_session` clones the agent's context, so each arm is set: `Off`
     // clears what the base might carry rather than inheriting it, since a
     // replay's header reports it as a fact (review of #612, pass 4).

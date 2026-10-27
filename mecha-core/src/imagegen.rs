@@ -258,6 +258,10 @@ pub struct Request {
     /// — the owner painted it, and it arrives here already sized to the
     /// canvas and softened (`prepare_mask`). `None` redraws the whole frame.
     pub mask: Option<Reference>,
+    /// The owner's picture LoRAs from settings (`loras::for_picture`),
+    /// chained between the model's loader and the sampler in this order.
+    /// Never the model's: the tool's schema has no such field.
+    pub loras: Vec<crate::loras::PictureLora>,
 }
 
 /// The reference size for a masked edit: the canvas at full detail, since
@@ -706,8 +710,8 @@ pub fn comfy_graph(
     mask: Option<&str>,
 ) -> Value {
     let mut encode = json!({
-        "clip": ["clip", 0], "prompt": req.prompt, "negative_prompt": req.sampling.negative,
-        "resolution": req.reference_size});
+        "clip": ["clip", 0], "prompt": with_triggers(&req.prompt, &req.loras),
+        "negative_prompt": req.sampling.negative, "resolution": req.reference_size});
     let model = cfg.model_file(req.sampling.model);
     let (loader, mut unet) = unet_loader(model);
     unet["unet_name"] = json!(model);
@@ -748,8 +752,17 @@ pub fn comfy_graph(
         _ => json!(["encode", 2]),
     };
     graph["encode"] = json!({"class_type": "TextEncodeQwenImage21", "inputs": encode});
+    // One loader per LoRA, each patching the model the last one gave
+    // (`docs/LORA-DESIGN.md` §5), as the clip graph chains them.
+    let mut model = json!(["unet", 0]);
+    for (i, l) in req.loras.iter().enumerate() {
+        let node = format!("lora{}", i + 1);
+        graph[&node] = json!({"class_type": "LoraLoaderModelOnly", "inputs": {
+            "model": model, "lora_name": l.file, "strength_model": l.strength}});
+        model = json!([node, 0]);
+    }
     graph["sample"] = json!({"class_type": "KSampler", "inputs": {
-        "model": ["unet", 0], "positive": ["encode", 0], "negative": ["encode", 1],
+        "model": model, "positive": ["encode", 0], "negative": ["encode", 1],
         "latent_image": canvas, "seed": req.seed, "steps": req.sampling.steps,
         // Guidance off (cfg 1) is the reference setting; above 1 doubles
         // every step. Each value is from a closed range or list
@@ -757,6 +770,99 @@ pub fn comfy_graph(
         "cfg": req.sampling.cfg, "sampler_name": req.sampling.sampler,
         "scheduler": req.sampling.scheduler, "denoise": 1.0}});
     graph
+}
+
+/// Whether the owner's picture LoRAs apply to a picture that loads
+/// `diffusion_model`, and why not when they do not (`docs/LORA-DESIGN.md`
+/// §5). Checked per picture on the file it actually loads, which is the
+/// turbo file for a turbo picture, never on one config key. M1 and M2
+/// (2026-10-27) measured both int8 files, standard and turbo: every key
+/// patched, the trained likeness drawn on both, about a second more a
+/// picture. A `.gguf` file patches through its own loader, which was not
+/// measured, so nothing applies to it.
+pub fn model_lora(diffusion_model: &str) -> std::result::Result<(), &'static str> {
+    if unet_loader(diffusion_model).0 == "UnetLoaderGGUF" {
+        return Err("LoRAs are not applied to a .gguf model file");
+    }
+    Ok(())
+}
+
+/// What a picture's result says of the owner's LoRAs: counts and reasons,
+/// never a name, since the model has no say in them (`docs/LORA-DESIGN.md`
+/// §4). Empty when the settings list none.
+pub fn loras_said(p: &crate::loras::Picked, off: Option<&str>, triggers: bool) -> String {
+    let n = |k: usize| {
+        if k == 1 {
+            "1 LoRA".to_string()
+        } else {
+            format!("{k} LoRAs")
+        }
+    };
+    let mut out = String::new();
+    if !p.applied.is_empty() {
+        out.push_str(&format!(
+            " Picture settings applied {}.",
+            n(p.applied.len())
+        ));
+        if triggers {
+            out.push_str(" Settings added trigger words to the prompt.");
+        }
+    }
+    if let Some(why) = off {
+        out.push_str(&format!(
+            " The picture settings' LoRAs were left out: {why}."
+        ));
+    }
+    if p.refused > 0 {
+        out.push_str(&format!(
+            " {} in picture settings {} left out because {} file did not check.",
+            n(p.refused),
+            if p.refused == 1 { "was" } else { "were" },
+            if p.refused == 1 { "its" } else { "their" },
+        ));
+    }
+    if p.gone > 0 {
+        out.push_str(&format!(
+            " {} in picture settings {} no longer in the registry.",
+            n(p.gone),
+            if p.gone == 1 { "is" } else { "are" },
+        ));
+    }
+    if p.damaged {
+        out.push_str(" The LoRA list in picture settings could not be read, so none applied.");
+    }
+    out
+}
+
+/// The manifest's `loras`: the same counts, or null when settings list none.
+fn loras_counted(p: &crate::loras::Picked, off: Option<&str>) -> Value {
+    if p.applied.is_empty() && off.is_none() && p.refused == 0 && p.gone == 0 && !p.damaged {
+        return Value::Null;
+    }
+    json!({
+        "applied": p.applied.len(),
+        "left_out": off,
+        "refused": p.refused,
+        "gone": p.gone,
+        "damaged": p.damaged,
+    })
+}
+
+/// The prompt with each LoRA's trigger words where it does not already say
+/// them (any case), ahead of it: a picture prompt has no field to insert
+/// into, so this is `videogen::loras::with_triggers`'s prefix branch.
+pub fn with_triggers(prompt: &str, loras: &[crate::loras::PictureLora]) -> String {
+    let lower = prompt.to_lowercase();
+    let mut missing: Vec<&str> = Vec::new();
+    for t in loras.iter().filter_map(|l| l.trigger.as_deref()) {
+        if !lower.contains(&t.to_lowercase()) && !missing.contains(&t) {
+            missing.push(t);
+        }
+    }
+    if missing.is_empty() {
+        return prompt.to_string();
+    }
+    format!("{}. {prompt}", missing.join(", "))
 }
 
 /// How much free memory a job needs before it starts, in MB, given what the
@@ -2339,6 +2445,14 @@ pub struct ImageGenerate {
     /// tests — there is no chat layer, so an arm measures only what it
     /// names.
     chat_settings: Option<std::path::PathBuf>,
+    /// The mecha home whose LoRA registry a picture's list is resolved
+    /// against (`loras::Loaded::read`), read on every call that has a list.
+    /// Unset — replays, evals, tests — no list applies.
+    loras_home: Option<std::path::PathBuf>,
+    /// The registry as last read whole: a re-read that fails keeps it, so
+    /// one transient read error never draws a picture without its LoRAs
+    /// (`docs/LORA-DESIGN.md` §3).
+    loras_last: Arc<std::sync::Mutex<Option<crate::loras::Loaded>>>,
 }
 
 /// The description a form is built with: [`DESCRIPTION`], then the styles
@@ -2444,7 +2558,79 @@ impl ImageGenerate {
             reference_pixels: MAX_REFERENCE_PIXELS,
             faces: Arc::new(crate::face::CachedRetinaFace),
             chat_settings: None,
+            loras_home: None,
+            loras_last: Arc::new(std::sync::Mutex::new(None)),
         })
+    }
+
+    /// Resolve the owner's picture LoRA lists against the registry in
+    /// `mecha_home` on every call.
+    pub fn with_loras(mut self, mecha_home: std::path::PathBuf) -> Self {
+        self.loras_home = Some(mecha_home);
+        self
+    }
+
+    /// What this picture's LoRA list comes to: the turn's layer over the
+    /// chat's, each name resolved against the registry as it is now, and
+    /// none at all on a model file LoRAs are not measured on (`model_lora`).
+    fn picture_loras(
+        &self,
+        ctx: &ToolCtx,
+        model: crate::sampling::Model,
+    ) -> (crate::loras::Picked, Option<&'static str>) {
+        let chat = self
+            .chat_settings
+            .as_deref()
+            .map(crate::sampling::chat_loras)
+            .unwrap_or_default();
+        let (names, damaged) = ctx.image_loras.over(&chat);
+        if names.is_empty() {
+            return (
+                crate::loras::Picked {
+                    damaged,
+                    ..Default::default()
+                },
+                None,
+            );
+        }
+        let Some(home) = &self.loras_home else {
+            return (
+                crate::loras::Picked {
+                    gone: names.len(),
+                    damaged,
+                    ..Default::default()
+                },
+                None,
+            );
+        };
+        let folders = crate::loras::Folders::of(home, Some(&self.cfg), None);
+        let fresh = crate::loras::Loaded::read(home, None, &folders);
+        let loaded = {
+            let mut last = self.loras_last.lock().unwrap_or_else(|e| e.into_inner());
+            match (&fresh.unreadable, last.as_ref()) {
+                (Some(why), Some(kept)) => {
+                    tracing::warn!("the LoRA registry {why}; pictures keep the last one read");
+                    kept.clone()
+                }
+                (Some(_), None) => fresh,
+                (None, _) => {
+                    *last = Some(fresh.clone());
+                    fresh
+                }
+            }
+        };
+        let picked = crate::loras::for_picture(&names, damaged, &loaded);
+        match model_lora(self.cfg.model_file(model)) {
+            Ok(()) => (picked, None),
+            Err(why) if !picked.applied.is_empty() => (
+                crate::loras::Picked {
+                    applied: Vec::new(),
+                    ..picked
+                },
+                Some(why),
+            ),
+            Err(_) => (picked, None),
+        }
     }
 
     /// Lay the turn's settings over the chat's, read from `path` on every
@@ -2512,6 +2698,8 @@ impl ImageGenerate {
             // 2026-10-11): a persona form without it would draw an unset
             // field at the model's default, not the chat's.
             chat_settings: self.chat_settings.clone(),
+            loras_home: self.loras_home.clone(),
+            loras_last: Arc::clone(&self.loras_last),
         }
     }
 
@@ -2625,6 +2813,7 @@ impl ImageGenerate {
                 references: Vec::new(),
                 reference_size: base.reference_size,
                 mask: None,
+                loras: base.loras.clone(),
             },
         )
         .await;
@@ -2665,6 +2854,7 @@ impl ImageGenerate {
                         references: Vec::new(),
                         reference_size: base.reference_size,
                         mask: None,
+                        loras: base.loras.clone(),
                     },
                 )
                 .await;
@@ -2731,6 +2921,7 @@ impl ImageGenerate {
                     }],
                     reference_size: EDIT_REFERENCE_SIZE,
                     mask: None,
+                    loras: base.loras.clone(),
                 },
             )
             .await;
@@ -2777,6 +2968,7 @@ impl ImageGenerate {
                 references,
                 reference_size: EDIT_REFERENCE_SIZE,
                 mask: None,
+                loras: base.loras.clone(),
             },
         )
         .await;
@@ -2800,6 +2992,7 @@ impl ImageGenerate {
                 }],
                 reference_size: EDIT_REFERENCE_SIZE,
                 mask: None,
+                loras: base.loras.clone(),
             },
         )
         .await;
@@ -2849,6 +3042,9 @@ impl ImageGenerate {
             }],
             reference_size: EDIT_REFERENCE_SIZE,
             mask: None,
+            // A redraw for a clip's reference: the owner's picture LoRAs
+            // are for the pictures a chat draws, not for this.
+            loras: Vec::new(),
         };
         let timeout = Duration::from_secs(self.cfg.timeout_secs);
         let out = self
@@ -3736,6 +3932,8 @@ impl Tool for ImageGenerate {
         // guards.
         // Read once, so the guard and the request agree on the model.
         let tuning = self.tuning(ctx);
+        // The owner's LoRAs for it, from the same read of the settings.
+        let (picked, lora_off) = self.picture_loras(ctx, tuning.model.unwrap_or_default());
         let may_segment = call.may_segment();
         if let Err(why) = self
             .memory_guard(tuning.model.unwrap_or_default(), may_segment)
@@ -3905,6 +4103,7 @@ impl Tool for ImageGenerate {
             references: Vec::new(),
             reference_size: EDIT_REFERENCE_SIZE,
             mask: None,
+            loras: picked.applied.clone(),
         };
         // A redraw is drawn at a seed the picture was not (§5.1).
         if plan.route == "redrawn" {
@@ -5614,6 +5813,9 @@ impl Tool for ImageGenerate {
                     "scheduler": req.sampling.scheduler,
                     "negative": !req.sampling.negative.is_empty(),
                 },
+                // The owner's LoRAs, by count: the model had no say in them,
+                // and the manifest names none (`docs/LORA-DESIGN.md` §4).
+                "loras": loras_counted(&picked, lora_off),
             });
             // The prompt, for the owner only, outside the jail (the manifest
             // never carries it): a line that cannot be written costs the
@@ -5626,6 +5828,7 @@ impl Tool for ImageGenerate {
                     "route": plan.route,
                     "seed": req.seed,
                     "sampling": manifest["sampling"],
+                    "loras": manifest["loras"],
                     "roles": manifest["roles"],
                     "reader": manifest["reader"],
                     "prompt": req.prompt,
@@ -5740,6 +5943,11 @@ impl Tool for ImageGenerate {
                      together and finished.",
                 );
             }
+            text.push_str(&loras_said(
+                &picked,
+                lora_off,
+                with_triggers(&req.prompt, &req.loras) != req.prompt,
+            ));
             if let Some(note) = &layers_note {
                 text.push(' ');
                 text.push_str(note);
@@ -6524,6 +6732,29 @@ mod tests {
     }
 
     #[test]
+    fn a_trigger_is_added_once_and_only_where_the_prompt_lacks_it() {
+        let l = |t: Option<&str>| crate::loras::PictureLora {
+            file: "x.safetensors".into(),
+            strength: 1.0,
+            trigger: t.map(String::from),
+        };
+        assert_eq!(with_triggers("a lighthouse", &[]), "a lighthouse");
+        assert_eq!(
+            with_triggers(
+                "a lighthouse",
+                &[l(Some("oil paint")), l(None), l(Some("oil paint"))]
+            ),
+            "oil paint. a lighthouse"
+        );
+        assert_eq!(
+            with_triggers("An Oil Paint lighthouse", &[l(Some("oil paint"))]),
+            "An Oil Paint lighthouse"
+        );
+        assert!(model_lora("Qwen-Image-2.1-Q4.GGUF").is_err());
+        assert!(model_lora(crate::sampling::turbo_model()).is_ok());
+    }
+
+    #[test]
     fn the_graph_is_fixed_and_the_prompt_is_only_ever_a_value() {
         let cfg = ImageConfig::default();
         // A prompt that is itself a graph fragment must stay a string.
@@ -6536,6 +6767,7 @@ mod tests {
             references: Vec::new(),
             reference_size: EDIT_REFERENCE_SIZE,
             mask: None,
+            loras: Vec::new(),
         };
         let g = comfy_graph(&cfg, &req, &[], None);
         let mut classes: Vec<_> = g
@@ -6589,6 +6821,7 @@ mod tests {
             references: Vec::new(),
             reference_size: EDIT_REFERENCE_SIZE,
             mask: None,
+            loras: Vec::new(),
         };
         let g = comfy_graph(&cfg, &req(guided.resolve(cfg.steps)), &[], None);
         let k = &g["sample"]["inputs"];
@@ -6643,6 +6876,7 @@ mod tests {
                 references: Vec::new(),
                 reference_size: EDIT_REFERENCE_SIZE,
                 mask: None,
+                loras: Vec::new(),
             };
             let g = comfy_graph(&cfg, &req, &[], None);
             assert_eq!(g["unet"]["class_type"], node, "{file}");
@@ -6808,6 +7042,7 @@ mod tests {
             references: Vec::new(),
             reference_size: EDIT_REFERENCE_SIZE,
             mask: None,
+            loras: Vec::new(),
         };
         let g = comfy_graph(&cfg, &req, &["a.png".into(), "b.jpg".into()], None);
         assert_eq!(g["ref1"]["class_type"], "LoadImage");
@@ -8857,6 +9092,7 @@ mod tests {
             references: Vec::new(),
             reference_size: EDIT_REFERENCE_SIZE,
             mask: None,
+            loras: Vec::new(),
         };
         let g = comfy_graph(&cfg, &req, &["pic.png".into()], Some("m.png"));
         assert_eq!(g["maskimg"]["inputs"]["image"], "m.png [temp]");
@@ -11958,6 +12194,105 @@ mod tests {
         let out = tool(&url).call(call, &cx).await.unwrap();
         assert!(!out.is_error, "{}", out.content);
         assert_eq!(sampled(&seen).0, 1.0, "no chat layer");
+    }
+
+    /// The owner's picture LoRAs (LORA-DESIGN.md §5): the chat's list rides
+    /// the graph between the loader and the sampler, in list order, with its
+    /// triggers ahead of the prompt, and the result counts them without a
+    /// name. A persona's empty list draws none; a name the registry lost is
+    /// counted; a `.gguf` model leaves them out and says so.
+    #[tokio::test]
+    async fn the_owners_loras_ride_the_graph_and_the_result_counts_them() {
+        let (url, seen) = distinct(4).await;
+        let (dir, store, home) = (tempdir(), tempdir(), tempdir());
+        for f in ["paint", "grain"] {
+            crate::loras::write_test_lora(
+                &home.join("pics").join(format!("{f}.safetensors")),
+                crate::loras::QWEN_KEYS,
+            );
+        }
+        std::fs::write(
+            home.join(crate::loras::FILE),
+            "[[lora]]\nname = \"paint\"\nabout = \"a made-up paint look\"\nmodel = \"qwen-image\"\n\
+             file = \"paint.safetensors\"\nstrength = 0.8\ntrigger = \"oil paint\"\n\n\
+             [[lora]]\nname = \"grain\"\nabout = \"a made-up film grain\"\nmodel = \"qwen-image\"\n\
+             file = \"grain.safetensors\"\n",
+        )
+        .unwrap();
+        let chat = crate::sampling::chat_path(&home);
+        crate::sampling::set_chat_loras(
+            &chat,
+            &crate::loras::Layer::Set(vec!["paint".into(), "grain".into()]),
+        )
+        .unwrap();
+        let cfg = |model: &str| ImageConfig {
+            url: url.clone(),
+            min_available_mb: 0,
+            unload_after_secs: 0,
+            loras_dir: Some(vec![home.join("pics")]),
+            diffusion_model: model.into(),
+            ..Default::default()
+        };
+        let t = ImageGenerate::new(cfg(&ImageConfig::default().diffusion_model))
+            .unwrap()
+            .with_chat_settings(chat.clone())
+            .with_loras(home.clone());
+        let graph = |seen: &Arc<Mutex<Vec<String>>>| {
+            let line = last_prompt(seen);
+            let body: Value = serde_json::from_str(&line[line.find('{').unwrap()..]).unwrap();
+            body["prompt"].clone()
+        };
+        let call = json!({"scene": {"setting": "a lighthouse at dusk"}});
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        let out = t.call(call.clone(), &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let g = graph(&seen);
+        assert_eq!(g["lora1"]["inputs"]["lora_name"], "paint.safetensors");
+        assert_eq!(g["lora1"]["inputs"]["strength_model"], 0.8);
+        assert_eq!(g["lora1"]["inputs"]["model"], json!(["unet", 0]));
+        assert_eq!(g["lora2"]["inputs"]["lora_name"], "grain.safetensors");
+        assert_eq!(g["lora2"]["inputs"]["model"], json!(["lora1", 0]));
+        assert_eq!(g["sample"]["inputs"]["model"], json!(["lora2", 0]));
+        let prompt = g["encode"]["inputs"]["prompt"].as_str().unwrap();
+        assert!(prompt.starts_with("oil paint. "), "{prompt}");
+        assert!(out.content.contains("applied 2 LoRAs"), "{}", out.content);
+        assert!(out.content.contains("trigger words"), "{}", out.content);
+        for name in ["paint", "grain"] {
+            assert!(!out.content.contains(name), "named: {}", out.content);
+        }
+        assert_eq!(manifest_of(&dir, &out.content)["loras"]["applied"], 2);
+        // Through the persona form, a persona set to none draws none.
+        let persona = t.persona_form(None);
+        cx.image_loras = crate::loras::Layer::Set(vec![]);
+        let out = persona.call(call.clone(), &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(graph(&seen).get("lora1").is_none());
+        assert!(!out.content.contains("LoRA"), "{}", out.content);
+        assert!(manifest_of(&dir, &out.content)["loras"].is_null());
+        // A name the registry no longer has is counted, never named.
+        cx.image_loras = crate::loras::Layer::Set(vec!["grain".into(), "gone".into()]);
+        let out = persona.call(call.clone(), &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(
+            graph(&seen)["lora1"]["inputs"]["lora_name"],
+            "grain.safetensors"
+        );
+        assert!(
+            out.content
+                .contains("1 LoRA in picture settings is no longer in the registry"),
+            "{}",
+            out.content
+        );
+        // A .gguf model file: left out, and said.
+        cx.image_loras = crate::loras::Layer::Inherit;
+        let gguf = ImageGenerate::new(cfg("Qwen-Image-2.1-Q4.gguf"))
+            .unwrap()
+            .with_chat_settings(chat)
+            .with_loras(home);
+        let out = gguf.call(call, &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(graph(&seen).get("lora1").is_none());
+        assert!(out.content.contains(".gguf"), "{}", out.content);
     }
 
     /// The pinned turbo model missing from the server is refused naming the

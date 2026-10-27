@@ -4217,6 +4217,7 @@ impl PersonaChats {
                 layers_posed: false,
                 // The owner's picture settings, read fresh this turn.
                 image_tuning: mecha_core::persona::tuning(&self.store, &name),
+                image_loras: mecha_core::persona::loras(&self.store, &name),
                 owner: &text,
                 history: &before,
                 panel: panel.is_some(),

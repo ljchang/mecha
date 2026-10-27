@@ -353,10 +353,190 @@ async fn edit(state: St, name: String, body: WriteBody, family: Family) -> Respo
 }
 
 async fn remove(state: St, name: String, q: UnlockQuery, family: Family) -> Response {
-    write(state, q.unlock, false, Op::Remove, move |home| {
-        loras::remove_entry(home, family, &name)
+    let held = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = std::sync::Arc::clone(&held);
+    let r = write(state, q.unlock, false, Op::Remove, move |home| {
+        loras::remove_entry(home, family, &name)?;
+        // A removed picture entry leaves every layer's list too (§6); a
+        // clip entry's lists are step 2's.
+        if family == Family::QwenImage {
+            let n = loras::strip_from_layers(
+                &mecha_core::sampling::chat_path(home),
+                &home.join("personas"),
+                &name,
+            )
+            .map_err(loras::WriteError::Io)?;
+            count.store(n, std::sync::atomic::Ordering::Relaxed);
+        }
+        Ok(())
     })
-    .await
+    .await;
+    if r.status() != StatusCode::OK {
+        return r;
+    }
+    let held = held.load(std::sync::atomic::Ordering::Relaxed);
+    no_store(Json(json!({ "ok": true, "layers": held })).into_response())
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LayerBody {
+    #[serde(default)]
+    unlock: Option<String>,
+    /// Follow the chat's list (a persona's only).
+    #[serde(default)]
+    inherit: bool,
+    #[serde(default)]
+    names: Vec<String>,
+}
+
+/// Which picture layer a route names: the chat's, or a persona's.
+enum Which {
+    Chat,
+    Persona(String),
+}
+
+fn layer_word(l: &loras::Layer) -> &'static str {
+    match l {
+        loras::Layer::Inherit => "inherit",
+        loras::Layer::Set(_) => "set",
+        loras::Layer::Damaged(_) => "damaged",
+    }
+}
+
+fn names_of(l: &loras::Layer) -> Vec<String> {
+    match l {
+        loras::Layer::Set(n) => n.clone(),
+        _ => Vec::new(),
+    }
+}
+
+/// The persona's directory in the store, when it has one.
+fn persona_dir(home: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+    mecha_core::persona::validate_name(name).ok()?;
+    let dir = home.join("personas");
+    dir.join(name).join("state.toml").exists().then_some(dir)
+}
+
+/// One picture layer's LoRA list, with the picture entries it may name.
+fn layer_view(here: &Here, which: &Which) -> Result<Value, (StatusCode, String)> {
+    let chat_path = mecha_core::sampling::chat_path(&here.home);
+    let chat = mecha_core::sampling::chat_loras(&chat_path);
+    let layer = match which {
+        Which::Chat => chat.clone(),
+        Which::Persona(name) => {
+            let dir = persona_dir(&here.home, name)
+                .ok_or((StatusCode::NOT_FOUND, "no such persona".to_string()))?;
+            mecha_core::persona::loras(&dir, name)
+        }
+    };
+    let loaded = Loaded::read(&here.home, None, &here.folders());
+    let choices: Vec<Value> = loaded
+        .entries
+        .iter()
+        .filter(|(e, _)| e.model == Family::QwenImage)
+        .map(|(e, st)| {
+            json!({"name": e.name, "about": e.about, "status": status_word(st), "reason": st.reason(e)})
+        })
+        .collect();
+    Ok(json!({
+        "locked": false,
+        "layer": layer_word(&layer),
+        "names": names_of(&layer),
+        // What inherit means for a persona: the chat's list as it is now.
+        "chat": names_of(&chat),
+        "chat_damaged": matches!(chat, loras::Layer::Damaged(_)),
+        "max": loras::MAX_PER_PICTURE,
+        "choices": choices,
+    }))
+}
+
+async fn layer_get(state: St, q: UnlockQuery, which: Which) -> Response {
+    if !state.library.unlocked(q.unlock.as_deref()) {
+        return locked();
+    }
+    let got = tokio::task::spawn_blocking(move || {
+        let here =
+            Here::read().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+        layer_view(&here, &which)
+    })
+    .await;
+    match got {
+        Ok(Ok(v)) => no_store(Json(v).into_response()),
+        Ok(Err((code, why))) => (code, format!("{why}\n")).into_response(),
+        Err(e) => failed(e),
+    }
+}
+
+/// Write one picture layer's list, checked against the registry first
+/// (`loras::check_layer`): only picture entries, none twice, at most the
+/// cap. This route alone writes the lists; the picture-settings routes keep
+/// them as they are.
+async fn layer_put(state: St, body: LayerBody, which: Which) -> Response {
+    if !state.library.unlocked(body.unlock.as_deref()) {
+        return (StatusCode::FORBIDDEN, "locked\n").into_response();
+    }
+    let done = tokio::task::spawn_blocking(move || {
+        let here =
+            Here::read().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+        let layer = if body.inherit {
+            if matches!(which, Which::Chat) {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "the chat's list has no layer above it to inherit".to_string(),
+                ));
+            }
+            loras::Layer::Inherit
+        } else {
+            let loaded = Loaded::read(&here.home, None, &here.folders());
+            if let Some(why) = &loaded.unreadable {
+                return Err((StatusCode::CONFLICT, format!("the registry {why}")));
+            }
+            loras::Layer::Set(
+                loras::check_layer(&body.names, &loaded)
+                    .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))?,
+            )
+        };
+        let wrote = match &which {
+            Which::Chat => mecha_core::sampling::set_chat_loras(
+                &mecha_core::sampling::chat_path(&here.home),
+                &layer,
+            ),
+            Which::Persona(name) => {
+                let dir = persona_dir(&here.home, name)
+                    .ok_or((StatusCode::NOT_FOUND, "no such persona".to_string()))?;
+                mecha_core::persona::set_loras(&dir, name, layer).map(|_| ())
+            }
+        };
+        wrote.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+        layer_view(&here, &which)
+    })
+    .await;
+    match done {
+        Ok(Ok(v)) => no_store(Json(v).into_response()),
+        Ok(Err((code, why))) => (code, format!("{why}\n")).into_response(),
+        Err(e) => failed(e),
+    }
+}
+
+pub async fn image_chat_layer(state: St, Query(q): Query<UnlockQuery>) -> Response {
+    layer_get(state, q, Which::Chat).await
+}
+pub async fn image_chat_layer_save(state: St, Json(b): Json<LayerBody>) -> Response {
+    layer_put(state, b, Which::Chat).await
+}
+pub async fn image_persona_layer(
+    state: St,
+    Path(name): Path<String>,
+    Query(q): Query<UnlockQuery>,
+) -> Response {
+    layer_get(state, q, Which::Persona(name)).await
+}
+pub async fn image_persona_layer_save(
+    state: St,
+    Path(name): Path<String>,
+    Json(b): Json<LayerBody>,
+) -> Response {
+    layer_put(state, b, Which::Persona(name)).await
 }
 
 pub async fn image_list(state: St, Query(q): Query<UnlockQuery>) -> Response {
@@ -597,5 +777,134 @@ mod tests {
         .await;
         assert_eq!(r.status(), StatusCode::OK);
         assert_eq!(read(Family::QwenImage).await["entries"], json!([]));
+    }
+
+    /// The picture layers' lists (§6): behind the unlock like every LoRA
+    /// route; a write is checked against the registry (picture entries
+    /// only, the cap); a persona may inherit and the chat may not; and a
+    /// removed entry leaves every list that held it, with the count said.
+    #[tokio::test]
+    async fn the_picture_layers_are_read_and_written_behind_the_unlock() {
+        let _home = crate::testenv::HomeGuard::new("loras-layers");
+        let home = mecha_core::work::mecha_home().unwrap();
+        std::fs::write(
+            home.join(loras::FILE),
+            "[[lora]]\nname = \"paint\"\nabout = \"a made-up paint look\"\nmodel = \"qwen-image\"\nfile = \"p.safetensors\"\n\n\
+             [[lora]]\nname = \"wave\"\nabout = \"a made-up wave\"\nmodel = \"h3\"\nfile = \"w.safetensors\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            home.join("config.toml"),
+            "[image]\nurl = \"http://127.0.0.1:9\"\n",
+        )
+        .unwrap();
+        let lib = mecha_core::imagelib::Library::default();
+        mecha_core::persona::create(
+            &home.join("personas"),
+            &lib,
+            mecha_core::persona::NewPersona {
+                name: "mara".into(),
+                display: "Mara".into(),
+                origin: mecha_core::persona::Origin::Owner,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let state = super::super::tests::test_state();
+        let token = Some(state.library.grant_for_tests());
+        let get = |which: &str, unlock: Option<String>| {
+            let state = state.clone();
+            let which = which.to_string();
+            async move {
+                let q = UnlockQuery { unlock };
+                let r = if which == "chat" {
+                    image_chat_layer(State(state), Query(q)).await
+                } else {
+                    image_persona_layer(State(state), Path(which), Query(q)).await
+                };
+                body(r).await
+            }
+        };
+        let put = |which: &str, inherit: bool, names: &[&str], unlock: Option<String>| {
+            let state = state.clone();
+            let which = which.to_string();
+            let b = LayerBody {
+                unlock,
+                inherit,
+                names: names.iter().map(|n| n.to_string()).collect(),
+            };
+            async move {
+                let r = if which == "chat" {
+                    image_chat_layer_save(State(state), Json(b)).await
+                } else {
+                    image_persona_layer_save(State(state), Path(which), Json(b)).await
+                };
+                body(r).await
+            }
+        };
+        // Locked: no names, and no write.
+        let (code, text) = get("chat", None).await;
+        assert_eq!((code, text.trim()), (StatusCode::OK, "{\"locked\":true}"));
+        let (code, _) = put("chat", false, &["paint"], None).await;
+        assert_eq!(code, StatusCode::FORBIDDEN);
+        assert_eq!(
+            mecha_core::sampling::chat_loras(&mecha_core::sampling::chat_path(&home)),
+            loras::Layer::Inherit
+        );
+        // Checked against the registry.
+        let (code, text) = put("chat", false, &["wave"], token.clone()).await;
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+        assert!(text.contains("clip LoRA"), "{text}");
+        let (code, _) = put("chat", true, &[], token.clone()).await;
+        assert_eq!(
+            code,
+            StatusCode::BAD_REQUEST,
+            "the chat has nothing above it"
+        );
+        let (code, text) = put("chat", false, &["paint"], token.clone()).await;
+        assert_eq!(code, StatusCode::OK, "{text}");
+        let v: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["names"], json!(["paint"]));
+        assert_eq!(v["choices"][0]["name"], "paint");
+        assert_eq!(v["choices"].as_array().unwrap().len(), 1, "pictures only");
+        // A persona starts inheriting, may choose none, and inherits again.
+        let (_, text) = get("mara", token.clone()).await;
+        let v: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            (v["layer"].as_str(), &v["chat"]),
+            (Some("inherit"), &json!(["paint"]))
+        );
+        let (code, text) = put("mara", false, &[], token.clone()).await;
+        assert_eq!(code, StatusCode::OK, "{text}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).unwrap()["layer"],
+            "set"
+        );
+        let (code, _) = get("nobody", token.clone()).await;
+        assert_eq!(code, StatusCode::NOT_FOUND);
+        put("mara", false, &["paint"], token.clone()).await;
+        // Removing the entry takes it off both lists, and says how many.
+        let r = remove(
+            State(state.clone()),
+            "paint".into(),
+            UnlockQuery {
+                unlock: token.clone(),
+            },
+            Family::QwenImage,
+        )
+        .await;
+        let (code, text) = body(r).await;
+        assert_eq!(code, StatusCode::OK, "{text}");
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["layers"], 2);
+        let (_, text) = get("mara", token.clone()).await;
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).unwrap()["names"],
+            json!([])
+        );
+        let (_, text) = get("chat", token).await;
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).unwrap()["names"],
+            json!([])
+        );
     }
 }
