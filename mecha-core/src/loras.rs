@@ -621,8 +621,10 @@ pub struct EntryInput {
     pub frames: Option<String>,
     #[serde(default)]
     pub references: Option<String>,
+    /// As the page sent it: a number, or text the parser refuses with its
+    /// own reason, never a silent default (review of #750).
     #[serde(default)]
-    pub strength: Option<f64>,
+    pub strength: Option<serde_json::Value>,
     #[serde(default)]
     pub trigger: Option<String>,
     #[serde(default)]
@@ -669,6 +671,15 @@ fn open_doc(path: &Path) -> Result<(toml_edit::DocumentMut, bool), WriteError> {
             path.display()
         ))
     })?;
+    // `lora = []` is an empty registry as the loader reads it: the first
+    // entry the page adds replaces it with a `[[lora]]` table.
+    if doc
+        .get("lora")
+        .and_then(|v| v.as_array())
+        .is_some_and(|a| a.is_empty())
+    {
+        doc.remove("lora");
+    }
     if doc.get("lora").is_some_and(|v| !v.is_array_of_tables()) {
         return Err(WriteError::Invalid(format!(
             "`lora` in {} is not a list of [[lora]] tables",
@@ -746,8 +757,29 @@ pub fn write_entry(
             table.insert(k, toml_edit::value(v));
         }
     }
-    if let Some(s) = input.strength {
-        table.insert("strength", toml_edit::value(s));
+    match &input.strength {
+        None | Some(serde_json::Value::Null) => {}
+        Some(serde_json::Value::Number(n)) => match (n.as_i64(), n.as_f64()) {
+            (Some(i), _) => {
+                table.insert("strength", toml_edit::value(i));
+            }
+            (None, Some(f)) => {
+                table.insert("strength", toml_edit::value(f));
+            }
+            _ => {
+                return Err(WriteError::Invalid(
+                    "`strength` is a number above 0, at most 2".into(),
+                ))
+            }
+        },
+        Some(serde_json::Value::String(t)) => {
+            table.insert("strength", toml_edit::value(t.as_str()));
+        }
+        Some(_) => {
+            return Err(WriteError::Invalid(
+                "`strength` is a number above 0, at most 2".into(),
+            ))
+        }
     }
     if let Some(t) = input
         .trigger
@@ -1258,7 +1290,7 @@ file = "gone.safetensors"
             name: "watercolor".into(),
             about: "loose washes".into(),
             file: Some("styles/wc.safetensors".into()),
-            strength: Some(0.7),
+            strength: Some(serde_json::json!(0.7)),
             ..Default::default()
         };
         write_entry(&home, Family::QwenImage, &input, None).unwrap();
@@ -1324,6 +1356,18 @@ file = "gone.safetensors"
             "{text}"
         );
 
+        // A strength that is not a number is refused with the parser's
+        // reason, never saved as the default.
+        let typo = EntryInput {
+            name: "d".into(),
+            strength: Some(serde_json::json!("0.8x")),
+            ..input.clone()
+        };
+        assert!(matches!(
+            write_entry(&home, Family::QwenImage, &typo, None),
+            Err(WriteError::Invalid(ref w)) if w.contains("`strength`")
+        ));
+
         // A file that does not read is never overwritten.
         std::fs::write(home.join(FILE), "[[lora]\n").unwrap();
         assert!(
@@ -1333,6 +1377,23 @@ file = "gone.safetensors"
             std::fs::read_to_string(home.join(FILE)).unwrap(),
             "[[lora]\n"
         );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn an_empty_lora_list_takes_a_first_entry() {
+        let home = scratch();
+        std::fs::write(home.join(FILE), "lora = []\n").unwrap();
+        let input = EntryInput {
+            name: "w".into(),
+            about: "x".into(),
+            file: Some("w.safetensors".into()),
+            ..Default::default()
+        };
+        write_entry(&home, Family::H3, &input, None).unwrap();
+        let (entries, _) =
+            parse(&std::fs::read_to_string(home.join(FILE)).unwrap(), false).unwrap();
+        assert_eq!(entries.len(), 1);
         let _ = std::fs::remove_dir_all(&home);
     }
 

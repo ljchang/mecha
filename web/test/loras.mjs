@@ -40,6 +40,7 @@ t('the same file in both modes is sent as one', eq(entryOf({ ...clip, about: ' a
 t('a file per mode is sent per mode', eq(entryOf({ ...clip, about: 'x', references: '' }, 'h3'), { name: 'w', about: 'x', frames: 'w.safetensors' }));
 t('an empty strength is the default', !('strength' in entryOf({ ...pic, about: 'x' }, 'qwen-image')));
 t('a strength is a number', entryOf({ ...pic, about: 'x', strength: '0.7' }, 'qwen-image').strength === 0.7);
+t('a strength that is not a number goes as text, for the server to refuse', entryOf({ ...pic, about: 'x', strength: '0.8x' }, 'qwen-image').strength === '0.8x');
 t('always is a clip field only', !('always' in entryOf({ ...pic, about: 'x', always: true }, 'qwen-image')) && entryOf({ ...clip, about: 'x', always: true }, 'h3').always === true);
 const back = formFrom({ name: 'w', about: 'x', frames: 'f.safetensors', references: 'r.safetensors', strength: 1, trigger: null, always: false });
 t('an edit starts from the entry, a default strength left blank', back.editing === 'w' && back.strength === '' && back.frames === 'f.safetensors');

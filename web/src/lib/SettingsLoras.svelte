@@ -58,6 +58,8 @@
     // A token the server no longer honours has lapsed: drop it.
     if (token && Object.values(next).some((d) => d.locked)) dropToken();
     data = next;
+    // A read that went through clears what an earlier action left standing.
+    if (Object.values(next).every((d) => !d.error)) error = null;
   }
 
   async function unlock() {
@@ -219,8 +221,9 @@
         {#if d.source === 'legacy'}
           <div class="tf-row stack">
             <span class="tf-help">
-              Read from the old clip file <code>{d.path}</code>. Saving here creates <code>{d.new_path}</code>, and the old
-              file then stops being read: move its entries there first.
+              Read from the old clip file <code>{d.path}</code>, which mecha does not edit: change its entries there. Adding
+              one here creates <code>{d.new_path}</code>, and the old file then stops being read, so move its entries
+              there first.
             </span>
           </div>
         {/if}
@@ -253,12 +256,14 @@
               <span class="tf-help mono">{rowDetail(e)}</span>
               <span class="tf-help" class:bad={st.bad}>{st.text}</span>
             </div>
+            {#if d.source !== 'legacy'}
             <div class="acts">
               <button class="tf-btn" disabled={busy} onclick={() => openEdit(s, e)}>Edit</button>
               <button class="tf-btn" class:warn={removing === `${s.route}/${e.name}`} disabled={busy} onclick={() => remove(s, e)}>
                 {removing === `${s.route}/${e.name}` ? 'Remove?' : 'Remove'}
               </button>
             </div>
+            {/if}
           </div>
         {:else}
           <div class="tf-row stack"><span class="tf-help">No {s.title.toLowerCase()} LoRAs yet.</span></div>

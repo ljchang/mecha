@@ -121,8 +121,11 @@ export function entryOf(form, family) {
     }
     if (form.always) out.always = true;
   }
+  // A number when it reads as one; otherwise the text itself, so the
+  // server's parser refuses it with its reason (`NaN` would serialise as
+  // null and be saved as the default: review of #750).
   const s = trim(String(form.strength ?? ''));
-  if (s) out.strength = Number(s);
+  if (s) out.strength = s !== '' && Number.isFinite(Number(s)) ? Number(s) : s;
   if (trim(form.trigger)) out.trigger = trim(form.trigger);
   return out;
 }
