@@ -179,10 +179,11 @@ function rig({ live = true, refuse = null } = {}) {
          return { ok: true, json: async () => ({ started: true }) };
        };
        ${sendSrc}
-       return async (typed, opts) => {
+       return async (typed, opts, files = []) => {
          input = typed;
+         attachments = files;
          await send(opts);
-         return { body: bodies.at(-1), sent: bodies.length, continuing };
+         return { body: bodies.at(-1), sent: bodies.length, continuing, error };
        };`,
     )(from);
   const run = make(null);
@@ -199,6 +200,9 @@ function rig({ live = true, refuse = null } = {}) {
   is(cont.continuing, null, 'and the Continue is spent');
   const empty = await make('images/a.png')('   ');
   is(empty.sent, 0, 'a Continue with no words sends nothing');
+  const filesOnly = await make('images/a.png')('', undefined, ['inbox/a.png']);
+  is(filesOnly.sent, 0, 'nor with files alone');
+  is(/Say what changes in the picture/.test(filesOnly.error ?? ''), true, 'and says why, rather than nothing');
   const own = await make('images/a.png')('Edit images/b.png: add a hat', { edit: { picture: 'images/b.png', words: 'add a hat' } });
   is(own.body.edit.picture, 'images/b.png', "the Edit panel's own picture wins over a Continue");
   is(own.continuing, { key: 'k1', path: 'images/a.png' }, 'and the Continue stays for the next message');

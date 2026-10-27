@@ -1410,8 +1410,14 @@
     const from = own && !edit ? continuingHere : null;
     if (from) edit = { picture: from, words: typed };
     const text = withAttachments(from ? composeContinueMessage(from, typed) ?? '' : typed, attached);
+    // A Continue is a change said in words: files alone have nothing to say
+    // about the picture, so the page says so rather than sending nothing
+    // without a word (review of #754, pass 2).
+    if (from && !typed) {
+      if (attached.length) error = 'Say what changes in the picture, or press ✕ on the Continue to send the files on their own.';
+      return;
+    }
     if (!text || !key) return;
-    if (from && !typed) return;
     if (own) {
       input = '';
       attachments = [];

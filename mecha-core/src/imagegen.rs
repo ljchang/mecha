@@ -3169,6 +3169,12 @@ pub const RETOUCH_DESC: &str = "One small change to the picture itself, in words
      colour, a detail (\"Give the man a red umbrella.\"). Never clothes, a pose, an expression \
      or a person: those are `scene.people`.";
 /// `picture`'s description.
+pub const PICTURE_DESC: &str = "The picture being changed: one the user attached (inbox/...) or \
+     an earlier result (images/...), only when the user asks to continue, build on, edit or \
+     change it. In a chat with a Continue button on its pictures, only that button builds on \
+     one, and it names the picture for you: never name an earlier result on a turn the user \
+     typed. Leave it out for a new picture, which keeps nothing from earlier ones.";
+
 /// Which earlier picture a turn's pictures may build on, decided by the
 /// owner's button and never by the model (the owner, 2026-10-27: "a new
 /// image is just typing a new description", and waiting for a picture only to
@@ -3188,10 +3194,6 @@ pub enum BuildOn {
 fn plain_path(p: &str) -> &str {
     p.trim().trim_start_matches("./")
 }
-
-pub const PICTURE_DESC: &str = "The picture being changed: one the user attached (inbox/...) or \
-     an earlier result (images/...), only when the user asks to continue, build on, edit or \
-     change it. Leave it out for a new picture, which keeps nothing from earlier ones.";
 
 impl ImageGenerate {
     /// The persona's names, which `who` resolves to its approved character.
@@ -3829,13 +3831,22 @@ impl Tool for ImageGenerate {
         // call. A model that named an earlier picture on a typed turn is
         // refused rather than redrawn from nothing, so it describes the new
         // picture whole instead of a change to one the owner did not choose.
+        // A photo the owner uploaded, by where the path resolves, so
+        // `inbox/../images/a.png` is the result it names; unknown (the jail
+        // refuses it, or there is no inbox) is not one (review of #754).
+        let uploaded = |p: &str| match (ctx.resolve(p), ctx.resolve("inbox")) {
+            (Ok(path), Ok(inbox)) => path.starts_with(inbox),
+            _ => false,
+        };
         match &ctx.build_on {
             None => {}
             Some(BuildOn::Picture(p)) => {
                 if call.picture.as_deref().map(plain_path) != Some(plain_path(p)) {
                     if let Some(other) = call.picture.replace(p.clone()) {
-                        // A mask marks places in the picture it was painted on.
+                        // A mask, and the regions painted in it, mark places
+                        // in the picture they were painted on.
                         call.mask = None;
+                        call.regions.clear();
                         call.notes.push(format!(
                             "The owner pressed Continue on {p}, so this builds on it, not \
                              on {other}."
@@ -3846,16 +3857,22 @@ impl Tool for ImageGenerate {
                         ));
                     }
                 }
+                // The room it is drawn onto is the owner's too: an upload, or
+                // the picture pressed on, never another earlier result the
+                // call chose (review of #754, pass 2).
+                if let Some(room) = call
+                    .setting_photo
+                    .as_deref()
+                    .filter(|r| !uploaded(r) && plain_path(r) != plain_path(p))
+                {
+                    return Ok(refused(format!(
+                        "The owner pressed Continue on {p}, so this builds on it, and {room} \
+                         is another earlier picture, not a photo they uploaded: describe the \
+                         place in words in `scene.setting`, or leave it as {p} has it."
+                    )));
+                }
             }
             Some(BuildOn::Nothing) => {
-                // A photo the owner uploaded, by where the path resolves, so
-                // `inbox/../images/a.png` is the result it names; unknown
-                // (the jail refuses it, or there is no inbox) is not one
-                // (review of #754, pass 1).
-                let uploaded = |p: &str| match (ctx.resolve(p), ctx.resolve("inbox")) {
-                    (Ok(path), Ok(inbox)) => path.starts_with(inbox),
-                    _ => false,
-                };
                 if let Some(p) = call.picture.as_deref().filter(|p| !uploaded(p)) {
                     return Ok(refused(format!(
                         "The owner typed this turn rather than pressing Continue on {p}, so \
@@ -13049,6 +13066,24 @@ mod tests {
             "{}",
             named.content
         );
+        // Not onto another earlier picture as the room, under a Continue
+        // either (review of #754, pass 2).
+        let room = t
+            .call(
+                json!({"scene": {"setting": {"photo": other},
+                       "people": [{"who": "maya", "doing": "sitting down"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(room.is_error, "{}", room.content);
+        assert!(
+            room.content.contains("another earlier picture"),
+            "{}",
+            room.content
+        );
+        // What the field itself tells the model, where it chooses.
+        assert!(PICTURE_DESC.contains("never name an earlier result on a turn the user typed"));
         assert!(
             last_prompt(&seen).contains("a green coat"),
             "{}",
