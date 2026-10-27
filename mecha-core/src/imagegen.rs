@@ -3838,6 +3838,9 @@ impl Tool for ImageGenerate {
             (Ok(path), Ok(inbox)) => path.starts_with(inbox),
             _ => false,
         };
+        // A room photo no file answers to is the read's to refuse, saying so,
+        // in either arm (review of #754, passes 4 and 5).
+        let there = |p: &str| ctx.resolve(p).is_ok_and(|path| path.exists());
         match &ctx.build_on {
             None => {}
             Some(BuildOn::Picture(p)) => {
@@ -3873,7 +3876,7 @@ impl Tool for ImageGenerate {
                 if let Some(room) = call
                     .setting_photo
                     .as_deref()
-                    .filter(|r| !uploaded(r) && plain_path(r) != plain_path(p))
+                    .filter(|r| there(r) && !uploaded(r) && plain_path(r) != plain_path(p))
                 {
                     return Ok(refused(format!(
                         "The owner pressed Continue on {p}, so this builds on it, and {room} \
@@ -3955,9 +3958,7 @@ impl Tool for ImageGenerate {
                 )));
             }
             // A room photo is drawn onto, so an earlier result there is the
-            // same building-on by another field. One that is not there is the
-            // read's to refuse, saying so.
-            let there = |p: &str| ctx.resolve(p).is_ok_and(|path| path.exists());
+            // same building-on by another field.
             if let Some(p) = call
                 .setting_photo
                 .as_deref()
@@ -12974,7 +12975,7 @@ mod tests {
     /// `picture` was taken as it came.
     #[tokio::test]
     async fn only_the_owners_continue_builds_on_a_picture() {
-        let (url, seen) = distinct(6).await;
+        let (url, seen) = distinct(7).await;
         let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya"]));
         let t = tool(&url).with_library_dir(lib.clone());
         let mut cx = clean(scene_ctx(&dir, &store, "chat-a"));
@@ -13127,6 +13128,61 @@ mod tests {
             last_prompt(&seen).contains("a green coat"),
             "{}",
             last_prompt(&seen)
+        );
+        // A mask painted on another picture is dropped, and the call drawn
+        // onto the one pressed; regions painted there are refused, since
+        // their legend would describe outlines not in it (review of #754,
+        // passes 4 and 5).
+        let masked = t
+            .call(
+                json!({"picture": other, "mask": "inbox/painted-elsewhere.png",
+                       "retouch": "Give her a red umbrella."}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!masked.is_error, "the mask was read: {}", masked.content);
+        assert!(
+            masked.content.contains(&format!("not on {other}")),
+            "{}",
+            masked.content
+        );
+        assert!(
+            !masked.content.contains("painted-elsewhere"),
+            "the other picture's mask was used: {}",
+            masked.content
+        );
+        assert!(manifest_of(&dir, &masked.content)["mask"].is_null());
+        let before = drawn();
+        let regions = t
+            .call(
+                json!({"picture": other, "mask": "inbox/painted-elsewhere.png",
+                       "regions": [{"colour": "magenta", "words": "make it red"}]}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(regions.is_error, "{}", regions.content);
+        assert!(
+            regions.content.contains("places in another picture"),
+            "{}",
+            regions.content
+        );
+        assert_eq!(drawn(), before, "regions from another picture rendered");
+        // A room no file answers to is the read's to refuse, not called an
+        // earlier picture.
+        let invented_room = t
+            .call(
+                json!({"scene": {"setting": {"photo": "images/a-garden.png"},
+                       "people": [{"who": "maya", "doing": "sitting down"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            !invented_room.content.contains("another earlier picture"),
+            "{}",
+            invented_room.content
         );
     }
 
