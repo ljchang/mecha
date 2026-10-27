@@ -110,6 +110,13 @@ pub enum Check {
 /// or `audio_patch_proj.*`, or kohya's spelling `lora_unet_blocks_*`. Under
 /// a `diffusion_model.`, `transformer.` or `model.diffusion_model.` prefix,
 /// as trainers write them.
+///
+/// **The kohya spelling is taken on its block keys alone, and that is a
+/// known limit**: the owner's kohya-spelled H3 files (7 of 41, 2026-10-26)
+/// carry no other key to corroborate with, so requiring one would refuse
+/// them all. A Wan LoRA in that spelling (musubi-tuner writes it) reads as
+/// H3 too: the check catches the common mistake, a picture LoRA filed as a
+/// clip one or the reverse, not every other video model.
 pub fn family_of_keys<'a>(keys: impl IntoIterator<Item = &'a str>) -> Check {
     let (mut qwen, mut flux, mut blocks, mut h3_marker, mut kohya_h3) =
         (false, false, false, false, false);
@@ -153,9 +160,13 @@ fn header_keys(path: &Path) -> Result<Vec<String>> {
     if len > MAX_HEADER {
         bail!("its header claims {len} bytes, over the {MAX_HEADER} a LoRA's needs");
     }
-    let mut header = vec![0u8; len as usize];
-    f.read_exact(&mut header)
-        .map_err(|_| anyhow!("its header is longer than the file"))?;
+    // Read up to the claim rather than allocating it: a short file claiming
+    // the most costs what it holds, not 8 MiB.
+    let mut header = Vec::new();
+    f.take(len).read_to_end(&mut header)?;
+    if (header.len() as u64) < len {
+        bail!("its header is longer than the file");
+    }
     let map: serde_json::Map<String, serde_json::Value> =
         serde_json::from_slice(&header).map_err(|_| anyhow!("its header is not JSON"))?;
     Ok(map.into_iter().map(|(k, _)| k).collect())
@@ -446,9 +457,12 @@ impl Status {
                 "left out: it says `model = \"{}\"`, and {f:?} {}",
                 e.model.as_str(),
                 match c {
-                    Check::Family(other) => format!("is a {} LoRA", other.as_str()),
+                    Check::Family(other) => format!("is made for {}", other.as_str()),
                     Check::Both => "has the keys of both families".into(),
-                    _ => "has the keys of neither family".into(),
+                    Check::Neither => "has the keys of neither family".into(),
+                    // `status` answers an unreadable file before a mismatch;
+                    // said as what it is should that order ever change.
+                    Check::Unreadable(why) => format!("could not be read ({why})"),
                 }
             ),
         })
@@ -656,6 +670,12 @@ mod tests {
         );
         assert_eq!(
             f(&["lora_unet_blocks_0_attn_q.lora_down.weight"]),
+            Check::Family(Family::H3)
+        );
+        // The known limit: kohya's spelling has nothing beside its blocks to
+        // corroborate, so a Wan file written that way also reads as H3.
+        assert_eq!(
+            f(&["lora_unet_blocks_39_cross_attn_k.lora_down.weight"]),
             Check::Family(Family::H3)
         );
         // `blocks.*` alone is many models' spelling, not H3's evidence.
@@ -921,7 +941,7 @@ file = "gone.safetensors"
         );
         let problems = l.problems(Family::H3).join("\n");
         assert!(
-            problems.contains("is a qwen-image LoRA") && problems.contains("in none of"),
+            problems.contains("is made for qwen-image") && problems.contains("in none of"),
             "{problems}"
         );
         assert!(!l.problems(Family::QwenImage).join("").contains("liar"));

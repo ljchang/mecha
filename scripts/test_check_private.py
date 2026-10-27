@@ -681,6 +681,28 @@ class Guard(unittest.TestCase):
         self.stage("doc.md", "glimmerpass_h3x\n")
         self.assertEqual(self.run_guard("--staged").returncode, 0)
 
+    def test_a_lora_trigger_wrapped_across_lines_is_refused(self):
+        self.write_registry('[[lora]]\nname = "x"\nabout = "x"\nmodel = "h3"\n'
+                            'file = "q.safetensors"\ntrigger = "a slow glimmer"\n')
+        self.stage("doc.rs", "// the words are a slow\n// glimmer at dusk\n")
+        r = self.run_guard("--staged")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("doc.rs:1-2: text from the owner's LoRA registry", r.stdout)
+
+    def test_a_lora_registry_does_not_stand_in_for_required_conversations(self):
+        empty = os.path.join(self.tmp.name, "empty")
+        os.makedirs(empty)
+        open(os.path.join(empty, "loras.toml"), "w").write(
+            '[[lora]]\nname = "x_1"\nabout = "x"\nmodel = "h3"\nfile = "q.safetensors"\n')
+        self.stage("doc.md", "The ferry leaves at noon.\n")
+        env = dict(os.environ, MECHA_HOME=empty, CHECK_PRIVATE_JOURNAL="0", CHECK_PRIVATE_REQUIRE="1")
+        r = subprocess.run([sys.executable, GUARD, "--staged"], cwd=self.repo, env=env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 2, r.stdout)
+        # Without the requirement it still checks the registry.
+        self.stage("doc.md", "see x_1\n")
+        r = self.run_guard("--staged", home=empty)
+        self.assertEqual(r.returncode, 1, r.stdout)
+
     def test_a_plain_lora_name_only_warns_and_names_the_field(self):
         self.write_registry('[[lora]]\nname = "lantern"\nabout = "x"\nmodel = "h3"\nfile = "q.safetensors"\n')
         self.stage("doc.md", "A lantern on the pier.\n")

@@ -62,7 +62,8 @@ pub async fn execute(args: Args) -> Result<()> {
         Err(e) => findings.push(Finding {
             component: "sandbox".to_string(),
             severity: Severity::Attention,
-            summary: "could not read the config to check shell confinement".to_string(),
+            summary: "could not read the config to check shell confinement or the LoRA registry"
+                .to_string(),
             detail: format!("{e:#}"),
             remedy: None,
         }),

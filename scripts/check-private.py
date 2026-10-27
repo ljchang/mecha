@@ -739,16 +739,19 @@ def main(args):
         BASE[0] = args[1].split("..")[0]
     shingles, phrases, ids, names, found = corpus()
     lora_refuse, lora_warn = lora_registry()
-    if not found and not (lora_refuse or lora_warn):
+    if not found:
         # On the machine that holds the conversations, set
         # CHECK_PRIVATE_REQUIRE=1: a mistyped MECHA_HOME or a hook run as
         # another user then refuses instead of passing (review of #557), as
-        # MECHA_TEST_REQUIRE_BACKENDS does for skipped tests.
+        # MECHA_TEST_REQUIRE_BACKENDS does for skipped tests. A LoRA registry
+        # found there does not stand in for the conversations (review of
+        # #749).
         if os.environ.get("CHECK_PRIVATE_REQUIRE") == "1":
             print(f"check-private: no conversations under {MECHA}, and CHECK_PRIVATE_REQUIRE=1; refusing.")
             return 2
-        print("check-private: no conversations on this machine to compare against; passing.")
-        return 0
+        if not (lora_refuse or lora_warn):
+            print("check-private: no conversations on this machine to compare against; passing.")
+            return 0
     findings = []
     # The guard's own file, under whatever label the mode gives its path.
     lines = [(p, n, t) for p, n, t in added_lines(args)
@@ -778,6 +781,16 @@ def main(args):
                 if 3 <= len(q.split()) < SHINGLE and q in phrases and not in_head(q):
                     hit = "a quoted phrase said in a conversation"
                     break
+        # Registry text by the passage's words, so a trigger wrapped across
+        # two lines, or behind a comment marker on each, is still a phrase
+        # (review of #749).
+        if not hit and lora_refuse:
+            said = f" {' '.join(words(text))} "
+            for phrase in lora_refuse:
+                w = " ".join(words(phrase))
+                if w and f" {w} " in said and not in_head(w):
+                    hit = "text from the owner's LoRA registry"
+                    break
         if hit:
             findings.append((p, where, hit))
     for p, n, t in lines:
@@ -790,11 +803,6 @@ def main(args):
             for name in names:
                 if re.search(rf"\b{re.escape(name)}\b", t, re.I) and not in_head(" ".join(words(name))):
                     hit = "the name of one of the owner's personas"
-                    break
-        if not hit:
-            for phrase in lora_refuse:
-                if phrase_in(phrase, t) and not in_head(" ".join(words(phrase))):
-                    hit = "text from the owner's LoRA registry"
                     break
         if hit:
             findings.append((p, n, hit))
