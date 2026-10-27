@@ -13,23 +13,25 @@
   let error = $state(null);
   let busy = $state(false);
 
-  async function load(t) {
-    if (!t) {
-      view = null;
-      return;
-    }
+  // Each load is numbered, so a slower answer for the persona shown before
+  // never lands over the one shown now.
+  let seq = 0;
+  async function load(who, t) {
+    const mine = ++seq;
+    view = null;
+    error = null;
+    if (!t) return;
     try {
-      const res = await fetch(layerUrl(persona, t));
+      const res = await fetch(layerUrl(who, t));
       if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
       const j = await res.json();
-      view = j.locked ? null : j;
-      error = null;
+      if (mine === seq) view = j.locked ? null : j;
     } catch (e) {
-      error = String(e?.message ?? e);
+      if (mine === seq) error = String(e?.message ?? e);
     }
   }
   $effect(() => {
-    load(token);
+    load(persona, token);
   });
 
   async function save(inherit, names) {
@@ -52,6 +54,9 @@
 
   const following = $derived(view?.layer === 'inherit' && !!persona);
   const on = $derived(following ? view?.chat ?? [] : view?.names ?? []);
+  // What a save sends: the names the registry still has. A name it lost is
+  // dropped on the next change rather than refused with it (review of #751).
+  const kept = $derived(on.filter((n) => view?.choices.some((c) => c.name === n)));
 </script>
 
 <div class="loraset">
@@ -71,7 +76,7 @@
     {/if}
     {#if persona}
       <label class="check">
-        <input type="checkbox" checked={following} disabled={busy} onchange={(e) => save(e.currentTarget.checked, e.currentTarget.checked ? [] : on.filter((n) => view.choices.some((c) => c.name === n)))} />
+        <input type="checkbox" checked={following} disabled={busy} onchange={(e) => save(e.currentTarget.checked, e.currentTarget.checked ? [] : kept)} />
         Follow the chat's list ({chatLine(view)})
       </label>
     {/if}
@@ -81,8 +86,8 @@
         <input
           type="checkbox"
           {checked}
-          disabled={busy || following || (!checked && on.length >= view.max)}
-          onchange={() => save(false, toggled(on, c.name, view.max))}
+          disabled={busy || following || (!checked && kept.length >= view.max)}
+          onchange={() => save(false, toggled(kept, c.name, view.max))}
         />
         <span class="name">{c.name}</span>
         <span class="hint inline" class:bad={c.status !== 'checked'}>{c.status === 'checked' ? c.about : c.reason}</span>
@@ -91,8 +96,11 @@
       <span class="hint">No picture LoRAs in the registry yet: add them under Settings → LoRAs.</span>
     {/each}
     {#each on.filter((n) => !view.choices.some((c) => c.name === n)) as gone (gone)}
-      <span class="bad">{gone} is on the list but no longer in the registry.</span>
+      <span class="bad">{gone} is on the list but no longer in the registry; the next change here drops it.</span>
     {/each}
+    {#if !following && on.length > kept.length}
+      <button class="drop" disabled={busy} onclick={() => save(false, kept)}>Drop {on.length - kept.length === 1 ? 'it' : 'them'} now</button>
+    {/if}
   {:else if !error}
     <span class="hint">reading…</span>
   {/if}
@@ -108,4 +116,5 @@
   .muted { opacity: 0.6; }
   .name { font-family: var(--mono); font-size: 12px; }
   .bad { color: var(--hazard); font-size: 12px; }
+  .drop { align-self: flex-start; background: none; border: none; padding: 4px 0; color: var(--accent-400); font-size: 12px; cursor: pointer; }
 </style>

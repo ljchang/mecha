@@ -224,7 +224,7 @@
       {#if s.family === 'qwen-image'}
         <!-- Re-read after an edit or remove here, so a removed entry leaves
              the list on screen too. -->
-        {#key data[s.family]}
+        {#key (data[s.family]?.entries ?? []).map((e) => e.name).join('\n')}
           <div class="layer"><PictureLoras {token} /></div>
         {/key}
       {/if}

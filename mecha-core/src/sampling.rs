@@ -390,17 +390,21 @@ pub fn chat(path: &std::path::Path) -> Tuning {
 /// hold the list, must not clear it.
 pub fn set_chat(path: &std::path::Path, tuning: Tuning) -> Result<Tuning> {
     let tuning = tuning.checked()?;
+    let _one = CHAT_WRITE.lock().unwrap_or_else(|e| e.into_inner());
     let mut table = match toml::Value::try_from(&tuning)? {
         toml::Value::Table(t) => t,
         _ => toml::Table::new(),
     };
     // A file that is not TOML is replaced, as before the list shared it:
-    // the chat's damaged list and an absent one both apply nothing.
-    if let Some(v) = chat_table(path)
-        .ok()
-        .flatten()
-        .and_then(|t| t.get("loras").cloned())
-    {
+    // the chat's damaged list and an absent one both apply nothing. A file
+    // that cannot be read is refused, so a transient error never writes the
+    // owner's list away (review of #751, pass 4).
+    let old = match std::fs::read_to_string(path) {
+        Ok(text) => toml::from_str::<toml::Table>(&text).ok(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => bail!("{} cannot be read ({e})", path.display()),
+    };
+    if let Some(v) = old.and_then(|t| t.get("loras").cloned()) {
         table.insert("loras".into(), v);
     }
     write_chat(path, &table)?;
@@ -421,6 +425,7 @@ pub fn chat_loras(path: &std::path::Path) -> crate::loras::Layer {
 /// is not TOML is refused rather than replaced, since replacing it would
 /// lose the owner's other settings in it.
 pub fn set_chat_loras(path: &std::path::Path, layer: &crate::loras::Layer) -> Result<()> {
+    let _one = CHAT_WRITE.lock().unwrap_or_else(|e| e.into_inner());
     let mut table = chat_table(path)?.unwrap_or_default();
     match layer.value() {
         Some(v) => table.insert("loras".into(), v),
@@ -428,6 +433,11 @@ pub fn set_chat_loras(path: &std::path::Path, layer: &crate::loras::Layer) -> Re
     };
     write_chat(path, &table)
 }
+
+/// The file's two writers, the settings route and the LoRA route, each
+/// read it to keep the other's half: one at a time, or a save from each
+/// pane at once could lose one half.
+static CHAT_WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// The settings file as a table, `None` when there is none.
 fn chat_table(path: &std::path::Path) -> Result<Option<toml::Table>> {
