@@ -16,7 +16,7 @@ use serde_json::Value;
 pub const MAX_FACES: usize = crate::imagelib::MAX_CAST;
 
 /// The persona's own names, which `who` resolves to its linked character.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct SelfNames {
     /// The persona's approved library character, if it has one.
     pub character: Option<String>,
@@ -122,6 +122,9 @@ pub struct Call {
     /// rather than refused (mecha-a3's G1b: optional fields a model fills
     /// with the wrong thing are its most common shape refusal).
     pub notes: Vec<String>,
+    /// Who "self" and the persona's names are, so an older record's people
+    /// are read by the same rule as the call's own (`migrated`).
+    pub me: SelfNames,
 }
 
 impl Call {
@@ -479,6 +482,7 @@ pub fn parse(
         size,
         seed,
         notes,
+        me: me.clone(),
     };
     if call.picture.is_none() && !call.has_scene() {
         return Err(
@@ -676,7 +680,12 @@ fn leading_name(who: &str) -> Option<(&str, bool)> {
 /// change names `Library("maya")` and the record holds no Maya by name, that
 /// described person is Maya: rewritten here, so an edit does not add her a
 /// second time beside herself, nor a `remove` say she is not there.
-fn migrated(base: &Scene, change: &SceneChange, approved: &dyn Fn(&str) -> bool) -> Option<Scene> {
+fn migrated(
+    base: &Scene,
+    change: &SceneChange,
+    approved: &dyn Fn(&str) -> bool,
+    me: &SelfNames,
+) -> Option<Scene> {
     let named: Vec<String> = change
         .people
         .iter()
@@ -691,10 +700,15 @@ fn migrated(base: &Scene, change: &SceneChange, approved: &dyn Fn(&str) -> bool)
         let Some((head, _)) = leading_name(d) else {
             continue;
         };
-        let key = head.trim().to_lowercase();
+        // Read by `resolve`'s own rule, so "self, …" and the persona's names
+        // reach its character even where its key is not its name (review of
+        // #756, pass 4).
+        let Some(Ok(Who::Library(key))) = resolve_name(head, approved, me) else {
+            continue;
+        };
         // The first such person only: two described people led by one name
         // would otherwise become one character twice (review of #756, pass 3).
-        if named.contains(&key) && !taken.contains(&key) && approved(&key) {
+        if named.contains(&key) && !taken.contains(&key) {
             p.who = Who::Library(key.clone());
             taken.push(key);
         }
@@ -917,7 +931,7 @@ pub fn plan(
     worn: &dyn Fn(&str) -> Option<(String, crate::scene::Origin)>,
 ) -> Result<Plan, String> {
     let mut change = call.change.clone();
-    let carried = base.and_then(|b| migrated(b, &change, approved));
+    let carried = base.and_then(|b| migrated(b, &change, approved, &call.me));
     let base = carried.as_ref().or(base);
     let mut notes_ahead: Vec<String> = Vec::new();
     if let (Some(path), Some(hash)) = (&call.setting_photo, setting_photo_hash) {
@@ -1852,6 +1866,28 @@ mod tests {
             .filter(|q| q.who == Who::Library("maya".into()))
             .count();
         assert_eq!(mayas, 1, "{:?}", p.next.people);
+        // A persona whose character is not its name: the record's "<Name>
+        // (self)" and "self, …" are read as the call's own `who` is (review
+        // of #756, pass 4).
+        let paper = SelfNames {
+            character: Some("wren".into()),
+            names: vec!["Paper".into()],
+        };
+        for old in ["paper (self), by the window", "self, by the window"] {
+            let mut rec = base.clone();
+            rec.people[0].who = Who::Described(old.into());
+            let c = parse(
+                &json!({"picture": "images/a.png", "scene": {"people": [
+                    {"who": "self", "wearing": "a blue dress"}]}}),
+                &lib,
+                &paper,
+                false,
+            )
+            .unwrap();
+            let p = plan(&c, Some(&rec), None, Origin::Clean, &lib, &names, &|_| None).unwrap();
+            assert_eq!(p.next.people.len(), 1, "{old}: {:?}", p.next.people);
+            assert_eq!(p.next.people[0].who, Who::Library("wren".into()), "{old}");
+        }
     }
 
     /// `self` and the persona's names resolve to its character; a library
