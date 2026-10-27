@@ -1766,9 +1766,10 @@ pub struct DraftView {
 /// not above the prose. They fall through to `other`, which every surface
 /// shows below the body.
 /// `start_time`/`end_time` sit here rather than falling through to `other`
-/// for one reason: `other` is in map order, which is alphabetical, so an
-/// event read *end before start* — nonsense on a page and worse in an ear,
-/// where a listener cannot glance back to sort it out.
+/// for one reason: `other` is in the order the model wrote the arguments,
+/// which promises nothing, so an event could read *end before start* —
+/// nonsense on a page and worse in an ear, where a listener cannot glance
+/// back to sort it out.
 const HEADER_FIELDS: [&str; 12] = [
     "to",
     "cc",
