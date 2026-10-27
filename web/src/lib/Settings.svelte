@@ -6,6 +6,7 @@
   import SettingsFeatures from './SettingsFeatures.svelte';
   import SettingsLock from './SettingsLock.svelte';
   import SettingsImages from './SettingsImages.svelte';
+  import SettingsLoras from './SettingsLoras.svelte';
   import { autolockLine } from './autolock.js';
   import { features } from './features.svelte.js';
   import { isShown, summary } from './features.js';
@@ -17,7 +18,7 @@
   // two-tap save and the voice pane's live microphone have no business
   // sharing a scope.
   let { initial = null, navigate, backTo } = $props();
-  const PANES = ['charter', 'learning', 'voice', 'images', 'lock', 'features'];
+  const PANES = ['charter', 'learning', 'voice', 'images', 'loras', 'lock', 'features'];
   // Derived, never copied into state: App re-renders this with a new
   // `initial` on back/forward, and a `$state` snapshot would ignore it.
   const pane = $derived(PANES.includes(initial) ? initial : null);
@@ -27,6 +28,7 @@
     learning: 'Learning',
     voice: 'Voice',
     images: 'Images',
+    loras: 'LoRAs',
     lock: 'Lock',
     features: 'Features',
   };
@@ -153,6 +155,8 @@
     voice: 'M4 10v4M8 6.5v11M12 9v6M16 4.5v15M20 10v4',
     // A framed picture: a sun over a hill.
     images: 'M4 5h16v14H4zM4 16l5-5 4 4 3-3 4 4M15.5 9.5h.01',
+    // Stacked layers: what a LoRA adds over the model.
+    loras: 'M12 4l8 4-8 4-8-4zM4 12l8 4 8-4M4 16l8 4 8-4',
     // A padlock: the library's, which Personas share.
     lock: 'M7 11V7a5 5 0 0110 0v4M5 11h14v10H5z',
     // Switches.
@@ -173,6 +177,13 @@
       { pane: 'learning', name: 'Learning', line: learningLine },
       isShown(features.rows, 'voice') && { pane: 'voice', name: 'Voice', line: voiceLine },
       isShown(features.rows, 'image') && { pane: 'images', name: 'Images', line: imagesLine },
+      // Pictures' and clips' LoRAs: shown with either feature on, each
+      // section inside with its own; locked, so the index says no more.
+      (isShown(features.rows, 'image') || isShown(features.rows, 'video')) && {
+        pane: 'loras',
+        name: 'LoRAs',
+        line: { text: 'your own, for pictures and clips · behind the lock' },
+      },
       // The lock guards two tabs; with both off it guards nothing to see.
       (isShown(features.rows, 'personas') || isShown(features.rows, 'library')) && {
         pane: 'lock',
@@ -249,6 +260,8 @@
       <SettingsLock />
     {:else if pane === 'images'}
       <SettingsImages />
+    {:else if pane === 'loras'}
+      <SettingsLoras />
     {:else}
       <SettingsVoice />
     {/if}

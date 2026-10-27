@@ -1,7 +1,9 @@
 # LoRAs for pictures and clips — one registry, one picker
 
-Status: **design; step 1 built** (2026-10-27: the shared registry, the
-family check, the folder keys and the `doctor` findings, in `loras.rs`).
+Status: **design; step 1 built, step 4's pane built** (2026-10-27: the
+shared registry, the family check, the folder keys and the `doctor`
+findings, in `loras.rs`; Settings → LoRAs and its routes, ahead of steps 2
+and 3, with the layer lists left to them).
 §8 holds the decisions: L1, L2, L3, L5 and L6 ruled 2026-10-26; L4 is
 decided by M2.
 
@@ -537,6 +539,23 @@ refused rather than applied to everyone. An unset `[image] loras_dir` on
 a ComfyUI that mecha installed is resolved at read time
 (`comfyui_unit::installed_here`), so `write_image_table` writes no key for
 it. `check-private.py` reads the registry as above.
+
+**What step 4 built first** (2026-10-27, the owner's call to start with the
+page). Settings → LoRAs reads and edits the registry through
+`/api/loras/{image|video}` and `/api/loras/{image|video}/{name}`, each set
+under its own feature, every route behind the library unlock (L3): a locked
+read answers `{"locked": true}` and nothing else. Writes go through
+`loras::write_entry` and `loras::remove_entry`, which keep the owner's
+comments and order, run the result through the same parser, and replace the
+file atomically (a new file is 0600). While the old file is the registry, a
+write answers 409 with what saving would do, and goes ahead only when the
+page sends it again with consent. The Add list is each server's
+`LoraLoaderModelOnly` options less the files entries use and the video
+turbo files. `PANE_FEATURE` takes a list for this pane, read by
+`featureOf` (first listed), the new `featureFor`, `opens` and `bounceFor`
+only. Not built yet: the layer lists in Images, Video and persona settings
+(steps 2 and 3), and with them a remove's "N layers held it". Clip edits
+reach clips at the next start, as §3 says of step 1.
 
 Each step is its own PR. The tests and docs use made-up names only. Until
 step 1 puts the registry in `check-private.py`'s corpus, each push is also

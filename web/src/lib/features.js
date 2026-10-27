@@ -30,6 +30,12 @@ export const VIEW_FEATURE = {
  * refuses lands on Home, as a hidden view's does — its routes answer
  * `feature_off` — and the view does not offer it. One whose feature is hidden
  * but not yet guarded still opens (`refuses`).
+ *
+ * A pane may belong to several, as a list: it is shown while **any** is on,
+ * and sent Home only when **all** refuse. Only the readers here learn lists
+ * (`featureOf`, `featureFor`, `opens`, `bounceFor`); each hands one id on,
+ * because `isShown`, `refuses`, `banner` and `hiddenLine` read a miss as
+ * shown, and an array handed to them would fail open (LORA-DESIGN.md §6).
  */
 export const PANE_FEATURE = {
   'review/graph': 'graph',
@@ -37,12 +43,34 @@ export const PANE_FEATURE = {
   'review/frontdoor': 'frontdoor',
   'settings/voice': 'voice',
   'settings/images': 'image',
+  'settings/loras': ['image', 'video'],
   'library/voices': 'voice',
 };
 
-/** The feature `view/sub` belongs to: its pane's, else its view's, else none. */
+/** A pane's features as a list: none, one, or several. */
+function paneFeatures(view, sub) {
+  const v = PANE_FEATURE[`${view}/${sub}`];
+  return v == null ? [] : Array.isArray(v) ? v : [v];
+}
+
+/**
+ * The feature `view/sub` belongs to: its pane's (the first listed), else its
+ * view's, else none. Pure, so it takes no rows; `featureFor` ranks a list by
+ * what is on.
+ */
 export function featureOf(view, sub) {
-  return PANE_FEATURE[`${view}/${sub}`] ?? VIEW_FEATURE[view] ?? null;
+  return paneFeatures(view, sub)[0] ?? VIEW_FEATURE[view] ?? null;
+}
+
+/**
+ * The one feature `view/sub` stands under now: of a pane's list, the first
+ * that is on, or the first listed when none is — so a banner speaks for the
+ * feature the pane is showing under, and `isShown` of it means any is on.
+ */
+export function featureFor(rows, view, sub) {
+  const listed = paneFeatures(view, sub);
+  if (listed.length > 1) return listed.find((id) => isShown(rows, id)) ?? listed[0];
+  return featureOf(view, sub);
 }
 
 /**
@@ -86,8 +114,8 @@ export function opensAnyway(view, sub) {
 export function opens(rows, view, sub) {
   // Opening anyway answers only the *view's* switch: a pane with a feature of
   // its own still needs that one (review of #490 — Voices with voice off).
-  const pane = PANE_FEATURE[`${view}/${sub}`];
-  return isShown(rows, featureOf(view, sub)) || (opensAnyway(view, sub) && isShown(rows, pane));
+  const pane = paneFeatures(view, sub).length ? featureFor(rows, view, sub) : null;
+  return isShown(rows, featureFor(rows, view, sub)) || (opensAnyway(view, sub) && isShown(rows, pane));
 }
 
 /** `/api/features`'s body as a map from id to row, or null when unanswered. */
@@ -119,8 +147,8 @@ export function refuses(rows, id) {
  */
 export function bounceFor(rows, view, sub) {
   const viewF = VIEW_FEATURE[view];
-  const paneF = PANE_FEATURE[`${view}/${sub}`];
-  if (paneF && refuses(rows, paneF)) return paneF;
+  const paneF = paneFeatures(view, sub);
+  if (paneF.length && paneF.every((id) => refuses(rows, id))) return paneF[0];
   if (viewF && !isShown(rows, viewF) && !opensAnyway(view, sub)) return viewF;
   return null;
 }
