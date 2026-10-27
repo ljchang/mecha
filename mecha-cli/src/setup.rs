@@ -1751,7 +1751,7 @@ async fn prepare_tools_carrying(
                     // the owner expects to carry it would otherwise just
                     // look worse.
                     for problem in tool.lora_problems() {
-                        eprintln!("mecha: [video] loras: {problem}");
+                        eprintln!("mecha: clip LoRAs: {problem}");
                     }
                     // The voice library is cloning's, part of `voice`:
                     // with `voice` off no voice is read, and H3 voices the

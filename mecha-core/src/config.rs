@@ -1304,9 +1304,17 @@ impl ConfigLayer {
         if let Some(v) = self.voice.as_mut() {
             opt(&mut v.voices_dir);
         }
+        if let Some(i) = self.image.as_mut() {
+            for d in i.loras_dir.iter_mut().flatten() {
+                *d = expand_home(d);
+            }
+        }
         if let Some(v) = self.video.as_mut() {
             opt(&mut v.guide_addendum);
             opt(&mut v.loras);
+            for d in v.loras_dir.iter_mut().flatten() {
+                *d = expand_home(d);
+            }
         }
         if let Some(h) = self.harness.as_mut() {
             opt(&mut h.source_dir);
@@ -3948,6 +3956,8 @@ mod tests {
              [sandbox]\nwritable = [\"~/scratch\", \"/abs\"]\n\
              [video]\nguide_addendum = \"~/.mecha/video-guide.md\"\n\
              loras = \"~/.mecha/video-loras.toml\"\n\
+             loras_dir = [\"~/video-server/models/loras\", \"/abs/loras\"]\n\
+             [image]\nloras_dir = [\"~/image-server/models/loras\"]\n\
              [[mcp]]\nname = \"mail\"\ncommand = \"~/.cargo/bin/mecha-mail\"\n\
              args = [\"serve\", \"~/notes\", \"a~b\", \"~other/x\"]\n",
         )
@@ -3964,6 +3974,19 @@ mod tests {
         assert_eq!(
             cfg.video.as_ref().and_then(|v| v.loras.clone()),
             Some(home.join(".mecha/video-loras.toml"))
+        );
+        // So are `[image]`'s, and both LoRA folder lists: a literal `~`
+        // there would leave every entry for that server out.
+        assert_eq!(
+            cfg.video.as_ref().and_then(|v| v.loras_dir.clone()),
+            Some(vec![
+                home.join("video-server/models/loras"),
+                PathBuf::from("/abs/loras")
+            ])
+        );
+        assert_eq!(
+            cfg.image.as_ref().and_then(|i| i.loras_dir.clone()),
+            Some(vec![home.join("image-server/models/loras")])
         );
         assert_eq!(
             cfg.sandbox.writable,

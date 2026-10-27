@@ -1163,9 +1163,20 @@ here:
   mecha ships no weights, no licence text and no LoRA. The file names in
   `VideoConfig::default` are the names MiniMax's ComfyUI release gives them,
   as `[image]`'s are Qwen's.
-- **The owner's LoRAs are the owner's** (`videogen::loras`, `[video]
-  loras`). mecha ships and names none (the owner's ruling of 2026-10-23):
-  the registry is a file the owner writes, read when the tool is built
+- **The owner's LoRAs are the owner's** (`loras`, `videogen::loras`,
+  `docs/LORA-DESIGN.md`). mecha ships and names none (the owner's ruling of
+  2026-10-23): the registry is `~/.mecha/loras.toml`, one file for pictures
+  and clips (for one release, the old clips-only file `[video] loras` names
+  while the new one does not exist). **An entry's `model` is checked against
+  its file**: the header is read as a bounded prefix (8 MiB at most, never
+  the tensors), its key shapes decide `qwen-image`, `h3` or neither, and an
+  entry whose file disagrees, matches neither or both, cannot be read, or
+  is in none of its server's folders (`[image] loras_dir`, `[video]
+  loras_dir`) is left out and said, since a LoRA for another model loads
+  without an error and changes little. Each file's result is kept by
+  (path, length, mtime), so an unchanged file is never re-read and cannot
+  move the schema. `mecha doctor` names every entry left out. The clip
+  registry is read when the tool is built
   because its names and `about` lines sit in the schema's `motion`, which
   is in the cached prefix. Each entry names its file per H3 checkpoint,
   since a LoRA trained on the other one broke clips (2026-10-24); a pick

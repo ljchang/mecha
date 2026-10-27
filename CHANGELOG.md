@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **One LoRA registry for pictures and clips, checked against the files.**
+  `~/.mecha/loras.toml` holds both kinds; each entry says `model =
+  "qwen-image"` or `"h3"`, and mecha reads each file's header to check it,
+  leaving out (and saying) an entry whose file is for another model, cannot
+  be read, or is not in the server's LoRA folders. **Set `[video] loras_dir`
+  (and `[image] loras_dir` for a ComfyUI you installed yourself) before
+  updating**, to the folders each server loads LoRAs from: without it every
+  clip LoRA is left out. The old `[video] loras` file is still read for this
+  release while the new one does not exist; `mecha doctor` says it has
+  moved, and names every entry left out. Picture LoRAs are recorded and
+  checked but not applied yet.
+
 - **Video clips can use your own LoRAs, places and clothes.** `[video] loras`
   points at a registry you write (mecha ships and names none): always-on
   entries ride every clip and the model picks the rest per clip; one with no

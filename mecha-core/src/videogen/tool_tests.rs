@@ -787,7 +787,8 @@ async fn the_owners_loras_ride_the_clip_and_a_wrong_one_is_left_out_or_refused()
     let home = scratch();
     let chat = home.join("chat");
     std::fs::create_dir_all(&chat).unwrap();
-    let registry = home.join("loras.toml");
+    // The old clips-only file, which reads as `h3` entries.
+    let registry = home.join("video-loras.toml");
     std::fs::write(
         &registry,
         r#"
@@ -811,11 +812,18 @@ always = true
 
 [[lora]]
 name = "broken"
+
+[[lora]]
+name = "liar"
+about = "a picture LoRA filed as a clip one"
+file = "liar.safetensors"
 "#,
     )
     .unwrap();
+    let folder = home.join("server-loras");
     let cfg = VideoConfig {
         loras: Some(registry.clone()),
+        loras_dir: Some(vec![folder.clone()]),
         ..VideoConfig::default()
     };
     let files = [
@@ -825,6 +833,11 @@ name = "broken"
     ]
     .map(String::from)
     .to_vec();
+    for f in &files {
+        crate::loras::write_test_lora(&folder.join(f), crate::loras::H3_KEYS);
+    }
+    // Its keys say Qwen-Image: it never reaches a clip, and is said.
+    crate::loras::write_test_lora(&folder.join("liar.safetensors"), crate::loras::QWEN_KEYS);
     let (url, log) = fake(
         Fake {
             extra_files: files.clone(),
@@ -839,7 +852,12 @@ name = "broken"
     })
     .unwrap()
     .for_test(&home, Arc::new(Stub::default()), Duration::from_millis(20));
-    assert_eq!(t.lora_problems().len(), 1, "{:?}", t.lora_problems());
+    assert_eq!(t.lora_problems().len(), 2, "{:?}", t.lora_problems());
+    assert!(
+        t.lora_problems()[1].contains("\"liar\"") && t.lora_problems()[1].contains("qwen-image"),
+        "{:?}",
+        t.lora_problems()
+    );
     let schema = t.input_schema();
     assert_eq!(
         schema["properties"]["motion"]["items"]["enum"],
@@ -924,7 +942,13 @@ name = "broken"
         .any(|l| l.starts_with("POST /prompt")));
 
     // Without a registry the schema has no `motion` at all.
-    let plain = VideoGenerate::new(VideoConfig::default()).unwrap();
+    let plain = VideoGenerate::new(VideoConfig::default())
+        .unwrap()
+        .for_test(
+            &home.join("no-registry"),
+            Arc::new(Stub::default()),
+            Duration::from_millis(20),
+        );
     assert!(plain.input_schema()["properties"].get("motion").is_none());
     std::fs::remove_dir_all(&home).ok();
 }
