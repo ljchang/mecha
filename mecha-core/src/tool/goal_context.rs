@@ -303,7 +303,7 @@ mod tests {
         let v = ask(&ctx, "task:t-budget").await;
         assert_eq!(
             v["examples"].to_string(),
-            r#"[{"evidence":"declared check passed at that time","expected":"summary.md exists","session":"s-plan","step":"draft the Lakeside Institute summary"}]"#,
+            r#"[{"session":"s-plan","step":"draft the Lakeside Institute summary","expected":"summary.md exists","evidence":"declared check passed at that time"}]"#,
             "a declared-check example is the bytes it always was"
         );
 

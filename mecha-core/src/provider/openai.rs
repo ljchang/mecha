@@ -989,7 +989,7 @@ mod tests {
         assert!(plain.get("chat_template_kwargs").is_none());
         assert_eq!(
             serde_json::to_string(&plain).unwrap(),
-            r#"{"max_tokens":64,"messages":[{"content":"hi","role":"user"}],"model":"m"}"#
+            r#"{"model":"m","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}"#
         );
         let declined = p.body(
             &CompletionRequest {
