@@ -932,13 +932,6 @@ advances it.
   - **A persona chat:** its copy beside its transcript
     (`<id>.scene.json`), and the persona's `scene/index/<sha256>.json`.
     A `scene/latest.json` left from before 2026-10-27 is read by nothing.
-- **A new chat starts with no scene, and a new picture carries nothing**
-  (`IMAGE-SCENE-DESIGN.md` R10, the owner, 2026-10-27, reversing R7). Only
-  a call that names `picture` builds on a record: `carried` in `call` is
-  that picture's record, else the chat's, and `None` for a new picture, and
-  the scene reader, a newcomer's clothes and the layered outfit all read
-  it. A fresh chat had drawn a place and a person from another chat's
-  last picture.
   - **The assistant's kept web chats:** the same layout one level up
     (`scene::assistant_slot`): the copy beside the transcript in `sessions/`,
     the index in `~/.mecha/scene/`.
@@ -949,6 +942,13 @@ advances it.
     so their pictures carry no record and every change to one is an edit.
   - **The guard:** `only_the_served_chats_stamp_a_scene_slot` reads the
     source for any other stamp.
+- **A new chat starts with no scene, and a new picture carries nothing**
+  (`IMAGE-SCENE-DESIGN.md` R10, the owner, 2026-10-27, reversing R7). Only
+  a call that names `picture` builds on a record: `carried` in `call` is
+  that picture's record (the chat's copy only when it records that very
+  picture), and `None` for a new picture, and the scene reader, a
+  newcomer's clothes and the layered outfit all read it. A fresh chat had
+  drawn a place and a person from another chat's last picture.
 - **Lookup is by the picture's bytes, through the index**, so a picture
   carried into another chat brings its scene. Nothing reads a scene back out
   of a manifest: a run can write the jail.

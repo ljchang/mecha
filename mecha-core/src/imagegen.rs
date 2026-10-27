@@ -3984,14 +3984,21 @@ impl Tool for ImageGenerate {
             _ => None,
         };
         // What the call may carry from before: the record of the picture it
-        // builds on, else the chat's, and for a new picture nothing (the
-        // owner, 2026-10-27). A picture builds on another only when its call
-        // names it, which the owner asks for; a new one is drawn from its own
-        // words, never the chat's last clothes, place or people.
+        // builds on, and for a new picture nothing (the owner, 2026-10-27). A
+        // picture builds on another only when its call names it, which the
+        // owner asks for; a new one is drawn from its own words, never the
+        // chat's last clothes, place or people. The chat's copy stands in only
+        // for the picture it records, when that one's index entry went
+        // missing: never for another, so an upload named in `picture` (never
+        // rendered, so never indexed) borrows nothing (review of #753, pass 2).
         let carried = match &picture {
-            Some(_) => base
-                .clone()
-                .or_else(|| ctx.scene.as_ref().and_then(|s| s.current())),
+            Some(r) => base.clone().or_else(|| {
+                let named = crate::scene::hash(&r.bytes);
+                ctx.scene
+                    .as_ref()
+                    .and_then(|s| s.current())
+                    .filter(|s| s.picture.as_deref() == Some(named.as_str()))
+            }),
             None => None,
         };
         // The record's words reach the prompt too, so they are read for a
@@ -10717,6 +10724,70 @@ mod tests {
         );
     }
 
+    /// A layered new picture takes no outfit from the chat's last picture:
+    /// the cutouts' clothes are the call's, or the record a call builds on,
+    /// and a new picture builds on none (the owner, 2026-10-27). Fails where
+    /// the layered build read the chat's copy (`recorded`).
+    #[tokio::test]
+    async fn a_layered_new_picture_takes_no_outfit_from_the_chats_last() {
+        let (url, seen) = fake_with(Fake {
+            history: vec![done(); 7],
+            views: vec![
+                picture(6, [30, 30, 30]),
+                picture(8, [90, 90, 90]),
+                cutout_png(true),
+                cutout_png(true),
+                picture(20, [200, 40, 40]),
+                picture(22, [210, 50, 50]),
+                picture(24, [60, 160, 60]),
+            ],
+            ..Fake::default()
+        })
+        .await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        let first = t
+            .call(
+                json!({"scene": {"setting": "a quiet reading room",
+                       "people": [{"who": "maya", "wearing": "a long green wool coat with brass buttons",
+                                   "doing": "reading a book"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!first.is_error, "{}", first.content);
+        let coat = |seen: &Arc<Mutex<Vec<String>>>| {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|l| l.contains("green wool coat"))
+                .count()
+        };
+        let before = coat(&seen);
+        assert!(before > 0, "the first picture's prompt names the coat");
+
+        cx.layers = true;
+        let mut call = touching_call();
+        call["scene"]["people"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("wearing");
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(
+            manifest_of(&dir, &out.content)["route"],
+            "layered",
+            "{}",
+            out.content
+        );
+        assert_eq!(
+            coat(&seen),
+            before,
+            "a layered pass wore the last picture's coat"
+        );
+    }
+
     /// `[image] timeout_secs` bounds the whole layered build: a pass that
     /// would start past it is never sent, rather than each of n + 3 passes
     /// having the full time (review of #624).
@@ -12623,7 +12694,7 @@ mod tests {
     /// chat's copy.
     #[tokio::test]
     async fn a_new_picture_carries_nothing_from_the_chats_last() {
-        let (url, seen) = distinct(3).await;
+        let (url, seen) = distinct(4).await;
         let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya"]));
         let t = tool(&url).with_library_dir(lib.clone());
         let mut cx = clean(scene_ctx(&dir, &store, "chat-a"));
@@ -12684,6 +12755,29 @@ mod tests {
             "building on it lost the clothes: {prompt}"
         );
         assert_eq!(records.lock().unwrap().last(), Some(&true));
+
+        // An upload named in `picture` has no record of its own, and borrows
+        // none from the chat's last picture (review of #753, pass 2).
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::write(dir.join("inbox/beach.png"), picture(30, [10, 120, 200])).unwrap();
+        let upload = t
+            .call(
+                json!({"picture": "inbox/beach.png", "scene": {"people": [{"who": "maya", "doing": "standing on the sand"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!upload.is_error, "{}", upload.content);
+        let prompt = last_prompt(&seen);
+        assert!(
+            !prompt.contains("green coat"),
+            "an upload wore the last picture's clothes: {prompt}"
+        );
+        assert_eq!(
+            records.lock().unwrap().last(),
+            Some(&false),
+            "the reader was handed another picture's record"
+        );
         // What the model is told, where it decides: a new picture keeps
         // nothing, and `picture` is for when the owner asks to build on one.
         assert!(DESCRIPTION.contains("a new picture keeps nothing from earlier ones"));
