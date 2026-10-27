@@ -831,12 +831,23 @@ pub fn loras_said(p: &crate::loras::Picked, off: Option<&str>, triggers: bool) -
     if p.damaged {
         out.push_str(" The LoRA list in picture settings could not be read, so none applied.");
     }
+    if p.unreadable {
+        out.push_str(
+            " The LoRA registry could not be read, so no LoRA in picture settings applied.",
+        );
+    }
     out
 }
 
 /// The manifest's `loras`: the same counts, or null when settings list none.
 fn loras_counted(p: &crate::loras::Picked, off: Option<&str>) -> Value {
-    if p.applied.is_empty() && off.is_none() && p.refused == 0 && p.gone == 0 && !p.damaged {
+    if p.applied.is_empty()
+        && off.is_none()
+        && p.refused == 0
+        && p.gone == 0
+        && !p.damaged
+        && !p.unreadable
+    {
         return Value::Null;
     }
     json!({
@@ -845,6 +856,7 @@ fn loras_counted(p: &crate::loras::Picked, off: Option<&str>) -> Value {
         "refused": p.refused,
         "gone": p.gone,
         "damaged": p.damaged,
+        "registry_unreadable": p.unreadable,
     })
 }
 
@@ -2612,7 +2624,19 @@ impl ImageGenerate {
                     tracing::warn!("the LoRA registry {why}; pictures keep the last one read");
                     kept.clone()
                 }
-                (Some(_), None) => fresh,
+                // Nothing read before: every name would look deleted, so
+                // the result says the registry did not read instead (review
+                // of #751).
+                (Some(_), None) => {
+                    return (
+                        crate::loras::Picked {
+                            damaged,
+                            unreadable: true,
+                            ..Default::default()
+                        },
+                        None,
+                    )
+                }
                 (None, _) => {
                     *last = Some(fresh.clone());
                     fresh
@@ -12203,7 +12227,7 @@ mod tests {
     /// counted; a `.gguf` model leaves them out and says so.
     #[tokio::test]
     async fn the_owners_loras_ride_the_graph_and_the_result_counts_them() {
-        let (url, seen) = distinct(4).await;
+        let (url, seen) = distinct(6).await;
         let (dir, store, home) = (tempdir(), tempdir(), tempdir());
         for f in ["paint", "grain"] {
             crate::loras::write_test_lora(
@@ -12283,6 +12307,27 @@ mod tests {
             "{}",
             out.content
         );
+        // A registry that does not read, with none read before: said as
+        // that, never as names deleted (review of #751).
+        let cold = ImageGenerate::new(cfg(&ImageConfig::default().diffusion_model))
+            .unwrap()
+            .with_chat_settings(chat.clone())
+            .with_loras(home.clone());
+        let registry = std::fs::read_to_string(home.join(crate::loras::FILE)).unwrap();
+        std::fs::write(home.join(crate::loras::FILE), "[[lora]\n").unwrap();
+        cx.image_loras = crate::loras::Layer::Inherit;
+        let out = cold.call(call.clone(), &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("registry could not be read"),
+            "{}",
+            out.content
+        );
+        assert!(!out.content.contains("no longer"), "{}", out.content);
+        // The tool that read it whole before keeps that read.
+        let out = t.call(call.clone(), &cx).await.unwrap();
+        assert!(out.content.contains("applied 2 LoRAs"), "{}", out.content);
+        std::fs::write(home.join(crate::loras::FILE), registry).unwrap();
         // A .gguf model file: left out, and said.
         cx.image_loras = crate::loras::Layer::Inherit;
         let gguf = ImageGenerate::new(cfg("Qwen-Image-2.1-Q4.gguf"))

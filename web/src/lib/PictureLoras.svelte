@@ -85,7 +85,7 @@
           onchange={() => save(false, toggled(on, c.name, view.max))}
         />
         <span class="name">{c.name}</span>
-        <span class="hint inline">{c.status === 'checked' ? c.about : c.reason}</span>
+        <span class="hint inline" class:bad={c.status !== 'checked'}>{c.status === 'checked' ? c.about : c.reason}</span>
       </label>
     {:else}
       <span class="hint">No picture LoRAs in the registry yet: add them under Settings → LoRAs.</span>

@@ -1001,7 +1001,13 @@ impl Layer {
 /// file does not check may still be listed (a disk can be unmounted for a
 /// day); it is left out at render with the count said.
 pub fn check_layer(names: &[String], loaded: &Loaded) -> Result<Vec<String>> {
-    if names.len() > MAX_PER_PICTURE {
+    check_layer_within(names, loaded, MAX_PER_PICTURE)
+}
+
+/// [`check_layer`] with the length allowed set by the caller: the route
+/// lets a list stored past the cap shrink a name at a time.
+pub fn check_layer_within(names: &[String], loaded: &Loaded, cap: usize) -> Result<Vec<String>> {
+    if names.len() > cap {
         bail!("a picture takes at most {MAX_PER_PICTURE} LoRAs");
     }
     let mut out: Vec<String> = Vec::new();
@@ -1064,6 +1070,9 @@ pub struct Picked {
     pub refused: usize,
     /// The deciding list was damaged, so nothing from it applied.
     pub damaged: bool,
+    /// The registry did not read and none had been read before, so nothing
+    /// applied: said as that, never as entries the owner deleted.
+    pub unreadable: bool,
 }
 
 /// The picture entries `names` resolve to in `loaded`, in list order.

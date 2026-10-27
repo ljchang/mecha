@@ -574,9 +574,9 @@ page sends it again with consent. The Add list is each server's
 `LoraLoaderModelOnly` options less the files entries use and the video
 turbo files. `PANE_FEATURE` takes a list for this pane, read by
 `featureOf` (first listed), the new `featureFor`, `opens` and `bounceFor`
-only. Not built yet: the layer lists in Images, Video and persona settings
-(steps 2 and 3), and with them a remove's "N layers held it". Clip edits
-reach clips at the next start, as §3 says of step 1.
+only. The picture lists and a remove's "N layers held it" came with step
+3 (below); the clip lists are step 2's. Clip edits reach clips at the next
+start, as §3 says of step 1.
 
 **What step 3 built** (2026-10-27, after M1–M3). The list is
 `loras::Layer`: inherit, a set of names (empty is "none"), or damaged. A
