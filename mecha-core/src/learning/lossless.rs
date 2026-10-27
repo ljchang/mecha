@@ -80,8 +80,9 @@ pub(super) fn merge_toml(
 /// One stored JSON record, rendered for a rewrite: the original text when the
 /// caller left it alone, the struct's own rendering when nothing from the
 /// original needs carrying (so the common case keeps the struct's field
-/// order), and the merged tree only when something does — whose keys come
-/// out sorted, the price of carrying a field this build has no slot for.
+/// order), and the merged tree only when something does — whose keys keep
+/// the merge's insertion order, the price of carrying a field this build
+/// has no slot for.
 pub(super) fn render_json<T: serde::Serialize>(
     orig_text: &str,
     orig: &serde_json::Value,
