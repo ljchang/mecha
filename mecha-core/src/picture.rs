@@ -403,7 +403,7 @@ pub fn parse(
                             Some(_) => return Err("`remove` must be true or false.".into()),
                         };
                         change.people.push(PersonChange {
-                            who: resolve(&who, approved, me)?,
+                            who: resolve(&who, approved, me, &mut notes)?,
                             at,
                             wearing: text(v.get("wearing"), "scene.people.wearing", field)?,
                             doing: text(v.get("doing"), "scene.people.doing", field)?,
@@ -618,8 +618,15 @@ fn names_in(text: &str, approved: &dyn Fn(&str) -> bool, me: &SelfNames) -> Vec<
 /// reader's clothes and pose for it matched no one, and the name inside the
 /// description reached the image model as "the viewer" (owner, 2026-10-27:
 /// a persona chat drew someone else, clothed, standing). Only a separator ends
-/// the name, so "John's sister" or "Maya and John" stay descriptions.
-fn resolve(who: &str, approved: &dyn Fn(&str) -> bool, me: &SelfNames) -> Result<Who, String> {
+/// the name, so "John's sister" or "Maya and John" stay descriptions. The
+/// words left out are said in `notes`, never dropped silently: they may be
+/// an act that belongs in `doing`.
+fn resolve(
+    who: &str,
+    approved: &dyn Fn(&str) -> bool,
+    me: &SelfNames,
+    notes: &mut Vec<String>,
+) -> Result<Who, String> {
     if let Some(named) = resolve_name(who, approved, me) {
         return named;
     }
@@ -629,8 +636,17 @@ fn resolve(who: &str, approved: &dyn Fn(&str) -> bool, me: &SelfNames) -> Result
         .and_then(|h| h.split(" - ").next())
         .unwrap_or_default();
     if head.trim().len() < who.trim().len() {
-        if let Some(named) = resolve_name(head, approved, me) {
-            return named;
+        // Only a resolved name, never the no-character refusal: with words
+        // after the name there is something to draw from, and an over-filled
+        // `who` is absorbed, not refused (review of #756).
+        if let Some(Ok(named)) = resolve_name(head, approved, me) {
+            notes.push(format!(
+                "`who` \"{}\" was read as {}: the library says how they look, so the words \
+                 after the name were left out. Put an act in `doing` and clothes in `wearing`.",
+                who.trim(),
+                head.trim()
+            ));
+            return Ok(named);
         }
     }
     Ok(Who::Described(who.trim().to_string()))
@@ -1705,6 +1721,32 @@ mod tests {
         let p = planned(&c, None);
         assert_eq!(p.next.people[0].who, Who::Library("maya".into()));
         assert!(p.offstage.is_empty(), "{:?}", p.offstage);
+        // The words left out are said, so an act can move to `doing`.
+        assert!(
+            c.notes
+                .iter()
+                .any(|n| n.contains("basket of plums") && n.contains("`doing`")),
+            "{:?}",
+            c.notes
+        );
+        // A persona with no approved character is drawn from its words, never
+        // refused for having no "self" (review of #756).
+        let unlinked = SelfNames {
+            character: None,
+            names: vec!["Maya".into()],
+        };
+        let c = parse(
+            &json!({"scene": {"setting": "an orchard", "people": [
+                {"who": "Maya, a potter in a clay-flecked apron"}]}}),
+            &|_| false,
+            &unlinked,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            c.change.people[0].who,
+            Who::Described("Maya, a potter in a clay-flecked apron".into())
+        );
     }
 
     /// `self` and the persona's names resolve to its character; a library
