@@ -1009,6 +1009,19 @@ pub struct RunStats {
         deserialize_with = "crate::brief::lenient_brief"
     )]
     pub brief: Option<Box<crate::brief::SituationBrief>>,
+    /// How the run's first request met the server's cache, against the
+    /// conversation's previous request: kept, rebuilt after a change, or lost
+    /// with nothing changed, and after how long idle (`cache_lens::ResumeCache`).
+    /// The sensor `docs/IDLE-CACHE-DESIGN.md` reads before anything saves a
+    /// chat's state to disk. `None` on a row from before it, with caching off,
+    /// and on a record this build cannot read — costing the field, never the
+    /// row, on `brief`'s rule.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::brief::lenient"
+    )]
+    pub resume_cache: Option<crate::cache_lens::ResumeCache>,
     /// What had entered the conversation by the end. Recorded here as well as
     /// in [`Record::Taint`] because this record is read on its own, by a
     /// reader that is counting rather than reconstructing.
@@ -1104,6 +1117,10 @@ impl RunStats {
         // the episode's.
         if self.brief.is_none() {
             self.brief = other.brief.clone();
+        }
+        // The same: an episode resumed once, at its start.
+        if self.resume_cache.is_none() {
+            self.resume_cache = other.resume_cache.clone();
         }
         self.turns += other.turns;
         self.usage.add(&other.usage);
@@ -1311,6 +1328,7 @@ impl RunStats {
             ),
             homeostat: o.homeostat.clone(),
             brief: o.brief.clone().map(Box::new),
+            resume_cache: o.resume_cache.clone(),
             taint: o.taint,
         }
     }
@@ -2995,6 +3013,7 @@ mod homeostat_record_tests {
             taint: crate::agent::Taint::default(),
             homeostat: None,
             brief: None,
+            resume_cache: None,
             stop_cause: crate::agent::StopCause::Completed,
             compactions: 0,
             usage_complete: true,
@@ -4446,6 +4465,7 @@ mod tests {
             duration_secs: None,
             homeostat: None,
             brief: None,
+            resume_cache: None,
             context_overflows: 0,
             boredom_notices: 0,
             step_escalations_attempted: 0,
@@ -4523,6 +4543,7 @@ mod tests {
                 duration_secs: None,
                 homeostat: None,
                 brief: None,
+                resume_cache: None,
                 context_overflows: 0,
                 boredom_notices: 0,
                 step_escalations_attempted: 0,
@@ -4636,6 +4657,7 @@ mod tests {
             duration_secs: None,
             homeostat: None,
             brief: None,
+            resume_cache: None,
             context_overflows: 0,
             boredom_notices: 0,
             step_escalations_attempted: 0,
@@ -5197,6 +5219,7 @@ mod tests {
             taint: crate::agent::Taint::default(),
             homeostat: None,
             brief: None,
+            resume_cache: None,
             stop_cause: crate::agent::StopCause::Completed,
             compactions: 0,
             usage_complete: true,

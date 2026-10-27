@@ -1268,6 +1268,13 @@ pub struct Conversation {
     /// end; the session file records it (`Record::Grants`) and resuming
     /// re-proves each one (`grant::readmit`).
     pub grants: Vec<crate::grant::Grant>,
+    /// Whether the server kept this conversation's prefix, judged request by
+    /// request — here rather than on the run for `pressure`'s reason, and
+    /// because the request that matters most is a run's first one: the turn
+    /// after an idle gap, which a per-run lens could only call a baseline
+    /// (`cache_lens` module docs). Never persisted; a conversation read back
+    /// from disk starts with nothing to compare against.
+    pub cache_lens: crate::cache_lens::CacheLens,
 }
 
 impl Conversation {
@@ -1285,6 +1292,7 @@ impl Conversation {
             goal_anchor: None,
             harness_notes: Vec::new(),
             grants: Vec::new(),
+            cache_lens: crate::cache_lens::CacheLens::default(),
         }
     }
 
@@ -1302,6 +1310,7 @@ impl Conversation {
             goal_anchor: None,
             harness_notes: Vec::new(),
             grants: Vec::new(),
+            cache_lens: crate::cache_lens::CacheLens::default(),
         }
     }
 
@@ -1461,6 +1470,7 @@ impl From<Vec<Message>> for Conversation {
             goal_anchor: None,
             harness_notes: Vec::new(),
             grants: Vec::new(),
+            cache_lens: crate::cache_lens::CacheLens::default(),
         }
     }
 }
@@ -2052,6 +2062,10 @@ pub struct RunOutcome {
     /// The situation brief the front-end assembled for this run, copied off
     /// [`RunContext::brief`] — recorded, never sent.
     pub brief: Option<crate::brief::SituationBrief>,
+    /// How this run's first request met the server's cache, judged against
+    /// the conversation's previous request (`cache_lens::ResumeCache`).
+    /// `None` when caching is off or the run sent nothing.
+    pub resume_cache: Option<crate::cache_lens::ResumeCache>,
     pub stop_cause: StopCause,
     /// Cost of this run, when the provider has prices configured.
     pub cost_usd: Option<f64>,
@@ -2793,14 +2807,27 @@ impl Agent {
         // did, discarded if it does not — a `/model` switch replaces the
         // tokenizer the anchor was measured under.
         pressure.carry_into(self.request_surface(cx));
+        // Taken off and put back for `pressure`'s reason; kept across runs,
+        // unlike `pressure` on a surface change, because a changed surface is
+        // one of the verdicts it exists to record.
+        let mut cache_lens = std::mem::take(&mut convo.cache_lens);
+        cache_lens.begin_run();
 
         let ran = self
-            .run_loop(cx, convo, events, &mut context_overflows, &mut pressure)
+            .run_loop(
+                cx,
+                convo,
+                events,
+                &mut context_overflows,
+                &mut pressure,
+                &mut cache_lens,
+            )
             .await;
         // Before the `?`. The series is a fact about the conversation, so a run
         // that errored still leaves behind what it measured — and the next run
         // on this conversation is the one that needs it most.
         convo.pressure = pressure.clone();
+        convo.cache_lens = cache_lens;
         // A human answer remains a fact even if the provider fails afterwards.
         convo.goal_anchor = cx.tools.goal_track.as_ref().and_then(|t| t.anchor());
         // And so does a person's grant: the yes was given whether or not the
@@ -2812,6 +2839,10 @@ impl Agent {
         let mut outcome = ran?;
         outcome.duration_secs = Some(started.elapsed().as_secs_f64());
         outcome.context_overflows = context_overflows;
+        outcome.resume_cache = convo
+            .cache_lens
+            .resume()
+            .map(|r| r.record(self.cache_contended));
         // One place, after every exit. The loop returns from five of them, and
         // a snapshot attached at five is worse than one attached at none —
         // a field that is present for most runs reads as a sampling failure
@@ -2878,6 +2909,7 @@ impl Agent {
         events: Option<UnboundedSender<AgentEvent>>,
         context_overflows: &mut u32,
         pressure: &mut crate::pressure::ContextTracker,
+        cache_lens: &mut crate::cache_lens::CacheLens,
     ) -> Result<RunOutcome> {
         let harness_notes = self.now_notes();
         let stamped = Self::stamped(cx, &events);
@@ -2902,12 +2934,11 @@ impl Agent {
         let mut prompt_tokens = 0u64;
         let mut compaction_gave_up = false;
         let mut compactions = 0u32;
-        // Watches whether the cached prefix is actually being reused, and
-        // names the reason when it legitimately is not. Per run, because
-        // within a run "append-only between turns" is the invariant to
-        // verify; across runs the surface may honestly differ, and that diff
-        // is `RunConfig`'s to record.
-        let mut cache_lens = crate::cache_lens::CacheLens::new();
+        // `cache_lens` watches whether the cached prefix is actually being
+        // reused, and names the reason when it legitimately is not. It comes
+        // from the conversation, so a run's first request is judged against
+        // the last run's final one; a surface that honestly differs across
+        // runs is a verdict (`SurfaceChanged`), never a warning.
         let mut loop_guard = LoopGuard::new(self.cfg.loop_guard);
         let mut boredom = crate::boredom::Boredom::new(self.cfg.boredom);
         // See `MAX_STEP_ESCALATIONS_PER_RUN`. Both carried into `RunOutcome`
@@ -3322,6 +3353,7 @@ impl Agent {
                     duration_secs: None,
                     homeostat: None,
                     brief: None,
+                    resume_cache: None,
                     context_overflows: 0,
                     boredom_notices: 0,
                     step_escalations_attempted: 0,
@@ -3449,6 +3481,9 @@ impl Agent {
             } else {
                 events.clone()
             };
+            // Where an idle gap before this request ends (`CacheLens::observe_sent`):
+            // the first send, so an overflow retry's re-send does not move it.
+            let sent_at = std::time::Instant::now();
             let completion = match self.complete(cx, &request, &stream).await {
                 Err(e) if is_context_overflow(&e) => {
                     // Counted before the recovery rather than after it: what
@@ -3595,7 +3630,25 @@ impl Agent {
             // turn's legitimate cache break reads as the rewrite it is.
             if self.cfg.cache_prompt {
                 use crate::cache_lens::Verdict;
-                match cache_lens.observe(&request, &response.usage) {
+                // A run's first request is judged against the previous run's
+                // last, across however long the conversation sat idle, and a
+                // server that evicted it meanwhile is doing its job — the
+                // outcome row records it (`RunStats::resume_cache`). Only a
+                // drop *within* a run, where nothing had time to evict it
+                // but this agent's own requests, is the anomaly to warn on.
+                let first_of_run = cache_lens.resume().is_none();
+                match cache_lens.observe_sent(&request, &response.usage, sent_at) {
+                    Verdict::Drop { repaid, prev_total } if first_of_run => tracing::info!(
+                        repaid,
+                        prev_total,
+                        idle_secs = cache_lens
+                            .resume()
+                            .and_then(|r| r.idle)
+                            .map(|d| d.as_secs()),
+                        "prompt cache: the server no longer held this conversation's prefix \
+                         when it resumed; {repaid} of the previous prompt's {prev_total} \
+                         tokens were read again"
+                    ),
                     Verdict::Drop { repaid, prev_total } if self.cache_contended => {
                         tracing::info!(
                             repaid,
@@ -4651,6 +4704,7 @@ impl Agent {
             // swapped pair of arguments compiles.
             homeostat: None,
             brief: None,
+            resume_cache: None,
             context_overflows: 0,
             boredom_notices: 0,
             step_escalations_attempted: 0,
@@ -4801,6 +4855,7 @@ impl Agent {
             taint,
             homeostat: None,
             brief: None,
+            resume_cache: None,
             context_overflows: 0,
             boredom_notices: 0,
             step_escalations_attempted: 0,
@@ -14048,6 +14103,60 @@ mod tests {
     /// any regression that drops the slot from the run scope, which would
     /// otherwise record a confident zero where the `Option` was added to
     /// produce a dash (found on review).
+    /// The lens rides the conversation, so a chat's next message — a new
+    /// run — is judged against the last one, and the verdict reaches the
+    /// outcome row. Built per run, the second run's first request was a
+    /// baseline and a server that lost the prefix in between left no trace.
+    #[tokio::test]
+    async fn a_second_run_records_how_its_first_request_met_the_cache() {
+        let reply = |text: &str, usage: Usage| CompletionResponse {
+            usage,
+            ..assistant(vec![Block::text(text)], StopReason::EndTurn)
+        };
+        let (agent, _provider) = agent_with(
+            vec![
+                // Run 1 writes an 18k prefix to the cache.
+                reply(
+                    "one",
+                    Usage {
+                        input_tokens: 8,
+                        cache_creation_input_tokens: 18_000,
+                        ..Usage::default()
+                    },
+                ),
+                // Run 2 only appended, and the server handed back none of it.
+                reply(
+                    "two",
+                    Usage {
+                        input_tokens: 18_300,
+                        ..Usage::default()
+                    },
+                ),
+            ],
+            PermissionMode::Allow,
+        );
+        let mut convo = Conversation::user("first");
+        let first = agent.run(&mut convo, None).await.unwrap();
+        let first = first
+            .resume_cache
+            .expect("caching is on, so the lens judged");
+        assert_eq!(first.verdict, crate::cache_lens::ResumeVerdict::Baseline);
+        assert_eq!(first.idle_secs, None);
+
+        convo.messages.push(Message::user("second"));
+        let outcome = agent.run(&mut convo, None).await.unwrap();
+        let second = outcome.resume_cache.clone().unwrap();
+        assert_eq!(second.verdict, crate::cache_lens::ResumeVerdict::Drop);
+        assert_eq!(second.prev_total, Some(18_008));
+        assert!(second.idle_secs.is_some());
+        // And the outcome row the session file keeps carries it, both ways.
+        let row = crate::session::RunStats::from(&outcome);
+        let json = serde_json::to_string(&row).unwrap();
+        assert!(json.contains(r#""verdict":"drop""#), "{json}");
+        let back: crate::session::RunStats = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.resume_cache, Some(second));
+    }
+
     #[tokio::test]
     async fn the_run_outcome_carries_the_null_step_and_reopen_counts() {
         let todo_call = |id: &str, items: serde_json::Value| {

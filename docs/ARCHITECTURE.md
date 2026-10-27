@@ -11010,6 +11010,19 @@ silently:
 If you change the server's `-c`, change `context_window` to match — a stale
 value is worse than none, because the derived threshold trusts it.
 
+**Whether the prefix came back is `cache_lens`'s question, and the lens rides
+the `Conversation`, never the run.** In a chat one message is one run, so the
+request that shows a server eviction — the first one after an idle gap — is
+always a run's first, and a lens built per run could only call it a baseline.
+Carried across runs (taken off and put back around `run_loop`, as `pressure`
+is), it judges that request against the previous run's last one and the
+outcome row records the verdict with the idle gap (`RunStats::resume_cache`):
+`drop` is an eviction, `transcript_rewritten` and `surface_changed` are misses
+mecha caused. It is never persisted — a conversation read back from disk
+starts at `baseline` — and its verdicts never reach the model. Until
+2026-10-27 the lens was per run, and a week of 87k–338k-token re-reads could
+not be split into the two causes (`docs/IDLE-CACHE-DESIGN.md` §3–§4).
+
 ## Timezones
 
 **The clock is asked per request and the reading is never stored.** `Clock`
