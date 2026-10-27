@@ -26,9 +26,20 @@
 //! - **Judge only what was sent.** The verdict compares the request that
 //!   actually went out (post any overflow recovery) with the one before it,
 //!   both from the caller's hand — the lens holds hashes, never content.
+//!
+//! **The lens lives on the conversation, not the run.** In a chat one
+//! message is one run, so a per-run lens judged every turn's first request
+//! as a [`Verdict::Baseline`] — and the first request after an idle gap is
+//! exactly where a server that evicted the chat's prefix would show. Carried
+//! across runs, that request is judged against the previous run's last one,
+//! and [`CacheLens::resume`] keeps the verdict so the run's outcome row can
+//! record it ([`ResumeCache`]): the measurement `docs/IDLE-CACHE-DESIGN.md`
+//! waits on before anything saves a chat's state to disk.
 
 use crate::message::{CompletionRequest, Usage};
+use serde::{Deserialize, Serialize};
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::time::{Duration, Instant};
 
 /// Below this many re-paid tokens, a drop is not worth a warning: small
 /// prompts and the tokenizer boundary a server keeps at the end of its
@@ -50,9 +61,14 @@ pub enum Verdict {
     /// Same surface, appended-only transcript, and the numbers look like
     /// reuse: the cached prefix is doing its job.
     Stable { uncached: u64, read: u64 },
-    /// The tool list or system prompt changed since the last request. Reuse
-    /// breaking here is expected; the name says which knob moved.
-    SurfaceChanged { system: bool, tools: bool },
+    /// The tool list, system prompt or model changed since the last request.
+    /// Reuse breaking here is expected; the name says which knob moved. A
+    /// model switch reloads the server, and nothing it held survives.
+    SurfaceChanged {
+        system: bool,
+        tools: bool,
+        model: bool,
+    },
     /// The messages are no longer an extension of what was last sent —
     /// compaction, eviction or thinning rewrote history, and the moving half
     /// of the cache is legitimately gone.
@@ -68,9 +84,14 @@ pub enum Verdict {
     Drop { repaid: u64, prev_total: u64 },
 }
 
+#[derive(Debug, Clone)]
 struct Prev {
     system: u64,
     tools: u64,
+    model: u64,
+    /// When this request's usage came back: the start of the idle gap the
+    /// next run's first request is measured across.
+    at: Instant,
     /// One hash per message *as sent*, less the run's notes
     /// (`CompletionRequest::trailing_notes`), so the append-only check is a
     /// prefix comparison rather than a diff.
@@ -83,12 +104,27 @@ struct Prev {
     notes_input: u64,
 }
 
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct CacheLens {
     prev: Option<Prev>,
     /// A nonzero cache tier has been reported at least once, so zeros from
     /// here on are evidence rather than silence.
     reporting_seen: bool,
+    /// Set by [`CacheLens::begin_run`]; the next observation is the run's
+    /// first request, and its verdict is kept in `resume`.
+    awaiting_first: bool,
+    resume: Option<Resume>,
+}
+
+/// How a run's first request met the cache, with the gap since the request
+/// before it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Resume {
+    pub verdict: Verdict,
+    /// `None` when there was no earlier request to measure from.
+    pub idle: Option<Duration>,
+    pub read: u64,
+    pub uncached: u64,
 }
 
 impl CacheLens {
@@ -96,10 +132,35 @@ impl CacheLens {
         Self::default()
     }
 
+    /// A run is starting on this conversation: its first observation is the
+    /// one [`CacheLens::resume`] reports. The comparison state is kept — that
+    /// is the point of carrying the lens across runs.
+    pub fn begin_run(&mut self) {
+        self.awaiting_first = true;
+        self.resume = None;
+    }
+
+    /// The verdict on the current run's first request, once it has been
+    /// observed. `None` before then, and for a run that sent nothing.
+    pub fn resume(&self) -> Option<&Resume> {
+        self.resume.as_ref()
+    }
+
     /// Observe one completed request and the usage the provider reported for
     /// it. Pure bookkeeping: the caller decides what, if anything, to do
     /// with the verdict.
     pub fn observe(&mut self, request: &CompletionRequest, usage: &Usage) -> Verdict {
+        self.observe_at(request, usage, Instant::now())
+    }
+
+    /// [`CacheLens::observe`] with the clock passed in, so a test can put
+    /// an idle gap between two runs without sleeping through it.
+    pub fn observe_at(
+        &mut self,
+        request: &CompletionRequest,
+        usage: &Usage,
+        now: Instant,
+    ) -> Verdict {
         let (messages, notes_bytes) = history_hashes(request);
         let total_bytes = request.system.as_ref().map_or(0, String::len)
             + serde_json::to_string(&request.tools).map_or(0, |t| t.len())
@@ -113,6 +174,8 @@ impl CacheLens {
             // that is a surface change the harness made, never the
             // unexplained drop this lens exists to isolate (review of #596).
             tools: hash_of(&(&request.tools, format!("{:?}", request.tool_choice))),
+            model: hash_of(&request.model),
+            at: now,
             messages,
             total_input,
             notes_input: (total_input as f64 * notes_bytes as f64 / total_bytes.max(1) as f64)
@@ -126,8 +189,13 @@ impl CacheLens {
             Some(prev) => {
                 let system = prev.system != current.system;
                 let tools = prev.tools != current.tools;
-                if system || tools {
-                    Verdict::SurfaceChanged { system, tools }
+                let model = prev.model != current.model;
+                if system || tools || model {
+                    Verdict::SurfaceChanged {
+                        system,
+                        tools,
+                        model,
+                    }
                 } else if !is_prefix(&prev.messages, &current.messages) {
                     Verdict::TranscriptRewritten
                 } else if !self.reporting_seen && !cached_reported {
@@ -163,14 +231,113 @@ impl CacheLens {
             }
         };
 
+        if std::mem::take(&mut self.awaiting_first) {
+            self.resume = Some(Resume {
+                verdict: verdict.clone(),
+                idle: self
+                    .prev
+                    .as_ref()
+                    .map(|p| now.saturating_duration_since(p.at)),
+                read: usage.cache_read_input_tokens,
+                uncached: usage.input_tokens,
+            });
+        }
         self.reporting_seen |= cached_reported;
         self.prev = Some(current);
         verdict
     }
 }
 
+/// A run's [`Resume`] as its outcome row records it (`RunStats::resume_cache`).
+///
+/// Numbers and a closed verdict, never content: the lens holds hashes only,
+/// and the row is a corpus input like every other `RunStats` field.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResumeCache {
+    pub verdict: ResumeVerdict,
+    /// Seconds since the conversation's previous request came back. Absent
+    /// on a baseline: the first request this process saw for the
+    /// conversation, so a new chat or one reopened after a restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_secs: Option<u64>,
+    /// On `surface_changed`, which knobs moved.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub system_changed: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tools_changed: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub model_changed: bool,
+    /// On `drop`: the part of the previous prompt that was paid for again,
+    /// and that prompt's size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repaid: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev_total: Option<u64>,
+    /// What the first request read from the cache and what it did not.
+    #[serde(default)]
+    pub cache_read: u64,
+    #[serde(default)]
+    pub uncached: u64,
+    /// The agent shares the server's slots with interleaved conversations
+    /// (`Agent::set_cache_contended`), so a drop has a known cause.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub contended: bool,
+}
+
+/// [`Verdict`]'s kind, as a closed set written to an append-only store: an
+/// unknown name read back is [`ResumeVerdict::Unknown`], never a failed row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResumeVerdict {
+    Baseline,
+    Stable,
+    SurfaceChanged,
+    TranscriptRewritten,
+    Unobservable,
+    Drop,
+    #[serde(other)]
+    Unknown,
+}
+
+impl Resume {
+    pub fn record(&self, contended: bool) -> ResumeCache {
+        let mut r = ResumeCache {
+            verdict: ResumeVerdict::Baseline,
+            idle_secs: self.idle.map(|d| d.as_secs()),
+            system_changed: false,
+            tools_changed: false,
+            model_changed: false,
+            repaid: None,
+            prev_total: None,
+            cache_read: self.read,
+            uncached: self.uncached,
+            contended,
+        };
+        r.verdict = match &self.verdict {
+            Verdict::Baseline => ResumeVerdict::Baseline,
+            Verdict::Stable { .. } => ResumeVerdict::Stable,
+            Verdict::SurfaceChanged {
+                system,
+                tools,
+                model,
+            } => {
+                (r.system_changed, r.tools_changed, r.model_changed) = (*system, *tools, *model);
+                ResumeVerdict::SurfaceChanged
+            }
+            Verdict::TranscriptRewritten => ResumeVerdict::TranscriptRewritten,
+            Verdict::Unobservable => ResumeVerdict::Unobservable,
+            Verdict::Drop { repaid, prev_total } => {
+                (r.repaid, r.prev_total) = (Some(*repaid), Some(*prev_total));
+                ResumeVerdict::Drop
+            }
+        };
+        r
+    }
+}
+
 /// Hash anything serializable. `DefaultHasher` is unstable across processes,
-/// which is fine: a lens lives inside one run and its hashes never leave it.
+/// which is fine: a lens lives inside one process (it rides a `Conversation`
+/// across runs, never a file) and its hashes never leave it.
 fn hash_of<T: serde::Serialize>(value: &T) -> u64 {
     let mut h = DefaultHasher::new();
     serde_json::to_string(value)
@@ -327,7 +494,8 @@ mod tests {
             lens.observe(&second, &usage(18_000, 500, 0)),
             Verdict::SurfaceChanged {
                 system: false,
-                tools: true
+                tools: true,
+                model: false
             }
         );
     }
@@ -345,7 +513,8 @@ mod tests {
             lens.observe(&closing, &usage(18_000, 500, 0)),
             Verdict::SurfaceChanged {
                 system: false,
-                tools: true
+                tools: true,
+                model: false
             }
         );
     }
@@ -449,5 +618,119 @@ mod tests {
             lens.observe(&request(convo(2)), &usage(900, 100, 17_000)),
             Verdict::Stable { .. }
         ));
+    }
+
+    /// The case the lens moved onto the conversation for: a chat's next
+    /// message is a new run, and its first request — after however long the
+    /// chat sat idle — is judged against the previous run's last one. Built
+    /// per run, that request was always a baseline and a server that lost the
+    /// prefix in between was invisible.
+    #[test]
+    fn a_resumed_run_whose_prefix_the_server_lost_is_a_drop_with_its_idle_gap() {
+        let t0 = Instant::now();
+        let mut lens = CacheLens::new();
+        lens.begin_run();
+        lens.observe_at(&request(convo(1)), &usage(8, 18_000, 0), t0);
+        lens.observe_at(&request(convo(2)), &usage(40, 200, 18_000), t0);
+        // Next message, twenty minutes later: nothing changed, the transcript
+        // only grew, and the cache handed back none of it.
+        lens.begin_run();
+        let later = t0 + Duration::from_secs(1_200);
+        assert!(matches!(
+            lens.observe_at(&request(convo(3)), &usage(18_300, 0, 0), later),
+            Verdict::Drop { .. }
+        ));
+        let resume = lens.resume().unwrap().record(false);
+        assert_eq!(resume.verdict, ResumeVerdict::Drop);
+        assert_eq!(resume.idle_secs, Some(1_200));
+        assert_eq!(resume.prev_total, Some(18_240));
+        assert_eq!(resume.cache_read, 0);
+    }
+
+    #[test]
+    fn a_resumed_run_that_reused_the_prefix_is_stable() {
+        let t0 = Instant::now();
+        let mut lens = CacheLens::new();
+        lens.begin_run();
+        lens.observe_at(&request(convo(1)), &usage(8, 18_000, 0), t0);
+        lens.begin_run();
+        lens.observe_at(
+            &request(convo(2)),
+            &usage(60, 0, 18_000),
+            t0 + Duration::from_secs(30),
+        );
+        let resume = lens.resume().unwrap().record(true);
+        assert_eq!(resume.verdict, ResumeVerdict::Stable);
+        assert_eq!((resume.idle_secs, resume.cache_read), (Some(30), 18_000));
+        assert!(resume.contended);
+    }
+
+    /// The first request a process sees for a conversation has nothing to be
+    /// compared with — a new chat, or one reopened after a restart — and says
+    /// so rather than claiming an idle gap of zero.
+    #[test]
+    fn a_conversations_first_run_is_a_baseline_with_no_idle_gap() {
+        let mut lens = CacheLens::new();
+        lens.begin_run();
+        lens.observe(&request(convo(1)), &usage(8, 18_000, 0));
+        let resume = lens.resume().unwrap().record(false);
+        assert_eq!(resume.verdict, ResumeVerdict::Baseline);
+        assert_eq!(resume.idle_secs, None);
+    }
+
+    /// Only the run's first request is the resume: later turns of the same
+    /// run are the per-run invariant the lens always watched.
+    #[test]
+    fn only_the_first_request_of_a_run_is_its_resume() {
+        let mut lens = CacheLens::new();
+        lens.begin_run();
+        lens.observe(&request(convo(1)), &usage(8, 18_000, 0));
+        lens.observe(&request(convo(2)), &usage(18_300, 0, 0));
+        assert_eq!(lens.resume().unwrap().verdict, Verdict::Baseline);
+        // And a run that has not sent anything yet reports nothing.
+        lens.begin_run();
+        assert!(lens.resume().is_none());
+    }
+
+    /// A model switch reloads the server, so the miss after it is a surface
+    /// change with a name, never a drop.
+    #[test]
+    fn a_model_switch_between_runs_is_a_surface_change() {
+        let mut lens = CacheLens::new();
+        lens.begin_run();
+        lens.observe(&request(convo(1)), &usage(8, 18_000, 0));
+        lens.begin_run();
+        let mut switched = request(convo(2));
+        switched.model = "other".into();
+        lens.observe(&switched, &usage(18_300, 0, 0));
+        let resume = lens.resume().unwrap().record(false);
+        assert_eq!(resume.verdict, ResumeVerdict::SurfaceChanged);
+        assert!(resume.model_changed && !resume.tools_changed && !resume.system_changed);
+    }
+
+    /// A closed enum in an append-only store is a wire format: the record
+    /// round-trips, and a verdict name this build does not know reads back as
+    /// `Unknown` instead of failing the row it sits on.
+    #[test]
+    fn the_resume_record_round_trips_and_an_unknown_verdict_degrades() {
+        let r = ResumeCache {
+            verdict: ResumeVerdict::Drop,
+            idle_secs: Some(600),
+            system_changed: false,
+            tools_changed: false,
+            model_changed: false,
+            repaid: Some(40_000),
+            prev_total: Some(41_000),
+            cache_read: 0,
+            uncached: 41_200,
+            contended: false,
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(!json.contains("changed") && !json.contains("contended"));
+        assert_eq!(serde_json::from_str::<ResumeCache>(&json).unwrap(), r);
+        let future: ResumeCache =
+            serde_json::from_str(r#"{"verdict":"evicted_to_disk","cache_read":5}"#).unwrap();
+        assert_eq!(future.verdict, ResumeVerdict::Unknown);
+        assert_eq!(future.cache_read, 5);
     }
 }
