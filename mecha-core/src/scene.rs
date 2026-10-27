@@ -1511,6 +1511,15 @@ mod tests {
             "{n}"
         );
         assert!(n.contains("call image_generate.)"), "{n}");
+        // The owner's ruling (2026-10-27, R10): the place and the person a
+        // fresh chat drew came in through this note's prose, which the model
+        // restated in a new picture's call, so the note says a new picture
+        // keeps none of it, and never again that clothes and places come
+        // from here.
+        assert!(n.contains("A new picture starts from"), "{n}");
+        assert!(n.contains("keeps none of this"), "{n}");
+        assert!(n.contains("pass it as `picture`"), "{n}");
+        assert!(!n.contains("come from here"), "{n}");
         assert!(stem_of(&n).is_some());
     }
 }
