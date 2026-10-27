@@ -663,6 +663,46 @@ class Guard(unittest.TestCase):
         self.stage("b.md", "Ann O'Hara again.\n")
         self.assertEqual(self.run_guard("--staged").returncode, 0)
 
+    def write_registry(self, text, where="loras.toml"):
+        open(os.path.join(self.home, where), "w").write(text)
+
+    def test_a_lora_registry_file_name_or_specific_trigger_is_refused(self):
+        self.write_registry('[[lora]]\nname = "glimmer_v2"\nabout = "x"\nmodel = "h3"\n'
+                            'file = "sub/glimmerpass_h3.safetensors"\ntrigger = "a slow glimmer"\n')
+        for text in ("uses glimmerpass_h3 here", "the GLIMMER_V2 entry", "try A Slow Glimmer now"):
+            git(self.repo, "reset", "-q")
+            self.stage("doc.md", text + "\n")
+            r = self.run_guard("--staged")
+            self.assertEqual(r.returncode, 1, (text, r.stdout))
+            self.assertIn("LoRA registry", r.stdout)
+            self.assertNotIn("glimmer", r.stdout.lower())
+        # A whole phrase only: a longer word that contains it is not it.
+        git(self.repo, "reset", "-q")
+        self.stage("doc.md", "glimmerpass_h3x\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 0)
+
+    def test_a_plain_lora_name_only_warns_and_names_the_field(self):
+        self.write_registry('[[lora]]\nname = "lantern"\nabout = "x"\nmodel = "h3"\nfile = "q.safetensors"\n')
+        self.stage("doc.md", "A lantern on the pier.\n")
+        r = self.run_guard("--staged")
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("LoRA registry `name`", r.stdout)
+        self.assertNotIn("lantern", r.stdout)
+
+    def test_the_old_lora_file_the_config_names_is_read(self):
+        self.write_registry('[[lora]]\nname = "x"\nabout = "x"\nfile = "oldstem_fl.safetensors"\n', "old.toml")
+        open(os.path.join(self.home, "config.toml"), "w").write(
+            f'[video]\nloras = "{os.path.join(self.home, "old.toml")}"\n')
+        self.stage("doc.md", "oldstem_fl\n")
+        self.assertEqual(self.run_guard("--staged").returncode, 1)
+
+    def test_an_unreadable_lora_registry_refuses(self):
+        self.write_registry("[[lora]\n")
+        self.stage("doc.md", "The ferry leaves at noon.\n")
+        r = self.run_guard("--staged")
+        self.assertEqual(r.returncode, 2, r.stdout)
+        self.assertIn("LoRA registry", r.stdout)
+
     def test_made_up_text_passes(self):
         self.stage("fixture.py", 'X = "The ferry leaves at noon."\n')
         self.assertEqual(self.run_guard("--staged").returncode, 0)

@@ -112,6 +112,7 @@ pub mod learning;
 pub mod lesson_source;
 pub mod llama_units;
 pub mod log_cap;
+pub mod loras;
 pub mod mail_mcp;
 pub mod mail_triage;
 pub mod mailbox;

@@ -31,7 +31,14 @@ commit message (`--message FILE`, the commit-msg hook) — for:
 1. a run of `SHINGLE` words that was said in a conversation;
 2. a quoted phrase of three or more words that was said in one;
 3. a real persona or voice session id;
-4. the name of one of the owner's own personas.
+4. the name of one of the owner's own personas;
+5. text from the owner's LoRA registry (`~/.mecha/loras.toml`, and while it is
+   still read the old file `[video] loras` names): every file stem, and every
+   `name` or `trigger` that is specific (more than one word, or holding `_`,
+   `-` or a digit), as a whole phrase. A single plain word is only a warning
+   naming which registry field matched, since LoRA names are ordinary nouns
+   and refusing one would refuse unrelated commits with no way to see why
+   (the owner's ruling, 2026-10-23: no LoRA of theirs in a public repository).
 
 Text already in the repository before the change is never flagged: the harness's own
 sentences (the call note, the outbox read-back) are spoken in conversations
@@ -49,6 +56,7 @@ instead of passing.
 
 import glob
 import json
+import tomllib
 import os
 import re
 import subprocess
@@ -557,6 +565,58 @@ def corpus():
     return shingles, phrases, ids, names, bool(whole or partly or names)
 
 
+def lora_registry():
+    """(phrases that refuse, {word: field} that only warn) from the owner's
+    LoRA registry. A registry that exists and cannot be read is a refusal
+    (exit 2), as an unreadable session store is, never a pass."""
+    paths = [f"{MECHA}/loras.toml"]
+    config = f"{MECHA}/config.toml"
+    if os.path.exists(config):
+        try:
+            with open(config, "rb") as fh:
+                old = tomllib.load(fh).get("video", {}).get("loras")
+        except (OSError, ValueError) as e:
+            print(f"check-private: {config} could not be read ({e}), so the old LoRA registry it names is unknown; refusing rather than passing unread.")
+            sys.exit(2)
+        if isinstance(old, str):
+            paths.append(os.path.expanduser(old))
+    refuse, warn = set(), {}
+    for path in paths:
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, "rb") as fh:
+                entries = tomllib.load(fh).get("lora", [])
+        except (OSError, ValueError) as e:
+            print(f"check-private: the LoRA registry {path} could not be read ({e}); refusing rather than passing unread.")
+            sys.exit(2)
+        for e in entries if isinstance(entries, list) else []:
+            if not isinstance(e, dict):
+                continue
+            for key in ("file", "frames", "references"):
+                v = e.get(key)
+                if isinstance(v, str) and v.strip():
+                    stem = os.path.basename(v.strip())
+                    stem = stem[: -len(".safetensors")] if stem.endswith(".safetensors") else stem
+                    if stem:
+                        refuse.add(stem.lower())
+            for key in ("name", "trigger"):
+                v = e.get(key)
+                if not isinstance(v, str) or not v.strip():
+                    continue
+                v = v.strip().lower()
+                if len(v.split()) > 1 or re.search(r"[_\-0-9]", v):
+                    refuse.add(v)
+                else:
+                    warn.setdefault(v, key)
+    return refuse, warn
+
+
+def phrase_in(phrase, line):
+    """`phrase` as a whole phrase in `line`, any case."""
+    return re.search(rf"(?<![A-Za-z0-9_]){re.escape(phrase)}(?![A-Za-z0-9_])", line, re.I) is not None
+
+
 def run_git(cmd):
     """A git command's output; one that fails is refused, never read as
     "nothing added" (review of #557 — the silently-degrading guard)."""
@@ -678,7 +738,8 @@ def main(args):
     if args and args[0] == "--range":
         BASE[0] = args[1].split("..")[0]
     shingles, phrases, ids, names, found = corpus()
-    if not found:
+    lora_refuse, lora_warn = lora_registry()
+    if not found and not (lora_refuse or lora_warn):
         # On the machine that holds the conversations, set
         # CHECK_PRIVATE_REQUIRE=1: a mistyped MECHA_HOME or a hook run as
         # another user then refuses instead of passing (review of #557), as
@@ -730,12 +791,22 @@ def main(args):
                 if re.search(rf"\b{re.escape(name)}\b", t, re.I) and not in_head(" ".join(words(name))):
                     hit = "the name of one of the owner's personas"
                     break
+        if not hit:
+            for phrase in lora_refuse:
+                if phrase_in(phrase, t) and not in_head(" ".join(words(phrase))):
+                    hit = "text from the owner's LoRA registry"
+                    break
         if hit:
             findings.append((p, n, hit))
+        else:
+            for word, field in lora_warn.items():
+                if phrase_in(word, t) and not in_head(word):
+                    print(f"check-private: warning: {p}:{n} has a word that is a LoRA registry `{field}`; check it is not one of the owner's LoRAs.")
+                    break
     if not findings:
         return 0
-    print("check-private: refusing — this change carries conversation text (owner's ruling,")
-    print("2026-10-04: no persona chat or voice call words in this repository).")
+    print("check-private: refusing — this change carries conversation text or LoRA registry")
+    print("text (owner's rulings, 2026-10-04 and 2026-10-23: neither belongs in this repository).")
     for path, num, hit in findings[:40]:
         print(f"  {path}:{num}: {hit}")
     print("Replace it with made-up text of the same shape. The words are not printed here.")

@@ -122,6 +122,13 @@ pub struct ImageConfig {
     /// server restarts, and an incognito chat withholds the tool: a promise
     /// that cannot be kept is not made (`INCOGNITO-DESIGN.md` §6.3).
     pub server_temp_dir: Option<std::path::PathBuf>,
+    /// The folders the server loads LoRAs from (ComfyUI's `models/loras`,
+    /// and any `extra_model_paths.yaml` adds), looked in for each picture
+    /// entry of the owner's LoRA registry, whose file is checked against
+    /// them (`loras`). Unset, a ComfyUI that mecha installed means its own
+    /// `models/loras`; any other server's picture LoRAs are left out until
+    /// it is set.
+    pub loras_dir: Option<Vec<std::path::PathBuf>>,
 }
 
 impl ImageConfig {
@@ -162,6 +169,7 @@ impl Default for ImageConfig {
             // (`behind_mecha_s_proxy`).
             unload_after_secs: 900,
             server_temp_dir: None,
+            loras_dir: None,
         }
     }
 }

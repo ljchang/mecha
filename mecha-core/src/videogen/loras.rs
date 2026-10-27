@@ -1,40 +1,21 @@
-//! The owner's own LoRAs for clips, by name: a registry file the owner
-//! writes (`[video] loras`), from which the model picks per clip through
-//! `motion`. The model names an entry, never a file: the file, its strength
-//! and its trigger words are the registry's.
+//! The owner's own LoRAs for clips, by name: the `h3` entries of the
+//! owner's registry (`crate::loras`) whose files were found and checked,
+//! from which the model picks per clip through `motion`. The model names an
+//! entry, never a file: the file, its strength and its trigger words are the
+//! registry's.
 //!
 //! mecha ships no LoRA and names none (the owner's ruling, 2026-10-23): this
-//! is the mechanism, and which LoRAs exist is the owner's files and this
-//! file. The format:
-//!
-//! ```toml
-//! [[lora]]
-//! name = "wave"                    # what `motion` takes
-//! about = "a friendly wave"        # one line, shown to the model
-//! file = "wave_h3.safetensors"     # in the server's models/loras, both modes
-//! strength = 0.8                   # 0 < s <= 2, default 1
-//! trigger = "waving hello"         # added to the prompt when it is absent
-//!
-//! [[lora]]
-//! name = "detail"
-//! about = "fine skin detail"
-//! frames = "detail_fl.safetensors"      # a file per H3 checkpoint instead:
-//! references = "detail_ref.safetensors" # an entry offers only the modes it names
-//! always = true                         # on every clip, never offered
-//! ```
+//! is the mechanism, and which LoRAs exist is the owner's files and registry.
 //!
 //! **Each mode gets only LoRAs trained for its checkpoint.** References mode
 //! runs H3's `ref2va` model and frames mode its `fl2va` one; a LoRA trained
 //! on the other gave broken clips in the owner's tests (2026-10-24), so an
 //! entry names its file per mode, and a pick without a file for the clip's
-//! mode is refused with what would work.
-//!
-//! An entry that does not read is left out and said, never the whole
-//! registry: one bad line costs that LoRA, not the others.
+//! mode is left out with what would work. **And only LoRAs trained for H3**:
+//! an entry whose file's keys say another model never reaches a clip
+//! (`crate::loras::Status`).
 
-use std::path::Path;
-
-use anyhow::{anyhow, bail, Result};
+use anyhow::{bail, Result};
 use serde_json::{json, Value};
 
 use super::graph::Mode;
@@ -80,110 +61,44 @@ pub struct Registry {
     pub loras: Vec<Lora>,
 }
 
-/// A name the model types and a file name ComfyUI lists: plain, no path.
-fn plain(s: &str, extra: &[char]) -> bool {
-    !s.is_empty()
-        && s.len() <= 128
-        && !s.starts_with('.')
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || "_-.".contains(c) || extra.contains(&c))
-}
-
-fn entry(t: &toml::Table) -> Result<Lora> {
-    let s = |k: &str| t.get(k).and_then(|v| v.as_str()).map(str::trim);
-    let name = s("name").unwrap_or_default().to_string();
-    if !plain(&name, &[]) || name.contains('.') {
-        bail!("`name` must be letters, digits, - or _");
-    }
-    let about = s("about").unwrap_or_default().to_string();
-    if about.is_empty() {
-        bail!("`about` is required: it is how the model knows when to use it");
-    }
-    if about.len() > 300 {
-        bail!("`about` is one line, at most 300 characters");
-    }
-    let file_ok = |f: &str| f.ends_with(".safetensors") && plain(f, &[' ']);
-    let mut frames = s("frames").map(str::to_string);
-    let mut references = s("references").map(str::to_string);
-    if let Some(f) = s("file") {
-        frames.get_or_insert_with(|| f.to_string());
-        references.get_or_insert_with(|| f.to_string());
-    }
-    if frames.is_none() && references.is_none() {
-        bail!("give `file`, or `frames` and/or `references`");
-    }
-    for f in frames.iter().chain(references.iter()) {
-        if !file_ok(f) {
-            bail!("{f:?} is not a plain .safetensors name in the server's models/loras");
-        }
-    }
-    let strength = match t.get("strength") {
-        None => 1.0,
-        Some(v) => v
-            .as_float()
-            .or_else(|| v.as_integer().map(|i| i as f64))
-            .filter(|s| *s > 0.0 && *s <= 2.0)
-            .ok_or_else(|| anyhow!("`strength` is a number above 0, at most 2"))?,
-    };
-    let trigger = s("trigger").filter(|t| !t.is_empty()).map(str::to_string);
-    let always = match t.get("always") {
-        None => false,
-        Some(v) => v
-            .as_bool()
-            .ok_or_else(|| anyhow!("`always` is true or false"))?,
-    };
-    Ok(Lora {
-        name,
-        about,
-        frames,
-        references,
-        strength,
-        trigger,
-        always,
-    })
-}
-
 impl Registry {
-    /// The registry in `text`, and a line per entry left out.
-    pub fn parse(text: &str) -> (Registry, Vec<String>) {
-        let mut out = Registry::default();
-        let mut skipped = Vec::new();
-        let table: toml::Table = match text.parse() {
-            Ok(t) => t,
-            Err(e) => return (out, vec![format!("the file does not read: {e}")]),
-        };
-        let entries = table
-            .get("lora")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
-        for (i, v) in entries.iter().enumerate() {
-            let Some(t) = v.as_table() else {
-                skipped.push(format!("lora #{}: not a table", i + 1));
-                continue;
-            };
-            match entry(t) {
-                Ok(l) if out.loras.iter().any(|o| o.name == l.name) => {
-                    skipped.push(format!("lora {:?}: a second entry by that name", l.name))
-                }
-                Ok(l) => out.loras.push(l),
-                Err(e) => skipped.push(format!("lora #{}: {e}", i + 1)),
-            }
+    /// The clip entries of `loaded` that can apply: `h3`, every file found
+    /// and read as H3's. The rest are `loaded`'s problems to say.
+    pub fn from_loaded(loaded: &crate::loras::Loaded) -> Registry {
+        Registry {
+            loras: loaded
+                .usable(crate::loras::Family::H3)
+                .map(|e| Lora {
+                    name: e.name.clone(),
+                    about: e.about.clone(),
+                    frames: e.frames.clone(),
+                    references: e.references.clone(),
+                    strength: e.strength,
+                    trigger: e.trigger.clone(),
+                    always: e.always,
+                })
+                .collect(),
         }
-        (out, skipped)
     }
 
-    /// The registry at `path`, and what was left out of it. A file that is
-    /// not there is an empty registry and said, as one that does not read
-    /// is: `[video] loras` naming a file means the owner expects LoRAs.
-    pub fn load(path: &Path) -> (Registry, Vec<String>) {
-        match std::fs::read_to_string(path) {
-            Ok(text) => Registry::parse(&text),
-            Err(e) => (
-                Registry::default(),
-                vec![format!("cannot read it ({e}), so clips carry no LoRAs")],
-            ),
-        }
+    /// The registry in `text`, as the old clips-only file, unchecked: what a
+    /// test of picking needs.
+    #[cfg(test)]
+    pub(crate) fn parse(text: &str) -> (Registry, Vec<String>) {
+        let Ok((entries, skipped)) = crate::loras::parse(text, true) else {
+            return (Registry::default(), vec!["the file does not read".into()]);
+        };
+        let loaded = crate::loras::Loaded {
+            source: crate::loras::Source::None,
+            ignored: None,
+            entries: entries
+                .into_iter()
+                .map(|e| (e, crate::loras::Status::Checked))
+                .collect(),
+            skipped: Vec::new(),
+            unreadable: None,
+        };
+        (Registry::from_loaded(&loaded), skipped)
     }
 
     pub fn get(&self, name: &str) -> Option<&Lora> {
@@ -371,9 +286,6 @@ strength = 5
         let (r, skipped) = Registry::parse("[[lora]\nname=");
         assert!(r.loras.is_empty());
         assert_eq!(skipped.len(), 1);
-        let (r, skipped) = Registry::load(Path::new("/nonexistent/loras.toml"));
-        assert!(r.loras.is_empty());
-        assert!(skipped[0].starts_with("cannot read it"), "{skipped:?}");
     }
 
     #[test]
