@@ -458,12 +458,13 @@ mod tests {
         record_crisis(&dir, "web", Tier::Keyword, true).unwrap();
         let text = std::fs::read_to_string(dir.join("safety.jsonl")).unwrap();
         let value: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
-        let keys: Vec<&str> = value
+        let mut keys: Vec<&str> = value
             .as_object()
             .unwrap()
             .keys()
             .map(String::as_str)
             .collect();
+        keys.sort_unstable();
         assert_eq!(
             keys,
             vec!["at", "check", "detector", "paused", "surface", "tier"]
