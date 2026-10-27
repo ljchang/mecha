@@ -155,13 +155,21 @@ mod tests {
                 .find(&format!("export const {name} = {{"))
                 .unwrap_or_else(|| panic!("{name} is not in features.js"));
             let block = &js[start..start + js[start..].find("};").unwrap()];
+            // A pane of several features is a list (`'settings/loras':
+            // ['image', 'video']`): each id in it is held to the registry.
             block
                 .lines()
                 .skip(1)
-                .filter_map(|l| {
-                    let (k, v) = l.trim().trim_end_matches(',').split_once(": ")?;
-                    let unquote = |s: &str| s.trim_matches(|c| c == '\'' || c == '"').to_string();
-                    Some((unquote(k), unquote(v)))
+                .filter_map(|l| l.trim().trim_end_matches(',').split_once(": "))
+                .flat_map(|(k, v)| {
+                    let unquote =
+                        |s: &str| s.trim().trim_matches(|c| c == '\'' || c == '"').to_string();
+                    let k = unquote(k);
+                    v.trim_start_matches('[')
+                        .trim_end_matches(']')
+                        .split(',')
+                        .map(|id| (k.clone(), unquote(id)))
+                        .collect::<Vec<_>>()
                 })
                 .collect()
         };

@@ -5,7 +5,7 @@
 // failed; an `unready` feature the owner switched on, hidden; a queue with
 // strangers' requests waiting, hidden because its switch is off; and a
 // banner that names the child when the parent is what is broken.
-import { OPENS_ANYWAY, opensAnyway, opens, bounceFor, featureOf, refuses, index, isShown, queueCardShown, banner, hiddenLine, summary, tree, detail, VIEW_FEATURE } from '../src/lib/features.js';
+import { OPENS_ANYWAY, opensAnyway, opens, bounceFor, featureOf, featureFor, refuses, index, isShown, queueCardShown, banner, hiddenLine, summary, tree, detail, VIEW_FEATURE } from '../src/lib/features.js';
 
 let pass = 0;
 let fail = 0;
@@ -106,6 +106,39 @@ console.log('where a link bounces');
   t('the voices chip shows with images off', opens(noImages, 'library', 'voices') === true);
   t('and not with voice off', opens(noVoice, 'library', 'voices') === false);
   t('a core pane opening anyway still opens', opens(new Map([['tasks', row('tasks', 'off', { gated: true })]]), 'tasks', 'waiting') === true);
+}
+
+console.log('a pane of two features');
+{
+  // Settings → LoRAs is image generation's and video's: shown while either
+  // is on, sent home only when both refuse, and its banner speaks for the
+  // one it is showing under (LORA-DESIGN.md §6, the #654 shape both ways).
+  const st = (image, video) =>
+    new Map([
+      ['image', row('image', image, { gated: true })],
+      ['video', row('video', video, { gated: true })],
+    ]);
+  t('featureOf stays pure: the first listed', featureOf('settings', 'loras') === 'image');
+  t('with images off and video on it stands under video', featureFor(st('off', 'on'), 'settings', 'loras') === 'video');
+  t('with both on, the first listed', featureFor(st('on', 'on'), 'settings', 'loras') === 'image');
+  t('with both off, the first listed', featureFor(st('off', 'off'), 'settings', 'loras') === 'image');
+  t('a one-feature pane is its feature', featureFor(st('off', 'on'), 'settings', 'images') === 'image');
+  t('it opens with only video on', bounceFor(st('off', 'on'), 'settings', 'loras') === null && opens(st('off', 'on'), 'settings', 'loras'));
+  t('it opens with only images on', bounceFor(st('on', 'off'), 'settings', 'loras') === null && opens(st('on', 'off'), 'settings', 'loras'));
+  t('it goes home only when both refuse', bounceFor(st('off', 'off'), 'settings', 'loras') === 'image' && !opens(st('off', 'off'), 'settings', 'loras'));
+  // One refusing and one hidden-but-not-guarded still opens.
+  const half = new Map([
+    ['image', row('image', 'off', { gated: true })],
+    ['video', row('video', 'off', { gated: false })],
+  ]);
+  t('it stays while one has not refused', bounceFor(half, 'settings', 'loras') === null);
+  const unready = new Map([
+    ['image', row('image', 'off', { gated: true })],
+    ['video', row('video', 'unready', { reason: 'no [video] table', gated: true })],
+  ]);
+  t('the banner survives a list value', banner(unready, featureFor(unready, 'settings', 'loras'))?.label === 'Video');
+  t('and so does the hidden line', hiddenLine(st('off', 'off'), featureFor(st('off', 'off'), 'settings', 'loras'))?.text === 'Image is off');
+  t('nothing is hidden before the answer', opens(null, 'settings', 'loras') && bounceFor(null, 'settings', 'loras') === null);
 }
 
 console.log('what refuses');

@@ -608,6 +608,323 @@ impl Loaded {
     }
 }
 
+/// What the page sends for one entry: the registry's own fields, with the
+/// family given by the route it came through.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EntryInput {
+    pub name: String,
+    pub about: String,
+    #[serde(default)]
+    pub file: Option<String>,
+    #[serde(default)]
+    pub frames: Option<String>,
+    #[serde(default)]
+    pub references: Option<String>,
+    /// As the page sent it: a number, or text the parser refuses with its
+    /// own reason, never a silent default (review of #750).
+    #[serde(default)]
+    pub strength: Option<serde_json::Value>,
+    #[serde(default)]
+    pub trigger: Option<String>,
+    #[serde(default)]
+    pub always: bool,
+}
+
+/// Why a write from the page did not happen.
+#[derive(Debug)]
+pub enum WriteError {
+    /// No entry of that family by that name.
+    NotFound,
+    /// The entry, or the file as it stands, does not read: said to the owner.
+    Invalid(String),
+    Io(anyhow::Error),
+}
+
+impl std::fmt::Display for WriteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WriteError::NotFound => write!(f, "no LoRA by that name"),
+            WriteError::Invalid(why) => write!(f, "{why}"),
+            WriteError::Io(e) => write!(f, "{e:#}"),
+        }
+    }
+}
+
+/// One writer at a time in this process: each write reads, edits and
+/// replaces the whole file.
+static WRITING: Mutex<()> = Mutex::new(());
+
+/// The registry file as a document the page may edit: the owner's comments,
+/// order and spacing kept. A file that does not parse is refused, never
+/// overwritten: the owner fixes it by hand first.
+fn open_doc(path: &Path) -> Result<(toml_edit::DocumentMut, bool), WriteError> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(WriteError::Io(anyhow!("reading {}: {e}", path.display()))),
+    };
+    let existed = path.exists();
+    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e| {
+        WriteError::Invalid(format!(
+            "{} does not read ({e}); fix it by hand before saving from here",
+            path.display()
+        ))
+    })?;
+    // `lora = []` is an empty registry as the loader reads it: the first
+    // entry the page adds replaces it with a `[[lora]]` table.
+    if doc
+        .get("lora")
+        .and_then(|v| v.as_array())
+        .is_some_and(|a| a.is_empty())
+    {
+        doc.remove("lora");
+    }
+    if doc.get("lora").is_some_and(|v| !v.is_array_of_tables()) {
+        return Err(WriteError::Invalid(format!(
+            "`lora` in {} is not a list of [[lora]] tables",
+            path.display()
+        )));
+    }
+    Ok((doc, existed))
+}
+
+fn table_name(t: &toml_edit::Table) -> Option<&str> {
+    t.get("name").and_then(|v| v.as_str()).map(str::trim)
+}
+
+fn table_family(t: &toml_edit::Table) -> Option<Family> {
+    t.get("model")
+        .and_then(|v| v.as_str())
+        .and_then(|m| Family::parse(m.trim()))
+}
+
+/// The file through a temporary one renamed over it
+/// (`imagelib::write_atomic_mode`: created at its mode, never followed
+/// through a link, synced before the rename), so a reader never sees half a
+/// write and the registry is never world-readable on the way. A new file is
+/// the owner's alone (0600); an old one keeps its mode, and one whose mode
+/// cannot be read is written 0600 rather than at the umask's.
+fn replace_file(path: &Path, text: &str, existed: bool) -> Result<(), WriteError> {
+    #[cfg(unix)]
+    let mode = {
+        use std::os::unix::fs::PermissionsExt;
+        Some(if existed {
+            std::fs::metadata(path)
+                .map(|m| m.permissions().mode() & 0o777)
+                .unwrap_or(0o600)
+        } else {
+            0o600
+        })
+    };
+    #[cfg(not(unix))]
+    let mode = {
+        let _ = existed;
+        None
+    };
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| WriteError::Io(anyhow!("creating {}: {e}", dir.display())))?;
+    }
+    crate::imagelib::write_atomic_mode(path, text.as_bytes(), mode).map_err(WriteError::Io)
+}
+
+/// Add an entry of `family` to the registry at `mecha_home`, or replace the
+/// one named `replacing`, in place. The result goes through the same parser
+/// as the file, and is written only if the entry reads: the page cannot
+/// write an entry the file would refuse.
+pub fn write_entry(
+    mecha_home: &Path,
+    family: Family,
+    input: &EntryInput,
+    replacing: Option<&str>,
+) -> Result<(), WriteError> {
+    let _one = WRITING.lock().unwrap_or_else(|p| p.into_inner());
+    let path = mecha_home.join(FILE);
+    let (mut doc, existed) = open_doc(&path)?;
+    let name = input.name.trim().to_string();
+    let mut table = toml_edit::Table::new();
+    table.insert("name", toml_edit::value(name.clone()));
+    table.insert("about", toml_edit::value(input.about.trim()));
+    table.insert("model", toml_edit::value(family.as_str()));
+    for (k, v) in [
+        ("file", &input.file),
+        ("frames", &input.frames),
+        ("references", &input.references),
+    ] {
+        if let Some(v) = v.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+            table.insert(k, toml_edit::value(v));
+        }
+    }
+    match &input.strength {
+        None | Some(serde_json::Value::Null) => {}
+        Some(serde_json::Value::Number(n)) => match (n.as_i64(), n.as_f64()) {
+            (Some(i), _) => {
+                table.insert("strength", toml_edit::value(i));
+            }
+            (None, Some(f)) => {
+                table.insert("strength", toml_edit::value(f));
+            }
+            _ => {
+                return Err(WriteError::Invalid(
+                    "`strength` is a number above 0, at most 2".into(),
+                ))
+            }
+        },
+        Some(serde_json::Value::String(t)) => {
+            table.insert("strength", toml_edit::value(t.as_str()));
+        }
+        Some(_) => {
+            return Err(WriteError::Invalid(
+                "`strength` is a number above 0, at most 2".into(),
+            ))
+        }
+    }
+    if let Some(t) = input
+        .trigger
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+    {
+        table.insert("trigger", toml_edit::value(t));
+    }
+    if input.always {
+        table.insert("always", toml_edit::value(true));
+    }
+    if !doc.contains_key("lora") {
+        doc.insert(
+            "lora",
+            toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new()),
+        );
+    }
+    let list = doc["lora"]
+        .as_array_of_tables_mut()
+        .expect("checked by open_doc");
+    let at = |list: &toml_edit::ArrayOfTables, n: &str| {
+        list.iter().position(|t| table_name(t) == Some(n))
+    };
+    let index = match replacing {
+        Some(old) => {
+            let i = at(list, old).ok_or(WriteError::NotFound)?;
+            if table_family(list.get(i).expect("found")) != Some(family) {
+                return Err(WriteError::NotFound);
+            }
+            if name != old && at(list, &name).is_some() {
+                return Err(WriteError::Invalid(format!(
+                    "there is already a LoRA named {name:?}"
+                )));
+            }
+            // The comments above the entry's header stay where they were.
+            let slot = list.get_mut(i).expect("found");
+            if let Some(prefix) = slot.decor().prefix().cloned() {
+                table.decor_mut().set_prefix(prefix);
+            }
+            *slot = table;
+            i
+        }
+        None => {
+            if at(list, &name).is_some() {
+                return Err(WriteError::Invalid(format!(
+                    "there is already a LoRA named {name:?}"
+                )));
+            }
+            list.push(table);
+            list.len() - 1
+        }
+    };
+    let text = doc.to_string();
+    let (entries, skipped) = parse(&text, false).map_err(|e| WriteError::Invalid(e.to_string()))?;
+    if !entries.iter().any(|e| e.name == name && e.model == family) {
+        let marker = format!("lora #{}: ", index + 1);
+        let why = skipped
+            .iter()
+            .find_map(|s| s.strip_prefix(&marker))
+            .unwrap_or("it does not read")
+            .to_string();
+        return Err(WriteError::Invalid(why));
+    }
+    replace_file(&path, &text, existed)
+}
+
+/// Remove the entry of `family` named `name` from the registry at
+/// `mecha_home`, leaving the rest of the file as the owner wrote it.
+pub fn remove_entry(mecha_home: &Path, family: Family, name: &str) -> Result<(), WriteError> {
+    let _one = WRITING.lock().unwrap_or_else(|p| p.into_inner());
+    let path = mecha_home.join(FILE);
+    let (mut doc, existed) = open_doc(&path)?;
+    let Some(list) = doc.get_mut("lora").and_then(|v| v.as_array_of_tables_mut()) else {
+        return Err(WriteError::NotFound);
+    };
+    let i = list
+        .iter()
+        .position(|t| table_name(t) == Some(name) && table_family(t) == Some(family))
+        .ok_or(WriteError::NotFound)?;
+    // Comments above the first entry are the file's header more often than
+    // the entry's: they move to the entry after it, or to the end.
+    let prefix = list
+        .get(i)
+        .and_then(|t| t.decor().prefix().cloned())
+        .filter(|_| i == 0);
+    list.remove(i);
+    if let Some(prefix) = prefix {
+        match list.get_mut(0) {
+            Some(next) => {
+                let mut joined = prefix.as_str().unwrap_or_default().to_string();
+                joined.push_str(
+                    next.decor()
+                        .prefix()
+                        .and_then(|p| p.as_str())
+                        .unwrap_or_default(),
+                );
+                next.decor_mut().set_prefix(joined);
+            }
+            None => {
+                let text = prefix.as_str().unwrap_or_default().to_string();
+                doc.set_trailing(text);
+            }
+        }
+    }
+    replace_file(&path, &doc.to_string(), existed)
+}
+
+/// A file a server lists that no entry uses yet, for the page's Add list:
+/// its family as its header says, or why it could not be told.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unused {
+    pub file: String,
+    pub check: Result<Check, String>,
+}
+
+/// The files of `listed` (a server's `lora_name` options) that no entry of
+/// `entries` uses and none of `skip` names, each checked when it can be:
+/// with no folders, or a file in none of them, the family is unknown and
+/// the reason given, so an empty pane never hides the cause. A name §3's
+/// lexical rule would refuse is never offered.
+pub fn unused(
+    listed: &[String],
+    entries: &[(Entry, Status)],
+    skip: &[&str],
+    dirs: Option<&[PathBuf]>,
+    key: &str,
+) -> Vec<Unused> {
+    let used: std::collections::HashSet<&str> =
+        entries.iter().flat_map(|(e, _)| e.files()).collect();
+    listed
+        .iter()
+        .filter(|f| file_ok(f) && !used.contains(f.as_str()) && !skip.contains(&f.as_str()))
+        .map(|f| Unused {
+            file: f.clone(),
+            check: match dirs.filter(|d| !d.is_empty()) {
+                None => Err(format!("{key} is not set, so its family cannot be read")),
+                Some(dirs) => match find(f, dirs) {
+                    Some(path) => Ok(check_file(&path)),
+                    None => Err(format!("it is in none of the {key} folders")),
+                },
+            },
+        })
+        .collect()
+}
+
 /// A file with a safetensors header naming `keys` and no tensors: what a
 /// test needs for the family check.
 #[cfg(test)]
@@ -957,6 +1274,182 @@ file = "gone.safetensors"
         );
         assert_eq!(none.entries[0].1, Status::NoFolder);
         assert!(none.problems(Family::QwenImage)[0].contains("[image] loras_dir"));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn the_page_writes_through_the_parser_and_keeps_the_owners_file() {
+        let home = scratch();
+        std::fs::write(
+            home.join(FILE),
+            "# my LoRAs\n\n[[lora]]\nname = \"wave\"   # the hello one\nabout = \"a wave\"\nmodel = \"h3\"\nfile = \"w.safetensors\"\n",
+        )
+        .unwrap();
+        let input = EntryInput {
+            name: "watercolor".into(),
+            about: "loose washes".into(),
+            file: Some("styles/wc.safetensors".into()),
+            strength: Some(serde_json::json!(0.7)),
+            ..Default::default()
+        };
+        write_entry(&home, Family::QwenImage, &input, None).unwrap();
+        let text = std::fs::read_to_string(home.join(FILE)).unwrap();
+        assert!(
+            text.starts_with("# my LoRAs") && text.contains("# the hello one"),
+            "{text}"
+        );
+        let (entries, skipped) = parse(&text, false).unwrap();
+        assert!(skipped.is_empty(), "{skipped:?}");
+        assert_eq!(entries[1].name, "watercolor");
+        assert_eq!(entries[1].model, Family::QwenImage);
+
+        // A second by the same name, or one the parser refuses, is not written.
+        assert!(matches!(
+            write_entry(&home, Family::H3, &EntryInput { name: "wave".into(), about: "x".into(), file: Some("x.safetensors".into()), ..Default::default() }, None),
+            Err(WriteError::Invalid(ref w)) if w.contains("already")
+        ));
+        let always = EntryInput {
+            always: true,
+            ..input.clone()
+        };
+        assert!(matches!(
+            write_entry(&home, Family::QwenImage, &EntryInput { name: "b".into(), ..always }, None),
+            Err(WriteError::Invalid(ref w)) if w.contains("`always` is for clips")
+        ));
+        let escape = EntryInput {
+            name: "c".into(),
+            file: Some("../x.safetensors".into()),
+            ..input.clone()
+        };
+        assert!(matches!(
+            write_entry(&home, Family::QwenImage, &escape, None),
+            Err(WriteError::Invalid(_))
+        ));
+        assert_eq!(std::fs::read_to_string(home.join(FILE)).unwrap(), text);
+
+        // Edit in place, under its own family only; a rename keeps the slot.
+        assert!(matches!(
+            write_entry(&home, Family::H3, &input, Some("watercolor")),
+            Err(WriteError::NotFound)
+        ));
+        let renamed = EntryInput {
+            name: "washes".into(),
+            ..input.clone()
+        };
+        write_entry(&home, Family::QwenImage, &renamed, Some("watercolor")).unwrap();
+        let (entries, _) =
+            parse(&std::fs::read_to_string(home.join(FILE)).unwrap(), false).unwrap();
+        assert_eq!(
+            entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+            ["wave", "washes"]
+        );
+
+        assert!(matches!(
+            remove_entry(&home, Family::QwenImage, "wave"),
+            Err(WriteError::NotFound)
+        ));
+        remove_entry(&home, Family::H3, "wave").unwrap();
+        let text = std::fs::read_to_string(home.join(FILE)).unwrap();
+        assert!(
+            text.starts_with("# my LoRAs") && !text.contains("\"wave\""),
+            "{text}"
+        );
+
+        // A strength that is not a number is refused with the parser's
+        // reason, never saved as the default.
+        let typo = EntryInput {
+            name: "d".into(),
+            strength: Some(serde_json::json!("0.8x")),
+            ..input.clone()
+        };
+        assert!(matches!(
+            write_entry(&home, Family::QwenImage, &typo, None),
+            Err(WriteError::Invalid(ref w)) if w.contains("`strength`")
+        ));
+
+        // A file that does not read is never overwritten.
+        std::fs::write(home.join(FILE), "[[lora]\n").unwrap();
+        assert!(
+            matches!(write_entry(&home, Family::QwenImage, &input, None), Err(WriteError::Invalid(ref w)) if w.contains("by hand"))
+        );
+        assert_eq!(
+            std::fs::read_to_string(home.join(FILE)).unwrap(),
+            "[[lora]\n"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn an_empty_lora_list_takes_a_first_entry() {
+        let home = scratch();
+        std::fs::write(home.join(FILE), "lora = []\n").unwrap();
+        let input = EntryInput {
+            name: "w".into(),
+            about: "x".into(),
+            file: Some("w.safetensors".into()),
+            ..Default::default()
+        };
+        write_entry(&home, Family::H3, &input, None).unwrap();
+        let (entries, _) =
+            parse(&std::fs::read_to_string(home.join(FILE)).unwrap(), false).unwrap();
+        assert_eq!(entries.len(), 1);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_registry_the_page_creates_is_the_owners_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = scratch();
+        let input = EntryInput {
+            name: "wave".into(),
+            about: "a wave".into(),
+            file: Some("w.safetensors".into()),
+            ..Default::default()
+        };
+        write_entry(&home, Family::H3, &input, None).unwrap();
+        let mode = std::fs::metadata(home.join(FILE))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn the_add_list_offers_unused_files_with_their_family_or_why_not() {
+        let home = scratch();
+        let dir = home.join("loras");
+        write_test_lora(&dir.join("a.safetensors"), QWEN_KEYS);
+        write_test_lora(&dir.join("used.safetensors"), QWEN_KEYS);
+        let (entries, _) = parse(
+            "[[lora]]\nname = \"u\"\nabout = \"x\"\nmodel = \"qwen-image\"\nfile = \"used.safetensors\"\n",
+            false,
+        )
+        .unwrap();
+        let entries: Vec<_> = entries.into_iter().map(|e| (e, Status::Checked)).collect();
+        let listed: Vec<String> = [
+            "a.safetensors",
+            "used.safetensors",
+            "turbo.safetensors",
+            "gone.safetensors",
+            "../x.safetensors",
+        ]
+        .map(String::from)
+        .to_vec();
+        let dirs = vec![dir];
+        let out = unused(
+            &listed,
+            &entries,
+            &["turbo.safetensors"],
+            Some(&dirs),
+            "[image] loras_dir",
+        );
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert_eq!(out[0].check, Ok(Check::Family(Family::QwenImage)));
+        assert!(out[1].check.as_ref().unwrap_err().contains("none of"));
+        let blind = unused(&listed, &entries, &[], None, "[image] loras_dir");
+        assert!(blind[0].check.as_ref().unwrap_err().contains("not set"));
         let _ = std::fs::remove_dir_all(&home);
     }
 
