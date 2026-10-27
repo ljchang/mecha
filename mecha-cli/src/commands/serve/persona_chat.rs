@@ -3984,7 +3984,13 @@ impl PersonaChats {
         let scene_note = mecha_core::scene::persona_slot(&self.store, &name, &ps.session.meta.id)
             .current()
             .and_then(|scene| {
-                mecha_core::scene::note(&scene, ps.pinned.settings.character.as_deref())
+                // Typed turns have the Continue button; a spoken one names
+                // the picture itself (R10, R11).
+                mecha_core::scene::note(
+                    &scene,
+                    ps.pinned.settings.character.as_deref(),
+                    build_on.is_some(),
+                )
             });
         let notes: Vec<String> = [
             memory_note,
@@ -8250,7 +8256,31 @@ mod tests {
                 .map(|m| m.text().matches("blue raincoat").count())
                 .sum();
             assert_eq!(copies, 1, "a note, never stored in a message");
+            // A typed turn has the Continue button (R11).
+            assert!(
+                newest.contains("Only the owner's Continue on a picture builds on it"),
+                "{newest}"
+            );
         }
+        // A spoken turn has none, so the call still names the picture
+        // itself (R10; review of #754, pass 3).
+        w.personas()
+            .bind_call(&w.library, &key, None)
+            .await
+            .unwrap();
+        spoken(&w, &key, "And after that?").await;
+        let newest = w
+            .seen
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .messages
+            .last()
+            .unwrap()
+            .text();
+        assert!(newest.contains("pass it as `picture`"), "{newest}");
+        assert!(!newest.contains("Continue on a picture"), "{newest}");
     }
 
     /// §9.7, on every turn: past the first reply, an owner message that

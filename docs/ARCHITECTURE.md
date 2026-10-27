@@ -959,7 +959,8 @@ advances it.
   from the resolved path against the chat's `inbox/`, never the string.
   `Picture(p)` on a Continue, Edit or Regenerate: every call that turn is
   rebuilt onto `p`. A spoken turn and every other front end stamp `None`,
-  which leaves it to the call. A Continue is the edit panel's `PanelEdit`
+  which leaves it to the call, and the scene note says which (`scene::note`'s
+  `by_button`): a spoken turn is still told to name the picture itself. A Continue is the edit panel's `PanelEdit`
   with the owner's words, so the harness draws it; a picture change into a
   running reply is refused (`PICTURE_CHANGE_WAITS`), since a steer carries
   words alone, and the page holds Continue and Edit back while one runs.
