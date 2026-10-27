@@ -699,35 +699,34 @@ fn table_family(t: &toml_edit::Table) -> Option<Family> {
         .and_then(|m| Family::parse(m.trim()))
 }
 
-/// The file through a temporary one renamed over it, so a reader never sees
-/// half a write; a new file is the owner's alone (0600), an old one keeps
-/// its mode.
+/// The file through a temporary one renamed over it
+/// (`imagelib::write_atomic_mode`: created at its mode, never followed
+/// through a link, synced before the rename), so a reader never sees half a
+/// write and the registry is never world-readable on the way. A new file is
+/// the owner's alone (0600); an old one keeps its mode, and one whose mode
+/// cannot be read is written 0600 rather than at the umask's.
 fn replace_file(path: &Path, text: &str, existed: bool) -> Result<(), WriteError> {
-    let io = |e: std::io::Error| WriteError::Io(anyhow!("writing {}: {e}", path.display()));
-    let dir = path
-        .parent()
-        .ok_or_else(|| WriteError::Io(anyhow!("{} has no folder", path.display())))?;
-    std::fs::create_dir_all(dir).map_err(io)?;
-    let tmp = dir.join(format!(".{FILE}.{}.tmp", uuid::Uuid::new_v4().simple()));
-    std::fs::write(&tmp, text).map_err(io)?;
-    let mode = if existed {
-        std::fs::metadata(path).ok().map(|m| m.permissions())
-    } else {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            Some(std::fs::Permissions::from_mode(0o600))
-        }
-        #[cfg(not(unix))]
+    #[cfg(unix)]
+    let mode = {
+        use std::os::unix::fs::PermissionsExt;
+        Some(if existed {
+            std::fs::metadata(path)
+                .map(|m| m.permissions().mode() & 0o777)
+                .unwrap_or(0o600)
+        } else {
+            0o600
+        })
+    };
+    #[cfg(not(unix))]
+    let mode = {
+        let _ = existed;
         None
     };
-    if let Some(mode) = mode {
-        let _ = std::fs::set_permissions(&tmp, mode);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| WriteError::Io(anyhow!("creating {}: {e}", dir.display())))?;
     }
-    std::fs::rename(&tmp, path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        io(e)
-    })
+    crate::imagelib::write_atomic_mode(path, text.as_bytes(), mode).map_err(WriteError::Io)
 }
 
 /// Add an entry of `family` to the registry at `mecha_home`, or replace the
