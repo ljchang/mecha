@@ -906,6 +906,11 @@ pub struct ToolCtx {
     /// owner's settings, stamped by the host each turn like `layers`, and the
     /// reference setting everywhere else. Never the model's.
     pub image_tuning: crate::sampling::Tuning,
+    /// This persona's picture LoRA list (`loras::Layer`), stamped like
+    /// `image_tuning`; inherit everywhere else, which is the chat's list
+    /// where a chat layer is configured and none where it is not. Never the
+    /// model's.
+    pub image_loras: crate::loras::Layer,
 }
 
 /// The last confirmed goal, and how the plan has moved against it.
@@ -1102,6 +1107,7 @@ impl Default for ToolCtx {
             layers: false,
             layers_posed: false,
             image_tuning: crate::sampling::Tuning::default(),
+            image_loras: crate::loras::Layer::Inherit,
         }
     }
 }

@@ -443,6 +443,20 @@ pub struct ImageSettings {
     /// table: each unset field is the model's default.
     #[serde(flatten)]
     pub tuning: crate::sampling::Tuning,
+    /// Its picture LoRAs (`docs/LORA-DESIGN.md` §4), beside the tuning and
+    /// never part of it: written by the LoRA route alone, so a save of the
+    /// other settings leaves it as it was. Read in [`lenient_image`].
+    #[serde(
+        default,
+        skip_deserializing,
+        skip_serializing_if = "crate::loras::Layer::is_inherit",
+        serialize_with = "layer_value"
+    )]
+    pub loras: crate::loras::Layer,
+}
+
+fn layer_value<S: serde::Serializer>(l: &crate::loras::Layer, s: S) -> Result<S::Ok, S::Error> {
+    l.value().serialize(s)
 }
 
 impl ImageSettings {
@@ -467,8 +481,17 @@ pub enum Touching {
 /// default, never the others' (`sampling::Tuning::lenient`).
 fn lenient_image<'de, D: serde::Deserializer<'de>>(d: D) -> Result<ImageSettings, D::Error> {
     let raw = Option::<toml::Value>::deserialize(d)?;
-    let Some(toml::Value::Table(table)) = raw else {
-        return Ok(ImageSettings::default());
+    let table = match raw {
+        Some(toml::Value::Table(table)) => table,
+        // A table that is not one still held whatever list it held: it
+        // applies nothing, never the chat's.
+        Some(other) => {
+            return Ok(ImageSettings {
+                loras: crate::loras::Layer::Damaged(other),
+                ..ImageSettings::default()
+            })
+        }
+        None => return Ok(ImageSettings::default()),
     };
     Ok(ImageSettings {
         touching: table
@@ -476,6 +499,7 @@ fn lenient_image<'de, D: serde::Deserializer<'de>>(d: D) -> Result<ImageSettings
             .and_then(|v| v.clone().try_into::<Touching>().ok())
             .unwrap_or_default(),
         tuning: crate::sampling::Tuning::lenient(&table),
+        loras: crate::loras::Layer::read(table.get("loras")),
     })
 }
 
@@ -1979,6 +2003,34 @@ pub fn set_tuning(dir: &Path, name: &str, tuning: crate::sampling::Tuning) -> Re
     Ok(state)
 }
 
+/// This persona's picture LoRA list, read like [`tuning`]. A `state.toml`
+/// that does not read is a damaged list, never an inherited one.
+pub fn loras(dir: &Path, name: &str) -> crate::loras::Layer {
+    if validate_name(name).is_err() {
+        return crate::loras::Layer::Inherit;
+    }
+    let path = dir.join(name).join("state.toml");
+    if !path.exists() {
+        return crate::loras::Layer::Inherit;
+    }
+    read_prose(&path)
+        .and_then(|s| parse_toml::<State>(&s))
+        .map(|s| s.image.loras)
+        .unwrap_or(crate::loras::Layer::Damaged(toml::Value::Boolean(false)))
+}
+
+/// This persona's picture LoRA list, already checked against the registry
+/// by the caller (`loras::check_layer`). The owner's LoRA route is the one
+/// caller: no tool writes it.
+pub fn set_loras(dir: &Path, name: &str, layer: crate::loras::Layer) -> Result<State> {
+    let (_, p) = current(dir, name)?;
+    let mut state = p.state;
+    state.image.loras = layer;
+    state.updated = now();
+    write_state(&dir.join(name), &state)?;
+    Ok(state)
+}
+
 /// How this persona's touching scenes are drawn (IMAGE-DESIGN.md §15.1).
 /// The owner's settings route is the one caller: no tool writes it.
 pub fn set_touching(dir: &Path, name: &str, touching: Touching) -> Result<State> {
@@ -3179,6 +3231,45 @@ mod tests {
         let text = std::fs::read_to_string(&file).unwrap();
         assert!(!text.contains("[image]"), "{text}");
         assert_eq!(tuning(&dir, "mara").model, None, "unset: the chat's");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// The LoRA list sits beside the tuning and is written by its own
+    /// route alone: a cfg save keeps an explicit empty list explicit (it
+    /// must not become inherit), and a damaged list survives a save as it
+    /// was and reads as damaged, never as inherit (LORA-DESIGN.md §4).
+    #[test]
+    fn a_settings_save_keeps_the_lora_list_as_it_was() {
+        use crate::loras::Layer;
+        use crate::sampling::Tuning;
+        let dir = scratch();
+        create(&dir, &no_lib(), new("mara")).unwrap();
+        assert_eq!(loras(&dir, "mara"), Layer::Inherit);
+        set_loras(&dir, "mara", Layer::Set(vec![])).unwrap();
+        let guided = Tuning {
+            cfg: Some(3.0),
+            ..Tuning::default()
+        };
+        set_tuning(&dir, "mara", guided.clone()).unwrap();
+        assert_eq!(loras(&dir, "mara"), Layer::Set(vec![]), "none stays none");
+        set_tuning(&dir, "mara", Tuning::default()).unwrap();
+        assert_eq!(loras(&dir, "mara"), Layer::Set(vec![]));
+        set_loras(&dir, "mara", Layer::Set(vec!["paint".into()])).unwrap();
+        set_touching(&dir, "mara", Touching::Precise).unwrap();
+        assert_eq!(loras(&dir, "mara"), Layer::Set(vec!["paint".into()]));
+        assert_eq!(tuning(&dir, "mara"), Tuning::default());
+        // A list that does not read is damaged, and a save writes it back.
+        let file = dir.join("mara").join("state.toml");
+        let text = std::fs::read_to_string(&file).unwrap();
+        std::fs::write(&file, text.replace("loras = [\"paint\"]", "loras = 7")).unwrap();
+        assert!(matches!(loras(&dir, "mara"), Layer::Damaged(_)));
+        set_tuning(&dir, "mara", guided).unwrap();
+        assert!(matches!(loras(&dir, "mara"), Layer::Damaged(_)));
+        assert!(std::fs::read_to_string(&file)
+            .unwrap()
+            .contains("loras = 7"));
+        set_loras(&dir, "mara", Layer::Inherit).unwrap();
+        assert_eq!(loras(&dir, "mara"), Layer::Inherit);
         std::fs::remove_dir_all(dir).ok();
     }
 

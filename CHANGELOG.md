@@ -18,8 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   updating**, to the folders each server loads LoRAs from: without it every
   clip LoRA is left out. The old `[video] loras` file is still read for this
   release while the new one does not exist; `mecha doctor` says it has
-  moved, and names every entry left out. Picture LoRAs are recorded and
-  checked but not applied yet.
+  moved, and names every entry left out.
+
+- **Pictures use your LoRAs.** Turn picture LoRAs on for every picture in
+  chat in Settings → LoRAs, and per persona on its page (or let it follow
+  the chat's list). At most three a picture. They apply on the standard and
+  turbo models, not on a `.gguf` model file. A trigger word the prompt lacks
+  is added ahead of it. The picture's result says how many applied, never
+  which. Behind the library lock, as the registry is.
 
 - **Settings → LoRAs.** Add, edit and remove your LoRAs from the web app,
   picture and clip ones in their own sections, each shown while its feature

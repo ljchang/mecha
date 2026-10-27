@@ -15,7 +15,11 @@ export const SECTIONS = [
  * rather than named after `fetch(`, so the docs demo's drift guard
  * (website/scripts/check-demo.mjs) reads this list instead.
  */
-export const LORA_ENDPOINTS = SECTIONS.flatMap((s) => [`/api/loras/${s.route}`, `/api/loras/${s.route}/X`]);
+export const LORA_ENDPOINTS = [
+  ...SECTIONS.flatMap((s) => [`/api/loras/${s.route}`, `/api/loras/${s.route}/X`]),
+  '/api/loras/image/layer/chat',
+  '/api/loras/image/layer/persona/X',
+];
 
 /** A section's list URL, with the unlock when there is one. */
 export function listUrl(route, token) {
@@ -29,15 +33,44 @@ export function entryUrl(route, name, token) {
 }
 
 /**
- * What an entry's row says about where it stands. A checked picture entry
- * says it is not applied yet: the picture graph has no LoRA node until the
- * build's step 3. A checked clip entry reaches clips once mecha restarts,
- * since the clip tool reads the registry when it starts.
+ * What an entry's row says about where it stands. A checked clip entry
+ * reaches clips once mecha restarts, since the clip tool reads the registry
+ * when it starts; a picture entry applies where a layer's list turns it on,
+ * from the next picture.
  */
 export function standing(entry, family) {
   if (entry.status !== 'checked') return { text: entry.reason ?? 'left out', bad: true };
-  if (family === 'qwen-image') return { text: 'checked · not applied to pictures yet', bad: false };
-  return { text: entry.always ? 'checked · on every clip' : 'checked', bad: false };
+  return { text: family === 'h3' && entry.always ? 'checked · on every clip' : 'checked', bad: false };
+}
+
+/**
+ * A picture layer's list route (LORA-DESIGN.md §6): the chat's, or a
+ * persona's by name, with the unlock when there is one.
+ */
+export function layerUrl(persona, token) {
+  const base = persona ? `/api/loras/image/layer/persona/${encodeURIComponent(persona)}` : '/api/loras/image/layer/chat';
+  return token ? `${base}?unlock=${encodeURIComponent(token)}` : base;
+}
+
+/**
+ * The list after a tap on `name`: off if it was on, else on at the end,
+ * unless the list is already at `max`, which the server would refuse.
+ */
+export function toggled(names, name, max) {
+  if (names.includes(name)) return names.filter((n) => n !== name);
+  return names.length >= max ? names : [...names, name];
+}
+
+/** What a persona's list follows, in a line: the chat's names, or none. */
+export function chatLine(view) {
+  if (view.chat_damaged) return "the chat's list does not read, so none";
+  return view.chat.length ? view.chat.join(', ') : 'none';
+}
+
+/** What a remove says about the lists that held the entry. */
+export function heldLine(n) {
+  if (!n) return null;
+  return `It was taken off ${n === 1 ? 'one picture list' : `${n} picture lists`} too.`;
 }
 
 /** The files an entry names, as a row lists them. */
