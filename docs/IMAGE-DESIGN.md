@@ -222,7 +222,7 @@ Two rules (review B1).
 ## 6. The record
 
 - **Where:** one scene store per chat, outside the jail, harness-written. Records written before the redesign still read: the old `place` as the setting (its `picture` kind as a photo) and a person's `name` as a library `who`. Their people are unknown, since the mark postdates them, so a pose change on one is an edit, never a restage with nobody.
-  - **Persona chats** also write the persona's latest and the content-hash index, so a picture carried into another chat is found by its bytes (`IMAGE-SCENE-DESIGN.md` rulings R3 and R7).
+  - **Persona chats** also write the content-hash index, so a picture carried into another chat is found by its bytes (`IMAGE-SCENE-DESIGN.md` R3). A new chat starts with no scene, and a new picture keeps nothing from earlier ones (R10, 2026-10-27, which retired the persona's latest).
   - **Incognito** keeps its copy in the room and never writes back (R9).
 - **What:** the scene, with origins per field. The place is the setting only (§4). Plus the picture's hash, its seed, size, render plan and the library versions used.
 - **The scene note** (`scene::note` in each persona run's notes) stays, for typed turns, which still have the persona choosing the call. Its stems and origin rules stand. With the setting recorded as the setting only, it no longer carries an old pose, and G3 covers it (review S8).
@@ -438,7 +438,7 @@ The steps run in one deferred job (`jobs.rs`), in order, with **the job's own ca
 
 ### 15.4 What is kept
 
-The picture's scene record gets a `layers` entry, written wherever the record is (the chat's copy, the persona's latest and the index entry, as any render lands), so a later chat that starts from the latest carries it too. **A carried entry is a reference, not a build:** the plate and cutouts sit in the jail of the chat that drew them (`work/persona/<key>/`), outside any other chat's, so a re-place from another chat always redraws from the portraits. Where the intermediates should live so a re-place can find them from any chat, likely the `scene/` folder the persona's chats already share and key by picture hash, is decided with the re-place (15.6), not here. The entry holds:
+The picture's scene record gets a `layers` entry, written wherever the record is (the chat's copy and the index entry, as any render lands), so a picture carried into a later chat brings it too. **A carried entry is a reference, not a build:** the plate and cutouts sit in the jail of the chat that drew them (`work/persona/<key>/`), outside any other chat's, so a re-place from another chat always redraws from the portraits. Where the intermediates should live so a re-place can find them from any chat, likely the `scene/` folder the persona's chats already share and key by picture hash, is decided with the re-place (15.6), not here. The entry holds:
 
 - the plate's hash;
 - per person: who, the cutout's hash (the RGBA PNG, kept in the workspace beside the picture), the part, and the seed;

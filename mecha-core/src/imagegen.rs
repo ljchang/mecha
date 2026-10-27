@@ -3121,10 +3121,13 @@ pub const DESCRIPTION: &str = "Draw a picture with the local image model, or cha
      of a picture without people), `light` (light, mood, time of day), `camera` (shot size, \
      angle, framing), `style` (a library style's name, only when the user asks for a look), \
      `people`, `together` (what people do \
-     with each other) and `text` (words to render exactly). Each person has `who` (a library \
+     with each other) and `text` (words to render exactly), all from the user's request: a \
+     new picture keeps nothing from earlier ones, so never bring back an earlier picture's \
+     place, clothes or people the request does not ask for. Each person has `who` (a library \
      character's name, \"self\" for you, or a description of someone not in the library), \
-     `where` (left, centre, right or background), `wearing`, `doing` and `expression`. To \
-     change a picture, name it in `picture` and send only what changes in `scene`: a new pose \
+     `where` (left, centre, right or background), `wearing`, `doing` and `expression`. Only \
+     when the user asks to continue, build on, edit or change a picture, name it in `picture` \
+     and send only what changes in `scene`: a new pose \
      or camera redraws the scene, new clothes, an expression or someone added edit the \
      picture, and restating what is already true changes nothing (a call that changes \
      nothing draws the scene again). Take someone out with `remove`. One small change to the \
@@ -3166,7 +3169,8 @@ pub const RETOUCH_DESC: &str = "One small change to the picture itself, in words
      or a person: those are `scene.people`.";
 /// `picture`'s description.
 pub const PICTURE_DESC: &str = "The picture being changed: one the user attached (inbox/...) or \
-     an earlier result (images/...). Leave it out for a new picture.";
+     an earlier result (images/...), only when the user asks to continue, build on, edit or \
+     change it. Leave it out for a new picture, which keeps nothing from earlier ones.";
 
 impl ImageGenerate {
     /// The persona's names, which `who` resolves to its approved character.
@@ -3979,6 +3983,27 @@ impl Tool for ImageGenerate {
             (Some(slot), Some(r)) => slot.lookup(&r.bytes),
             _ => None,
         };
+        // What the call may carry from before: the record of the picture it
+        // builds on, and for a new picture nothing (the owner, 2026-10-27). A
+        // picture builds on another only when its call names it, which the
+        // owner asks for; a new one is drawn from its own words, never the
+        // chat's last clothes, place or people. The chat's copy stands in only
+        // for the picture it records, when that one's index entry went
+        // missing: never for another, so an upload named in `picture` (never
+        // rendered, so never indexed) borrows nothing (review of #753, pass 2).
+        // Belt and braces: `land` writes the index entry before the copy, so
+        // a copy naming a picture implies its entry, and `base` is already
+        // that record; this arm covers an entry lost from the index by hand.
+        let carried = match &picture {
+            Some(r) => base.clone().or_else(|| {
+                let named = crate::scene::hash(&r.bytes);
+                ctx.scene
+                    .as_ref()
+                    .and_then(|s| s.current())
+                    .filter(|s| s.picture.as_deref() == Some(named.as_str()))
+            }),
+            None => None,
+        };
         // The record's words reach the prompt too, so they are read for a
         // character whose entry has since broken, as the call's were above
         // (review of #597, pass 10).
@@ -4039,9 +4064,7 @@ impl Tool for ImageGenerate {
             .collect();
         let reader_said = match (&ctx.scene_reader, call.change.people.is_empty()) {
             (Some(reader), false) => {
-                let record = base
-                    .clone()
-                    .or_else(|| ctx.scene.as_ref().and_then(|s| s.current()));
+                let record = carried.clone();
                 let read = tokio::time::timeout(SCENE_READ_TIMEOUT, reader.read(record.as_ref()))
                     .await
                     .unwrap_or_else(|_| Err("the reader took too long".into()));
@@ -4094,10 +4117,17 @@ impl Tool for ImageGenerate {
         };
         let named = |t: &str| crate::imagelib::named_in(&lib, t);
         // What the chat last drew each person in: clothes a newcomer's call
-        // left out come from it (mecha-a3's G1b).
-        let current = ctx.scene.as_ref().and_then(|slot| slot.current());
+        // left out come from it (mecha-a3's G1b), on a picture that builds
+        // on another only. The chat's copy, not `carried`: a newcomer is by
+        // definition not in the picture built on, so only the chat's last
+        // picture can have drawn them (review of #753, pass 3). A new
+        // picture asks nothing of it.
+        let chat_last = picture
+            .is_some()
+            .then(|| ctx.scene.as_ref().and_then(|s| s.current()))
+            .flatten();
         let worn = |key: &str| {
-            current.as_ref().and_then(|s| {
+            chat_last.as_ref().and_then(|s| {
                 s.people
                     .iter()
                     .find(|p| p.who.key() == key)
@@ -4465,9 +4495,9 @@ impl Tool for ImageGenerate {
                                 .as_deref()
                                 .and_then(crate::layers::framing);
                             // Each person's clothes, the fuller of the
-                            // call's and the chat's record (mecha-a3: the
-                            // shorter lost half an outfit).
-                            let recorded = ctx.scene.as_ref().and_then(|s| s.current());
+                            // call's and the record it builds on (mecha-a3:
+                            // the shorter lost half an outfit).
+                            let recorded = carried.clone();
                             let fuller = |p: &crate::scene::Person| {
                                 // The call's own clothes, when it names any:
                                 // a fuller record's outfit replaced the one
@@ -10610,7 +10640,6 @@ mod tests {
                 chat_copy: store.join("sessions").join(format!("{chat}.scene.json")),
                 store: store.join("scene"),
                 chat: chat.into(),
-                from_latest: true,
             }),
             ..Default::default()
         }
@@ -10702,6 +10731,128 @@ mod tests {
         assert_eq!(
             manifest_of(&dir, &out.content)["clothes_in_act"],
             json!(["Maya"])
+        );
+    }
+
+    /// Someone added to a picture the owner builds on wears what this chat
+    /// last drew them in (mecha-a3's G1b), from the chat's copy, since the
+    /// picture built on does not hold them; a new picture asks nothing of
+    /// it. Fails where `worn` read only the record built on (review of
+    /// #753, pass 3: it could never fire).
+    #[tokio::test]
+    async fn a_newcomer_to_a_picture_built_on_wears_what_the_chat_last_drew() {
+        let (url, seen) = distinct(6).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let cx = clean(scene_ctx(&dir, &store, "chat-a"));
+        let draw = |v: Value| {
+            let (t, cx) = (&t, &cx);
+            async move {
+                let out = t.call(v, cx).await.unwrap();
+                assert!(!out.is_error, "{}", out.content);
+                out
+            }
+        };
+        let first = draw(json!({"scene": {"setting": "a quiet reading room",
+            "people": [{"who": "maya", "wearing": "a green coat", "doing": "reading a book"}]}}))
+        .await;
+        let p1 = picture_of(&first.content);
+        draw(json!({"scene": {"setting": "a bakery at dawn",
+            "people": [{"who": "john", "wearing": "a striped baker's apron", "doing": "kneading dough"}]}}))
+        .await;
+        // A new picture of John alone takes nothing from the bakery.
+        draw(json!({"scene": {"setting": "a harbour wall",
+            "people": [{"who": "john", "doing": "watching the boats"}]}}))
+        .await;
+        assert!(
+            !last_prompt(&seen).contains("striped baker's apron"),
+            "{}",
+            last_prompt(&seen)
+        );
+        // Built on the first picture, John is a newcomer, and wears what the
+        // chat last drew him in: the harbour picture, which gave no clothes,
+        // so the default. Draw him once more in the apron, then add him.
+        draw(json!({"scene": {"setting": "a bakery at dawn",
+            "people": [{"who": "john", "wearing": "a striped baker's apron", "doing": "kneading dough"}]}}))
+        .await;
+        let added = draw(json!({"picture": p1, "scene": {"people": [
+            {"who": "john", "where": "right", "doing": "handing Maya a cup of tea"}]}}))
+        .await;
+        assert!(
+            added
+                .content
+                .contains("John is wearing what this chat last drew them in."),
+            "{}",
+            added.content
+        );
+        assert!(
+            last_prompt(&seen).contains("striped baker's apron"),
+            "{}",
+            last_prompt(&seen)
+        );
+    }
+
+    /// A layered new picture takes no outfit from the chat's last picture:
+    /// the cutouts' clothes are the call's, or the record a call builds on,
+    /// and a new picture builds on none (the owner, 2026-10-27). Fails where
+    /// the layered build read the chat's copy (`recorded`).
+    #[tokio::test]
+    async fn a_layered_new_picture_takes_no_outfit_from_the_chats_last() {
+        let (url, seen) = fake_with(Fake {
+            history: vec![done(); 7],
+            views: vec![
+                picture(6, [30, 30, 30]),
+                picture(8, [90, 90, 90]),
+                cutout_png(true),
+                cutout_png(true),
+                picture(20, [200, 40, 40]),
+                picture(22, [210, 50, 50]),
+                picture(24, [60, 160, 60]),
+            ],
+            ..Fake::default()
+        })
+        .await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        let first = t
+            .call(
+                json!({"scene": {"setting": "a quiet reading room",
+                       "people": [{"who": "maya", "wearing": "a long green wool coat with brass buttons",
+                                   "doing": "reading a book"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!first.is_error, "{}", first.content);
+        let coat = |seen: &Arc<Mutex<Vec<String>>>| {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|l| l.contains("green wool coat"))
+                .count()
+        };
+        let before = coat(&seen);
+        assert!(before > 0, "the first picture's prompt names the coat");
+
+        cx.layers = true;
+        let mut call = touching_call();
+        call["scene"]["people"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("wearing");
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(
+            manifest_of(&dir, &out.content)["route"],
+            "layered",
+            "{}",
+            out.content
+        );
+        assert_eq!(
+            coat(&seen),
+            before,
+            "a layered pass wore the last picture's coat"
         );
     }
 
@@ -12583,6 +12734,125 @@ mod tests {
                 left_out: None,
             })
         }
+    }
+
+    /// A reader that notes whether it was handed a record, and finds nothing.
+    #[derive(Debug)]
+    struct RecordSeen(Arc<std::sync::Mutex<Vec<bool>>>);
+
+    #[async_trait]
+    impl crate::persona::edit::SceneReader for RecordSeen {
+        async fn read(
+            &self,
+            record: Option<&crate::scene::Scene>,
+        ) -> std::result::Result<crate::persona::edit::Extracted, String> {
+            self.0.lock().unwrap().push(record.is_some());
+            Ok(crate::persona::edit::Extracted {
+                scene: Default::default(),
+                retouch: None,
+                left_out: None,
+            })
+        }
+    }
+
+    /// A new picture starts from nothing (the owner, 2026-10-27): the chat's
+    /// last picture lends it no clothes or place, and the reader is handed
+    /// no record. One that names the picture it builds on carries both.
+    /// Fails where a new picture's clothes and reader record came from the
+    /// chat's copy.
+    #[tokio::test]
+    async fn a_new_picture_carries_nothing_from_the_chats_last() {
+        let (url, seen) = distinct(4).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = clean(scene_ctx(&dir, &store, "chat-a"));
+        let first = t
+            .call(
+                json!({"scene": {"setting": "a quiet reading room",
+                       "people": [{"who": "maya", "wearing": "a green coat", "doing": "reading a book"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!first.is_error, "{}", first.content);
+        let p1 = picture_of(&first.content);
+        let records = Arc::new(std::sync::Mutex::new(Vec::new()));
+        cx.scene_reader = Some(Arc::new(RecordSeen(Arc::clone(&records))));
+
+        let second = t
+            .call(
+                json!({"scene": {"setting": "a beach at dawn",
+                       "people": [{"who": "maya", "doing": "flying a kite"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!second.is_error, "{}", second.content);
+        let prompt = last_prompt(&seen);
+        assert!(prompt.contains("a beach at dawn"), "{prompt}");
+        assert!(
+            !prompt.contains("green coat"),
+            "the last clothes rode along: {prompt}"
+        );
+        // No code path has carried a setting into a new picture (`plan` takes
+        // `base`, and the reader merges only acts and clothes): a place came
+        // back only when the model restated it from the note, which the note
+        // test and the description checks below guard. Kept against a new
+        // channel.
+        assert!(
+            !prompt.contains("reading room"),
+            "the last place rode along: {prompt}"
+        );
+        assert_eq!(
+            *records.lock().unwrap(),
+            vec![false],
+            "the reader read the chat's record"
+        );
+
+        let third = t
+            .call(
+                json!({"picture": p1, "scene": {"people": [{"who": "maya", "doing": "standing by the window"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!third.is_error, "{}", third.content);
+        let prompt = last_prompt(&seen);
+        assert!(
+            prompt.contains("a green coat"),
+            "building on it lost the clothes: {prompt}"
+        );
+        assert_eq!(records.lock().unwrap().last(), Some(&true));
+
+        // An upload named in `picture` has no record of its own, and borrows
+        // none from the chat's last picture (review of #753, pass 2).
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::write(dir.join("inbox/beach.png"), picture(30, [10, 120, 200])).unwrap();
+        let upload = t
+            .call(
+                json!({"picture": "inbox/beach.png", "scene": {"people": [{"who": "maya", "doing": "standing on the sand"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!upload.is_error, "{}", upload.content);
+        let prompt = last_prompt(&seen);
+        assert!(
+            !prompt.contains("green coat"),
+            "an upload wore the last picture's clothes: {prompt}"
+        );
+        assert_eq!(
+            records.lock().unwrap().last(),
+            Some(&false),
+            "the reader was handed another picture's record"
+        );
+        // What the model is told, where it decides: a new picture keeps
+        // nothing, and `picture` is for when the owner asks to build on one.
+        assert!(DESCRIPTION.contains("a new picture keeps nothing from earlier ones"));
+        assert!(DESCRIPTION
+            .contains("Only when the user asks to continue, build on, edit or change a picture"));
+        assert!(PICTURE_DESC
+            .contains("only when the user asks to continue, build on, edit or change it"));
     }
 
     /// A persona's bare call is drawn with what the reader found it left

@@ -927,11 +927,11 @@ that lands records `plan.next` with the picture's hash, its seed and the
 chat, after the picture is saved, so a cancelled or failed render never
 advances it.
 
-- **Where:** three things, all harness-written and outside the jail. They
+- **Where:** two things, both harness-written and outside the jail. They
   are stamped by the front end (`ToolCtx::scene`), never by a model.
   - **A persona chat:** its copy beside its transcript
-    (`<id>.scene.json`), and the persona's `scene/latest.json` and
-    `scene/index/<sha256>.json`.
+    (`<id>.scene.json`), and the persona's `scene/index/<sha256>.json`.
+    A `scene/latest.json` left from before 2026-10-27 is read by nothing.
   - **The assistant's kept web chats:** the same layout one level up
     (`scene::assistant_slot`): the copy beside the transcript in `sessions/`,
     the index in `~/.mecha/scene/`.
@@ -942,6 +942,15 @@ advances it.
     so their pictures carry no record and every change to one is an edit.
   - **The guard:** `only_the_served_chats_stamp_a_scene_slot` reads the
     source for any other stamp.
+- **A new chat starts with no scene, and a new picture carries nothing**
+  (`IMAGE-SCENE-DESIGN.md` R10, the owner, 2026-10-27, reversing R7). Only
+  a call that names `picture` builds on a record: `carried` in `call` is
+  that picture's record (the chat's copy only when it records that very
+  picture), and `None` for a new picture; the scene reader and the layered
+  outfit read it. A newcomer added to a picture built on takes the clothes
+  this chat last drew them in from the chat's copy (G1b), since the picture
+  built on cannot hold them; a new picture asks nothing of it. A fresh
+  chat had drawn a place and a person from another chat's last picture.
 - **Lookup is by the picture's bytes, through the index**, so a picture
   carried into another chat brings its scene. Nothing reads a scene back out
   of a manifest: a run can write the jail.
@@ -6758,7 +6767,7 @@ was ever deployed.
 - **A replay sample renders against the chat's scene as of the turn, staged
   fresh per sample** (`scene::stage::stage_at`, then `Sampler::sample`). The
   scene comes back exactly from the chat's last landed picture before the
-  turn, or approximately from the persona's latest by write time. The stage
+  turn; with none, the chat had no scene (R10). The stage
   copies into a scratch folder that it proves lies outside the store and
   workspace, and only that folder is ever stamped (both stamping source
   scans name `replay_persona.rs` for this). A store shared across samples
