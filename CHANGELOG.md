@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   moved, and names every entry left out. Picture LoRAs are recorded and
   checked but not applied yet.
 
+- **Settings → LoRAs.** Add, edit and remove your LoRAs from the web app,
+  picture and clip ones in their own sections, each shown while its feature
+  is on. The Add list is the files each server already has, with the model
+  each was made for read from the file. The pane sits behind the library
+  lock. Clip changes reach clips when mecha next restarts.
+
 - **Video clips can use your own LoRAs, places and clothes.** `[video] loras`
   points at a registry you write (mecha ships and names none): always-on
   entries ride every clip and the model picks the rest per clip; one with no

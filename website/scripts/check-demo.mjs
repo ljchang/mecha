@@ -58,6 +58,9 @@ for (const path of personaEndpoints) paths.add(path);
 // The voice library's, which `library.js` builds the same way.
 const {VOICE_ENDPOINTS: voiceEndpoints} = await import(join(web, 'src/lib/library.js'));
 for (const path of voiceEndpoints) paths.add(path);
+// Settings → LoRAs', which `loras.js` builds the same way.
+const {LORA_ENDPOINTS: loraEndpoints} = await import(join(web, 'src/lib/loras.js'));
+for (const path of loraEndpoints) paths.add(path);
 
 const answered = (path) => ROUTES.some(([, pattern]) => pattern.test(path));
 const missing = [...paths].filter((p) => !answered(p)).sort();
