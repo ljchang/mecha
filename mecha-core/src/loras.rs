@@ -1008,7 +1008,7 @@ pub fn check_layer(names: &[String], loaded: &Loaded) -> Result<Vec<String>> {
 /// lets a list stored past the cap shrink a name at a time.
 pub fn check_layer_within(names: &[String], loaded: &Loaded, cap: usize) -> Result<Vec<String>> {
     if names.len() > cap {
-        bail!("a picture takes at most {MAX_PER_PICTURE} LoRAs");
+        bail!("a picture takes at most {cap} LoRAs");
     }
     let mut out: Vec<String> = Vec::new();
     for n in names {
@@ -1045,13 +1045,19 @@ pub fn rename_in_layers(
 ) -> Result<usize> {
     let moved = |n: &[String]| -> Option<Vec<String>> {
         n.iter().any(|x| x == old).then(|| {
-            n.iter()
-                .filter_map(|x| match (x == old, new) {
-                    (false, _) => Some(x.clone()),
-                    (true, Some(to)) => Some(to.to_string()),
-                    (true, None) => None,
-                })
-                .collect()
+            // A list already holding `new` (a stale name the registry had
+            // lost) keeps that one place, so the LoRA is never chained
+            // twice (review of #751, pass 3).
+            let mut out: Vec<String> = Vec::new();
+            for x in n {
+                let next = if x == old { new } else { Some(x.as_str()) };
+                if let Some(next) = next {
+                    if !out.iter().any(|o| o == next) {
+                        out.push(next.to_string());
+                    }
+                }
+            }
+            out
         })
     };
     let mut held = 0;
@@ -1776,6 +1782,31 @@ file = "wave.safetensors"
             ]
         );
         assert_eq!((p.refused, p.gone, p.damaged), (1, 2, false));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A rename keeps its place on a list, and onto a name the list already
+    /// holds (stale) it leaves one, never two; `None` takes it off.
+    #[test]
+    fn a_rename_on_the_lists_never_doubles_an_entry() {
+        let home = scratch();
+        let chat = crate::sampling::chat_path(&home);
+        let set = |n: &[&str]| Layer::Set(n.iter().map(|s| s.to_string()).collect());
+        crate::sampling::set_chat_loras(&chat, &set(&["a", "b", "c"])).unwrap();
+        let personas = home.join("personas");
+        assert_eq!(
+            rename_in_layers(&chat, &personas, "b", Some("z")).unwrap(),
+            1
+        );
+        assert_eq!(crate::sampling::chat_loras(&chat), set(&["a", "z", "c"]));
+        assert_eq!(
+            rename_in_layers(&chat, &personas, "a", Some("c")).unwrap(),
+            1
+        );
+        assert_eq!(crate::sampling::chat_loras(&chat), set(&["c", "z"]));
+        assert_eq!(strip_from_layers(&chat, &personas, "z").unwrap(), 1);
+        assert_eq!(crate::sampling::chat_loras(&chat), set(&["c"]));
+        assert_eq!(strip_from_layers(&chat, &personas, "nope").unwrap(), 0);
         let _ = std::fs::remove_dir_all(&home);
     }
 }
