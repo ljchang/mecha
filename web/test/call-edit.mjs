@@ -139,26 +139,47 @@ function rig({ live = true } = {}) {
 // the harness draws the change there and nowhere else (`persona::edit`).
 {
   const sendSrc = readOut('  async function send({ edit = null, text: fixed = null } = {}) {');
-  const run = new Function(
-    `'use strict';
-     const bodies = [];
-     let input = '', attachments = [], key = 'k1', token = null, error = null;
-     const chosen = { display: 'Mara' };
-     const withAttachments = (typed) => typed;
-     const chatUrl = (k, p) => '/api/persona-chat/' + k + p;
-     const notice = () => {};
-     const fetch = async (url, opts) => {
-       bodies.push(JSON.parse(opts.body));
-       return { ok: true, json: async () => ({ started: true }) };
-     };
-     ${sendSrc}
-     return async (typed, opts) => { input = typed; await send(opts); return { body: bodies.at(-1) }; };`,
-  )();
+  const make = (from) =>
+    new Function(
+      'from',
+      `'use strict';
+       const bodies = [];
+       let input = '', attachments = [], key = 'k1', token = null, error = null;
+       let continuing = from ? { key: 'k1', path: from } : null;
+       const continuingHere = from;
+       const chosen = { display: 'Mara' };
+       const withAttachments = (typed) => typed;
+       const chatUrl = (k, p) => '/api/persona-chat/' + k + p;
+       const notice = () => {};
+       const composeContinueMessage = (p, w) => (w.trim() ? 'Continue ' + p + ': ' + w.trim() : null);
+       const fetch = async (url, opts) => {
+         bodies.push(JSON.parse(opts.body));
+         return { ok: true, json: async () => ({ started: true }) };
+       };
+       ${sendSrc}
+       return async (typed, opts) => {
+         input = typed;
+         await send(opts);
+         return { body: bodies.at(-1), sent: bodies.length, continuing };
+       };`,
+    )(from);
+  const run = make(null);
   const edit = { picture: 'images/a.png', words: 'add a hat' };
   const panel = await run('Edit images/a.png: add a hat', { edit });
   is(panel.body.edit, edit, "the panel's turn carries its fields");
   const typed = await run('hello');
   is('edit' in typed.body, false, 'a typed turn sends no edit field');
+  // Continue (the owner, 2026-10-27): typed under a Continue, the words go
+  // as the change to that picture, and the press is spent once taken.
+  const cont = await make('images/a.png')('  now she walks to the window ');
+  is(cont.body.edit, { picture: 'images/a.png', words: 'now she walks to the window' }, 'a Continue sends its picture and the words as fields');
+  is(cont.body.text, 'Continue images/a.png: now she walks to the window', 'with the line the owner sees');
+  is(cont.continuing, null, 'and the Continue is spent');
+  const empty = await make('images/a.png')('   ');
+  is(empty.sent, 0, 'a Continue with no words sends nothing');
+  const own = await make('images/a.png')('Edit images/b.png: add a hat', { edit: { picture: 'images/b.png', words: 'add a hat' } });
+  is(own.body.edit.picture, 'images/b.png', "the Edit panel's own picture wins over a Continue");
+  is(own.continuing, { key: 'k1', path: 'images/a.png' }, 'and the Continue stays for the next message');
 }
 
 // Regenerate (IMAGE-DESIGN.md §5.4): the picture showing goes out with
@@ -175,6 +196,8 @@ function rig({ live = true } = {}) {
        const bodies = [];
        let input = 'half a thought', attachments = ['inbox/notes.pdf'], key = 'k1', token = null, error = null;
        let chosenVersion = new Map([['images/a.png', 'images/a.png']]);
+       let continuing = null;
+       const continuingHere = null;
        const run = { running };
        const chosen = { display: 'Mara' };
        const withAttachments = (typed, files) => [typed, ...files].join(' ');

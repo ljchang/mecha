@@ -988,6 +988,8 @@ impl Sampler {
             image_tuning: Default::default(),
             // A replay draws with no LoRAs: it has no chat layer.
             image_loras: Default::default(),
+            // A replay re-runs the recorded call as the model writes it.
+            build_on: None,
             owner: &branch.owner,
             history: &branch.messages,
             panel: false,

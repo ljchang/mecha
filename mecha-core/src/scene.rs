@@ -705,8 +705,9 @@ pub fn note(scene: &Scene, me: Option<&str>) -> Option<String> {
         Origin::Untrusted => UNTRUSTED_SCENE_STEM,
     };
     // The middle sentence is the owner's ruling (2026-10-27): what the last
-    // picture showed carries into the next only when the owner asks to build
-    // on it, and then through `picture`, whose record the call starts from.
+    // picture showed carries into the next only when the owner presses
+    // Continue on it, which the harness turns into `picture` (`BuildOn`).
+    // The model is never the one to choose.
     // It used to say clothes and places came from here, and a fresh chat drew
     // a place and a person the owner had not asked for.
     // The last sentence is mecha-a3's measured line (2026-10-08): on the two
@@ -716,8 +717,8 @@ pub fn note(scene: &Scene, me: Option<&str>) -> Option<String> {
     // the looping turn fell from ~8,100 to ~2,500 characters.
     Some(format!(
         "{stem}: what your last picture in this chat showed. A new picture starts from \
-         nothing and keeps none of this: only when the owner asks to continue, build on, \
-         edit or change that picture, pass it as `picture`, and say only what changes. \
+         nothing and keeps none of this: describe it whole from the owner's words. Only the \
+         owner's Continue on a picture builds on it, and the harness does that for you. \
          This is a record of what was drawn before, not a picture the owner has in front \
          of them now: to show them a picture, call image_generate.){out}"
     ))
@@ -1518,7 +1519,10 @@ mod tests {
         // from here.
         assert!(n.contains("A new picture starts from"), "{n}");
         assert!(n.contains("keeps none of this"), "{n}");
-        assert!(n.contains("pass it as `picture`"), "{n}");
+        assert!(
+            n.contains("Only the owner's Continue on a picture builds on it"),
+            "{n}"
+        );
         assert!(!n.contains("come from here"), "{n}");
         assert!(stem_of(&n).is_some());
     }

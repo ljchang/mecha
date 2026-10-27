@@ -202,6 +202,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Continue on a picture is the only way to build on it.** Every picture in
+  a persona chat has a Continue button beside Edit and Regenerate: press it,
+  say what changes, and the next picture builds on that one. Typing without
+  it always draws a new picture, and the harness refuses a call that names an
+  earlier picture on a typed turn, so the model never decides which was
+  meant. A change to a picture sent while a reply runs waits for it
+  (`IMAGE-SCENE-DESIGN.md` R11).
 - **A new picture starts from nothing, and a new chat starts with no scene.**
   A persona's new chat no longer continues from her last picture, and within
   a chat a picture builds on an earlier one only when it names that picture,
