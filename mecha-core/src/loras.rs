@@ -1012,7 +1012,7 @@ pub fn check_layer_within(names: &[String], loaded: &Loaded, cap: usize) -> Resu
     }
     let mut out: Vec<String> = Vec::new();
     for n in names {
-        let n = n.trim();
+        let n = n.as_str();
         if out.iter().any(|o| o == n) {
             bail!("{n:?} is listed twice");
         }
@@ -1030,19 +1030,41 @@ pub fn check_layer_within(names: &[String], loaded: &Loaded, cap: usize) -> Resu
 /// damaged list is left as it is: it applies nothing, and rewriting it
 /// would lose what the owner wrote.
 pub fn strip_from_layers(chat: &Path, personas: &Path, name: &str) -> Result<usize> {
+    rename_in_layers(chat, personas, name, None)
+}
+
+/// Rename `old` to `new` on every picture layer's list, or take it off
+/// with `None`, keeping its place: an entry renamed on the page goes on
+/// applying where it applied (review of #751). The number of lists that
+/// held it.
+pub fn rename_in_layers(
+    chat: &Path,
+    personas: &Path,
+    old: &str,
+    new: Option<&str>,
+) -> Result<usize> {
+    let moved = |n: &[String]| -> Option<Vec<String>> {
+        n.iter().any(|x| x == old).then(|| {
+            n.iter()
+                .filter_map(|x| match (x == old, new) {
+                    (false, _) => Some(x.clone()),
+                    (true, Some(to)) => Some(to.to_string()),
+                    (true, None) => None,
+                })
+                .collect()
+        })
+    };
     let mut held = 0;
     if let Layer::Set(n) = crate::sampling::chat_loras(chat) {
-        if n.iter().any(|x| x == name) {
-            let kept = n.into_iter().filter(|x| x != name).collect();
-            crate::sampling::set_chat_loras(chat, &Layer::Set(kept))?;
+        if let Some(next) = moved(&n) {
+            crate::sampling::set_chat_loras(chat, &Layer::Set(next))?;
             held += 1;
         }
     }
     for p in crate::persona::Store::load(personas).all() {
-        if let Layer::Set(n) = &p.state.image.loras {
-            if n.iter().any(|x| x == name) {
-                let kept = n.iter().filter(|x| *x != name).cloned().collect();
-                crate::persona::set_loras(personas, &p.name, Layer::Set(kept))?;
+        if let Layer::Set(n) = crate::persona::loras(personas, &p.name) {
+            if let Some(next) = moved(&n) {
+                crate::persona::set_loras(personas, &p.name, Layer::Set(next))?;
                 held += 1;
             }
         }
