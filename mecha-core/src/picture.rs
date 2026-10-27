@@ -662,7 +662,12 @@ fn leading_name(who: &str) -> Option<(&str, bool)> {
     if head.trim().is_empty() || head.trim().len() >= who.trim().len() {
         return None;
     }
-    let said_more = who[head.len()..].chars().any(char::is_alphanumeric);
+    // "Maya (self)" says nothing more than "Maya": no note for it.
+    let rest: String = who[head.len()..]
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect();
+    let said_more = !rest.is_empty() && !rest.eq_ignore_ascii_case("self");
     Some((head, said_more))
 }
 
@@ -680,19 +685,21 @@ fn migrated(base: &Scene, change: &SceneChange, approved: &dyn Fn(&str) -> bool)
         .filter(|k| !base.people.iter().any(|p| p.who.key() == *k))
         .collect();
     let mut out = base.clone();
-    let mut moved = false;
+    let mut taken: Vec<String> = Vec::new();
     for p in &mut out.people {
         let Who::Described(d) = &p.who else { continue };
         let Some((head, _)) = leading_name(d) else {
             continue;
         };
         let key = head.trim().to_lowercase();
-        if named.contains(&key) && approved(&key) {
-            p.who = Who::Library(key);
-            moved = true;
+        // The first such person only: two described people led by one name
+        // would otherwise become one character twice (review of #756, pass 3).
+        if named.contains(&key) && !taken.contains(&key) && approved(&key) {
+            p.who = Who::Library(key.clone());
+            taken.push(key);
         }
     }
-    moved.then_some(out)
+    (!taken.is_empty()).then_some(out)
 }
 
 /// A `who` that is wholly a name: "self", one of the persona's names, or an
@@ -1820,13 +1827,31 @@ mod tests {
             Some(&base),
         );
         assert!(p.next.people.is_empty(), "{:?}", p.next.people);
-        let c = call(json!({"scene": {"setting": "a shed", "people": [{"who": "Maya,"}]}}));
-        assert_eq!(c.change.people[0].who, Who::Library("maya".into()));
-        assert!(
-            !c.notes.iter().any(|n| n.contains("left out")),
-            "{:?}",
-            c.notes
+        for who in ["Maya,", "Maya (self)"] {
+            let c = call(json!({"scene": {"setting": "a shed", "people": [{"who": who}]}}));
+            assert_eq!(c.change.people[0].who, Who::Library("maya".into()));
+            assert!(
+                !c.notes.iter().any(|n| n.contains("left out")),
+                "{who}: {:?}",
+                c.notes
+            );
+        }
+        // Two described people led by one name: only the first becomes her.
+        let mut two = base.clone();
+        two.people.push(two.people[0].clone());
+        two.people[1].who = Who::Described("maya (self) in the background".into());
+        let p = planned(
+            &call(json!({"picture": "images/a.png", "scene": {"people": [
+                {"who": "Maya", "wearing": "a blue dress"}]}})),
+            Some(&two),
         );
+        let mayas = p
+            .next
+            .people
+            .iter()
+            .filter(|q| q.who == Who::Library("maya".into()))
+            .count();
+        assert_eq!(mayas, 1, "{:?}", p.next.people);
     }
 
     /// `self` and the persona's names resolve to its character; a library
