@@ -137,7 +137,11 @@
         body: JSON.stringify({ unlock: token, entry: entryOf(form, form.family), create_new: createNew }),
       });
       if (res.status === 409) {
-        confirmNew = (await res.text()).trim();
+        // Only an add that would create the new file can go ahead on
+        // consent; the other refusal is said as an error.
+        const why = await res.json().catch(() => ({}));
+        if (why.consent) confirmNew = why.message;
+        else formError = why.message ?? 'refused';
         return;
       }
       if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
@@ -161,6 +165,7 @@
     busy = true;
     try {
       const res = await fetch(entryUrl(s.route, entry.name, token), { method: 'DELETE' });
+      if (res.status === 409) throw new Error((await res.json().catch(() => ({}))).message ?? 'refused');
       if (!res.ok) throw new Error((await res.text()).trim() || `HTTP ${res.status}`);
       if (form?.editing === entry.name && form?.route === s.route) form = null;
       await load();

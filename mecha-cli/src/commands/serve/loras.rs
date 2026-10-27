@@ -74,10 +74,6 @@ impl Here {
     fn folders(&self) -> Folders {
         Folders::of(&self.home, self.image.as_ref(), self.video.as_ref())
     }
-
-    fn loaded(&self) -> Loaded {
-        Loaded::read(&self.home, self.legacy(), &self.folders())
-    }
 }
 
 fn locked() -> Response {
@@ -118,12 +114,21 @@ fn check_note(c: &Check) -> Option<String> {
 /// The server's LoRA files, as its own Add list names them
 /// (`LoraLoaderModelOnly`'s `lora_name`), or why it did not answer.
 async fn listed(url: anyhow::Result<reqwest::Url>) -> Result<Vec<String>, String> {
-    let url = url.map_err(|e| format!("{e:#}"))?;
-    let url = url
+    let mut base = url.map_err(|e| format!("{e:#}"))?;
+    // `join` replaces the last path segment unless the base ends in `/`.
+    if !base.path().ends_with('/') {
+        base.set_path(&format!("{}/", base.path()));
+    }
+    let url = base
         .join("object_info/LoraLoaderModelOnly")
         .map_err(|e| e.to_string())?;
+    // Loopback, never through a proxy and never a redirect away from the
+    // address `loopback_url` vetted (`comfy::Client::new`'s reason; review
+    // of #750).
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(4))
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| e.to_string())?;
     let body: Value = client
@@ -174,18 +179,22 @@ async fn list(state: St, q: UnlockQuery, family: Family) -> Response {
 /// The pane's view of one family: the registry's source, each entry with
 /// where it stands, and the server's files no entry uses yet.
 fn describe(here: &Here, family: Family, files: Result<Vec<String>, String>) -> Value {
-    let loaded = here.loaded();
     let folders = here.folders();
+    let loaded = Loaded::read(&here.home, here.legacy(), &folders);
     let dirs = folders.get(family);
     let (source, path) = match &loaded.source {
         Source::Shared(p) => ("shared", Some(p.clone())),
         Source::Legacy(p) => ("legacy", Some(p.clone())),
         Source::None => ("none", None),
     };
-    let entries: Vec<Value> = loaded
+    let mine: Vec<(loras::Entry, Status)> = loaded
         .entries
         .iter()
         .filter(|(e, _)| e.model == family)
+        .cloned()
+        .collect();
+    let entries: Vec<Value> = mine
+        .iter()
         .map(|(e, st)| {
             json!({
                 "name": e.name,
@@ -216,7 +225,9 @@ fn describe(here: &Here, family: Family, files: Result<Vec<String>, String>) -> 
         .unwrap_or_default();
     let (unused, unused_error) = match files {
         Ok(files) => (
-            loras::unused(&files, &loaded.entries, &turbo, dirs, family.dir_key())
+            // Only this family's entries claim a file: the same relative name
+            // on the other server is another file (review of #750).
+            loras::unused(&files, &mine, &turbo, dirs, family.dir_key())
                 .into_iter()
                 .map(|u| match u.check {
                     Ok(c) => {
@@ -269,12 +280,14 @@ async fn write(
         return (StatusCode::FORBIDDEN, "locked\n").into_response();
     }
     let done = tokio::task::spawn_blocking(move || {
-        let here = Here::read().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
-        if let Source::Legacy(old) = &here.loaded().source {
+        let here = Here::read().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, false, format!("{e:#}")))?;
+        // Which file is the registry, and nothing more: no parse, no header.
+        if let (Source::Legacy(old), _) = loras::source(&here.home, here.legacy()) {
             let new = here.home.join(loras::FILE);
             if kind != Op::Add {
                 return Err((
                     StatusCode::CONFLICT,
+                    false,
                     format!(
                         "This entry is in the old file {}, which mecha does not edit: change it there, or move its entries to {} first.",
                         old.display(),
@@ -285,6 +298,7 @@ async fn write(
             if !create_new {
                 return Err((
                     StatusCode::CONFLICT,
+                    true,
                     format!(
                         "Saving creates {}, and {} stops being read: move its entries there first, or confirm.",
                         new.display(),
@@ -294,15 +308,22 @@ async fn write(
             }
         }
         op(&here.home).map_err(|e| match e {
-            loras::WriteError::NotFound => (StatusCode::NOT_FOUND, e.to_string()),
-            loras::WriteError::Invalid(_) => (StatusCode::BAD_REQUEST, e.to_string()),
-            loras::WriteError::Io(_) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+            loras::WriteError::NotFound => (StatusCode::NOT_FOUND, false, e.to_string()),
+            loras::WriteError::Invalid(_) => (StatusCode::BAD_REQUEST, false, e.to_string()),
+            loras::WriteError::Io(_) => (StatusCode::INTERNAL_SERVER_ERROR, false, e.to_string()),
         })
     })
     .await;
     match done {
         Ok(Ok(())) => no_store(Json(json!({ "ok": true })).into_response()),
-        Ok(Err((code, why))) => (code, format!("{why}\n")).into_response(),
+        // A 409 says whether sending it again with consent would go ahead:
+        // only an add creating the new file can (review of #750).
+        Ok(Err((StatusCode::CONFLICT, consent, why))) => (
+            StatusCode::CONFLICT,
+            Json(json!({ "message": why, "consent": consent })),
+        )
+            .into_response(),
+        Ok(Err((code, _, why))) => (code, format!("{why}\n")).into_response(),
         Err(e) => failed(e),
     }
 }
@@ -512,7 +533,10 @@ mod tests {
         };
         let (code, text) = body(add(State(state.clone()), w(false), Family::QwenImage).await).await;
         assert_eq!(code, StatusCode::CONFLICT, "{text}");
-        assert!(text.contains("stops being read"), "{text}");
+        assert!(
+            text.contains("stops being read") && text.contains("\"consent\":true"),
+            "{text}"
+        );
         // An old entry is edited or removed in the old file, consent or not.
         let edit_old = WriteBody {
             unlock: token.clone(),
