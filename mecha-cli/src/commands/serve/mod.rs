@@ -50,6 +50,7 @@ pub(crate) mod incognito;
 mod late;
 mod library;
 mod listen;
+mod loras;
 mod mail;
 mod model;
 mod persona_chat;
@@ -675,6 +676,28 @@ fn api() -> gate::Owned {
             "/api/settings/images",
             Owner::Of(Feature::Image),
             get(persona_chat::chat_image_settings).post(persona_chat::chat_image_settings_save),
+        )
+        // The LoRA registry, one set per family under its own feature (a
+        // route belongs to exactly one), every one behind the library unlock.
+        .at(
+            "/api/loras/image",
+            Owner::Of(Feature::Image),
+            get(loras::image_list).post(loras::image_add),
+        )
+        .at(
+            "/api/loras/image/{name}",
+            Owner::Of(Feature::Image),
+            axum::routing::put(loras::image_edit).delete(loras::image_remove),
+        )
+        .at(
+            "/api/loras/video",
+            Owner::Of(Feature::Video),
+            get(loras::video_list).post(loras::video_add),
+        )
+        .at(
+            "/api/loras/video/{name}",
+            Owner::Of(Feature::Video),
+            axum::routing::put(loras::video_edit).delete(loras::video_remove),
         )
         .at(
             "/api/personas/{name}/memory",
@@ -1981,7 +2004,7 @@ mod tests {
     }
 
     /// `test_router`'s state, for a test that builds its own router.
-    fn test_state() -> WebState {
+    pub(super) fn test_state() -> WebState {
         WebState {
             owner_login: Arc::new("owner@example.com".into()),
             chat: None,
@@ -2539,6 +2562,15 @@ mod tests {
             ("POST", "/api/settings/charter"),
             ("GET", "/api/settings/images"),
             ("POST", "/api/settings/images"),
+            // The owner's LoRA registry: names, descriptions and triggers.
+            ("GET", "/api/loras/image"),
+            ("POST", "/api/loras/image"),
+            ("PUT", "/api/loras/image/x"),
+            ("DELETE", "/api/loras/image/x"),
+            ("GET", "/api/loras/video"),
+            ("POST", "/api/loras/video"),
+            ("PUT", "/api/loras/video/x"),
+            ("DELETE", "/api/loras/video/x"),
             ("GET", "/api/settings/rules"),
             ("POST", "/api/settings/rules/retire"),
             ("POST", "/api/settings/rules/restore"),
