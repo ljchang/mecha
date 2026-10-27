@@ -2100,7 +2100,7 @@ mod tests {
         // An empty `to` is absence, not an addressee.
         assert_eq!(
             summarize("t", &json!({"to": "", "body": "x"})),
-            r#"t {"body":"x","to":""}"#
+            r#"t {"to":"","body":"x"}"#
         );
     }
 
