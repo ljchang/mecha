@@ -611,7 +611,38 @@ fn names_in(text: &str, approved: &dyn Fn(&str) -> bool, me: &SelfNames) -> Vec<
 
 /// Who a `who` names: the persona itself, a library character, or someone
 /// described in words.
+///
+/// A name followed by a description ("Maya, a tall woman with…") is
+/// that character: the library supplies how they look, so the words after
+/// the name are dropped. Read as a stranger, the name lost its portrait, the
+/// reader's clothes and pose for it matched no one, and the name inside the
+/// description reached the image model as "the viewer" (owner, 2026-10-27:
+/// a persona chat drew someone else, clothed, standing). Only a separator ends
+/// the name, so "John's sister" or "Maya and John" stay descriptions.
 fn resolve(who: &str, approved: &dyn Fn(&str) -> bool, me: &SelfNames) -> Result<Who, String> {
+    if let Some(named) = resolve_name(who, approved, me) {
+        return named;
+    }
+    let head = who
+        .split([',', '(', ':', '—', '–', ';'])
+        .next()
+        .and_then(|h| h.split(" - ").next())
+        .unwrap_or_default();
+    if head.trim().len() < who.trim().len() {
+        if let Some(named) = resolve_name(head, approved, me) {
+            return named;
+        }
+    }
+    Ok(Who::Described(who.trim().to_string()))
+}
+
+/// A `who` that is wholly a name: "self", one of the persona's names, or an
+/// approved library character. `None` for anything else.
+fn resolve_name(
+    who: &str,
+    approved: &dyn Fn(&str) -> bool,
+    me: &SelfNames,
+) -> Option<Result<Who, String>> {
     let key = who.trim().to_lowercase();
     let is_me = key == "self"
         || me.names.iter().any(|n| n.trim().to_lowercase() == key)
@@ -620,21 +651,18 @@ fn resolve(who: &str, approved: &dyn Fn(&str) -> bool, me: &SelfNames) -> Result
             .as_deref()
             .is_some_and(|c| c.trim().to_lowercase() == key);
     if is_me {
-        return me
-            .character
-            .as_deref()
-            .map(|c| Who::Library(c.trim().to_lowercase()))
-            .ok_or_else(|| {
-                "This persona has no approved library character, so there is no \"self\" to \
-                 draw; describe the persona in `who` instead."
-                    .to_string()
-            });
+        return Some(
+            me.character
+                .as_deref()
+                .map(|c| Who::Library(c.trim().to_lowercase()))
+                .ok_or_else(|| {
+                    "This persona has no approved library character, so there is no \"self\" to \
+                     draw; describe the persona in `who` instead."
+                        .to_string()
+                }),
+        );
     }
-    Ok(if approved(&key) {
-        Who::Library(key)
-    } else {
-        Who::Described(who.trim().to_string())
-    })
+    approved(&key).then_some(Ok(Who::Library(key)))
 }
 
 /// What a person wears when nobody said and nothing is on record: drawn
@@ -1645,6 +1673,38 @@ mod tests {
         assert!(c.mask.is_none() && c.notes[0].contains("goes with a `retouch`"));
         // A retouch with nothing to change and no scene is nothing to draw.
         assert!(parse(&json!({"retouch": "a red hat"}), &lib, &me(), false).is_err());
+    }
+
+    /// A name followed by a description is that character, never a stranger
+    /// whose name is then "the viewer" (owner, 2026-10-27); with no
+    /// separator after the name, the words stay a description.
+    #[test]
+    fn a_name_leading_a_description_is_that_character() {
+        let c = call(json!({"scene": {"setting": "a pottery shed", "people": [
+            {"who": "Maya, a potter in a clay-flecked apron", "where": "centre"},
+            {"who": "John (her brother), in his forties"},
+            {"who": "Wren — the neighbour"},
+            {"who": "Ivo - a painter"},
+            {"who": "John's sister"},
+            {"who": "a stranger, tall"}]}}));
+        let whos: Vec<_> = c.change.people.iter().map(|p| p.who.clone()).collect();
+        assert_eq!(
+            whos,
+            [
+                Who::Library("maya".into()),
+                Who::Library("john".into()),
+                Who::Library("wren".into()),
+                Who::Library("ivo".into()),
+                Who::Described("John's sister".into()),
+                Who::Described("a stranger, tall".into()),
+            ]
+        );
+        // The persona's own name leading a description is the persona.
+        let c = call(json!({"scene": {"setting": "an orchard", "people": [
+            {"who": "Maya (self), carrying a basket of plums"}]}}));
+        let p = planned(&c, None);
+        assert_eq!(p.next.people[0].who, Who::Library("maya".into()));
+        assert!(p.offstage.is_empty(), "{:?}", p.offstage);
     }
 
     /// `self` and the persona's names resolve to its character; a library
