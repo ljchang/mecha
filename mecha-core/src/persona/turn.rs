@@ -69,6 +69,11 @@ pub struct Turn<'a> {
     /// The persona's picture LoRA list, read by the host like
     /// `image_tuning`; a replay arm's is inherit.
     pub image_loras: crate::loras::Layer,
+    /// The picture this turn may build on (`imagegen::BuildOn`): a chat's
+    /// typed turn builds on nothing, and a Continue, Edit or Regenerate on
+    /// the picture it was pressed on. `None` for a spoken turn and a replay
+    /// arm, which leave it to the call.
+    pub build_on: Option<crate::imagegen::BuildOn>,
     /// The owner's words this turn, as typed — not the goal folded ahead of
     /// a first turn.
     pub owner: &'a str,
@@ -120,6 +125,7 @@ pub fn context(agent: &Agent, turn: Turn<'_>) -> RunContext {
     tools.layers_posed = turn.layers_posed;
     tools.image_tuning = turn.image_tuning;
     tools.image_loras = turn.image_loras;
+    tools.build_on = turn.build_on;
     // `for_session` clones the agent's context, so each arm is set: `Off`
     // clears what the base might carry rather than inheriting it, since a
     // replay's header reports it as a fact (review of #612, pass 4).

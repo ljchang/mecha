@@ -507,6 +507,17 @@ build follows them without asking again.
   record, no clothes, no layered outfit); the note and the tool description tell the model to
   name `picture` only on such a request. A fresh chat had drawn a place and a second person
   carried from an earlier chat's picture, and left out what was asked.
+- **R11 (the owner, 2026-10-27, the same day: strict).** Whether a request builds on a picture
+  is the owner's press, never the model's reading of the words: "the button could be for any
+  image in the chat, and a new image is just typing a new description", since waiting for a
+  picture only to find the model misread which was meant is the cost. Built as a **Continue**
+  button on every picture in a persona chat, beside Edit and Regenerate. A typed turn is stamped
+  `BuildOn::Nothing`, and `image_generate` refuses a call there that names an earlier result
+  (an upload, `inbox/…`, may still be named); a Continue, Edit or Regenerate is stamped
+  `BuildOn::Picture` with the picture pressed on, and every call that turn builds on it. A
+  Continue sends the owner's words through the edit panel's path (`PanelEdit`), so the harness
+  draws the change and the persona replies; into a running reply it waits, as Regenerate does.
+  Spoken call turns have no button and stay the call's to decide (R10).
 - **R8.** Regenerate beside Edit on every picture card: the same scene with a new seed, no model
   turn (§5.7). This replaces drawing two variants of every picture. Versions stay on one card, and the version showing
   is the one that is built on.

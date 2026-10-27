@@ -658,6 +658,13 @@ const MAX_GOAL: usize = 2000;
 /// Why a typed Regenerate into a running turn is refused.
 const REGENERATE_WAITS: &str = "a reply is running; Regenerate waits for it to finish";
 
+/// A Continue or an Edit pressed while a reply runs. Folded into the reply
+/// it would reach the persona as bare words, and the picture it was pressed
+/// on is what decides which picture is built on (`BuildOn`, the owner,
+/// 2026-10-27), so it waits rather than drawing something else.
+const PICTURE_CHANGE_WAITS: &str =
+    "a reply is running; a change to a picture waits for it to finish";
+
 /// How long a Regenerate pressed in a call waits for its line: past the
 /// worker's longest wait for an answer under way (`TYPED_ANSWER_END_SECS`,
 /// 180 s, in `scripts/voice/worker.py`), so a line queued behind a long
@@ -3616,8 +3623,15 @@ impl PersonaChats {
                 }
                 // A steer carries text only: a Regenerate folded in would
                 // reach the persona as the bare words (review of #634).
-                if edit.as_ref().is_some_and(|e| e.redraw) {
-                    return Err(Refusal::Conflict(REGENERATE_WAITS.into()));
+                if let Some(e) = &edit {
+                    return Err(Refusal::Conflict(
+                        if e.redraw {
+                            REGENERATE_WAITS
+                        } else {
+                            PICTURE_CHANGE_WAITS
+                        }
+                        .into(),
+                    ));
                 }
                 // Metered and judged where it first arrived; back to the
                 // front of the line, the oldest message, for the turn after.
@@ -3787,8 +3801,15 @@ impl PersonaChats {
             if spoken.is_some() {
                 return Err(Refusal::Busy);
             }
-            if edit.as_ref().is_some_and(|e| e.redraw) {
-                return Err(Refusal::Conflict(REGENERATE_WAITS.into()));
+            if let Some(e) = &edit {
+                return Err(Refusal::Conflict(
+                    if e.redraw {
+                        REGENERATE_WAITS
+                    } else {
+                        PICTURE_CHANGE_WAITS
+                    }
+                    .into(),
+                ));
             }
             if carried {
                 return Ok(back_to_the_front(ps, text, request_id, token));
@@ -3881,6 +3902,14 @@ impl PersonaChats {
         // under the call note, and the one edit a call carries is the redraw
         // its screen registered (`call_regenerate`; owner, 2026-10-10).
         let panel = edit.filter(|e| spoken.is_none() || e.redraw);
+        // Which picture this turn's pictures may build on (the owner,
+        // 2026-10-27): a typed turn, none, and a Continue, Edit or Regenerate,
+        // the picture it was pressed on. A spoken turn has no button to
+        // press, so the call decides, as before.
+        let build_on = spoken.is_none().then(|| match &panel {
+            Some(e) => mecha_core::imagegen::BuildOn::Picture(e.picture.clone()),
+            None => mecha_core::imagegen::BuildOn::Nothing,
+        });
         // Asked again with the conversation in hand: `wants_files` was read
         // under the first lock, two awaits ago, and a turn that finished in
         // between may have carried the files already (review of #459).
@@ -4218,6 +4247,7 @@ impl PersonaChats {
                 // The owner's picture settings, read fresh this turn.
                 image_tuning: mecha_core::persona::tuning(&self.store, &name),
                 image_loras: mecha_core::persona::loras(&self.store, &name),
+                build_on,
                 owner: &text,
                 history: &before,
                 panel: panel.is_some(),
@@ -6465,6 +6495,8 @@ mod tests {
         drawn: Arc<StdMutex<Vec<serde_json::Value>>>,
         /// Whether each of those calls ran with the conversation untrusted.
         drawn_untrusted: Arc<StdMutex<Vec<bool>>>,
+        /// What each of those calls was stamped to build on (`BuildOn`).
+        drawn_build_on: Arc<StdMutex<Vec<Option<mecha_core::imagegen::BuildOn>>>>,
         /// How many panel extractions were asked (`Capture`'s `.5`).
         extracted: Arc<StdMutex<usize>>,
         /// With a length, the stand-in renders as the real tool does: a
@@ -6511,6 +6543,7 @@ mod tests {
         Arc<StdMutex<Vec<serde_json::Value>>>,
         Arc<StdMutex<Vec<bool>>>,
         Arc<StdMutex<Option<std::time::Duration>>>,
+        Arc<StdMutex<Vec<Option<mecha_core::imagegen::BuildOn>>>>,
     );
 
     #[async_trait::async_trait]
@@ -6541,6 +6574,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(ctx.taint.is_some_and(|t| t.untrusted));
+            self.3.lock().unwrap().push(ctx.build_on.clone());
             const DRAWN: &str =
                 "image: images/stub.png\nA new picture. It is on the owner's screen; you have not seen it.";
             let Some(takes) = *self.2.lock().unwrap() else {
@@ -6687,6 +6721,7 @@ mod tests {
         pool.insert(Arc::new(mecha_core::tool::image_view::ImageView));
         let drawn = Arc::new(StdMutex::new(Vec::new()));
         let drawn_untrusted = Arc::new(StdMutex::new(Vec::new()));
+        let drawn_build_on = Arc::new(StdMutex::new(Vec::new()));
         let draw_takes = Arc::new(StdMutex::new(None));
         if clips {
             pool.insert(Arc::new(ClipStub));
@@ -6696,6 +6731,7 @@ mod tests {
                 Arc::clone(&drawn),
                 Arc::clone(&drawn_untrusted),
                 Arc::clone(&draw_takes),
+                Arc::clone(&drawn_build_on),
             )));
         }
         let mut config = mecha_core::config::Config::default();
@@ -6727,6 +6763,7 @@ mod tests {
             judged,
             drawn,
             drawn_untrusted,
+            drawn_build_on,
             extracted,
             draw_takes,
         }
@@ -7476,6 +7513,80 @@ mod tests {
             )
             .await;
         assert!(matches!(refused, Err(Refusal::Conflict(_))), "{refused:?}");
+        gate.notify_waiters();
+        assert!(w.drawn.lock().unwrap().is_empty());
+    }
+
+    /// What a turn's pictures build on is the owner's press, stamped on the
+    /// run (the owner, 2026-10-27): a typed turn, nothing; a Continue (the
+    /// panel's words), the picture it was pressed on. Fails where nothing
+    /// was stamped and the call was left to decide.
+    #[tokio::test]
+    async fn a_typed_turn_builds_on_nothing_and_a_continue_on_its_picture() {
+        use mecha_core::imagegen::BuildOn;
+        let w = world_built(Mode::Call("image_generate".into()), |_| {}, true);
+        let key = open_chat(&w).await;
+        turn(&w, &key, "draw the harbour").await;
+        assert_eq!(
+            w.drawn_build_on.lock().unwrap().clone(),
+            vec![Some(BuildOn::Nothing)],
+            "a typed turn builds on nothing"
+        );
+        let edit = PanelEdit {
+            picture: "images/a.png".into(),
+            mask: None,
+            words: "now at dusk".into(),
+            redraw: false,
+            regions: Vec::new(),
+        };
+        turn_as(&w, &key, "Continue images/a.png: now at dusk", Some(edit)).await;
+        let built = w.drawn_build_on.lock().unwrap().clone();
+        assert!(built.len() >= 2, "{built:?}");
+        assert!(
+            built[1..]
+                .iter()
+                .all(|b| b == &Some(BuildOn::Picture("images/a.png".into()))),
+            "a Continue builds on its picture: {built:?}"
+        );
+    }
+
+    /// A Continue or an Edit into a running turn is refused, as a Regenerate
+    /// is: folded into the reply it would reach the persona as bare words,
+    /// and the picture it was pressed on would be lost (the owner,
+    /// 2026-10-27). Fails where only a Regenerate waited.
+    #[tokio::test]
+    async fn a_continue_into_a_running_turn_waits() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let w = world_built(Mode::Gate(Arc::clone(&gate)), |_| {}, true);
+        let key = open_chat(&w).await;
+        w.personas()
+            .send(&w.chat, &w.library, &key, "Hello", None, None)
+            .await
+            .unwrap();
+        let edit = PanelEdit {
+            picture: "images/a.png".into(),
+            mask: None,
+            words: "now at dusk".into(),
+            redraw: false,
+            regions: Vec::new(),
+        };
+        let refused = w
+            .personas()
+            .send_with(
+                &w.chat,
+                &w.library,
+                &key,
+                "Continue images/a.png: now at dusk",
+                None,
+                None,
+                Vec::new(),
+                Some(edit),
+            )
+            .await;
+        assert!(
+            matches!(&refused, Err(Refusal::Conflict(why)) if why == PICTURE_CHANGE_WAITS),
+            "{refused:?}"
+        );
         gate.notify_waiters();
         assert!(w.drawn.lock().unwrap().is_empty());
     }

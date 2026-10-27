@@ -951,6 +951,18 @@ advances it.
   this chat last drew them in from the chat's copy (G1b), since the picture
   built on cannot hold them; a new picture asks nothing of it. A fresh
   chat had drawn a place and a person from another chat's last picture.
+- **What a picture builds on is the owner's press** (R11, 2026-10-27):
+  a persona chat stamps `ToolCtx::build_on` on every typed turn
+  (`imagegen::BuildOn`). `Nothing` on a typed turn: a call whose
+  `picture` or room photo (`scene.setting.photo`) is an earlier result is
+  refused before anything renders; an upload is still allowed, decided
+  from the resolved path against the chat's `inbox/`, never the string.
+  `Picture(p)` on a Continue, Edit or Regenerate: every call that turn is
+  rebuilt onto `p`. A spoken turn and every other front end stamp `None`,
+  which leaves it to the call. A Continue is the edit panel's `PanelEdit`
+  with the owner's words, so the harness draws it; a picture change into a
+  running reply is refused (`PICTURE_CHANGE_WAITS`), since a steer carries
+  words alone, and the page holds Continue and Edit back while one runs.
 - **Lookup is by the picture's bytes, through the index**, so a picture
   carried into another chat brings its scene. Nothing reads a scene back out
   of a manifest: a run can write the jail.

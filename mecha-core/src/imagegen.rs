@@ -3126,8 +3126,9 @@ pub const DESCRIPTION: &str = "Draw a picture with the local image model, or cha
      place, clothes or people the request does not ask for. Each person has `who` (a library \
      character's name, \"self\" for you, or a description of someone not in the library), \
      `where` (left, centre, right or background), `wearing`, `doing` and `expression`. Only \
-     when the user asks to continue, build on, edit or change a picture, name it in `picture` \
-     and send only what changes in `scene`: a new pose \
+     when the user asks to continue, build on, edit or change a picture (in a chat, by its \
+     Continue button, which names it for you), name it in `picture` and send only what \
+     changes in `scene`: a new pose \
      or camera redraws the scene, new clothes, an expression or someone added edit the \
      picture, and restating what is already true changes nothing (a call that changes \
      nothing draws the scene again). Take someone out with `remove`. One small change to the \
@@ -3168,6 +3169,26 @@ pub const RETOUCH_DESC: &str = "One small change to the picture itself, in words
      colour, a detail (\"Give the man a red umbrella.\"). Never clothes, a pose, an expression \
      or a person: those are `scene.people`.";
 /// `picture`'s description.
+/// Which earlier picture a turn's pictures may build on, decided by the
+/// owner's button and never by the model (the owner, 2026-10-27: "a new
+/// image is just typing a new description", and waiting for a picture only to
+/// find the model misread which was meant is the cost this removes).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BuildOn {
+    /// A typed turn: every picture is new, and a call naming an earlier
+    /// result is refused. A photo the owner uploaded (`inbox/`) may still be
+    /// named: attaching it was the owner's act.
+    Nothing,
+    /// The owner pressed Continue, Edit or Regenerate on this picture: every
+    /// picture call this turn builds on it, whatever the call named.
+    Picture(String),
+}
+
+/// `p` as a workspace path is compared: trimmed, without a leading `./`.
+fn plain_path(p: &str) -> &str {
+    p.trim().trim_start_matches("./")
+}
+
 pub const PICTURE_DESC: &str = "The picture being changed: one the user attached (inbox/...) or \
      an earlier result (images/...), only when the user asks to continue, build on, edit or \
      change it. Leave it out for a new picture, which keeps nothing from earlier ones.";
@@ -3803,6 +3824,44 @@ impl Tool for ImageGenerate {
             Ok(c) => c,
             Err(why) => return Ok(refused(why)),
         };
+        // The picture this turn may build on, where the front end has a
+        // Continue button (`BuildOn`): the owner's press decides, never the
+        // call. A model that named an earlier picture on a typed turn is
+        // refused rather than redrawn from nothing, so it describes the new
+        // picture whole instead of a change to one the owner did not choose.
+        match &ctx.build_on {
+            None => {}
+            Some(BuildOn::Picture(p)) => {
+                if call.picture.as_deref().map(plain_path) != Some(plain_path(p)) {
+                    if let Some(other) = call.picture.replace(p.clone()) {
+                        // A mask marks places in the picture it was painted on.
+                        call.mask = None;
+                        call.notes.push(format!(
+                            "The owner pressed Continue on {p}, so this builds on it, not \
+                             on {other}."
+                        ));
+                    } else {
+                        call.notes.push(format!(
+                            "The owner pressed Continue on {p}, so this builds on it."
+                        ));
+                    }
+                }
+            }
+            Some(BuildOn::Nothing) => {
+                if let Some(p) = call
+                    .picture
+                    .as_deref()
+                    .filter(|p| !plain_path(p).starts_with("inbox/"))
+                {
+                    return Ok(refused(format!(
+                        "The owner typed this turn rather than pressing Continue on {p}, so \
+                         it is a new picture: leave `picture` out and describe the whole \
+                         picture in `scene` from the owner's words, its setting and its \
+                         people. Only the owner's Continue on a picture builds on it."
+                    )));
+                }
+            }
+        }
         // A `picture` no file in this chat answers to: a name the model made
         // up. Beside a scene it is left out and said, and the scene is drawn
         // without it; on its own it is refused saying where pictures
@@ -12850,9 +12909,112 @@ mod tests {
         // nothing, and `picture` is for when the owner asks to build on one.
         assert!(DESCRIPTION.contains("a new picture keeps nothing from earlier ones"));
         assert!(DESCRIPTION
-            .contains("Only when the user asks to continue, build on, edit or change a picture"));
+            .contains("Only when the user asks to continue, build on, edit or change a picture (in a chat, by its Continue button"));
         assert!(PICTURE_DESC
             .contains("only when the user asks to continue, build on, edit or change it"));
+    }
+
+    /// The owner's button decides what a picture builds on, never the call
+    /// (`BuildOn`, the owner, 2026-10-27). Typed: a call naming an earlier
+    /// result is refused before anything renders, and a photo the owner
+    /// uploaded may still be named. Continue on a picture: a call naming
+    /// none, or another, builds on that one. Fails where the call's
+    /// `picture` was taken as it came.
+    #[tokio::test]
+    async fn only_the_owners_continue_builds_on_a_picture() {
+        let (url, seen) = distinct(4).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = clean(scene_ctx(&dir, &store, "chat-a"));
+        let first = t
+            .call(
+                json!({"scene": {"setting": "a quiet reading room",
+                       "people": [{"who": "maya", "wearing": "a green coat", "doing": "reading a book"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!first.is_error, "{}", first.content);
+        let p1 = picture_of(&first.content);
+        let drawn = || {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|l| l.starts_with("POST /prompt"))
+                .count()
+        };
+
+        // Typed: naming the earlier result is refused, and nothing renders.
+        cx.build_on = Some(BuildOn::Nothing);
+        let before = drawn();
+        let typed = t
+            .call(
+                json!({"picture": p1, "scene": {"people": [{"who": "maya", "doing": "standing by the window"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(typed.is_error, "{}", typed.content);
+        assert!(
+            typed.content.contains("rather than pressing Continue"),
+            "{}",
+            typed.content
+        );
+        assert_eq!(drawn(), before, "a refused call rendered");
+        // A photo the owner uploaded is still theirs to name.
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::copy(dir.join(&p1), dir.join("inbox/photo.png")).unwrap();
+        let upload = t
+            .call(
+                json!({"picture": "inbox/photo.png", "retouch": "Give her a red umbrella."}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!upload.is_error, "{}", upload.content);
+
+        // Continue on the first: a call naming no picture builds on it.
+        cx.build_on = Some(BuildOn::Picture(p1.clone()));
+        let next = t
+            .call(
+                json!({"scene": {"people": [{"who": "maya", "doing": "standing by the window"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!next.is_error, "{}", next.content);
+        assert!(
+            next.content
+                .contains(&format!("The owner pressed Continue on {p1}")),
+            "{}",
+            next.content
+        );
+        assert!(
+            last_prompt(&seen).contains("a green coat"),
+            "{}",
+            last_prompt(&seen)
+        );
+        assert_ne!(manifest_of(&dir, &next.content)["route"], "new");
+        // One naming another picture builds on the one pressed.
+        let other = picture_of(&upload.content);
+        let named = t
+            .call(
+                json!({"picture": other, "scene": {"people": [{"who": "maya", "doing": "sitting down"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!named.is_error, "{}", named.content);
+        assert!(
+            named.content.contains(&format!("not on {other}")),
+            "{}",
+            named.content
+        );
+        assert!(
+            last_prompt(&seen).contains("a green coat"),
+            "{}",
+            last_prompt(&seen)
+        );
     }
 
     /// A persona's bare call is drawn with what the reader found it left

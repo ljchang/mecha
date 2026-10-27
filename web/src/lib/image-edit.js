@@ -62,6 +62,16 @@ export function composeEditMessage(picturePath, maskPath, instruction) {
     : `Edit ${picturePath}: ${words}`;
 }
 
+// Continue (the owner, 2026-10-27): the message the owner sees for a turn
+// that builds on a picture. Typing alone always draws a new picture; only
+// this, Edit and Regenerate build on one, and the turn's `edit` names it, so
+// nothing is parsed back out of these words.
+export function composeContinueMessage(picturePath, instruction) {
+  const words = (instruction ?? '').trim();
+  if (!words) return null;
+  return `Continue ${picturePath}: ${words}`;
+}
+
 // Regenerate (IMAGE-DESIGN.md §5.4): the message the owner sees for the
 // picture drawn again as it is. The turn's `edit` carries `redraw` and the
 // picture alone, never a mask or regions, which the server refuses beside it.
