@@ -632,9 +632,12 @@ const NOTE_FIELD_CHARS: usize = 160;
 /// The scene as a run note: the setting, who is there, what each wears, does
 /// and shows, and the camera and light. The present comes from here, so a
 /// recalled day's outfit or blocking cannot stand in for it. `me` is the
-/// persona's own library character, said as "You". `None` when the scene
+/// persona's own library character, said as "You". `by_button`: the turn
+/// came from a page with a Continue button on its pictures, which the
+/// harness turns into `picture` (`imagegen::BuildOn`); a spoken turn has
+/// none and names the picture itself. `None` when the scene
 /// holds nothing to say.
-pub fn note(scene: &Scene, me: Option<&str>) -> Option<String> {
+pub fn note(scene: &Scene, me: Option<&str>, by_button: bool) -> Option<String> {
     let clip = |text: &str, n: usize| {
         let text = text.trim();
         let cut: String = text.chars().take(n).collect();
@@ -705,8 +708,9 @@ pub fn note(scene: &Scene, me: Option<&str>) -> Option<String> {
         Origin::Untrusted => UNTRUSTED_SCENE_STEM,
     };
     // The middle sentence is the owner's ruling (2026-10-27): what the last
-    // picture showed carries into the next only when the owner asks to build
-    // on it, and then through `picture`, whose record the call starts from.
+    // picture showed carries into the next only when the owner presses
+    // Continue on it, which the harness turns into `picture` (`BuildOn`).
+    // The model is never the one to choose.
     // It used to say clothes and places came from here, and a fresh chat drew
     // a place and a person the owner had not asked for.
     // The last sentence is mecha-a3's measured line (2026-10-08): on the two
@@ -714,12 +718,21 @@ pub fn note(scene: &Scene, me: Option<&str>) -> Option<String> {
     // the picture already sent, or looped deciding; with the line it called
     // the tool 10 times in 10, against 8 in 10 without, and its reasoning on
     // the looping turn fell from ~8,100 to ~2,500 characters.
+    // A turn with the button (R11) is told the harness names the picture;
+    // a spoken turn, which has none, still names it itself (R10; review of
+    // #754, pass 3: the call was told the button's sentence).
+    let builds_on = if by_button {
+        "describe it whole from the owner's words. Only the owner's Continue on a picture \
+         builds on it, and the harness does that for you."
+    } else {
+        "only when the owner asks to continue, build on, edit or change that picture, pass it \
+         as `picture`, and say only what changes."
+    };
     Some(format!(
         "{stem}: what your last picture in this chat showed. A new picture starts from \
-         nothing and keeps none of this: only when the owner asks to continue, build on, \
-         edit or change that picture, pass it as `picture`, and say only what changes. \
-         This is a record of what was drawn before, not a picture the owner has in front \
-         of them now: to show them a picture, call image_generate.){out}"
+         nothing and keeps none of this: {builds_on} This is a record of what was drawn \
+         before, not a picture the owner has in front of them now: to show them a picture, \
+         call image_generate.){out}"
     ))
 }
 
@@ -1294,7 +1307,7 @@ mod tests {
         }
         let unknown: Scene =
             serde_json::from_str(r#"{"setting": {"value": {"kind": "hologram"}}}"#).unwrap();
-        assert_eq!(note(&unknown, None), None);
+        assert_eq!(note(&unknown, None, true), None);
     }
 
     /// Landing writes the chat's copy and the index, and no latest; a new
@@ -1365,7 +1378,7 @@ mod tests {
             Origin::Clean,
             false,
         );
-        let n = note(&s, Some("Maya")).unwrap();
+        let n = note(&s, Some("Maya"), true).unwrap();
         assert!(n.starts_with(SCENE_STEM), "{n}");
         assert!(n.contains("Place: a narrow kitchen."), "{n}");
         assert!(
@@ -1378,9 +1391,9 @@ mod tests {
         let mut t = crate::agent::Taint::default();
         t.arm_for_notes(&[n]);
         assert!(t.private && !t.untrusted);
-        let n = note(&kitchen(Origin::Untrusted), None).unwrap();
+        let n = note(&kitchen(Origin::Untrusted), None, true).unwrap();
         assert!(n.starts_with(UNTRUSTED_SCENE_STEM), "{n}");
-        assert_eq!(note(&Scene::default(), None), None);
+        assert_eq!(note(&Scene::default(), None, true), None);
     }
 
     /// Forgetting a chat removes what its renders left, and nothing another
@@ -1505,7 +1518,7 @@ mod tests {
             ..SceneChange::default()
         };
         let (scene, _) = Scene::apply(None, &change, Origin::Clean, true);
-        let n = note(&scene, None).unwrap();
+        let n = note(&scene, None, true).unwrap();
         assert!(
             n.contains("not a picture the owner has in front of them now"),
             "{n}"
@@ -1518,8 +1531,17 @@ mod tests {
         // from here.
         assert!(n.contains("A new picture starts from"), "{n}");
         assert!(n.contains("keeps none of this"), "{n}");
-        assert!(n.contains("pass it as `picture`"), "{n}");
+        assert!(
+            n.contains("Only the owner's Continue on a picture builds on it"),
+            "{n}"
+        );
         assert!(!n.contains("come from here"), "{n}");
+        // A spoken turn has no button, so it still names the picture itself.
+        let spoken = note(&scene, None, false).unwrap();
+        assert!(spoken.contains("A new picture starts from"), "{spoken}");
+        assert!(spoken.contains("pass it as `picture`"), "{spoken}");
+        assert!(!spoken.contains("Continue on a picture"), "{spoken}");
+        assert!(spoken.contains("call image_generate.)"), "{spoken}");
         assert!(stem_of(&n).is_some());
     }
 }
