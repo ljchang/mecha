@@ -49,8 +49,14 @@ cleanly by model family:
 
 | Family | Key shape |
 |---|---|
-| Qwen-Image | `transformer_blocks.*` (under a `diffusion_model.` or `transformer.` prefix), and no `single_transformer_blocks.*`, which FLUX's diffusers files carry beside the same name |
+| Qwen-Image | `transformer_blocks.*` (under a `diffusion_model.`, `transformer.` or `model.diffusion_model.` prefix), and no `single_transformer_blocks.*`, which FLUX's diffusers files carry beside the same name |
 | H3 | `blocks.*` beside `token_refiner.*` or `audio_patch_proj.*`, or the kohya spelling `lora_unet_blocks_*` |
+
+The kohya spelling is taken on its block keys alone. The owner's 7
+kohya-spelled H3 files carry no other key to corroborate with, so a Wan
+LoRA in that spelling reads as H3 too. The check catches the likely
+mistake, a picture LoRA filed as a clip one or the reverse, and not every
+other video model.
 
 The `__metadata__` block is not evidence. Ten of the 41 had no base-model
 field at all, and the field names differ by trainer. So:

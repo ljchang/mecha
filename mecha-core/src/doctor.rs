@@ -199,15 +199,6 @@ fn owner_setpoint(
     ))
 }
 
-/// Whether a confined `shell` is confined away from the mecha home. Not a
-/// store, so not in [`examine`]: the caller hands in the loaded `[sandbox]`.
-/// An unconfined `shell` is not a finding: it is the stock default, and a
-/// finding on every install would keep `doctor` exiting 1 forever (review of
-/// #294) — `mecha tools` says it instead. The closure guard (`closure::decide`) and the provenance of
-/// every closure record lean on it — an unconfined `shell` can detach from
-/// its registered parent and edit `~/.mecha` directly, and a sandbox that
-/// mounts the mecha home hands a confined command the shell registry and the
-/// closure store (`APPRAISAL-WIRING-DESIGN.md` 1b-2).
 /// The owner's LoRA registry (`loras`, `docs/LORA-DESIGN.md` §3): every
 /// way an entry is left out, said, so a refused LoRA is never a silently
 /// refused one. A picture or clip the owner expects to carry one would
@@ -350,6 +341,15 @@ fn resolve_existing_prefix(path: &Path) -> PathBuf {
 /// and trigger-run markers.
 const GUARD_DIRS: [&str; 4] = ["runs", "closures", "taskruns", "triggers"];
 
+/// Whether a confined `shell` is confined away from the mecha home. Not a
+/// store, so not in [`examine`]: the caller hands in the loaded `[sandbox]`.
+/// An unconfined `shell` is not a finding: it is the stock default, and a
+/// finding on every install would keep `doctor` exiting 1 forever (review of
+/// #294) — `mecha tools` says it instead. The closure guard (`closure::decide`) and the provenance of
+/// every closure record lean on it — an unconfined `shell` can detach from
+/// its registered parent and edit `~/.mecha` directly, and a sandbox that
+/// mounts the mecha home hands a confined command the shell registry and the
+/// closure store (`APPRAISAL-WIRING-DESIGN.md` 1b-2).
 pub fn check_shell_confinement(
     sandbox: &crate::sandbox::SandboxConfig,
     home: &Path,
