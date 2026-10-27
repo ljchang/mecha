@@ -665,7 +665,7 @@ fn open_doc(path: &Path) -> Result<(toml_edit::DocumentMut, bool), WriteError> {
         Err(e) => return Err(WriteError::Io(anyhow!("reading {}: {e}", path.display()))),
     };
     let existed = path.exists();
-    let doc: toml_edit::DocumentMut = text.parse().map_err(|e| {
+    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e| {
         WriteError::Invalid(format!(
             "{} does not read ({e}); fix it by hand before saving from here",
             path.display()
