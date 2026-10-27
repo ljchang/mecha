@@ -3842,11 +3842,21 @@ impl Tool for ImageGenerate {
             None => {}
             Some(BuildOn::Picture(p)) => {
                 if call.picture.as_deref().map(plain_path) != Some(plain_path(p)) {
+                    // Regions mark places in the picture they were painted on,
+                    // and their legend is already the retouch: onto another
+                    // picture they would describe outlines that are not there,
+                    // so refused, as #623 refuses them on a missing picture
+                    // (review of #754, pass 4).
+                    if !call.regions.is_empty() {
+                        return Ok(refused(format!(
+                            "The owner pressed Continue on {p}, and the painted regions mark \
+                             places in another picture: leave them out and say the change in \
+                             `scene`."
+                        )));
+                    }
                     if let Some(other) = call.picture.replace(p.clone()) {
-                        // A mask, and the regions painted in it, mark places
-                        // in the picture they were painted on.
+                        // A mask marks places in the picture it was painted on.
                         call.mask = None;
-                        call.regions.clear();
                         call.notes.push(format!(
                             "The owner pressed Continue on {p}, so this builds on it, not \
                              on {other}."
@@ -3872,26 +3882,8 @@ impl Tool for ImageGenerate {
                     )));
                 }
             }
-            Some(BuildOn::Nothing) => {
-                if let Some(p) = call.picture.as_deref().filter(|p| !uploaded(p)) {
-                    return Ok(refused(format!(
-                        "The owner typed this turn rather than pressing Continue on {p}, so \
-                         it is a new picture: leave `picture` out and describe the whole \
-                         picture in `scene` from the owner's words, its setting and its \
-                         people. Only the owner's Continue on a picture builds on it."
-                    )));
-                }
-                // A room photo is drawn onto, so an earlier result there is the
-                // same building-on by another field.
-                if let Some(p) = call.setting_photo.as_deref().filter(|p| !uploaded(p)) {
-                    return Ok(refused(format!(
-                        "The owner typed this turn, so it is a new picture, and {p} is an \
-                         earlier picture, not a photo they uploaded: describe the place in \
-                         words in `scene.setting`. Only the owner's Continue on a picture \
-                         builds on it."
-                    )));
-                }
-            }
+            // After the made-up-path recovery below.
+            Some(BuildOn::Nothing) => {}
         }
         // A `picture` no file in this chat answers to: a name the model made
         // up. Beside a scene it is left out and said, and the scene is drawn
@@ -3947,6 +3939,35 @@ impl Tool for ImageGenerate {
                          scene was drawn as a new picture."
                     )
                 });
+            }
+        }
+        // A typed turn builds on nothing (R11). After the recovery above, so
+        // a name no file answers to is still left out and drawn in one turn,
+        // as it was, and only an earlier picture that is really there is
+        // refused (review of #754, pass 4).
+        if ctx.build_on == Some(BuildOn::Nothing) {
+            if let Some(p) = call.picture.as_deref().filter(|p| !uploaded(p)) {
+                return Ok(refused(format!(
+                    "The owner typed this turn rather than pressing Continue on {p}, so it is \
+                     a new picture: leave `picture` out and describe the whole picture in \
+                     `scene` from the owner's words, its setting and its people. Only the \
+                     owner's Continue on a picture builds on it."
+                )));
+            }
+            // A room photo is drawn onto, so an earlier result there is the
+            // same building-on by another field. One that is not there is the
+            // read's to refuse, saying so.
+            let there = |p: &str| ctx.resolve(p).is_ok_and(|path| path.exists());
+            if let Some(p) = call
+                .setting_photo
+                .as_deref()
+                .filter(|p| there(p) && !uploaded(p))
+            {
+                return Ok(refused(format!(
+                    "The owner typed this turn, so it is a new picture, and {p} is an earlier \
+                     picture, not a photo they uploaded: describe the place in words in \
+                     `scene.setting`. Only the owner's Continue on a picture builds on it."
+                )));
             }
         }
         // A `style` the library does not hold: the field takes a library
@@ -12953,7 +12974,7 @@ mod tests {
     /// `picture` was taken as it came.
     #[tokio::test]
     async fn only_the_owners_continue_builds_on_a_picture() {
-        let (url, seen) = distinct(5).await;
+        let (url, seen) = distinct(6).await;
         let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya"]));
         let t = tool(&url).with_library_dir(lib.clone());
         let mut cx = clean(scene_ctx(&dir, &store, "chat-a"));
@@ -13004,6 +13025,24 @@ mod tests {
             assert!(out.is_error, "{sneaked}: {}", out.content);
             assert_eq!(drawn(), before, "{sneaked} rendered");
         }
+        // A name no file answers to is not an earlier picture: left out
+        // and drawn, as before, rather than refused (review of #754, pass 4).
+        let invented = t
+            .call(
+                json!({"picture": "images/never-drawn.png", "scene": {"setting": "a rooftop garden",
+                       "people": [{"who": "maya", "wearing": "a coat", "doing": "watering plants"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!invented.is_error, "{}", invented.content);
+        assert!(
+            invented
+                .content
+                .contains("There is no picture `images/never-drawn.png`"),
+            "{}",
+            invented.content
+        );
         // A photo the owner uploaded is still theirs to name.
         std::fs::create_dir_all(dir.join("inbox")).unwrap();
         std::fs::copy(dir.join(&p1), dir.join("inbox/photo.png")).unwrap();
