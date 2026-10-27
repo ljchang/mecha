@@ -150,16 +150,33 @@ impl CacheLens {
     /// it. Pure bookkeeping: the caller decides what, if anything, to do
     /// with the verdict.
     pub fn observe(&mut self, request: &CompletionRequest, usage: &Usage) -> Verdict {
-        self.observe_at(request, usage, Instant::now())
+        let now = Instant::now();
+        self.observe_at(request, usage, now, now)
     }
 
-    /// [`CacheLens::observe`] with the clock passed in, so a test can put
-    /// an idle gap between two runs without sleeping through it.
+    /// [`CacheLens::observe`] for a request sent at `sent`. The idle gap a
+    /// run's first request records ends there, not when its answer came
+    /// back: measured to the response, it would include the request's own
+    /// prompt read — two minutes on a 176k re-read, and largest on exactly
+    /// the misses the gap is recorded to explain.
+    pub fn observe_sent(
+        &mut self,
+        request: &CompletionRequest,
+        usage: &Usage,
+        sent: Instant,
+    ) -> Verdict {
+        self.observe_at(request, usage, sent, Instant::now())
+    }
+
+    /// The same with both instants passed in, so a test can put an idle gap
+    /// between two runs without sleeping through it: `sent` ends the gap
+    /// before this request, `done` starts the one after it.
     pub fn observe_at(
         &mut self,
         request: &CompletionRequest,
         usage: &Usage,
-        now: Instant,
+        sent: Instant,
+        done: Instant,
     ) -> Verdict {
         let (messages, notes_bytes) = history_hashes(request);
         let total_bytes = request.system.as_ref().map_or(0, String::len)
@@ -175,7 +192,7 @@ impl CacheLens {
             // unexplained drop this lens exists to isolate (review of #596).
             tools: hash_of(&(&request.tools, format!("{:?}", request.tool_choice))),
             model: hash_of(&request.model),
-            at: now,
+            at: done,
             messages,
             total_input,
             notes_input: (total_input as f64 * notes_bytes as f64 / total_bytes.max(1) as f64)
@@ -237,7 +254,7 @@ impl CacheLens {
                 idle: self
                     .prev
                     .as_ref()
-                    .map(|p| now.saturating_duration_since(p.at)),
+                    .map(|p| sent.saturating_duration_since(p.at)),
                 read: usage.cache_read_input_tokens,
                 uncached: usage.input_tokens,
             });
@@ -630,14 +647,14 @@ mod tests {
         let t0 = Instant::now();
         let mut lens = CacheLens::new();
         lens.begin_run();
-        lens.observe_at(&request(convo(1)), &usage(8, 18_000, 0), t0);
-        lens.observe_at(&request(convo(2)), &usage(40, 200, 18_000), t0);
+        lens.observe_at(&request(convo(1)), &usage(8, 18_000, 0), t0, t0);
+        lens.observe_at(&request(convo(2)), &usage(40, 200, 18_000), t0, t0);
         // Next message, twenty minutes later: nothing changed, the transcript
         // only grew, and the cache handed back none of it.
         lens.begin_run();
         let later = t0 + Duration::from_secs(1_200);
         assert!(matches!(
-            lens.observe_at(&request(convo(3)), &usage(18_300, 0, 0), later),
+            lens.observe_at(&request(convo(3)), &usage(18_300, 0, 0), later, later),
             Verdict::Drop { .. }
         ));
         let resume = lens.resume().unwrap().record(false);
@@ -647,16 +664,33 @@ mod tests {
         assert_eq!(resume.cache_read, 0);
     }
 
+    /// The gap ends when the resuming request is sent. Measured to its
+    /// response, a re-read's own minutes of prompt processing would count as
+    /// idle time, inflating exactly the rows a drop is recorded on.
+    #[test]
+    fn the_idle_gap_ends_at_the_send_not_the_response() {
+        let t0 = Instant::now();
+        let mut lens = CacheLens::new();
+        lens.begin_run();
+        lens.observe_at(&request(convo(1)), &usage(8, 18_000, 0), t0, t0);
+        lens.begin_run();
+        let sent = t0 + Duration::from_secs(600);
+        let done = sent + Duration::from_secs(130);
+        lens.observe_at(&request(convo(2)), &usage(18_300, 0, 0), sent, done);
+        assert_eq!(lens.resume().unwrap().record(false).idle_secs, Some(600));
+    }
+
     #[test]
     fn a_resumed_run_that_reused_the_prefix_is_stable() {
         let t0 = Instant::now();
         let mut lens = CacheLens::new();
         lens.begin_run();
-        lens.observe_at(&request(convo(1)), &usage(8, 18_000, 0), t0);
+        lens.observe_at(&request(convo(1)), &usage(8, 18_000, 0), t0, t0);
         lens.begin_run();
         lens.observe_at(
             &request(convo(2)),
             &usage(60, 0, 18_000),
+            t0 + Duration::from_secs(30),
             t0 + Duration::from_secs(30),
         );
         let resume = lens.resume().unwrap().record(true);

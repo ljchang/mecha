@@ -3481,6 +3481,9 @@ impl Agent {
             } else {
                 events.clone()
             };
+            // Where an idle gap before this request ends (`CacheLens::observe_sent`):
+            // the first send, so an overflow retry's re-send does not move it.
+            let sent_at = std::time::Instant::now();
             let completion = match self.complete(cx, &request, &stream).await {
                 Err(e) if is_context_overflow(&e) => {
                     // Counted before the recovery rather than after it: what
@@ -3627,7 +3630,25 @@ impl Agent {
             // turn's legitimate cache break reads as the rewrite it is.
             if self.cfg.cache_prompt {
                 use crate::cache_lens::Verdict;
-                match cache_lens.observe(&request, &response.usage) {
+                // A run's first request is judged against the previous run's
+                // last, across however long the conversation sat idle, and a
+                // server that evicted it meanwhile is doing its job — the
+                // outcome row records it (`RunStats::resume_cache`). Only a
+                // drop *within* a run, where nothing had time to evict it
+                // but this agent's own requests, is the anomaly to warn on.
+                let first_of_run = cache_lens.resume().is_none();
+                match cache_lens.observe_sent(&request, &response.usage, sent_at) {
+                    Verdict::Drop { repaid, prev_total } if first_of_run => tracing::info!(
+                        repaid,
+                        prev_total,
+                        idle_secs = cache_lens
+                            .resume()
+                            .and_then(|r| r.idle)
+                            .map(|d| d.as_secs()),
+                        "prompt cache: the server no longer held this conversation's prefix \
+                         when it resumed; {repaid} of the previous prompt's {prev_total} \
+                         tokens were read again"
+                    ),
                     Verdict::Drop { repaid, prev_total } if self.cache_contended => {
                         tracing::info!(
                             repaid,
