@@ -8,6 +8,7 @@ import {
   hasPaint,
   maskName,
   composeEditMessage,
+  composeContinueMessage,
 } from '../src/lib/image-edit.js';
 
 // A picture shown at half size: a click maps to its own pixels, clamped.
@@ -41,6 +42,11 @@ assert.equal(
 );
 assert.equal(composeEditMessage('images/a.png', null, 'make it dusk'), 'Edit images/a.png: make it dusk');
 assert.equal(composeEditMessage('images/a.png', 'inbox/m.png', '   '), null, 'no words, no request');
+assert.equal(
+  composeContinueMessage('images/a.png', '  now she walks to the window '),
+  'Continue images/a.png: now she walks to the window',
+);
+assert.equal(composeContinueMessage('images/a.png', '  '), null, 'no words, no request');
 
 // Regions: the least-present colours are picked, the index is exact, and a
 // region with no words makes no message.

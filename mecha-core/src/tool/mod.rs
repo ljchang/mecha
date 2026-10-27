@@ -911,6 +911,12 @@ pub struct ToolCtx {
     /// where a chat layer is configured and none where it is not. Never the
     /// model's.
     pub image_loras: crate::loras::Layer,
+    /// Which earlier picture this turn's pictures may build on, stamped by a
+    /// front end with a Continue button on its pictures (the owner,
+    /// 2026-10-27): typed, nothing, and a picture the owner pressed
+    /// Continue, Edit or Regenerate on, that one. `None` where no front end
+    /// offers the button, which leaves it to the call. Never the model's.
+    pub build_on: Option<crate::imagegen::BuildOn>,
 }
 
 /// The last confirmed goal, and how the plan has moved against it.
@@ -1108,6 +1114,7 @@ impl Default for ToolCtx {
             layers_posed: false,
             image_tuning: crate::sampling::Tuning::default(),
             image_loras: crate::loras::Layer::Inherit,
+            build_on: None,
         }
     }
 }

@@ -3126,8 +3126,9 @@ pub const DESCRIPTION: &str = "Draw a picture with the local image model, or cha
      place, clothes or people the request does not ask for. Each person has `who` (a library \
      character's name, \"self\" for you, or a description of someone not in the library), \
      `where` (left, centre, right or background), `wearing`, `doing` and `expression`. Only \
-     when the user asks to continue, build on, edit or change a picture, name it in `picture` \
-     and send only what changes in `scene`: a new pose \
+     when the user asks to continue, build on, edit or change a picture (in a chat, by its \
+     Continue button, which names it for you), name it in `picture` and send only what \
+     changes in `scene`: a new pose \
      or camera redraws the scene, new clothes, an expression or someone added edit the \
      picture, and restating what is already true changes nothing (a call that changes \
      nothing draws the scene again). Take someone out with `remove`. One small change to the \
@@ -3170,7 +3171,29 @@ pub const RETOUCH_DESC: &str = "One small change to the picture itself, in words
 /// `picture`'s description.
 pub const PICTURE_DESC: &str = "The picture being changed: one the user attached (inbox/...) or \
      an earlier result (images/...), only when the user asks to continue, build on, edit or \
-     change it. Leave it out for a new picture, which keeps nothing from earlier ones.";
+     change it. In a chat with a Continue button on its pictures, only that button builds on \
+     one, and it names the picture for you: never name an earlier result on a turn the user \
+     typed. Leave it out for a new picture, which keeps nothing from earlier ones.";
+
+/// Which earlier picture a turn's pictures may build on, decided by the
+/// owner's button and never by the model (the owner, 2026-10-27: "a new
+/// image is just typing a new description", and waiting for a picture only to
+/// find the model misread which was meant is the cost this removes).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BuildOn {
+    /// A typed turn: every picture is new, and a call naming an earlier
+    /// result is refused. A photo the owner uploaded (`inbox/`) may still be
+    /// named: attaching it was the owner's act.
+    Nothing,
+    /// The owner pressed Continue, Edit or Regenerate on this picture: every
+    /// picture call this turn builds on it, whatever the call named.
+    Picture(String),
+}
+
+/// `p` as a workspace path is compared: trimmed, without a leading `./`.
+fn plain_path(p: &str) -> &str {
+    p.trim().trim_start_matches("./")
+}
 
 impl ImageGenerate {
     /// The persona's names, which `who` resolves to its approved character.
@@ -3803,6 +3826,68 @@ impl Tool for ImageGenerate {
             Ok(c) => c,
             Err(why) => return Ok(refused(why)),
         };
+        // The picture this turn may build on, where the front end has a
+        // Continue button (`BuildOn`): the owner's press decides, never the
+        // call. A model that named an earlier picture on a typed turn is
+        // refused rather than redrawn from nothing, so it describes the new
+        // picture whole instead of a change to one the owner did not choose.
+        // A photo the owner uploaded, by where the path resolves, so
+        // `inbox/../images/a.png` is the result it names; unknown (the jail
+        // refuses it, or there is no inbox) is not one (review of #754).
+        let uploaded = |p: &str| match (ctx.resolve(p), ctx.resolve("inbox")) {
+            (Ok(path), Ok(inbox)) => path.starts_with(inbox),
+            _ => false,
+        };
+        // A room photo no file answers to is the read's to refuse, saying so,
+        // in either arm (review of #754, passes 4 and 5).
+        let there = |p: &str| ctx.resolve(p).is_ok_and(|path| path.exists());
+        match &ctx.build_on {
+            None => {}
+            Some(BuildOn::Picture(p)) => {
+                if call.picture.as_deref().map(plain_path) != Some(plain_path(p)) {
+                    // Regions mark places in the picture they were painted on,
+                    // and their legend is already the retouch: onto another
+                    // picture they would describe outlines that are not there,
+                    // so refused, as #623 refuses them on a missing picture
+                    // (review of #754, pass 4).
+                    if !call.regions.is_empty() {
+                        return Ok(refused(format!(
+                            "The owner pressed Continue on {p}, and the painted regions mark \
+                             places in another picture: leave them out and say the change in \
+                             `scene`."
+                        )));
+                    }
+                    if let Some(other) = call.picture.replace(p.clone()) {
+                        // A mask marks places in the picture it was painted on.
+                        call.mask = None;
+                        call.notes.push(format!(
+                            "The owner pressed Continue on {p}, so this builds on it, not \
+                             on {other}."
+                        ));
+                    } else {
+                        call.notes.push(format!(
+                            "The owner pressed Continue on {p}, so this builds on it."
+                        ));
+                    }
+                }
+                // The room it is drawn onto is the owner's too: an upload, or
+                // the picture pressed on, never another earlier result the
+                // call chose (review of #754, pass 2).
+                if let Some(room) = call
+                    .setting_photo
+                    .as_deref()
+                    .filter(|r| there(r) && !uploaded(r) && plain_path(r) != plain_path(p))
+                {
+                    return Ok(refused(format!(
+                        "The owner pressed Continue on {p}, so this builds on it, and {room} \
+                         is another earlier picture, not a photo they uploaded: describe the \
+                         place in words in `scene.setting`, or leave it as {p} has it."
+                    )));
+                }
+            }
+            // After the made-up-path recovery below.
+            Some(BuildOn::Nothing) => {}
+        }
         // A `picture` no file in this chat answers to: a name the model made
         // up. Beside a scene it is left out and said, and the scene is drawn
         // without it; on its own it is refused saying where pictures
@@ -3857,6 +3942,33 @@ impl Tool for ImageGenerate {
                          scene was drawn as a new picture."
                     )
                 });
+            }
+        }
+        // A typed turn builds on nothing (R11). After the recovery above, so
+        // a name no file answers to is still left out and drawn in one turn,
+        // as it was, and only an earlier picture that is really there is
+        // refused (review of #754, pass 4).
+        if ctx.build_on == Some(BuildOn::Nothing) {
+            if let Some(p) = call.picture.as_deref().filter(|p| !uploaded(p)) {
+                return Ok(refused(format!(
+                    "The owner typed this turn rather than pressing Continue on {p}, so it is \
+                     a new picture: leave `picture` out and describe the whole picture in \
+                     `scene` from the owner's words, its setting and its people. Only the \
+                     owner's Continue on a picture builds on it."
+                )));
+            }
+            // A room photo is drawn onto, so an earlier result there is the
+            // same building-on by another field.
+            if let Some(p) = call
+                .setting_photo
+                .as_deref()
+                .filter(|p| there(p) && !uploaded(p))
+            {
+                return Ok(refused(format!(
+                    "The owner typed this turn, so it is a new picture, and {p} is an earlier \
+                     picture, not a photo they uploaded: describe the place in words in \
+                     `scene.setting`. Only the owner's Continue on a picture builds on it."
+                )));
             }
         }
         // A `style` the library does not hold: the field takes a library
@@ -12850,9 +12962,228 @@ mod tests {
         // nothing, and `picture` is for when the owner asks to build on one.
         assert!(DESCRIPTION.contains("a new picture keeps nothing from earlier ones"));
         assert!(DESCRIPTION
-            .contains("Only when the user asks to continue, build on, edit or change a picture"));
+            .contains("Only when the user asks to continue, build on, edit or change a picture (in a chat, by its Continue button"));
         assert!(PICTURE_DESC
             .contains("only when the user asks to continue, build on, edit or change it"));
+    }
+
+    /// The owner's button decides what a picture builds on, never the call
+    /// (`BuildOn`, the owner, 2026-10-27). Typed: a call naming an earlier
+    /// result is refused before anything renders, and a photo the owner
+    /// uploaded may still be named. Continue on a picture: a call naming
+    /// none, or another, builds on that one. Fails where the call's
+    /// `picture` was taken as it came.
+    #[tokio::test]
+    async fn only_the_owners_continue_builds_on_a_picture() {
+        let (url, seen) = distinct(7).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = clean(scene_ctx(&dir, &store, "chat-a"));
+        let first = t
+            .call(
+                json!({"scene": {"setting": "a quiet reading room",
+                       "people": [{"who": "maya", "wearing": "a green coat", "doing": "reading a book"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!first.is_error, "{}", first.content);
+        let p1 = picture_of(&first.content);
+        let drawn = || {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|l| l.starts_with("POST /prompt"))
+                .count()
+        };
+
+        // Typed: naming the earlier result is refused, and nothing renders.
+        cx.build_on = Some(BuildOn::Nothing);
+        let before = drawn();
+        let typed = t
+            .call(
+                json!({"picture": p1, "scene": {"people": [{"who": "maya", "doing": "standing by the window"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(typed.is_error, "{}", typed.content);
+        assert!(
+            typed.content.contains("rather than pressing Continue"),
+            "{}",
+            typed.content
+        );
+        assert_eq!(drawn(), before, "a refused call rendered");
+        // Not by another spelling of the path, nor as the room it is drawn
+        // onto (review of #754, pass 1).
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        for sneaked in [
+            json!({"picture": format!("inbox/../{p1}"), "retouch": "Give her a red umbrella."}),
+            json!({"scene": {"setting": {"photo": p1},
+                   "people": [{"who": "maya", "wearing": "a coat", "doing": "standing by the window"}]}}),
+        ] {
+            let out = t.call(sneaked.clone(), &cx).await.unwrap();
+            assert!(out.is_error, "{sneaked}: {}", out.content);
+            assert_eq!(drawn(), before, "{sneaked} rendered");
+        }
+        // A name no file answers to is not an earlier picture: left out
+        // and drawn, as before, rather than refused (review of #754, pass 4).
+        let invented = t
+            .call(
+                json!({"picture": "images/never-drawn.png", "scene": {"setting": "a rooftop garden",
+                       "people": [{"who": "maya", "wearing": "a coat", "doing": "watering plants"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!invented.is_error, "{}", invented.content);
+        assert!(
+            invented
+                .content
+                .contains("There is no picture `images/never-drawn.png`"),
+            "{}",
+            invented.content
+        );
+        // A photo the owner uploaded is still theirs to name.
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::copy(dir.join(&p1), dir.join("inbox/photo.png")).unwrap();
+        let upload = t
+            .call(
+                json!({"picture": "inbox/photo.png", "retouch": "Give her a red umbrella."}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!upload.is_error, "{}", upload.content);
+        let room = t
+            .call(
+                json!({"scene": {"setting": {"photo": "inbox/photo.png"},
+                       "people": [{"who": "maya", "wearing": "a coat", "doing": "standing by the window"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            !room.is_error,
+            "an uploaded room was refused: {}",
+            room.content
+        );
+
+        // Continue on the first: a call naming no picture builds on it.
+        cx.build_on = Some(BuildOn::Picture(p1.clone()));
+        let next = t
+            .call(
+                json!({"scene": {"people": [{"who": "maya", "doing": "standing by the window"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!next.is_error, "{}", next.content);
+        assert!(
+            next.content
+                .contains(&format!("The owner pressed Continue on {p1}")),
+            "{}",
+            next.content
+        );
+        assert!(
+            last_prompt(&seen).contains("a green coat"),
+            "{}",
+            last_prompt(&seen)
+        );
+        assert_ne!(manifest_of(&dir, &next.content)["route"], "new");
+        // One naming another picture builds on the one pressed.
+        let other = picture_of(&upload.content);
+        let named = t
+            .call(
+                json!({"picture": other, "scene": {"people": [{"who": "maya", "doing": "sitting down"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!named.is_error, "{}", named.content);
+        assert!(
+            named.content.contains(&format!("not on {other}")),
+            "{}",
+            named.content
+        );
+        // Not onto another earlier picture as the room, under a Continue
+        // either (review of #754, pass 2).
+        let room = t
+            .call(
+                json!({"scene": {"setting": {"photo": other},
+                       "people": [{"who": "maya", "doing": "sitting down"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(room.is_error, "{}", room.content);
+        assert!(
+            room.content.contains("another earlier picture"),
+            "{}",
+            room.content
+        );
+        // What the field itself tells the model, where it chooses.
+        assert!(PICTURE_DESC.contains("never name an earlier result on a turn the user typed"));
+        assert!(
+            last_prompt(&seen).contains("a green coat"),
+            "{}",
+            last_prompt(&seen)
+        );
+        // A mask painted on another picture is dropped, and the call drawn
+        // onto the one pressed; regions painted there are refused, since
+        // their legend would describe outlines not in it (review of #754,
+        // passes 4 and 5).
+        let masked = t
+            .call(
+                json!({"picture": other, "mask": "inbox/painted-elsewhere.png",
+                       "retouch": "Give her a red umbrella."}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!masked.is_error, "the mask was read: {}", masked.content);
+        assert!(
+            masked.content.contains(&format!("not on {other}")),
+            "{}",
+            masked.content
+        );
+        assert!(
+            !masked.content.contains("painted-elsewhere"),
+            "the other picture's mask was used: {}",
+            masked.content
+        );
+        assert!(manifest_of(&dir, &masked.content)["mask"].is_null());
+        let before = drawn();
+        let regions = t
+            .call(
+                json!({"picture": other, "mask": "inbox/painted-elsewhere.png",
+                       "regions": [{"colour": "magenta", "words": "make it red"}]}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(regions.is_error, "{}", regions.content);
+        assert!(
+            regions.content.contains("places in another picture"),
+            "{}",
+            regions.content
+        );
+        assert_eq!(drawn(), before, "regions from another picture rendered");
+        // A room no file answers to is the read's to refuse, not called an
+        // earlier picture.
+        let invented_room = t
+            .call(
+                json!({"scene": {"setting": {"photo": "images/a-garden.png"},
+                       "people": [{"who": "maya", "doing": "sitting down"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            !invented_room.content.contains("another earlier picture"),
+            "{}",
+            invented_room.content
+        );
     }
 
     /// A persona's bare call is drawn with what the reader found it left
