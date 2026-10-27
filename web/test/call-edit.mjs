@@ -38,13 +38,14 @@ const fns = ['  function editImage(path) {', '  function editInCall(path) {', ' 
   .map(readOut)
   .join('\n');
 
-function rig({ live = true } = {}) {
+function rig({ live = true, refuse = null } = {}) {
   return new Function(
     'live',
+    'refuse',
     'uploadRegionReferences',
     `'use strict';
      const log = [];
-     let key = 'k1', token = null, input = 'typed in the chat box', imageEdit = null;
+     let key = 'k1', token = null, input = 'typed in the chat box', imageEdit = null, error = null;
      const caller = {
        holdMic: (on) => log.push(on ? 'hold' : 'release'),
        say: (text) => (log.push('say:' + text), live),
@@ -55,10 +56,17 @@ function rig({ live = true } = {}) {
      const composeEditMessage = (p, mask, text) => (text ? 'edit ' + p + ': ' + text : null);
      const composeRegionsMessage = (p, idx, rs) => 'regions ' + p + ': ' + rs.map((r) => r.colour).join(',');
      const fetch = async (url) => (log.push('upload'), { ok: true, json: async () => ({ path: 'inbox/mask.png' }) });
-     const send = async (opts) => log.push('chat-send:' + input + (opts?.edit ? ' [edit ' + JSON.stringify(opts.edit) + ']' : ''));
+     const send = async (opts) => {
+       log.push('chat-send:' + input + (opts?.edit ? ' [edit ' + JSON.stringify(opts.edit) + ']' : ''));
+       if (refuse) {
+         error = refuse;
+         return false;
+       }
+       return true;
+     };
      ${fns}
-     return { editImage, editInCall, closeEdit, sendEdit, log, state: () => ({ imageEdit, input }) };`,
-  )(live, uploadRegionReferences);
+     return { editImage, editInCall, closeEdit, sendEdit, log, state: () => ({ imageEdit, input, error }) };`,
+  )(live, refuse, uploadRegionReferences);
 }
 
 {
@@ -111,6 +119,20 @@ function rig({ live = true } = {}) {
     true,
     'the region carries the uploaded picture, never the file itself',
   );
+}
+
+{
+  // Refused (a reply still running): the panel stays with its picture and
+  // says why, and the owner's draft comes back, never the composed line
+  // alone, which would go as a typed turn (review of #754).
+  const r = rig({ refuse: 'a reply is running; a change to a picture waits for it to finish' });
+  r.editImage('images/a.png');
+  await r.sendEdit({ text: 'add a hat', mask: null });
+  const e = r.state().imageEdit;
+  is(e?.path, 'images/a.png', 'the panel stays open on its picture');
+  is([e?.busy, /^Not sent: a reply is running; .* waits for it to finish\.$/.test(e?.error ?? '')], [false, true], 'and says why');
+  is(r.state().input, 'typed in the chat box', "the owner's draft comes back");
+  is(r.state().error, null, 'said in the panel, not above the chat');
 }
 
 {

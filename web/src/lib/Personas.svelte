@@ -404,16 +404,30 @@
         closeEdit();
         return;
       }
+      const draft = input;
       input = message;
-      imageEdit = null;
       // The edit as fields beside the message the owner sees: the harness
       // draws it itself and the persona only replies (IMAGE-DESIGN.md §5.3),
       // so nothing is parsed back out of the words.
-      await send({
+      const sent = await send({
         edit: regions.length
           ? { picture: edit.path, mask: maskPath, words: '', regions: placed }
           : { picture: edit.path, mask: maskPath ?? undefined, words: text.trim() },
       });
+      if (sent) {
+        if (imageEdit === edit) imageEdit = null;
+      } else {
+        // Refused (a reply still running, say): the panel stays, holding its
+        // picture, mask and regions, and says why, and the owner's draft
+        // comes back. The composed line alone in the composer would send as
+        // a typed turn, which builds on nothing (review of #754).
+        input = draft;
+        if (imageEdit === edit) {
+          edit.busy = false;
+          edit.error = `Not sent: ${error ?? 'the server refused it'}.`;
+        }
+        error = null;
+      }
     } catch (err) {
       if (imageEdit === edit) {
         edit.busy = false;
@@ -2087,8 +2101,10 @@
                   <button class="vstep" aria-label="Next version" disabled={at === list.length - 1} onclick={() => stepVersion(picture, list, 1)}>›</button>
                 </span>
               {/if}
-              <button class="genedit" class:on={continuingHere === shown} title="Build the next picture on this one" onclick={() => continueFrom(shown)}>Continue</button>
-              <button class="genedit" onclick={() => editImage(shown)}>Edit</button>
+              <!-- Held back while a reply runs, as Regenerate is: a change to a
+                   picture waits for it (PICTURE_CHANGE_WAITS). -->
+              <button class="genedit" class:on={continuingHere === shown} disabled={run.running} title={run.running ? `${chosen.display} is answering` : 'Build the next picture on this one'} onclick={() => continueFrom(shown)}>Continue</button>
+              <button class="genedit" disabled={run.running} title={run.running ? `${chosen.display} is answering` : 'Change this picture'} onclick={() => editImage(shown)}>Edit</button>
               {#if redrawable(entry)}<button class="genedit" disabled={run.running} title={run.running ? `${chosen.display} is answering` : 'Draw this picture again at a new seed'} onclick={() => regenerate(picture, shown)}>Regenerate</button>{/if}
               <button class="genedit" onclick={() => savePicture(shown)}>Download</button>
               {#if pictureNote?.path === shown}<span class="genfail">not downloaded: {pictureNote.why}</span>{/if}
