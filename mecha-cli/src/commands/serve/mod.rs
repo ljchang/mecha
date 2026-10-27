@@ -689,6 +689,18 @@ fn api() -> gate::Owned {
             Owner::Of(Feature::Image),
             axum::routing::put(loras::image_edit).delete(loras::image_remove),
         )
+        // Each picture layer's LoRA list, beside its settings but never in
+        // their body: the settings read takes no unlock (§6).
+        .at(
+            "/api/loras/image/layer/chat",
+            Owner::Of(Feature::Image),
+            get(loras::image_chat_layer).put(loras::image_chat_layer_save),
+        )
+        .at(
+            "/api/loras/image/layer/persona/{name}",
+            Owner::Of(Feature::Image),
+            get(loras::image_persona_layer).put(loras::image_persona_layer_save),
+        )
         .at(
             "/api/loras/video",
             Owner::Of(Feature::Video),
@@ -2567,6 +2579,10 @@ mod tests {
             ("POST", "/api/loras/image"),
             ("PUT", "/api/loras/image/x"),
             ("DELETE", "/api/loras/image/x"),
+            ("GET", "/api/loras/image/layer/chat"),
+            ("PUT", "/api/loras/image/layer/chat"),
+            ("GET", "/api/loras/image/layer/persona/x"),
+            ("PUT", "/api/loras/image/layer/persona/x"),
             ("GET", "/api/loras/video"),
             ("POST", "/api/loras/video"),
             ("PUT", "/api/loras/video/x"),

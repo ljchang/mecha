@@ -1676,8 +1676,11 @@ async fn prepare_tools_carrying(
                             // callers that name none (eval, batch, a persona
                             // replay): an arm measures what it names (the
                             // owner, 2026-10-11).
+                            // The owner's picture LoRAs ride the same layers,
+                            // resolved against the registry in this home.
                             if opts.surface.is_some() {
                                 tool.with_chat_settings(mecha_core::sampling::chat_path(&home))
+                                    .with_loras(home.clone())
                             } else {
                                 tool
                             }

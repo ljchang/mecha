@@ -577,6 +577,20 @@ workspace**. Six decisions, each a bug if undone:
   graph it is given, custom nodes included, so `comfy_graph` is fixed in code
   and the prompt reaches it as a JSON string value. The tool is typed values
   in, bytes out.
+- **The owner's LoRAs ride the graph, never the schema**
+  (`docs/LORA-DESIGN.md` §4–§5). A picture's list is the turn's layer (a
+  persona's `state.toml`) over the chat's (`picture-settings.toml`), read on
+  every call, each name resolved against the registry as it reads now
+  (`loras::for_picture`); the chain sits between the model's loader and the
+  sampler (`comfy_graph`), and a trigger the prompt lacks goes ahead of it.
+  The result counts what applied and why the rest did not, and names none,
+  since the model had no say. A persona's empty list is "none", a damaged
+  one applies nothing rather than the chat's, and a registry re-read that
+  fails keeps the last one read. Only the LoRA routes write the lists:
+  `set_chat` and `set_tuning` keep them as they were, so a cfg save from a
+  locked page never clears one. A `.gguf` model file takes none
+  (`model_lora`), since its loader patches by another path and was never
+  measured.
 - **No egress, earned in code.** The schema has no destination and
   `loopback_url` refuses any server that is not this machine, and the client
   follows no redirect and uses no proxy — a 307 on `/prompt` would re-send the

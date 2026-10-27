@@ -127,7 +127,7 @@ const COMMIT_STAMP: &str = ".mecha-commit";
 /// (`imagegen::sam_graph`), so an install on a ComfyUI with no SAM 3 node
 /// fails its check rather than linking a checkpoint nothing can load. A test
 /// builds the graphs and holds the two sets equal, both ways.
-pub const NODES: [&str; 16] = [
+pub const NODES: [&str; 17] = [
     "CLIPLoader",
     "CLIPTextEncode",
     "CheckpointLoaderSimple",
@@ -135,6 +135,7 @@ pub const NODES: [&str; 16] = [
     "ImageToMask",
     "KSampler",
     "LoadImage",
+    "LoraLoaderModelOnly",
     "MaskToImage",
     "PreviewImage",
     "SAM3_Detect",
@@ -1214,6 +1215,12 @@ mod tests {
             references: Vec::new(),
             reference_size: EDIT_REFERENCE_SIZE,
             mask: None,
+            // The owner's LoRAs ride every graph but the segmentation's.
+            loras: vec![crate::loras::PictureLora {
+                file: "style.safetensors".into(),
+                strength: 1.0,
+                trigger: None,
+            }],
         };
         let gguf = ImageConfig {
             diffusion_model: "model.gguf".into(),

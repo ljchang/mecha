@@ -8,6 +8,7 @@
   import EditModal from './EditModal.svelte';
   import ChatProse from './ChatProse.svelte';
   import PictureQueue from './PictureQueue.svelte';
+  import PictureLoras from './PictureLoras.svelte';
   import { replyContext } from './speech.js';
   import PersonaCall from './PersonaCall.svelte';
   import { features } from './features.svelte.js';
@@ -1786,6 +1787,11 @@
                (Settings → Images). -->
           {#if chosen.image}
             <PictureSettings img={chosen.image} opts={data?.image_options} {busy} save={saveImage} {token} />
+            <!-- Its picture LoRAs, beside the settings and never in their
+                 body: their own route, behind the library unlock (L3). -->
+            {#if isShown(features.rows, 'image')}
+              <PictureLoras persona={chosen.name} {token} />
+            {/if}
           {/if}
         {/if}
         {#if asForm && current.form.form}

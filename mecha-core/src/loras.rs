@@ -925,6 +925,206 @@ pub fn unused(
         .collect()
 }
 
+/// The most picture LoRAs one layer's list may hold (§5, M3): three, each
+/// at strength 1, held on the int8 model on 2026-10-27 (two seeds, a
+/// likeness LoRA and two others, coherent at every count). The settings
+/// route refuses a longer list; a list stored before a lower cap applies
+/// whole until it is next saved, so a lowered cap never drops an entry the
+/// owner chose without the owner seeing it.
+pub const MAX_PER_PICTURE: usize = 3;
+
+/// One layer's picture LoRA list (§4): the chat's, in
+/// `picture-settings.toml`, or a persona's, in its `state.toml`'s `[image]`
+/// table. Written by the owner's settings route alone.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum Layer {
+    /// No list here: a persona follows the chat's as it changes, and the
+    /// chat, with no layer above it, has none (L1).
+    #[default]
+    Inherit,
+    /// These entries, by name, in this order; empty is "none", which stays
+    /// empty whatever the chat's list says.
+    Set(Vec<String>),
+    /// A list was written and does not read. It applies nothing, never the
+    /// chat's: inherit is the direction that applies more. The value is kept
+    /// so an unrelated save writes it back as it was rather than as inherit.
+    Damaged(toml::Value),
+}
+
+impl Layer {
+    /// The `loras` value of a stored table.
+    pub fn read(v: Option<&toml::Value>) -> Layer {
+        let Some(v) = v else {
+            return Layer::Inherit;
+        };
+        let names: Option<Vec<String>> = v.as_array().and_then(|a| {
+            a.iter()
+                .map(|n| n.as_str().map(str::to_string))
+                .collect::<Option<Vec<_>>>()
+        });
+        match names {
+            Some(n) => Layer::Set(n),
+            None => Layer::Damaged(v.clone()),
+        }
+    }
+
+    /// The value written for it, or `None` for no key.
+    pub fn value(&self) -> Option<toml::Value> {
+        match self {
+            Layer::Inherit => None,
+            Layer::Set(n) => Some(toml::Value::Array(
+                n.iter().cloned().map(toml::Value::String).collect(),
+            )),
+            Layer::Damaged(v) => Some(v.clone()),
+        }
+    }
+
+    pub fn is_inherit(&self) -> bool {
+        *self == Layer::Inherit
+    }
+
+    /// The names a picture applies, with this layer over `chat`'s, and
+    /// whether the deciding list was damaged.
+    pub fn over(&self, chat: &Layer) -> (Vec<String>, bool) {
+        match (self, chat) {
+            (Layer::Set(n), _) => (n.clone(), false),
+            (Layer::Damaged(_), _) => (Vec::new(), true),
+            (Layer::Inherit, Layer::Set(n)) => (n.clone(), false),
+            (Layer::Inherit, Layer::Damaged(_)) => (Vec::new(), true),
+            (Layer::Inherit, Layer::Inherit) => (Vec::new(), false),
+        }
+    }
+}
+
+/// A list the owner's route may write: each name a picture entry the
+/// registry holds, none twice, at most [`MAX_PER_PICTURE`]. An entry whose
+/// file does not check may still be listed (a disk can be unmounted for a
+/// day); it is left out at render with the count said.
+pub fn check_layer(names: &[String], loaded: &Loaded) -> Result<Vec<String>> {
+    check_layer_within(names, loaded, MAX_PER_PICTURE)
+}
+
+/// [`check_layer`] with the length allowed set by the caller: the route
+/// lets a list stored past the cap shrink a name at a time.
+pub fn check_layer_within(names: &[String], loaded: &Loaded, cap: usize) -> Result<Vec<String>> {
+    if names.len() > cap {
+        bail!("a picture takes at most {cap} LoRAs");
+    }
+    let mut out: Vec<String> = Vec::new();
+    for n in names {
+        let n = n.as_str();
+        if out.iter().any(|o| o == n) {
+            bail!("{n:?} is listed twice");
+        }
+        match loaded.entries.iter().find(|(e, _)| e.name == n) {
+            Some((e, _)) if e.model == Family::QwenImage => out.push(n.to_string()),
+            Some(_) => bail!("{n:?} is a clip LoRA, not a picture one"),
+            None => bail!("there is no LoRA named {n:?} in the registry"),
+        }
+    }
+    Ok(out)
+}
+
+/// Take `name` off every picture layer's list: the chat's and each
+/// persona's. The number of lists that held it, for the page to say. A
+/// damaged list is left as it is: it applies nothing, and rewriting it
+/// would lose what the owner wrote.
+pub fn strip_from_layers(chat: &Path, personas: &Path, name: &str) -> Result<usize> {
+    rename_in_layers(chat, personas, name, None)
+}
+
+/// Rename `old` to `new` on every picture layer's list, or take it off
+/// with `None`, keeping its place: an entry renamed on the page goes on
+/// applying where it applied (review of #751). The number of lists that
+/// held it.
+pub fn rename_in_layers(
+    chat: &Path,
+    personas: &Path,
+    old: &str,
+    new: Option<&str>,
+) -> Result<usize> {
+    let moved = |n: &[String]| -> Option<Vec<String>> {
+        n.iter().any(|x| x == old).then(|| {
+            // A list already holding `new` (a stale name the registry had
+            // lost) keeps that one place, so the LoRA is never chained
+            // twice (review of #751, pass 3).
+            let mut out: Vec<String> = Vec::new();
+            for x in n {
+                let next = if x == old { new } else { Some(x.as_str()) };
+                if let Some(next) = next {
+                    if !out.iter().any(|o| o == next) {
+                        out.push(next.to_string());
+                    }
+                }
+            }
+            out
+        })
+    };
+    let mut held = 0;
+    if let Layer::Set(n) = crate::sampling::chat_loras(chat) {
+        if let Some(next) = moved(&n) {
+            crate::sampling::set_chat_loras(chat, &Layer::Set(next))?;
+            held += 1;
+        }
+    }
+    for p in crate::persona::Store::load(personas).all() {
+        if let Layer::Set(n) = crate::persona::loras(personas, &p.name) {
+            if let Some(next) = moved(&n) {
+                crate::persona::set_loras(personas, &p.name, Layer::Set(next))?;
+                held += 1;
+            }
+        }
+    }
+    Ok(held)
+}
+
+/// One LoRA a picture's graph chains, by the file name its server lists.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PictureLora {
+    pub file: String,
+    pub strength: f64,
+    pub trigger: Option<String>,
+}
+
+/// What a picture's resolved list came to: what applies, and a count for
+/// each reason the rest did not. Counts only: the model has no say in the
+/// list, so the result never names an entry (§4).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Picked {
+    pub applied: Vec<PictureLora>,
+    /// Names no longer in the registry, or no longer picture entries.
+    pub gone: usize,
+    /// Entries whose file did not check (`Status`).
+    pub refused: usize,
+    /// The deciding list was damaged, so nothing from it applied.
+    pub damaged: bool,
+    /// The registry did not read and none had been read before, so nothing
+    /// applied: said as that, never as entries the owner deleted.
+    pub unreadable: bool,
+}
+
+/// The picture entries `names` resolve to in `loaded`, in list order.
+pub fn for_picture(names: &[String], damaged: bool, loaded: &Loaded) -> Picked {
+    let mut out = Picked {
+        damaged,
+        ..Picked::default()
+    };
+    for n in names {
+        match loaded.entries.iter().find(|(e, _)| &e.name == n) {
+            Some((e, st)) if e.model == Family::QwenImage => match (&e.file, st.is_checked()) {
+                (Some(file), true) => out.applied.push(PictureLora {
+                    file: file.clone(),
+                    strength: e.strength,
+                    trigger: e.trigger.clone(),
+                }),
+                _ => out.refused += 1,
+            },
+            _ => out.gone += 1,
+        }
+    }
+    out
+}
+
 /// A file with a safetensors header naming `keys` and no tensors: what a
 /// test needs for the family check.
 #[cfg(test)]
@@ -1460,6 +1660,153 @@ file = "gone.safetensors"
         let l = Loaded::read(&home, None, &Folders::default());
         assert!(l.entries.is_empty());
         assert!(l.problems(Family::H3)[0].contains("does not read"));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A home with three picture entries and one clip entry, every file
+    /// present and of its family, the picture folder set.
+    fn picture_home() -> (PathBuf, Loaded) {
+        let home = scratch();
+        let dir = home.join("pics");
+        for f in ["paint", "grain", "glow"] {
+            write_test_lora(&dir.join(format!("{f}.safetensors")), QWEN_KEYS);
+        }
+        std::fs::write(
+            home.join(FILE),
+            r#"
+[[lora]]
+name = "paint"
+about = "a made-up paint look"
+model = "qwen-image"
+file = "paint.safetensors"
+strength = 0.8
+trigger = "oil paint"
+
+[[lora]]
+name = "grain"
+about = "a made-up film grain"
+model = "qwen-image"
+file = "grain.safetensors"
+
+[[lora]]
+name = "lost"
+about = "a made-up file nobody has"
+model = "qwen-image"
+file = "lost.safetensors"
+
+[[lora]]
+name = "wave"
+about = "a made-up wave"
+model = "h3"
+file = "wave.safetensors"
+"#,
+        )
+        .unwrap();
+        let folders = Folders {
+            image: Some(vec![dir]),
+            video: None,
+        };
+        let loaded = Loaded::read(&home, None, &folders);
+        (home, loaded)
+    }
+
+    /// A persona's list over the chat's: set wins, even empty; inherit
+    /// follows; damaged applies nothing, never the chat's (§4).
+    #[test]
+    fn a_layer_over_the_chats_list_resolves_without_widening() {
+        let chat = Layer::Set(vec!["paint".into()]);
+        let mine = |l: &Layer| l.over(&chat);
+        assert_eq!(mine(&Layer::Inherit), (vec!["paint".to_string()], false));
+        assert_eq!(mine(&Layer::Set(vec![])), (vec![], false));
+        assert_eq!(
+            mine(&Layer::Set(vec!["grain".into()])),
+            (vec!["grain".to_string()], false)
+        );
+        let damaged = Layer::Damaged(toml::Value::Integer(3));
+        assert_eq!(mine(&damaged), (vec![], true));
+        // The chat has no layer above it: absent is none, damaged is none.
+        assert_eq!(Layer::Inherit.over(&Layer::Inherit), (vec![], false));
+        assert_eq!(Layer::Inherit.over(&damaged), (vec![], true));
+        // Read from a stored table, and written back as it was.
+        let t: toml::Table = toml::from_str("loras = [\"a\", 2]").unwrap();
+        let read = Layer::read(t.get("loras"));
+        assert!(matches!(read, Layer::Damaged(_)));
+        assert_eq!(read.value(), t.get("loras").cloned());
+        let t: toml::Table = toml::from_str("loras = []").unwrap();
+        assert_eq!(Layer::read(t.get("loras")), Layer::Set(vec![]));
+        assert_eq!(Layer::read(None), Layer::Inherit);
+        assert_eq!(Layer::Inherit.value(), None);
+    }
+
+    /// The route's check: picture entries the registry holds, none twice,
+    /// no more than the cap. A listed entry whose file is missing may stay.
+    #[test]
+    fn a_layer_names_only_picture_entries_up_to_the_cap() {
+        let (home, loaded) = picture_home();
+        let names = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            check_layer(&names(&["grain", "paint", "lost"]), &loaded).unwrap(),
+            names(&["grain", "paint", "lost"])
+        );
+        let refused = |n: &[&str]| check_layer(&names(n), &loaded).unwrap_err().to_string();
+        assert!(refused(&["wave"]).contains("clip LoRA"));
+        assert!(refused(&["nope"]).contains("no LoRA named"));
+        assert!(refused(&["paint", "paint"]).contains("twice"));
+        assert!(refused(&["paint", "grain", "lost", "paint"]).contains("at most 3"));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// What a picture applies, in list order, and a count for the rest:
+    /// a file that did not check, a name the registry no longer has, a clip
+    /// entry. Counts only, never names.
+    #[test]
+    fn a_picture_applies_its_checked_entries_in_list_order() {
+        let (home, loaded) = picture_home();
+        let names: Vec<String> = ["grain", "lost", "paint", "gone", "wave"]
+            .map(String::from)
+            .to_vec();
+        let p = for_picture(&names, false, &loaded);
+        assert_eq!(
+            p.applied,
+            vec![
+                PictureLora {
+                    file: "grain.safetensors".into(),
+                    strength: 1.0,
+                    trigger: None
+                },
+                PictureLora {
+                    file: "paint.safetensors".into(),
+                    strength: 0.8,
+                    trigger: Some("oil paint".into())
+                },
+            ]
+        );
+        assert_eq!((p.refused, p.gone, p.damaged), (1, 2, false));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A rename keeps its place on a list, and onto a name the list already
+    /// holds (stale) it leaves one, never two; `None` takes it off.
+    #[test]
+    fn a_rename_on_the_lists_never_doubles_an_entry() {
+        let home = scratch();
+        let chat = crate::sampling::chat_path(&home);
+        let set = |n: &[&str]| Layer::Set(n.iter().map(|s| s.to_string()).collect());
+        crate::sampling::set_chat_loras(&chat, &set(&["a", "b", "c"])).unwrap();
+        let personas = home.join("personas");
+        assert_eq!(
+            rename_in_layers(&chat, &personas, "b", Some("z")).unwrap(),
+            1
+        );
+        assert_eq!(crate::sampling::chat_loras(&chat), set(&["a", "z", "c"]));
+        assert_eq!(
+            rename_in_layers(&chat, &personas, "a", Some("c")).unwrap(),
+            1
+        );
+        assert_eq!(crate::sampling::chat_loras(&chat), set(&["c", "z"]));
+        assert_eq!(strip_from_layers(&chat, &personas, "z").unwrap(), 1);
+        assert_eq!(crate::sampling::chat_loras(&chat), set(&["c"]));
+        assert_eq!(strip_from_layers(&chat, &personas, "nope").unwrap(), 0);
         let _ = std::fs::remove_dir_all(&home);
     }
 }

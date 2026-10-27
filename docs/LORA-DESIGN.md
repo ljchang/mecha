@@ -1,11 +1,12 @@
 # LoRAs for pictures and clips — one registry, one picker
 
-Status: **design; step 1 built, step 4's pane built** (2026-10-27: the
-shared registry, the family check, the folder keys and the `doctor`
-findings, in `loras.rs`; Settings → LoRAs and its routes, ahead of steps 2
-and 3, with the layer lists left to them).
-§8 holds the decisions: L1, L2, L3, L5 and L6 ruled 2026-10-26; L4 is
-decided by M2.
+Status: **design; steps 1 and 3 built, step 4's pane built** (2026-10-27:
+the shared registry, the family check, the folder keys and the `doctor`
+findings, in `loras.rs`; Settings → LoRAs and its routes; M1–M3 measured
+and picture LoRAs applied, without L6's character tie). Step 2 and L6 are
+not built.
+§8 holds the decisions: L1, L2, L3, L5 and L6 ruled 2026-10-26; L4 decided
+by M2 on 2026-10-27.
 
 mecha ships no LoRA and names none (the owner's ruling, 2026-10-23). This
 document is the mechanism only. Every name, file and trigger word in it is
@@ -363,6 +364,26 @@ things are unknown, so the build waits on them:
   the stored one whole, with the result's count, so a lowered cap never
   drops an entry the owner chose without the owner seeing it.
 
+**What M1–M3 showed** (2026-10-27, one ComfyUI on the GB10, beside the
+resident chat model). The arms were the reference settings (euler, simple,
+cfg 1), 1024², one prompt, two seeds. Each was drawn with no LoRA, with a
+self-trained likeness LoRA, with a downloaded concept LoRA, and with both
+stacked plus a third. Every LoRA was at strength 1.
+
+- **M1, int8.** ComfyUI attached 192 patches on every LoRA render and logged
+  no unmatched key. The likeness LoRA drew its face on both seeds. A
+  standard picture took 28–29 s with or without one LoRA, and 30 s with two
+  or three. Free memory dipped about 0.5 GB more than without. There is no
+  bf16 file on this machine, so the comparison against bf16 was not run;
+  the int8 file patching whole is what the gate needed.
+- **M2, turbo.** The same pairs on the turbo int8 file took 8 s against 7 s.
+  They patched the same 192 modules and drew the same likeness. So L4 is
+  decided: entries apply on turbo too.
+- **M3, the cap.** One, two and three stacked held on both seeds: each was
+  coherent, and the likeness held at three. Four was not tried, so the cap
+  is three (`MAX_PER_PICTURE`). That is the largest count measured, not a
+  measured failure point.
+
 ## 6. The web
 
 - **Settings → LoRAs**, shown when the image or video feature is on.
@@ -553,9 +574,37 @@ page sends it again with consent. The Add list is each server's
 `LoraLoaderModelOnly` options less the files entries use and the video
 turbo files. `PANE_FEATURE` takes a list for this pane, read by
 `featureOf` (first listed), the new `featureFor`, `opens` and `bounceFor`
-only. Not built yet: the layer lists in Images, Video and persona settings
-(steps 2 and 3), and with them a remove's "N layers held it". Clip edits
-reach clips at the next start, as §3 says of step 1.
+only. The picture lists and a remove's "N layers held it" came with step
+3 (below); the clip lists are step 2's. Clip edits reach clips at the next
+start, as §3 says of step 1.
+
+**What step 3 built** (2026-10-27, after M1–M3). The list is
+`loras::Layer`: inherit, a set of names (empty is "none"), or damaged. A
+damaged list keeps its raw value, so a save writes it back as it was. It
+sits beside `Tuning` in `picture-settings.toml` and in a persona's `[image]`
+table. `set_chat` and `set_tuning` write the list back unchanged, and only
+the LoRA routes write it:
+`/api/loras/image/layer/chat` and `/api/loras/image/layer/persona/{name}`,
+under `Feature::Image`, behind the unlock, checked by `loras::check_layer`
+(picture entries only, none twice, at most three). `ImageGenerate` reads
+both layers and the registry on every call (`picture_loras`, keeping the
+last good registry), and `comfy_graph` chains the entries with their
+triggers ahead of the prompt. The layered build's passes chain them too;
+a clip's reference redraw (`upscale`) does not. The result and the
+manifest count what applied and why the rest did not; the owner's prompt
+log carries the same counts and the prompt as sent. A removed picture
+entry leaves every list, and the page says how many held it; a renamed
+one keeps its place on them. `doctor` names a damaged list and a
+name the registry lost, for pictures; the clip half of those findings is
+step 2's. Two departures from §6:
+
+- **The chat's list is on Settings → LoRAs**, in the Pictures section, not
+  on Settings → Images. The LoRAs pane already holds the unlock, and the
+  Images pane has none; Settings → Images says where the list is.
+- **L6 is not built.** An entry with `character` is still refused at parse
+  time, as step 1 left it, so a likeness LoRA can be listed only untied,
+  where it applies to every picture on that list. The tie, for pictures
+  and clips, is its own change.
 
 Each step is its own PR. The tests and docs use made-up names only. Until
 step 1 puts the registry in `check-private.py`'s corpus, each push is also
@@ -580,7 +629,8 @@ checked by hand for names from the owner's registry.
   pane lists explicit descriptions, and the lock exists so a glance at the
   screen does not show them. It hides the pane from browsing only.
 - **L4. Picture LoRAs on turbo:** decided by M2 rather than in advance.
-  *Recommendation:* follow what M2 shows.
+  **Decided by M2 (2026-10-27): they apply on turbo**, which patched and
+  drew the trained likeness as the standard file did (§5).
 - **L5. The real-person guard.** The 10-23 ruling asked for this to be
   raised again before the picker ships. One shape: library characters gain
   a `real` mark, registry entries an `explicit` mark, and an explicit entry

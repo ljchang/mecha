@@ -2015,6 +2015,10 @@ export const lorasImage = {
   ],
   unused: [{ file: 'styles/pastel_qi.safetensors', family: 'qwen-image', note: null }],
 };
+// A picture layer's list, as `/api/loras/image/layer/*` answers it.
+const loraChoices = lorasImage.entries.map((e) => ({ name: e.name, about: e.about, status: e.status, reason: e.reason }));
+export const loraLayerChat = { locked: false, layer: 'set', names: ['watercolor'], chat: ['watercolor'], chat_damaged: false, max: 3, choices: loraChoices };
+export const loraLayerPersona = { ...loraLayerChat, layer: 'inherit', names: [] };
 export const lorasVideo = {
   ...loraBase,
   family: 'h3',
