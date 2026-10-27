@@ -16,7 +16,7 @@ use serde_json::Value;
 pub const MAX_FACES: usize = crate::imagelib::MAX_CAST;
 
 /// The persona's own names, which `who` resolves to its linked character.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct SelfNames {
     /// The persona's approved library character, if it has one.
     pub character: Option<String>,
@@ -122,6 +122,9 @@ pub struct Call {
     /// rather than refused (mecha-a3's G1b: optional fields a model fills
     /// with the wrong thing are its most common shape refusal).
     pub notes: Vec<String>,
+    /// Who "self" and the persona's names are, so an older record's people
+    /// are read by the same rule as the call's own (`migrated`).
+    pub me: SelfNames,
 }
 
 impl Call {
@@ -403,7 +406,7 @@ pub fn parse(
                             Some(_) => return Err("`remove` must be true or false.".into()),
                         };
                         change.people.push(PersonChange {
-                            who: resolve(&who, approved, me)?,
+                            who: resolve(&who, approved, me, &mut notes)?,
                             at,
                             wearing: text(v.get("wearing"), "scene.people.wearing", field)?,
                             doing: text(v.get("doing"), "scene.people.doing", field)?,
@@ -479,6 +482,7 @@ pub fn parse(
         size,
         seed,
         notes,
+        me: me.clone(),
     };
     if call.picture.is_none() && !call.has_scene() {
         return Err(
@@ -611,7 +615,114 @@ fn names_in(text: &str, approved: &dyn Fn(&str) -> bool, me: &SelfNames) -> Vec<
 
 /// Who a `who` names: the persona itself, a library character, or someone
 /// described in words.
-fn resolve(who: &str, approved: &dyn Fn(&str) -> bool, me: &SelfNames) -> Result<Who, String> {
+///
+/// A name followed by a description ("Maya, a tall woman with…") is
+/// that character: the library supplies how they look, so the words after
+/// the name are dropped. Read as a stranger, the name lost its portrait, the
+/// reader's clothes and pose for it matched no one, and the name inside the
+/// description reached the image model as "the viewer" (owner, 2026-10-27:
+/// a persona chat drew someone else, clothed, standing). Only a separator ends
+/// the name, so "John's sister" or "Maya and John" stay descriptions. The
+/// words left out are said in `notes`, never dropped silently: they may be
+/// an act that belongs in `doing`.
+fn resolve(
+    who: &str,
+    approved: &dyn Fn(&str) -> bool,
+    me: &SelfNames,
+    notes: &mut Vec<String>,
+) -> Result<Who, String> {
+    if let Some(named) = resolve_name(who, approved, me) {
+        return named;
+    }
+    if let Some((head, said_more)) = leading_name(who) {
+        // Only a resolved name, never the no-character refusal: with words
+        // after the name there is something to draw from, and an over-filled
+        // `who` is absorbed, not refused (review of #756).
+        if let Some(Ok(named)) = resolve_name(head, approved, me) {
+            if said_more {
+                notes.push(format!(
+                    "`who` \"{}\" was read as {}: the library says how they look, so the \
+                     words after the name were left out. Put an act in `doing` and clothes in \
+                     `wearing`.",
+                    who.trim(),
+                    head.trim()
+                ));
+            }
+            return Ok(named);
+        }
+    }
+    Ok(Who::Described(who.trim().to_string()))
+}
+
+/// The words before the first separator (`,` `(` `:` `—` `–` `;` ` - `) of a
+/// `who` that has one, and whether anything worth saying follows ("Maya,"
+/// leaves nothing out). `None` when there is no separator.
+fn leading_name(who: &str) -> Option<(&str, bool)> {
+    let head = who
+        .split([',', '(', ':', '—', '–', ';'])
+        .next()
+        .and_then(|h| h.split(" - ").next())
+        .unwrap_or_default();
+    if head.trim().is_empty() || head.trim().len() >= who.trim().len() {
+        return None;
+    }
+    // "Maya (self)" says nothing more than "Maya": no note for it.
+    let rest: String = who[head.len()..]
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect();
+    let said_more = !rest.is_empty() && !rest.eq_ignore_ascii_case("self");
+    Some((head, said_more))
+}
+
+/// A record written before a name leading a description was read as that
+/// character (#756) holds it as `Described("maya, a potter …")`. Where this
+/// change names `Library("maya")` and the record holds no Maya by name, that
+/// described person is Maya: rewritten here, so an edit does not add her a
+/// second time beside herself, nor a `remove` say she is not there.
+fn migrated(
+    base: &Scene,
+    change: &SceneChange,
+    approved: &dyn Fn(&str) -> bool,
+    me: &SelfNames,
+) -> Option<Scene> {
+    let named: Vec<String> = change
+        .people
+        .iter()
+        .filter(|c| matches!(c.who, Who::Library(_)))
+        .map(|c| c.who.key())
+        .filter(|k| !base.people.iter().any(|p| p.who.key() == *k))
+        .collect();
+    let mut out = base.clone();
+    let mut taken: Vec<String> = Vec::new();
+    for p in &mut out.people {
+        let Who::Described(d) = &p.who else { continue };
+        let Some((head, _)) = leading_name(d) else {
+            continue;
+        };
+        // Read by `resolve`'s own rule, so "self, …" and the persona's names
+        // reach its character even where its key is not its name (review of
+        // #756, pass 4).
+        let Some(Ok(Who::Library(key))) = resolve_name(head, approved, me) else {
+            continue;
+        };
+        // The first such person only: two described people led by one name
+        // would otherwise become one character twice (review of #756, pass 3).
+        if named.contains(&key) && !taken.contains(&key) {
+            p.who = Who::Library(key.clone());
+            taken.push(key);
+        }
+    }
+    (!taken.is_empty()).then_some(out)
+}
+
+/// A `who` that is wholly a name: "self", one of the persona's names, or an
+/// approved library character. `None` for anything else.
+fn resolve_name(
+    who: &str,
+    approved: &dyn Fn(&str) -> bool,
+    me: &SelfNames,
+) -> Option<Result<Who, String>> {
     let key = who.trim().to_lowercase();
     let is_me = key == "self"
         || me.names.iter().any(|n| n.trim().to_lowercase() == key)
@@ -620,21 +731,18 @@ fn resolve(who: &str, approved: &dyn Fn(&str) -> bool, me: &SelfNames) -> Result
             .as_deref()
             .is_some_and(|c| c.trim().to_lowercase() == key);
     if is_me {
-        return me
-            .character
-            .as_deref()
-            .map(|c| Who::Library(c.trim().to_lowercase()))
-            .ok_or_else(|| {
-                "This persona has no approved library character, so there is no \"self\" to \
-                 draw; describe the persona in `who` instead."
-                    .to_string()
-            });
+        return Some(
+            me.character
+                .as_deref()
+                .map(|c| Who::Library(c.trim().to_lowercase()))
+                .ok_or_else(|| {
+                    "This persona has no approved library character, so there is no \"self\" to \
+                     draw; describe the persona in `who` instead."
+                        .to_string()
+                }),
+        );
     }
-    Ok(if approved(&key) {
-        Who::Library(key)
-    } else {
-        Who::Described(who.trim().to_string())
-    })
+    approved(&key).then_some(Ok(Who::Library(key)))
 }
 
 /// What a person wears when nobody said and nothing is on record: drawn
@@ -823,6 +931,8 @@ pub fn plan(
     worn: &dyn Fn(&str) -> Option<(String, crate::scene::Origin)>,
 ) -> Result<Plan, String> {
     let mut change = call.change.clone();
+    let carried = base.and_then(|b| migrated(b, &change, approved, &call.me));
+    let base = carried.as_ref().or(base);
     let mut notes_ahead: Vec<String> = Vec::new();
     if let (Some(path), Some(hash)) = (&call.setting_photo, setting_photo_hash) {
         change.setting = Some(Setting::Photo {
@@ -1645,6 +1755,139 @@ mod tests {
         assert!(c.mask.is_none() && c.notes[0].contains("goes with a `retouch`"));
         // A retouch with nothing to change and no scene is nothing to draw.
         assert!(parse(&json!({"retouch": "a red hat"}), &lib, &me(), false).is_err());
+    }
+
+    /// A name followed by a description is that character, never a stranger
+    /// whose name is then "the viewer" (owner, 2026-10-27); with no
+    /// separator after the name, the words stay a description.
+    #[test]
+    fn a_name_leading_a_description_is_that_character() {
+        let c = call(json!({"scene": {"setting": "a pottery shed", "people": [
+            {"who": "Maya, a potter in a clay-flecked apron", "where": "centre"},
+            {"who": "John (her brother), in his forties"},
+            {"who": "Wren — the neighbour"},
+            {"who": "Ivo - a painter"},
+            {"who": "John's sister"},
+            {"who": "a stranger, tall"}]}}));
+        let whos: Vec<_> = c.change.people.iter().map(|p| p.who.clone()).collect();
+        assert_eq!(
+            whos,
+            [
+                Who::Library("maya".into()),
+                Who::Library("john".into()),
+                Who::Library("wren".into()),
+                Who::Library("ivo".into()),
+                Who::Described("John's sister".into()),
+                Who::Described("a stranger, tall".into()),
+            ]
+        );
+        // The persona's own name leading a description is the persona.
+        let c = call(json!({"scene": {"setting": "an orchard", "people": [
+            {"who": "Maya (self), carrying a basket of plums"}]}}));
+        let p = planned(&c, None);
+        assert_eq!(p.next.people[0].who, Who::Library("maya".into()));
+        assert!(p.offstage.is_empty(), "{:?}", p.offstage);
+        // The words left out are said, so an act can move to `doing`.
+        assert!(
+            c.notes
+                .iter()
+                .any(|n| n.contains("basket of plums") && n.contains("`doing`")),
+            "{:?}",
+            c.notes
+        );
+        // A persona with no approved character is drawn from its words, never
+        // refused for having no "self" (review of #756).
+        let unlinked = SelfNames {
+            character: None,
+            names: vec!["Maya".into()],
+        };
+        let c = parse(
+            &json!({"scene": {"setting": "an orchard", "people": [
+                {"who": "Maya, a potter in a clay-flecked apron"}]}}),
+            &|_| false,
+            &unlinked,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            c.change.people[0].who,
+            Who::Described("Maya, a potter in a clay-flecked apron".into())
+        );
+    }
+
+    /// A record written while a name leading a description read as a
+    /// stranger holds `Described("maya, …")`: an edit naming Maya is that
+    /// person, never a second Maya, and a `remove` finds her (review of #756).
+    /// A name with nothing after its separator leaves nothing out to say.
+    #[test]
+    fn an_old_record_of_a_name_and_description_is_that_character() {
+        let first = planned(
+            &call(json!({"scene": {"setting": "a pottery shed", "people": [
+                {"who": "a potter", "wearing": "an apron", "doing": "throwing a pot"}]}})),
+            None,
+        );
+        let mut base = landed(&first, 3);
+        base.people[0].who = Who::Described("maya, a potter in a clay-flecked apron".into());
+        let p = planned(
+            &call(json!({"picture": "images/a.png", "scene": {"people": [
+                {"who": "Maya", "wearing": "a blue dress"}]}})),
+            Some(&base),
+        );
+        assert_eq!(p.next.people.len(), 1, "{:?}", p.next.people);
+        assert_eq!(p.next.people[0].who, Who::Library("maya".into()));
+        let p = planned(
+            &call(json!({"picture": "images/a.png", "scene": {"people": [
+                {"who": "Maya", "remove": true}]}})),
+            Some(&base),
+        );
+        assert!(p.next.people.is_empty(), "{:?}", p.next.people);
+        for who in ["Maya,", "Maya (self)"] {
+            let c = call(json!({"scene": {"setting": "a shed", "people": [{"who": who}]}}));
+            assert_eq!(c.change.people[0].who, Who::Library("maya".into()));
+            assert!(
+                !c.notes.iter().any(|n| n.contains("left out")),
+                "{who}: {:?}",
+                c.notes
+            );
+        }
+        // Two described people led by one name: only the first becomes her.
+        let mut two = base.clone();
+        two.people.push(two.people[0].clone());
+        two.people[1].who = Who::Described("maya (self) in the background".into());
+        let p = planned(
+            &call(json!({"picture": "images/a.png", "scene": {"people": [
+                {"who": "Maya", "wearing": "a blue dress"}]}})),
+            Some(&two),
+        );
+        let mayas = p
+            .next
+            .people
+            .iter()
+            .filter(|q| q.who == Who::Library("maya".into()))
+            .count();
+        assert_eq!(mayas, 1, "{:?}", p.next.people);
+        // A persona whose character is not its name: the record's "<Name>
+        // (self)" and "self, …" are read as the call's own `who` is (review
+        // of #756, pass 4).
+        let paper = SelfNames {
+            character: Some("wren".into()),
+            names: vec!["Paper".into()],
+        };
+        for old in ["paper (self), by the window", "self, by the window"] {
+            let mut rec = base.clone();
+            rec.people[0].who = Who::Described(old.into());
+            let c = parse(
+                &json!({"picture": "images/a.png", "scene": {"people": [
+                    {"who": "self", "wearing": "a blue dress"}]}}),
+                &lib,
+                &paper,
+                false,
+            )
+            .unwrap();
+            let p = plan(&c, Some(&rec), None, Origin::Clean, &lib, &names, &|_| None).unwrap();
+            assert_eq!(p.next.people.len(), 1, "{old}: {:?}", p.next.people);
+            assert_eq!(p.next.people[0].who, Who::Library("wren".into()), "{old}");
+        }
     }
 
     /// `self` and the persona's names resolve to its character; a library
