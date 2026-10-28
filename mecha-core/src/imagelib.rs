@@ -2291,6 +2291,9 @@ pub fn compile_with(
                      {shown}'s face is turned away from the viewer and out of sight, the back of \
                      {shown}'s head toward the camera."
                 ));
+                // Both copies are the figure, so neither's outfit is worn
+                // (review of #757, pass 3).
+                figures.push(format!("<image{a}>"));
                 figures.push(format!("<image{b}>"));
                 any_away = true;
                 format!("the person shown in <image{a}> and <image{b}>")
@@ -2357,8 +2360,10 @@ pub fn compile_with(
             line.push_str(&format!(", {}", m.expression));
         }
         // Seen from behind with only a portrait to draw from: the portrait
-        // still goes, so the sentence carries the turn alone.
-        if m.face_away && !away {
+        // still goes, so the sentence carries the turn alone. A cast of one
+        // only: a camera behind one of a group names that one, and the
+        // sentence was never measured on more (review of #757, pass 3).
+        if m.face_away && !away && n == 1 {
             line.push_str(&format!(", {shown}'s face turned away from the viewer"));
         }
         people.push(line);
@@ -4096,7 +4101,8 @@ mod tests {
                  wearing a yellow raincoat, laughing. <image1> and <image2> show one person, \
                  Maya: <image1> and <image2> are both Maya's full figure. Maya is seen from \
                  behind: Maya's face is turned away from the viewer and out of sight, the back \
-                 of Maya's head toward the camera. The clothing in <image2> is not worn here."
+                 of Maya's head toward the camera. The clothing in <image1> and <image2> is not \
+                 worn here."
             ),
             "{}",
             c.prompt
@@ -4159,6 +4165,18 @@ mod tests {
             c.prompt
         );
         assert!(c.used[0].portrait.is_some());
+
+        // A group seen from behind draws from portraits and says no turn: the
+        // camera may have put only one of them behind.
+        create(dir.path(), character("wren", Origin::Owner)).unwrap();
+        let lib = Library::load(dir.path()).0;
+        let away = |name: &str| CastMember {
+            face_away: true,
+            ..member(name)
+        };
+        let c = compile(&lib, "a studio", &[away("jo"), away("wren")], &[], None).unwrap();
+        assert!(!c.prompt.contains("turned away"), "{}", c.prompt);
+        assert!(c.used.iter().all(|u| u.portrait.is_some()));
     }
 
     /// A body goes only to a picture of one person (§9.4, E14), each refusal
