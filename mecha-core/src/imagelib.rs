@@ -1800,10 +1800,11 @@ pub struct CastMember {
     /// outfit beside it (`imagegen::clothes_in_act`): the record keeps it.
     pub clothes_in_act: bool,
     /// The camera sees them from behind (`picture::faces_away`): with a full
-    /// figure attached, it goes alone, without the portrait, and the prompt
-    /// says their face is turned away. A front-facing portrait turned the
-    /// face to the camera under every wording measured, 0 of 12, and the
-    /// full figure in its place turned her away 3 of 3 (owner, 2026-10-28).
+    /// figure attached, it fills both identity slots with no portrait, and
+    /// the prompt says their face is turned away. On a rear-view Continue the
+    /// portrait turned the face to the camera 0 of 12 under every wording;
+    /// the figure in both slots, with the expression and the style's eye
+    /// clauses gone, turned away 5 of 5 (owner, 2026-10-28; §9.4).
     pub face_away: bool,
 }
 
@@ -1962,6 +1963,23 @@ pub(crate) fn absent(lib: &Library, kind: Kind, name: &str) -> bool {
 /// Empty, or only the refusal's own placeholder copied back — no answer.
 pub(crate) fn blank(s: &str) -> bool {
     s.chars().all(|c| c == '…' || c == '.')
+}
+
+/// Whether a library character's full figure goes to a picture of `cast`
+/// library people (§9.4): a cast of one, under [`MAX_BOUND_IMAGES`], with a
+/// full figure attached. What `imagegen` asks before it leaves a face-away
+/// person's expression out, so only someone drawn from their figure loses it
+/// (review of #757).
+pub fn figure_goes(lib: &Library, cast: usize, name: &str) -> bool {
+    2 * cast <= MAX_BOUND_IMAGES
+        && lib
+            .get(Kind::Character, &name.trim().to_lowercase())
+            .filter(|e| e.status == Status::Approved)
+            .is_some_and(|e| {
+                e.sendable_references()
+                    .iter()
+                    .any(|r| r.kind == RefKind::FullBody)
+            })
 }
 
 /// Compile a scene. Errors are sentences for the model.
@@ -2419,12 +2437,20 @@ pub fn compile_with(
             // see: dropped for a picture drawn from behind. With the
             // expression gone too, a rear view turned away 5 of 5, against 4
             // of 5 with the full figure alone (owner, 2026-10-28).
+            // "Eye" or "eyes" as whole words, so eyeshadow stays; a style
+            // that would be left empty keeps its words (review of #757).
             let text = entry.text.trim();
-            Some(if any_away {
-                text.split(", ")
-                    .filter(|c| !c.to_lowercase().contains("eyes"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+            let about_eyes = |c: &str| {
+                c.split(|ch: char| !ch.is_alphabetic())
+                    .any(|w| w.eq_ignore_ascii_case("eye") || w.eq_ignore_ascii_case("eyes"))
+            };
+            let kept = text
+                .split(", ")
+                .filter(|c| !about_eyes(c))
+                .collect::<Vec<_>>()
+                .join(", ");
+            Some(if any_away && !kept.trim().is_empty() {
+                kept
             } else {
                 text.to_string()
             })
@@ -4086,6 +4112,31 @@ mod tests {
             "{}",
             c.prompt
         );
+        // A one-clause style keeps its words, and eyeshadow is not an eye.
+        let mut one = style("one");
+        one.text = "film still with sharp focus on the eyes".into();
+        create(dir.path(), one).unwrap();
+        let mut shadow = style("shadow");
+        shadow.text = "studio light, soft eyeshadow, sharp eyes".into();
+        create(dir.path(), shadow).unwrap();
+        let lib = Library::load(dir.path()).0;
+        let away = || CastMember {
+            face_away: true,
+            ..member("maya")
+        };
+        let c = compile(&lib, "a studio", &[away()], &[], Some("one")).unwrap();
+        assert!(
+            c.prompt
+                .ends_with("Style: film still with sharp focus on the eyes"),
+            "{}",
+            c.prompt
+        );
+        let c = compile(&lib, "a studio", &[away()], &[], Some("shadow")).unwrap();
+        assert!(
+            c.prompt.ends_with("Style: studio light, soft eyeshadow"),
+            "{}",
+            c.prompt
+        );
         assert_eq!(c.used[0].portrait, None);
         assert!(c.used[0].full_body.is_some());
         // Facing the camera, the same style keeps its eyes.
@@ -4110,6 +4161,20 @@ mod tests {
             c.prompt
         );
         assert!(c.used[0].portrait.is_some());
+    }
+
+    /// A full figure goes only to a cast of one whose character has one:
+    /// what decides whether a face-away person's expression is left out.
+    #[test]
+    fn a_figure_goes_to_a_cast_of_one_that_has_one() {
+        let dir = scratch();
+        with_body(dir.path(), "maya", [9, 8, 8]);
+        create(dir.path(), character("jo", Origin::Owner)).unwrap();
+        let lib = Library::load(dir.path()).0;
+        assert!(figure_goes(&lib, 1, "Maya"));
+        assert!(!figure_goes(&lib, 2, "maya"));
+        assert!(!figure_goes(&lib, 1, "jo"));
+        assert!(!figure_goes(&lib, 1, "nobody"));
     }
 
     /// A body goes only to a picture of one person (§9.4, E14), each refusal

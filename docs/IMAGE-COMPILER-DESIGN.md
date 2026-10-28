@@ -163,7 +163,10 @@ The rules, each a measurement:
   not load, stays in the cast and gets its own refusal, because drawing a
   stranger in its place is the substitution the cast exists to prevent. A
   persona chat's form of the tool keeps refusing an unknown name.
-- **The style's text is appended verbatim**, never paraphrased.
+- **The style's text is appended verbatim**, never paraphrased. The one
+  exception: a picture drawn from a full figure seen from behind leaves out
+  the style's clauses about eyes, and keeps the style whole when that would
+  leave nothing (§9.4).
 - *(Lifted 2026-10-07; see the amendment at the head of this section.)*
   **`cast` and `reference_images` are exclusive in v1.** ComfyUI's encoder
   takes one reference resolution per call, so an edit canvas at 1024² and
