@@ -624,7 +624,9 @@ kind is derived from its directory (`Entry.kind`).
   Without a `full_body` the portrait still goes, and for a cast of one a
   sentence carries the turn (a camera behind one of a group names that
   one, and the sentence was never measured on more). The manifest's
-  `cast` row has no `portrait` when none went. A style clause that names
+  `cast` row has no `portrait` when none went. The replay judge asks no
+  expression question of such a picture, and its identity reading finds no
+  face to match there: that is a correct rear view, not a lost identity. A style clause that names
   eyes goes whole, so "a photograph with sharp eyes and fine grain" loses
   its medium too: clauses are split on commas and semicolons, and a style
   left empty keeps its words.
