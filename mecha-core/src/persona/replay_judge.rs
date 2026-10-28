@@ -382,9 +382,17 @@ impl IdentityJudge {
 /// wearing and expression, and each run of words the picture renders. A
 /// photo used as the setting is the owner's picture, not words to check;
 /// clothes the harness filled in because nobody named any say nothing;
-/// light and camera say how it was shot, which a yes/no reads poorly; and
-/// an empty field says nothing. Those are left out.
+/// light and camera say how it was shot, which a yes/no reads poorly; an
+/// expression under a camera behind the people is one the compiler did not
+/// send and the picture cannot show; and an empty field says nothing. Those
+/// are left out.
 pub fn clauses(scene: &Scene) -> Vec<Clause> {
+    // Seen from behind, a face is out of sight and its expression was not
+    // sent (`imagelib::CastMember::expression`; review of #757, pass 8).
+    let face_away = scene
+        .camera
+        .as_ref()
+        .is_some_and(|f| crate::picture::faces_away(&f.value));
     let mut out = Vec::new();
     let mut push = |field: &str, person: Option<usize>, text: &str| {
         if !text.trim().is_empty() {
@@ -413,7 +421,9 @@ pub fn clauses(scene: &Scene) -> Vec<Clause> {
         if p.wearing.trim() != crate::picture::WEARING_UNSAID {
             push("wearing", Some(i), &p.wearing);
         }
-        push("expression", Some(i), &p.expression);
+        if !face_away {
+            push("expression", Some(i), &p.expression);
+        }
     }
     for words in scene.text.iter().flat_map(|t| &t.value) {
         push("text", None, &words.words);
@@ -854,6 +864,26 @@ mod tests {
         assert!(clauses(&photo).is_empty());
         let asked = clauses(&scene)[2].question();
         assert!(asked.contains("\"reading a map\"") && asked.ends_with("Answer yes or no."));
+    }
+
+    /// Seen from behind, an expression is no clause: the compiler did not
+    /// send it and the picture cannot show it. From the front it is one.
+    #[test]
+    fn an_expression_is_no_clause_from_behind() {
+        let with_camera = |camera: &str| Scene {
+            camera: field(camera.into()),
+            people: vec![Person {
+                expression: "grinning".into(),
+                ..person("kneading clay", "an apron")
+            }],
+            people_known: true,
+            ..Scene::default()
+        };
+        let fields =
+            |s: &Scene| -> Vec<String> { clauses(s).into_iter().map(|c| c.field).collect() };
+        assert!(fields(&with_camera("eye level, facing her")).contains(&"expression".into()));
+        assert!(!fields(&with_camera("seen from behind her at the wheel"))
+            .contains(&"expression".into()));
     }
 
     /// An answer is read from its first word only, and anything unclear is
