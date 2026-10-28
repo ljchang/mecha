@@ -551,6 +551,7 @@ async fn draw_panel_edit(
                     styles: &styles,
                     record: record.as_ref(),
                     library: Some(&lib),
+                    persona: persona.as_deref(),
                 };
                 match edit::read_extraction_for(&text, &known, sole.as_deref(), &looks) {
                     // A change the reader reads as none is the render a
