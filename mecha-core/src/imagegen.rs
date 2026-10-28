@@ -11862,6 +11862,50 @@ mod tests {
         std::fs::remove_dir_all(lib).ok();
     }
 
+    /// Owner, 2026-10-28: under a first-person camera the holder, listed in
+    /// `people`, had their portrait sent and their face drawn. The image
+    /// model reads "the viewer" for them, only the others' portraits go, and
+    /// the count it is given leaves them out. Fails on the old tool, which
+    /// sent two portraits and named John.
+    #[tokio::test]
+    async fn a_first_person_cameras_holder_sends_no_portrait() {
+        let (url, seen) = distinct(1).await;
+        let lib = library_with(&["maya", "john"]);
+        let dir = tempdir();
+        let out = tool(&url)
+            .with_library_dir(lib.clone())
+            .call(
+                json!({"scene": {"setting": "a kitchen",
+                       "camera": "from John's first-person view, his face out of frame",
+                       "people": [
+                           {"who": "maya", "wearing": "a robe", "doing": "handing John a mug"},
+                           {"who": "john", "wearing": "pyjamas", "doing": "leaning on the counter"}]}}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("The camera is John's own eyes"),
+            "{}",
+            out.content
+        );
+        let prompt = last_prompt(&seen);
+        assert!(!prompt.contains("John"), "{prompt}");
+        assert!(prompt.contains("the viewer's own eyes"), "{prompt}");
+        assert!(
+            prompt.contains("from the viewer's first-person view"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("pyjamas, leaning on the counter"),
+            "{prompt}"
+        );
+        assert_eq!(uploads(&seen), 1, "only Maya's portrait");
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
     /// A clean run's context over a scene slot, as the persona chat builds it.
     fn clean(mut ctx: ToolCtx) -> ToolCtx {
         ctx.taint = Some(crate::agent::Taint {
