@@ -4440,7 +4440,19 @@ impl Tool for ImageGenerate {
                         .as_ref()
                         .is_some_and(|f| crate::picture::faces_away(&f.value));
                     for p in people {
-                        let doing = doing_words(p, together);
+                        // A face the camera cannot see has no expression to
+                        // draw: said, it pulled the face round (2026-10-28).
+                        let doing = if face_away {
+                            doing_words(
+                                &crate::scene::Person {
+                                    expression: String::new(),
+                                    ..p.clone()
+                                },
+                                together,
+                            )
+                        } else {
+                            doing_words(p, together)
+                        };
                         let kept = clothes_in_act(
                             p,
                             &p.doing,
