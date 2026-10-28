@@ -4433,8 +4433,23 @@ impl Tool for ImageGenerate {
                     let mut in_act = Vec::new();
                     let everyone: Vec<&crate::scene::Person> = people.iter().collect();
                     let shared = words.together.as_ref().map(|f| f.value.as_str());
+                    // A camera behind the people turns everyone's face away
+                    // (`imagelib::CastMember::face_away`).
+                    let face_away = words
+                        .camera
+                        .as_ref()
+                        .is_some_and(|f| crate::picture::faces_away(&f.value));
                     for p in people {
-                        let doing = doing_words(p, together);
+                        // A cast member's act without the expression, which
+                        // goes beside it for the compiler to leave out when
+                        // it draws them from behind from their figure.
+                        let act = doing_words(
+                            &crate::scene::Person {
+                                expression: String::new(),
+                                ..p.clone()
+                            },
+                            together,
+                        );
                         let kept = clothes_in_act(
                             p,
                             &p.doing,
@@ -4453,11 +4468,14 @@ impl Tool for ImageGenerate {
                                 cast.push(crate::imagelib::CastMember {
                                     name: n.clone(),
                                     wearing: p.wearing.clone(),
-                                    doing,
+                                    doing: act,
                                     clothes_in_act: kept,
+                                    expression: p.expression.clone(),
+                                    face_away,
                                 })
                             }
                             crate::scene::Who::Described(d) => {
+                                let doing = doing_words(p, together);
                                 let mut e = d.trim().trim_end_matches('.').to_string();
                                 if !p.wearing.trim().is_empty() && !kept {
                                     e.push_str(&format!(", wearing {}", p.wearing.trim()));
@@ -8693,6 +8711,85 @@ mod tests {
             None,
         )
         .unwrap();
+    }
+
+    /// §9.4, through the tool: a camera behind one person with a full figure
+    /// sends that figure in both slots and no portrait, leaves the
+    /// expression out, and the manifest says no portrait went; the same call
+    /// facing the camera is drawn as before, and a person with no figure
+    /// keeps the portrait and the expression (review of #757).
+    #[tokio::test]
+    async fn a_camera_behind_draws_from_the_figure_through_the_tool() {
+        let (url, seen) = fake(vec![done(); 3], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya", "john"]);
+        attach_body(&lib, "john", [71, 2, 2]);
+        let t = tool(&url).with_library_dir(lib.clone());
+        let call = |who: &str, camera: &str| {
+            json!({"scene": {"setting": "a studio", "camera": camera, "people": [
+                {"who": who, "wearing": "a flannel shirt", "doing": "kneading clay",
+                 "expression": "grinning"}]}, "seed": 5})
+        };
+        let last = || {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .rfind(|l| l.starts_with("POST /prompt"))
+                .unwrap()
+                .clone()
+        };
+        let manifest_of = |content: &str| -> Value {
+            let png = content
+                .lines()
+                .next()
+                .unwrap()
+                .strip_prefix("image: ")
+                .unwrap();
+            serde_json::from_slice(&std::fs::read(dir.join(png.replace(".png", ".json"))).unwrap())
+                .unwrap()
+        };
+
+        let out = t
+            .call(
+                call("john", "seen from behind him at the bench"),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let sent = last();
+        assert!(sent.contains("are both John's full figure"), "{sent}");
+        assert!(sent.contains("John is seen from behind"), "{sent}");
+        assert!(!sent.contains("portrait"), "{sent}");
+        assert!(!sent.contains("grinning"), "{sent}");
+        assert!(manifest_of(&out.content)["cast"][0]["portrait"].is_null());
+
+        let out = t
+            .call(call("john", "eye level, facing him"), &ctx(&dir))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let sent = last();
+        assert!(sent.contains("is John's portrait"), "{sent}");
+        assert!(sent.contains("kneading clay, grinning"), "{sent}");
+        assert!(manifest_of(&out.content)["cast"][0]["portrait"].is_string());
+
+        let out = t
+            .call(
+                call("maya", "seen from behind her at the bench"),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let sent = last();
+        assert!(
+            sent.contains("kneading clay, grinning, Maya's face turned away"),
+            "{sent}"
+        );
+        assert!(manifest_of(&out.content)["cast"][0]["portrait"].is_string());
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
     }
 
     /// IMAGE-COMPILER-DESIGN.md §9.4: a cast of one with a full body sends

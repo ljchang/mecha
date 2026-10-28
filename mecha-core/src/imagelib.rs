@@ -1799,6 +1799,17 @@ pub struct CastMember {
     /// The act already says what they have on, so the prompt states no
     /// outfit beside it (`imagegen::clothes_in_act`): the record keeps it.
     pub clothes_in_act: bool,
+    /// Their face's expression, said after the act: left out for someone
+    /// drawn from behind from their full figure, whose face the camera
+    /// cannot see (decided here, by the figure that went; review of #757).
+    pub expression: String,
+    /// The camera sees them from behind (`picture::faces_away`): with a full
+    /// figure attached, it fills both identity slots with no portrait, and
+    /// the prompt says their face is turned away. On a rear-view Continue the
+    /// portrait turned the face to the camera 0 of 12 under every wording;
+    /// the figure in both slots, with the expression and the style's eye
+    /// clauses gone, turned away 5 of 5 (owner, 2026-10-28; §9.4).
+    pub face_away: bool,
 }
 
 /// What an entry contributed to a generation — for the result text and the
@@ -1835,7 +1846,8 @@ struct CloseUp {
 pub struct Compiled {
     pub prompt: String,
     /// `(name, bytes, ext)` in `<imageN>` order; a full figure's name is
-    /// `full_body:<name>`, after its person's portrait.
+    /// `full_body:<name>`, after its person's portrait, or twice in a row
+    /// with no portrait for someone drawn from behind (§9.4).
     pub references: Vec<(String, Vec<u8>, &'static str)>,
     pub used: Vec<Used>,
     /// Seeds that drew the cast's portraits, when known.
@@ -2051,6 +2063,8 @@ pub fn compile_with(
         wearing: &'a str,
         doing: &'a str,
         clothes_in_act: bool,
+        expression: &'a str,
+        face_away: bool,
         portrait: (Vec<u8>, &'static str),
         body: Option<&'a Reference>,
     }
@@ -2094,6 +2108,8 @@ pub fn compile_with(
             wearing,
             doing,
             clothes_in_act: member.clothes_in_act,
+            expression: member.expression.trim().trim_end_matches('.'),
+            face_away: member.face_away,
             portrait,
             body: entry
                 .sendable_references()
@@ -2258,10 +2274,31 @@ pub fn compile_with(
     let mut close = identity_images;
     let mut close_refs = Vec::new();
     let mut close_words = Vec::new();
+    // Someone drawn from behind from their full figure: the style's words
+    // about eyes go (`style_text`).
+    let mut any_away = false;
     for (i, ((m, body), shots)) in members.into_iter().zip(bound).zip(details).enumerate() {
         let shown = crate::imagegen::capitalized(&m.name);
         names.push(shown.clone());
+        let away = m.face_away && body.is_some();
         let who = match &body {
+            // Both slots hold the full figure: alone in one slot it drew a
+            // second head 2 of 5, in both 0 of 5 (owner, 2026-10-28).
+            Some(_) if away => {
+                let (a, b) = (refs.len() + 1, refs.len() + 2);
+                bindings.push(format!(
+                    "<image{a}> and <image{b}> show one person, {shown}: <image{a}> and \
+                     <image{b}> are both {shown}'s full figure. {shown} is seen from behind: \
+                     {shown}'s face is turned away from the viewer and out of sight, the back of \
+                     {shown}'s head toward the camera."
+                ));
+                // Both copies are the figure, so neither's outfit is worn
+                // (review of #757, pass 3).
+                figures.push(format!("<image{a}>"));
+                figures.push(format!("<image{b}>"));
+                any_away = true;
+                format!("the person shown in <image{a}> and <image{b}>")
+            }
             Some(_) => {
                 let (face, figure) = (refs.len() + 1, refs.len() + 2);
                 bindings.push(format!(
@@ -2279,13 +2316,20 @@ pub fn compile_with(
             kind: Kind::Character,
             name: m.name.clone(),
             version: m.entry.version,
-            portrait: m.entry.portrait.clone(),
+            // What went, as the manifest says it: no portrait for a person
+            // drawn from behind with a full figure.
+            portrait: if away { None } else { m.entry.portrait.clone() },
             full_body: body.as_ref().and(m.body.map(|r| r.blob.clone())),
             details: shots.iter().map(|s| s.blob.clone()).collect(),
         });
         let (bytes, ext) = m.portrait;
-        refs.push((m.name.clone(), bytes, ext));
+        if !away {
+            refs.push((m.name.clone(), bytes, ext));
+        }
         if let Some((bytes, ext)) = body {
+            if away {
+                refs.push((format!("full_body:{}", m.name), bytes.clone(), ext));
+            }
             refs.push((format!("full_body:{}", m.name), bytes, ext));
         }
         // V-D's binding for video, in this compiler's pointers: the mark is
@@ -2312,6 +2356,16 @@ pub fn compile_with(
         }
         if !m.doing.is_empty() {
             line.push_str(&format!(", {}", m.doing));
+        }
+        if !m.expression.is_empty() && !away {
+            line.push_str(&format!(", {}", m.expression));
+        }
+        // Seen from behind with only a portrait to draw from: the portrait
+        // still goes, so the sentence carries the turn alone. A cast of one
+        // only: a camera behind one of a group names that one, and the
+        // sentence was never measured on more (review of #757, pass 3).
+        if m.face_away && !away && n == 1 {
+            line.push_str(&format!(", {shown}'s face turned away from the viewer"));
         }
         people.push(line);
     }
@@ -2377,7 +2431,31 @@ pub fn compile_with(
                 full_body: None,
                 details: Vec::new(),
             });
-            Some(entry.text.trim().to_string())
+            // A clause about the eyes asks for a face the camera cannot
+            // see: dropped for a picture drawn from behind. With the
+            // expression gone too, a rear view turned away 5 of 5, against 4
+            // of 5 with the full figure alone (owner, 2026-10-28).
+            // "Eye" or "eyes" as whole words, so eyeshadow stays; a style
+            // that would be left empty keeps its words (review of #757).
+            let text = entry.text.trim();
+            let about_eyes = |c: &str| {
+                c.split(|ch: char| !ch.is_alphabetic())
+                    .any(|w| w.eq_ignore_ascii_case("eye") || w.eq_ignore_ascii_case("eyes"))
+            };
+            // Clauses are separated by commas or semicolons; a style
+            // written as one sentence keeps its words (below).
+            let kept = text
+                .split([',', ';'])
+                .map(str::trim)
+                .filter(|c| !c.is_empty())
+                .filter(|c| !about_eyes(c))
+                .collect::<Vec<_>>()
+                .join(", ");
+            Some(if any_away && !kept.trim().is_empty() {
+                kept
+            } else {
+                text.to_string()
+            })
         }
     };
 
@@ -2740,6 +2818,8 @@ mod tests {
             wearing: "a yellow raincoat".into(),
             doing: "laughing".into(),
             clothes_in_act: false,
+            expression: String::new(),
+            face_away: false,
         }
     }
 
@@ -3359,6 +3439,8 @@ mod tests {
             wearing: "a grey coat".into(),
             doing: String::new(),
             clothes_in_act: false,
+            expression: String::new(),
+            face_away: false,
         };
         let c = compile(
             &lib,
@@ -3985,6 +4067,131 @@ mod tests {
             "{}",
             c.prompt
         );
+    }
+
+    /// Seen from behind, a person with a full figure is drawn from it, in
+    /// both identity slots: no portrait, the prompt says the face is turned
+    /// away, a close-up is numbered after the two, and the style's words
+    /// about eyes go. Without a figure the portrait still goes and the
+    /// sentence carries the turn (owner, 2026-10-28: the portrait turned the
+    /// face to the camera 0 of 12; the figure in both slots, 5 of 5 away).
+    #[test]
+    fn seen_from_behind_the_full_figure_stands_in_for_the_portrait() {
+        let dir = scratch();
+        with_body(dir.path(), "maya", [9, 7, 7]);
+        with_detail(
+            dir.path(),
+            "maya",
+            [7, 9, 9],
+            "anchor tattoo, left shoulder",
+        );
+        let mut lens = style("lens");
+        lens.text = "a photograph, soft light, sharp focus on the eyes, fine grain".into();
+        create(dir.path(), lens).unwrap();
+        let lib = Library::load(dir.path()).0;
+        let away = CastMember {
+            face_away: true,
+            expression: "smiling".into(),
+            ..member("maya")
+        };
+        let c = compile(&lib, "a studio", &[away], &[], Some("lens")).unwrap();
+        assert!(!c.prompt.contains("smiling"), "{}", c.prompt);
+        let names: Vec<&str> = c.references.iter().map(|r| r.0.as_str()).collect();
+        assert_eq!(names, ["full_body:maya", "full_body:maya", "detail:maya"]);
+        assert_eq!(c.references[0].1, c.references[1].1);
+        assert!(
+            c.prompt.contains(
+                "The person shown in <image1> and <image2> (maya, a person with a memorable \
+                 face. Maya's anchor tattoo, left shoulder is shown close up in <image3>), \
+                 wearing a yellow raincoat, laughing. <image1> and <image2> show one person, \
+                 Maya: <image1> and <image2> are both Maya's full figure. Maya is seen from \
+                 behind: Maya's face is turned away from the viewer and out of sight, the back \
+                 of Maya's head toward the camera. The clothing in <image1> and <image2> is not \
+                 worn here."
+            ),
+            "{}",
+            c.prompt
+        );
+        assert!(!c.prompt.contains("portrait"), "{}", c.prompt);
+        assert!(
+            c.prompt
+                .ends_with("Style: a photograph, soft light, fine grain"),
+            "{}",
+            c.prompt
+        );
+        // A one-clause style keeps its words, and eyeshadow is not an eye.
+        let mut one = style("one");
+        one.text = "film still with sharp focus on the eyes".into();
+        create(dir.path(), one).unwrap();
+        let mut shadow = style("shadow");
+        shadow.text = "studio light, soft eyeshadow, sharp eyes".into();
+        create(dir.path(), shadow).unwrap();
+        let lib = Library::load(dir.path()).0;
+        let away = || CastMember {
+            face_away: true,
+            ..member("maya")
+        };
+        let c = compile(&lib, "a studio", &[away()], &[], Some("one")).unwrap();
+        assert!(
+            c.prompt
+                .ends_with("Style: film still with sharp focus on the eyes"),
+            "{}",
+            c.prompt
+        );
+        let mut semi = style("semi");
+        semi.text = "matte skin; sharp eyes; warm light".into();
+        create(dir.path(), semi).unwrap();
+        let lib = Library::load(dir.path()).0;
+        let c = compile(&lib, "a studio", &[away()], &[], Some("semi")).unwrap();
+        assert!(
+            c.prompt.ends_with("Style: matte skin, warm light"),
+            "{}",
+            c.prompt
+        );
+        let c = compile(&lib, "a studio", &[away()], &[], Some("shadow")).unwrap();
+        assert!(
+            c.prompt.ends_with("Style: studio light, soft eyeshadow"),
+            "{}",
+            c.prompt
+        );
+        assert_eq!(c.used[0].portrait, None);
+        assert!(c.used[0].full_body.is_some());
+        // Facing the camera, the same style keeps its eyes.
+        let c = compile(&lib, "a studio", &[member("maya")], &[], Some("lens")).unwrap();
+        assert!(c.prompt.contains("sharp focus on the eyes"), "{}", c.prompt);
+        assert!(c.prompt.contains("is Maya's portrait"), "{}", c.prompt);
+
+        // No figure attached: the portrait goes, and the words turn her.
+        let dir = scratch();
+        create(dir.path(), character("jo", Origin::Owner)).unwrap();
+        let lib = Library::load(dir.path()).0;
+        let away = CastMember {
+            face_away: true,
+            expression: "smiling".into(),
+            ..member("jo")
+        };
+        let c = compile(&lib, "a studio", &[away], &[], None).unwrap();
+        assert_eq!(c.references.len(), 1);
+        // Drawn from a portrait, the face keeps its expression.
+        assert!(
+            c.prompt
+                .contains("laughing, smiling, Jo's face turned away from the viewer"),
+            "{}",
+            c.prompt
+        );
+        assert!(c.used[0].portrait.is_some());
+
+        // A group seen from behind draws from portraits and says no turn: the
+        // camera may have put only one of them behind.
+        create(dir.path(), character("wren", Origin::Owner)).unwrap();
+        let lib = Library::load(dir.path()).0;
+        let away = |name: &str| CastMember {
+            face_away: true,
+            ..member(name)
+        };
+        let c = compile(&lib, "a studio", &[away("jo"), away("wren")], &[], None).unwrap();
+        assert!(!c.prompt.contains("turned away"), "{}", c.prompt);
+        assert!(c.used.iter().all(|u| u.portrait.is_some()));
     }
 
     /// A body goes only to a picture of one person (§9.4, E14), each refusal

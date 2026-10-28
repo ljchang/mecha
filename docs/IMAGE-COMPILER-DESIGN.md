@@ -163,7 +163,10 @@ The rules, each a measurement:
   not load, stays in the cast and gets its own refusal, because drawing a
   stranger in its place is the substitution the cast exists to prevent. A
   persona chat's form of the tool keeps refusing an unknown name.
-- **The style's text is appended verbatim**, never paraphrased.
+- **The style's text is appended verbatim**, never paraphrased. The one
+  exception: a picture drawn from a full figure seen from behind leaves out
+  the style's clauses about eyes, and keeps the style whole when that would
+  leave nothing (§9.4).
 - *(Lifted 2026-10-07; see the amendment at the head of this section.)*
   **`cast` and `reference_images` are exclusive in v1.** ComfyUI's encoder
   takes one reference resolution per call, so an edit canvas at 1024² and
@@ -583,7 +586,7 @@ kind is derived from its directory (`Entry.kind`).
 
 | Reference | `image_generate` (Qwen-Image) | `video_generate` (H3) |
 |---|---|---|
-| face | the whole portrait at 512² for a new picture (E10), its crop for an edit, as now | the face crop, as now; from an attached `face` reference when there is one, else from the portrait |
+| face | the whole portrait at 512² for a new picture (E10), its crop for an edit, as now; for a new picture, not sent when the camera sees the person from behind and they have a full body (below); an edit still sends the crop | the face crop, as now; from an attached `face` reference when there is one, else from the portrait |
 | full_body | **sent** to a new picture of one person, bound to the portrait (E9b; owner, 2026-10-13); faces only for two or more (E14; owner, 2026-10-19), and on edits | **sent** beside the face crop to a cast of **one or two** when everyone has one, **unbound** (both pictures named as one subject, with no face-from/build-from split): "the person in `<Picture 1>` and `<Picture 2>`", not the face-from/build-from wording, the likely cause of V-B's extra person (V-B's retest passed for a cast of two; owner, 2026-10-14) |
 | detail | **sent** with its label after every face and body, while five images last (`MAX_PICTURE_IMAGES`): "<Name>'s <label> is shown close up in `<imageK>`" inside the description, the identity images then named by number, and "`<imageK>` shows only <Name>'s <label>, not a person: it is kept exactly where it is, and nowhere else" (V-D for pictures passed; owner, 2026-10-26) | **sent** with its label, "`<Subject n>`'s <label> is shown close up in `<Picture k>`", kept "exactly where it is, and nowhere else" (V-D passed; owner, 2026-10-26) |
 | location | its text in the scene | its images as an environment `<Subject>`, if V-L passes |
@@ -603,6 +606,30 @@ kind is derived from its directory (`Entry.kind`).
 - **Every row marked "if" is off until its measurement passes,** and the
   owner rules on the result. A reference a generator doesn't send still
   costs no image slot: the description and labels carry the facts in words.
+- **Seen from behind, the full figure stands in for the portrait** (owner,
+  2026-10-28). When the camera reads as from behind (`picture::faces_away`:
+  behind, rear, a back view, a face turned away; never with a front, a
+  shoulder looked over, or a face toward the camera), a person with a
+  `full_body` is drawn from it in both identity slots, with no portrait,
+  and the prompt says their face is turned away. The person's expression
+  and the style's clauses about eyes are left out for that picture.
+  Measured on a rear-view Continue:
+  - the portrait sent: the face turned to the camera under every wording
+    tried, at the base seed and fresh ones, 0 of 12;
+  - the full figure alone in one slot: 2 of 5 away, and a second head
+    drawn 2 of 5;
+  - in both slots: 4 of 5; with the expression and the eye clause gone
+    too: 5 of 5, no second head, base seed included.
+
+  Without a `full_body` the portrait still goes, and for a cast of one a
+  sentence carries the turn (a camera behind one of a group names that
+  one, and the sentence was never measured on more). The manifest's
+  `cast` row has no `portrait` when none went. The replay judge asks no
+  expression question of such a picture, and its identity reading finds no
+  face to match there: that is a correct rear view, not a lost identity. A style clause that names
+  eyes goes whole, so "a photograph with sharp eyes and fine grain" loses
+  its medium too: clauses are split on commas and semicolons, and a style
+  left empty keeps its words.
 - **Labels have their own budget per person,** at most 300 characters of
   detail labels appended to one description (review of #680, pass 2).
   *Never built for pictures, and superseded there on 2026-10-26:* a label
