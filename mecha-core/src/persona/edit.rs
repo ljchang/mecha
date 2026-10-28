@@ -741,15 +741,29 @@ pub fn read_extraction_for(
         .get("look")
         .filter(|v| !v.is_null() && v.as_str().is_none_or(|t| !t.trim().is_empty()))
         .or_else(|| obj.get("style"));
-    let framing_look = look_value
+    // A look that names a shot is the camera's, whole (`picture::is_framing`).
+    // Not split into a shot and a rest: the framing vocabulary is partial,
+    // so a clause it does not know ("tight on the wheel") would become a
+    // look and ride the setting, the drift this guards against. A mixed
+    // "watercolour, close up" loses its watercolour instead, the rarer cost
+    // now the reader is told framing is never a look (review of #757).
+    let shot = look_value
         .and_then(serde_json::Value::as_str)
         .map(str::trim)
-        .filter(|t| !t.is_empty() && crate::picture::is_framing(t));
-    if let Some(shot) = framing_look {
-        scene.entry("camera").or_insert_with(|| shot.into());
+        .filter(|t| !t.is_empty() && crate::picture::is_framing(t))
+        .map(str::to_string);
+    if let Some(shot) = &shot {
+        scene
+            .entry("camera")
+            .or_insert_with(|| shot.as_str().into());
+    }
+    // A framing look an earlier reading joined to the setting comes off on
+    // any change that sets the camera: that change redraws the scene
+    // anyway, so taking it off costs no extra redraw (review of #757).
+    if scene.contains_key("camera") {
         strip_framing_look(looks, &mut scene);
     }
-    match look_value.filter(|_| framing_look.is_none()) {
+    match look_value.filter(|_| shot.is_none()) {
         None | Some(serde_json::Value::Null) => {}
         Some(serde_json::Value::String(t)) if t.trim().is_empty() => {}
         Some(serde_json::Value::String(t)) => match look_into(t, looks, &mut scene) {
@@ -1472,6 +1486,9 @@ mod tests {
             assert_eq!(e.scene["camera"], "behind the potter", "{answer}");
             assert!(e.scene.get("setting").is_none(), "{answer}: {:?}", e.scene);
         }
+        // A camera alone takes a stuck framing look off the setting too.
+        let e = read(r#"{"camera": "closer in, at the wheel"}"#, &stuck_looks);
+        assert_eq!(e.scene["setting"], "a potter's shed at dusk");
         // A real look still joins the setting.
         let e = read(r#"{"look": "1930s lantern slide"}"#, &looks);
         assert!(e.scene.get("camera").is_none());

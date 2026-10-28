@@ -775,7 +775,15 @@ fn camera_behind(text: &str) -> bool {
             let w = camera_words(clause);
             let behind = w.iter().enumerate().any(|(i, t)| {
                 t == "behind"
-                    && ((i == 0 && k == 0) || (i > 0 && OWNS.contains(&w[i - 1].as_str())))
+                    && ((i == 0 && k == 0)
+                        || (i > 0 && OWNS.contains(&w[i - 1].as_str()) && w[i - 1] != "is")
+                        // "is behind" only with the camera as its subject:
+                        // "the kiln is behind her" is scenery (review of
+                        // #757, pass 5).
+                        || (i >= 2
+                            && w[i - 1] == "is"
+                            && ["camera", "lens", "shot", "view", "viewer", "framing"]
+                                .contains(&w[i - 2].as_str())))
                     && !(i >= 2 && w[i - 1] == "from" && LIGHT.contains(&w[i - 2].as_str()))
             });
             let rear = w.iter().enumerate().any(|(i, t)| {
@@ -809,7 +817,9 @@ pub fn faces_away(camera: &str) -> bool {
     };
     let away = camera_behind(camera)
         || has_run(&w, &["back", "view"])
-        || has_run(&w, &["from", "the", "back"])
+        // "from the back of the shed" is a place, not a back view.
+        || w.windows(4).any(|q| q[0] == "from" && q[1] == "the" && q[2] == "back" && q[3] != "of")
+        || w.ends_with(&["from".into(), "the".into(), "back".into()])
         // In order: a back turned to the camera, never "back" anywhere
         // beside "camera" ("the camera pulled back" is distance; review of
         // #757).
@@ -867,7 +877,6 @@ pub fn is_framing(words: &str) -> bool {
         ["bird's", "eye"],
         ["eye", "level"],
         ["back", "view"],
-        ["point", "of"],
     ];
     has("closeup")
         || has("zoom")
@@ -875,6 +884,7 @@ pub fn is_framing(words: &str) -> bool {
         || camera_behind(words)
         || has("shoulder")
         || PAIRS.iter().any(|p| has_run(&w, p))
+        || has_run(&w, &["point", "of", "view"])
 }
 
 /// What a person wears when nobody said and nothing is on record: drawn
@@ -2031,6 +2041,7 @@ mod tests {
             "tight on the wheel, from behind the potter",
             "rear quarter view by the kiln",
             "the lens sits behind him at the bench",
+            "the camera is behind him, low",
             "his back toward the camera, glaze buckets beside",
             "from the back, shoulders filling the frame",
             "she has turned away from the lens",
@@ -2048,6 +2059,9 @@ mod tests {
             "tight on her face, shelves of pots behind her",
             "wide on the potter at her wheel, behind her the kiln",
             "tight on her hands, behind her the shelves",
+            "a medium shot so the mural is behind him",
+            "tight on her face so the kiln is behind her",
+            "from the back of the shed, wide on her face",
             "lit from behind by the kiln, eye level",
             "standing at the rear of the shed, toward the lens",
             "tight on his face and the clay",
