@@ -755,6 +755,36 @@ fn camera_words(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Whether the camera owns "behind" or "rear" in `text`, rather than
+/// scenery or light: "behind" opening a clause or after "from", "is",
+/// "sits", "seen", "shot", "camera" or "lens"; a rear view, shot, angle or
+/// quarter; "from the rear". Never "pots behind her" (scenery) or "lit from
+/// behind" (light) (review of #757). Read per clause, so a comma starts one.
+fn camera_behind(text: &str) -> bool {
+    const OWNS: &[&str] = &[
+        "from", "is", "sits", "seen", "shot", "camera", "lens", "viewed", "filmed",
+    ];
+    const LIGHT: &[&str] = &[
+        "lit", "backlit", "light", "lighting", "glow", "glowing", "sun", "sunlight",
+    ];
+    text.split([',', ';', ':', '.']).any(|clause| {
+        let w = camera_words(clause);
+        let behind = w.iter().enumerate().any(|(i, t)| {
+            t == "behind"
+                && (i == 0 || OWNS.contains(&w[i - 1].as_str()))
+                && !(i >= 2 && w[i - 1] == "from" && LIGHT.contains(&w[i - 2].as_str()))
+        });
+        let rear = w.iter().enumerate().any(|(i, t)| {
+            t == "rear"
+                && (w
+                    .get(i + 1)
+                    .is_some_and(|n| ["view", "shot", "angle", "quarter"].contains(&n.as_str()))
+                    || (i >= 2 && w[i - 1] == "the" && w[i - 2] == "from"))
+        });
+        behind || rear
+    })
+}
+
 /// Whether `w` holds `seq` as consecutive words.
 fn has_run(w: &[String], seq: &[&str]) -> bool {
     w.windows(seq.len())
@@ -774,8 +804,7 @@ pub fn faces_away(camera: &str) -> bool {
             .iter()
             .any(|t| t == "away")
     };
-    let away = has("behind")
-        || has("rear")
+    let away = camera_behind(camera)
         || has_run(&w, &["back", "view"])
         || has_run(&w, &["from", "the", "back"])
         // In order: a back turned to the camera, never "back" anywhere
@@ -840,8 +869,7 @@ pub fn is_framing(words: &str) -> bool {
     has("closeup")
         || has("zoom")
         || has("overhead")
-        || has("behind")
-        || has("rear")
+        || camera_behind(words)
         || has("shoulder")
         || PAIRS.iter().any(|p| has_run(&w, p))
 }
@@ -2014,6 +2042,9 @@ mod tests {
             "rear quarter, her face toward the lens",
             "the lens pulled back, wide on the workshop",
             "his apron tied back, the lens close",
+            "tight on her face, shelves of pots behind her",
+            "lit from behind by the kiln, eye level",
+            "standing at the rear of the shed, toward the lens",
             "tight on his face and the clay",
             "",
         ] {

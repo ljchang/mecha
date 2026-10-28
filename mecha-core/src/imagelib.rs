@@ -1799,6 +1799,10 @@ pub struct CastMember {
     /// The act already says what they have on, so the prompt states no
     /// outfit beside it (`imagegen::clothes_in_act`): the record keeps it.
     pub clothes_in_act: bool,
+    /// Their face's expression, said after the act: left out for someone
+    /// drawn from behind from their full figure, whose face the camera
+    /// cannot see (decided here, by the figure that went; review of #757).
+    pub expression: String,
     /// The camera sees them from behind (`picture::faces_away`): with a full
     /// figure attached, it fills both identity slots with no portrait, and
     /// the prompt says their face is turned away. On a rear-view Continue the
@@ -1965,23 +1969,6 @@ pub(crate) fn blank(s: &str) -> bool {
     s.chars().all(|c| c == '…' || c == '.')
 }
 
-/// Whether a library character's full figure goes to a picture of `cast`
-/// library people (§9.4): a cast of one, under [`MAX_BOUND_IMAGES`], with a
-/// full figure attached. What `imagegen` asks before it leaves a face-away
-/// person's expression out, so only someone drawn from their figure loses it
-/// (review of #757).
-pub fn figure_goes(lib: &Library, cast: usize, name: &str) -> bool {
-    2 * cast <= MAX_BOUND_IMAGES
-        && lib
-            .get(Kind::Character, &name.trim().to_lowercase())
-            .filter(|e| e.status == Status::Approved)
-            .is_some_and(|e| {
-                e.sendable_references()
-                    .iter()
-                    .any(|r| r.kind == RefKind::FullBody)
-            })
-}
-
 /// Compile a scene. Errors are sentences for the model.
 ///
 /// The prompt's shape is Qwen-Image 2.1's and each clause is a measurement:
@@ -2075,6 +2062,7 @@ pub fn compile_with(
         wearing: &'a str,
         doing: &'a str,
         clothes_in_act: bool,
+        expression: &'a str,
         face_away: bool,
         portrait: (Vec<u8>, &'static str),
         body: Option<&'a Reference>,
@@ -2119,6 +2107,7 @@ pub fn compile_with(
             wearing,
             doing,
             clothes_in_act: member.clothes_in_act,
+            expression: member.expression.trim().trim_end_matches('.'),
             face_away: member.face_away,
             portrait,
             body: entry
@@ -2363,6 +2352,9 @@ pub fn compile_with(
         }
         if !m.doing.is_empty() {
             line.push_str(&format!(", {}", m.doing));
+        }
+        if !m.expression.is_empty() && !away {
+            line.push_str(&format!(", {}", m.expression));
         }
         // Seen from behind with only a portrait to draw from: the portrait
         // still goes, so the sentence carries the turn alone.
@@ -2816,6 +2808,7 @@ mod tests {
             wearing: "a yellow raincoat".into(),
             doing: "laughing".into(),
             clothes_in_act: false,
+            expression: String::new(),
             face_away: false,
         }
     }
@@ -3436,6 +3429,7 @@ mod tests {
             wearing: "a grey coat".into(),
             doing: String::new(),
             clothes_in_act: false,
+            expression: String::new(),
             face_away: false,
         };
         let c = compile(
@@ -4087,9 +4081,11 @@ mod tests {
         let lib = Library::load(dir.path()).0;
         let away = CastMember {
             face_away: true,
+            expression: "smiling".into(),
             ..member("maya")
         };
         let c = compile(&lib, "a studio", &[away], &[], Some("lens")).unwrap();
+        assert!(!c.prompt.contains("smiling"), "{}", c.prompt);
         let names: Vec<&str> = c.references.iter().map(|r| r.0.as_str()).collect();
         assert_eq!(names, ["full_body:maya", "full_body:maya", "detail:maya"]);
         assert_eq!(c.references[0].1, c.references[1].1);
@@ -4150,31 +4146,19 @@ mod tests {
         let lib = Library::load(dir.path()).0;
         let away = CastMember {
             face_away: true,
+            expression: "smiling".into(),
             ..member("jo")
         };
         let c = compile(&lib, "a studio", &[away], &[], None).unwrap();
         assert_eq!(c.references.len(), 1);
+        // Drawn from a portrait, the face keeps its expression.
         assert!(
             c.prompt
-                .contains("laughing, Jo's face turned away from the viewer"),
+                .contains("laughing, smiling, Jo's face turned away from the viewer"),
             "{}",
             c.prompt
         );
         assert!(c.used[0].portrait.is_some());
-    }
-
-    /// A full figure goes only to a cast of one whose character has one:
-    /// what decides whether a face-away person's expression is left out.
-    #[test]
-    fn a_figure_goes_to_a_cast_of_one_that_has_one() {
-        let dir = scratch();
-        with_body(dir.path(), "maya", [9, 8, 8]);
-        create(dir.path(), character("jo", Origin::Owner)).unwrap();
-        let lib = Library::load(dir.path()).0;
-        assert!(figure_goes(&lib, 1, "Maya"));
-        assert!(!figure_goes(&lib, 2, "maya"));
-        assert!(!figure_goes(&lib, 1, "jo"));
-        assert!(!figure_goes(&lib, 1, "nobody"));
     }
 
     /// A body goes only to a picture of one person (§9.4, E14), each refusal
