@@ -778,7 +778,18 @@ pub fn faces_away(camera: &str) -> bool {
         || has("rear")
         || has_run(&w, &["back", "view"])
         || has_run(&w, &["from", "the", "back"])
-        || (has("back") && has("camera"))
+        // In order: a back turned to the camera, never "back" anywhere
+        // beside "camera" ("the camera pulled back" is distance; review of
+        // #757).
+        || w.iter().enumerate().any(|(i, t)| {
+            t == "back"
+                && w
+                    .get(i + 1)
+                    .is_some_and(|n| ["to", "toward", "towards", "is", "turned"].contains(&n.as_str()))
+                && w[i + 1..(i + 5).min(w.len())]
+                    .iter()
+                    .any(|x| ["camera", "lens", "viewer", "us"].contains(&x.as_str()))
+        })
         || w.iter()
             .enumerate()
             .any(|(i, t)| ["face", "faces", "facing", "turned"].contains(&t.as_str()) && turned(i));
@@ -786,7 +797,12 @@ pub fn faces_away(camera: &str) -> bool {
     // a look or eyes toward the camera, the viewer or us, unless turned away.
     let facing = has("front")
         || has("frontal")
-        || has("shoulder")
+        || w.iter().enumerate().any(|(i, t)| {
+            t == "over"
+                && w[i + 1..(i + 3).min(w.len())]
+                    .iter()
+                    .any(|x| x == "shoulder")
+        })
         || w.iter().enumerate().any(|(i, t)| {
             ["face", "faces", "facing", "looking", "looks", "eyes"].contains(&t.as_str())
                 && !turned(i)
@@ -1987,6 +2003,7 @@ mod tests {
             "his back toward the camera, glaze buckets beside",
             "from the back, shoulders filling the frame",
             "she has turned away from the lens",
+            "her back is to the lens, kiln glowing",
         ] {
             assert!(faces_away(away), "{away}");
         }
@@ -1995,6 +2012,8 @@ mod tests {
             "behind the bench, then round to the front",
             "from behind the kiln, over her shoulder",
             "rear quarter, her face toward the lens",
+            "the lens pulled back, wide on the workshop",
+            "his apron tied back, the lens close",
             "tight on his face and the clay",
             "",
         ] {

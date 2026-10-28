@@ -4439,10 +4439,25 @@ impl Tool for ImageGenerate {
                         .camera
                         .as_ref()
                         .is_some_and(|f| crate::picture::faces_away(&f.value));
+                    let library_people = people
+                        .iter()
+                        .filter(|p| matches!(p.who, crate::scene::Who::Library(_)))
+                        .count();
                     for p in people {
                         // A face the camera cannot see has no expression to
                         // draw: said, it pulled the face round (2026-10-28).
-                        let doing = if face_away {
+                        // Only for someone drawn from their full figure: one
+                        // who keeps a portrait, or is described, keeps it
+                        // (review of #757).
+                        let from_figure = face_away
+                            && bodies
+                            && match &p.who {
+                                crate::scene::Who::Library(n) => {
+                                    crate::imagelib::figure_goes(&lib, library_people, n)
+                                }
+                                crate::scene::Who::Described(_) => false,
+                            };
+                        let doing = if from_figure {
                             doing_words(
                                 &crate::scene::Person {
                                     expression: String::new(),

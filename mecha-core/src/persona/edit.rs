@@ -493,6 +493,18 @@ fn drop_earlier_look(
     looks: &Looks,
     scene: &mut serde_json::Map<String, serde_json::Value>,
 ) -> bool {
+    drop_earlier_look_if(looks, scene, &|_| true)
+}
+
+/// [`drop_earlier_look`] when the joined look passes `drop`: the setting the
+/// change carries, or the record's, without the look an earlier reading
+/// joined to it. One lookup for both callers, so they cannot drift apart
+/// (review of #757).
+fn drop_earlier_look_if(
+    looks: &Looks,
+    scene: &mut serde_json::Map<String, serde_json::Value>,
+    drop: &dyn Fn(&str) -> bool,
+) -> bool {
     let words = match scene.get("setting").and_then(serde_json::Value::as_str) {
         Some(given) => Some(given.to_string()),
         None => match looks
@@ -505,11 +517,11 @@ fn drop_earlier_look(
         },
     };
     match words.as_deref().and_then(|w| w.split_once(LOOK_JOIN)) {
-        Some((before, _)) => {
+        Some((before, joined)) if drop(joined) => {
             scene.insert("setting".into(), before.trim().into());
             true
         }
-        None => false,
+        _ => false,
     }
 }
 
@@ -518,25 +530,9 @@ fn drop_earlier_look(
 const LOOK_JOIN: &str = ", in the look of ";
 
 /// A look an earlier reading joined to the setting that names a shot, not a
-/// look (`picture::is_framing`), taken off: the setting the change carries,
-/// or the record's. Any other look stays.
+/// look (`picture::is_framing`), taken off; any other look stays.
 fn strip_framing_look(looks: &Looks, scene: &mut serde_json::Map<String, serde_json::Value>) {
-    let words = match scene.get("setting").and_then(serde_json::Value::as_str) {
-        Some(given) => Some(given.to_string()),
-        None => match looks
-            .record
-            .and_then(|r| r.setting.as_ref())
-            .map(|f| &f.value)
-        {
-            Some(crate::scene::Setting::Words { text }) => Some(text.clone()),
-            _ => None,
-        },
-    };
-    if let Some((before, joined)) = words.as_deref().and_then(|w| w.split_once(LOOK_JOIN)) {
-        if crate::picture::is_framing(joined) && !before.trim().is_empty() {
-            scene.insert("setting".into(), before.trim().into());
-        }
-    }
+    drop_earlier_look_if(looks, scene, &crate::picture::is_framing);
 }
 
 /// The owner's look, in their words, made a change by code (mecha-a3's G605:
@@ -737,9 +733,15 @@ pub fn read_extraction_for(
     // there when the answer gave no camera, dropped beside one that did, and
     // a framing look an earlier reading joined to the record's setting comes
     // off it (owner, 2026-10-27).
-    let framing_look = obj
+    // `style` too: the record shows that key, and a reader without the
+    // schema answers in it (review of #605). Resolved once, so a null or
+    // empty `look` falls through to `style` for the guard as for the look
+    // (review of #757).
+    let look_value = obj
         .get("look")
-        .or_else(|| obj.get("style"))
+        .filter(|v| !v.is_null() && v.as_str().is_none_or(|t| !t.trim().is_empty()))
+        .or_else(|| obj.get("style"));
+    let framing_look = look_value
         .and_then(serde_json::Value::as_str)
         .map(str::trim)
         .filter(|t| !t.is_empty() && crate::picture::is_framing(t));
@@ -747,14 +749,7 @@ pub fn read_extraction_for(
         scene.entry("camera").or_insert_with(|| shot.into());
         strip_framing_look(looks, &mut scene);
     }
-    // `style` too: the record shows that key, and a reader without the
-    // schema answers in it (review of #605).
-    match obj
-        .get("look")
-        .filter(|v| !v.is_null() && v.as_str().is_none_or(|t| !t.trim().is_empty()))
-        .or_else(|| obj.get("style"))
-        .filter(|_| framing_look.is_none())
-    {
+    match look_value.filter(|_| framing_look.is_none()) {
         None | Some(serde_json::Value::Null) => {}
         Some(serde_json::Value::String(t)) if t.trim().is_empty() => {}
         Some(serde_json::Value::String(t)) => match look_into(t, looks, &mut scene) {
@@ -1461,6 +1456,16 @@ mod tests {
         let e = read(r#"{"look": "wide on the shed, eye level"}"#, &stuck_looks);
         assert_eq!(e.scene["camera"], "wide on the shed, eye level");
         assert_eq!(e.scene["setting"], "a potter's shed at dusk");
+        // A null or empty look falls through to a framing style, which is
+        // the camera's too.
+        for answer in [
+            r#"{"look": null, "style": "behind the potter"}"#,
+            r#"{"look": "", "style": "behind the potter"}"#,
+        ] {
+            let e = read(answer, &looks);
+            assert_eq!(e.scene["camera"], "behind the potter", "{answer}");
+            assert!(e.scene.get("setting").is_none(), "{answer}: {:?}", e.scene);
+        }
         // A real look still joins the setting.
         let e = read(r#"{"look": "1930s lantern slide"}"#, &looks);
         assert!(e.scene.get("camera").is_none());
