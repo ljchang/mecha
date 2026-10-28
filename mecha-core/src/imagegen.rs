@@ -4440,7 +4440,6 @@ impl Tool for ImageGenerate {
                         .as_ref()
                         .is_some_and(|f| crate::picture::faces_away(&f.value));
                     for p in people {
-                        let doing = doing_words(p, together);
                         // A cast member's act without the expression, which
                         // goes beside it for the compiler to leave out when
                         // it draws them from behind from their figure.
@@ -4476,6 +4475,7 @@ impl Tool for ImageGenerate {
                                 })
                             }
                             crate::scene::Who::Described(d) => {
+                                let doing = doing_words(p, together);
                                 let mut e = d.trim().trim_end_matches('.').to_string();
                                 if !p.wearing.trim().is_empty() && !kept {
                                     e.push_str(&format!(", wearing {}", p.wearing.trim()));

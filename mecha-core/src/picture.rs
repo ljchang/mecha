@@ -817,14 +817,18 @@ pub fn faces_away(camera: &str) -> bool {
     };
     let away = camera_behind(camera)
         || has_run(&w, &["back", "view"])
-        // "from the back of the shed" is a place, not a back view.
-        || w.windows(4).any(|q| q[0] == "from" && q[1] == "the" && q[2] == "back" && q[3] != "of")
-        || w.ends_with(&["from".into(), "the".into(), "back".into()])
-        // In order: a back turned to the camera, never "back" anywhere
-        // beside "camera" ("the camera pulled back" is distance; review of
-        // #757).
+        // "From the back" ending its clause: never "the back wall" or "the
+        // back of the shed", which are places (review of #757, pass 7).
+        || camera
+            .split([',', ';', ':', '.'])
+            .any(|clause| camera_words(clause).ends_with(&["from".into(), "the".into(), "back".into()]))
+        // Someone's back turned to the camera: a possessive first, so "pulled
+        // back to show us the bench" is distance, not a back (review of #757,
+        // passes 1 and 7).
         || w.iter().enumerate().any(|(i, t)| {
             t == "back"
+                && i > 0
+                && ["her", "his", "their", "its"].contains(&w[i - 1].as_str())
                 && w
                     .get(i + 1)
                     .is_some_and(|n| ["to", "toward", "towards", "is", "turned"].contains(&n.as_str()))
@@ -2049,6 +2053,7 @@ mod tests {
             "the lens sits behind him at the bench",
             "the camera is behind him, low",
             "from behind her, the wheel in front of her hands",
+            "she works with her back to us",
             "his back toward the camera, glaze buckets beside",
             "from the back, shoulders filling the frame",
             "she has turned away from the lens",
@@ -2066,6 +2071,9 @@ mod tests {
             "tight on her face, shelves of pots behind her",
             "wide on the potter at her wheel, behind her the kiln",
             "tight on her hands, behind her the shelves",
+            "pulled back to show us the whole bench",
+            "shot from the back wall of the shed, wide on her face",
+            "stepped back toward the camera",
             "a medium shot so the mural is behind him",
             "tight on her face so the kiln is behind her",
             "from the back of the shed, wide on her face",
