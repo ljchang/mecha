@@ -756,10 +756,12 @@ fn camera_words(text: &str) -> Vec<String> {
 }
 
 /// Whether the camera owns "behind" or "rear" in `text`, rather than
-/// scenery or light: "behind" opening a clause or after "from", "is",
-/// "sits", "seen", "shot", "camera" or "lens"; a rear view, shot, angle or
-/// quarter; "from the rear". Never "pots behind her" (scenery) or "lit from
-/// behind" (light) (review of #757). Read per clause, so a comma starts one.
+/// scenery or light: "behind" opening the camera's words, or after "from",
+/// "is", "sits", "seen", "shot", "camera" or "lens"; a rear view, shot,
+/// angle or quarter; "from the rear". Never "pots behind her" (scenery),
+/// "lit from behind" (light), or a later clause that opens with "behind",
+/// which is scenery's shape too ("wide on her, behind her the kiln";
+/// review of #757). Read per clause, so a comma starts one.
 fn camera_behind(text: &str) -> bool {
     const OWNS: &[&str] = &[
         "from", "is", "sits", "seen", "shot", "camera", "lens", "viewed", "filmed",
@@ -767,22 +769,23 @@ fn camera_behind(text: &str) -> bool {
     const LIGHT: &[&str] = &[
         "lit", "backlit", "light", "lighting", "glow", "glowing", "sun", "sunlight",
     ];
-    text.split([',', ';', ':', '.']).any(|clause| {
-        let w = camera_words(clause);
-        let behind = w.iter().enumerate().any(|(i, t)| {
-            t == "behind"
-                && (i == 0 || OWNS.contains(&w[i - 1].as_str()))
-                && !(i >= 2 && w[i - 1] == "from" && LIGHT.contains(&w[i - 2].as_str()))
-        });
-        let rear = w.iter().enumerate().any(|(i, t)| {
-            t == "rear"
-                && (w
-                    .get(i + 1)
-                    .is_some_and(|n| ["view", "shot", "angle", "quarter"].contains(&n.as_str()))
-                    || (i >= 2 && w[i - 1] == "the" && w[i - 2] == "from"))
-        });
-        behind || rear
-    })
+    text.split([',', ';', ':', '.'])
+        .enumerate()
+        .any(|(k, clause)| {
+            let w = camera_words(clause);
+            let behind = w.iter().enumerate().any(|(i, t)| {
+                t == "behind"
+                    && ((i == 0 && k == 0) || (i > 0 && OWNS.contains(&w[i - 1].as_str())))
+                    && !(i >= 2 && w[i - 1] == "from" && LIGHT.contains(&w[i - 2].as_str()))
+            });
+            let rear = w.iter().enumerate().any(|(i, t)| {
+                t == "rear"
+                    && (w.get(i + 1).is_some_and(|n| {
+                        ["view", "shot", "angle", "quarter"].contains(&n.as_str())
+                    }) || (i >= 2 && w[i - 1] == "the" && w[i - 2] == "from"))
+            });
+            behind || rear
+        })
 }
 
 /// Whether `w` holds `seq` as consecutive words.
@@ -2043,6 +2046,8 @@ mod tests {
             "the lens pulled back, wide on the workshop",
             "his apron tied back, the lens close",
             "tight on her face, shelves of pots behind her",
+            "wide on the potter at her wheel, behind her the kiln",
+            "tight on her hands, behind her the shelves",
             "lit from behind by the kiln, eye level",
             "standing at the rear of the shed, toward the lens",
             "tight on his face and the clay",

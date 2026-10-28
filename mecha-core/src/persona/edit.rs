@@ -1435,17 +1435,23 @@ mod tests {
         };
         let read = |t: &str, l: &Looks| read_extraction_for(t, &known, None, l).unwrap();
         let e = read(
-            r#"{"look": "tight on the wheel, behind the potter"}"#,
+            r#"{"look": "tight on the wheel, from behind the potter"}"#,
             &looks,
         );
-        assert_eq!(e.scene["camera"], "tight on the wheel, behind the potter");
+        assert_eq!(
+            e.scene["camera"],
+            "tight on the wheel, from behind the potter"
+        );
         assert!(e.scene.get("setting").is_none(), "{:?}", e.scene);
         // Beside a camera of its own, the look is dropped, never stacked.
         let e = read(
-            r#"{"camera": "tight on the wheel, behind the potter", "look": "behind the potter"}"#,
+            r#"{"camera": "tight on the wheel, from behind the potter", "look": "behind the potter"}"#,
             &looks,
         );
-        assert_eq!(e.scene["camera"], "tight on the wheel, behind the potter");
+        assert_eq!(
+            e.scene["camera"],
+            "tight on the wheel, from behind the potter"
+        );
         assert!(e.scene.get("setting").is_none(), "{:?}", e.scene);
         // An earlier reading's framing look comes off the record's setting.
         let stuck = words("a potter's shed at dusk, in the look of low angle");
