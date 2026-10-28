@@ -621,8 +621,13 @@ kind is derived from its directory (`Entry.kind`).
   - in both slots: 4 of 5; with the expression and the eye clause gone
     too: 5 of 5, no second head, base seed included.
 
-  Without a `full_body` the portrait still goes and the sentence carries the
-  turn. The manifest's `cast` row then has no `portrait`, since none went.
+  Without a `full_body` the portrait still goes, and for a cast of one a
+  sentence carries the turn (a camera behind one of a group names that
+  one, and the sentence was never measured on more). The manifest's
+  `cast` row has no `portrait` when none went. A style clause that names
+  eyes goes whole, so "a photograph with sharp eyes and fine grain" loses
+  its medium too: clauses are split on commas and semicolons, and a style
+  left empty keeps its words.
 - **Labels have their own budget per person,** at most 300 characters of
   detail labels appended to one description (review of #680, pass 2).
   *Never built for pictures, and superseded there on 2026-10-26:* a label
