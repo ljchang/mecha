@@ -455,6 +455,7 @@ impl SceneReader for ModelReader {
                 styles: &styles,
                 record,
                 library: Some(&lib),
+                persona: shown_persona.as_deref(),
             },
         )
     }
@@ -484,6 +485,10 @@ pub struct Looks<'a> {
     /// waits on the owner or did not load is that finding, said by name,
     /// never words in the setting (review of #605).
     pub library: Option<&'a crate::imagelib::Library>,
+    /// Whom "you" and "her" name in the owner's words: the persona's linked
+    /// character as the picture names them (`picture::shown`), when it has
+    /// one.
+    pub persona: Option<&'a str>,
 }
 
 /// A held style replacing an earlier look in words: those words come off
@@ -663,9 +668,26 @@ pub fn read_extraction_for(
             None | Some(serde_json::Value::Null) => {}
             Some(serde_json::Value::String(t)) if t.trim().is_empty() => {}
             Some(serde_json::Value::String(t)) => {
-                scene.insert(k.into(), t.trim().into());
+                scene.insert(k.into(), owners_words(t.trim()).into());
             }
             Some(_) => return Err(format!("`{k}` was not text")),
+        }
+    }
+    // A camera said relative to the shot ("a touch wider, to show the
+    // window") moves the record's camera rather than replacing it: on
+    // 2026-10-28 a relative ask replaced a first-person camera, and the next
+    // three pictures lost the point of view.
+    if let (Some(serde_json::Value::String(new)), Some(old)) = (
+        scene.get("camera"),
+        looks
+            .record
+            .and_then(|r| r.camera.as_ref())
+            .map(|f| f.value.trim())
+            .filter(|c| !c.is_empty()),
+    ) {
+        if relative_camera(new) && !old.contains(new.as_str()) {
+            let joined = format!("{}, {new}", old.trim_end_matches(['.', ',']));
+            scene.insert("camera".into(), joined.into());
         }
     }
     // One person answered at the top level, as a model without the schema
@@ -686,6 +708,9 @@ pub fn read_extraction_for(
         .get("people")
         .filter(|p| !p.is_null())
         .or(top_level.as_ref());
+    // People a pronoun named and nobody drawable is: the owner, who is the
+    // viewer, or a group. Said beside the change, never a failure of it.
+    let mut not_people: Vec<String> = Vec::new();
     if let Some(people) = people {
         let list = people.as_array().ok_or("`people` was not a list")?;
         let mut out = Vec::new();
@@ -695,6 +720,28 @@ pub fn read_extraction_for(
                 .map(str::trim)
                 .filter(|w| !w.is_empty())
                 .ok_or("a person had no `who`")?;
+            // A pronoun is never a name: on 2026-10-28 a capitalised "you"
+            // read as one failed a whole reading. "You" and "her" are the
+            // persona, as the reader is told; "me" is the owner, who is the
+            // viewer; "we" and "both" are nobody in particular.
+            let who = match pronoun(who) {
+                None => who,
+                Some(Pronoun::Persona) => match looks.persona {
+                    Some(p) => p,
+                    None => {
+                        not_people.push(format!("{who} names no one in this picture"));
+                        continue;
+                    }
+                },
+                Some(Pronoun::Owner) => {
+                    not_people.push(format!("{who} is the owner, the viewer, never drawn"));
+                    continue;
+                }
+                Some(Pronoun::Group) => {
+                    not_people.push(format!("{who} names no one person"));
+                    continue;
+                }
+            };
             if looks_like_a_name(who) && !known(who) {
                 return Err(format!("{who} is not in this picture or the image library"));
             }
@@ -702,6 +749,11 @@ pub fn read_extraction_for(
             m.insert("who".into(), who.into());
             for k in ["wearing", "doing", "expression", "where"] {
                 if let Some(t) = p[k].as_str().map(str::trim).filter(|t| !t.is_empty()) {
+                    let t = if k == "where" {
+                        t.to_string()
+                    } else {
+                        owners_words(t)
+                    };
                     m.insert(k.into(), t.into());
                 }
             }
@@ -776,10 +828,11 @@ pub fn read_extraction_for(
         Some(_) => return Err("`look` was not text".into()),
     }
     let retouch = match obj.get("retouch") {
-        Some(serde_json::Value::String(t)) if !t.trim().is_empty() => Some(t.trim().to_string()),
+        Some(serde_json::Value::String(t)) if !t.trim().is_empty() => Some(owners_words(t.trim())),
         None | Some(serde_json::Value::Null) | Some(serde_json::Value::String(_)) => None,
         Some(_) => return Err("`retouch` was not text".into()),
     };
+    cannot.extend(not_people);
     // Only an answer with nothing in it is "another try" (§5.3 step 5). One
     // whose keys this reader could not use is a failure, said, never a redraw
     // (mecha-a3's G1).
@@ -808,16 +861,11 @@ pub fn read_extraction_for(
             keys.join(", ")
         ));
     }
-    let (retouch, left_out) = if scene.is_empty() {
-        (retouch, None)
-    } else {
-        (None, retouch)
-    };
-    let left_out = match (left_out, cannot.is_empty()) {
-        (l, true) => l,
-        (None, false) => Some(cannot.join("; ")),
-        (Some(l), false) => Some(format!("{l}; {}", cannot.join("; "))),
-    };
+    // A retouch beside a scene change rides with it: `image_generate` folds
+    // it in as one more line of the render (`picture::Plan::also`). Left
+    // out, it dropped the owner's asks a reader filed there: on 2026-10-28
+    // a pose and an expression, beside a camera change.
+    let left_out = (!cannot.is_empty()).then(|| cannot.join("; "));
     Ok(Extracted {
         scene,
         retouch,
@@ -841,20 +889,23 @@ fn looks_like_a_name(who: &str) -> bool {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Extracted {
     pub scene: serde_json::Map<String, serde_json::Value>,
+    /// A small change to something that is not a person, alone or beside
+    /// the scene change, which `image_generate` then draws as one more line.
     pub retouch: Option<String>,
-    /// A retouch the extraction gave beside a scene change, not drawn.
+    /// What the extraction asked for that cannot be drawn, said.
     pub left_out: Option<String>,
 }
 
 impl Extracted {
-    /// The `image_generate` call for `picture`: the scene change, or the
-    /// retouch with the owner's painted mask. Nothing at all is a redraw
-    /// (§5.3 step 5): `picture` alone changes nothing.
+    /// The `image_generate` call for `picture`: the scene change and the
+    /// retouch beside it. Nothing at all is a redraw (§5.3 step 5):
+    /// `picture` alone changes nothing.
     pub fn call(&self, picture: &str) -> serde_json::Value {
         let mut call = serde_json::json!({ "picture": picture });
         if !self.scene.is_empty() {
             call["scene"] = serde_json::Value::Object(self.scene.clone());
-        } else if let Some(r) = &self.retouch {
+        }
+        if let Some(r) = &self.retouch {
             call["retouch"] = r.clone().into();
         }
         call
@@ -863,18 +914,104 @@ impl Extracted {
     /// The change in words for the fact: the typed fields, or that it was
     /// drawn again.
     pub fn summary(&self) -> String {
-        let mut said = if !self.scene.is_empty() {
-            serde_json::Value::Object(self.scene.clone()).to_string()
-        } else if let Some(r) = &self.retouch {
-            format!("retouch: {r}")
-        } else {
-            "drawn again".to_string()
+        let mut said = match (self.scene.is_empty(), &self.retouch) {
+            (false, Some(r)) => format!(
+                "{}, with: {r}",
+                serde_json::Value::Object(self.scene.clone())
+            ),
+            (false, None) => serde_json::Value::Object(self.scene.clone()).to_string(),
+            (true, Some(r)) => format!("retouch: {r}"),
+            (true, None) => "drawn again".to_string(),
         };
         if let Some(l) = &self.left_out {
             said.push_str(&format!("; not drawn, beside the scene change: {l}"));
         }
         said
     }
+}
+
+/// What a pronoun in a `who` stands for: the persona the owner talks to,
+/// the owner themselves, or a group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pronoun {
+    Persona,
+    Owner,
+    Group,
+}
+
+/// A `who` that is a pronoun rather than a name or a description, the
+/// owner's words as a reader copied them ("You", "me", "we"), with any
+/// " of us" or " of you" after a group's word.
+fn pronoun(who: &str) -> Option<Pronoun> {
+    let who = who.trim().trim_end_matches('.').to_lowercase();
+    let group = who
+        .strip_suffix(" of us")
+        .or_else(|| who.strip_suffix(" of you"))
+        .unwrap_or(&who);
+    if matches!(group, "both" | "all" | "the two" | "the three" | "the four") && group != who {
+        return Some(Pronoun::Group);
+    }
+    match who.as_str() {
+        "you" | "yourself" | "she" | "her" | "herself" => Some(Pronoun::Persona),
+        "i" | "me" | "myself" | "owner" | "the owner" | "viewer" | "the viewer" => {
+            Some(Pronoun::Owner)
+        }
+        "we" | "us" | "ourselves" | "both" | "all" | "everyone" | "everybody" | "they" | "them" => {
+            Some(Pronoun::Group)
+        }
+        _ => None,
+    }
+}
+
+/// The owner's first person in a reader's field, as the image model reads
+/// it: "my", "mine", "me", "myself" and "I" are the viewer, who is never
+/// drawn (`picture::as_viewer`). The reader copies the owner's own words, so
+/// on 2026-10-28 an act on "my" body reached the image model with nobody it
+/// could be, and it drew a third person to be "me".
+pub(crate) fn owners_words(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 16);
+    let mut word = String::new();
+    let flush = |word: &mut String, out: &mut String| {
+        out.push_str(match word.to_lowercase().as_str() {
+            "my" | "mine" => "the viewer's",
+            "me" | "myself" | "i" => "the viewer",
+            "i'm" | "i’m" => "the viewer is",
+            _ => word.as_str(),
+        });
+        word.clear();
+    };
+    for c in text.chars() {
+        if c.is_alphanumeric() || c == '\'' || c == '’' {
+            word.push(c);
+        } else {
+            flush(&mut word, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut word, &mut out);
+    out
+}
+
+/// Whether a camera ask moves the shot it is given against rather than
+/// naming one: a zoom, closer or wider, pulled back or in, a little or a
+/// bit. "Close up" names a shot; "a touch nearer" moves one.
+fn relative_camera(camera: &str) -> bool {
+    let w: Vec<String> = camera
+        .to_lowercase()
+        .split(|c: char| !c.is_alphabetic())
+        .filter(|w| !w.is_empty())
+        .map(String::from)
+        .collect();
+    let first = w
+        .iter()
+        .find(|t| !["a", "just", "and", "now", "then", "please"].contains(&t.as_str()));
+    first.is_some_and(|t| {
+        [
+            "zoom", "zoomed", "closer", "further", "farther", "wider", "tighter", "pull", "pulled",
+            "push", "pushed", "move", "bit", "little", "slightly", "touch", "nearer",
+        ]
+        .contains(&t.as_str())
+    })
 }
 
 /// One painted region from the edit panel: its colour, its words, and a
@@ -985,6 +1122,115 @@ mod tests {
         assert!(crate::agent::is_harness_voice(REDRAW_NOT_DRAWN));
     }
 
+    /// 2026-10-28: a reader's capitalised `who: "You"` read as a name failed
+    /// the whole reading. You is the persona, me the owner (the viewer, never
+    /// drawn), "we" nobody in particular: each is said, never a failure of
+    /// the rest. Fails on the old reader, which refused "You".
+    #[test]
+    fn a_pronoun_in_who_is_the_persona_the_owner_or_nobody() {
+        let known = |w: &str| ["Maya", "John"].contains(&w);
+        let looks = Looks {
+            persona: Some("Maya"),
+            ..Default::default()
+        };
+        let e = read_extraction_for(
+            r#"{"people": [{"who": "You", "wearing": "a robe"},
+                {"who": "me", "wearing": "jeans"}, {"who": "We", "doing": "lying down"}],
+                "light": "dusk"}"#,
+            &known,
+            None,
+            &looks,
+        )
+        .unwrap();
+        assert_eq!(
+            e.scene["people"],
+            serde_json::json!([{"who": "Maya", "wearing": "a robe"}])
+        );
+        let said = e.left_out.as_deref().unwrap_or("");
+        assert!(said.contains("me is the owner, the viewer"), "{said}");
+        assert!(said.contains("We names no one person"), "{said}");
+        // Without a persona character "you" names nobody, still not a name.
+        let e = read_extraction(
+            r#"{"people": [{"who": "You", "doing": "waving"}], "light": "dusk"}"#,
+            &known,
+        )
+        .unwrap();
+        assert!(e.scene.get("people").is_none());
+        // Only a pronoun, and nothing else: that is the answer, said.
+        let why = read_extraction(
+            r#"{"people": [{"who": "Me", "wearing": "a suit"}]}"#,
+            &known,
+        )
+        .unwrap_err();
+        assert!(why.contains("the viewer"), "{why}");
+    }
+
+    /// 2026-10-28: the reader copied "my" into a part, and the image
+    /// model had nobody it could be, so it drew a third person. The owner's
+    /// first person is the viewer; a name or "mystery" is left alone.
+    #[test]
+    fn the_owners_first_person_is_the_viewer() {
+        assert_eq!(
+            owners_words("holding my hand, looking at me; I watch"),
+            "holding the viewer's hand, looking at the viewer; the viewer watch"
+        );
+        assert_eq!(
+            owners_words("from my point of view"),
+            "from the viewer's point of view"
+        );
+        assert_eq!(
+            owners_words("a mystery novel by Ian"),
+            "a mystery novel by Ian"
+        );
+        let known = |w: &str| w == "Maya";
+        let e = read_extraction(
+            r#"{"together": "Maya kisses me", "people": [{"who": "Maya", "doing": "sitting on my lap"}]}"#,
+            &known,
+        )
+        .unwrap();
+        assert_eq!(e.scene["together"], "Maya kisses the viewer");
+        assert_eq!(e.scene["people"][0]["doing"], "sitting on the viewer's lap");
+    }
+
+    /// 2026-10-28: a relative camera ask replaced a first-person camera and
+    /// the next pictures lost the point of view. A camera said against
+    /// the shot joins the record's; one that names a shot replaces it.
+    #[test]
+    fn a_relative_camera_moves_the_recorded_one() {
+        let known = |_: &str| true;
+        let record = crate::scene::Scene {
+            camera: Some(crate::scene::Field {
+                value: "first person point of view, looking down".into(),
+                origin: crate::scene::Origin::Clean,
+            }),
+            ..Default::default()
+        };
+        let looks = Looks {
+            record: Some(&record),
+            ..Default::default()
+        };
+        let read = |t: &str| read_extraction_for(t, &known, None, &looks).unwrap();
+        for moved in [
+            "zoom out a touch to show the window",
+            "a touch nearer",
+            "pull back to show the bed",
+        ] {
+            let e = read(&format!(r#"{{"camera": "{moved}"}}"#));
+            assert_eq!(
+                e.scene["camera"],
+                format!("first person point of view, looking down, {moved}"),
+                "{moved}"
+            );
+        }
+        for named in ["close up on the teapot", "full body shot from the side"] {
+            let e = read(&format!(r#"{{"camera": "{named}"}}"#));
+            assert_eq!(e.scene["camera"], named, "{named}");
+        }
+        // No recorded camera: the ask is the camera.
+        let e = read_extraction(r#"{"camera": "a touch nearer"}"#, &known).unwrap();
+        assert_eq!(e.scene["camera"], "a touch nearer");
+    }
+
     #[test]
     fn an_extraction_reads_into_the_tools_call() {
         let known = |w: &str| ["Maya", "John"].contains(&w);
@@ -1011,11 +1257,20 @@ mod tests {
         // A newline in what the owner typed never moves the result's line.
         let f = fact("images/a.png", "a red\nscarf", "image: images/b.png");
         assert_eq!(fact_result(&f), Some("image: images/b.png"));
-        // A retouch beside a scene change is left out and said.
+        // A retouch beside a scene change rides with it, one more line the
+        // tool draws (`picture::Plan::also`), and is said with it.
         let e =
             read_extraction(r#"{"light": "dusk", "retouch": "a red umbrella"}"#, &known).unwrap();
-        assert_eq!(e.retouch, None);
-        assert!(e.summary().contains("not drawn"), "{}", e.summary());
+        assert_eq!(
+            e.call("p"),
+            serde_json::json!({"picture": "p", "scene": {"light": "dusk"}, "retouch": "a red umbrella"})
+        );
+        assert!(
+            e.summary().ends_with(", with: a red umbrella"),
+            "{}",
+            e.summary()
+        );
+        assert!(e.left_out.is_none());
         // A retouch alone.
         let e = read_extraction(r#"{"retouch": "a red umbrella"}"#, &known).unwrap();
         assert_eq!(e.call("p")["retouch"], "a red umbrella");
@@ -1103,7 +1358,7 @@ mod tests {
             ..Default::default()
         };
         let read = |t: &str| read_extraction_for(t, &known, None, &looks);
-        // A held style, however it is said, and a retouch beside it left out.
+        // A held style, however it is said, and a retouch beside it riding.
         for said in ["Black and white", "black-and-white style", "INK WASH look"] {
             let e = read(&format!(r#"{{"look": "{said}", "retouch": "{said}"}}"#)).unwrap();
             assert!(
@@ -1111,7 +1366,8 @@ mod tests {
                 "{said}: {:?}",
                 e.scene
             );
-            assert!(e.call("p").get("retouch").is_none() && e.left_out.is_some());
+            assert_eq!(e.call("p")["retouch"], said);
+            assert!(e.left_out.is_none());
         }
         // Any other look joins the record's setting, in the owner's words.
         let e = read(r#"{"look": "pencil sketch"}"#).unwrap();
@@ -1246,6 +1502,7 @@ mod tests {
             styles: &styles,
             record: Some(&mine),
             library: Some(&lib),
+            persona: None,
         };
         let e = read_extraction_for(
             r#"{"style": "secret wash", "light": "dusk"}"#,
@@ -1259,6 +1516,7 @@ mod tests {
             styles: &styles,
             record: Some(&harbour),
             library: Some(&lib),
+            persona: None,
         };
         let e =
             read_extraction_for(r#"{"look": "secret wash"}"#, &known, None, &elsewhere).unwrap();
