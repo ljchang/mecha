@@ -764,7 +764,7 @@ fn camera_words(text: &str) -> Vec<String> {
 /// review of #757). Read per clause, so a comma starts one.
 fn camera_behind(text: &str) -> bool {
     const OWNS: &[&str] = &[
-        "from", "is", "sits", "seen", "shot", "camera", "lens", "viewed", "filmed",
+        "from", "sits", "seen", "shot", "camera", "lens", "viewed", "filmed",
     ];
     const LIGHT: &[&str] = &[
         "lit", "backlit", "light", "lighting", "glow", "glowing", "sun", "sunlight",
@@ -776,7 +776,7 @@ fn camera_behind(text: &str) -> bool {
             let behind = w.iter().enumerate().any(|(i, t)| {
                 t == "behind"
                     && ((i == 0 && k == 0)
-                        || (i > 0 && OWNS.contains(&w[i - 1].as_str()) && w[i - 1] != "is")
+                        || (i > 0 && OWNS.contains(&w[i - 1].as_str()))
                         // "is behind" only with the camera as its subject:
                         // "the kiln is behind her" is scenery (review of
                         // #757, pass 5).
@@ -837,7 +837,13 @@ pub fn faces_away(camera: &str) -> bool {
             .any(|(i, t)| ["face", "faces", "facing", "turned"].contains(&t.as_str()) && turned(i));
     // A face meant to show: the front, a shoulder looked over, or a face,
     // a look or eyes toward the camera, the viewer or us, unless turned away.
-    let facing = has("front")
+    // "front" as the camera's side, never the positional "in front of"
+    // ("the wheel in front of her hands" places a wheel; review of #757,
+    // pass 6).
+    let facing = w
+        .iter()
+        .enumerate()
+        .any(|(i, t)| t == "front" && !(i > 0 && w[i - 1] == "in"))
         || has("frontal")
         || w.iter().enumerate().any(|(i, t)| {
             t == "over"
@@ -2042,6 +2048,7 @@ mod tests {
             "rear quarter view by the kiln",
             "the lens sits behind him at the bench",
             "the camera is behind him, low",
+            "from behind her, the wheel in front of her hands",
             "his back toward the camera, glaze buckets beside",
             "from the back, shoulders filling the frame",
             "she has turned away from the lens",

@@ -1846,7 +1846,8 @@ struct CloseUp {
 pub struct Compiled {
     pub prompt: String,
     /// `(name, bytes, ext)` in `<imageN>` order; a full figure's name is
-    /// `full_body:<name>`, after its person's portrait.
+    /// `full_body:<name>`, after its person's portrait, or twice in a row
+    /// with no portrait for someone drawn from behind (§9.4).
     pub references: Vec<(String, Vec<u8>, &'static str)>,
     pub used: Vec<Used>,
     /// Seeds that drew the cast's portraits, when known.
@@ -2441,8 +2442,12 @@ pub fn compile_with(
                 c.split(|ch: char| !ch.is_alphabetic())
                     .any(|w| w.eq_ignore_ascii_case("eye") || w.eq_ignore_ascii_case("eyes"))
             };
+            // Clauses are separated by commas or semicolons; a style
+            // written as one sentence keeps its words (below).
             let kept = text
-                .split(", ")
+                .split([',', ';'])
+                .map(str::trim)
+                .filter(|c| !c.is_empty())
                 .filter(|c| !about_eyes(c))
                 .collect::<Vec<_>>()
                 .join(", ");
@@ -4130,6 +4135,16 @@ mod tests {
         assert!(
             c.prompt
                 .ends_with("Style: film still with sharp focus on the eyes"),
+            "{}",
+            c.prompt
+        );
+        let mut semi = style("semi");
+        semi.text = "matte skin; sharp eyes; warm light".into();
+        create(dir.path(), semi).unwrap();
+        let lib = Library::load(dir.path()).0;
+        let c = compile(&lib, "a studio", &[away()], &[], Some("semi")).unwrap();
+        assert!(
+            c.prompt.ends_with("Style: matte skin, warm light"),
             "{}",
             c.prompt
         );
