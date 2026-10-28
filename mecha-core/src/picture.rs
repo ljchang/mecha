@@ -865,6 +865,33 @@ pub fn faces_away(camera: &str) -> bool {
     away && !facing
 }
 
+/// Whose own eyes a camera is, when it is someone's: a first-person camera
+/// ("first person", "first-person", "through her own eyes", "through John's
+/// eyes") and the one library name in it that is its holder, by a
+/// possessive ("from John's first-person view") or as the only name the
+/// camera holds ("first person, John at the stove"). `names` are the
+/// library keys named in `camera`. A point of view alone ("a wide shot
+/// from John's POV") is not first person: it is how a persona says where a
+/// wide shot stands, with the holder in it.
+pub fn first_person_holder(camera: &str, names: &[String]) -> Option<String> {
+    let w = camera_words(camera);
+    let through_eyes = w
+        .iter()
+        .enumerate()
+        .any(|(i, t)| t == "through" && w[i + 1..(i + 4).min(w.len())].iter().any(|x| x == "eyes"));
+    if !(has_run(&w, &["first", "person"]) || has_run(&w, &["own", "eyes"]) || through_eyes) {
+        return None;
+    }
+    let possessive = names
+        .iter()
+        .find(|n| w.iter().any(|t| *t == format!("{n}'s")));
+    match (possessive, names) {
+        (Some(n), _) => Some(n.clone()),
+        (None, [only]) => Some(only.clone()),
+        _ => None,
+    }
+}
+
 /// Whether words name a shot rather than a look: framing, distance or
 /// angle. A reader that filed a framing word as a `look` had it joined to
 /// the setting, where it rode every later picture (owner, 2026-10-27); such
@@ -1349,6 +1376,53 @@ pub fn plan(
     }
     let mut people = next.people.clone();
     people.sort_by_key(|p| rank(p.at));
+    // A cast member who holds a first-person camera (`first_person_holder`)
+    // is left out, beside someone the camera looks at: the record keeps them, the
+    // image model reads "the viewer", and their clothes and act are one line
+    // of what that viewer's eyes see. Sent as a cast member under a
+    // first-person camera, the holder's portrait drew his face in all four
+    // renders of 2026-10-28, and the people beside him twice over.
+    let mut seen_from: Option<String> = None;
+    if let Some(camera) = next.camera.as_ref().map(|f| f.value.as_str()) {
+        let holder = first_person_holder(camera, &named_in(camera)).filter(|h| {
+            people.len() >= 2
+                && people
+                    .iter()
+                    .any(|p| matches!(&p.who, Who::Library(n) if n == h))
+        });
+        if let Some(h) = holder {
+            let at = people
+                .iter()
+                .position(|p| matches!(&p.who, Who::Library(n) if *n == h))
+                .expect("found above");
+            let p = people.remove(at);
+            let mut own: Vec<&str> = Vec::new();
+            if !p.wearing.trim().is_empty() && p.wearing.trim() != WEARING_UNSAID {
+                own.push(p.wearing.trim());
+            }
+            if !p.doing.trim().is_empty() {
+                own.push(p.doing.trim());
+            }
+            seen_from = Some(if own.is_empty() {
+                "The camera is the viewer's own eyes: the viewer's face is never in the picture."
+                    .into()
+            } else {
+                format!(
+                    "The camera is the viewer's own eyes: the viewer's face is never in the \
+                     picture, only their body as they see it ({}).",
+                    own.join(", ")
+                )
+            });
+            if !offstage.contains(&h) {
+                offstage.push(h.clone());
+            }
+            let name = crate::imagegen::capitalized(&h);
+            notes.push(format!(
+                "The camera is {name}'s own eyes, so {name} is left out of the cast and read \
+                 as \"the viewer\", whose face never shows."
+            ));
+        }
+    }
     let library = |p: &&crate::scene::Person| matches!(p.who, Who::Library(_));
     let faces_all: Vec<String> = people.iter().filter(library).map(|p| p.who.key()).collect();
     if faces_all.len() > MAX_FACES {
@@ -1390,10 +1464,15 @@ pub fn plan(
         route: "new",
         said: (!notes.is_empty()).then(|| notes.join(" ")),
         clothes_said,
-        also: call
-            .retouch
-            .clone()
-            .filter(|_| call.picture.is_none() || !unchanged),
+        also: match (
+            call.retouch
+                .clone()
+                .filter(|_| call.picture.is_none() || !unchanged),
+            seen_from,
+        ) {
+            (Some(r), Some(s)) => Some(format!("{}. {s}", r.trim().trim_end_matches('.'))),
+            (r, s) => r.or(s),
+        },
         offstage,
     };
     // A new picture: its setting is a photo (people placed in it), or words.
@@ -2198,6 +2277,99 @@ mod tests {
             ),
             "Maya waves at the viewer. The words \"Happy Birthday John\" appear."
         );
+    }
+
+    /// A first-person camera's holder is the name it gives them by a
+    /// possessive, or its one name; a point of view alone is not first
+    /// person, and two names with no possessive are nobody's eyes.
+    #[test]
+    fn a_first_person_camera_names_whose_eyes_it_is() {
+        let n = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        for (camera, names, holder) in [
+            (
+                "first person, showing John at the stove",
+                n(&["john"]),
+                Some("john"),
+            ),
+            (
+                "from john's first-person view, his face out of frame",
+                n(&["john"]),
+                Some("john"),
+            ),
+            (
+                "a first-person shot from John's side of the table, Maya opposite",
+                n(&["john", "maya"]),
+                Some("john"),
+            ),
+            (
+                "close on Maya, seen through John's eyes",
+                n(&["maya", "john"]),
+                Some("john"),
+            ),
+            (
+                "a wide angle from John's POV across the garden",
+                n(&["john"]),
+                None,
+            ),
+            (
+                "first person view of Maya and John",
+                n(&["maya", "john"]),
+                None,
+            ),
+            ("a first person shot", n(&[]), None),
+        ] {
+            assert_eq!(
+                first_person_holder(camera, &names).as_deref(),
+                holder,
+                "{camera}"
+            );
+        }
+    }
+
+    /// Owner, 2026-10-28: someone whose own eyes the camera is, listed in
+    /// `people`, had their portrait sent and their face drawn in 4 of 4
+    /// renders. They stay in the record, are left out of the cast, read as
+    /// "the viewer", and their act is the viewer's line. Fails on the old
+    /// planner, which cast them.
+    #[test]
+    fn a_first_person_cameras_holder_is_the_viewer_not_the_cast() {
+        let p = planned(
+            &call(json!({"scene": {"setting": "a kitchen",
+                "camera": "first-person view through John's eyes, across the kitchen",
+                "people": [
+                    {"who": "maya", "wearing": "a coat", "doing": "stirring a pot"},
+                    {"who": "john", "wearing": "pyjamas", "doing": "leaning on the counter"}]}})),
+            None,
+        );
+        let cast: Vec<String> = p.people.iter().map(|q| q.who.key()).collect();
+        assert_eq!(cast, ["maya"]);
+        assert!(!p.faces.contains(&"john".to_string()), "{:?}", p.faces);
+        let kept: Vec<String> = p.next.people.iter().map(|q| q.who.key()).collect();
+        assert_eq!(kept, ["maya", "john"], "the record keeps him");
+        assert_eq!(p.offstage, vec!["john".to_string()]);
+        let also = p.also.as_deref().unwrap_or("");
+        assert!(also.contains("the viewer's own eyes"), "{also}");
+        assert!(also.contains("pyjamas, leaning on the counter"), "{also}");
+        assert!(p.said.as_deref().unwrap_or("").contains("John's own eyes"));
+        // Not first person: a wide shot from his point of view draws him.
+        let wide = planned(
+            &call(json!({"scene": {"setting": "a kitchen",
+                "camera": "a wide angle from John's POV",
+                "people": [
+                    {"who": "maya", "wearing": "a coat", "doing": "sitting"},
+                    {"who": "john", "wearing": "pyjamas", "doing": "leaning on the counter"}]}})),
+            None,
+        );
+        assert_eq!(wide.people.len(), 2);
+        assert!(wide.also.is_none());
+        // Alone, the camera has nobody else to see: he is drawn.
+        let alone = planned(
+            &call(json!({"scene": {"setting": "a kitchen",
+                "camera": "first-person view through John's eyes, across the kitchen",
+                "people": [{"who": "john", "wearing": "pyjamas", "doing": "reading"}]}})),
+            None,
+        );
+        assert_eq!(alone.people.len(), 1);
     }
 
     /// A new picture naming library characters with nobody in `people`
