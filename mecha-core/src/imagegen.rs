@@ -4433,6 +4433,12 @@ impl Tool for ImageGenerate {
                     let mut in_act = Vec::new();
                     let everyone: Vec<&crate::scene::Person> = people.iter().collect();
                     let shared = words.together.as_ref().map(|f| f.value.as_str());
+                    // A camera behind the people turns everyone's face away
+                    // (`imagelib::CastMember::face_away`).
+                    let face_away = words
+                        .camera
+                        .as_ref()
+                        .is_some_and(|f| crate::picture::faces_away(&f.value));
                     for p in people {
                         let doing = doing_words(p, together);
                         let kept = clothes_in_act(
@@ -4455,6 +4461,7 @@ impl Tool for ImageGenerate {
                                     wearing: p.wearing.clone(),
                                     doing,
                                     clothes_in_act: kept,
+                                    face_away,
                                 })
                             }
                             crate::scene::Who::Described(d) => {

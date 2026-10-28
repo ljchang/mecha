@@ -745,6 +745,91 @@ fn resolve_name(
     approved(&key).then_some(Ok(Who::Library(key)))
 }
 
+/// A camera's words, lowercased, split on anything not a letter or an
+/// apostrophe: what [`faces_away`] and [`is_framing`] read.
+fn camera_words(text: &str) -> Vec<String> {
+    text.to_lowercase()
+        .split(|c: char| !(c.is_alphabetic() || c == '\''))
+        .filter(|w| !w.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+/// Whether `w` holds `seq` as consecutive words.
+fn has_run(w: &[String], seq: &[&str]) -> bool {
+    w.windows(seq.len())
+        .any(|win| win.iter().zip(seq).all(|(a, b)| a == b))
+}
+
+/// Whether a camera sees its people from behind, so their faces are turned
+/// away (`imagelib::CastMember::face_away`): "behind" or "rear", a back
+/// view, the back toward the camera, or a face turned away. A front, an
+/// over-the-shoulder shot, or a face toward the camera or the viewer reads
+/// as not, since a face is then meant to show.
+pub fn faces_away(camera: &str) -> bool {
+    let w = camera_words(camera);
+    let has = |x: &str| w.iter().any(|t| t == x);
+    let turned = |i: usize| {
+        w[i.saturating_sub(2)..(i + 3).min(w.len())]
+            .iter()
+            .any(|t| t == "away")
+    };
+    let away = has("behind")
+        || has("rear")
+        || has_run(&w, &["back", "view"])
+        || has_run(&w, &["from", "the", "back"])
+        || (has("back") && has("camera"))
+        || w.iter()
+            .enumerate()
+            .any(|(i, t)| ["face", "faces", "facing", "turned"].contains(&t.as_str()) && turned(i));
+    // A face meant to show: the front, a shoulder looked over, or a face,
+    // a look or eyes toward the camera, the viewer or us, unless turned away.
+    let facing = has("front")
+        || has("frontal")
+        || has("shoulder")
+        || w.iter().enumerate().any(|(i, t)| {
+            ["face", "faces", "facing", "looking", "looks", "eyes"].contains(&t.as_str())
+                && !turned(i)
+                && w[i + 1..(i + 4).min(w.len())]
+                    .iter()
+                    .any(|x| ["camera", "viewer", "us", "lens"].contains(&x.as_str()))
+        });
+    away && !facing
+}
+
+/// Whether words name a shot rather than a look: framing, distance or
+/// angle. A reader that filed a framing word as a `look` had it joined to
+/// the setting, where it rode every later picture (owner, 2026-10-27); such
+/// words are the camera's.
+pub fn is_framing(words: &str) -> bool {
+    let w = camera_words(words);
+    let has = |x: &str| w.iter().any(|t| t == x);
+    const PAIRS: &[[&str; 2]] = &[
+        ["close", "up"],
+        ["full", "body"],
+        ["whole", "body"],
+        ["wide", "shot"],
+        ["medium", "shot"],
+        ["long", "shot"],
+        ["low", "angle"],
+        ["high", "angle"],
+        ["camera", "angle"],
+        ["from", "above"],
+        ["from", "below"],
+        ["bird's", "eye"],
+        ["eye", "level"],
+        ["back", "view"],
+        ["point", "of"],
+    ];
+    has("closeup")
+        || has("zoom")
+        || has("overhead")
+        || has("behind")
+        || has("rear")
+        || has("shoulder")
+        || PAIRS.iter().any(|p| has_run(&w, p))
+}
+
 /// What a person wears when nobody said and nothing is on record: drawn
 /// as the scene suits. A judge reads it as no claim about the picture
 /// (`persona::replay_judge::clauses`), since every outfit suits it.
@@ -1887,6 +1972,49 @@ mod tests {
             let p = plan(&c, Some(&rec), None, Origin::Clean, &lib, &names, &|_| None).unwrap();
             assert_eq!(p.next.people.len(), 1, "{old}: {:?}", p.next.people);
             assert_eq!(p.next.people[0].who, Who::Library("wren".into()), "{old}");
+        }
+    }
+
+    /// A camera behind the people turns their faces away; one that names
+    /// the front, a shoulder looked over, or a face toward the lens does
+    /// not, and a back toward the lens is still from behind.
+    #[test]
+    fn faces_away_reads_the_camera() {
+        for away in [
+            "tight on the wheel, from behind the potter",
+            "rear quarter view by the kiln",
+            "the lens sits behind him at the bench",
+            "his back toward the camera, glaze buckets beside",
+            "from the back, shoulders filling the frame",
+            "she has turned away from the lens",
+        ] {
+            assert!(faces_away(away), "{away}");
+        }
+        for not in [
+            "wide on the workshop, eye level",
+            "behind the bench, then round to the front",
+            "from behind the kiln, over her shoulder",
+            "rear quarter, her face toward the lens",
+            "tight on his face and the clay",
+            "",
+        ] {
+            assert!(!faces_away(not), "{not}");
+        }
+        for shot in [
+            "Close-up",
+            "behind the wheel",
+            "full body, wide",
+            "low angle by the kiln",
+        ] {
+            assert!(is_framing(shot), "{shot}");
+        }
+        for look in [
+            "pencil sketch",
+            "1930s lantern slide",
+            "watercolour",
+            "back lit dusk",
+        ] {
+            assert!(!is_framing(look), "{look}");
         }
     }
 

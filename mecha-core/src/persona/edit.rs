@@ -203,15 +203,23 @@ fn photo_setting(
 /// The extraction's instructions: a3's measured wording (EVIDENCE §B.8,
 /// §D), with the clothes home the fast misses lacked and the `kind`
 /// discriminator gone.
+/// `camera` is the framing in the owner's words with its purpose, and never a
+/// `look` (owner, 2026-10-27: a framing word filed as a look was joined to
+/// the setting and rode every later picture). Measured on 18 made-up camera
+/// asks against the local reader, two runs each: framing filed as a look 1
+/// to 0, a purpose kept 2 of 8 to 5 of 8, the looks, clothes, light and
+/// poses unchanged.
 const EXTRACTION_SYSTEM: &str = "You turn the owner's request to change a picture into the \
 fields that change. Given the picture's scene record and the owner's words, fill only what \
 changes: people (by `who` from the record) with `doing` for a new pose or action, `expression` \
 for the face, `wearing` for clothes (clothes alone: only `wearing`), `where` for their place \
 in the frame; `remove` to take \
 someone out; someone new with their `who`, `wearing` and `doing`; `together` for what the people \
-in the picture do with each other, as one line naming them; `camera`, `light`, `setting` when \
-those change; `look` when the owner asks for a different look (a style, a medium, an era), \
-copied short in the owner's own words; `retouch` for a small change to something that is not a \
+in the picture do with each other, as one line naming them; `camera` for the framing, distance \
+and angle (a close up, from behind, a full body shot, from above) in the owner's own words, with \
+what the shot is meant to show when they say it; `light`, `setting` when those change; `look` \
+when the owner asks for a different look (a style, a medium, an era; never framing or an angle, \
+which are `camera`), copied short in the owner's own words; `retouch` for a small change to something that is not a \
 person. \
 Leave out \
 everything that stays the same. If the words only ask for another try, answer {}. Answer with \
@@ -509,6 +517,28 @@ fn drop_earlier_look(
 /// replaces the earlier one rather than stacking beside it.
 const LOOK_JOIN: &str = ", in the look of ";
 
+/// A look an earlier reading joined to the setting that names a shot, not a
+/// look (`picture::is_framing`), taken off: the setting the change carries,
+/// or the record's. Any other look stays.
+fn strip_framing_look(looks: &Looks, scene: &mut serde_json::Map<String, serde_json::Value>) {
+    let words = match scene.get("setting").and_then(serde_json::Value::as_str) {
+        Some(given) => Some(given.to_string()),
+        None => match looks
+            .record
+            .and_then(|r| r.setting.as_ref())
+            .map(|f| &f.value)
+        {
+            Some(crate::scene::Setting::Words { text }) => Some(text.clone()),
+            _ => None,
+        },
+    };
+    if let Some((before, joined)) = words.as_deref().and_then(|w| w.split_once(LOOK_JOIN)) {
+        if crate::picture::is_framing(joined) && !before.trim().is_empty() {
+            scene.insert("setting".into(), before.trim().into());
+        }
+    }
+}
+
 /// The owner's look, in their words, made a change by code (mecha-a3's G605:
 /// the reader copies a look faithfully, 27 of 27, but given `style` it chose
 /// the nearest name or invented one, 0 of 18 unheld looks right). A look the
@@ -703,12 +733,27 @@ pub fn read_extraction_for(
         }
     };
     let mut no_op_look = false;
+    // A shot filed as a look is the camera's (`picture::is_framing`): moved
+    // there when the answer gave no camera, dropped beside one that did, and
+    // a framing look an earlier reading joined to the record's setting comes
+    // off it (owner, 2026-10-27).
+    let framing_look = obj
+        .get("look")
+        .or_else(|| obj.get("style"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|t| !t.is_empty() && crate::picture::is_framing(t));
+    if let Some(shot) = framing_look {
+        scene.entry("camera").or_insert_with(|| shot.into());
+        strip_framing_look(looks, &mut scene);
+    }
     // `style` too: the record shows that key, and a reader without the
     // schema answers in it (review of #605).
     match obj
         .get("look")
         .filter(|v| !v.is_null() && v.as_str().is_none_or(|t| !t.trim().is_empty()))
         .or_else(|| obj.get("style"))
+        .filter(|_| framing_look.is_none())
     {
         None | Some(serde_json::Value::Null) => {}
         Some(serde_json::Value::String(t)) if t.trim().is_empty() => {}
@@ -1372,5 +1417,56 @@ mod tests {
         assert!(extraction_request("m", None, "x", None, &[], false)
             .response_schema
             .is_none());
+    }
+
+    /// A shot filed as a look is the camera's: moved there when the answer
+    /// gave no camera, dropped beside one that did, and a framing look an
+    /// earlier reading joined to the setting comes off it. A real look is
+    /// untouched (owner, 2026-10-27).
+    #[test]
+    fn a_shot_filed_as_a_look_is_the_camera() {
+        let known = |_: &str| true;
+        let words = |text: &str| crate::scene::Scene {
+            setting: Some(crate::scene::Field {
+                value: crate::scene::Setting::Words { text: text.into() },
+                origin: crate::scene::Origin::Clean,
+            }),
+            ..Default::default()
+        };
+        let shed = words("a potter's shed at dusk");
+        let looks = Looks {
+            record: Some(&shed),
+            ..Default::default()
+        };
+        let read = |t: &str, l: &Looks| read_extraction_for(t, &known, None, l).unwrap();
+        let e = read(
+            r#"{"look": "tight on the wheel, behind the potter"}"#,
+            &looks,
+        );
+        assert_eq!(e.scene["camera"], "tight on the wheel, behind the potter");
+        assert!(e.scene.get("setting").is_none(), "{:?}", e.scene);
+        // Beside a camera of its own, the look is dropped, never stacked.
+        let e = read(
+            r#"{"camera": "tight on the wheel, behind the potter", "look": "behind the potter"}"#,
+            &looks,
+        );
+        assert_eq!(e.scene["camera"], "tight on the wheel, behind the potter");
+        assert!(e.scene.get("setting").is_none(), "{:?}", e.scene);
+        // An earlier reading's framing look comes off the record's setting.
+        let stuck = words("a potter's shed at dusk, in the look of low angle");
+        let stuck_looks = Looks {
+            record: Some(&stuck),
+            ..Default::default()
+        };
+        let e = read(r#"{"look": "wide on the shed, eye level"}"#, &stuck_looks);
+        assert_eq!(e.scene["camera"], "wide on the shed, eye level");
+        assert_eq!(e.scene["setting"], "a potter's shed at dusk");
+        // A real look still joins the setting.
+        let e = read(r#"{"look": "1930s lantern slide"}"#, &looks);
+        assert!(e.scene.get("camera").is_none());
+        assert_eq!(
+            e.scene["setting"],
+            "a potter's shed at dusk, in the look of 1930s lantern slide"
+        );
     }
 }
