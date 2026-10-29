@@ -760,9 +760,18 @@ pub fn read_extraction_for(
             // in particular.
             let names: Vec<&str> = match pronoun(who) {
                 None => vec![who],
+                // "You" is whom the owner addresses, always the persona
+                // (review of #758, pass 4).
+                Some(Pronoun::Persona) => match looks.persona {
+                    Some(p) => vec![p],
+                    None => {
+                        not_people.push(format!("{who} names no one in this picture"));
+                        continue;
+                    }
+                },
                 // On a picture of one person who is not the persona, "her"
                 // is that person (review of #758).
-                Some(Pronoun::Persona) => match (looks.persona, sole_other) {
+                Some(Pronoun::Her) => match (looks.persona, sole_other) {
                     (_, Some(one)) => vec![one],
                     (Some(p), None) => vec![p],
                     (None, None) => {
@@ -1010,7 +1019,10 @@ impl Extracted {
 /// the owner themselves, the two of them, or a group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Pronoun {
+    /// "You": whom the owner addresses, the persona.
     Persona,
+    /// "She", "her": the persona, or on a picture of one other person, them.
+    Her,
     Owner,
     /// The owner and the persona: "we", "us", "the two of us".
     We,
@@ -1034,7 +1046,8 @@ fn pronoun(who: &str) -> Option<Pronoun> {
         });
     }
     match who.as_str() {
-        "you" | "yourself" | "she" | "her" | "herself" => Some(Pronoun::Persona),
+        "you" | "yourself" => Some(Pronoun::Persona),
+        "she" | "her" | "herself" => Some(Pronoun::Her),
         "i" | "me" | "myself" | "owner" | "the owner" => Some(Pronoun::Owner),
         // The viewer is the camera, never a person to draw, whoever the
         // owner is (review of #758, pass 3).
@@ -1356,6 +1369,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(e.scene["people"][0]["who"], "Wren");
+        // "You" is still whom the owner addresses (review of #758, pass 4).
+        let e = read_extraction_for(
+            r#"{"people": [{"who": "you", "doing": "waving"}]}"#,
+            &known_wren,
+            None,
+            &on_wren,
+        )
+        .unwrap();
+        assert_eq!(e.scene["people"][0]["who"], "Maya");
     }
 
     /// 2026-10-28: a relative camera ask replaced a first-person camera and

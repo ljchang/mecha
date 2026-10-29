@@ -3224,8 +3224,12 @@ fn plain_path(p: &str) -> &str {
 impl ImageGenerate {
     /// The persona's names, which `who` resolves to its approved character.
     fn self_names(&self, lib: &crate::imagelib::Library) -> crate::picture::SelfNames {
+        let owner = lib.owner();
         let Some(who) = &self.self_as else {
-            return crate::picture::SelfNames::default();
+            return crate::picture::SelfNames {
+                owner,
+                ..Default::default()
+            };
         };
         let character = who
             .character
@@ -3238,6 +3242,7 @@ impl ImageGenerate {
         crate::picture::SelfNames {
             character,
             names: vec![who.name.clone(), who.display.clone()],
+            owner,
         }
     }
 }
@@ -5622,7 +5627,7 @@ impl Tool for ImageGenerate {
                                 "region without a picture was",
                                 "regions without a picture were"
                             ),
-                            regions_named(&kept, "region with one", "regions with one")
+                            regions_named(&kept, "region with one", "regions with a picture")
                         ));
                         pre_pass = Some(PrePass {
                             req: first,

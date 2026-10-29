@@ -22,6 +22,10 @@ pub struct SelfNames {
     pub character: Option<String>,
     /// Every name the persona answers to: its display name and folder.
     pub names: Vec<String>,
+    /// The owner's approved library character (`Library::owner`), whose
+    /// eyes a first-person camera with no possessive is
+    /// (`first_person_holder`).
+    pub owner: Option<String>,
 }
 
 /// The colours a region may be painted in, by name and exact pixel value.
@@ -1016,14 +1020,15 @@ pub fn faces_away(camera: &str) -> bool {
 
 /// Whose own eyes a camera is, when it is someone's: a first-person camera
 /// ("first person", "first-person", "through her own eyes", "through John's
-/// eyes": only whose eyes between "through" and "eyes") and the one library
-/// name in it that is its holder, by a
-/// possessive ("from John's first-person view") or as the only name the
-/// camera holds ("first person, John at the stove"). `names` are the
-/// library keys named in `camera`. A point of view alone ("a wide shot
-/// from John's POV") is not first person: it is how a persona says where a
-/// wide shot stands, with the holder in it.
-pub fn first_person_holder(camera: &str, names: &[String]) -> Option<String> {
+/// eyes": only whose eyes between "through" and "eyes"), held by the library
+/// name it gives a possessive ("from John's first-person view"), else by the
+/// owner's character (`Library::owner`), whose eyes an unowned first person
+/// is. A name alone is never the holder: "first person, looking at Maya"
+/// looks at Maya (review of #758, pass 4). `names` are the library keys
+/// named in `camera`. A point of view alone ("a wide shot from John's POV")
+/// is not first person: it is how a persona says where a wide shot stands,
+/// with the holder in it.
+pub fn first_person_holder(camera: &str, names: &[String], owner: Option<&str>) -> Option<String> {
     let w = camera_words(camera);
     // Seen through someone's eyes: "through", then only whose ("her", "his",
     // "their", a possessive name, "own"), then "eyes". Never any "eyes" near
@@ -1039,14 +1044,11 @@ pub fn first_person_holder(camera: &str, names: &[String]) -> Option<String> {
     if !(has_run(&w, &["first", "person"]) || through_eyes) {
         return None;
     }
-    let possessive = names
+    names
         .iter()
-        .find(|n| w.iter().any(|t| *t == format!("{n}'s")));
-    match (possessive, names) {
-        (Some(n), _) => Some(n.clone()),
-        (None, [only]) => Some(only.clone()),
-        _ => None,
-    }
+        .find(|n| w.iter().any(|t| *t == format!("{n}'s")))
+        .cloned()
+        .or_else(|| owner.map(str::to_string))
 }
 
 /// Whether words name a shot rather than a look: framing, distance or
@@ -1585,12 +1587,13 @@ pub fn plan(
         .map(|f| f.value.as_str())
         .filter(|_| drawn_from_scene)
     {
-        let holder = first_person_holder(camera, &named_in(camera)).filter(|h| {
-            people.len() >= 2
-                && people
-                    .iter()
-                    .any(|p| matches!(&p.who, Who::Library(n) if n == h))
-        });
+        let holder = first_person_holder(camera, &named_in(camera), call.me.owner.as_deref())
+            .filter(|h| {
+                people.len() >= 2
+                    && people
+                        .iter()
+                        .any(|p| matches!(&p.who, Who::Library(n) if n == h))
+            });
         if let Some(h) = holder {
             let at = people
                 .iter()
@@ -1598,8 +1601,9 @@ pub fn plan(
                 .expect("found above");
             let p = people.remove(at);
             let mut own: Vec<&str> = Vec::new();
-            if !p.wearing.trim().is_empty() && p.wearing.trim() != WEARING_UNSAID {
-                own.push(p.wearing.trim());
+            let worn = outfit_words(&p.wearing);
+            if !worn.is_empty() && worn != WEARING_UNSAID {
+                own.push(&worn);
             }
             if !p.doing.trim().is_empty() {
                 own.push(p.doing.trim());
@@ -2062,6 +2066,7 @@ mod tests {
         SelfNames {
             character: Some("maya".into()),
             names: vec!["Maya".into()],
+            owner: None,
         }
     }
     fn call(v: Value) -> Call {
@@ -2228,6 +2233,7 @@ mod tests {
         let unlinked = SelfNames {
             character: None,
             names: vec!["Maya".into()],
+            owner: None,
         };
         let c = parse(
             &json!({"scene": {"setting": "an orchard", "people": [
@@ -2300,6 +2306,7 @@ mod tests {
         let paper = SelfNames {
             character: Some("wren".into()),
             names: vec!["Paper".into()],
+            owner: None,
         };
         for old in ["paper (self), by the window", "self, by the window"] {
             let mut rec = base.clone();
@@ -2476,18 +2483,16 @@ mod tests {
         );
     }
 
-    /// A first-person camera's holder is the name it gives them by a
-    /// possessive, or its one name; a point of view alone is not first
-    /// person, and two names with no possessive are nobody's eyes.
+    /// A first-person camera's holder is the name it gives a possessive, else
+    /// the owner's character; a name alone is looked at, never the holder,
+    /// and a point of view alone is not first person.
     #[test]
     fn a_first_person_camera_names_whose_eyes_it_is() {
         let n = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         for (camera, names, holder) in [
-            (
-                "first person, showing John at the stove",
-                n(&["john"]),
-                Some("john"),
-            ),
+            // A name alone is looked at, not looked through (review of #758,
+            // pass 4).
+            ("first person, looking at John", n(&["john"]), None),
             (
                 "from john's first-person view, his face out of frame",
                 n(&["john"]),
@@ -2534,11 +2539,23 @@ mod tests {
             ("a first person shot", n(&[]), None),
         ] {
             assert_eq!(
-                first_person_holder(camera, &names).as_deref(),
+                first_person_holder(camera, &names, None).as_deref(),
                 holder,
                 "{camera}"
             );
         }
+        // With the owner's character set, an unowned first person is theirs,
+        // and a possessive still wins.
+        let owner = Some("wren");
+        assert_eq!(
+            first_person_holder("first person, looking at John", &n(&["john"]), owner).as_deref(),
+            Some("wren")
+        );
+        assert_eq!(
+            first_person_holder("from John's first-person view", &n(&["john"]), owner).as_deref(),
+            Some("john")
+        );
+        assert_eq!(first_person_holder("a wide shot", &n(&[]), owner), None);
     }
 
     /// Owner, 2026-10-28: someone whose own eyes the camera is, listed in

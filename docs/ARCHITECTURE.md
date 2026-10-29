@@ -754,8 +754,11 @@ The routes, in the result's own words and the manifest's `route`:
   and only from the owner's own words. With none set, the owner is the
   viewer. Never a name in code.
 - **A first-person camera's holder is the viewer** (`picture::first_person_holder`):
-  left out of the cast beside anyone else on a picture drawn from the scene,
-  their act one line of what the viewer's eyes see; a retouch keeps them.
+  the name the camera gives a possessive, else the owner's character; never
+  a name alone, which the camera looks at. Left out of the cast beside
+  anyone else on a picture drawn from the scene, their act one line of what
+  the viewer's eyes see (`Plan::seen_from`, apart from `also`); a retouch
+  keeps them.
 - **An outfit is said outright** (2026-10-28, replay rig): a nude one is
   spelled out (`picture::outfit_words`, clothed 3/3 before, 0/3 after), and
   a change that takes the top off says "no top", into the record
