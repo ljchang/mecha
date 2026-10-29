@@ -769,6 +769,13 @@ pub fn read_extraction_for(
                         continue;
                     }
                 },
+                Some(Pronoun::Him) => match sole_other {
+                    Some(one) => vec![one],
+                    None => {
+                        not_people.push(format!("{who} names no one in this picture"));
+                        continue;
+                    }
+                },
                 // On a picture of one person who is not the persona, "her"
                 // is that person (review of #758).
                 Some(Pronoun::Her) => match (looks.persona, sole_other) {
@@ -1023,6 +1030,9 @@ enum Pronoun {
     Persona,
     /// "She", "her": the persona, or on a picture of one other person, them.
     Her,
+    /// "He", "him": the one other person on a picture of one, else nobody
+    /// (review of #758, pass 5).
+    Him,
     Owner,
     /// The owner and the persona: "we", "us", "the two of us".
     We,
@@ -1048,6 +1058,7 @@ fn pronoun(who: &str) -> Option<Pronoun> {
     match who.as_str() {
         "you" | "yourself" => Some(Pronoun::Persona),
         "she" | "her" | "herself" => Some(Pronoun::Her),
+        "he" | "him" | "himself" => Some(Pronoun::Him),
         "i" | "me" | "myself" | "owner" | "the owner" => Some(Pronoun::Owner),
         // The viewer is the camera, never a person to draw, whoever the
         // owner is (review of #758, pass 3).
@@ -1378,6 +1389,25 @@ mod tests {
         )
         .unwrap();
         assert_eq!(e.scene["people"][0]["who"], "Maya");
+        // "He" is never a name: the one other person, else nobody, said
+        // (review of #758, pass 5).
+        let e = read_extraction_for(
+            r#"{"people": [{"who": "He", "expression": "laughing"}]}"#,
+            &known_wren,
+            None,
+            &on_wren,
+        )
+        .unwrap();
+        assert_eq!(e.scene["people"][0]["who"], "Wren");
+        let e = read_extraction_for(
+            r#"{"people": [{"who": "him", "doing": "waving"}], "light": "dusk"}"#,
+            &known_wren,
+            None,
+            &looks,
+        )
+        .unwrap();
+        assert!(e.scene.get("people").is_none());
+        assert!(e.left_out.unwrap_or_default().contains("him names no one"));
     }
 
     /// 2026-10-28: a relative camera ask replaced a first-person camera and
