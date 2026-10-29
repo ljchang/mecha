@@ -4417,6 +4417,62 @@ impl Tool for ImageGenerate {
                     }
                 }
                 let style = plan.next.style.as_ref().map(|s| s.value.clone());
+                // A cast of one sends their face crop in the portrait's slot
+                // (`imagelib::CastMember::face`), unless the camera is behind
+                // them, where no portrait goes at all. A crop that cannot be
+                // had sends the whole portrait, said.
+                let behind = plan
+                    .next
+                    .camera
+                    .as_ref()
+                    .is_some_and(|f| crate::picture::faces_away(&f.value));
+                let solo = match people.as_slice() {
+                    [p] if !behind => match &p.who {
+                        crate::scene::Who::Library(n) => lib
+                            .get(crate::imagelib::Kind::Character, n)
+                            .filter(|e| e.status == crate::imagelib::Status::Approved)
+                            .cloned()
+                            .map(|e| (n.clone(), e)),
+                        crate::scene::Who::Described(_) => None,
+                    },
+                    _ => None,
+                };
+                let solo_face: Option<(String, Vec<u8>)> = match solo {
+                    Some((name, entry)) => {
+                        let faces = Arc::clone(&self.faces);
+                        let for_faces = lib.clone();
+                        let anchor =
+                            tokio::task::spawn_blocking(move || faces.anchor(&for_faces, &entry))
+                                .await
+                                .unwrap_or_else(|_| {
+                                    crate::face::Anchor::Unavailable(
+                                        "the face detector failed".into(),
+                                    )
+                                });
+                        let shown = capitalized(&name);
+                        match anchor {
+                            crate::face::Anchor::Crop(crop) => {
+                                crops_said.push(shown);
+                                Some((name, crop))
+                            }
+                            crate::face::Anchor::NoFace => {
+                                dropped.push(format!(
+                                    "No face was found in {shown}'s portrait, so the whole \
+                                     portrait went."
+                                ));
+                                None
+                            }
+                            crate::face::Anchor::Unavailable(why) => {
+                                dropped.push(format!(
+                                    "{shown}'s face crop could not be made ({why}), so the \
+                                     whole portrait went."
+                                ));
+                                None
+                            }
+                        }
+                    }
+                    None => None,
+                };
                 // A picture layers may draw is compiled from portraits alone,
                 // so a layered build's fallback single pass draws what its
                 // cutouts would have (§9.4). Should layers then decline, the
@@ -4472,6 +4528,10 @@ impl Tool for ImageGenerate {
                                     clothes_in_act: kept,
                                     expression: p.expression.clone(),
                                     face_away,
+                                    face: solo_face
+                                        .as_ref()
+                                        .filter(|(who, _)| who == n && people.len() == 1)
+                                        .map(|(_, crop)| crop.clone()),
                                 })
                             }
                             crate::scene::Who::Described(d) => {
@@ -6837,6 +6897,11 @@ mod tests {
         .polling_every(Duration::from_millis(10))
         .with_library_dir(tempdir())
         .with_seeds()
+        // No machine's detector: a test reads the same on every box, and a
+        // debug-built RetinaFace on every solo picture took minutes.
+        .with_faces(stub_faces(crate::face::Anchor::Unavailable(
+            "no face detector here".into(),
+        )))
     }
 
     #[test]
@@ -8873,7 +8938,8 @@ mod tests {
 
     /// §9.4, 2026-10-26: a close-up goes after the faces, bound to its person
     /// in the prompt, and the manifest keeps its hash. Its label is prompt
-    /// words only and never reaches the result.
+    /// words only and never reaches the result. A cast of one only
+    /// (`imagelib`'s `a_close_up_stays_home_beside_two_people`).
     #[tokio::test]
     async fn a_close_up_goes_after_the_faces_and_into_the_manifest() {
         let (url, seen) = fake(vec![done()], "200 OK").await;
@@ -8893,7 +8959,7 @@ mod tests {
         let t = tool(&url).with_library_dir(lib.clone());
         let out = t
             .call(
-                json!({"scene": {"setting": "a studio", "people": two_people()}, "seed": 5}),
+                json!({"scene": {"setting": "a studio", "people": [two_people()[0]]}, "seed": 5}),
                 &ctx(&dir),
             )
             .await
@@ -8905,14 +8971,14 @@ mod tests {
             .iter()
             .filter(|l| l.starts_with("POST /upload/image"))
             .count();
-        assert_eq!(uploads, 3, "two portraits and a close-up");
+        assert_eq!(uploads, 2, "a portrait and a close-up");
         let submitted = seen
             .iter()
             .rfind(|l| l.starts_with("POST /prompt"))
             .unwrap();
         for words in [
-            "Maya's left-forearm tattoo is shown close up in <image3>",
-            "<image1> and <image2> serve as identity sources only.",
+            "Maya's left-forearm tattoo is shown close up in <image2>",
+            "<image1> is an identity reference only",
         ] {
             assert!(submitted.contains(words), "{words}\n{submitted}");
         }
@@ -8930,7 +8996,6 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with("sha256-"));
-        assert!(manifest["cast"][1].get("details").is_none());
         assert!(!manifest.to_string().contains("tattoo"));
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
@@ -11865,6 +11930,65 @@ mod tests {
         std::fs::remove_dir_all(lib).ok();
     }
 
+    /// Owner, 2026-10-29: a new picture of one person sends their face crop
+    /// in the portrait's slot, recorded in the manifest's `crops`; with no
+    /// crop to be had, the whole portrait goes and the result says why. A
+    /// cast of two, and a camera behind the one, ask for none. Fails on the
+    /// old tool, which never asked.
+    #[tokio::test]
+    async fn a_cast_of_one_sends_their_face_crop() {
+        let (url, seen) = distinct(4).await;
+        let lib = library_with(&["maya", "john"]);
+        let dir = tempdir();
+        let crop = picture(4, [200, 150, 120]);
+        let faces = stub_faces(crate::face::Anchor::Crop(crop.clone()));
+        let t = tool(&url)
+            .with_library_dir(lib.clone())
+            .with_faces(Arc::clone(&faces) as Arc<dyn crate::face::FaceAnchors>);
+        let solo = json!({"scene": {"setting": "a park",
+            "people": [{"who": "maya", "wearing": "a coat", "doing": "reading"}]}});
+        let out = t.call(solo.clone(), &ctx(&dir)).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(faces.asked.load(Ordering::SeqCst), 1);
+        assert_eq!(manifest_of(&dir, &out.content)["crops"], json!(["Maya"]));
+        assert_eq!(uploads(&seen), 1, "the crop alone");
+        // Two people: portraits, no crop asked.
+        let two = t
+            .call(
+                json!({"scene": {"setting": "a park", "people": two_people()}}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!two.is_error, "{}", two.content);
+        assert_eq!(faces.asked.load(Ordering::SeqCst), 1);
+        // Seen from behind: no portrait goes, so no crop is asked.
+        let behind = t
+            .call(
+                json!({"scene": {"setting": "a park", "camera": "from behind",
+                    "people": [{"who": "maya", "wearing": "a coat", "doing": "reading"}]}}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!behind.is_error, "{}", behind.content);
+        assert_eq!(faces.asked.load(Ordering::SeqCst), 1);
+        // No detector: the whole portrait, said.
+        let none = tool(&url)
+            .with_library_dir(lib.clone())
+            .call(solo, &ctx(&dir))
+            .await
+            .unwrap();
+        assert!(
+            none.content
+                .contains("Maya's face crop could not be made (no face detector here), so the whole portrait went."),
+            "{}",
+            none.content
+        );
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
     /// Owner, 2026-10-28: under a first-person camera the holder, listed in
     /// `people`, had their portrait sent and their face drawn. The image
     /// model reads "the viewer" for them, only the others' portraits go, and
@@ -13830,7 +13954,9 @@ mod tests {
             dressed.content
         );
         assert_eq!(uploads(&seen) - before, 2, "the canvas and one crop");
-        assert_eq!(faces.asked.load(Ordering::SeqCst), 1);
+        // Once for the new picture of one (its crop in the portrait's slot),
+        // once for the edit.
+        assert_eq!(faces.asked.load(Ordering::SeqCst), 2);
         let prompt = last_prompt(&seen);
         assert!(
             prompt.contains("Take only Maya's facial identity from <image2>, nothing else."),
