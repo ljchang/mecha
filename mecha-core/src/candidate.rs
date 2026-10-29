@@ -974,9 +974,11 @@ pub fn pointwise_can_change(numeric: &Judgement) -> bool {
 ///    ([`PointwiseTally::origin_rejects`]); on a single decided point the
 ///    arms' sampling noise is too likely, so it reaches a person — unless
 ///    the numbers already rejected on a regression, which stands.
-/// 2. **Origin undecided** → the numeric gate's verdict, unchanged, recorded
-///    as [`Basis::NumericOnly`] (R36's rule 3, and the 2026-08-22 auto-accept
-///    of config rumination, are kept). Winning nowhere is not winning.
+/// 2. **Origin undecided** → the numeric gate's verdict, unchanged,
+///    recorded as [`Basis::NumericOnly`] (R36's rule 3, and the 2026-08-22
+///    auto-accept of config rumination, are kept). Winning nowhere is not
+///    winning. **One exception:** a numeric `Accept` over any held-out
+///    regression becomes a `Propose`; a change must not introduce one.
 /// 3. **Origin for** → `Accept` only when every other thing holds: the
 ///    numbers held ([`Guard::Held`]), the class may be accepted by
 ///    measurement at all (a `Security` or `Architecture` change still
@@ -1024,7 +1026,21 @@ pub fn combine(
              pass-to-fail is too little to reject on, and too much to accept over"
         ))
     } else if origin != PointwiseVerdict::For {
-        return (numeric, Basis::NumericOnly);
+        // Nothing won at the origin leaves the numbers' verdict — but not an
+        // accept over a held-out regression: a change must not introduce
+        // one, whatever the floor or the tie says of the tally (found by the
+        // Codex review of the R36 amendment). Only an accept is held back;
+        // a numeric rejection or proposal stands as it was.
+        if numeric.disposition == Disposition::Accept && p.baseline_only > 0 {
+            Disposition::Propose(format!(
+                "the numbers accepted it and nothing was won at its origin ({points}), but it \
+                 regressed {} held-out point(s) — a change that breaks something it was not \
+                 shown is a person's decision",
+                p.baseline_only
+            ))
+        } else {
+            return (numeric, Basis::NumericOnly);
+        }
     } else {
         match numeric.guard {
             Guard::Regressed(r) => Disposition::Reject(format!(
@@ -2004,19 +2020,44 @@ mod r36_tests {
             &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (11, 6)),
         );
         assert!(matches!(rejected.disposition, Disposition::Reject(_)));
-        for numeric in [accepted, rejected] {
-            for undecided in [
-                PointwiseTally::default(),
-                tally(3, 0, 0),
-                tally(2, 2, 3),
-                tally(0, 0, 8),
-            ] {
+        for numeric in [accepted.clone(), rejected] {
+            for undecided in [PointwiseTally::default(), tally(3, 0, 0), tally(0, 0, 8)] {
                 assert_eq!(undecided.verdict(), PointwiseVerdict::Undecided);
                 let (combined, basis) = combine(ChangeClass::Config, numeric.clone(), &undecided);
                 assert_eq!(basis, Basis::NumericOnly);
                 assert_eq!(combined.disposition, numeric.disposition);
             }
         }
+    }
+
+    /// A numeric accept does not survive a held-out regression when nothing
+    /// was won at the origin: a tie, or a tally under the floor, is still a
+    /// point where the baseline passed and the candidate failed. A numeric
+    /// reject stands. Fails on the old fall-through.
+    #[test]
+    fn a_numeric_accept_does_not_survive_a_held_out_regression() {
+        let accepted = judge_drawn(
+            ChangeClass::Config,
+            &turns(),
+            &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (10, 4)),
+            &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (10, 4)),
+        );
+        assert_eq!(accepted.disposition, Disposition::Accept);
+        for t in [tally(2, 2, 3), tally(0, 1, 0), tally(3, 1, 0)] {
+            assert_eq!(t.origin_verdict(), PointwiseVerdict::Undecided);
+            let (combined, _) = combine(ChangeClass::Config, accepted.clone(), &t);
+            assert!(
+                matches!(combined.disposition, Disposition::Propose(ref why) if why.contains("regressed")),
+                "{t:?}: {:?}",
+                combined.disposition
+            );
+        }
+        let (kept, basis) = combine(ChangeClass::Config, accepted.clone(), &tally(0, 0, 8));
+        assert_eq!(
+            (kept.disposition, basis),
+            (Disposition::Accept, Basis::NumericOnly),
+            "no regression: the numbers stand"
+        );
     }
 
     /// **Winning nowhere is not winning.** A held-out slice that decided for
