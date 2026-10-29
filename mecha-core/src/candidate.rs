@@ -969,8 +969,11 @@ pub fn pointwise_can_change(numeric: &Judgement) -> bool {
 /// shown.** The origin is the episode the proposal cited; the held-out slice
 /// is drawn from sessions the proposer's brief never showed.
 ///
-/// 1. **Held-out against** or **origin against** → `Reject`, however the
-///    numbers came out.
+/// 1. **Held-out against** → `Reject`, however the numbers came out. **Origin
+///    against** → `Reject` when two points decided it
+///    ([`PointwiseTally::origin_rejects`]); on a single decided point the
+///    arms' sampling noise is too likely, so it reaches a person — unless
+///    the numbers already rejected on a regression, which stands.
 /// 2. **Origin undecided** → the numeric gate's verdict, unchanged, recorded
 ///    as [`Basis::NumericOnly`] (R36's rule 3, and the 2026-08-22 auto-accept
 ///    of config rumination, are kept). Winning nowhere is not winning.
@@ -1009,6 +1012,13 @@ pub fn combine(
             "lost at the episode it came from ({points}): it made the failure it cites worse"
         ))
     } else if origin == PointwiseVerdict::Against {
+        // A numeric rejection on a regression stands: one flaky origin point
+        // must not turn it into a proposal.
+        if matches!(numeric.guard, Guard::Regressed(_))
+            && matches!(numeric.disposition, Disposition::Reject(_))
+        {
+            return (numeric, Basis::NumericOnly);
+        }
         Disposition::Propose(format!(
             "lost at the episode it came from on a single decided point ({points}): one sampled \
              pass-to-fail is too little to reject on, and too much to accept over"
@@ -2064,6 +2074,18 @@ mod r36_tests {
             matches!(run(&lost), Disposition::Propose(ref why) if why.contains("single decided point")),
             "one flaky origin point reaches a person: {:?}",
             run(&lost)
+        );
+        // ...but never over a numeric rejection on a regression.
+        let regressed = judge_drawn(
+            ChangeClass::Config,
+            &turns(),
+            &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (2, 1)),
+            &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (2, 1)),
+        );
+        let (kept, basis) = combine(ChangeClass::Config, regressed.clone(), &lost);
+        assert_eq!(
+            (kept.disposition, basis),
+            (regressed.disposition, Basis::NumericOnly)
         );
         lost.count_origin(Outcome::Pass, Outcome::Fail);
         assert!(
