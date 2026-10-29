@@ -2091,12 +2091,38 @@ pub(crate) fn edge_faces(
 
 /// What an edit whose painted regions take a face needs, in its job, to lay
 /// the new face back along the face's own edges ([`edge_faces`]).
+/// A regions edit's first pass: the painted regions that take no picture,
+/// drawn alone as a masked edit before the regions that take a face or a look
+/// (owner, 2026-10-29). A region with a picture samples the whole canvas and
+/// lays back through the paint, and in that pass a region asked to take
+/// something out took out nothing: on the replay rig a removal beside a face
+/// region removed 0 of 6, and the same removal alone, masked, 2 of 3.
+struct PrePass {
+    req: Request,
+    plan: MaskPlan,
+    /// The region index, for the second pass's canvas and lay-back.
+    index: Vec<u8>,
+    /// The regions the second pass draws: those that take a picture.
+    kept: Vec<crate::picture::Region>,
+    resolution: u32,
+}
+
 struct FaceEdges {
     /// The hard paint of the regions with no face, which keep their own.
     others: Option<image::GrayImage>,
     /// A face region's words name the hair too: SAM's "hair" is added.
     hair: bool,
     colours: Vec<String>,
+}
+
+/// Regions named by colour for a result line: "the cyan region without a
+/// picture was", "the magenta and cyan regions without a picture were".
+fn regions_named(regions: &[crate::picture::Region], one: &str, many: &str) -> String {
+    let colours: Vec<&str> = regions.iter().map(|r| r.colour.as_str()).collect();
+    match colours.as_slice() {
+        [c] => format!("{c} {one}"),
+        cs => format!("{} {many}", cs.join(" and ")),
+    }
 }
 
 /// What a face region's note adds when its character's face could not be
@@ -4334,6 +4360,7 @@ impl Tool for ImageGenerate {
         // The painted regions' index, kept for the face regions' edges.
         let mut region_index: Option<Vec<u8>> = None;
         let mut face_edges: Option<FaceEdges> = None;
+        let mut pre_pass: Option<PrePass> = None;
         let mut crops_said: Vec<String> = Vec::new();
         // Whether the people's parts were split (`roles`), for the manifest:
         // the split is prompt-only and its fallback silent, so this is the
@@ -5311,6 +5338,8 @@ impl Tool for ImageGenerate {
         let mut viewers = plan.offstage.clone();
         let names_checked = plan.next.people_known;
         if mask_plan.is_some() && !call.regions.is_empty() {
+            // The regions that took a picture, by colour.
+            let mut took: Vec<[u8; 3]> = Vec::new();
             let mut lines: Vec<String> = Vec::new();
             let mut face_regions: Vec<crate::picture::Region> = Vec::new();
             for r in &call.regions {
@@ -5459,6 +5488,7 @@ impl Tool for ImageGenerate {
                     },
                 };
                 if let Some((bytes, ext, is_face, from)) = found {
+                    took.push(r.rgb);
                     if is_face {
                         face_regions.push(r.clone());
                     }
@@ -5491,6 +5521,78 @@ impl Tool for ImageGenerate {
                     ));
                 }
             }
+            // Regions with no picture beside ones with: drawn first, alone,
+            // masked (`PrePass`); the pass below then carries only the ones
+            // with a picture, on what the first left.
+            let (kept, plain): (Vec<crate::picture::Region>, Vec<crate::picture::Region>) = call
+                .regions
+                .iter()
+                .cloned()
+                .partition(|r| took.contains(&r.rgb));
+            if let (false, false, Some(index)) = (lines.is_empty(), plain.is_empty(), &region_index)
+            {
+                let canvas = req.references[0].bytes.clone();
+                let resolution = req.reference_size;
+                let (index_c, plain_c) = (index.clone(), plain.clone());
+                let prepared = tokio::task::spawn_blocking(move || {
+                    let (plan, outlined) =
+                        prepare_regions(&canvas, &index_c, &plain_c, resolution)?;
+                    let picture = png_bytes(&plan.picture)?;
+                    let soft =
+                        png_bytes(&image::DynamicImage::ImageLuma8(plan.soft.clone()).to_rgb8())?;
+                    Ok::<_, String>((plan, picture, soft, png_bytes(&outlined)?))
+                })
+                .await;
+                let all = crate::picture::region_legend(&call.regions);
+                match prepared {
+                    Ok(Ok((plan, picture, soft, outlined))) if req.prompt.contains(&all) => {
+                        let mut first = req.clone();
+                        first.prompt = crate::picture::region_legend(&plain);
+                        first.references = vec![
+                            Reference {
+                                bytes: picture,
+                                ext: "png",
+                                ..req.references[0].clone()
+                            },
+                            Reference {
+                                path: "the regions, outlined".into(),
+                                bytes: outlined,
+                                ext: "png",
+                            },
+                        ];
+                        first.mask = Some(Reference {
+                            path: "the regions without a picture".into(),
+                            bytes: soft,
+                            ext: "png",
+                        });
+                        req.prompt =
+                            req.prompt
+                                .replacen(&all, &crate::picture::region_legend(&kept), 1);
+                        dropped.push(format!(
+                            "The {} drawn first, then the {} on that.",
+                            regions_named(
+                                &plain,
+                                "region without a picture was",
+                                "regions without a picture were"
+                            ),
+                            regions_named(&kept, "region with one", "regions with one")
+                        ));
+                        pre_pass = Some(PrePass {
+                            req: first,
+                            plan,
+                            index: index.clone(),
+                            kept: kept.clone(),
+                            resolution,
+                        });
+                    }
+                    // Not split, the edit draws as one pass, as before.
+                    Ok(Ok(_)) => {
+                        tracing::warn!("image_generate: the regions' legend was not found to split")
+                    }
+                    Ok(Err(e)) => tracing::warn!("image_generate: first pass unprepared: {e}"),
+                    Err(e) => tracing::warn!("image_generate: first pass unprepared: {e}"),
+                }
+            }
             if !lines.is_empty() {
                 req.prompt = format!("{} {}", req.prompt.trim(), lines.join(" "));
                 // Sampled whole; `mask_plan` still lays the result back
@@ -5512,10 +5614,12 @@ impl Tool for ImageGenerate {
             if let (false, Some(index), Some(mp)) =
                 (face_regions.is_empty(), &region_index, &mask_plan)
             {
+                // With a first pass, only the regions this pass draws.
                 let others: Vec<crate::picture::Region> = call
                     .regions
                     .iter()
                     .filter(|r| !face_regions.iter().any(|f| f.rgb == r.rgb))
+                    .filter(|r| pre_pass.is_none() || took.contains(&r.rgb))
                     .cloned()
                     .collect();
                 let (cw, ch) = mp.picture.dimensions();
@@ -5555,6 +5659,9 @@ impl Tool for ImageGenerate {
             .flat_map(|t| t.value.iter().map(|w| w.words.as_str()))
             .collect();
         req.prompt = crate::picture::as_viewer(&req.prompt, &viewers, &rendered);
+        if let Some(first) = pre_pass.as_mut() {
+            first.req.prompt = crate::picture::as_viewer(&first.req.prompt, &viewers, &rendered);
+        }
         if req.prompt.chars().count() > crate::imagelib::MAX_COMPILED_PROMPT {
             return Ok(refused(format!(
                 "The picture's description came to over {} characters; say less in the scene.",
@@ -5615,6 +5722,70 @@ impl Tool for ImageGenerate {
             // segmentation is followed by this job's render (§3).
             let mut seg_left: Option<String> = None;
             let mut seg_cancelled = false;
+            // The regions without a picture first (`PrePass`): its result is
+            // the canvas, outline and lay-back base of the pass with them.
+            if let Some(first) = pre_pass {
+                let Outcome { image, left } = me
+                    .backend
+                    .generate(
+                        &me.cfg,
+                        &first.req,
+                        ctx.cancel.as_ref(),
+                        timeout,
+                        ctx.image_trail.as_deref(),
+                    )
+                    .await;
+                seg_left = left;
+                let drawn = match image {
+                    Ok(bytes) => bytes,
+                    Err(Failure::Cancelled) => {
+                        return ToolOutput::err(
+                            "Cancelled — the generation was stopped and nothing was saved.",
+                        )
+                    }
+                    Err(Failure::Other(e)) => {
+                        return ToolOutput::err(format!(
+                            "Image generation failed on the regions without a picture: {e:#}. \
+                             Nothing was saved."
+                        ))
+                    }
+                };
+                let PrePass {
+                    plan,
+                    index,
+                    kept,
+                    resolution,
+                    ..
+                } = first;
+                let next = tokio::task::spawn_blocking(move || {
+                    let laid = composite_masked(&drawn, &plan)?;
+                    let (plan, outlined) = prepare_regions(&laid, &index, &kept, resolution)?;
+                    Ok::<_, String>((png_bytes(&plan.picture)?, png_bytes(&outlined)?, plan))
+                })
+                .await;
+                match next {
+                    Ok(Ok((picture, outlined, plan))) => {
+                        req.references[0].bytes = picture;
+                        req.references[0].ext = "png";
+                        if let Some(r) = req.references.get_mut(1) {
+                            r.bytes = outlined;
+                        }
+                        mask_plan = Some(plan);
+                    }
+                    Ok(Err(why)) => {
+                        return ToolOutput::err(format!(
+                            "The regions without a picture were drawn but could not be laid \
+                             over the original: {why}. Nothing was saved."
+                        ))
+                    }
+                    Err(e) => {
+                        return ToolOutput::err(format!(
+                            "The regions without a picture were drawn but could not be laid \
+                             over the original: {e}. Nothing was saved."
+                        ))
+                    }
+                }
+            }
             let unusable = |words: &str| {
                 format!(
                     "What matched '{words}' could not be used as a mask, so the change was made \
@@ -9791,9 +9962,12 @@ mod tests {
         let red = image::RgbImage::from_pixel(64, 64, image::Rgb([200, 20, 20]));
         let mut result = std::io::Cursor::new(Vec::new());
         red.write_to(&mut result, image::ImageFormat::Png).unwrap();
+        let blue = image::RgbImage::from_pixel(64, 64, image::Rgb([20, 20, 200]));
+        let mut first = std::io::Cursor::new(Vec::new());
+        blue.write_to(&mut first, image::ImageFormat::Png).unwrap();
         let (url, seen) = fake_with(Fake {
-            history: vec![done()],
-            views: vec![result.into_inner()],
+            history: vec![done(), done()],
+            views: vec![first.into_inner(), result.into_inner()],
             ..Fake::default()
         })
         .await;
@@ -9839,16 +10013,31 @@ mod tests {
             "{}",
             out.content
         );
-        let seen = seen.lock().unwrap().clone();
-        let uploads = seen
-            .iter()
-            .filter(|l| l.starts_with("POST /upload/image"))
-            .count();
-        assert_eq!(
-            uploads, 3,
-            "the picture, its outlined copy, and the face crop"
+        // The cyan region takes no picture: drawn first, alone, masked
+        // (`PrePass`), then the magenta one on what it left.
+        assert!(
+            out.content.contains(
+                "The cyan region without a picture was drawn first, then the magenta region \
+                 with one on that."
+            ),
+            "{}",
+            out.content
         );
-        let submitted = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+        let seen = seen.lock().unwrap().clone();
+        let prompts: Vec<&String> = seen
+            .iter()
+            .filter(|l| l.starts_with("POST /prompt"))
+            .collect();
+        assert_eq!(prompts.len(), 2, "the cyan region, then the magenta");
+        assert!(prompts[0].contains("SetLatentNoiseMask"), "{}", prompts[0]);
+        assert!(
+            prompts[0].contains("in the cyan outline, make his shirt green")
+                && !prompts[0].contains("magenta"),
+            "{}",
+            prompts[0]
+        );
+        let submitted = prompts[1];
+        assert!(!submitted.contains("cyan"), "{submitted}");
         assert!(submitted.contains("images.image_3"), "{submitted}");
         assert!(!submitted.contains("SetLatentNoiseMask"), "{submitted}");
         assert!(submitted.contains("EmptyLatentImage"), "{submitted}");
@@ -9865,8 +10054,11 @@ mod tests {
         let saved = image::load_from_memory(&std::fs::read(dir.join(png)).unwrap())
             .unwrap()
             .to_rgb8();
-        // Between the two regions, untouched.
+        // The shirt from the first pass, the face from the second.
         let (w, h) = saved.dimensions();
+        assert_eq!(saved.get_pixel(w * 3 / 4, h * 5 / 8).0, [20, 20, 200]);
+        assert_eq!(saved.get_pixel(w / 8, h / 2).0, [200, 20, 20]);
+        // Between the two regions, untouched.
         let canvas = prepare_mask(&original, &mask_png(64, 64, (0, 16, 16, 56)), 1024).unwrap();
         assert_eq!(
             saved.get_pixel(w / 2, h / 20),
@@ -9884,9 +10076,16 @@ mod tests {
         let red = image::RgbImage::from_pixel(64, 64, image::Rgb([200, 20, 20]));
         let mut result = std::io::Cursor::new(Vec::new());
         red.write_to(&mut result, image::ImageFormat::Png).unwrap();
+        let blue = image::RgbImage::from_pixel(64, 64, image::Rgb([20, 20, 200]));
+        let mut first = std::io::Cursor::new(Vec::new());
+        blue.write_to(&mut first, image::ImageFormat::Png).unwrap();
         let (url, seen) = fake_with(Fake {
-            history: vec![done(), done()],
-            views: vec![mask_png(64, 64, (2, 24, 10, 40)), result.into_inner()],
+            history: vec![done(), done(), done()],
+            views: vec![
+                first.into_inner(),
+                mask_png(64, 64, (2, 24, 10, 40)),
+                result.into_inner(),
+            ],
             sam: true,
             ..Fake::default()
         })
@@ -9934,11 +10133,16 @@ mod tests {
             .iter()
             .filter(|l| l.starts_with("POST /prompt"))
             .collect();
-        assert_eq!(prompts.len(), 2, "the face, then the render");
+        assert_eq!(
+            prompts.len(),
+            3,
+            "the region without a picture, the face, then the render"
+        );
+        assert!(prompts[0].contains("SetLatentNoiseMask"), "{}", prompts[0]);
         assert!(
-            prompts[0].contains("SAM3_Detect") && prompts[0].contains("\"text\":\"face\""),
+            prompts[1].contains("SAM3_Detect") && prompts[1].contains("\"text\":\"face\""),
             "{}",
-            prompts[0]
+            prompts[1]
         );
         let saved =
             image::load_from_memory(&std::fs::read(dir.join(picture_of(&out.content))).unwrap())
@@ -9954,8 +10158,8 @@ mod tests {
         );
         assert_eq!(
             saved.get_pixel(768, 640).0,
-            [200, 20, 20],
-            "the shirt region"
+            [20, 20, 200],
+            "the shirt region, from the first pass, which the second does not lay back over"
         );
         std::fs::remove_dir_all(dir).ok();
     }
