@@ -467,8 +467,9 @@ impl SceneReader for ModelReader {
 
 /// The extraction's answer, read: the JSON object in it, with only the
 /// fields the schema has, as the tool's `scene` and `retouch`. A `retouch`
-/// beside a scene change is left out and said, since the tool draws one or
-/// the other. `known` answers whether a `who` names someone this picture or
+/// beside a scene change rides with it, one more line the tool draws
+/// (`picture::Plan::also`); what cannot be drawn is left out and said.
+/// `known` answers whether a `who` names someone this picture or
 /// the library holds; a bare name it does not is a failure (§5.3 step 6),
 /// never a stranger drawn under that name.
 pub fn read_extraction(text: &str, known: &dyn Fn(&str) -> bool) -> Result<Extracted, String> {
@@ -692,8 +693,14 @@ pub fn read_extraction_for(
             .map(|f| f.value.trim())
             .filter(|c| !c.is_empty()),
     ) {
-        if relative_camera(new) && !old.contains(new.as_str()) {
-            let joined = format!("{}, {new}", old.trim_end_matches(['.', ',']));
+        if relative_camera(new) {
+            // Asked again, the record's camera already says it: kept as it
+            // is, never replaced by the bare ask (review of #758).
+            let joined = if old.contains(new.as_str()) {
+                old.to_string()
+            } else {
+                format!("{}, {new}", old.trim_end_matches(['.', ',']))
+            };
             scene.insert("camera".into(), joined.into());
         }
     }
@@ -973,7 +980,7 @@ impl Extracted {
             (true, None) => "drawn again".to_string(),
         };
         if let Some(l) = &self.left_out {
-            said.push_str(&format!("; not drawn, beside the scene change: {l}"));
+            said.push_str(&format!("; not drawn: {l}"));
         }
         said
     }
@@ -1018,7 +1025,7 @@ fn pronoun(who: &str) -> Option<Pronoun> {
 }
 
 /// The owner's first person in a reader's field, as the image model reads
-/// it: "my", "mine", "me", "myself" and "I" are the owner's character when
+/// it: "my", "me", "myself" and "I" are the owner's character when
 /// the library names one (`Library::owner`), else the viewer, who is never
 /// drawn (`picture::as_viewer`); a character not in the picture becomes the
 /// viewer there too. The reader copies the owner's own words, so on
@@ -1033,7 +1040,8 @@ pub(crate) fn owners_words(text: &str, owner: Option<&str>) -> String {
     let mut word = String::new();
     let flush = |word: &mut String, out: &mut String| {
         match word.to_lowercase().as_str() {
-            "my" | "mine" => out.push_str(&mine),
+            // Never "mine": a gold mine is a place (review of #758).
+            "my" => out.push_str(&mine),
             "me" | "myself" | "i" => out.push_str(&me),
             "i'm" | "i’m" => {
                 out.push_str(&me);
@@ -1336,6 +1344,25 @@ mod tests {
             let e = read(&format!(r#"{{"camera": "{named}"}}"#));
             assert_eq!(e.scene["camera"], named, "{named}");
         }
+        // Asked again, the recorded camera already says it: kept whole,
+        // never the bare ask (review of #758).
+        let twice = crate::scene::Scene {
+            camera: Some(crate::scene::Field {
+                value: "a first-person view from the doorway, a touch nearer".into(),
+                origin: crate::scene::Origin::Clean,
+            }),
+            ..Default::default()
+        };
+        let again = Looks {
+            record: Some(&twice),
+            ..Default::default()
+        };
+        let e =
+            read_extraction_for(r#"{"camera": "a touch nearer"}"#, &known, None, &again).unwrap();
+        assert_eq!(
+            e.scene["camera"],
+            "a first-person view from the doorway, a touch nearer"
+        );
         // No recorded camera: the ask is the camera.
         let e = read_extraction(r#"{"camera": "a touch nearer"}"#, &known).unwrap();
         assert_eq!(e.scene["camera"], "a touch nearer");
