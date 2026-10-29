@@ -1159,6 +1159,12 @@ pub struct Plan {
     /// more line of the render, folded in rather than refused (G1b: 13 of
     /// 65 shape refusals were this).
     pub also: Option<String>,
+    /// What the viewer's own eyes see when the camera is a cast member's
+    /// first person (`first_person_holder`): one more line of the render,
+    /// apart from `also`, so the holder's clothes are never read as shared
+    /// words that already dress someone else (`imagegen::clothes_in_act`;
+    /// review of #758, pass 3).
+    pub seen_from: Option<String>,
     /// Library characters named in the words but not in the picture: never
     /// drawn, and "the viewer" in what the image model reads ([`as_viewer`]).
     pub offstage: Vec<String>,
@@ -1457,8 +1463,11 @@ pub fn plan(
             let with = format!("{}, no top", p.wearing.trim().trim_end_matches(['.', ',']));
             // Only where it fits the field's cap: past it the picture would
             // be refused (review of #758).
-            if before.is_some_and(|q| removed_top(&q.wearing, &p.wearing))
-                && with.chars().count() <= crate::imagelib::MAX_CAST_FIELD
+            // A change, never a redraw of the same outfit (review of #758,
+            // pass 3).
+            if before.is_some_and(|q| {
+                q.wearing.trim() != p.wearing.trim() && removed_top(&q.wearing, &p.wearing)
+            }) && with.chars().count() <= crate::imagelib::MAX_CAST_FIELD
             {
                 p.wearing = with;
                 clothes_said.push((
@@ -1656,15 +1665,11 @@ pub fn plan(
         route: "new",
         said: (!notes.is_empty()).then(|| notes.join(" ")),
         clothes_said,
-        also: match (
-            call.retouch
-                .clone()
-                .filter(|_| call.picture.is_none() || !unchanged),
-            seen_from,
-        ) {
-            (Some(r), Some(s)) => Some(format!("{}. {s}", r.trim().trim_end_matches('.'))),
-            (r, s) => r.or(s),
-        },
+        also: call
+            .retouch
+            .clone()
+            .filter(|_| call.picture.is_none() || !unchanged),
+        seen_from,
         offstage,
     };
     // A new picture: its setting is a photo (people placed in it), or words.
@@ -2557,9 +2562,10 @@ mod tests {
         let kept: Vec<String> = p.next.people.iter().map(|q| q.who.key()).collect();
         assert_eq!(kept, ["maya", "john"], "the record keeps him");
         assert_eq!(p.offstage, vec!["john".to_string()]);
-        let also = p.also.as_deref().unwrap_or("");
-        assert!(also.contains("the viewer's own eyes"), "{also}");
-        assert!(also.contains("pyjamas, leaning on the counter"), "{also}");
+        assert!(p.also.is_none(), "{:?}", p.also);
+        let seen = p.seen_from.as_deref().unwrap_or("");
+        assert!(seen.contains("the viewer's own eyes"), "{seen}");
+        assert!(seen.contains("pyjamas, leaning on the counter"), "{seen}");
         assert!(p.said.as_deref().unwrap_or("").contains("John's own eyes"));
         // Not first person: a wide shot from his point of view draws him.
         let wide = planned(
@@ -2571,7 +2577,7 @@ mod tests {
             None,
         );
         assert_eq!(wide.people.len(), 2);
-        assert!(wide.also.is_none());
+        assert!(wide.seen_from.is_none());
         // Alone, the camera has nobody else to see: he is drawn.
         let alone = planned(
             &call(json!({"scene": {"setting": "a kitchen",
@@ -2662,6 +2668,20 @@ mod tests {
             "{:?}",
             p.clothes_said
         );
+        // A redraw of the same outfit says nothing of a top (review of #758,
+        // pass 3).
+        let bottoms = planned(
+            &call(json!({"scene": {"setting": "a beach",
+                "people": [{"who": "maya", "wearing": "bikini bottoms", "doing": "wading"}]}})),
+            None,
+        );
+        let again = planned(
+            &call(json!({"picture": "images/c.png", "scene": {"people": [
+                {"who": "maya", "wearing": "bikini bottoms"}]}})),
+            Some(&landed(&bottoms, 5)),
+        );
+        assert_eq!(again.next.people[0].wearing, "bikini bottoms");
+        assert!(again.clothes_said.is_empty(), "{:?}", again.clothes_said);
         // A later change of pose alone keeps it so.
         let after = planned(
             &call(json!({"picture": "images/b.png", "scene": {"people": [
@@ -2692,7 +2712,7 @@ mod tests {
             Some(&base),
         );
         assert!(p.offstage.is_empty(), "{:?}", p.offstage);
-        assert!(!p.also.as_deref().unwrap_or("").contains("own eyes"));
+        assert!(p.seen_from.is_none());
         // A scene change on it is drawn from the scene: the holder is the
         // viewer again.
         let q = planned(

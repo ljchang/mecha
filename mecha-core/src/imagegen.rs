@@ -3444,19 +3444,34 @@ fn add_owner(
     change: &mut crate::scene::SceneChange,
     read: &serde_json::Map<String, Value>,
     owner: &str,
+    record: Option<&crate::scene::Scene>,
 ) -> bool {
     let shown = crate::picture::shown(&crate::scene::Who::Library(owner.to_string()));
     // Never past what a picture draws: a reading must not turn a drawable
-    // call into a refusal (review of #758).
-    let present: Vec<&crate::scene::PersonChange> =
-        change.people.iter().filter(|p| !p.remove).collect();
-    let faces = present
+    // call into a refusal. Counted over the picture, the record's people with
+    // the change's, as the planner counts them (review of #758, passes 2-3).
+    let removed: Vec<String> = change
+        .people
         .iter()
-        .filter(|p| matches!(p.who, crate::scene::Who::Library(_)))
-        .count();
-    if present.iter().any(|p| p.who.key() == owner)
+        .filter(|p| p.remove)
+        .map(|p| p.who.key())
+        .collect();
+    let mut drawn: Vec<(String, bool)> = record
+        .map(|r| r.people.as_slice())
+        .unwrap_or_default()
+        .iter()
+        .map(|p| (p.who.key(), matches!(p.who, crate::scene::Who::Library(_))))
+        .filter(|(k, _)| !removed.contains(k))
+        .collect();
+    for p in change.people.iter().filter(|p| !p.remove) {
+        if !drawn.iter().any(|(k, _)| *k == p.who.key()) {
+            drawn.push((p.who.key(), matches!(p.who, crate::scene::Who::Library(_))));
+        }
+    }
+    let faces = drawn.iter().filter(|(_, library)| *library).count();
+    if drawn.iter().any(|(k, _)| k == owner)
         || faces >= crate::picture::MAX_FACES
-        || present.len() >= crate::scene::MAX_PEOPLE
+        || drawn.len() >= crate::scene::MAX_PEOPLE
     {
         return false;
     }
@@ -3484,7 +3499,11 @@ fn add_owner(
         who: crate::scene::Who::Library(owner.to_string()),
         at: None,
         wearing: text("wearing"),
-        doing: text("doing").filter(|_| change.together.is_none()),
+        // As `merge_read` reads a pose: only for a call that gave none and
+        // no `together`, where the reader mirrors a one-way act.
+        doing: text("doing").filter(|_| {
+            change.together.is_none() && change.people.iter().all(|p| p.doing.is_none())
+        }),
         expression: None,
         remove: false,
     });
@@ -4268,7 +4287,12 @@ impl Tool for ImageGenerate {
                         let before = call.change.clone();
                         let mut merged = merge_read(&mut call.change, &extracted.scene);
                         if let Some(owner) = lib.owner().filter(|_| extracted.owner_named) {
-                            if add_owner(&mut call.change, &extracted.scene, &owner) {
+                            if add_owner(
+                                &mut call.change,
+                                &extracted.scene,
+                                &owner,
+                                record.as_ref(),
+                            ) {
                                 merged.push("owner".to_string());
                             }
                         }
@@ -4460,6 +4484,7 @@ impl Tool for ImageGenerate {
                                 Some(crate::scene::Setting::Words { .. })
                             )
                             && plan.also.is_none()
+                            && plan.seen_from.is_none()
                             && plan.next.text.as_ref().is_none_or(|t| t.value.is_empty());
                         // ~1-3 s on the router, 9 s once beside two live
                         // turns (mecha-a3): bounded, and a late split draws
@@ -4567,8 +4592,13 @@ impl Tool for ImageGenerate {
                 // cutouts would have (§9.4). Should layers then decline, the
                 // single pass is the picture, and it is compiled again with
                 // the bodies (review of #685).
-                let layers_wanted =
-                    ctx.layers && plan.route == "new" && people.len() >= 2 && as_called;
+                // A first-person picture is one pass: its viewer line is the
+                // single pass's.
+                let layers_wanted = ctx.layers
+                    && plan.route == "new"
+                    && people.len() >= 2
+                    && as_called
+                    && plan.seen_from.is_none();
                 let compile_from = |people: &[crate::scene::Person],
                                     words: &crate::scene::Scene,
                                     together: bool,
@@ -4641,12 +4671,18 @@ impl Tool for ImageGenerate {
                     }
                     crate::imagelib::compile_with(
                         &lib,
-                        &match &plan.also {
+                        &[
+                            Some(scene_words(words)),
                             // A retouch given for a new picture, or beside a
                             // restage: one more sentence of the scene.
-                            Some(also) => format!("{} {also}", scene_words(words)),
-                            None => scene_words(words),
-                        },
+                            plan.also.clone(),
+                            plan.seen_from.clone(),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .filter(|w| !w.is_empty())
+                        .collect::<Vec<_>>()
+                        .join(" "),
                         &cast,
                         &extras,
                         style.as_deref(),
@@ -5216,9 +5252,9 @@ impl Tool for ImageGenerate {
                 }
                 prompt.push_str(&close(&plan.instruction));
                 // A retouch given beside the scene change: one more line.
-                if let Some(also) = &plan.also {
+                for line in plan.also.iter().chain(&plan.seen_from) {
                     prompt.push(' ');
-                    prompt.push_str(&close(also));
+                    prompt.push_str(&close(line));
                 }
                 // A style the edit changes to: its own words, as a new
                 // picture's compile pastes them (review of #597).
@@ -5722,13 +5758,6 @@ impl Tool for ImageGenerate {
             me.generation.fetch_add(1, Ordering::SeqCst);
             let started = Instant::now();
             let timeout = Duration::from_secs(me.cfg.timeout_secs);
-            // Every segmentation in the job shares one budget, apart from the
-            // render's own timeout, so a wedged one holds the chat's job slot
-            // for at most that much more, never a second or third timeout
-            // (review of #710, pass 5; #624's shared deadline). A regions edit
-            // with a first pass (`PrePass`) renders twice, each under its own
-            // timeout, so it holds the slot up to twice the render's.
-            let seg_deadline = Instant::now() + SEGMENT_BUDGET.min(timeout);
             // The named area becomes the painted mask it names; anything that
             // keeps it from being one draws the whole picture, as the words
             // were before, and says so. Never a refusal, so every
@@ -5777,7 +5806,12 @@ impl Tool for ImageGenerate {
                 })
                 .await;
                 match next {
-                    Ok(Ok((picture, outlined, plan))) => {
+                    Ok(Ok((picture, outlined, mut plan))) => {
+                        // The owner's picture's own size, which the result
+                        // states beside the edit's (review of #758, pass 3).
+                        if let Some(source) = mask_plan.as_ref().map(|m| m.source) {
+                            plan.source = source;
+                        }
                         req.references[0].bytes = picture;
                         req.references[0].ext = "png";
                         if let Some(r) = req.references.get_mut(1) {
@@ -5799,6 +5833,15 @@ impl Tool for ImageGenerate {
                     }
                 }
             }
+            // Every segmentation in the job shares one budget, apart from the
+            // render's own timeout, so a wedged one holds the chat's job slot
+            // for at most that much more, never a second or third timeout
+            // (review of #710, pass 5; #624's shared deadline). It starts
+            // after a first pass (`PrePass`), so no render runs inside it and
+            // a slow first pass cannot starve the face regions' edges; that
+            // edit renders twice, so it holds the slot up to twice the
+            // render's timeout (review of #758, pass 3).
+            let seg_deadline = Instant::now() + SEGMENT_BUDGET.min(timeout);
             let unusable = |words: &str| {
                 format!(
                     "What matched '{words}' could not be used as a mask, so the change was made \
@@ -6321,6 +6364,7 @@ impl Tool for ImageGenerate {
                     "words": record_prose(&plan.next)
                         .into_iter()
                         .chain(plan.also.clone())
+                        .chain(plan.seen_from.clone())
                         .chain(split_words.iter().cloned())
                         .filter(|w| !w.trim().is_empty())
                         .collect::<Vec<_>>(),
@@ -10036,6 +10080,13 @@ mod tests {
             "{}",
             out.content
         );
+        // The second pass keeps the owner's picture's own size for the
+        // result's claim (review of #758, pass 3).
+        assert!(
+            out.content.contains("was edited at 1024×1024"),
+            "{}",
+            out.content
+        );
         let seen = seen.lock().unwrap().clone();
         let prompts: Vec<&String> = seen
             .iter()
@@ -12198,6 +12249,47 @@ mod tests {
         std::fs::remove_dir_all(lib).ok();
     }
 
+    /// Review of #758, pass 3: the first-person holder's clothes are the
+    /// viewer's line, never shared words that already dress someone else, so
+    /// an outfit the record carries for another person still reaches the
+    /// prompt when the holder's own says nudity. Fails when the line rode in
+    /// `Plan::also`, which `clothes_in_act` reads.
+    #[tokio::test]
+    async fn a_nude_holder_never_undresses_the_others() {
+        let (url, seen) = distinct(2).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let cx = clean(scene_ctx(&dir, &store, "chat-a"));
+        let first = t
+            .call(
+                json!({"scene": {"setting": "a kitchen", "camera": "a wide shot",
+                       "people": [
+                           {"who": "maya", "wearing": "a quilted robe", "doing": "stirring a pot"},
+                           {"who": "john", "wearing": "pyjamas", "doing": "leaning on the counter"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!first.is_error, "{}", first.content);
+        let p1 = picture_of(&first.content);
+        let pov = t
+            .call(
+                json!({"picture": p1, "scene": {
+                    "camera": "a first-person view through John's eyes",
+                    "people": [{"who": "john", "wearing": "naked"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!pov.is_error, "{}", pov.content);
+        let prompt = last_prompt(&seen);
+        assert!(prompt.contains("a quilted robe"), "{prompt}");
+        assert!(prompt.contains("the viewer's own eyes"), "{prompt}");
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(store).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
     /// Owner, 2026-10-29: a new picture of one person sends their face crop
     /// in the portrait's slot, recorded in the manifest's `crops`; with no
     /// crop to be had, the whole portrait goes and the result says why. A
@@ -12510,7 +12602,7 @@ mod tests {
                 who: crate::scene::Who::Library("maya".into()),
                 at: None,
                 wearing: Some("a robe".into()),
-                doing: Some("reading".into()),
+                doing: None,
                 expression: None,
                 remove: false,
             }],
@@ -12520,7 +12612,12 @@ mod tests {
             {"who": "John", "wearing": "pyjamas", "doing": "dozing beside Maya"},
             {"who": "Wren", "doing": "watching"}
         ]});
-        assert!(add_owner(&mut change, read.as_object().unwrap(), "john"));
+        assert!(add_owner(
+            &mut change,
+            read.as_object().unwrap(),
+            "john",
+            None
+        ));
         let keys: Vec<String> = change.people.iter().map(|p| p.who.key()).collect();
         assert_eq!(keys, ["maya", "john"]);
         assert_eq!(change.people[1].wearing.as_deref(), Some("pyjamas"));
@@ -12529,11 +12626,16 @@ mod tests {
             Some("dozing beside Maya")
         );
         assert!(
-            !add_owner(&mut change, read.as_object().unwrap(), "john"),
+            !add_owner(&mut change, read.as_object().unwrap(), "john", None),
             "once"
         );
         let none = json!({"people": [{"who": "Maya", "doing": "laughing"}]});
-        assert!(!add_owner(&mut change, none.as_object().unwrap(), "wren"));
+        assert!(!add_owner(
+            &mut change,
+            none.as_object().unwrap(),
+            "wren",
+            None
+        ));
         // Never past the faces one picture draws (review of #758, pass 2).
         let mut full = crate::scene::SceneChange {
             people: ["maya", "john", "ivo", "pell", "tamsin"]
@@ -12550,8 +12652,56 @@ mod tests {
             ..Default::default()
         };
         let wren = json!({"people": [{"who": "Wren", "doing": "waving"}]});
-        assert!(!add_owner(&mut full, wren.as_object().unwrap(), "wren"));
+        assert!(!add_owner(
+            &mut full,
+            wren.as_object().unwrap(),
+            "wren",
+            None
+        ));
         assert_eq!(full.people.len(), 5);
+        // Counted over the picture: five in the record and one in the change
+        // is a full picture too (review of #758, pass 3).
+        let record = crate::scene::Scene {
+            people: ["maya", "john", "ivo", "pell", "tamsin"]
+                .iter()
+                .map(|n| crate::scene::Person {
+                    who: crate::scene::Who::Library((*n).into()),
+                    at: None,
+                    wearing: "a coat".into(),
+                    doing: String::new(),
+                    expression: String::new(),
+                    origin: crate::scene::Origin::Clean,
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let maya = || crate::scene::SceneChange {
+            people: vec![crate::scene::PersonChange {
+                who: crate::scene::Who::Library("maya".into()),
+                at: None,
+                wearing: None,
+                doing: Some("laughing".into()),
+                expression: None,
+                remove: false,
+            }],
+            ..Default::default()
+        };
+        let mut one = maya();
+        assert!(!add_owner(
+            &mut one,
+            wren.as_object().unwrap(),
+            "wren",
+            Some(&record)
+        ));
+        // A pose the call gave keeps the owner's off, as `merge_read` does.
+        let mut posed = maya();
+        assert!(add_owner(
+            &mut posed,
+            wren.as_object().unwrap(),
+            "wren",
+            None
+        ));
+        assert_eq!(posed.people[1].doing, None);
     }
 
     /// The reader's change fills only what the call left out: a `together`,
