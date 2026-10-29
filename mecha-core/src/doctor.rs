@@ -4143,6 +4143,7 @@ mod tests {
             reason: None,
             rejection: None,
             cites: None,
+            shown: None,
         };
         std::fs::write(
             dir.join(format!("{id}.json")),

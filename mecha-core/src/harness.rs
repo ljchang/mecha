@@ -492,6 +492,19 @@ pub struct HarnessCandidate {
     /// carried no episodes to cite.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cites: Option<String>,
+    /// The sessions the proposer's brief showed as episodes. The held-out
+    /// slice of this candidate's point-wise comparison is drawn from
+    /// sessions *not* in this list, or "held out" would mean nothing (R36,
+    /// 2026-10-29). **`None` is a record from before the field**: nothing
+    /// is known of what it was shown, so it has no held-out points (unknown
+    /// is never clean). **`Some` of an empty list is a brief that showed no
+    /// session** — a corpus with no digests or appraisals — and everything is
+    /// held out. Told apart because the first read as the second would drop
+    /// the held-out veto for every such night (found reviewing the R36
+    /// amendment). The brief's aggregate counters and its history text are not
+    /// shown sessions: the guarantee is "never shown individually".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shown: Option<Vec<String>>,
 }
 
 /// Who rejected a candidate, and — when it was the owner — what they ruled.
@@ -751,7 +764,8 @@ impl HarnessCandidate {
             m.work_baseline > 0 && (m.work_candidate as f64) < m.work_baseline as f64 * WORK_FLOOR;
         let lost = m.selection.losses > m.selection.wins || m.holdout.losses > m.holdout.wins;
         let lost_pointwise = m.pointwise.as_ref().is_some_and(|p| {
-            p.basis == Basis::Pointwise && p.tally.verdict() == PointwiseVerdict::Against
+            p.basis == Basis::Pointwise
+                && (p.tally.verdict() == PointwiseVerdict::Against || p.tally.origin_rejects())
         });
         if work_fell || lost || lost_pointwise {
             return HistoryVerdict::Harmed;
@@ -1527,6 +1541,27 @@ mod tests {
             .is_ok());
     }
 
+    /// A record from before `shown` reads `None` (unknown, no held-out
+    /// slice); a brief that showed nothing writes `Some([])` and reads it
+    /// back. Fails if the two collapse into one.
+    #[test]
+    fn shown_tells_a_legacy_record_from_a_brief_that_showed_nothing() {
+        let mut c: HarnessCandidate = serde_json::from_value(serde_json::json!({
+            "id": "hc-1", "created_at": "2026-10-01T00:00:00Z", "class": "config",
+            "change": "max_turns=20", "metric": "turns", "rationale": "", "evidence": "",
+            "status": "staged"
+        }))
+        .unwrap();
+        assert_eq!(c.shown, None, "no field: unknown");
+        c.shown = Some(Vec::new());
+        let wire = serde_json::to_value(&c).unwrap();
+        assert!(wire.get("shown").is_some(), "an empty list is written");
+        let back: HarnessCandidate = serde_json::from_value(wire).unwrap();
+        assert_eq!(back.shown, Some(Vec::new()));
+        c.shown = None;
+        assert!(serde_json::to_value(&c).unwrap().get("shown").is_none());
+    }
+
     /// A measurement's point-wise evidence round-trips; a record from
     /// before R36 reads `None` — unknown, never "numeric only" — and a basis
     /// a newer build wrote reads `Unknown` without failing the record.
@@ -1541,6 +1576,9 @@ mod tests {
                 undecided: 2,
                 lost_baseline: 0,
                 lost_candidate: 1,
+                origin_decided: 2,
+                origin_candidate_only: 1,
+                origin_baseline_only: 0,
             },
             basis: Basis::Pointwise,
             not_run: None,
@@ -1888,6 +1926,7 @@ accepted_at = "2026-08-22T00:00:00Z"
             reason: None,
             rejection: None,
             cites: None,
+            shown: None,
         };
         store.write(&c).unwrap();
         let read = store.find("hc-2026").unwrap();
@@ -2056,6 +2095,7 @@ mod history_verdict_tests {
             reason: Some("prose the verdict must never read".into()),
             rejection,
             cites: None,
+            shown: None,
         }
     }
 
