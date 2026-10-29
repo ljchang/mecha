@@ -973,6 +973,14 @@ multi-step effects.
   (P5), `effort`.
 - It needs no ruling: it is the existing point-wise pass with a second
   point source.
+- **Built** (`PointKind::Repeat`, `counterfactual::first_repeats` and
+  `repeat_verdict`; ARCHITECTURE "Point-wise comparison at decision
+  points"). Two choices the paragraph above left open: only the **first**
+  repeat of a failure is a point, and only the arm's **decision turn** is
+  graded, because a call that leaves the dead end with other arguments is
+  answered from the recording with the failure it avoided. Both `sessions
+  compare` and a candidate's point-wise half draw these points; a
+  candidate's pool is already scoped to the served model (#726).
 
 **What R1's yes still leaves open.**
 - §14.7 says fitness is the owner's own usage, and fixture worlds are not

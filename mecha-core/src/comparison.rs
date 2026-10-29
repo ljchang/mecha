@@ -63,7 +63,8 @@ pub enum Kind {
     Gate,
     /// `mecha sessions compare` (row 2d-1, O1): K policies driven a short
     /// horizon from an informative decision point of a recorded session,
-    /// graded by the owner's recorded verdict. One kind per point kind, so
+    /// graded by the owner's recorded verdict (a repeat's, by the
+    /// recording's own results). One kind per point kind, so
     /// `Summary::by_kind` reads the mix without a new field: an owner's
     /// steer, an owner's denial, a failed check, a draft the owner rewrote
     /// before sending, a draft the owner rejected, and a surprise (a
@@ -74,6 +75,11 @@ pub enum Kind {
     PointEditedDraft,
     PointRejectedDraft,
     PointSurprise,
+    /// A failed call the run repeated unchanged after reading it — the one
+    /// point kind with no owner's act behind it (`HARNESS-EVOLUTION-DESIGN.md`
+    /// P8): the recording already says what the call returns. An older build
+    /// reads it as `Unknown`.
+    PointRepeat,
     /// `mecha learn --compare-sources` (row 2e-1, R25): at an intervention
     /// the reflector reflected on, the recorded prompt with no rules against
     /// the same with the reflector's lesson and with the session appraisal's
@@ -115,6 +121,11 @@ pub enum Validator {
     /// The same validator on a draft the owner rejected: an arm fails by
     /// drafting the rejected text and passes by ending without drafting.
     RejectedDraft,
+    /// `counterfactual::repeat_verdict`: an arm fails by making, in the turn
+    /// it regenerates, a call the recording shows failing with the same
+    /// error, and passes otherwise. Structural, and nobody's verdict: the
+    /// recording is the evidence.
+    StructuralRepeat,
     /// No structural validator can pose this point's question — a surprise
     /// with no owner act behind it, or a check that is the agent's own or
     /// cannot be re-run on a branch that executes nothing. **The arms are

@@ -873,6 +873,7 @@ mod tests {
             reason: None,
             rejection,
             cites: None,
+            shown: None,
         }
     }
 

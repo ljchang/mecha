@@ -7768,8 +7768,35 @@ through the store above (a `point-*` `Kind` per point kind).
   relocated **at its own message** (`counterfactual::locate_steer_at` /
   `locate_denial_at`, via `probe::prepare_intervention_at`), never by text
   alone, which finds the first of two identical steers.
+- **One kind needs no owner at all: a repeat** (`HARNESS-EVOLUTION-DESIGN.md`
+  P8's middle step). A failed call the run made again, unchanged, after it
+  had read the failure (`counterfactual::first_repeats`): same target and
+  identical error text, by `compact::same_failure`, the key
+  `collapse_repeated_failures` folds on, so a poll (a changing result) and a
+  refusal are never repeats. Only a **later** turn **of the same run**
+  repeats (a call doubled in one batch was issued before either answer, and
+  a top-level user turn ends the streak: the owner may have fixed the cause
+  and asked for another try, and an arm that obeys is no dead end), only
+  the **first** repeat of a
+  failure is a point (the third attempt is the same decision again, and
+  would weight one stuck episode several times in a uniform draw), and only
+  calls a registered tool answered count (#723: an invented name has no
+  answer to replay and lends no situation key). The branch regenerates the
+  repeating turn, as a denial's does, and `counterfactual::repeat_verdict`
+  (`StructuralRepeat`) **fails an arm whose decision turn makes any recorded
+  failing call again** — same tool, same input — and passes it otherwise,
+  ending the run included: the point judges the dead end, nothing more.
+  **Only the decision turn is graded** (`ReplayReport::decision_turn_calls`,
+  read back from the branch and checked against the trace, `None` after a
+  compaction): an `Arguments` divergence is not structural, so a run that
+  moved off the dead end is answered with the *recorded* failure of the call
+  it replaced, and its next turn reacts to an error it never earned. A
+  decision turn that cannot be read back is inconclusive. The supply is the
+  corpus itself, which is the point: every other posed kind waits on an
+  owner's act, and the harness gate had decided one point in total.
 - **The owner's recorded verdict decides, through a structural validator
-  only** (R27). Steer and denial reuse `StructuralSteer`/`StructuralDenial`.
+  only** (R27) — the recording's own, for a repeat (above). Steer and
+  denial reuse `StructuralSteer`/`StructuralDenial`.
   A draft point is `ProbeKind::Draft`, branched like a denial (the whole
   staging turn regenerated), and graded by `counterfactual::draft_verdict`
   (`ReleasedDraft`/`RejectedDraft`): **an arm passes only by producing the
@@ -7811,8 +7838,8 @@ through the store above (a `point-*` `Kind` per point kind).
   by `pointwise::draw`, then — row 2e-6, R39 — stably re-ordered by the
   replay priority of each point's session (`pointwise::draw_ranked`), so
   the seed decides only among equals. **A harness candidate's points are
-  never ranked** (`candidate_draw`): R36 gives the point-wise half no
-  separate holdout, so they are the confirming sample, and a prioritised
+  never ranked** (`candidate_draw`): the held-out points are the
+  confirming sample (R36), and a prioritised
   confirming sample is a biased one (§8.1;
   `candidate_points_ignore_the_replay_priority`). `--points` (default 8) counts
   driven points; unposed points cost nothing and are not charged. A point

@@ -8,8 +8,9 @@
 //! [`pointwise::ARMS_MAX`] policies — the prompt the run carried, the rules
 //! deployed today for its situation, and none — driven through
 //! [`probe::drive_arm_within`] a short horizon ([`pointwise::HORIZON_TURNS`])
-//! from the point, and graded by the owner's recorded verdict through a
-//! structural validator. Every comparison goes through
+//! from the point, and graded through a structural validator — by the
+//! owner's recorded verdict, or for a repeat by the recording's own
+//! results. Every comparison goes through
 //! [`ComparisonStore::record`], the store's one provenance door.
 //!
 //! **What it costs, and who waits.** Nothing is driven for a point no
@@ -152,9 +153,9 @@ fn compare_draw(pool: Vec<Drawable>, seed: u64, sessions_dir: &Path) -> Vec<Draw
     pointwise::draw_ranked(pool, seed, |d| &d.point, &priorities)
 }
 
-/// A harness candidate's draw: **uniform, never ranked** (R39). R36 gives
-/// the point-wise half no separate holdout, so these points *are* the
-/// sample that confirms or refutes the candidate, and a prioritised
+/// A harness candidate's draw: **uniform, never ranked** (R39). The held-out
+/// points (sessions the proposer never saw, R36 as ruled 2026-10-29) *are*
+/// the sample that confirms or refutes the candidate, and a prioritised
 /// confirming sample is a biased one (`GOAL-SYSTEM-DESIGN.md` §8.1) — the
 /// replay priority may choose what `sessions compare` examines, never what
 /// counts as proof. `candidate_points_ignore_the_replay_priority` pins it.
@@ -322,6 +323,9 @@ pub fn plan(
                 return Ok(Plan::Unavailable(format!("outbox item {item_id} is gone")));
             };
             probe::prepare_draft_in(path, item)?
+        }
+        (PointKind::Repeat, Locator::Repeat { call_id }) => {
+            probe::prepare_repeat_in(path, call_id)?
         }
         (PointKind::FailedCheck | PointKind::Surprise, Locator::Step { step }) => {
             let transcript = match Session::read(path) {
@@ -581,8 +585,8 @@ pub async fn run(global: &crate::GlobalOpts, opts: Options) -> Result<()> {
     let levers_off = crate::setup::levers_off(global, &cfg);
     let mut seats_gone = false;
     for Drawable { path, point } in &drawn {
-        // A steer, a denial and a draft are always posed, so once nothing
-        // more can be driven they are counted without reading their
+        // A steer, a denial, a draft and a repeat are always posed, so once
+        // nothing more can be driven they are counted without reading their
         // transcripts again; a check or a surprise may be unposed and free,
         // so it is still prepared.
         let always_posed = matches!(
@@ -591,6 +595,7 @@ pub async fn run(global: &crate::GlobalOpts, opts: Options) -> Result<()> {
                 | PointKind::Denial
                 | PointKind::EditedDraft
                 | PointKind::RejectedDraft
+                | PointKind::Repeat
         );
         if always_posed && budget == 0 {
             tally.over_budget += 1;
@@ -785,6 +790,37 @@ pub struct CandidateScope<'a> {
     pub workspace: Option<&'a Path>,
     /// Newest sessions read, at most — the whole-session draw's pool size.
     pub sessions: usize,
+    /// The episode the proposal cited: where it must win.
+    pub origin: Option<&'a str>,
+    /// Every session the proposer's brief showed. None of them is held out.
+    pub shown: Option<&'a [String]>,
+}
+
+/// Which slice of a candidate's comparison a session's points belong to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Slice {
+    /// The cited episode: the candidate has to win here.
+    Origin,
+    /// A session the proposer never saw: the candidate must not regress here.
+    HeldOut,
+}
+
+/// The slice a session's points are compared in, or `None` when they are in
+/// neither: a session the proposer was shown but did not cite is no origin,
+/// and held out of nothing. **A candidate that recorded nothing about what
+/// was shown (`None`) has no held-out slice** — any session might have been
+/// shown, and unknown is never clean. `Some` of an empty list is a brief
+/// that showed no session, and every session is held out.
+fn slice_of(session: &str, origin: Option<&str>, shown: Option<&[String]>) -> Option<Slice> {
+    if origin == Some(session) {
+        Some(Slice::Origin)
+    } else {
+        match shown {
+            None => None,
+            Some(shown) if shown.iter().any(|s| s == session) => None,
+            Some(_) => Some(Slice::HeldOut),
+        }
+    }
 }
 
 /// The two arms a candidate is compared under at a point: the run's
@@ -830,6 +866,19 @@ fn candidate_comparison(
     Ok(c)
 }
 
+/// Count one compared point in its slice's tally.
+fn count_in(
+    tally: &mut mecha_core::candidate::PointwiseTally,
+    slice: Slice,
+    baseline: Outcome,
+    candidate: Outcome,
+) {
+    match slice {
+        Slice::Origin => tally.count_origin(baseline, candidate),
+        Slice::HeldOut => tally.count(baseline, candidate),
+    }
+}
+
 /// Count a candidate's comparison already on record at this point, if
 /// there is one — a re-measurement pays for no point twice. A reused point
 /// is a point compared, so it spends the same budget a driven one does:
@@ -840,13 +889,14 @@ fn reuse(
     on_record: &[Comparison],
     skeleton: &Comparison,
     out: &mut CandidateEvidence,
+    slice: Slice,
     budget: &mut usize,
 ) -> bool {
     let Some(row) = pointwise::on_record(on_record, skeleton) else {
         return false;
     };
     if let Some((baseline, candidate)) = outcomes_of(row) {
-        out.tally.count(baseline, candidate);
+        count_in(&mut out.tally, slice, baseline, candidate);
         out.comparisons.push(row.id.clone());
     }
     *budget = budget.saturating_sub(1);
@@ -856,14 +906,12 @@ fn reuse(
 /// Why a candidate's point-wise pass compared nothing, when it did not —
 /// each cause in its own words.
 fn empty_reason(out: &CandidateEvidence, seats_held: bool, lost_to_arms: usize) -> Option<String> {
-    if out.tally.decided + out.tally.undecided > 0 {
+    let compared = out.tally.decided + out.tally.origin_decided + out.tally.undecided;
+    if compared > 0 {
         // Evidence, but perhaps less than the budget allowed: a pass cut
         // short by held seats must not read like a thin corpus.
         return seats_held.then(|| {
-            format!(
-                "stopped short: every background seat stayed held after {} point(s)",
-                out.tally.decided + out.tally.undecided
-            )
+            format!("stopped short: every background seat stayed held after {compared} point(s)")
         });
     }
     Some(if seats_held {
@@ -948,15 +996,35 @@ pub async fn compare_candidate(
     )?;
     let seats = crate::commands::tasks::permits()?;
     let mut budget = mecha_core::candidate::POINTS_PER_CANDIDATE;
+    let mut origin_budget = mecha_core::candidate::ORIGIN_POINTS;
     // Why a pass may come back empty, kept apart: "the seats never freed"
     // and "every arm failed" are machine facts, "no point to compare" is a
     // fact about the corpus, and a reader months later must not take one
     // for another (found on review).
     let mut seats_held = false;
     let mut lost_to_arms = 0usize;
-    for Drawable { path, point } in candidate_draw(pool, seed) {
-        if budget == 0 {
-            break;
+    // The origin's points first, then the held-out ones, each drawn with the
+    // measurement's own seed. A session in neither slice is not drawn.
+    let (origin_pool, held_pool): (Vec<_>, Vec<_>) = pool
+        .into_iter()
+        .filter(|d| slice_of(&d.point.session_id, scope.origin, scope.shown).is_some())
+        .partition(|d| scope.origin == Some(d.point.session_id.as_str()));
+    let drawn: Vec<(Slice, Drawable)> = candidate_draw(origin_pool, seed)
+        .into_iter()
+        .map(|d| (Slice::Origin, d))
+        .chain(
+            candidate_draw(held_pool, seed)
+                .into_iter()
+                .map(|d| (Slice::HeldOut, d)),
+        )
+        .collect();
+    for (slice, Drawable { path, point }) in drawn {
+        let budget = match slice {
+            Slice::Origin => &mut origin_budget,
+            Slice::HeldOut => &mut budget,
+        };
+        if *budget == 0 {
+            continue;
         }
         // Only a point a structural validator poses can decide anything.
         let Plan::Posed(prep) = plan(&point, &path, &by_id, surfaces.as_ref())? else {
@@ -980,7 +1048,7 @@ pub async fn compare_candidate(
             model,
             candidate,
         )?;
-        if reuse(&on_record, &skeleton, &mut out, &mut budget) {
+        if reuse(&on_record, &skeleton, &mut out, slice, budget) {
             continue;
         }
         let what = format!("compare candidate {candidate} {}", point.kind.as_str());
@@ -989,7 +1057,7 @@ pub async fn compare_candidate(
             seats_held = true;
             break;
         };
-        budget -= 1;
+        *budget -= 1;
         let mut outcomes = Vec::new();
         for (role, policy) in arms.iter() {
             let driven = probe::drive_arm_under(
@@ -1037,12 +1105,21 @@ pub async fn compare_candidate(
         )?;
         if tally.stored.written > written {
             if let Some((baseline, candidate)) = outcomes_of(&comparison) {
-                out.tally.count(baseline, candidate);
+                count_in(&mut out.tally, slice, baseline, candidate);
                 out.comparisons.push(comparison.id);
             }
         }
     }
     out.not_run = empty_reason(&out, seats_held, lost_to_arms);
+    // Said apart: nothing decided at the origin is why a held-out result
+    // alone cannot accept, and a reader must not take it for a thin corpus.
+    if out.tally.origin_decided == 0 && out.not_run.is_none() {
+        out.not_run = Some(
+            "no point at the cited episode could be compared, so nothing was won where the \
+             proposal came from"
+                .into(),
+        );
+    }
     Ok(out)
 }
 
@@ -1792,7 +1869,13 @@ mod tests {
         };
         let mut out = CandidateEvidence::default();
         let mut budget = mecha_core::candidate::POINTS_PER_CANDIDATE;
-        assert!(reuse(&rows, &skeleton("hc-ledger"), &mut out, &mut budget));
+        assert!(reuse(
+            &rows,
+            &skeleton("hc-ledger"),
+            &mut out,
+            Slice::HeldOut,
+            &mut budget
+        ));
         assert_eq!((out.tally.decided, out.tally.candidate_only), (1, 1));
         assert_eq!(out.comparisons, vec![c.id]);
         assert_eq!(
@@ -1802,7 +1885,13 @@ mod tests {
         );
         let mut other = CandidateEvidence::default();
         assert!(
-            !reuse(&rows, &skeleton("hc-quarter"), &mut other, &mut budget),
+            !reuse(
+                &rows,
+                &skeleton("hc-quarter"),
+                &mut other,
+                Slice::HeldOut,
+                &mut budget
+            ),
             "another candidate's verdict at the same point is not this one's"
         );
         assert_eq!(budget, mecha_core::candidate::POINTS_PER_CANDIDATE - 1);
@@ -1844,7 +1933,7 @@ mod tests {
             if budget == 0 {
                 break;
             }
-            if reuse(&rows, &stored, &mut out, &mut budget) {
+            if reuse(&rows, &stored, &mut out, Slice::HeldOut, &mut budget) {
                 reused += 1;
             }
         }
@@ -1885,6 +1974,41 @@ mod tests {
         assert_eq!(pool(Some("another-model"), None), 0);
         assert_eq!(pool(None, Some(home.clone())), 4, "inside the workspace");
         assert_eq!(pool(None, Some(home.join("elsewhere"))), 0);
+    }
+
+    /// A point counts in its own slice's tally and in no other.
+    #[test]
+    fn a_point_counts_in_its_own_slice_only() {
+        let mut t = mecha_core::candidate::PointwiseTally::default();
+        count_in(&mut t, Slice::Origin, Outcome::Fail, Outcome::Pass);
+        count_in(&mut t, Slice::HeldOut, Outcome::Pass, Outcome::Pass);
+        assert_eq!((t.origin_decided, t.origin_candidate_only), (1, 1));
+        assert_eq!((t.decided, t.candidate_only, t.baseline_only), (1, 0, 0));
+    }
+
+    /// **Held out means never shown.** The cited episode is the origin; a
+    /// session the proposer was shown and did not cite is in neither slice;
+    /// one it never saw is held out; and a candidate that recorded no shown
+    /// sessions has no held-out slice at all.
+    #[test]
+    fn a_session_is_held_out_only_if_the_proposer_never_saw_it() {
+        let shown = vec!["a".to_string(), "b".to_string()];
+        let s = Some(shown.as_slice());
+        assert_eq!(slice_of("a", Some("a"), s), Some(Slice::Origin));
+        assert_eq!(slice_of("b", Some("a"), s), None, "shown, not cited");
+        assert_eq!(slice_of("z", Some("a"), s), Some(Slice::HeldOut));
+        assert_eq!(slice_of("z", None, s), Some(Slice::HeldOut));
+        assert_eq!(
+            slice_of("z", Some("a"), None),
+            None,
+            "a record that predates the field: unknown is never held out"
+        );
+        assert_eq!(
+            slice_of("z", Some("a"), Some(&[])),
+            Some(Slice::HeldOut),
+            "a brief that showed nothing holds everything out"
+        );
+        assert_eq!(slice_of("a", Some("a"), None), Some(Slice::Origin));
     }
 
     /// R39: `compare_candidate`'s draw is unchanged by the ranking — same
