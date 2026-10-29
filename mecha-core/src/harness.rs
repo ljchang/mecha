@@ -671,8 +671,7 @@ impl HarnessCandidate {
         let lost = m.selection.losses > m.selection.wins || m.holdout.losses > m.holdout.wins;
         let lost_pointwise = m.pointwise.as_ref().is_some_and(|p| {
             p.basis == Basis::Pointwise
-                && (p.tally.verdict() == PointwiseVerdict::Against
-                    || p.tally.origin_verdict() == PointwiseVerdict::Against)
+                && (p.tally.verdict() == PointwiseVerdict::Against || p.tally.origin_rejects())
         });
         if work_fell || lost || lost_pointwise {
             return HistoryVerdict::Harmed;

@@ -348,11 +348,7 @@ async fn ruminate(
         reason: None,
         rejection: None,
         cites: proposal.cites.as_ref().map(ToString::to_string),
-        shown: evidence
-            .digests
-            .iter()
-            .map(|d| d.session_id().to_string())
-            .collect(),
+        shown: evidence.shown_sessions(),
     };
 
     println!("── candidate {} ──", cand.id);

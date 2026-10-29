@@ -913,6 +913,14 @@ impl PointwiseTally {
         }
     }
 
+    /// Whether the origin lost firmly enough to reject: two decided points,
+    /// more baseline-only than candidate-only passes. One decided point is
+    /// not enough — the arms are sampled, and a single flaky pass-to-fail
+    /// must not end a candidate; it reaches a person instead.
+    pub fn origin_rejects(&self) -> bool {
+        self.origin_decided >= 2 && self.origin_verdict() == PointwiseVerdict::Against
+    }
+
     /// The held-out slice's verdict: [`MIN_DECIDED_POINTS`] decided, and a
     /// strict majority one way.
     pub fn verdict(&self) -> PointwiseVerdict {
@@ -996,9 +1004,14 @@ pub fn combine(
             "lost on held-out episodes ({points}): where the proposer was shown nothing, the \
              current harness did what the owner decided more often than the candidate did"
         ))
-    } else if origin == PointwiseVerdict::Against {
+    } else if p.origin_rejects() {
         Disposition::Reject(format!(
             "lost at the episode it came from ({points}): it made the failure it cites worse"
+        ))
+    } else if origin == PointwiseVerdict::Against {
+        Disposition::Propose(format!(
+            "lost at the episode it came from on a single decided point ({points}): one sampled \
+             pass-to-fail is too little to reject on, and too much to accept over"
         ))
     } else if origin != PointwiseVerdict::For {
         return (numeric, Basis::NumericOnly);
@@ -2047,12 +2060,16 @@ mod r36_tests {
         );
         let mut lost = PointwiseTally::default();
         lost.count_origin(Outcome::Pass, Outcome::Fail);
-        let t = lost;
-        let (combined, _) = combine(ChangeClass::Config, held.clone(), &t);
         assert!(
-            matches!(combined.disposition, Disposition::Reject(ref why) if why.contains("lost at the episode it came from")),
+            matches!(run(&lost), Disposition::Propose(ref why) if why.contains("single decided point")),
+            "one flaky origin point reaches a person: {:?}",
+            run(&lost)
+        );
+        lost.count_origin(Outcome::Pass, Outcome::Fail);
+        assert!(
+            matches!(run(&lost), Disposition::Reject(ref why) if why.contains("lost at the episode it came from")),
             "{:?}",
-            combined.disposition
+            run(&lost)
         );
     }
 

@@ -1973,11 +1973,6 @@ mod tests {
         assert_eq!(pool(None, Some(home.join("elsewhere"))), 0);
     }
 
-    /// R39: `compare_candidate`'s draw is unchanged by the ranking — same
-    /// seed and pool, same points, element for element, before and after a
-    /// session's surprise raises its priority — while `sessions compare`'s
-    /// draw moves that session's points to the front. Fails if the
-    /// candidate's draw is ever ranked.
     /// A point counts in its own slice's tally and in no other.
     #[test]
     fn a_point_counts_in_its_own_slice_only() {
@@ -2007,6 +2002,11 @@ mod tests {
         assert_eq!(slice_of("a", Some("a"), &[]), Some(Slice::Origin));
     }
 
+    /// R39: `compare_candidate`'s draw is unchanged by the ranking — same
+    /// seed and pool, same points, element for element, before and after a
+    /// session's surprise raises its priority — while `sessions compare`'s
+    /// draw moves that session's points to the front. Fails if the
+    /// candidate's draw is ever ranked.
     #[test]
     fn candidate_points_ignore_the_replay_priority() {
         let guard = crate::testenv::HomeGuard::new("pointwise-candidate-uniform");
