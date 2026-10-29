@@ -793,7 +793,7 @@ pub struct CandidateScope<'a> {
     /// The episode the proposal cited: where it must win.
     pub origin: Option<&'a str>,
     /// Every session the proposer's brief showed. None of them is held out.
-    pub shown: &'a [String],
+    pub shown: Option<&'a [String]>,
 }
 
 /// Which slice of a candidate's comparison a session's points belong to.
@@ -807,16 +807,19 @@ enum Slice {
 
 /// The slice a session's points are compared in, or `None` when they are in
 /// neither: a session the proposer was shown but did not cite is no origin,
-/// and held out of nothing. **A candidate that recorded no shown sessions
-/// has no held-out slice** — with nothing to hold out from, any session might
-/// have been shown, and unknown is never clean.
-fn slice_of(session: &str, origin: Option<&str>, shown: &[String]) -> Option<Slice> {
+/// and held out of nothing. **A candidate that recorded nothing about what
+/// was shown (`None`) has no held-out slice** — any session might have been
+/// shown, and unknown is never clean. `Some` of an empty list is a brief
+/// that showed no session, and every session is held out.
+fn slice_of(session: &str, origin: Option<&str>, shown: Option<&[String]>) -> Option<Slice> {
     if origin == Some(session) {
         Some(Slice::Origin)
-    } else if shown.is_empty() || shown.iter().any(|s| s == session) {
-        None
     } else {
-        Some(Slice::HeldOut)
+        match shown {
+            None => None,
+            Some(shown) if shown.iter().any(|s| s == session) => None,
+            Some(_) => Some(Slice::HeldOut),
+        }
     }
 }
 
@@ -1990,16 +1993,22 @@ mod tests {
     #[test]
     fn a_session_is_held_out_only_if_the_proposer_never_saw_it() {
         let shown = vec!["a".to_string(), "b".to_string()];
-        assert_eq!(slice_of("a", Some("a"), &shown), Some(Slice::Origin));
-        assert_eq!(slice_of("b", Some("a"), &shown), None, "shown, not cited");
-        assert_eq!(slice_of("z", Some("a"), &shown), Some(Slice::HeldOut));
-        assert_eq!(slice_of("z", None, &shown), Some(Slice::HeldOut));
+        let s = Some(shown.as_slice());
+        assert_eq!(slice_of("a", Some("a"), s), Some(Slice::Origin));
+        assert_eq!(slice_of("b", Some("a"), s), None, "shown, not cited");
+        assert_eq!(slice_of("z", Some("a"), s), Some(Slice::HeldOut));
+        assert_eq!(slice_of("z", None, s), Some(Slice::HeldOut));
         assert_eq!(
-            slice_of("z", Some("a"), &[]),
+            slice_of("z", Some("a"), None),
             None,
-            "nothing recorded as shown: unknown is never held out"
+            "a record that predates the field: unknown is never held out"
         );
-        assert_eq!(slice_of("a", Some("a"), &[]), Some(Slice::Origin));
+        assert_eq!(
+            slice_of("z", Some("a"), Some(&[])),
+            Some(Slice::HeldOut),
+            "a brief that showed nothing holds everything out"
+        );
+        assert_eq!(slice_of("a", Some("a"), None), Some(Slice::Origin));
     }
 
     /// R39: `compare_candidate`'s draw is unchanged by the ranking — same

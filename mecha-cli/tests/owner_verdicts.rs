@@ -141,7 +141,7 @@ fn seed_candidates(home: &Path) {
                 reason: None,
                 rejection: None,
                 cites: None,
-                shown: Vec::new(),
+                shown: None,
             })
             .unwrap();
     }
