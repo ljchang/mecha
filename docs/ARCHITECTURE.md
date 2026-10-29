@@ -746,6 +746,16 @@ The routes, in the result's own words and the manifest's `route`:
   refusal. On a picture with no record the names are left as written: its
   people are unknown. A character whose entry did not load, named anywhere
   in the call, is still refused (`broken_named_in`, review of #383).
+- **"Me" and "we" are the owner's character only when the library says
+  which** (`Library::owner`, `owner.toml`, written by `mecha imagelib
+  set-owner`; owner, 2026-10-29): the readers map the owner's my/me/I to it
+  and "we" to it and the persona, and a persona turn's reading may add it to
+  the persona's call (`imagegen::add_owner`), the one person a reading adds,
+  and only from the owner's own words. With none set, the owner is the
+  viewer. Never a name in code.
+- **A first-person camera's holder is the viewer** (`picture::first_person_holder`):
+  left out of the cast beside anyone else on a picture drawn from the scene,
+  their act one line of what the viewer's eyes see; a retouch keeps them.
 - **At most five people with faces** (`picture::MAX_FACES`, the owner's
   provisional C5 ruling). More are refused, naming them, never trimmed.
   `EDIT_REFERENCE_BUDGET` is the canvas plus five crops, and `call` refuses

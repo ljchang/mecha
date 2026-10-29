@@ -157,6 +157,16 @@ pub enum Cmd {
     /// with no one using them (1 to 240; 15 when never set). Takes effect
     /// at the next unlock.
     SetAutolock { minutes: u32 },
+    /// Say which character is you: whom "me", "my" and "we" name when you
+    /// ask for a picture. With none set you are the viewer, never drawn.
+    SetOwner {
+        /// An approved character.
+        #[arg(required_unless_present = "clear")]
+        name: Option<String>,
+        /// Clear the setting: you are the viewer again.
+        #[arg(long, conflicts_with = "name")]
+        clear: bool,
+    },
     /// Remove a candidate.
     Reject {
         name: String,
@@ -1075,6 +1085,16 @@ fn run(dir: &std::path::Path, cmd: Cmd) -> Result<()> {
             }
             imagelib::set_lock_password(dir, &first)?;
             println!("Lock password set. Locked entries show in the web library once unlocked.");
+        }
+        Cmd::SetOwner { name, clear: _ } => {
+            imagelib::set_owner(dir, name.as_deref())?;
+            match name {
+                Some(n) => println!(
+                    "{} is you now: \"me\", \"my\" and \"we\" in what you ask of a picture name them.",
+                    n.trim().to_lowercase()
+                ),
+                None => println!("Cleared: in what you ask of a picture, you are the viewer."),
+            }
         }
         Cmd::SetAutolock { minutes } => {
             imagelib::set_autolock_minutes(dir, minutes)?;

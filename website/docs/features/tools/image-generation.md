@@ -290,6 +290,10 @@ fit one picture, and a scene holds at most ten people.
   Otherwise a library name elsewhere in the words, for someone not in the
   picture, is read as "the viewer" rather than drawn as a stranger, and the
   result says so.
+- **"Me" is you when the library says which character you are.** Run
+  `mecha imagelib set-owner <name>` once, and "me", "my" and "we" in what
+  you ask of a picture name that character (and "we", you and the persona).
+  Without it, you are the viewer: never drawn.
 - **An edit carries the faces of the people it changes.** Each library
   character an edit places or changes comes in as a head crop of their
   portrait beside their description, so a chain of edits does not drift into

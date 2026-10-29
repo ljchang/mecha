@@ -409,6 +409,9 @@ impl SceneReader for ModelReader {
     async fn read(&self, record: Option<&crate::scene::Scene>) -> Result<Extracted, String> {
         let lib = crate::imagelib::Library::load(&self.library).0;
         let styles = crate::imagelib::style_names(&lib);
+        let shown_owner = lib
+            .owner()
+            .map(|k| crate::picture::shown(&crate::scene::Who::Library(k)));
         let shown_persona = self
             .character
             .as_deref()
@@ -456,6 +459,7 @@ impl SceneReader for ModelReader {
                 record,
                 library: Some(&lib),
                 persona: shown_persona.as_deref(),
+                owner: shown_owner.as_deref(),
             },
         )
     }
@@ -489,6 +493,9 @@ pub struct Looks<'a> {
     /// character as the picture names them (`picture::shown`), when it has
     /// one.
     pub persona: Option<&'a str>,
+    /// Whom "me" and "my" name: the owner's character (`Library::owner`), as
+    /// the picture names them, when the library says one is the owner.
+    pub owner: Option<&'a str>,
 }
 
 /// A held style replacing an earlier look in words: those words come off
@@ -668,7 +675,7 @@ pub fn read_extraction_for(
             None | Some(serde_json::Value::Null) => {}
             Some(serde_json::Value::String(t)) if t.trim().is_empty() => {}
             Some(serde_json::Value::String(t)) => {
-                scene.insert(k.into(), owners_words(t.trim()).into());
+                scene.insert(k.into(), owners_words(t.trim(), looks.owner).into());
             }
             Some(_) => return Err(format!("`{k}` was not text")),
         }
@@ -711,6 +718,7 @@ pub fn read_extraction_for(
     // People a pronoun named and nobody drawable is: the owner, who is the
     // viewer, or a group. Said beside the change, never a failure of it.
     let mut not_people: Vec<String> = Vec::new();
+    let mut owner_named = false;
     if let Some(people) = people {
         let list = people.as_array().ok_or("`people` was not a list")?;
         let mut out = Vec::new();
@@ -722,45 +730,78 @@ pub fn read_extraction_for(
                 .ok_or("a person had no `who`")?;
             // A pronoun is never a name: on 2026-10-28 a capitalised "you"
             // read as one failed a whole reading. "You" and "her" are the
-            // persona, as the reader is told; "me" is the owner, who is the
-            // viewer; "we" and "both" are nobody in particular.
-            let who = match pronoun(who) {
-                None => who,
+            // persona, as the reader is told; "me" is the owner's character
+            // when the library names one (`Library::owner`), else the viewer;
+            // "we" is the owner and the persona; "both" and "they" are nobody
+            // in particular.
+            let names: Vec<&str> = match pronoun(who) {
+                None => vec![who],
                 Some(Pronoun::Persona) => match looks.persona {
-                    Some(p) => p,
+                    Some(p) => vec![p],
                     None => {
                         not_people.push(format!("{who} names no one in this picture"));
                         continue;
                     }
                 },
-                Some(Pronoun::Owner) => {
-                    not_people.push(format!("{who} is the owner, the viewer, never drawn"));
-                    continue;
+                Some(Pronoun::Owner) => match looks.owner {
+                    Some(o) => {
+                        owner_named = true;
+                        vec![o]
+                    }
+                    None => {
+                        not_people.push(format!("{who} is the owner, the viewer, never drawn"));
+                        continue;
+                    }
+                },
+                Some(Pronoun::We) => {
+                    owner_named |= looks.owner.is_some();
+                    let we: Vec<&str> = looks.owner.into_iter().chain(looks.persona).collect();
+                    if we.is_empty() {
+                        not_people.push(format!("{who} names no one person"));
+                        continue;
+                    }
+                    we
                 }
                 Some(Pronoun::Group) => {
                     not_people.push(format!("{who} names no one person"));
                     continue;
                 }
             };
-            if looks_like_a_name(who) && !known(who) {
-                return Err(format!("{who} is not in this picture or the image library"));
-            }
-            let mut m = serde_json::Map::new();
-            m.insert("who".into(), who.into());
-            for k in ["wearing", "doing", "expression", "where"] {
-                if let Some(t) = p[k].as_str().map(str::trim).filter(|t| !t.is_empty()) {
-                    let t = if k == "where" {
-                        t.to_string()
-                    } else {
-                        owners_words(t)
-                    };
-                    m.insert(k.into(), t.into());
+            let several = names.len() > 1;
+            for who in names {
+                if looks_like_a_name(who) && !known(who) {
+                    return Err(format!("{who} is not in this picture or the image library"));
                 }
+                // Someone named twice (by name and by "we") is read once, the
+                // first time.
+                if out.iter().any(|q: &serde_json::Value| {
+                    q["who"]
+                        .as_str()
+                        .is_some_and(|w| w.eq_ignore_ascii_case(who))
+                }) {
+                    continue;
+                }
+                let mut m = serde_json::Map::new();
+                m.insert("who".into(), who.into());
+                for k in ["wearing", "doing", "expression", "where"] {
+                    // One place cannot hold two people.
+                    if k == "where" && several {
+                        continue;
+                    }
+                    if let Some(t) = p[k].as_str().map(str::trim).filter(|t| !t.is_empty()) {
+                        let t = if k == "where" {
+                            t.to_string()
+                        } else {
+                            owners_words(t, looks.owner)
+                        };
+                        m.insert(k.into(), t.into());
+                    }
+                }
+                if p["remove"].as_bool() == Some(true) {
+                    m.insert("remove".into(), true.into());
+                }
+                out.push(serde_json::Value::Object(m));
             }
-            if p["remove"].as_bool() == Some(true) {
-                m.insert("remove".into(), true.into());
-            }
-            out.push(serde_json::Value::Object(m));
         }
         if !out.is_empty() {
             scene.insert("people".into(), out.into());
@@ -828,7 +869,9 @@ pub fn read_extraction_for(
         Some(_) => return Err("`look` was not text".into()),
     }
     let retouch = match obj.get("retouch") {
-        Some(serde_json::Value::String(t)) if !t.trim().is_empty() => Some(owners_words(t.trim())),
+        Some(serde_json::Value::String(t)) if !t.trim().is_empty() => {
+            Some(owners_words(t.trim(), looks.owner))
+        }
         None | Some(serde_json::Value::Null) | Some(serde_json::Value::String(_)) => None,
         Some(_) => return Err("`retouch` was not text".into()),
     };
@@ -870,6 +913,7 @@ pub fn read_extraction_for(
         scene,
         retouch,
         left_out,
+        owner_named,
     })
 }
 
@@ -894,6 +938,11 @@ pub struct Extracted {
     pub retouch: Option<String>,
     /// What the extraction asked for that cannot be drawn, said.
     pub left_out: Option<String>,
+    /// The owner's words named the owner ("me", "we") and the library's
+    /// owner character stands for them in `people`: the one person a
+    /// persona turn's reading may add to the persona's call
+    /// (`imagegen::merge_read`).
+    pub owner_named: bool,
 }
 
 impl Extracted {
@@ -931,11 +980,13 @@ impl Extracted {
 }
 
 /// What a pronoun in a `who` stands for: the persona the owner talks to,
-/// the owner themselves, or a group.
+/// the owner themselves, the two of them, or a group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Pronoun {
     Persona,
     Owner,
+    /// The owner and the persona: "we", "us", "the two of us".
+    We,
     Group,
 }
 
@@ -949,35 +1000,47 @@ fn pronoun(who: &str) -> Option<Pronoun> {
         .or_else(|| who.strip_suffix(" of you"))
         .unwrap_or(&who);
     if matches!(group, "both" | "all" | "the two" | "the three" | "the four") && group != who {
-        return Some(Pronoun::Group);
+        return Some(if who.ends_with(" of us") {
+            Pronoun::We
+        } else {
+            Pronoun::Group
+        });
     }
     match who.as_str() {
         "you" | "yourself" | "she" | "her" | "herself" => Some(Pronoun::Persona),
         "i" | "me" | "myself" | "owner" | "the owner" | "viewer" | "the viewer" => {
             Some(Pronoun::Owner)
         }
-        "we" | "us" | "ourselves" | "both" | "all" | "everyone" | "everybody" | "they" | "them" => {
-            Some(Pronoun::Group)
-        }
+        "we" | "us" | "ourselves" => Some(Pronoun::We),
+        "both" | "all" | "everyone" | "everybody" | "they" | "them" => Some(Pronoun::Group),
         _ => None,
     }
 }
 
 /// The owner's first person in a reader's field, as the image model reads
-/// it: "my", "mine", "me", "myself" and "I" are the viewer, who is never
-/// drawn (`picture::as_viewer`). The reader copies the owner's own words, so
-/// on 2026-10-28 an act on "my" body reached the image model with nobody it
+/// it: "my", "mine", "me", "myself" and "I" are the owner's character when
+/// the library names one (`Library::owner`), else the viewer, who is never
+/// drawn (`picture::as_viewer`); a character not in the picture becomes the
+/// viewer there too. The reader copies the owner's own words, so on
+/// 2026-10-28 an act on "my" body reached the image model with nobody it
 /// could be, and it drew a third person to be "me".
-pub(crate) fn owners_words(text: &str) -> String {
+pub(crate) fn owners_words(text: &str, owner: Option<&str>) -> String {
+    let (me, mine) = match owner {
+        Some(o) => (o.to_string(), format!("{o}'s")),
+        None => ("the viewer".to_string(), "the viewer's".to_string()),
+    };
     let mut out = String::with_capacity(text.len() + 16);
     let mut word = String::new();
     let flush = |word: &mut String, out: &mut String| {
-        out.push_str(match word.to_lowercase().as_str() {
-            "my" | "mine" => "the viewer's",
-            "me" | "myself" | "i" => "the viewer",
-            "i'm" | "i’m" => "the viewer is",
-            _ => word.as_str(),
-        });
+        match word.to_lowercase().as_str() {
+            "my" | "mine" => out.push_str(&mine),
+            "me" | "myself" | "i" => out.push_str(&me),
+            "i'm" | "i’m" => {
+                out.push_str(&me);
+                out.push_str(" is");
+            }
+            _ => out.push_str(word),
+        }
         word.clear();
     };
     for c in text.chars() {
@@ -1148,7 +1211,9 @@ mod tests {
         );
         let said = e.left_out.as_deref().unwrap_or("");
         assert!(said.contains("me is the owner, the viewer"), "{said}");
-        assert!(said.contains("We names no one person"), "{said}");
+        // "We" is the owner and the persona: no owner set, so the persona,
+        // already read once from "You".
+        assert!(!said.contains("We"), "{said}");
         // Without a persona character "you" names nobody, still not a name.
         let e = read_extraction(
             r#"{"people": [{"who": "You", "doing": "waving"}], "light": "dusk"}"#,
@@ -1171,15 +1236,15 @@ mod tests {
     #[test]
     fn the_owners_first_person_is_the_viewer() {
         assert_eq!(
-            owners_words("holding my hand, looking at me; I watch"),
+            owners_words("holding my hand, looking at me; I watch", None),
             "holding the viewer's hand, looking at the viewer; the viewer watch"
         );
         assert_eq!(
-            owners_words("from my point of view"),
+            owners_words("from my point of view", None),
             "from the viewer's point of view"
         );
         assert_eq!(
-            owners_words("a mystery novel by Ian"),
+            owners_words("a mystery novel by Ian", None),
             "a mystery novel by Ian"
         );
         let known = |w: &str| w == "Maya";
@@ -1190,6 +1255,51 @@ mod tests {
         .unwrap();
         assert_eq!(e.scene["together"], "Maya kisses the viewer");
         assert_eq!(e.scene["people"][0]["doing"], "sitting on the viewer's lap");
+        // With the library naming the owner's character, they are that.
+        assert_eq!(
+            owners_words("holding my hand, looking at me", Some("John")),
+            "holding John's hand, looking at John"
+        );
+    }
+
+    /// Owner, 2026-10-29: with the library naming the owner's character
+    /// (`Library::owner`), "me" is that character and "we" is them and the
+    /// persona, each read once; with none set, as before.
+    #[test]
+    fn me_and_we_name_the_owners_character_when_the_library_has_one() {
+        let known = |w: &str| ["Maya", "John"].contains(&w);
+        let looks = Looks {
+            persona: Some("Maya"),
+            owner: Some("John"),
+            ..Default::default()
+        };
+        let e = read_extraction_for(
+            r#"{"people": [{"who": "me", "wearing": "a suit", "doing": "dancing with Maya"}]}"#,
+            &known,
+            None,
+            &looks,
+        )
+        .unwrap();
+        assert_eq!(
+            e.scene["people"],
+            serde_json::json!([{"who": "John", "wearing": "a suit", "doing": "dancing with Maya"}])
+        );
+        let e = read_extraction_for(
+            r#"{"people": [{"who": "Maya", "doing": "laughing"},
+                {"who": "the two of us", "wearing": "raincoats", "where": "left"}]}"#,
+            &known,
+            None,
+            &looks,
+        )
+        .unwrap();
+        assert_eq!(
+            e.scene["people"],
+            serde_json::json!([
+                {"who": "Maya", "doing": "laughing"},
+                {"who": "John", "wearing": "raincoats"}
+            ])
+        );
+        assert!(e.left_out.is_none(), "{:?}", e.left_out);
     }
 
     /// 2026-10-28: a relative camera ask replaced a first-person camera and
@@ -1503,6 +1613,7 @@ mod tests {
             record: Some(&mine),
             library: Some(&lib),
             persona: None,
+            owner: None,
         };
         let e = read_extraction_for(
             r#"{"style": "secret wash", "light": "dusk"}"#,
@@ -1517,6 +1628,7 @@ mod tests {
             record: Some(&harbour),
             library: Some(&lib),
             persona: None,
+            owner: None,
         };
         let e =
             read_extraction_for(r#"{"look": "secret wash"}"#, &known, None, &elsewhere).unwrap();
