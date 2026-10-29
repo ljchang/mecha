@@ -44,7 +44,7 @@ use std::path::{Path, PathBuf};
 
 /// The configuration knobs an automated proposer may move. Closed on
 /// purpose; see the module docs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverrideKey {
     CompactAtTokens,
     MaxTurns,
@@ -637,7 +637,11 @@ pub fn setting_holders(on_file: &[HarnessCandidate]) -> Vec<&HarnessCandidate> {
         .iter()
         .filter_map(|key| {
             let moved_on = on_file.iter().rposition(|c| {
+                // A record the override set could have applied: an
+                // unparseable or non-config one never moved the setting.
                 matches!(c.status.as_str(), STATUS_ACCEPTED | STATUS_REVERTED)
+                    && c.class == ChangeClass::Config
+                    && parse_change(&c.change).is_ok()
                     && setting_of(&c.change) == Some(*key)
             });
             on_file
