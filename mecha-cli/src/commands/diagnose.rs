@@ -784,23 +784,15 @@ pub fn history_lines(
             Some(_) => {}
         }
     }
-    // A setting held by a record shows once, by its newest holder, and no
+    // A setting held by a record keeps its newest holder in the brief, and no
     // other value of it is shown as one to propose: the check refuses them
-    // ([`HarnessCandidate::forbids_proposal`]), so a line under "you may
+    // ([`mecha_core::harness::setting_holders`]), so a line under "you may
     // propose one again" would be the brief inviting what the loop refuses.
-    let mut holders: std::collections::HashMap<
-        mecha_core::harness::OverrideKey,
-        &mecha_core::harness::HarnessCandidate,
-    > = std::collections::HashMap::new();
-    for c in all.iter().rev() {
-        if let Some(setting) = c.held_setting() {
-            holders.entry(setting).or_insert(c);
-        }
-    }
+    let holders = mecha_core::harness::setting_holders(all);
     order.retain(|key| {
         let c = decides[key];
         let held_elsewhere = mecha_core::harness::setting_of(&c.change)
-            .and_then(|s| holders.get(&s))
+            .and_then(|s| holders.iter().find(|h| h.held_setting() == Some(s)))
             .is_some_and(|h| {
                 mecha_core::harness::canonical_change(&h.change)
                     != mecha_core::harness::canonical_change(&c.change)
@@ -811,12 +803,10 @@ pub fn history_lines(
     // The holders survive the window: truncated out, the instruction not to
     // propose another value would vanish while the check still refused one.
     // At most one per setting in the closed set, so it stays bounded.
-    let mut held: Vec<String> = holders
-        .values()
+    for key in holders
+        .iter()
         .map(|h| mecha_core::harness::canonical_change(&h.change))
-        .collect();
-    held.sort();
-    for key in held {
+    {
         if !order.contains(&key) && decides.contains_key(&key) {
             order.push(key);
         }
@@ -943,6 +933,13 @@ mod tests {
         assert!(!on_file[4].forbids_retry(true));
     }
 
+    fn holds_against(on_file: &[mecha_core::harness::HarnessCandidate], change: &str) -> bool {
+        let want = mecha_core::harness::setting_of(change);
+        mecha_core::harness::setting_holders(on_file)
+            .iter()
+            .any(|h| h.held_setting() == want)
+    }
+
     /// The brief and the check read one predicate (review of the setting
     /// hold): a value of a held setting is not shown under "you may propose
     /// one again", the holder survives the newest-20 window, and a record
@@ -970,7 +967,10 @@ mod tests {
             "25 is not shown as proposable while 20 holds the setting"
         );
         assert!(!on_file[1].forbids_retry(true), "not vacuous: it would be");
-        assert!(on_file[0].forbids_proposal("max_turns=25", true));
+        assert!(
+            holds_against(&on_file, "max_turns=25"),
+            "the holder is what the check refuses 25 on"
+        );
 
         // The holder survives twenty newer distinct changes.
         let mut crowded = vec![on_file[0].clone()];
@@ -997,17 +997,32 @@ mod tests {
             let c = record("hc-x", change, status, rejection);
             assert!(c.held_setting().is_none(), "{change} {status}");
             assert!(
-                !c.forbids_proposal("max_turns=25", true),
+                !holds_against(std::slice::from_ref(&c), "max_turns=25"),
                 "{change} {status}"
             );
         }
         // A categorical setting holds nothing at other values.
         let kind = record("hc-z", "effort=medium", STATUS_STAGED, None);
         assert!(kind.held_setting().is_none());
-        assert!(!kind.forbids_proposal("effort=high", true));
+        assert!(!holds_against(std::slice::from_ref(&kind), "effort=high"));
         let mut arch = record("hc-y", "max_turns=20", STATUS_STAGED, None);
         arch.class = mecha_core::candidate::ChangeClass::Architecture;
-        assert!(!arch.forbids_proposal("max_turns=25", true));
+        assert!(!holds_against(std::slice::from_ref(&arch), "max_turns=25"));
+
+        // Released once the setting has moved on: a later accepted record.
+        let moved = vec![
+            record("hc-1", "max_turns=20", STATUS_STAGED, None),
+            record("hc-2", "max_turns=40", STATUS_ACCEPTED, None),
+        ];
+        assert!(!holds_against(&moved, "max_turns=25"));
+        let after = vec![
+            record("hc-2", "max_turns=40", STATUS_ACCEPTED, None),
+            record("hc-3", "max_turns=20", STATUS_STAGED, None),
+        ];
+        assert!(
+            holds_against(&after, "max_turns=25"),
+            "a hold made after it still holds"
+        );
     }
 
     /// Found on review of #329: the diagnostician's run is narrowed off past

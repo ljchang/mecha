@@ -617,6 +617,39 @@ pub fn setting_of(change: &str) -> Option<OverrideKey> {
     OverrideKey::parse(key.trim())
 }
 
+/// The records that hold a setting against every other value of it, newest
+/// first per setting, in the order of [`OverrideKey::ALL`]; `on_file` is the
+/// store's order, oldest first.
+///
+/// A hold is **released by a later accepted or reverted record of the same
+/// setting**: the setting has been moved on since, so a staged or no-effect
+/// record from before it no longer says anything about where to go next.
+/// Without it, one old `max_turns=20` held the whole setting for good
+/// (found reviewing the setting hold). Both the re-derivation check and the
+/// brief read this one function, so what the brief shows and what the loop
+/// refuses cannot differ.
+///
+/// From 2026-10-09 to 10-28 the nightly proposed `max_turns` at 5, 4, 20,
+/// 100, 200, 60 and 25, each staged with arms that could not be told apart:
+/// the ban was on the exact `KEY=VALUE`, so it stepped to the next number.
+pub fn setting_holders(on_file: &[HarnessCandidate]) -> Vec<&HarnessCandidate> {
+    OverrideKey::ALL
+        .iter()
+        .filter_map(|key| {
+            let moved_on = on_file.iter().rposition(|c| {
+                matches!(c.status.as_str(), STATUS_ACCEPTED | STATUS_REVERTED)
+                    && setting_of(&c.change) == Some(*key)
+            });
+            on_file
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(i, c)| c.held_setting() == Some(*key) && moved_on.is_none_or(|m| *i > m))
+                .map(|(_, c)| c)
+        })
+        .collect()
+}
+
 /// A change as the store compares it: the canonical spec when it parses,
 /// so spacing cannot make two records of one change look like two changes.
 pub fn canonical_change(change: &str) -> String {
@@ -626,25 +659,6 @@ pub fn canonical_change(change: &str) -> String {
 }
 
 impl HarnessCandidate {
-    /// Whether this record forbids proposing `change` tonight — the one
-    /// predicate the re-derivation check and the brief's grouping both
-    /// read.
-    ///
-    /// The same change is forbidden by [`Self::forbids_retry`]. **A different
-    /// value of the same setting is forbidden while this record holds the
-    /// setting** ([`HistoryVerdict::holds_setting`]): ban only the exact
-    /// `KEY=VALUE` and the proposer steps to the next number. From
-    /// 2026-10-09 to 10-28 it proposed `max_turns` at 5, 4, 20, 100, 200, 60
-    /// and 25, each staged or tied for the same reason, and each paid for a
-    /// replay that could not see it.
-    pub fn forbids_proposal(&self, change: &str, has_headroom: bool) -> bool {
-        if canonical_change(&self.change) == canonical_change(change) {
-            return self.forbids_retry(has_headroom);
-        }
-        self.held_setting()
-            .is_some_and(|held| Some(held) == setting_of(change))
-    }
-
     /// The setting this record holds against every other value, if it holds
     /// one: a config change that parses (a value the override set cannot
     /// make was never going to be applied, so holds nothing) whose verdict
