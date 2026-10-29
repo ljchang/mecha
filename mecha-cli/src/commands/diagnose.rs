@@ -1023,6 +1023,12 @@ mod tests {
             holds_against(&after, "max_turns=25"),
             "a hold made after it still holds"
         );
+        // An accepted record that never parsed moved nothing.
+        let bogus = vec![
+            record("hc-1", "max_turns=20", STATUS_STAGED, None),
+            record("hc-2", "max_turns=abc", STATUS_ACCEPTED, None),
+        ];
+        assert!(holds_against(&bogus, "max_turns=25"));
     }
 
     /// Found on review of #329: the diagnostician's run is narrowed off past
