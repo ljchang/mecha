@@ -3408,6 +3408,52 @@ fn merge_read(
     merged
 }
 
+/// The owner's character added to a persona's call when the owner's own words
+/// named themselves ("me", "we"; `edit::Extracted::owner_named`) and the call
+/// left them out, with the clothes and act the reading gave them. The one
+/// person a reading adds (owner, 2026-10-29): a name in the persona's own
+/// words still makes them the viewer. Whether they were added, for the
+/// manifest.
+fn add_owner(
+    change: &mut crate::scene::SceneChange,
+    read: &serde_json::Map<String, Value>,
+    owner: &str,
+) -> bool {
+    let shown = crate::picture::shown(&crate::scene::Who::Library(owner.to_string()));
+    if change.people.iter().any(|p| p.who.key() == owner) {
+        return false;
+    }
+    let Some(r) = read
+        .get("people")
+        .and_then(Value::as_array)
+        .and_then(|people| {
+            people.iter().find(|r| {
+                r["who"]
+                    .as_str()
+                    .is_some_and(|w| w.trim().eq_ignore_ascii_case(&shown))
+            })
+        })
+    else {
+        return false;
+    };
+    let text = |k: &str| {
+        r[k].as_str()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .filter(|t| t.chars().count() <= crate::imagelib::MAX_CAST_FIELD)
+            .map(str::to_string)
+    };
+    change.people.push(crate::scene::PersonChange {
+        who: crate::scene::Who::Library(owner.to_string()),
+        at: None,
+        wearing: text("wearing"),
+        doing: text("doing").filter(|_| change.together.is_none()),
+        expression: None,
+        remove: false,
+    });
+    true
+}
+
 /// How long a persona's picture waits for the scene reader before it is drawn
 /// as the call said it. Before the split, so a turn can spend both.
 const SCENE_READ_TIMEOUT: Duration = Duration::from_secs(20);
@@ -4183,7 +4229,12 @@ impl Tool for ImageGenerate {
                 Some(match read {
                     Ok(extracted) => {
                         let before = call.change.clone();
-                        let merged = merge_read(&mut call.change, &extracted.scene);
+                        let mut merged = merge_read(&mut call.change, &extracted.scene);
+                        if let Some(owner) = lib.owner().filter(|_| extracted.owner_named) {
+                            if add_owner(&mut call.change, &extracted.scene, &owner) {
+                                merged.push("owner".to_string());
+                            }
+                        }
                         // The reader's words pass the door the call's did: a
                         // library character whose entry did not load, named
                         // in them, would be drawn as a stranger (review of
@@ -12232,6 +12283,42 @@ mod tests {
         }
     }
 
+    /// Owner, 2026-10-29: the owner's character joins a persona's call only
+    /// from the reading of the owner's own words, with what the reading gave
+    /// them; never twice, and nobody else is added.
+    #[test]
+    fn the_owner_named_in_the_owners_words_joins_the_call() {
+        let mut change = crate::scene::SceneChange {
+            people: vec![crate::scene::PersonChange {
+                who: crate::scene::Who::Library("maya".into()),
+                at: None,
+                wearing: Some("a robe".into()),
+                doing: Some("reading".into()),
+                expression: None,
+                remove: false,
+            }],
+            ..Default::default()
+        };
+        let read = json!({"people": [
+            {"who": "John", "wearing": "pyjamas", "doing": "dozing beside Maya"},
+            {"who": "Wren", "doing": "watching"}
+        ]});
+        assert!(add_owner(&mut change, read.as_object().unwrap(), "john"));
+        let keys: Vec<String> = change.people.iter().map(|p| p.who.key()).collect();
+        assert_eq!(keys, ["maya", "john"]);
+        assert_eq!(change.people[1].wearing.as_deref(), Some("pyjamas"));
+        assert_eq!(
+            change.people[1].doing.as_deref(),
+            Some("dozing beside Maya")
+        );
+        assert!(
+            !add_owner(&mut change, read.as_object().unwrap(), "john"),
+            "once"
+        );
+        let none = json!({"people": [{"who": "Maya", "doing": "laughing"}]});
+        assert!(!add_owner(&mut change, none.as_object().unwrap(), "wren"));
+    }
+
     /// The reader's change fills only what the call left out: a `together`,
     /// and each named person's `doing` and `wearing`; never someone the call
     /// does not name, and never the setting.
@@ -13129,6 +13216,7 @@ mod tests {
                 scene: v.as_object().cloned().unwrap_or_default(),
                 retouch: None,
                 left_out: None,
+                owner_named: false,
             })
         }
     }
@@ -13148,6 +13236,7 @@ mod tests {
                 scene: Default::default(),
                 retouch: None,
                 left_out: None,
+                owner_named: false,
             })
         }
     }

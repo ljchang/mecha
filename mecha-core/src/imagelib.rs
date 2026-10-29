@@ -1686,6 +1686,71 @@ fn check_autolock(minutes: u32) -> Result<()> {
     Ok(())
 }
 
+/// Which library character is the owner: whom "me", "my" and "we" name in
+/// the owner's words about a picture (owner, 2026-10-29). The owner's own
+/// file, written only by `mecha imagelib set-owner`, never by a model, and
+/// never a name in code: with none set, the owner is the viewer, as before.
+const OWNER_FILE: &str = "owner.toml";
+
+#[derive(Serialize, Deserialize)]
+struct OwnerFile {
+    character: String,
+}
+
+impl Library {
+    /// The owner's character, when one is set and is an approved character
+    /// here. One that is gone or not approved is said in the log and read
+    /// as none: the owner is then the viewer, never a stranger drawn under
+    /// a name the library cannot back.
+    pub fn owner(&self) -> Option<String> {
+        let path = self.dir.join(OWNER_FILE);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(e) => {
+                tracing::warn!("imagelib: the owner setting could not be read: {e}");
+                return None;
+            }
+        };
+        let key = match toml::from_str::<OwnerFile>(&text) {
+            Ok(f) => f.character.trim().to_lowercase(),
+            Err(e) => {
+                tracing::warn!("imagelib: the owner setting is not readable: {e}");
+                return None;
+            }
+        };
+        let held = self
+            .get(Kind::Character, &key)
+            .is_some_and(|e| e.status == Status::Approved);
+        if !held {
+            tracing::warn!("imagelib: the owner setting names `{key}`, no approved character");
+        }
+        held.then_some(key)
+    }
+}
+
+/// Set (or, with `None`, clear) which approved character is the owner.
+pub fn set_owner(dir: &Path, character: Option<&str>) -> Result<()> {
+    let path = dir.join(OWNER_FILE);
+    let Some(name) = character else {
+        return match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e).context("clearing the owner setting"),
+        };
+    };
+    let key = name.trim().to_lowercase();
+    let lib = Library::load(dir).0;
+    let entry = lib
+        .get(Kind::Character, &key)
+        .with_context(|| format!("no character named `{key}` in the library"))?;
+    if entry.status != Status::Approved {
+        bail!("`{key}` waits on approval: approve it first");
+    }
+    let text = toml::to_string_pretty(&OwnerFile { character: key })?;
+    write_atomic_mode(&path, text.as_bytes(), Some(0o600)).context("writing the owner setting")
+}
+
 /// Which library voices are locked (owner, 2026-10-15: "lock voices just
 /// like images and personas"). A voice is a clip in the TTS's own directory
 /// with no record of ours to carry a flag, so the flags live here, beside
@@ -4332,6 +4397,23 @@ mod tests {
         assert!(compile(&lib, &long, &one, &[], None)
             .unwrap_err()
             .contains("shorten the scene"));
+    }
+
+    /// The owner's character is set from an approved character only, read
+    /// back while it stays one, and cleared to none.
+    #[test]
+    fn the_owner_is_an_approved_character_or_none() {
+        let dir = scratch();
+        create(dir.path(), character("john", Origin::Owner)).unwrap();
+        assert_eq!(Library::load(dir.path()).0.owner(), None);
+        assert!(set_owner(dir.path(), Some("nobody")).is_err());
+        set_owner(dir.path(), Some(" John ")).unwrap();
+        assert_eq!(Library::load(dir.path()).0.owner().as_deref(), Some("john"));
+        // Gone from the library: none, never a stranger under the name.
+        std::fs::remove_dir_all(dir.path().join("characters/john")).unwrap();
+        assert_eq!(Library::load(dir.path()).0.owner(), None);
+        set_owner(dir.path(), None).unwrap();
+        assert!(!dir.path().join(OWNER_FILE).exists());
     }
 
     /// A body whose bytes no longer match their hash is not sent; the
