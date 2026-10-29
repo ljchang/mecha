@@ -44,7 +44,7 @@ use std::path::{Path, PathBuf};
 
 /// The configuration knobs an automated proposer may move. Closed on
 /// purpose; see the module docs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OverrideKey {
     CompactAtTokens,
     MaxTurns,
@@ -53,6 +53,18 @@ pub enum OverrideKey {
 }
 
 impl OverrideKey {
+    /// Whether the setting's values lie on a line, so that a value held at
+    /// one place says something about its neighbours. `effort` is a set of
+    /// kinds: `medium` staged says nothing of `high`.
+    pub fn is_ordered(self) -> bool {
+        match self {
+            OverrideKey::CompactAtTokens | OverrideKey::MaxTurns | OverrideKey::MaxOutputTokens => {
+                true
+            }
+            OverrideKey::Effort => false,
+        }
+    }
+
     pub const ALL: [OverrideKey; 4] = [
         OverrideKey::CompactAtTokens,
         OverrideKey::MaxTurns,
@@ -629,9 +641,22 @@ impl HarnessCandidate {
         if canonical_change(&self.change) == canonical_change(change) {
             return self.forbids_retry(has_headroom);
         }
-        self.class == ChangeClass::Config
-            && setting_of(&self.change).is_some_and(|held| Some(held) == setting_of(change))
-            && self.history_verdict().holds_setting()
+        self.held_setting()
+            .is_some_and(|held| Some(held) == setting_of(change))
+    }
+
+    /// The setting this record holds against every other value, if it holds
+    /// one: a config change that parses (a value the override set cannot
+    /// make was never going to be applied, so holds nothing) whose verdict
+    /// [`HistoryVerdict::holds_setting`]. The brief reads this too, so what
+    /// it shows and what the check refuses are one predicate.
+    pub fn held_setting(&self) -> Option<OverrideKey> {
+        (self.class == ChangeClass::Config
+            && parse_change(&self.change).is_ok()
+            && self.history_verdict().holds_setting())
+        .then(|| setting_of(&self.change))
+        .flatten()
+        .filter(|key| key.is_ordered())
     }
 
     /// Whether this record forbids proposing its change again tonight —
