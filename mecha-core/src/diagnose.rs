@@ -1363,7 +1363,7 @@ const HISTORY_GROUPS: &[(&[HistoryVerdict], &str)] = &[
         ],
         "measured to make no difference, or judged by the owner to do nothing — the \
          instrument that measured them has not changed since, so do not propose these \
-         again yet",
+         again yet, nor another value of the same numeric setting",
     ),
     (
         &[HistoryVerdict::NoHeadroom],
@@ -1385,7 +1385,8 @@ const HISTORY_GROUPS: &[(&[HistoryVerdict], &str)] = &[
     ),
     (
         &[HistoryVerdict::Staged],
-        "waiting on a person — do not propose these again while they wait",
+        "waiting on a person — do not propose these again while they wait, nor another \
+         value of the same numeric setting",
     ),
 ];
 
