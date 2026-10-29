@@ -535,7 +535,7 @@ fn no_served_runs(model: &str, from_workspace: Option<&std::path::Path>) -> Stri
 /// Compared on the canonical spec when the change parses, so spacing
 /// differences cannot re-open a rejection; and a different value of a
 /// setting a record still holds is forbidden too
-/// ([`HarnessCandidate::forbids_proposal`]). **Only a prior that forbids a
+/// ([`mecha_core::harness::setting_holders`]). **Only a prior that forbids a
 /// retry stops it** (P1): this used to stop any re-derivation of anything on
 /// file, so a change the owner had marked "the measurement could not tell" —
 /// which the brief now invites back — would have been refused the night it
@@ -553,12 +553,23 @@ fn forbidding_prior<'a>(
     change: &str,
     has_headroom: impl Fn(mecha_core::candidate::Metric) -> bool,
 ) -> Option<&'a HarnessCandidate> {
+    let new_spec = mecha_core::harness::canonical_change(change);
     // Each record against the metric *it* predicted — what `history_lines`
     // reads too, so the brief and this check cannot disagree about one
-    // record (found on review of #717).
+    // record (found on review of #717). The same change first, so the
+    // record named is the one that re-derives it; then a held setting.
+    let held = mecha_core::harness::setting_of(change);
     on_file
         .iter()
-        .find(|c| c.forbids_proposal(change, has_headroom(c.metric)))
+        .find(|c| {
+            mecha_core::harness::canonical_change(&c.change) == new_spec
+                && c.forbids_retry(has_headroom(c.metric))
+        })
+        .or_else(|| {
+            mecha_core::harness::setting_holders(on_file)
+                .into_iter()
+                .find(|h| h.held_setting() == held)
+        })
 }
 
 /// The draw's seed, off the candidate id rather than the clock: re-measuring

@@ -667,16 +667,18 @@ appears under two contradicting instructions.
 check matched the whole `KEY=VALUE`, so a staged `max_turns=20` banned
 `max_turns=20` and nothing else. From 10-09 to 10-28 the nightly proposed
 `max_turns` at 5, 4, 20, 100, 200, 60 and 25, each staged with the arms
-identical or too few to measure (`mecha harness list --all`). `HarnessCandidate::forbids_proposal`
-now also refuses a different value of a setting while a record for it is
-`Staged`, `NoObservedEffect` or `OwnerNoEffect`
-(`HistoryVerdict::holds_setting`; `HarnessCandidate::held_setting` is the
-one predicate the brief reads too). The brief's two groups say so, a held
-setting shows once by its newest holder, other values of it are not shown as
-proposable, and the holder survives the newest-20 window. A harm
-stays the exact value's: `max_turns=3` harmful does not say 30 is. Not done:
-checking, before the replay is paid for, that any drawn episode could reach
-the new limit.
+identical or too few to measure (`mecha harness list --all`).
+`harness::setting_holders` now names the records that hold a setting: a
+`Staged`, `NoObservedEffect` or `OwnerNoEffect` record of an ordered setting
+(`max_turns`, `compact_at_tokens`, `max_output_tokens`; `effort` is a set of
+kinds and holds nothing). The re-derivation check refuses any other value of
+a held setting, and the brief reads the same function: other values of it are
+not shown as proposable, and the holder survives the newest-20 window. **A
+later accepted or reverted record of the setting releases the hold.** A harm
+stays the exact value's: `max_turns=3` harmful does not say 30 is. A hold
+has no age limit, so a staged record the owner never resolves holds its
+setting until they do. Not done: checking, before the replay is paid for,
+that any drawn episode could reach the new limit.
 
 The live record when it was built: the gate had rejected none of the 17
 candidates. All 12 rejections were the owner's, and four of them were keys
