@@ -446,8 +446,8 @@ pub fn draw<T>(mut items: Vec<T>, seed: u64, point: impl Fn(&T) -> &Point) -> Ve
 /// has every factor unknown.
 ///
 /// **Never the harness candidate's draw.** `compare_candidate`'s points are
-/// R36's confirming sample (there is no separate holdout), and a
-/// prioritised confirming sample is a biased one (`GOAL-SYSTEM-DESIGN.md`
+/// R36's confirming sample (held out from what the proposer was shown,
+/// ruled 2026-10-29), and a prioritised confirming sample is a biased one (`GOAL-SYSTEM-DESIGN.md`
 /// §8.1); it keeps [`draw`] (R39).
 pub fn draw_ranked<T>(
     items: Vec<T>,

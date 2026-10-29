@@ -7589,8 +7589,8 @@ through the store above (a `point-*` `Kind` per point kind).
   by `pointwise::draw`, then — row 2e-6, R39 — stably re-ordered by the
   replay priority of each point's session (`pointwise::draw_ranked`), so
   the seed decides only among equals. **A harness candidate's points are
-  never ranked** (`candidate_draw`): R36 gives the point-wise half no
-  separate holdout, so they are the confirming sample, and a prioritised
+  never ranked** (`candidate_draw`): the held-out points are the
+  confirming sample (R36), and a prioritised
   confirming sample is a biased one (§8.1;
   `candidate_points_ignore_the_replay_priority`). `--points` (default 8) counts
   driven points; unposed points cost nothing and are not charged. A point

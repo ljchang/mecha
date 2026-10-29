@@ -71,6 +71,7 @@ impl Fixture {
                 reason: None,
                 rejection: None,
                 cites: None,
+                shown: Vec::new(),
             })
             .unwrap();
     }

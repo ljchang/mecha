@@ -480,6 +480,14 @@ pub struct HarnessCandidate {
     /// carried no episodes to cite.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cites: Option<String>,
+    /// The sessions the proposer's brief showed as episodes. The held-out
+    /// slice of this candidate's point-wise comparison is drawn from
+    /// sessions *not* in this list, or "held out" would mean nothing (R36,
+    /// 2026-10-29). Empty on a record from before the field, which then has
+    /// nothing to hold out from and so no held-out points (unknown is never
+    /// clean).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shown: Vec<String>,
 }
 
 /// Who rejected a candidate, and — when it was the owner — what they ruled.
@@ -662,7 +670,9 @@ impl HarnessCandidate {
             m.work_baseline > 0 && (m.work_candidate as f64) < m.work_baseline as f64 * WORK_FLOOR;
         let lost = m.selection.losses > m.selection.wins || m.holdout.losses > m.holdout.wins;
         let lost_pointwise = m.pointwise.as_ref().is_some_and(|p| {
-            p.basis == Basis::Pointwise && p.tally.verdict() == PointwiseVerdict::Against
+            p.basis == Basis::Pointwise
+                && (p.tally.verdict() == PointwiseVerdict::Against
+                    || p.tally.origin_verdict() == PointwiseVerdict::Against)
         });
         if work_fell || lost || lost_pointwise {
             return HistoryVerdict::Harmed;
@@ -1452,6 +1462,9 @@ mod tests {
                 undecided: 2,
                 lost_baseline: 0,
                 lost_candidate: 1,
+                origin_decided: 2,
+                origin_candidate_only: 1,
+                origin_baseline_only: 0,
             },
             basis: Basis::Pointwise,
             not_run: None,
@@ -1799,6 +1812,7 @@ accepted_at = "2026-08-22T00:00:00Z"
             reason: None,
             rejection: None,
             cites: None,
+            shown: Vec::new(),
         };
         store.write(&c).unwrap();
         let read = store.find("hc-2026").unwrap();
@@ -1967,6 +1981,7 @@ mod history_verdict_tests {
             reason: Some("prose the verdict must never read".into()),
             rejection,
             cites: None,
+            shown: Vec::new(),
         }
     }
 

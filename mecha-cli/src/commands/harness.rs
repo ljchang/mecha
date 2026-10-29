@@ -348,6 +348,11 @@ async fn ruminate(
         reason: None,
         rejection: None,
         cites: proposal.cites.as_ref().map(ToString::to_string),
+        shown: evidence
+            .digests
+            .iter()
+            .map(|d| d.session_id().to_string())
+            .collect(),
     };
 
     println!("── candidate {} ──", cand.id);
@@ -1037,6 +1042,13 @@ async fn measure(
     // re-measurement draws the same points and reuses their comparisons —
     // and not paid for at all when no point-wise outcome could change the
     // verdict (a numeric rejection on a regression).
+    // The episode the proposal cited, as `check_citation` stored it:
+    // `<session id> #<call>`.
+    let origin = cand
+        .cites
+        .as_deref()
+        .and_then(|c| c.rsplit_once(" #"))
+        .map(|(episode, _)| episode.to_string());
     let evidence = if mecha_core::candidate::pointwise_can_change(&numeric) {
         // **A point-wise pass that fails is not a failed measurement.** The
         // whole-session replay above is already paid for; an unwritable
@@ -1055,6 +1067,8 @@ async fn measure(
             crate::pointwise_pass::CandidateScope {
                 workspace,
                 sessions,
+                origin: origin.as_deref(),
+                shown: &cand.shown,
             },
         )
         .await
@@ -2016,6 +2030,7 @@ mod tests {
             reason: None,
             rejection,
             cites: None,
+            shown: Vec::new(),
         }
     }
 
@@ -2180,6 +2195,7 @@ mod tests {
                 undecided: 0,
                 lost_baseline: 0,
                 lost_candidate: 4,
+                ..Default::default()
             },
             basis: Basis::Pointwise,
             not_run: None,

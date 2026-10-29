@@ -3823,6 +3823,7 @@ mod tests {
             reason: None,
             rejection: None,
             cites: None,
+            shown: Vec::new(),
         };
         std::fs::write(
             dir.join(format!("{id}.json")),
