@@ -2352,7 +2352,10 @@ pub fn compile_with(
         }
         let mut line = format!("{who} ({text})");
         if !m.clothes_in_act {
-            line.push_str(&format!(", wearing {}", m.wearing));
+            line.push_str(&format!(
+                ", wearing {}",
+                crate::picture::outfit_words(m.wearing)
+            ));
         }
         if !m.doing.is_empty() {
             line.push_str(&format!(", {}", m.doing));

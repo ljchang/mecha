@@ -3699,7 +3699,7 @@ fn edit_person(
     if !p.wearing.trim().is_empty() && !in_act {
         out.push_str(&format!(
             ", wearing {}",
-            p.wearing.trim().trim_end_matches('.')
+            crate::picture::outfit_words(&p.wearing)
         ));
     }
     let doing = doing_words(p, together);
@@ -4478,7 +4478,10 @@ impl Tool for ImageGenerate {
                                 let doing = doing_words(p, together);
                                 let mut e = d.trim().trim_end_matches('.').to_string();
                                 if !p.wearing.trim().is_empty() && !kept {
-                                    e.push_str(&format!(", wearing {}", p.wearing.trim()));
+                                    e.push_str(&format!(
+                                        ", wearing {}",
+                                        crate::picture::outfit_words(&p.wearing)
+                                    ));
                                 }
                                 if !doing.is_empty() {
                                     e.push_str(&format!(", {doing}"));
