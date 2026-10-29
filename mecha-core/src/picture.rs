@@ -165,6 +165,7 @@ const LOWER: &[&str] = &[
     "boxers",
     "thong",
     "knickers",
+    "bottom",
     "bottoms",
     "joggers",
     "sweatpants",
@@ -192,10 +193,23 @@ fn names_any(wearing: &str, set: &[&str]) -> bool {
 /// 3. Only a removal is read so: an outfit first given as "jeans and boots"
 /// says nothing either way, and is left to the persona's words.
 pub fn removed_top(before: &str, after: &str) -> bool {
+    // A garment named as its bottom half ("bikini bottoms") is a lower
+    // garment, never a top (review of #758).
+    let after_lower = after.to_lowercase();
+    let words: Vec<&str> = after_lower
+        .split(|c: char| !(c.is_alphanumeric() || c == '-'))
+        .filter(|w| !w.is_empty())
+        .collect();
+    let chest = words.iter().enumerate().any(|(i, w)| {
+        UPPER.contains(w)
+            && !words
+                .get(i + 1)
+                .is_some_and(|n| *n == "bottom" || *n == "bottoms")
+    });
     names_any(before, UPPER)
-        && !names_any(after, UPPER)
+        && !chest
         && names_any(after, LOWER)
-        && !after.to_lowercase().contains("topless")
+        && !after_lower.contains("topless")
 }
 
 /// Whether a painted region's words are about a face: the one place a
@@ -1000,7 +1014,8 @@ pub fn faces_away(camera: &str) -> bool {
 
 /// Whose own eyes a camera is, when it is someone's: a first-person camera
 /// ("first person", "first-person", "through her own eyes", "through John's
-/// eyes") and the one library name in it that is its holder, by a
+/// eyes": only whose eyes between "through" and "eyes") and the one library
+/// name in it that is its holder, by a
 /// possessive ("from John's first-person view") or as the only name the
 /// camera holds ("first person, John at the stove"). `names` are the
 /// library keys named in `camera`. A point of view alone ("a wide shot
@@ -1008,11 +1023,18 @@ pub fn faces_away(camera: &str) -> bool {
 /// wide shot stands, with the holder in it.
 pub fn first_person_holder(camera: &str, names: &[String]) -> Option<String> {
     let w = camera_words(camera);
-    let through_eyes = w
-        .iter()
-        .enumerate()
-        .any(|(i, t)| t == "through" && w[i + 1..(i + 4).min(w.len())].iter().any(|x| x == "eyes"));
-    if !(has_run(&w, &["first", "person"]) || has_run(&w, &["own", "eyes"]) || through_eyes) {
+    // Seen through someone's eyes: "through", then only whose ("her", "his",
+    // "their", a possessive name, "own"), then "eyes". Never any "eyes" near
+    // any "through" ("light through the trees, eyes closed"; review of #758).
+    let whose = |x: &str| ["her", "his", "their", "own", "my"].contains(&x) || x.ends_with("'s");
+    let through_eyes = w.iter().enumerate().any(|(i, t)| {
+        t == "through"
+            && (1..=2).any(|k| {
+                w.get(i + k + 1).is_some_and(|e| e == "eyes")
+                    && w[i + 1..=i + k].iter().all(|x| whose(x))
+            })
+    });
+    if !(has_run(&w, &["first", "person"]) || through_eyes) {
         return None;
     }
     let possessive = names
@@ -2463,6 +2485,18 @@ mod tests {
                 Some("john"),
             ),
             (
+                "through John's own eyes, Maya at the door",
+                n(&["john", "maya"]),
+                Some("john"),
+            ),
+            // Eyes near a "through" that is not seen through (review of #758).
+            (
+                "light through the trees, John's eyes closed",
+                n(&["john"]),
+                None,
+            ),
+            ("close on John's own eyes", n(&["john"]), None),
+            (
                 "a wide angle from John's POV across the garden",
                 n(&["john"]),
                 None,
@@ -2574,6 +2608,12 @@ mod tests {
             "already said"
         );
         assert!(!removed_top("a sundress", "cargo shorts, topless"));
+        // A garment named as its bottom half is a lower one (review of #758).
+        assert!(removed_top(
+            "a denim shirt and cargo shorts",
+            "bikini bottoms"
+        ));
+        assert!(removed_top("a striped swimsuit", "a swimsuit bottom"));
     }
 
     /// 2026-10-28: a change took the shirt off and kept the shorts, and the
