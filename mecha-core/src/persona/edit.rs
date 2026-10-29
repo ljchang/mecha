@@ -1035,9 +1035,10 @@ fn pronoun(who: &str) -> Option<Pronoun> {
     }
     match who.as_str() {
         "you" | "yourself" | "she" | "her" | "herself" => Some(Pronoun::Persona),
-        "i" | "me" | "myself" | "owner" | "the owner" | "viewer" | "the viewer" => {
-            Some(Pronoun::Owner)
-        }
+        "i" | "me" | "myself" | "owner" | "the owner" => Some(Pronoun::Owner),
+        // The viewer is the camera, never a person to draw, whoever the
+        // owner is (review of #758, pass 3).
+        "viewer" | "the viewer" => Some(Pronoun::Group),
         "we" | "us" | "ourselves" => Some(Pronoun::We),
         "both" | "all" | "everyone" | "everybody" | "they" | "them" => Some(Pronoun::Group),
         _ => None,
