@@ -348,7 +348,7 @@ async fn ruminate(
         reason: None,
         rejection: None,
         cites: proposal.cites.as_ref().map(ToString::to_string),
-        shown: evidence.shown_sessions(),
+        shown: Some(evidence.shown_sessions()),
     };
 
     println!("── candidate {} ──", cand.id);
@@ -1064,7 +1064,7 @@ async fn measure(
                 workspace,
                 sessions,
                 origin: origin.as_deref(),
-                shown: &cand.shown,
+                shown: cand.shown.as_deref(),
             },
         )
         .await
@@ -2026,7 +2026,7 @@ mod tests {
             reason: None,
             rejection,
             cites: None,
-            shown: Vec::new(),
+            shown: None,
         }
     }
 
