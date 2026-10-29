@@ -1810,6 +1810,14 @@ pub struct CastMember {
     /// the figure in both slots, with the expression and the style's eye
     /// clauses gone, turned away 5 of 5 (owner, 2026-10-28; §9.4).
     pub face_away: bool,
+    /// Their face crop, sent in the portrait's slot (`face::FaceAnchors`).
+    /// A whole portrait carries its outfit: on the replay rig on 2026-10-29
+    /// a solo picture drew the portrait's top beside lower garments alone
+    /// at 3 of 3 seeds, and a nude outfit clothed at 3 of 3; with the crop,
+    /// 0 of 6, and ArcFace likeness to the portrait rose (.58 to .64, .60 to
+    /// .71). Video measured the same leak and moved to the crop on
+    /// 2026-10-13. `None` sends the whole portrait.
+    pub face: Option<Vec<u8>>,
 }
 
 /// What an entry contributed to a generation — for the result text and the
@@ -2099,9 +2107,12 @@ pub fn compile_with(
                 "`wearing` and `doing` are capped at {MAX_CAST_FIELD} characters each."
             ));
         }
-        let portrait = lib
-            .read_portrait(entry)
-            .map_err(|e| format!("`{name}`'s portrait cannot be read: {e:#}."))?;
+        let portrait = match &member.face {
+            Some(crop) => (crop.clone(), "png"),
+            None => lib
+                .read_portrait(entry)
+                .map_err(|e| format!("`{name}`'s portrait cannot be read: {e:#}."))?,
+        };
         members.push(Member {
             name,
             entry,
@@ -2168,7 +2179,7 @@ pub fn compile_with(
     let identity_images = n * if both { 2 } else { 1 };
     let mut room = MAX_PICTURE_IMAGES.saturating_sub(identity_images);
     let mut details: Vec<Vec<CloseUp>> = (0..n).map(|_| Vec::new()).collect();
-    let (mut no_room, mut unread, mut unlabelled) = (0, 0, 0);
+    let (mut no_room, mut unread, mut unlabelled, mut grouped) = (0, 0, 0, 0);
     for (i, m) in members.iter().enumerate() {
         for r in m
             .entry
@@ -2187,6 +2198,14 @@ pub fn compile_with(
                 unlabelled += 1;
                 continue;
             };
+            // A cast of one only: beside two people the close-ups drew an
+            // extra person in 5 of 6 renders on the replay rig on
+            // 2026-10-29, and in 0 of 6 without them, at no likeness cost
+            // (owner, 2026-10-29).
+            if n >= 2 {
+                grouped += 1;
+                continue;
+            }
             if !bodies {
                 no_room += 1;
                 continue;
@@ -2233,6 +2252,19 @@ pub fn compile_with(
             } else {
                 "references were"
             }
+        ));
+    }
+    if grouped > 0 {
+        notes.push(format!(
+            "{} close-up {} not sent: they go only to a picture of one person, and this one \
+             has {}.",
+            capitalize(number(grouped)),
+            if grouped == 1 {
+                "reference was"
+            } else {
+                "references were"
+            },
+            number(n)
         ));
     }
     if unread > 0 {
@@ -2823,6 +2855,7 @@ mod tests {
             clothes_in_act: false,
             expression: String::new(),
             face_away: false,
+            face: None,
         }
     }
 
@@ -3444,6 +3477,7 @@ mod tests {
             clothes_in_act: false,
             expression: String::new(),
             face_away: false,
+            face: None,
         };
         let c = compile(
             &lib,
@@ -4321,11 +4355,12 @@ mod tests {
         add_reference(dir, name, RefKind::Detail, &png_of(rgb), Some(label.into())).unwrap();
     }
 
-    /// The same-seed pair's shape (§9.4, 2026-10-26): a close-up goes after
-    /// every face, is named inside its person's description, and the closing
-    /// sentence names the identity images so the mark is no one.
+    /// A close-up goes to a cast of one only: beside two people it drew an
+    /// extra person in 5 of 6 renders, and 0 of 6 without (owner,
+    /// 2026-10-29). Not sent, said in a count, and the manifest holds none.
+    /// Fails on the old compiler, which sent it after every face.
     #[test]
-    fn a_close_up_is_sent_after_every_face_and_bound_to_its_person() {
+    fn a_close_up_stays_home_beside_two_people() {
         let dir = scratch();
         create(dir.path(), character("maya", Origin::Owner)).unwrap();
         with_detail(dir.path(), "maya", [7, 1, 1], "left-forearm tattoo.");
@@ -4333,22 +4368,22 @@ mod tests {
         let lib = Library::load(dir.path()).0;
         let c = compile(&lib, "a studio", &[member("maya"), member("jo")], &[], None).unwrap();
         let names: Vec<&str> = c.references.iter().map(|r| r.0.as_str()).collect();
-        assert_eq!(names, ["maya", "jo", "detail:maya"]);
-        assert_eq!(
-            c.prompt,
-            "a studio. From left to right: the person from <image1> (maya, a person with a \
-             memorable face. Maya's left-forearm tattoo is shown close up in <image3>), wearing \
-             a yellow raincoat, laughing; the person from <image2> (jo, a person with a \
-             memorable face), wearing a yellow raincoat, laughing. Exactly two people are in \
-             the foreground, Maya and Jo, each exactly once; anyone in the background is a \
-             stranger, not from any image. <image1> and <image2> serve as identity sources \
-             only. <image3> shows only Maya's left-forearm tattoo, not a person: it is kept \
-             exactly where it is, and nowhere else."
+        assert_eq!(names, ["maya", "jo"]);
+        assert!(!c.prompt.contains("close up"), "{}", c.prompt);
+        assert!(
+            c.prompt
+                .contains("All images serve as identity sources only."),
+            "{}",
+            c.prompt
         );
-        assert!(c.notes.is_empty(), "{:?}", c.notes);
-        let maya = lib.get(Kind::Character, "maya").unwrap();
-        assert_eq!(c.used[0].details, [maya.references[0].blob.clone()]);
-        assert!(c.used[1].details.is_empty());
+        assert_eq!(
+            c.notes,
+            [
+                "One close-up reference was not sent: they go only to a picture of one person, \
+              and this one has two."
+            ]
+        );
+        assert!(c.used.iter().all(|u| u.details.is_empty()));
     }
 
     /// One person with a close-up is no longer "the image": the portrait is
@@ -4474,13 +4509,15 @@ mod tests {
         let scene = "a".repeat(MAX_COMPILED_PROMPT - 10 - (base - 1));
         let c = compile(&lib, &scene, &two, &[], None).unwrap();
         assert_eq!(c.references.len(), 2);
+        // Beside two people the close-up stays home on its own rule, so the
+        // cap's fallback has nothing to take off; both notes still say why.
         assert_eq!(
             c.notes,
             [
                 "Full-figure references were not sent: they go only to a picture of one person, \
                  and this one has two.",
-                "Close-up references were not sent: the prompt would run over its limit with \
-                 them."
+                "One close-up reference was not sent: they go only to a picture of one person, \
+                 and this one has two."
             ]
         );
     }
@@ -4539,10 +4576,10 @@ mod tests {
         );
     }
 
-    /// Two people and an extra: the head count binds the cast to their
-    /// numbered portraits too, so the mark is no one (review of #748, pass 3).
+    /// Two people and an extra: the close-up stays home, so the head count
+    /// is the measured one with no mark among the images.
     #[test]
-    fn a_close_up_beside_two_people_and_an_extra_binds_by_number() {
+    fn a_close_up_beside_two_people_and_an_extra_stays_home() {
         let dir = scratch();
         create(dir.path(), character("maya", Origin::Owner)).unwrap();
         with_detail(dir.path(), "maya", [7, 11, 1], "tattoo");
@@ -4559,13 +4596,13 @@ mod tests {
         .unwrap();
         assert!(
             c.prompt.contains(
-                "Exactly three people in the image: the two from <image1> and <image2>, each \
-                 exactly once, and one new person not from any image."
+                "Exactly three people in the image: the two from the images, each exactly \
+                 once, and one new person not from any image."
             ),
             "{}",
             c.prompt
         );
-        assert!(!c.prompt.contains("from the images"), "{}", c.prompt);
+        assert_eq!(c.references.len(), 2);
     }
 
     /// A hand-edited close-up with no label has nothing to bind it by: not
