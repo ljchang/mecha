@@ -784,7 +784,43 @@ pub fn history_lines(
             Some(_) => {}
         }
     }
+    // A setting held by a record shows once, by its newest holder, and no
+    // other value of it is shown as one to propose: the check refuses them
+    // ([`HarnessCandidate::forbids_proposal`]), so a line under "you may
+    // propose one again" would be the brief inviting what the loop refuses.
+    let mut holders: std::collections::HashMap<
+        mecha_core::harness::OverrideKey,
+        &mecha_core::harness::HarnessCandidate,
+    > = std::collections::HashMap::new();
+    for c in all.iter().rev() {
+        if let Some(setting) = c.held_setting() {
+            holders.entry(setting).or_insert(c);
+        }
+    }
+    order.retain(|key| {
+        let c = decides[key];
+        let held_elsewhere = mecha_core::harness::setting_of(&c.change)
+            .and_then(|s| holders.get(&s))
+            .is_some_and(|h| {
+                mecha_core::harness::canonical_change(&h.change)
+                    != mecha_core::harness::canonical_change(&c.change)
+            });
+        !(held_elsewhere && c.history_verdict().may_repropose())
+    });
     order.truncate(20);
+    // The holders survive the window: truncated out, the instruction not to
+    // propose another value would vanish while the check still refused one.
+    // At most one per setting in the closed set, so it stays bounded.
+    let mut held: Vec<String> = holders
+        .values()
+        .map(|h| mecha_core::harness::canonical_change(&h.change))
+        .collect();
+    held.sort();
+    for key in held {
+        if !order.contains(&key) && decides.contains_key(&key) {
+            order.push(key);
+        }
+    }
     order.reverse();
     order
         .iter()
@@ -905,6 +941,73 @@ mod tests {
         // With headroom, the no-headroom record stops forbidding, and the
         // brief still shows it under the group that says so.
         assert!(!on_file[4].forbids_retry(true));
+    }
+
+    /// The brief and the check read one predicate (review of the setting
+    /// hold): a value of a held setting is not shown under "you may propose
+    /// one again", the holder survives the newest-20 window, and a record
+    /// that holds nothing at another value (accepted, harmed, unparseable)
+    /// does not hide it.
+    #[test]
+    fn a_held_setting_is_shown_once_and_never_as_proposable() {
+        use mecha_core::harness::HistoryVerdict as V;
+        use mecha_core::harness::{Rejection, STATUS_ACCEPTED, STATUS_REJECTED, STATUS_STAGED};
+        let on_file = vec![
+            // The holder, oldest: twenty newer changes would push it out.
+            record("hc-1", "max_turns=20", STATUS_STAGED, None),
+            // Another value, which the brief would invite back on its own.
+            record(
+                "hc-2",
+                "max_turns=25",
+                STATUS_REJECTED,
+                Some(Rejection::Unmeasured),
+            ),
+        ];
+        let lines = history_lines(&on_file, |_| true);
+        assert_eq!(
+            lines.iter().map(|l| l.verdict).collect::<Vec<_>>(),
+            vec![V::Staged],
+            "25 is not shown as proposable while 20 holds the setting"
+        );
+        assert!(!on_file[1].forbids_retry(true), "not vacuous: it would be");
+        assert!(on_file[0].forbids_proposal("max_turns=25", true));
+
+        // The holder survives twenty newer distinct changes.
+        let mut crowded = vec![on_file[0].clone()];
+        for i in 0..21 {
+            crowded.push(record(
+                &format!("hc-n{i}"),
+                &format!("compact_at_tokens={}", 20_000 + i),
+                STATUS_REJECTED,
+                Some(Rejection::Harmful),
+            ));
+        }
+        let lines = history_lines(&crowded, |_| true);
+        assert!(
+            lines.iter().any(|l| l.line.starts_with("max_turns=20")),
+            "the holder is kept past the window"
+        );
+
+        // Holds nothing: accepted, harmed, an unparseable value, another class.
+        for (change, status, rejection) in [
+            ("max_turns=20", STATUS_ACCEPTED, None),
+            ("max_turns=20", STATUS_REJECTED, Some(Rejection::Harmful)),
+            ("max_turns=abc", STATUS_STAGED, None),
+        ] {
+            let c = record("hc-x", change, status, rejection);
+            assert!(c.held_setting().is_none(), "{change} {status}");
+            assert!(
+                !c.forbids_proposal("max_turns=25", true),
+                "{change} {status}"
+            );
+        }
+        // A categorical setting holds nothing at other values.
+        let kind = record("hc-z", "effort=medium", STATUS_STAGED, None);
+        assert!(kind.held_setting().is_none());
+        assert!(!kind.forbids_proposal("effort=high", true));
+        let mut arch = record("hc-y", "max_turns=20", STATUS_STAGED, None);
+        arch.class = mecha_core::candidate::ChangeClass::Architecture;
+        assert!(!arch.forbids_proposal("max_turns=25", true));
     }
 
     /// Found on review of #329: the diagnostician's run is narrowed off past

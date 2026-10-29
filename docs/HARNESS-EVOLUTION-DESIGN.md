@@ -670,7 +670,10 @@ check matched the whole `KEY=VALUE`, so a staged `max_turns=20` banned
 identical or too few to measure (`mecha harness list --all`). `HarnessCandidate::forbids_proposal`
 now also refuses a different value of a setting while a record for it is
 `Staged`, `NoObservedEffect` or `OwnerNoEffect`
-(`HistoryVerdict::holds_setting`), and the brief's two groups say so. A harm
+(`HistoryVerdict::holds_setting`; `HarnessCandidate::held_setting` is the
+one predicate the brief reads too). The brief's two groups say so, a held
+setting shows once by its newest holder, other values of it are not shown as
+proposable, and the holder survives the newest-20 window. A harm
 stays the exact value's: `max_turns=3` harmful does not say 30 is. Not done:
 checking, before the replay is paid for, that any drawn episode could reach
 the new limit.
