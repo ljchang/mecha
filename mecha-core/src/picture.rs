@@ -65,6 +65,139 @@ impl Call {
     }
 }
 
+/// An outfit as the image model is given it: one that opens with nudity
+/// ("nude", "naked", "nothing") said outright as "nothing at all, completely
+/// naked". A portrait's own clothes fill whatever the words leave open: on
+/// the replay rig on 2026-10-28, "Nude" beside a clothed portrait drew the
+/// portrait's outfit at 3 of 3 seeds and the spelled-out form 0 of 3.
+pub fn outfit_words(wearing: &str) -> String {
+    let w = wearing.trim().trim_end_matches('.');
+    let (first, rest) = match w.find([',', ';']) {
+        Some(i) => (&w[..i], &w[i..]),
+        None => (w, ""),
+    };
+    let nude = matches!(
+        first.trim().to_lowercase().as_str(),
+        "nude"
+            | "naked"
+            | "nothing"
+            | "nothing at all"
+            | "no clothes"
+            | "completely nude"
+            | "completely naked"
+            | "fully nude"
+            | "fully naked"
+            | "totally naked"
+    );
+    if nude {
+        format!("nothing at all, completely naked{rest}")
+    } else {
+        w.to_string()
+    }
+}
+
+/// Garments that cover the chest, and garments for the lower body only, as
+/// whole words: what [`removed_top`] reads.
+const UPPER: &[&str] = &[
+    "top",
+    "tops",
+    "shirt",
+    "t-shirt",
+    "tee",
+    "blouse",
+    "bra",
+    "bralette",
+    "tank",
+    "camisole",
+    "cami",
+    "sweater",
+    "jumper",
+    "hoodie",
+    "sweatshirt",
+    "cardigan",
+    "jacket",
+    "blazer",
+    "coat",
+    "vest",
+    "corset",
+    "bustier",
+    "bodysuit",
+    "leotard",
+    "swimsuit",
+    "one-piece",
+    "dress",
+    "gown",
+    "robe",
+    "kimono",
+    "jumpsuit",
+    "romper",
+    "overalls",
+    "pyjamas",
+    "pajamas",
+    "nightie",
+    "nightgown",
+    "bikini",
+    "halter",
+    "tube",
+    "towel",
+    "apron",
+    "turtleneck",
+    "polo",
+    "tunic",
+    "lingerie",
+    "teddy",
+    "babydoll",
+    "kaftan",
+    "poncho",
+    "parka",
+    "shawl",
+];
+const LOWER: &[&str] = &[
+    "shorts",
+    "pants",
+    "trousers",
+    "jeans",
+    "leggings",
+    "skirt",
+    "panties",
+    "underwear",
+    "briefs",
+    "boxers",
+    "thong",
+    "knickers",
+    "bottoms",
+    "joggers",
+    "sweatpants",
+    "hotpants",
+    "culottes",
+    "chinos",
+    "slacks",
+    "g-string",
+];
+
+/// Whether an outfit names a garment from `set`, as a whole word: hyphens
+/// kept, so "t-shirt" is a shirt and "half-top" is not "top".
+fn names_any(wearing: &str, set: &[&str]) -> bool {
+    wearing
+        .to_lowercase()
+        .split(|c: char| !(c.is_alphanumeric() || c == '-'))
+        .any(|w| set.contains(&w))
+}
+
+/// Whether a change to someone's outfit takes their top off: the old outfit
+/// covered the chest, the new one names a lower garment and nothing for the
+/// chest. Said outright then (", no top"), since a portrait's top fills an
+/// unsaid chest: on the replay rig on 2026-10-28, shorts alone after a shirt
+/// came off drew the portrait's top at 3 of 3 seeds, and with "no top" 0 of
+/// 3. Only a removal is read so: an outfit first given as "jeans and boots"
+/// says nothing either way, and is left to the persona's words.
+pub fn removed_top(before: &str, after: &str) -> bool {
+    names_any(before, UPPER)
+        && !names_any(after, UPPER)
+        && names_any(after, LOWER)
+        && !after.to_lowercase().contains("topless")
+}
+
 /// Whether a painted region's words are about a face: the one place a
 /// library name in them takes that character's face, and the only words a
 /// dropped picture gives its face to rather than its look (§5.3).
@@ -1291,6 +1424,17 @@ pub fn plan(
             }
         }
     }
+    // A top a change took off is said, into the record too, so the next
+    // picture keeps it off (`removed_top`): never left to a portrait, whose
+    // own top fills an unsaid chest.
+    if let Some(b) = base {
+        for p in next.people.iter_mut() {
+            let before = b.people.iter().find(|q| q.who.key() == p.who.key());
+            if before.is_some_and(|q| removed_top(&q.wearing, &p.wearing)) {
+                p.wearing = format!("{}, no top", p.wearing.trim().trim_end_matches(['.', ',']));
+            }
+        }
+    }
     // A library name in prose is someone in the picture, or a stranger drawn
     // from words (E1): refused plainly unless they are in it.
     let in_picture: Vec<String> = next.people.iter().map(|p| p.who.key()).collect();
@@ -2382,6 +2526,82 @@ mod tests {
             None,
         );
         assert_eq!(alone.people.len(), 1);
+    }
+
+    /// Nudity opening an outfit is said outright; anything else is as given.
+    #[test]
+    fn a_nude_outfit_is_spelled_out() {
+        for nude in ["Nude", "naked.", "nothing at all", "Completely nude"] {
+            assert_eq!(
+                outfit_words(nude),
+                "nothing at all, completely naked",
+                "{nude}"
+            );
+        }
+        assert_eq!(
+            outfit_words("Nude, perched on a stool"),
+            "nothing at all, completely naked, perched on a stool"
+        );
+        for kept in [
+            "a nude-coloured slip dress",
+            "jeans and boots",
+            "a red coat.",
+        ] {
+            assert_eq!(outfit_words(kept), kept.trim_end_matches('.'), "{kept}");
+        }
+    }
+
+    /// A top is taken off only when the old outfit covered the chest and the
+    /// new one names lower garments alone; said once.
+    #[test]
+    fn a_top_taken_off_is_read_from_the_two_outfits() {
+        assert!(removed_top(
+            "a linen shirt over a sports bra, cargo shorts",
+            "cargo shorts"
+        ));
+        assert!(removed_top("a grey t-shirt and jeans", "jeans"));
+        assert!(!removed_top(
+            "a grey t-shirt and jeans",
+            "a hoodie and jeans"
+        ));
+        assert!(!removed_top("jeans and boots", "jeans"), "no top before");
+        assert!(
+            !removed_top("a sundress", "barefoot"),
+            "no lower garment named"
+        );
+        assert!(
+            !removed_top("a sundress", "cargo shorts, no top"),
+            "already said"
+        );
+        assert!(!removed_top("a sundress", "cargo shorts, topless"));
+    }
+
+    /// 2026-10-28: a change took the shirt off and kept the shorts, and the
+    /// portrait's top came back at 3 of 3 seeds. The change and the record
+    /// say "no top", so the next picture keeps it off. Fails on the old
+    /// planner, which passed the shorts alone.
+    #[test]
+    fn a_change_that_takes_the_top_off_says_so_in_the_record() {
+        let first = planned(
+            &call(json!({"scene": {"setting": "a porch",
+                "people": [{"who": "maya", "wearing": "a denim shirt and cargo shorts",
+                    "doing": "leaning on the rail"}]}})),
+            None,
+        );
+        let base = landed(&first, 3);
+        let p = planned(
+            &call(json!({"picture": "images/a.png", "scene": {"people": [
+                {"who": "maya", "wearing": "cargo shorts"}]}})),
+            Some(&base),
+        );
+        assert_eq!(p.next.people[0].wearing, "cargo shorts, no top");
+        // A later change of pose alone keeps it so.
+        let after = planned(
+            &call(json!({"picture": "images/b.png", "scene": {"people": [
+                {"who": "maya", "doing": "sitting on the step"}]}})),
+            Some(&landed(&p, 3)),
+        );
+        assert_eq!(after.next.people[0].wearing, "cargo shorts, no top");
     }
 
     /// A retouch of a picture whose camera is first person keeps its holder:
