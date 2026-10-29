@@ -3446,7 +3446,18 @@ fn add_owner(
     owner: &str,
 ) -> bool {
     let shown = crate::picture::shown(&crate::scene::Who::Library(owner.to_string()));
-    if change.people.iter().any(|p| p.who.key() == owner) {
+    // Never past what a picture draws: a reading must not turn a drawable
+    // call into a refusal (review of #758).
+    let present: Vec<&crate::scene::PersonChange> =
+        change.people.iter().filter(|p| !p.remove).collect();
+    let faces = present
+        .iter()
+        .filter(|p| matches!(p.who, crate::scene::Who::Library(_)))
+        .count();
+    if present.iter().any(|p| p.who.key() == owner)
+        || faces >= crate::picture::MAX_FACES
+        || present.len() >= crate::scene::MAX_PEOPLE
+    {
         return false;
     }
     let Some(r) = read
@@ -5714,7 +5725,9 @@ impl Tool for ImageGenerate {
             // Every segmentation in the job shares one budget, apart from the
             // render's own timeout, so a wedged one holds the chat's job slot
             // for at most that much more, never a second or third timeout
-            // (review of #710, pass 5; #624's shared deadline).
+            // (review of #710, pass 5; #624's shared deadline). A regions edit
+            // with a first pass (`PrePass`) renders twice, each under its own
+            // timeout, so it holds the slot up to twice the render's.
             let seg_deadline = Instant::now() + SEGMENT_BUDGET.min(timeout);
             // The named area becomes the painted mask it names; anything that
             // keeps it from being one draws the whole picture, as the words
@@ -12521,6 +12534,24 @@ mod tests {
         );
         let none = json!({"people": [{"who": "Maya", "doing": "laughing"}]});
         assert!(!add_owner(&mut change, none.as_object().unwrap(), "wren"));
+        // Never past the faces one picture draws (review of #758, pass 2).
+        let mut full = crate::scene::SceneChange {
+            people: ["maya", "john", "ivo", "pell", "tamsin"]
+                .iter()
+                .map(|n| crate::scene::PersonChange {
+                    who: crate::scene::Who::Library((*n).into()),
+                    at: None,
+                    wearing: Some("a coat".into()),
+                    doing: None,
+                    expression: None,
+                    remove: false,
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let wren = json!({"people": [{"who": "Wren", "doing": "waving"}]});
+        assert!(!add_owner(&mut full, wren.as_object().unwrap(), "wren"));
+        assert_eq!(full.people.len(), 5);
     }
 
     /// The reader's change fills only what the call left out: a `together`,
