@@ -561,6 +561,23 @@ pub enum HistoryVerdict {
 }
 
 impl HistoryVerdict {
+    /// Whether a record with this verdict keeps the *setting* its change
+    /// names from being proposed at any other value.
+    ///
+    /// Only the verdicts that say nothing about the setting's direction: a
+    /// change waiting on a person, or measured (or judged) to do nothing on
+    /// an instrument that has not changed since. A harm is about one value
+    /// — `max_turns=3` harmful does not say `max_turns=30` is — so it stays
+    /// the exact change's.
+    pub fn holds_setting(self) -> bool {
+        matches!(
+            self,
+            HistoryVerdict::Staged
+                | HistoryVerdict::NoObservedEffect
+                | HistoryVerdict::OwnerNoEffect
+        )
+    }
+
     /// Whether a diagnostician may propose the same change again.
     ///
     /// Only where nothing has ruled against it: too little evidence, or the
@@ -579,6 +596,15 @@ impl HistoryVerdict {
     }
 }
 
+/// The setting a config change names, whatever value it gives it.
+///
+/// Reads only the key, so a value that does not parse still names its
+/// setting. `None` for a change that is not `KEY=VALUE` over the closed set.
+pub fn setting_of(change: &str) -> Option<OverrideKey> {
+    let (key, _) = change.split_once('=')?;
+    OverrideKey::parse(key.trim())
+}
+
 /// A change as the store compares it: the canonical spec when it parses,
 /// so spacing cannot make two records of one change look like two changes.
 pub fn canonical_change(change: &str) -> String {
@@ -588,6 +614,26 @@ pub fn canonical_change(change: &str) -> String {
 }
 
 impl HarnessCandidate {
+    /// Whether this record forbids proposing `change` tonight — the one
+    /// predicate the re-derivation check and the brief's grouping both
+    /// read.
+    ///
+    /// The same change is forbidden by [`Self::forbids_retry`]. **A different
+    /// value of the same setting is forbidden while this record holds the
+    /// setting** ([`HistoryVerdict::holds_setting`]): ban only the exact
+    /// `KEY=VALUE` and the proposer steps to the next number. From
+    /// 2026-10-09 to 10-28 it proposed `max_turns` at 5, 4, 20, 100, 200, 60
+    /// and 25, each staged or tied for the same reason, and each paid for a
+    /// replay that could not see it.
+    pub fn forbids_proposal(&self, change: &str, has_headroom: bool) -> bool {
+        if canonical_change(&self.change) == canonical_change(change) {
+            return self.forbids_retry(has_headroom);
+        }
+        self.class == ChangeClass::Config
+            && setting_of(&self.change).is_some_and(|held| Some(held) == setting_of(change))
+            && self.history_verdict().holds_setting()
+    }
+
     /// Whether this record forbids proposing its change again tonight —
     /// the one predicate the re-derivation check and the brief's grouping
     /// both read, so the brief cannot invite what the loop then refuses.

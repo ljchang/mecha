@@ -663,6 +663,18 @@ Apart from those, P1 lifts only the bans the owner lifts. The brief shows
 each change once, by the record that decides it, so a retried change never
 appears under two contradicting instructions.
 
+**A held setting is held at every value** (2026-10-29). The re-derivation
+check matched the whole `KEY=VALUE`, so a staged `max_turns=20` banned
+`max_turns=20` and nothing else. From 10-09 to 10-28 the nightly proposed
+`max_turns` at 5, 4, 20, 100, 200, 60 and 25, each staged with the arms
+identical or too few to measure (`mecha harness list --all`). `HarnessCandidate::forbids_proposal`
+now also refuses a different value of a setting while a record for it is
+`Staged`, `NoObservedEffect` or `OwnerNoEffect`
+(`HistoryVerdict::holds_setting`), and the brief's two groups say so. A harm
+stays the exact value's: `max_turns=3` harmful does not say 30 is. Not done:
+checking, before the replay is paid for, that any drawn episode could reach
+the new limit.
+
 The live record when it was built: the gate had rejected none of the 17
 candidates. All 12 rejections were the owner's, and four of them were keys
 that never existed.
