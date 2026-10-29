@@ -1091,7 +1091,13 @@ fn run(dir: &std::path::Path, cmd: Cmd) -> Result<()> {
             match name {
                 Some(n) => println!(
                     "{} is you now: \"me\", \"my\" and \"we\" in what you ask of a picture name them.",
-                    n.trim().to_lowercase()
+                    {
+                        let key = n.trim().to_lowercase();
+                        let mut c = key.chars();
+                        c.next()
+                            .map(|f| f.to_uppercase().chain(c).collect::<String>())
+                            .unwrap_or_default()
+                    }
                 ),
                 None => println!("Cleared: in what you ask of a picture, you are the viewer."),
             }

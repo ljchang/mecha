@@ -895,7 +895,9 @@ fn resolve_name(
 /// A camera's words, lowercased, split on anything not a letter or an
 /// apostrophe: what [`faces_away`] and [`is_framing`] read.
 fn camera_words(text: &str) -> Vec<String> {
+    // A phone keyboard's apostrophe is the same mark (review of #758).
     text.to_lowercase()
+        .replace('’', "'")
         .split(|c: char| !(c.is_alphabetic() || c == '\''))
         .filter(|w| !w.is_empty())
         .map(String::from)
@@ -1452,8 +1454,20 @@ pub fn plan(
     if let Some(b) = base {
         for p in next.people.iter_mut() {
             let before = b.people.iter().find(|q| q.who.key() == p.who.key());
-            if before.is_some_and(|q| removed_top(&q.wearing, &p.wearing)) {
-                p.wearing = format!("{}, no top", p.wearing.trim().trim_end_matches(['.', ',']));
+            let with = format!("{}, no top", p.wearing.trim().trim_end_matches(['.', ',']));
+            // Only where it fits the field's cap: past it the picture would
+            // be refused (review of #758).
+            if before.is_some_and(|q| removed_top(&q.wearing, &p.wearing))
+                && with.chars().count() <= crate::imagelib::MAX_CAST_FIELD
+            {
+                p.wearing = with;
+                clothes_said.push((
+                    shown(&p.who),
+                    format!(
+                        "{}'s top came off in this change, so the outfit says \"no top\".",
+                        shown(&p.who)
+                    ),
+                ));
             }
         }
     }
@@ -2496,6 +2510,12 @@ mod tests {
                 None,
             ),
             ("close on John's own eyes", n(&["john"]), None),
+            // A phone keyboard's apostrophe (review of #758).
+            (
+                "through John’s eyes, Maya at the door",
+                n(&["john", "maya"]),
+                Some("john"),
+            ),
             (
                 "a wide angle from John's POV across the garden",
                 n(&["john"]),
@@ -2635,6 +2655,13 @@ mod tests {
             Some(&base),
         );
         assert_eq!(p.next.people[0].wearing, "cargo shorts, no top");
+        assert!(
+            p.clothes_said
+                .iter()
+                .any(|(_, s)| s.contains("top came off")),
+            "{:?}",
+            p.clothes_said
+        );
         // A later change of pose alone keeps it so.
         let after = planned(
             &call(json!({"picture": "images/b.png", "scene": {"people": [

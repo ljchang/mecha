@@ -694,14 +694,24 @@ pub fn read_extraction_for(
             .filter(|c| !c.is_empty()),
     ) {
         if relative_camera(new) {
-            // Asked again, the record's camera already says it: kept as it
-            // is, never replaced by the bare ask (review of #758).
-            let joined = if old.contains(new.as_str()) {
-                old.to_string()
+            // The latest move only: earlier moves come off the record's
+            // camera, so asked again it is said once, and moves never pile up
+            // past the field's cap, which would refuse every later one
+            // (review of #758, passes 1 and 2). Past the cap even so, the ask
+            // alone.
+            let shot: Vec<&str> = old
+                .trim_end_matches(['.', ','])
+                .split(", ")
+                .filter(|clause| !relative_camera(clause))
+                .collect();
+            let joined = if shot.is_empty() {
+                new.clone()
             } else {
-                format!("{}, {new}", old.trim_end_matches(['.', ',']))
+                format!("{}, {new}", shot.join(", "))
             };
-            scene.insert("camera".into(), joined.into());
+            if joined.chars().count() <= crate::imagelib::MAX_CAST_FIELD {
+                scene.insert("camera".into(), joined.into());
+            }
         }
     }
     // One person answered at the top level, as a model without the schema
@@ -726,6 +736,13 @@ pub fn read_extraction_for(
     // viewer, or a group. Said beside the change, never a failure of it.
     let mut not_people: Vec<String> = Vec::new();
     let mut owner_named = false;
+    // The record's one person, when it is not the persona.
+    let sole_other: Option<String> = looks
+        .record
+        .filter(|r| r.people.len() == 1)
+        .map(|r| crate::picture::shown(&r.people[0].who))
+        .filter(|one| looks.persona.is_none_or(|p| !p.eq_ignore_ascii_case(one)));
+    let sole_other = sole_other.as_deref();
     if let Some(people) = people {
         let list = people.as_array().ok_or("`people` was not a list")?;
         let mut out = Vec::new();
@@ -743,9 +760,12 @@ pub fn read_extraction_for(
             // in particular.
             let names: Vec<&str> = match pronoun(who) {
                 None => vec![who],
-                Some(Pronoun::Persona) => match looks.persona {
-                    Some(p) => vec![p],
-                    None => {
+                // On a picture of one person who is not the persona, "her"
+                // is that person (review of #758).
+                Some(Pronoun::Persona) => match (looks.persona, sole_other) {
+                    (_, Some(one)) => vec![one],
+                    (Some(p), None) => vec![p],
+                    (None, None) => {
                         not_people.push(format!("{who} names no one in this picture"));
                         continue;
                     }
@@ -1308,6 +1328,33 @@ mod tests {
             ])
         );
         assert!(e.left_out.is_none(), "{:?}", e.left_out);
+        // On a picture of one person who is not the persona, "her" is that
+        // person (review of #758).
+        let wren = crate::scene::Scene {
+            people: vec![crate::scene::Person {
+                who: crate::scene::Who::Library("wren".into()),
+                at: None,
+                wearing: "a coat".into(),
+                doing: String::new(),
+                expression: String::new(),
+                origin: crate::scene::Origin::Clean,
+            }],
+            ..Default::default()
+        };
+        let on_wren = Looks {
+            persona: Some("Maya"),
+            record: Some(&wren),
+            ..Default::default()
+        };
+        let known_wren = |w: &str| ["Maya", "Wren"].contains(&w);
+        let e = read_extraction_for(
+            r#"{"people": [{"who": "her", "expression": "smiling"}]}"#,
+            &known_wren,
+            None,
+            &on_wren,
+        )
+        .unwrap();
+        assert_eq!(e.scene["people"][0]["who"], "Wren");
     }
 
     /// 2026-10-28: a relative camera ask replaced a first-person camera and
@@ -1362,6 +1409,18 @@ mod tests {
         assert_eq!(
             e.scene["camera"],
             "a first-person view from the doorway, a touch nearer"
+        );
+        // A second, different move replaces the first rather than piling up
+        // past the field's cap (review of #758, pass 2).
+        let moved = Looks {
+            record: Some(&twice),
+            ..Default::default()
+        };
+        let e = read_extraction_for(r#"{"camera": "pull back a little"}"#, &known, None, &moved)
+            .unwrap();
+        assert_eq!(
+            e.scene["camera"],
+            "a first-person view from the doorway, pull back a little"
         );
         // No recorded camera: the ask is the camera.
         let e = read_extraction(r#"{"camera": "a touch nearer"}"#, &known).unwrap();
