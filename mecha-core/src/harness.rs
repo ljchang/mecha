@@ -53,6 +53,18 @@ pub enum OverrideKey {
 }
 
 impl OverrideKey {
+    /// Whether the setting's values lie on a line, so that a value held at
+    /// one place says something about its neighbours. `effort` is a set of
+    /// kinds: `medium` staged says nothing of `high`.
+    pub fn is_ordered(self) -> bool {
+        match self {
+            OverrideKey::CompactAtTokens | OverrideKey::MaxTurns | OverrideKey::MaxOutputTokens => {
+                true
+            }
+            OverrideKey::Effort => false,
+        }
+    }
+
     pub const ALL: [OverrideKey; 4] = [
         OverrideKey::CompactAtTokens,
         OverrideKey::MaxTurns,
@@ -561,6 +573,23 @@ pub enum HistoryVerdict {
 }
 
 impl HistoryVerdict {
+    /// Whether a record with this verdict keeps the *setting* its change
+    /// names from being proposed at any other value.
+    ///
+    /// Only the verdicts that say nothing about the setting's direction: a
+    /// change waiting on a person, or measured (or judged) to do nothing on
+    /// an instrument that has not changed since. A harm is about one value
+    /// — `max_turns=3` harmful does not say `max_turns=30` is — so it stays
+    /// the exact change's.
+    pub fn holds_setting(self) -> bool {
+        matches!(
+            self,
+            HistoryVerdict::Staged
+                | HistoryVerdict::NoObservedEffect
+                | HistoryVerdict::OwnerNoEffect
+        )
+    }
+
     /// Whether a diagnostician may propose the same change again.
     ///
     /// Only where nothing has ruled against it: too little evidence, or the
@@ -579,6 +608,52 @@ impl HistoryVerdict {
     }
 }
 
+/// The setting a config change names, whatever value it gives it.
+///
+/// Reads only the key, so a value that does not parse still names its
+/// setting. `None` for a change that is not `KEY=VALUE` over the closed set.
+pub fn setting_of(change: &str) -> Option<OverrideKey> {
+    let (key, _) = change.split_once('=')?;
+    OverrideKey::parse(key.trim())
+}
+
+/// The records that hold a setting against every other value of it, newest
+/// first per setting, in the order of [`OverrideKey::ALL`]; `on_file` is the
+/// store's order, oldest first.
+///
+/// A hold is **released by a later accepted or reverted record of the same
+/// setting**: the setting has been moved on since, so a staged or no-effect
+/// record from before it no longer says anything about where to go next.
+/// Without it, one old `max_turns=20` held the whole setting for good
+/// (found reviewing the setting hold). Both the re-derivation check and the
+/// brief read this one function, so what the brief shows and what the loop
+/// refuses cannot differ.
+///
+/// From 2026-10-09 to 10-28 the nightly proposed `max_turns` at 5, 4, 20,
+/// 100, 200, 60 and 25, each staged with arms that could not be told apart:
+/// the ban was on the exact `KEY=VALUE`, so it stepped to the next number.
+pub fn setting_holders(on_file: &[HarnessCandidate]) -> Vec<&HarnessCandidate> {
+    OverrideKey::ALL
+        .iter()
+        .filter_map(|key| {
+            let moved_on = on_file.iter().rposition(|c| {
+                // A record the override set could have applied: an
+                // unparseable or non-config one never moved the setting.
+                matches!(c.status.as_str(), STATUS_ACCEPTED | STATUS_REVERTED)
+                    && c.class == ChangeClass::Config
+                    && parse_change(&c.change).is_ok()
+                    && setting_of(&c.change) == Some(*key)
+            });
+            on_file
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(i, c)| c.held_setting() == Some(*key) && moved_on.is_none_or(|m| *i > m))
+                .map(|(_, c)| c)
+        })
+        .collect()
+}
+
 /// A change as the store compares it: the canonical spec when it parses,
 /// so spacing cannot make two records of one change look like two changes.
 pub fn canonical_change(change: &str) -> String {
@@ -588,6 +663,20 @@ pub fn canonical_change(change: &str) -> String {
 }
 
 impl HarnessCandidate {
+    /// The setting this record holds against every other value, if it holds
+    /// one: a config change that parses (a value the override set cannot
+    /// make was never going to be applied, so holds nothing) whose verdict
+    /// [`HistoryVerdict::holds_setting`]. The brief reads this too, so what
+    /// it shows and what the check refuses are one predicate.
+    pub fn held_setting(&self) -> Option<OverrideKey> {
+        (self.class == ChangeClass::Config
+            && parse_change(&self.change).is_ok()
+            && self.history_verdict().holds_setting())
+        .then(|| setting_of(&self.change))
+        .flatten()
+        .filter(|key| key.is_ordered())
+    }
+
     /// Whether this record forbids proposing its change again tonight —
     /// the one predicate the re-derivation check and the brief's grouping
     /// both read, so the brief cannot invite what the loop then refuses.
