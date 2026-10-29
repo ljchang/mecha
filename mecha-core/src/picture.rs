@@ -197,23 +197,50 @@ fn names_any(wearing: &str, set: &[&str]) -> bool {
 /// 3. Only a removal is read so: an outfit first given as "jeans and boots"
 /// says nothing either way, and is left to the persona's words.
 pub fn removed_top(before: &str, after: &str) -> bool {
-    // A garment named as its bottom half ("bikini bottoms") is a lower
-    // garment, never a top (review of #758).
-    let after_lower = after.to_lowercase();
-    let words: Vec<&str> = after_lower
+    covers_chest(before)
+        && !covers_chest(after)
+        && !bare_chest_said(after)
+        && names_any(after, LOWER)
+}
+
+/// Whether an outfit already says the chest is bare: "topless", or a
+/// chest garment said not to be there ("no top", "without a shirt").
+fn bare_chest_said(outfit: &str) -> bool {
+    let lower = outfit.to_lowercase();
+    let words: Vec<&str> = lower
         .split(|c: char| !(c.is_alphanumeric() || c == '-'))
         .filter(|w| !w.is_empty())
         .collect();
-    let chest = words.iter().enumerate().any(|(i, w)| {
+    lower.contains("topless")
+        || words.iter().enumerate().any(|(i, w)| {
+            UPPER.contains(w)
+                && words[i.saturating_sub(2)..i]
+                    .iter()
+                    .any(|p| *p == "no" || *p == "without")
+        })
+}
+
+/// Whether an outfit names a garment for the chest: never one named as its
+/// bottom half ("bikini bottoms"), one said not to be there ("no top",
+/// "without a shirt"), or a topless one (review of #758, passes 1 and 5).
+fn covers_chest(outfit: &str) -> bool {
+    let lower = outfit.to_lowercase();
+    if lower.contains("topless") {
+        return false;
+    }
+    let words: Vec<&str> = lower
+        .split(|c: char| !(c.is_alphanumeric() || c == '-'))
+        .filter(|w| !w.is_empty())
+        .collect();
+    words.iter().enumerate().any(|(i, w)| {
         UPPER.contains(w)
             && !words
                 .get(i + 1)
                 .is_some_and(|n| *n == "bottom" || *n == "bottoms")
-    });
-    names_any(before, UPPER)
-        && !chest
-        && names_any(after, LOWER)
-        && !after_lower.contains("topless")
+            && !words[i.saturating_sub(2)..i]
+                .iter()
+                .any(|p| *p == "no" || *p == "without")
+    })
 }
 
 /// Whether a painted region's words are about a face: the one place a
@@ -2657,6 +2684,14 @@ mod tests {
             "bikini bottoms"
         ));
         assert!(removed_top("a striped swimsuit", "a swimsuit bottom"));
+        // A top already said to be off is not taken off again (review of
+        // #758, pass 5).
+        assert!(!removed_top("cargo shorts, no top", "cargo shorts"));
+        assert!(!removed_top("jeans, without a shirt", "jeans"));
+        assert!(
+            !removed_top("a linen shirt", "cargo shorts, no top"),
+            "said once"
+        );
     }
 
     /// 2026-10-28: a change took the shirt off and kept the shorts, and the
