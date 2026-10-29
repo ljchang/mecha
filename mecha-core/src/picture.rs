@@ -1381,9 +1381,21 @@ pub fn plan(
     // image model reads "the viewer", and their clothes and act are one line
     // of what that viewer's eyes see. Sent as a cast member under a
     // first-person camera, the holder's portrait drew his face in all four
-    // renders of 2026-10-28, and the people beside him twice over.
+    // renders of 2026-10-28, and the people beside him twice over. Only for
+    // a picture drawn from the scene: a retouch of a picture keeps whoever is
+    // in it, and a painted region may name the holder on purpose, to take
+    // their face.
     let mut seen_from: Option<String> = None;
-    if let Some(camera) = next.camera.as_ref().map(|f| f.value.as_str()) {
+    let drawn_from_scene = call.regions.is_empty()
+        && call.mask.is_none()
+        && call.mask_words.is_none()
+        && (new_picture || !unchanged);
+    if let Some(camera) = next
+        .camera
+        .as_ref()
+        .map(|f| f.value.as_str())
+        .filter(|_| drawn_from_scene)
+    {
         let holder = first_person_holder(camera, &named_in(camera)).filter(|h| {
             people.len() >= 2
                 && people
@@ -2370,6 +2382,37 @@ mod tests {
             None,
         );
         assert_eq!(alone.people.len(), 1);
+    }
+
+    /// A retouch of a picture whose camera is first person keeps its holder:
+    /// a painted region may name them to take their face, and the planner
+    /// must not make them the viewer there (measured 2026-10-28: the region's
+    /// words had the name rewritten under a face taken by that name).
+    #[test]
+    fn a_retouch_under_a_first_person_camera_keeps_its_holder() {
+        let first = planned(
+            &call(json!({"scene": {"setting": "a kitchen",
+                "camera": "first-person view through John's eyes",
+                "people": [
+                    {"who": "maya", "wearing": "a coat", "doing": "stirring a pot"},
+                    {"who": "john", "wearing": "pyjamas", "doing": "leaning on the counter"}]}})),
+            None,
+        );
+        let base = landed(&first, 7);
+        let p = planned(
+            &call(json!({"picture": "images/a.png", "mask": "inbox/r.png",
+                "regions": [{"colour": "blue", "words": "John's face, sharper"}]})),
+            Some(&base),
+        );
+        assert!(p.offstage.is_empty(), "{:?}", p.offstage);
+        assert!(!p.also.as_deref().unwrap_or("").contains("own eyes"));
+        // A scene change on it is drawn from the scene: the holder is the
+        // viewer again.
+        let q = planned(
+            &call(json!({"picture": "images/a.png", "scene": {"light": "dusk"}})),
+            Some(&base),
+        );
+        assert_eq!(q.offstage, vec!["john".to_string()]);
     }
 
     /// A new picture naming library characters with nobody in `people`
