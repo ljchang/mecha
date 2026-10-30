@@ -242,7 +242,7 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
   cap vouches for nothing. Here it is a program-internal shape that
   changes no label. It must not become a `trusted_output` shape (§6).
 - **`structured_output` must be on.** A provider with it `Disabled` makes
-  `llm_query` refuse with a typed error, never fall back to parsing prose
+  `llm_query` raise (`QueryError:`, below), never fall back to parsing prose
   by hope: the silently-degrading-guard rule.
 - **Results carry the union of their sources' labels.** A shape bounds how
   much an attacker can say; it does not change who said it. Inside a
@@ -343,31 +343,30 @@ default**: the host runs one pass at a time. The bound is the host's own, becaus
 - The slot count is not fixed: `router::background_seats` sizes to the
   resident model, never fewer than one.
 
-**R7 is ruled: one at a time.** The rest of this paragraph is the design
-for raising it, kept so a later ruling has it, and it is **not built** in
-this slice: no permit-seat accounting for sub-call passes. Any concurrency
-above one would be bounded across runs, not per run. **An interactive run's sub-calls stay at one**: they take no
-permit, as interactive work never does, and so they are never parallel
-either. Otherwise the owner would queue behind their own fan-out, or the
-fan-out would be unbounded. For background runs, `DEFAULT_BACKGROUND_PERMITS`
-counts three, and each could fan out. So a background run's pass beyond
-its first takes a seat from the same permit directory the background runs
-share, and waits when none is free. The total of running background passes then never
-exceeds `router::background_seats`. In practice that means a background
-`llm_map` runs one at a time in the steady state: at the pool's designed
-occupancy every seat is already held by a run, so a second pass has
-nothing to take. R7 decides whether that is the policy or a floor. On a
-model with two or more slots that
-keeps the owner's reserve whole. On a one-slot model it cannot:
-`seats_for` is never below one, and `permit.rs` concedes the owner can
-wait behind one background decode there.
+**R7 is ruled: one at a time, for every run.** An interactive run's
+sub-calls take no permit, as interactive work never does. A background
+run's sub-calls run inside the one permit the run already holds. Nothing
+in this slice adds seat accounting for sub-call passes.
+
+*If R7 is ever raised* (design kept for that ruling, not built): any
+concurrency above one would be bounded across runs, not per run. An
+interactive run would still stay at one, or the owner would queue behind
+their own fan-out. A background run's pass beyond its first would take a
+seat from the permit directory the background runs share, and wait when
+none is free, so the total of running background passes would never
+exceed `router::background_seats`. At the pool's designed occupancy every
+seat is already held by a run, so even then a second pass would usually
+have nothing to take. On a model with two or more slots that would keep
+the owner's reserve whole. On a one-slot model it cannot: `seats_for` is
+never below one, and `permit.rs` concedes the owner can wait behind one
+background decode there.
 
 ---
 
 ## 5. The budget
 
-Per program, enforced by the host, every limit a typed error the program
-can catch:
+Per program, enforced by the host, every limit a `LimitError:`-tagged
+`RuntimeError` the program can catch (§4):
 
 | Limit | Default (ruling R4) | Enforced by |
 |---|---|---|
@@ -801,7 +800,8 @@ attacker selects from their own text can be an address; that is a
      byte, with no `CAP_MARKER` and no untrusted wrapper, and a `find`
      offset past the budget indexes the source correctly.
    - `llm_query` refuses when `structured_output` is disabled.
-   - Each budget limit stops a program with its typed error.
+   - Each budget limit stops a program with a `LimitError:`-tagged error
+     naming the limit.
 2. **The effect class from `ROLLOUT-DESIGN.md` §3.2** is built and is the
    admission rule; a test asserts `message_send` and `image_generate` are
    absent from a program.
@@ -919,8 +919,9 @@ with your recs"), except R4, which waits on M1.
 - **R3. Yes.** Composite shapes come back `external` (§6).
 - **R4. Owed.** The budget defaults (§5) are set after M0 (done) and M1
   measure a pass and a worker on this box.
-- **R5. Yes.** `peek` exists, capped at 16 KB together with `str[n]`
-  results, and counted (§3).
+- **R5. Yes.** `peek` exists, capped together with `str[n]` results, and
+  counted (§3). The cap's number belongs to R4's budget table (§5), with
+  16 KB as its proposed default.
 - **R6. Thinking off by default**, on per call (§4, from M0). **Every
   pass gets `max_tokens` of 8,192, thinking or not**, because the
   thinking-off request can be silently ignored (§4).
@@ -931,8 +932,13 @@ with your recs"), except R4, which waits on M1.
   pass reads that join (§7). The build lists every reader of the join and
   asserts none is a model pass.
 - **And the `code` call itself is `read_only()`.** A program runs
-  without a prompt, because every tool it can reach would skip the
-  approver individually, so approving the aggregate adds nothing. This was
+  without a prompt. The reason is not that its tools would all skip the
+  approver: a read-only tool still meets a `prompt` or `forbid` policy
+  rule. The reason is that every host call still goes through the full
+  gate, policy included (§7). A host call that would prompt raises
+  instead, and one that is forbidden is refused. Approving the program as
+  a whole would add a prompt in front of checks that already run per
+  call. This was
   raised by review pass 17 and decided with the rest. `read_only()`
   controls three things, not one: the approver's rule-free branch,
   `PermissionMode::ReadOnly` (which allows a `read_only()` tool and blocks
