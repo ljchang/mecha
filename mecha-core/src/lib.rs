@@ -104,6 +104,7 @@ pub mod image;
 pub mod imagegen;
 pub mod imagelib;
 pub mod install;
+pub mod interpreter;
 pub mod jobs;
 pub mod launchd;
 pub mod layers;

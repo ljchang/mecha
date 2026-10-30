@@ -3423,6 +3423,40 @@ no privilege at all — but read the paragraph above for what it does not close)
 or `docker`, or install an AppArmor profile. `mecha tools` prints the active
 sandbox, and `mecha tools --json` prints each tool's capabilities.
 
+## Code mode's interpreter
+
+`mecha-core/src/interpreter/` runs a model's program for code mode
+(`CODE-MODE-DESIGN.md`; slice 3a, the backend only, with no `code` tool yet).
+The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
+(cargo feature `monty`, off by default) is the one backend. The invariants:
+
+- **A program reaches the host only through the names it was started
+  with.** They are globals; every `NameLookup` is answered `Undefined`,
+  every `OsCall` (files, environment, sleeps, imports) `NotHandled`, and a
+  `FunctionCall` under any other name is refused in the program. Monty 1.4
+  has `eval` and `exec`, so a registered name is reachable from a built
+  string: reach is the registered set, never the source's free names.
+- **The worker pool is a third process class, confined like an MCP
+  server.** `monty-pool` clears the environment; the launcher runs the
+  pinned worker under bwrap with every namespace unshared, `--clearenv`,
+  and nothing bound but the static binary. Only bwrap confines a worker:
+  `none`, docker (the pool kills the client's pid, not the container),
+  landlock (no network closure) and Seatbelt refuse by name, and
+  `preflight` runs a program through the real launcher, so a sandbox that
+  cannot start the worker stops the start rather than degrading.
+- **The worker is identified by its sha256** (`worker.rs`), checked every
+  time a pool starts; a path or a version string never stands in for it.
+- **Backstops and the program's own exceptions are different types.**
+  `End::Backstop` names the wall clock, the heap or the suspension count;
+  a program that raises a backstop's message itself is `End::Raised`,
+  because the host checks the clock, its own suspension count and the
+  worker's death before believing one. Recursion is monty's *catchable*
+  `RecursionError`, and `request_timeout` bounds one turn, so the program's
+  wall clock (host time included) is the backend's own deadline.
+- **Stop kills.** A cancelled program gets `cancel_grace` to reach a turn
+  boundary, then its checkout is dropped, which kills the worker; it ends
+  `End::Cancelled` with what it printed.
+
 ## The front door
 
 `frontdoor.rs` and `mecha frontdoor` are everything that happens to a stranger's
