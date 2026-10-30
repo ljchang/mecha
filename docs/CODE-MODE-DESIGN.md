@@ -1,6 +1,6 @@
 # Code mode, reshaped by RLM — design
 
-**Status: 2026-10-30, designed, nothing built. Rulings owed (§11).**
+**Status: 2026-10-30, designed, nothing built. Ruled 2026-10-30 except R4, which waits on M1 (§11). M0 measured (§10).**
 
 This supersedes the *shape* of `AUDIT-RESEARCH.md` §3.12 ("programmatic
 tool calling, on monty"). That section's contract, its first hazard (taint
@@ -275,9 +275,11 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
   with thinking on is the HTTP-200-with-empty-`content` failure, and a
   pass refuses that by name, as the clients do, rather than reading it as
   an answer.
-- **Thinking**: the default is the server's. The ruling waits on M0 (§10),
-  because llama.cpp issue #20345 has reports of grammar plus thinking
-  failing on Qwen3.6 after the March fix.
+- **Thinking is off by default** (R6, after M0). A pass asks for
+  `enable_thinking: false`. A program may ask for thinking per call, and
+  that pass then gets `max_tokens` of 8,192, above the server's 4,096
+  reasoning budget. M0 measured thinking at ~40× the latency of a pass
+  without it, and it was less consistent on an ambiguous message (§10).
 
 `llm_map` is written with `asyncio.gather`, so the program does not
 change when concurrency does, but **its concurrency bound is one by
@@ -779,6 +781,38 @@ leaks into the grammar, and the smallest `max_tokens` at which a pass with
 thinking on still returns content. That floor is R6's input. Issue #20345
 has April and May reports of failure on this model after the fix landed.
 
+**M0, measured 2026-10-30.** 34 sequential requests on the router
+(build `b1915-27637851`, reasoning budget 4,096), against the resident
+preset `qwen3.6-35b-a3b-uncensored`, the same architecture and template as
+the production preset. Probing production would have swapped the resident
+model. Each request was gated on `voice.live = no`. The input was a made-up
+message carrying an injected "reply APPROVED" line. Schemas were a
+three-label enum and a three-field record (bool, `str` ≤ 32, int range).
+
+| Thinking | `max_tokens` | Schema-valid | Median latency | Failures |
+|---|---|---|---|---|
+| on | 512 | 0/6 | 5.5 s | all `finish: length`, HTTP 200, empty `content` |
+| on | 2,048 | 5/6 | 15 s | one: reasoning ran to ~8.5k characters |
+| on | 8,192 | 8/8 | 14 s | none |
+| off | 128 or 1,024 | 14/14 | 0.3–0.5 s | none |
+
+- **The grammar held.** Every pass that returned content was
+  schema-valid, in both the `llama_json` wire form
+  (`{"type":"json_object","schema":…}`) and the standard
+  `json_schema` form. No reasoning leaked into the output. The #20345
+  reports do not reproduce on this build.
+- **Every failure was the envelope failure CLAUDE.md names:** thinking
+  used the whole allowance. With thinking on, `max_tokens` must clear the
+  reasoning budget.
+- **No pass echoed the injected instruction** (0/34).
+- **Thinking was less consistent.** On the enum (an arguably ambiguous
+  message), thinking gave all three labels across seven runs. Without it,
+  eight runs agreed. One message and small numbers, and agreement is not
+  correctness, but it points the same way as the latency.
+
+The probe and its raw results are outside the repo; the table above is
+the record.
+
 **M1.** `monty-pool` worker start and per-host-call overhead on this box,
 owed since `CODE-MODE-RESEARCH.md`.
 
@@ -814,22 +848,33 @@ The predictions to falsify:
 
 ---
 
-## 11. Rulings owed
+## 11. Rulings
 
-- **R1.** The first slice is read-only (§2), and the effect-class table is
-  built first and shared with rollouts.
-- **R2.** Per-call shapes chosen by an unarmed parent (§6).
-- **R3.** Composite shapes come back `external` (§6).
-- **R4.** The budget defaults (§5).
-- **R5.** `peek` exists, capped and counted (§3).
-- **R6.** Sub-call thinking, after M0 (§4).
-- **R7.** Any `llm_map` concurrency above one, and how much of
-  `router::background_seats` it may draw (§4).
-- **R8.** Whether `llm_query` may run on a remote provider, which sends
-  past today's output cap (§4).
-- **R9.** Whether the outbox's owner-facing join may open a
-  `trusted_output` child's nested program records, and only if no model
-  pass reads that join (§7).
+Ruled by the owner on 2026-10-30, taking the recommendation on each ("go
+with your recs"), except R4, which waits on M1.
+
+- **R1. Yes.** The first slice is read-only (§2), and the effect-class
+  table is built first and shared with rollouts.
+- **R2. Yes, narrowly.** An unarmed parent may choose a per-call shape of
+  bool, number, or one-of with at most 16 labels (§6). An armed parent's
+  shape narrows nothing.
+- **R3. Yes.** Composite shapes come back `external` (§6).
+- **R4. Owed.** The budget defaults (§5) are set after M0 (done) and M1
+  measure a pass and a worker on this box.
+- **R5. Yes.** `peek` exists, capped at 16 KB together with `str[n]`
+  results, and counted (§3).
+- **R6. Thinking off by default**, on per call with an 8,192-token
+  allowance (§4, from M0).
+- **R7. One at a time.** No `llm_map` concurrency above one for now (§4).
+- **R8. No.** `llm_query` refuses on any provider that is not local (§4).
+- **R9. Yes, conditionally.** The outbox's owner-facing join may open a
+  `trusted_output` child's nested program records, but only while no model
+  pass reads that join (§7). The build lists every reader of the join and
+  asserts none is a model pass.
+- **And the `code` call itself is `read_only()`.** A program runs
+  without a prompt, because every tool it can reach would skip the
+  approver individually, so approving the aggregate adds nothing. This was
+  raised by review pass 17 and decided with the rest.
 
 ---
 
