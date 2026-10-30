@@ -852,6 +852,11 @@ impl Tool for MessageSendTool {
         Capabilities::default()
     }
 
+    /// `read_only()`, and a delivery into another session's mailbox.
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        Some(crate::tool::effect::Effect::StoreWrite)
+    }
+
     async fn call(&self, input: serde_json::Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         // Planning is read-only exploration; sending sets another agent in
         // motion. The phase gate admits this tool on its `read_only` flag, so

@@ -3918,6 +3918,11 @@ impl Tool for ImageGenerate {
         Capabilities::default()
     }
 
+    /// `read_only()`, and a picture drawn on the GPU.
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        Some(crate::tool::effect::Effect::Render)
+    }
+
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let lib = self
             .library_dir

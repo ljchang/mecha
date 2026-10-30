@@ -3725,7 +3725,17 @@ design: **reads fan out** (no `account` on a search or calendar window means
 every mailbox, merged in time order, each row tagged with its account);
 **item operations name their account** (thread and event ids are
 account-scoped, and every row a read returns carries the account, so the
-model always has it); **creates use the default or ask** (`mecha-mail
+model always has it — and leaves it behind anyway, so a thread or a named
+calendar with no account asks every account and takes the one that holds it:
+`thread_home` for a thread, `calendar_home` for a named calendar, and two
+that hold it is refused, never picked between. A calendar's criterion is a
+bare 200 — an empty window is a legitimate answer, so `thread_home`'s
+"returned something" is not available — so it also refuses when any account's
+read failed for a reason other than 400/403/404: a public calendar reads 200
+everywhere, and a transient failure at the true home would otherwise name the
+wrong account. An event update or delete
+still names its account);
+**creates use the default or ask** (`mecha-mail
 default <name>`; with several accounts and none, the error says to *ask the
 user* — worded that way because "use your best judgment" measurably makes
 models invent). **The schema declares a `default` key exactly where omitting
@@ -5354,6 +5364,41 @@ silent failure before it was a rule:
   (`prefix_tools = false`) collision fails startup in `setup`. The
   "MCP servers can shadow built-ins" doc comment on `Registry::insert`
   describes the method, not a configurable behaviour.
+
+**A closed effect class per tool, earned in code and never claimed by a
+server** (`tool/effect.rs`; the definition is `ROLLOUT-DESIGN.md` §3.2, the
+second consumer `CODE-MODE-DESIGN.md` §2). It says what a call does to the
+world, which `read_only()` cannot: that flag means "skips the approval
+gate", and `message_send`, `image_generate`, `persona_propose`,
+`hud_propose` and `ask_user` are all `read_only()`.
+
+- **Declared, then resolved.** A tool declares an `Effect` in its own impl
+  (`Tool::effect`, default `None`). `effect::resolve` applies §3.2's
+  first-match order to the declaration, the operator's outbox routing and
+  the tool's `Capabilities`: routed is `Staged`, undeclared is `Undeclared`,
+  `Chosen` is `Irreversible`, `Workspace` comes before the destructive row,
+  and a declared `Irreversible` lands with it. One function, so
+  `mecha tools --json` (`effect`) and every future consumer agree.
+- **Unknown is never safe.** A tool nobody classified is `Undeclared`, never
+  `Read`; a wrapper must forward `effect` as it forwards `capabilities`, or
+  the tool it wraps turns undeclared. `EffectClass` is a wire format, and
+  `from_wire` reads an unknown name as `Undeclared`.
+- **First-party servers are mecha's table, by program.** `effect::first_party`
+  classes `mecha-mail`, `mecha-docs` and the graph at `graph_mcp::REV` by the
+  `command`'s file name (`feature::server_feature`'s match), and only for an
+  entry from the operator's global file (`McpServerConfig::from_operator`,
+  never written by any file), so a project's `./tools/mecha-mail` buys
+  nothing. A tool the table does not list is undeclared.
+- **A third-party tool is undeclared until the operator says.** `[[mcp]]
+  effects` names a class per tool; it is stripped from project and
+  environment layers (the `trust_result_claims` rule), and `workspace` is
+  refused at load, because a server writes where it was spawned and that row
+  outranks `destructive`. Annotations move a class only toward caution:
+  `destructiveHint` and `openWorldHint` reach it through `Capabilities`, and
+  `readOnlyHint` is read by nothing here.
+- **Metadata, for now.** Nothing reads the class to loosen the interlock,
+  the jail, approval or taint. A consumer that admits by it must keep every
+  existing guard and add this one.
 
 ## Background jobs
 
@@ -7795,8 +7840,35 @@ through the store above (a `point-*` `Kind` per point kind).
   relocated **at its own message** (`counterfactual::locate_steer_at` /
   `locate_denial_at`, via `probe::prepare_intervention_at`), never by text
   alone, which finds the first of two identical steers.
+- **One kind needs no owner at all: a repeat** (`HARNESS-EVOLUTION-DESIGN.md`
+  P8's middle step). A failed call the run made again, unchanged, after it
+  had read the failure (`counterfactual::first_repeats`): same target and
+  identical error text, by `compact::same_failure`, the key
+  `collapse_repeated_failures` folds on, so a poll (a changing result) and a
+  refusal are never repeats. Only a **later** turn **of the same run**
+  repeats (a call doubled in one batch was issued before either answer, and
+  a top-level user turn ends the streak: the owner may have fixed the cause
+  and asked for another try, and an arm that obeys is no dead end), only
+  the **first** repeat of a
+  failure is a point (the third attempt is the same decision again, and
+  would weight one stuck episode several times in a uniform draw), and only
+  calls a registered tool answered count (#723: an invented name has no
+  answer to replay and lends no situation key). The branch regenerates the
+  repeating turn, as a denial's does, and `counterfactual::repeat_verdict`
+  (`StructuralRepeat`) **fails an arm whose decision turn makes any recorded
+  failing call again** — same tool, same input — and passes it otherwise,
+  ending the run included: the point judges the dead end, nothing more.
+  **Only the decision turn is graded** (`ReplayReport::decision_turn_calls`,
+  read back from the branch and checked against the trace, `None` after a
+  compaction): an `Arguments` divergence is not structural, so a run that
+  moved off the dead end is answered with the *recorded* failure of the call
+  it replaced, and its next turn reacts to an error it never earned. A
+  decision turn that cannot be read back is inconclusive. The supply is the
+  corpus itself, which is the point: every other posed kind waits on an
+  owner's act, and the harness gate had decided one point in total.
 - **The owner's recorded verdict decides, through a structural validator
-  only** (R27). Steer and denial reuse `StructuralSteer`/`StructuralDenial`.
+  only** (R27) — the recording's own, for a repeat (above). Steer and
+  denial reuse `StructuralSteer`/`StructuralDenial`.
   A draft point is `ProbeKind::Draft`, branched like a denial (the whole
   staging turn regenerated), and graded by `counterfactual::draft_verdict`
   (`ReleasedDraft`/`RejectedDraft`): **an arm passes only by producing the
@@ -7838,8 +7910,8 @@ through the store above (a `point-*` `Kind` per point kind).
   by `pointwise::draw`, then — row 2e-6, R39 — stably re-ordered by the
   replay priority of each point's session (`pointwise::draw_ranked`), so
   the seed decides only among equals. **A harness candidate's points are
-  never ranked** (`candidate_draw`): R36 gives the point-wise half no
-  separate holdout, so they are the confirming sample, and a prioritised
+  never ranked** (`candidate_draw`): the held-out points are the
+  confirming sample (R36), and a prioritised
   confirming sample is a biased one (§8.1;
   `candidate_points_ignore_the_replay_priority`). `--points` (default 8) counts
   driven points; unposed points cost nothing and are not charged. A point
@@ -8300,6 +8372,57 @@ a run — which **ships off**.
   ["contrast_evidence"]` forces it off whatever the environment says. On
   only after a measured run (R43). A reflection does not record that it
   was contrasted; the arm does.
+
+### What never becomes a rule, and every reply counted
+
+`HARNESS-EVOLUTION-DESIGN.md` P7, after Hermes's do-not-capture block.
+`REFLECTOR_SYSTEM` (steer, denial, followup, reject) names three kinds of
+moment to skip, as criteria rather than a tone: a failure the
+**environment** caused (a missing program, a server that was down; a
+user's denial is never one, it is the user's correction), a
+**negative claim about a tool** drawn from one bad result, and an approach
+**never resolved** in the excerpts. Each hardens into a self-imposed
+constraint that outlives its cause. The writing frame is left alone (an
+edit is shaped by neither tools nor the environment) and the mismatch frame
+carries its own count rule.
+
+- **A skip is kept apart from a reply that could not be used.**
+  `Reflector::reflect_typed` returns `Reflected`: a lesson, `Skipped`
+  (`{"skip": true}`), `Unusable` (no JSON, JSON that does not parse,
+  `"skip": false` with no lesson, or a skip that carries one), or `NotAsked` (a mismatch whose step is
+  not a learnable failure). `reflect`/`reflect_beside` keep their signature
+  and return the lesson alone. Folded together, the share of skips, which
+  is P7's measure, could not be read.
+- **Every reply is a row** in `reflector_replies.jsonl`
+  (`LearningStore::append_reply`, `ReplyRecord`): trigger, domain, outcome,
+  the lesson's id and `error_type`, the model, **the hash of the system
+  prompt sent**, so one prompt's skip share and category mix can be read
+  apart from another's, and **what the reflector was shown**: the evidence
+  class and whether a contrast success was set beside it. The prompt tells
+  the reflector to prefer a skip when excerpts are withheld, so a skip share
+  is read within an evidence class, never across a mix of them. **No text**:
+  `error_type` is the model's own string, so the row keeps it only when it
+  is a category a prompt offers (`ERROR_TYPES`, tested equal to the
+  prompts' lists) and records `unlisted` otherwise, apart from naming none. **A source's rows are
+  written before it is marked mined**, a session's ahead of its
+  reflections, and each row names the pass that wrote it. A pass that stops
+  in between leaves the source unmined, the retry writes its rows again,
+  and `replies_counting` counts a source's rows only once it is marked
+  mined, and only the last pass's, so a retried pass counts no reply twice,
+  loses none, and a pass still in flight counts nothing. Rows after the mark
+  could be lost to a stop, and rows after the reflections could leave a
+  lesson uncounted (both found on review of #730). The reflections
+  themselves are no more atomic than before the ledger: a stop between two
+  appends leaves the first on file, and the retry writes it again. `--remine-untrusted` records none: that backfill never marks a
+  session mined and is keyed by the reflections on file, which a skip does
+  not add, so a rerun would count the same skip again. `ReplyOutcome` is a
+  wire format: an unknown outcome reads as `Unknown` and is counted on its
+  own, never as unusable. `forget` purges the ledger by session and by
+  forgotten reflection, like the validation ledgers.
+- **The baseline before it is partial.** Skips used to be discarded, and
+  only steer and denial skips were ever printed to the learning log
+  (`· [steer] no lesson drawn`). Followup skips, the common case, have no
+  record before this.
 
 ## The goal system
 
@@ -9206,6 +9329,23 @@ measurably likelier to fail a step when its context holds its own earlier
 errors, so nagging about being stuck is a way of making it stick. It keys on the
 call *and* its result via `compact::target_of` — identical arguments with a
 changing result is polling, which must never grade as stuck.
+
+**A second key counts the same failure on new targets** (`boredom::error_shape`:
+the error with quoted spans, paths and numbers masked, per tool). The first
+key is blind to guessing — `fs_list` on one path outside the jail after
+another, a forbidden `shell` command reworded each turn — because every call
+is a new target; a corpus pass on 2026-10-30 found exactly that shape behind
+most model-side failures. It counts turns that bring the shape back on a
+target the streak had not seen, so an unchanged call (a poll, or the first
+key's stuck repeat) never adds to it. Unlike the loop guard it counts calls the
+*machine* refused (`ToolCallTrace::blocked`: policy, hook, interlock, phase
+gate), and says so in its own words (`Rung::Rewording`, no delegate offered: a
+child inherits the policy). **A person's `Decision::Deny` never enters the
+shape key** — the interactive approvers word every decline alike, so three
+declined calls would share a shape, and naming the owner's corrections as
+rewording would score their steering against the run through
+`boredom_notices` (review of #762). The refusal result is never edited, so
+`"Blocked by policy:"` stays `Blocked` for the miner and the guard.
 
 **The closure follow-up gate is `done`-only and reads the derived label
 beside one typed predicate.** `dropped` is the owner declining the work, so

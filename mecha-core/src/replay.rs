@@ -508,6 +508,7 @@ mod tests {
             input,
             is_error: false,
             denied: false,
+            blocked: false,
             unknown: false,
             staged: false,
         }

@@ -488,6 +488,12 @@ impl Tool for ReplayTool {
         }
     }
 
+    /// The live tool's declaration, forwarded with the rest of what only it
+    /// knows; `None` here would be the silently wrong default.
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        self.inner.effect()
+    }
+
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         // Decided under the lock, executed after it: a live call awaits, and a
         // std mutex must not be held across an await point.
@@ -887,6 +893,15 @@ pub struct ReplayReport {
     /// diverge and every index in `divergences` is at or above this —
     /// `replayed_calls[i]` sits at recording position `call_base + i`.
     pub call_base: usize,
+    /// How many of `replayed_calls` a branch's first regenerated turn made —
+    /// the decision a branch point asks about, and the only turn whose world
+    /// is surely the recording's: an `Arguments` divergence is not
+    /// structural, so the run goes on and its next calls are answered with
+    /// results recorded for calls nobody made (`counterfactual::
+    /// repeat_verdict`). `None` for a whole replay, and for a branch whose
+    /// first turn cannot be read back faithfully: a compaction rewrote the
+    /// history, no turn was produced, or its calls do not open the trace.
+    pub decision_turn_calls: Option<usize>,
 }
 
 impl ReplayReport {
@@ -958,6 +973,7 @@ pub async fn drive(
         final_text,
         stats,
         call_base: 0,
+        decision_turn_calls: None,
     })
 }
 
@@ -1013,6 +1029,7 @@ pub async fn drive_branch(
             }
         }
     }
+    let seeded = seed.len();
     let mut convo = Conversation::resumed(seed, taint);
     let mut stats = crate::session::RunStats {
         usage_complete: true,
@@ -1020,6 +1037,12 @@ pub async fn drive_branch(
     };
     let outcome = agent.run_in(cx, &mut convo, None).await?;
     stats.absorb(&outcome);
+    let decision_turn_calls = decision_turn(
+        &convo.messages,
+        seeded,
+        outcome.compactions,
+        &outcome.tool_calls,
+    );
     Ok(ReplayReport {
         divergences: crate::replay::diff_from(base, &trajectory.calls[base..], &outcome.tool_calls),
         replayed_calls: outcome.tool_calls,
@@ -1030,7 +1053,46 @@ pub async fn drive_branch(
         final_text: outcome.text,
         stats,
         call_base: base,
+        decision_turn_calls,
     })
+}
+
+/// How many calls the first turn a branch regenerated made — the first
+/// assistant message past the `seeded` prefix — when that can be read back
+/// faithfully; see [`ReplayReport::decision_turn_calls`]. Checked against the
+/// trace rather than trusted: the turn's calls must be the trace's first
+/// entries, name for name, or the count is `None`, never a guess.
+///
+/// **As a multiset, not in block order.** `agent::dispatch` traces a call
+/// settled at the gate (denied, unknown, refused by the phase, staged)
+/// while it approves, ahead of the calls it then executes, so a turn mixing
+/// the two traces out of block order — and a positional check discarded
+/// every such turn (found on review of #729). Every one of the turn's calls
+/// is traced before the next turn's, so the first `n` entries are this
+/// turn's, in some order; the window [`crate::counterfactual`] grades is a
+/// set either way.
+fn decision_turn(
+    messages: &[Message],
+    seeded: usize,
+    compactions: u32,
+    trace: &[crate::agent::ToolCallTrace],
+) -> Option<usize> {
+    if compactions > 0 {
+        return None;
+    }
+    let turn = messages
+        .get(seeded..)?
+        .iter()
+        .find(|m| m.role == crate::message::Role::Assistant && !m.harness)?;
+    let uses = turn.tool_uses();
+    // Names suffice: which calls the turn made is the question here, and
+    // the verdict compares their inputs itself.
+    let head = trace.get(..uses.len())?;
+    let mut issued: Vec<&str> = uses.iter().map(|(_, name, _)| *name).collect();
+    let mut traced: Vec<&str> = head.iter().map(|c| c.name.as_str()).collect();
+    issued.sort_unstable();
+    traced.sort_unstable();
+    (issued == traced).then_some(uses.len())
 }
 
 #[cfg(test)]
@@ -3289,5 +3351,76 @@ mod divergence_reason_tests {
         let first = probe.reason().expect("recorded");
         actual.call(json!({}), &ToolCtx::default()).await.unwrap();
         assert_eq!(probe.reason().as_deref(), Some(first.as_str()));
+    }
+}
+
+#[cfg(test)]
+mod decision_turn_tests {
+    use super::*;
+    use crate::agent::ToolCallTrace;
+    use crate::message::Block;
+    use serde_json::json;
+
+    fn call(name: &str) -> ToolCallTrace {
+        ToolCallTrace {
+            name: name.into(),
+            input: json!({}),
+            is_error: false,
+            denied: false,
+            blocked: false,
+            unknown: false,
+            staged: false,
+        }
+    }
+
+    fn turn(names: &[&str]) -> Message {
+        Message::assistant(
+            names
+                .iter()
+                .enumerate()
+                .map(|(i, n)| Block::ToolUse {
+                    id: format!("r{i}"),
+                    name: (*n).into(),
+                    input: json!({}),
+                })
+                .collect(),
+        )
+    }
+
+    /// The first regenerated turn is read past the seed, harness turns
+    /// skipped, and believed only when its calls open the trace: a
+    /// compaction, a missing turn or a trace it does not open is `None`,
+    /// never a count a repeat verdict would grade by.
+    #[test]
+    fn the_decision_turn_is_read_back_or_not_at_all() {
+        let seed = vec![Message::user("total the quarter"), turn(&["fs_read"])];
+        let mut harness = Message::assistant(vec![Block::text("(harness note)")]);
+        harness.harness = true;
+        let mut messages = seed.clone();
+        messages.extend([harness, turn(&["fs_list", "fs_read"]), turn(&["todo"])]);
+        let trace = [call("fs_list"), call("fs_read"), call("todo")];
+        assert_eq!(decision_turn(&messages, seed.len(), 0, &trace), Some(2));
+        assert_eq!(decision_turn(&messages, seed.len(), 1, &trace), None);
+        assert_eq!(
+            decision_turn(
+                &messages,
+                seed.len(),
+                0,
+                &[call("fs_read"), call("fs_list")]
+            ),
+            Some(2),
+            "a gate-settled call is traced ahead of an executed one (review of #729)"
+        );
+        assert_eq!(
+            decision_turn(&messages, seed.len(), 0, &[call("fs_list"), call("todo")]),
+            None,
+            "a trace this turn's calls do not open"
+        );
+        assert_eq!(decision_turn(&seed, seed.len(), 0, &[]), None, "no turn");
+        let mut ended = seed.clone();
+        ended.push(Message::assistant(vec![Block::text(
+            "I could not find it.",
+        )]));
+        assert_eq!(decision_turn(&ended, seed.len(), 0, &[]), Some(0));
     }
 }

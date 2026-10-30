@@ -515,6 +515,10 @@ impl Tool for FileSearch {
         Some(self)
     }
 
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        Some(crate::tool::effect::Effect::Read)
+    }
+
     async fn call(&self, input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
         let Some(query) = input
             .get("query")

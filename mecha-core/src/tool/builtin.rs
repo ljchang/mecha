@@ -93,6 +93,10 @@ impl Tool for FsRead {
         Capabilities::default().private()
     }
 
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        Some(crate::tool::effect::Effect::Read)
+    }
+
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let path = ctx.resolve_for(arg_str(&input, "path")?, Access::Read)?;
         let offset = input
@@ -285,6 +289,12 @@ impl Tool for FsWrite {
         Capabilities::default().destructive()
     }
 
+    /// Writes inside the jail only; `destructive` is its capability, and the
+    /// resolver puts `Workspace` ahead of that row.
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        Some(crate::tool::effect::Effect::Workspace)
+    }
+
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let path = ctx.resolve_for(arg_str(&input, "path")?, Access::Write)?;
         let content = arg_str(&input, "content")?;
@@ -339,6 +349,11 @@ impl Tool for FsEdit {
 
     fn capabilities(&self) -> Capabilities {
         Capabilities::default().destructive()
+    }
+
+    /// As `fs_write`.
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        Some(crate::tool::effect::Effect::Workspace)
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
@@ -406,6 +421,10 @@ impl Tool for FsList {
 
     fn capabilities(&self) -> Capabilities {
         Capabilities::default().private()
+    }
+
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        Some(crate::tool::effect::Effect::Read)
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
@@ -563,6 +582,12 @@ impl Tool for Shell {
         } else {
             None
         }
+    }
+
+    /// Jailed to the workspace when confined. Unconfined, or confined with a
+    /// network, its egress is `Chosen`, which resolves `Irreversible` first.
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        Some(crate::tool::effect::Effect::Workspace)
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
@@ -828,6 +853,12 @@ impl Tool for HttpFetch {
 
     fn capabilities(&self) -> Capabilities {
         Capabilities::default().untrusted().sends()
+    }
+
+    /// A GET. Its egress is `Chosen` — the model picks the host and the
+    /// payload fits in a query string — which resolves `Irreversible`.
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        Some(crate::tool::effect::Effect::Read)
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
@@ -1152,6 +1183,53 @@ mod tests {
             network,
             ..SandboxConfig::default()
         })))
+    }
+
+    /// The built-ins' effect classes (`tool::effect`, ROLLOUT-DESIGN.md
+    /// §3.2). Each row also states what `read_only()` says, because a class
+    /// derived from it is the naive build this axis exists to replace: it
+    /// would call `http_fetch` a read and `shell` and `fs_write` the same
+    /// thing.
+    #[test]
+    fn the_builtins_declare_their_effect_class() {
+        use crate::tool::effect::{class_of, EffectClass};
+        let cases: [(&dyn Tool, bool, EffectClass); 7] = [
+            (&FsRead, true, EffectClass::Read),
+            (&FsList, true, EffectClass::Read),
+            (&FsWrite, false, EffectClass::Workspace),
+            (&FsEdit, false, EffectClass::Workspace),
+            // A GET the model aims: `read_only()`, and `Chosen`.
+            (&HttpFetch, true, EffectClass::Irreversible),
+            // Confined with no network: jailed to the workspace, ahead of
+            // its `destructive`.
+            (
+                &shell_with(Backend::Bwrap, false),
+                false,
+                EffectClass::Workspace,
+            ),
+            // Unconfined: `Chosen`, ahead of `Workspace`.
+            (
+                &shell_with(Backend::None, false),
+                false,
+                EffectClass::Irreversible,
+            ),
+        ];
+        for (tool, read_only, class) in cases {
+            assert_eq!(tool.read_only(), read_only, "{}", tool.name());
+            assert_eq!(class_of(tool, false), class, "{}", tool.name());
+        }
+        // Confined but with a network is still a channel the model aims.
+        assert_eq!(
+            class_of(&shell_with(Backend::Bwrap, true), false),
+            EffectClass::Irreversible
+        );
+        // `todo` and `compact` act on the run's own state, which no class
+        // in §3.2 names: undeclared, and owed a ruling, not a guess.
+        assert_eq!(
+            class_of(&super::super::todo::TodoTool::new(), false),
+            EffectClass::Undeclared
+        );
+        assert_eq!(class_of(&CompactTool, false), EffectClass::Undeclared);
     }
 
     /// `shell` may stand in a granted directory, as the file tools may read

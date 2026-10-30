@@ -2130,6 +2130,10 @@ impl Tool for VideoGenerate {
         Capabilities::default()
     }
 
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        Some(crate::tool::effect::Effect::Render)
+    }
+
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let plan = match self.plan(&input, ctx) {
             Ok(plan) => plan,
@@ -2257,6 +2261,10 @@ impl Tool for VideoPromptGuide {
         } else {
             Capabilities::default()
         }
+    }
+
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        Some(crate::tool::effect::Effect::Read)
     }
 
     async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {

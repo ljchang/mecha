@@ -119,6 +119,10 @@ impl Tool for SystemRead {
         Capabilities::default().private()
     }
 
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        Some(crate::tool::effect::Effect::Read)
+    }
+
     async fn call(&self, input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
         let window = match input.get("window").and_then(Value::as_str) {
             None => Window::Now,

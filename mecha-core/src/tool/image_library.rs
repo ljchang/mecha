@@ -140,6 +140,10 @@ impl Tool for ImageLibrary {
         Capabilities::default().private()
     }
 
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        Some(crate::tool::effect::Effect::Read)
+    }
+
     async fn call(&self, input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
         let kind = match parse_kind(&input) {
             Ok(kind) => kind,
@@ -314,6 +318,11 @@ impl Tool for ImageLibraryPropose {
         Capabilities::default()
     }
 
+    /// `read_only()`, and a write to the library's candidates.
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        Some(crate::tool::effect::Effect::StoreWrite)
+    }
+
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let kind = match input
             .get("kind")
@@ -470,6 +479,13 @@ impl Tool for ImageLibraryReference {
     /// that is what keeps it from a `research` child (review of #692).
     fn capabilities(&self) -> Capabilities {
         Capabilities::default().destructive()
+    }
+
+    /// A write to the library store. It also declares `destructive`, and
+    /// §3.2's first-match order puts that row first, so it resolves
+    /// `Irreversible`.
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        Some(crate::tool::effect::Effect::StoreWrite)
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
