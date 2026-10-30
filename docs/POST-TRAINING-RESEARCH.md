@@ -49,7 +49,7 @@ Two readings follow.
   `max_turns` runs. None of those has been classified by cause. The 164
   are not all the owner's: `RunStats::tool_denied` counts "a human or a
   policy refusing", and the split lives only in the result text
-  (`"Denied by the user: "` vs `"Blocked by policy:"`). A
+  (`"Denied by the user:"` vs `"Blocked by policy:"`). A
   failure the harness or prompt causes is cheaper to fix with
   `harness ruminate` than with weights.
 - **The owner-labelled signal is tiny.** Fifteen verified successes, and
@@ -116,7 +116,7 @@ Three conclusions carry to mecha:
   mecha's own tool schema. Real mail never goes to a teacher API.
 - **The owner's decision points as preference pairs.** A human denial, a
   steer, a rewritten draft: `sessions compare` already finds them. A
-  denial counts only when it carries `"Denied by the user: "`, as
+  denial counts only when it carries `"Denied by the user:"`, as
   `pointwise.rs` keys it. A policy block is the harness working, never a
   correction to train on. Too few for
   SFT; enough for a held-out evaluation and possibly a small DPO pass.

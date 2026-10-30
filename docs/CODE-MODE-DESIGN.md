@@ -129,7 +129,7 @@ the call's `ToolOutput::external` and the tool's capabilities.
 | `find(h, pattern)` | list of (start, end) | offsets, never text |
 | `count(h, pattern)` | int | |
 | `json_get(h, path)` | Handle for a string, object or array leaf; a number, bool or null as itself | structured tool output without decoding it into the program. A string leaf is text and stays a handle, or it would bypass `peek`'s cap and count |
-| `peek(h, n=2000)` | str | **the only way bytes enter the program** |
+| `peek(h, n=2000)` | str | **the only way a handle's bytes enter the program**; a `str[n]` sub-call result (§4) is the other way prose does, and both draw on one cap and one count |
 
 `print(h)` renders a stub such as
 `<handle 3: 48,213 chars from mail_get_thread>`, so the default spelling of
@@ -175,6 +175,9 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
   | record | `{"due": "str[32]", "urgent": bool}` | ≤ 8 fields, no nesting past one level |
   | short text | `str[n]` | n ≤ 2,000 |
 
+- **A `str[n]` result is prose entering the program**, so it is counted
+  with `peek` against one cap (§5); otherwise it would be a second,
+  uncounted route around §3.
 - **`str[n]` and record fields of it never cross a trust boundary.**
   `AnswerShape` deliberately has no bounded-string shape, because
   "ignore previous instructions" fits in very few characters: a length
@@ -194,6 +197,11 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
 - **Same model only.** Sub-calls go to the model the run already holds. On
   the router, naming another preset swaps the resident model and evicts
   every slot.
+- **`max_tokens` sits above the reasoning budget** for every pass, as the
+  local clients already require. A tight allowance for a three-label enum
+  with thinking on is the HTTP-200-with-empty-`content` failure, and a
+  pass refuses that by name, as the clients do, rather than reading it as
+  an answer.
 - **Thinking**: the default is the server's. The ruling waits on M0 (§10),
   because llama.cpp issue #20345 has reports of grammar plus thinking
   failing on Qwen3.6 after the March fix.
@@ -211,9 +219,12 @@ default**. The bound is the host's own, because nothing else bounds it:
 - The slot count is not fixed: `router::background_seats` sizes to the
   resident model, never fewer than one.
 
-Any concurrency above one is ruling R7. It is derived from
-`router::background_seats` for the run's own class and leaves the reserve
-whole.
+Any concurrency above one is ruling R7, and it is bounded across runs,
+not per run. `DEFAULT_BACKGROUND_PERMITS` counts three background runs,
+and each could fan out. So a sub-call pass beyond a run's first takes a
+seat from the same permit directory the background runs share, and waits
+when none is free. The total of running background passes then never
+exceeds `router::background_seats`, and the owner's reserve stays whole.
 
 ---
 
@@ -230,7 +241,7 @@ can catch:
 | handle operations (§3) | 2,048 | the host; monty `max_suspensions` set to the sum as a backstop |
 | wall clock | 300 s | `monty-pool` `request_timeout`, which is **unset by default** and must be set |
 | memory, allocations, recursion | monty's limits | the pool worker |
-| `peek` bytes | 16 KB | the host |
+| `peek` bytes plus `str[n]` result bytes | 16 KB together | the host, one count (`peeked_bytes`) |
 
 **The limit a well-behaved program should hit first is the sub-call
 cap.** It is the expensive resource and the one the model's prompt names.
@@ -350,6 +361,17 @@ attacker selects from their own text can be an address; that is a
     the union of its reads (§6). This, and not the subagent derivation, is
     where the declaration is load-bearing.
 
+  - **The gate is reused; the result path is not.** `dispatch_one`
+    renders a result for the context: capped at `output_budget_bytes`,
+    spilled past it with `CAP_MARKER`, and wrapped by
+    `mark_untrusted_output`. A handle over that rendering would be a view
+    of truncated bytes plus wrapper tags, and `find` offsets would point
+    into the wrapper. So `dispatch_one` splits into its gate (every check,
+    then taint armed from the raw result) and its rendering, and a host
+    call takes the gate and the raw `ToolOutput`. The cap, the spill and
+    the wrapper apply to what re-enters the context: printed output,
+    `peek`, and `str[n]` results.
+
   Moving `dispatch_one` into `dispatch.rs` is optional tidying, a pure
   move checked by a diffed `cargo test -- --list`. It is not a
   prerequisite.
@@ -452,7 +474,12 @@ attacker selects from their own text can be an address; that is a
    - A draft staged after a program read a thread joins to that thread
      through `grounding::calls`.
    - Taint is armed before `resume` on a host call whose result is never
-     printed.
+     printed, and the `code` result comes back `external` when any host
+     call returned external content, so `Dispatched::external` and the
+     provenance map agree.
+   - A handle over a result larger than `output_budget_bytes` holds every
+     byte, with no `CAP_MARKER` and no untrusted wrapper, and a `find`
+     offset past the budget indexes the source correctly.
    - `llm_query` refuses when `structured_output` is disabled.
    - Each budget limit stops a program with its typed error.
    - A `pre_tool` hook that denies a host call raises inside the program.
@@ -488,8 +515,9 @@ attacker selects from their own text can be an address; that is a
 **M0, before code.** Probe Qwen3.6 with `response_format: json_schema` on
 the installed llama.cpp (27637851), with thinking on and off. Record
 schema-valid rate, latency for a three-label enum, and whether reasoning
-leaks into the grammar. Issue #20345 has April and May reports of failure
-on this model after the fix landed.
+leaks into the grammar, and the smallest `max_tokens` at which a pass with
+thinking on still returns content. That floor is R6's input. Issue #20345
+has April and May reports of failure on this model after the fix landed.
 
 **M1.** `monty-pool` worker start and per-host-call overhead on this box,
 owed since `CODE-MODE-RESEARCH.md`.
