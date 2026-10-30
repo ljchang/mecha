@@ -245,6 +245,9 @@ impl Monty {
         backstops: Backstops,
         max_workers: usize,
     ) -> Result<Self> {
+        // Hashed again here, so "verified" means "at this pool's start",
+        // not whenever a `VerifiedWorker` was last made.
+        let worker = super::worker::verify(worker.path())?;
         let launcher = Launcher::write(&confinement.argv(worker.path()))?;
         let mut cfg = PoolConfig::subprocess(&launcher.script);
         cfg.min_processes = 0;

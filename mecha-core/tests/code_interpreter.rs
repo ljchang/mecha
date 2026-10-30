@@ -633,6 +633,39 @@ async fn cancellation_stops_a_program_promptly() {
     assert_eq!(f.printed, "");
 }
 
+/// "Verified" means at this pool's start: a `VerifiedWorker` whose file
+/// changed after `verify` ran is refused by `Monty::new` (review of #765).
+#[tokio::test]
+async fn a_pool_start_hashes_the_worker_again() {
+    let w = pinned_worker().await;
+    if unavailable("the pinned monty worker", w.is_some()) {
+        return;
+    }
+    let dir = tmpdir("monty-rehash");
+    let copy = dir.join("monty");
+    std::fs::copy(w.unwrap().path(), &copy).unwrap();
+    let verified = worker::verify(&copy).unwrap();
+    // Same length, one byte different: only a hash tells them apart.
+    let mut bytes = std::fs::read(&copy).unwrap();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 0xff;
+    std::fs::write(&copy, bytes).unwrap();
+    let err = Monty::new(
+        &verified,
+        &Confinement::bwrap_at("/bin/false"),
+        Backstops::default(),
+        1,
+    )
+    .await
+    .err()
+    .expect("a changed worker started a pool");
+    assert!(
+        err.to_string().contains("does not hash to the pinned"),
+        "{err}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// The silently-degrading guard: a sandbox that cannot start the worker
 /// fails preflight with a refusal, never a fallback to running it bare. A
 /// backend that spawned the worker directly would pass this preflight.
