@@ -5312,6 +5312,22 @@ carry:
   this shape since it was written. Parity, not a regression, and the shape a
   Slack thread will show once.
 
+**A call's gate and its rendering are separate steps** (`CODE-MODE-DESIGN.md`
+§7). `Agent::dispatch`, which `run_tools` and `dispatch_one` wrap, runs each
+call's checks in `Agent::check` (phase gate, restriction, interlock, hooks,
+staging, rules, approver), runs a cleared call in `Agent::execute`, arms the
+taint from the raw output with `jobs::arm`, and only then renders it for the
+context with `jobs::render`: the cap at `output_budget_bytes`, the spill
+behind `CAP_MARKER`, and the `mark_untrusted_output` wrapper. A late job
+result takes the same two through `jobs::settle`. `Agent::gate` is the
+single-call composition of the first half: every check, the call, the taint
+armed, and the output handed back raw. It exists for a program's host call,
+which must keep raw bytes behind a handle; its doc comment says what that
+caller owes (refuse where a turn's call would prompt, arm before the program
+resumes, render once on the way back into the context). The seam is pinned by
+`the_gate_hands_back_the_raw_result_and_rendering_it_is_todays_block` and
+`the_gate_refuses_as_dispatch_does`.
+
 **The MCP client's wire behaviour** (`mcp.rs`). Each of these was a
 silent failure before it was a rule:
 
