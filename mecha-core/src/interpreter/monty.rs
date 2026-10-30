@@ -105,8 +105,9 @@ impl Confinement {
     }
 
     /// bwrap at an explicit path — for a test that needs one which fails.
-    /// It skips [`Self::for_sandbox`]'s backend and platform gate, so a
-    /// caller outside the tests builds confinement through that instead.
+    /// Not a construction path: it skips [`Self::for_sandbox`]'s backend and
+    /// platform gate, so every caller outside the tests goes through that.
+    #[doc(hidden)]
     pub fn bwrap_at(program: impl Into<PathBuf>) -> Self {
         Confinement::Bwrap {
             launcher: vec![program.into().display().to_string()],

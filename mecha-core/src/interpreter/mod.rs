@@ -132,7 +132,7 @@ impl std::fmt::Display for Backstop {
             Backstop::WorkerKilled { signal } => match signal {
                 Some(s) => write!(
                     f,
-                    "stopped: the interpreter was killed by signal {s} (most often the sandbox's memory limit)"
+                    "stopped: the interpreter was killed by signal {s} (the sandbox's memory limit, or something outside the program)"
                 ),
                 None => f.write_str("stopped: the interpreter died under the program"),
             },
@@ -347,6 +347,10 @@ mod tests {
         assert!(lines[0].contains("wall-clock") && lines[0].contains("600 s"));
         assert!(lines[1].contains("memory") && lines[1].contains("1024"));
         assert!(lines[2].contains("suspension") && lines[2].contains("2336"));
+        let killed = Backstop::WorkerKilled { signal: Some(9) }.to_string();
+        assert!(killed.contains("killed by signal 9"), "{killed}");
+        let lost = Backstop::WorkerKilled { signal: None }.to_string();
+        assert!(lost.contains("died under the program"), "{lost}");
     }
 
     #[test]
