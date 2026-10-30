@@ -128,7 +128,8 @@ pub fn cached(
     })
 }
 
-fn sha256_file(path: &Path) -> Result<String> {
+/// A file's sha256 as lowercase hex — the form every pin is written in.
+pub fn sha256_file(path: &Path) -> Result<String> {
     use std::io::Read;
     let mut f = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let mut h = Sha256::new();
@@ -271,6 +272,34 @@ async fn fetch_release_asset_from(
         return Ok(dest);
     }
     let url = format!("{base}/{repo}/releases/download/{tag}/{asset}");
+    fetch_to(&url, &dest, sha256, bytes, progress).await?;
+    Ok(dest)
+}
+
+/// Where PyPI serves a release's files from.
+const PYPI_FILES_BASE: &str = "https://files.pythonhosted.org/packages";
+
+/// Fetch one pinned PyPI file into `dir`: `path` is its location under
+/// PyPI's file host (`<2>/<2>/<60 hex>/<filename>`, as the project's JSON
+/// API lists it), checked against the sha256 a reviewer committed. Every
+/// part is `&'static`, so only a pin compiled into mecha can name a file —
+/// the same rule as [`fetch_release_asset`].
+pub async fn fetch_pypi_file(
+    path: &'static str,
+    sha256: &'static str,
+    bytes: u64,
+    dir: &Path,
+    progress: &mut dyn FnMut(u64),
+) -> Result<PathBuf> {
+    let name = path.rsplit('/').next().unwrap_or_default();
+    if !plain_relative(path) || name.is_empty() {
+        bail!("refusing a PyPI pin that is not a plain relative path: {path}");
+    }
+    let dest = dir.join(name);
+    if dest.exists() && std::fs::metadata(&dest)?.len() == bytes && sha256_file(&dest)? == sha256 {
+        return Ok(dest);
+    }
+    let url = format!("{PYPI_FILES_BASE}/{path}");
     fetch_to(&url, &dest, sha256, bytes, progress).await?;
     Ok(dest)
 }
