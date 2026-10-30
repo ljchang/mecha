@@ -641,8 +641,11 @@ impl MontyProgram {
     async fn end(&mut self, end: End, reusable: bool) -> Step {
         self.pending = false;
         if let Some(co) = self.checkout.take() {
+            // The hand-back is a protocol turn too, so it is bounded: a
+            // worker that does not reset within the grace period is dropped
+            // with the timed-out future, which kills it (review of #765).
             if reusable {
-                let _ = co.finish().await;
+                let _ = tokio::time::timeout(self.backstops.cancel_grace, co.finish()).await;
             }
         }
         let p = self.printed.lock().unwrap_or_else(|e| e.into_inner());
@@ -798,6 +801,138 @@ mod tests {
             kind,
             ..Default::default()
         })
+    }
+
+    /// The pinned worker for the tests that drive this module's internals:
+    /// `MECHA_MONTY_WORKER`, or fetched with `MECHA_TEST_FETCH_MONTY=1` (as
+    /// CI does). A skip otherwise, and a failure under
+    /// `MECHA_TEST_REQUIRE_BACKENDS=1`.
+    async fn worker_for_tests() -> Option<VerifiedWorker> {
+        let found = if let Some(p) = std::env::var_os("MECHA_MONTY_WORKER") {
+            super::super::worker::verify(Path::new(&p)).ok()
+        } else if std::env::var_os("MECHA_TEST_FETCH_MONTY").is_some() {
+            let home = std::env::temp_dir().join("mecha-test-monty-home");
+            super::super::worker::ensure(&home, &mut |_| {}).await.ok()
+        } else {
+            None
+        };
+        let bwrap = Confinement::for_sandbox(&sandbox(Backend::Bwrap)).is_ok();
+        if found.is_none() || !bwrap {
+            assert!(
+                std::env::var_os("MECHA_TEST_REQUIRE_BACKENDS").is_none(),
+                "the pinned monty worker or bwrap is unavailable, and MECHA_TEST_REQUIRE_BACKENDS is set"
+            );
+            eprintln!("SKIPPED: the pinned monty worker or bwrap is unavailable");
+            return None;
+        }
+        found
+    }
+
+    /// Every process under `pid`, itself included.
+    fn process_tree(pid: u32) -> Vec<u32> {
+        let mut out = vec![pid];
+        let mut i = 0;
+        while i < out.len() {
+            let tasks = std::fs::read_dir(format!("/proc/{}/task", out[i]));
+            for t in tasks.into_iter().flatten().flatten() {
+                let kids = std::fs::read_to_string(t.path().join("children")).unwrap_or_default();
+                out.extend(
+                    kids.split_whitespace()
+                        .filter_map(|k| k.parse::<u32>().ok()),
+                );
+            }
+            i += 1;
+        }
+        out
+    }
+
+    /// The hand-back is a protocol turn too. A worker stopped after it sent
+    /// `Complete` and before it answered the pool's `Reset` must not hold the
+    /// caller for `request_timeout` (600 s): the hand-back is bounded by the
+    /// grace period, and the worker is killed with the dropped future
+    /// (review of #765). Driven through this module's internals, because the
+    /// window between `Complete` and the hand-back is too narrow to hit from
+    /// outside.
+    #[tokio::test]
+    async fn a_worker_stopped_before_its_hand_back_does_not_hold_the_caller() {
+        let Some(w) = worker_for_tests().await else {
+            return;
+        };
+        let backstops = Backstops {
+            cancel_grace: Duration::from_secs(1),
+            ..Backstops::default()
+        };
+        let conf = Confinement::for_sandbox(&sandbox(Backend::Bwrap)).unwrap();
+        let interp = Monty::new(&w, &conf, backstops, 1).await.unwrap();
+        let co = interp.pool.checkout(&interp.repl).await.unwrap();
+        let launcher = co.pid().unwrap();
+        let mut p = MontyProgram::new(
+            Some(co),
+            BTreeSet::new(),
+            backstops,
+            Instant::now(),
+            CancellationToken::new(),
+        );
+        let feed = Req::Feed("1".into(), NamedValues::from(Vec::new()));
+        assert!(matches!(
+            p.turn(feed).await,
+            Turned::Event(TurnEvent::Complete(_))
+        ));
+        let tree = process_tree(launcher);
+        for pid in &tree {
+            // SAFETY: plain signal syscalls on processes this test's pool spawned.
+            unsafe { libc::kill(*pid as i32, libc::SIGSTOP) };
+        }
+        // A stop is pending until the kernel delivers it; wait until every
+        // process reads stopped, so the hand-back below cannot be answered.
+        let stopped = |pid: &u32| {
+            std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                .is_ok_and(|s| s.rsplit_once(") ").is_some_and(|(_, r)| r.starts_with('T')))
+        };
+        for _ in 0..100 {
+            if tree.iter().all(stopped) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            tree.iter().all(stopped),
+            "the worker never stopped: {tree:?}"
+        );
+        let t = Instant::now();
+        let step = tokio::time::timeout(
+            Duration::from_secs(30),
+            p.end(
+                End::Complete {
+                    value: None,
+                    repr: "1".into(),
+                },
+                true,
+            ),
+        )
+        .await
+        .expect("a stopped worker held the hand-back past the grace period");
+        assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+        assert!(matches!(step, Step::Done(_)));
+        // Killed, not left stopped and checked out. The sandbox's inner
+        // process goes by its parent-death signal, a beat after the outer.
+        let gone = |pid: &u32| {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+            stat.is_empty() || stat.contains(") Z ")
+        };
+        for _ in 0..50 {
+            if tree.iter().all(gone) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        for pid in tree {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+            assert!(
+                stat.is_empty() || stat.contains(") Z "),
+                "process {pid} outlived its hand-back: {stat}"
+            );
+        }
     }
 
     #[test]
