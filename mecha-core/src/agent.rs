@@ -3910,10 +3910,21 @@ impl Agent {
                     // Between "proceeding" and the guard's "dead": an approach
                     // that has stopped teaching the run anything, named while
                     // there is still something to do about it.
-                    let bored =
-                        boredom.observe_turn(outcomes.iter().map(|(name, input, content, _)| {
-                            (*name, crate::boredom::Boredom::key(name, input, content))
-                        }));
+                    // Unlike the guard, boredom counts what the harness
+                    // refused: a refusal reworded turn after turn is the model
+                    // not learning from it, and naming that is all this does.
+                    // The refusal itself is never touched.
+                    let bored = boredom.observe_turn(outcomes.iter().map(
+                        |&(name, input, content, is_error)| crate::boredom::Outcome {
+                            tool: name,
+                            key: crate::boredom::Boredom::key(name, input, content),
+                            failure: is_error.then(|| {
+                                let refused =
+                                    refused_by_harness.contains(&(name, input.to_string()));
+                                crate::boredom::Boredom::failure(name, input, content, refused)
+                            }),
+                        },
+                    ));
 
                     let mut result_message = Message::tool_results(results);
                     result_message.tool_provenance = provenance;
@@ -13707,6 +13718,128 @@ mod tests {
             .messages
             .iter()
             .all(|m| !m.text().contains("same thing")));
+    }
+
+    /// Every results message in a run, with the text riding beside it.
+    fn results_messages(convo: &Conversation) -> Vec<(Vec<String>, String)> {
+        convo
+            .messages
+            .iter()
+            .filter(|m| {
+                m.content
+                    .iter()
+                    .any(|b| matches!(b, Block::ToolResult { .. }))
+            })
+            .map(|m| {
+                let results = m
+                    .content
+                    .iter()
+                    .filter_map(|b| match b {
+                        Block::ToolResult { content, .. } => Some(content.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                (results, m.text())
+            })
+            .collect()
+    }
+
+    /// The corpus's commonest model-side loop (2026-10-30): `fs_list` on one
+    /// path outside the workspace after another. Every call is a new target,
+    /// so the exact key never matched and the run was told nothing. Fails on
+    /// the old loop, which had no shape key.
+    #[tokio::test]
+    async fn guessing_paths_outside_the_jail_is_named_once_and_the_error_kept() {
+        let list = |id: &str, path: &str| {
+            assistant(
+                vec![Block::ToolUse {
+                    id: id.into(),
+                    name: "fs_list".into(),
+                    input: json!({"path": path}),
+                }],
+                StopReason::ToolUse,
+            )
+        };
+        let (agent, _) = agent_with_tools(
+            vec![
+                list("l0", "/etc"),
+                list("l1", "/usr"),
+                list("l2", "/var"),
+                list("l3", "/opt"),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(crate::tool::builtin::FsList)],
+            PermissionMode::Allow,
+        );
+        let mut convo = Conversation::user("what is on this machine?");
+        agent.run(&mut convo, None).await.unwrap();
+
+        let turns = results_messages(&convo);
+        assert_eq!(turns.len(), 4);
+        for (results, _) in &turns {
+            assert!(
+                results[0].contains("resolves outside the workspace"),
+                "the jail's own error reaches the model untouched: {results:?}"
+            );
+        }
+        let named: Vec<usize> = (0..turns.len())
+            .filter(|&i| turns[i].1.starts_with(crate::boredom::NOTICE_STEM))
+            .collect();
+        assert_eq!(named, vec![2], "named on the third guess, and only then");
+        assert!(turns[2].1.contains("`fs_list`") && turns[2].1.contains("different arguments"));
+        assert!(
+            is_harness_voice(&turns[2].1),
+            "never mined as the owner speaking"
+        );
+    }
+
+    /// A `forbid` rule refusing one reworded command after another. The
+    /// notice is added beside the refusal, never in place of it: the result
+    /// still opens `Blocked by policy:`, so it is still never mined as a
+    /// correction and still never counted by the loop guard.
+    #[tokio::test]
+    async fn a_refusal_reworded_is_named_and_stays_a_refusal() {
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        let (agent, _) = agent_with_tools(
+            vec![
+                shell_call("t0", "rm -rf ./build"),
+                shell_call("t1", "rm -rf build/"),
+                shell_call("t2", "rm -rf ./build/*"),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(RecordingShell(Arc::clone(&ran)))],
+            PermissionMode::Allow,
+        );
+        let cx = agent
+            .context()
+            .as_ref()
+            .clone()
+            .with_policy(rules(GIT_RULES));
+        let cx = RunContext {
+            approver: Arc::new(NeverAsked),
+            ..cx
+        };
+        let mut convo = Conversation::user("clean up");
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+
+        assert!(ran.lock().unwrap().is_empty(), "a forbidden call ran");
+        assert_ne!(
+            outcome.stop_cause,
+            StopCause::Loop,
+            "a refusal never ends the run"
+        );
+        let turns = results_messages(&convo);
+        assert_eq!(turns.len(), 3);
+        for (results, _) in &turns {
+            assert!(results[0].starts_with("Blocked by policy:"), "{results:?}");
+        }
+        assert!(!turns[1].1.starts_with(crate::boredom::NOTICE_STEM));
+        let notice = &turns[2].1;
+        assert!(notice.starts_with(crate::boredom::NOTICE_STEM), "{notice}");
+        assert!(
+            notice.contains("refused") && notice.contains("tell the user"),
+            "{notice}"
+        );
     }
 
     // --- step appraisal ---
