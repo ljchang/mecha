@@ -106,6 +106,11 @@ pub enum Backstop {
     Memory(usize),
     /// The number of suspensions (calls, refused requests) one program may make.
     Suspensions(u64),
+    /// The worker died under the program — killed by the sandbox (a cgroup
+    /// memory limit from `[sandbox] memory_mb` is the usual cause) or
+    /// crashed. A program can bring this about, so it is an ending, not a
+    /// backend failure; `signal` is the one that killed it, when known.
+    WorkerKilled { signal: Option<i32> },
 }
 
 impl std::fmt::Display for Backstop {
@@ -122,8 +127,15 @@ impl std::fmt::Display for Backstop {
             ),
             Backstop::Suspensions(n) => write!(
                 f,
-                "stopped by the suspension backstop: the program made more than {n} host calls"
+                "stopped by the suspension backstop: the program suspended more than {n} times (host calls and refused requests)"
             ),
+            Backstop::WorkerKilled { signal } => match signal {
+                Some(s) => write!(
+                    f,
+                    "stopped: the interpreter was killed by signal {s} (most often the sandbox's memory limit)"
+                ),
+                None => f.write_str("stopped: the interpreter died under the program"),
+            },
         }
     }
 }

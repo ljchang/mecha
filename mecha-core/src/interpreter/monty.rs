@@ -105,6 +105,8 @@ impl Confinement {
     }
 
     /// bwrap at an explicit path — for a test that needs one which fails.
+    /// It skips [`Self::for_sandbox`]'s backend and platform gate, so a
+    /// caller outside the tests builds confinement through that instead.
     pub fn bwrap_at(program: impl Into<PathBuf>) -> Self {
         Confinement::Bwrap {
             launcher: vec![program.into().display().to_string()],
@@ -553,6 +555,27 @@ impl MontyProgram {
             PoolError::Timeout { .. } => {
                 let b = Backstop::WallClock(self.backstops.wall_clock);
                 Ok(self.end(End::Backstop(b), false).await)
+            }
+            // The worker vanished mid-program: the sandbox's cgroup limit
+            // (`[sandbox] memory_mb` below `max_memory`) SIGKILLs it before
+            // monty's own check fires, or the program crashed it. Either way
+            // the program brought it about, so it ends the program rather
+            // than reading as the backend failing. A worker that announced
+            // its own fatal error (version skew, say) is the backend's.
+            PoolError::Crashed {
+                status,
+                cause: monty_pool::CrashCause::Vanished { .. },
+            } => {
+                #[cfg(unix)]
+                let signal = status.and_then(|s| std::os::unix::process::ExitStatusExt::signal(&s));
+                #[cfg(not(unix))]
+                let signal: Option<i32> = {
+                    let _ = status;
+                    None
+                };
+                Ok(self
+                    .end(End::Backstop(Backstop::WorkerKilled { signal }), false)
+                    .await)
             }
             other => {
                 self.checkout = None;
