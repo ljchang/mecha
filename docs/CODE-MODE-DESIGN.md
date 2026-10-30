@@ -54,7 +54,7 @@ existing `AnswerShape` rule.
   cannot define an exception class (classes cannot inherit), and a host
   can raise only a built-in `ExcType` with one message: `MontyException`
   is a type, a message, a traceback, and structured data for the unicode
-  and JSON errors alone (`docs/limitations/exceptions.md` and
+  and JSON errors alone (monty's `docs/limitations/exceptions.md`, not this repo's, and
   `monty-types`' `ExcType`/`ExcData` at tag 1.4.0). So a host failure has
   no class of its own and carries no value but its message, which §4
   builds on and §3 constrains.
@@ -252,8 +252,10 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
   catchable in the program. It never returns a sentinel string: DSPy's
   `"[ERROR] ..."` string is the kind of value a program aggregates as
   data. Monty has no class to raise it as (§1), so every host failure is
-  a `RuntimeError` whose message opens with a fixed tag, the only thing
-  a program can tell causes apart by: `QueryError:` for a failed pass,
+  a `RuntimeError` whose message opens with a fixed tag. The tag is the
+  only thing a program can tell *host* causes apart by; an untagged
+  exception is monty's own (a `TypeError` in the program's code, say), and
+  a backstop (§5) is not an exception at all. The tags are `QueryError:` for a failed pass,
   `ToolError:` for a tool that returned `is_error` or a host call refused
   (§7, followed by the loop's own refusal prefix, so a policy block still
   never reads as a person's denial), `HandleError:` for a §3 handle
@@ -269,7 +271,11 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
   silently, and the count comes out low with nothing raised. A program
   that wants partial results loops `llm_query` under `try`/`except` and
   keeps its own list of failures. Under R7 that costs nothing, because
-  `llm_map` runs one pass at a time anyway. The root's prompt shows that
+  `llm_map` runs one pass at a time anyway. It does lose one guarantee:
+  `llm_map` refuses up front when the sweep is longer than the remaining
+  budget, while a hand-rolled loop spends passes until the cap and then
+  raises mid-sweep. The prompt's example checks the remaining budget
+  first. The root's prompt shows that
   loop, and an eval case checks the model uses it when one bad source
   should not void a sweep.
 - **Same model only.** Sub-calls go to the model the run already holds. On
@@ -368,8 +374,18 @@ background decode there.
 
 ## 5. The budget
 
-Per program, enforced by the host, every limit a `LimitError:`-tagged
-`RuntimeError` the program can catch (§4):
+Per program. **Two kinds of limit, and only the first is catchable:**
+- **Host limits** are counted by mecha at a host call. Crossing one
+  raises a `LimitError:`-tagged `RuntimeError` naming the limit, which the
+  program can catch (§4). These are sub-calls, sub-call input tokens,
+  thinking-on passes, tool reads, handle operations, host bytes (per
+  program and per process), live handles, and `peek` plus `str[n]` bytes.
+- **Backstops** are the wall clock (`monty-pool`'s `request_timeout`), and
+  monty's own memory, allocation and recursion limits with
+  `max_suspensions`. They end the program from outside, uncatchably,
+  because a backstop the program could catch would not be one. The `code`
+  call still returns a `tool_result`: whatever the program printed, then
+  a harness line naming the backstop that fired.
 
 | Limit | Default (ruling R4) | Enforced by |
 |---|---|---|
@@ -811,8 +827,9 @@ attacker selects from their own text can be an address; that is a
      byte, with no `CAP_MARKER` and no untrusted wrapper, and a `find`
      offset past the budget indexes the source correctly.
    - `llm_query` refuses when `structured_output` is disabled.
-   - Each budget limit stops a program with a `LimitError:`-tagged error
-     naming the limit.
+   - Each host limit (§5) raises a catchable `LimitError:`-tagged error
+     naming the limit. Each backstop ends the program uncatchably, and the
+     `tool_result` names the backstop after the program's printed output.
 2. **The effect class from `ROLLOUT-DESIGN.md` §3.2** is built and is the
    admission rule; a test asserts `message_send` and `image_generate` are
    absent from a program.
@@ -970,8 +987,13 @@ than an architecture section kept beside the code.
 
 - **Sinks of any kind**, pausing at the outbox, and persisted program
   state. Admitting a sink also flips `code` off `read_only()`, which takes
-  it out of `Phase::Plan` and `PermissionMode::ReadOnly` (§11). The sink slice is §3.12's original shape, with snapshots MAC'd,
-  taint carried beside them, and a version mismatch failing closed.
+  it out of `Phase::Plan` and `PermissionMode::ReadOnly` (§11). That
+  flip is the mechanism, not just a consequence: a host call skips the
+  approver's rule-free branch where `PermissionMode::ReadOnly` is
+  checked, so only the `code` call's own flag keeps a read-only session
+  from running a program with a sink. The sink slice is §3.12's original
+  shape, with snapshots MAC'd, taint carried beside them, and a version
+  mismatch failing closed.
 - **`Blind` tools.**
 - **Value-level labels inside the program** (CaMeL's capability tags).
   monty does not track data flow, and filtering it by hand is the approach
@@ -1000,7 +1022,8 @@ on 2026-10-30, 767 of them:
 | `shell` running Python | 44 of 319 shell calls | |
 
 The three tools never called were not registered in every session, so
-their zero is an upper bound on exposure, not a measured refusal rate.
+their zero is measured against an unknown denominator (how many
+sessions offered them), so it is not a refusal rate.
 The pattern still reads plainly:
 - Tools that serve the harness have never been chosen.
 - A tool named for a task is chosen routinely.
