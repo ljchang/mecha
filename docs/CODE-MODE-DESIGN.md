@@ -873,8 +873,9 @@ with your recs"), except R4, which waits on M1.
   measure a pass and a worker on this box.
 - **R5. Yes.** `peek` exists, capped at 16 KB together with `str[n]`
   results, and counted (§3).
-- **R6. Thinking off by default**, on per call with an 8,192-token
-  allowance (§4, from M0).
+- **R6. Thinking off by default**, on per call (§4, from M0). **Every
+  pass gets `max_tokens` of 8,192, thinking or not**, because the
+  thinking-off request can be silently ignored (§4).
 - **R7. One at a time.** No `llm_map` concurrency above one for now (§4).
 - **R8. No.** `llm_query` refuses on any provider that is not local (§4).
 - **R9. Yes, conditionally.** The outbox's owner-facing join may open a
