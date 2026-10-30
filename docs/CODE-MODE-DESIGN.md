@@ -49,8 +49,10 @@ existing `AnswerShape` rule.
   `string`, `io`, `operator`.
 - **`AUDIT-RESEARCH.md` §3.2 shipped.** `QuarantinedPass::response_schema` exists and every
   local provider is `structured_output = "llama_json"`.
-- **Its §3.7 did not.** `agent.rs` was 9,400 lines at the audit; it is 20,039
-  now. The full split is no longer a sensible prerequisite (§7).
+- **Its §3.7 did not, but the part this design needs exists.** `agent.rs`
+  was 9,400 lines at the audit and is 20,039 now. `run_tools` is a thin
+  wrapper over `Agent::dispatch`, and `Agent::dispatch_one` is already the
+  one path a harness-made call takes through every gate (§7).
 - **RLM evidence** (`RLM-RESEARCH.md`): the handle carries much of the
   gain (Qwen3-Coder CodeQA 20.0 → 66.0 with no sub-calls), depth above 1
   hurt the open model, and an unbudgeted open model made thousands of
@@ -70,13 +72,14 @@ existing `AnswerShape` rule.
 ## 2. The first slice is read-only
 
 **A program may call a tool only if it is in the registry the run was
-given, its effect class is `Read` or `ReadThatRecords`, and its egress is
-`None`.** Everything else is not registered in the program at all: not
+given, its effect class is `Read` or `ReadThatRecords`, its egress is
+`None`, and it is `read_only()`.** Everything else is not registered in the program at all: not
 refused at call time, absent. The registry term matters as much as the
 other two. A subagent's registry is an allowlist, a policy can narrow a
 run's tools, and `mecha eval` throws levers off. A global admitted set
 would let `code` reach a tool the run was never given, which would make it
-a bypass of all three.
+a bypass of all three. The `read_only()` term is not for safety; §7 says
+what it is for.
 
 The effect class is `ROLLOUT-DESIGN.md` §3.2's closed per-tool axis,
 declared in code for built-in and first-party tools and earned from the
@@ -191,9 +194,22 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
   because llama.cpp issue #20345 has reports of grammar plus thinking
   failing on Qwen3.6 after the March fix.
 
-`llm_map` runs its passes concurrently under `asyncio.gather`, bounded by
-free seats. The router has four slots of 262,144 and the root holds one,
-so the ceiling is three, and `permit.rs` already rations seats.
+`llm_map` runs its passes under `asyncio.gather`, **one at a time by
+default**. The bound is the host's own, because nothing else bounds it:
+- `permit.rs` never applies to interactive work ("a chat turn, a voice
+  call, a Slack thread — never takes a permit at all").
+- `DEFAULT_BACKGROUND_PERMITS = 3` is one seat short of the server's so
+  that the owner's turn never queues. Those three slots are the owner's
+  reserve, not spare capacity. A background run holding a permit that
+  fanned out to three concurrent sub-calls would fill all four slots and
+  put the owner behind a decode, which is what that module exists to
+  prevent.
+- The slot count is not fixed: `router::background_seats` sizes to the
+  resident model, never fewer than one.
+
+Any concurrency above one is ruling R7. It is derived from
+`router::background_seats` for the run's own class and leaves the reserve
+whole.
 
 ---
 
@@ -206,10 +222,19 @@ can catch:
 |---|---|---|
 | sub-calls | 32 | the host, counted at `llm_query`/`llm_map` |
 | sub-call input tokens | 400k | the host, from `Usage` |
-| host calls of any kind | 256 | monty `max_suspensions` |
+| tool reads | 256 | the host, counted at the gate |
+| handle operations (§3) | 2,048 | the host; monty `max_suspensions` set to the sum as a backstop |
 | wall clock | 300 s | `monty-pool` `request_timeout`, which is **unset by default** and must be set |
 | memory, allocations, recursion | monty's limits | the pool worker |
 | `peek` bytes | 16 KB | the host |
+
+**The limit a well-behaved program should hit first is the sub-call
+cap.** It is the expensive resource and the one the model's prompt names.
+A long document chunked into handles can reach 256 host calls before 32
+sub-calls, because `find`, `slice` and `chunks` are host calls. So the
+handle operations of §3 count toward their own, larger limit (2,048),
+and 256 applies to tool reads only. Each limit's error says which limit it
+was, because that error is the model's only feedback.
 
 Each run's total also draws on its existing `RunContext` budget.
 
@@ -260,8 +285,9 @@ answer_shape = ["yes", "no", "unclear"]
   *which* allowed answer returns (selection, branch steering). The shape
   bounds that to a choice among the owner's own words. It does not bound
   it to zero, and FIDES's warning applies: this endorses an untrusted
-  value. `trusted_output` already made that trade for profiles, and the
-  `classify` profile already uses it.
+  value. `trusted_output` already made that trade for profiles. A
+  `classify` profile in the owner's own `~/.mecha/config.toml`, not in
+  this repo, already uses it.
 
 **Two extensions are rulings, not defaults:**
 
@@ -284,23 +310,46 @@ attacker selects from their own text can be an address; that is a
 
 ## 7. Where it plugs in
 
-- **A gate, extracted, not the whole of §3.7.** The one prerequisite is
-  that a host call and a model call pass through *one* function, in
-  `ARCHITECTURE.md`'s order: the interlock against the taint as of that
-  call, then `pre_tool` hooks (fail closed), then the approver where the
-  tool requires it, then outbox routing (which no admitted tool hits, but
-  the check is part of the gate), then taint armed from the result. The
-  interlock runs first, so a hook can narrow policy but never loosen
-  security. Extract `run_tools`'s per-call body into
-  `dispatch.rs` as that function, a pure move verified by a diffed
-  `cargo test -- --list`, and leave the rest of §3.7 to its own slices.
+- **The gate exists; what is missing is a caller from inside a tool.**
+  `Agent::dispatch_one` is documented as the path every call takes, so it
+  meets the same gates in the same order: the phase gate, the
+  restriction, the trifecta interlock against the taint and any job still
+  out, the `pre_tool` hooks, outbox staging, the approval rules and the
+  approver. It arms the conversation's taint from the result and mints a
+  non-model call id. Three things are new:
+  - **A host call is made from inside a running tool.** `dispatch_one`
+    takes the conversation, which the loop holds while a tool executes. So
+    a program's host calls go back to the loop over a channel on
+    `ToolCtx`, and the loop runs each through `dispatch_one` and answers.
+    One gate, not a copy of one; §8's first hazard tests assert that host
+    calls arrive there.
+  - **No approver prompt mid-program.** The loop approves sequentially,
+    then executes concurrently, and a program runs inside the concurrent
+    phase. A host call that reached the approver would put a human prompt
+    behind tools already executing, under a 300 s clock. The admission
+    rule's `read_only()` term (§2) makes that impossible by construction:
+    an admitted tool skips the approver. A configured `prompt` policy rule
+    that matches a host call refuses it in the program, never prompts.
+  - **The turn's taint forecast stays honest.** `dispatch` precomputes
+    `turn_taint` from declared capabilities before anything executes, to
+    close "read a secret and send it in the same turn". A host call's
+    taint arriving mid-turn does not defeat that, because `code` declares
+    the union of its reads (§6).
+
+  Moving `dispatch_one` into `dispatch.rs` is optional tidying, a pure
+  move checked by a diffed `cargo test -- --list`. It is not a
+  prerequisite.
 - **The interpreter behind a trait** (`start`, `resume`; `dump`/`load`
   reserved for the sink slice), as `CODE-MODE-RESEARCH.md` asked.
   - monty 1.4 through `monty-pool` is the implementation.
   - The pool is a third process class beside llama-server seats and
-    sandboxed MCP servers: environment cleared as `mcp.rs`'s `connect`
-    clears it, no mounts, `OsCall` and unknown `NameLookup` refused, and
-    `preflight` failing the run if a worker will not start.
+    sandboxed MCP servers. It gets the whole of `connect`'s treatment,
+    not half: the environment cleared, **and** the configured `Sandbox`
+    around the worker, with no network and no filesystem beyond its own
+    binary. The interpreter's refusal of `OsCall` and unknown
+    `NameLookup`, with no mounts, is the first wall. The sandbox is the
+    second, because round 1 of Hack Monty was an escape. `preflight`
+    fails the run if a worker will not start inside it.
   - Littrs (0.6.2, Apache-2.0) is a fallback for this slice only. It has
     no pause API but needs none here, and its limits are weaker (no memory
     or time limit outside its WASM mode). wasmtime with a Python guest
@@ -323,9 +372,21 @@ attacker selects from their own text can be an address; that is a
     bytes, `external`, in issue order. The loop writes them to the session
     file as a `program` record beside the `tool_result`, the same way a
     compaction writes `rewrite`. The model's context never holds them.
-  - `grounding::calls` reads `program` records as calls nested under the
-    `code` call that made them, so a handle's source and a span inside it
-    dereference.
+  - **Which list carries them, exactly.** `grounding::calls` takes
+    `&[Message]` and borrows each `Call` out of it. Four of its readers
+    (`gossip::evidence_from`, `attribution::Given::before`,
+    `persona::cite`, and the live half of `outbox_source`) hold a live
+    conversation, where the only message list in scope *is* the model's
+    context. `Session::messages_ever` admits only `Record::Message`. So the
+    records cannot ride in the message list without entering the context.
+    They live on `Conversation` beside the messages, as taint does: a
+    `program_calls` list, persisted as `program` records and loaded by
+    `messages_ever`'s sibling.
+  - **That is a change to `grounding.rs`, not a record format.** The walk
+    gains a second source (`&[ProgramCall]`), and `Call` gains an owned,
+    nested variant under the `code` call that made it, so a handle's
+    source and a span inside it dereference. All five call sites change
+    to pass it. §8's join test is what proves it.
   - **Through a subagent there is no child session to hold the record:**
     a child agent writes no session file today. So the subagent tool's
     output carries its child's `program` records up, and the parent's
@@ -443,6 +504,8 @@ The predictions to falsify:
 - **R4.** The budget defaults (§5).
 - **R5.** `peek` exists, capped and counted (§3).
 - **R6.** Sub-call thinking, after M0 (§4).
+- **R7.** Any `llm_map` concurrency above one, and how much of
+  `router::background_seats` it may draw (§4).
 
 ---
 
