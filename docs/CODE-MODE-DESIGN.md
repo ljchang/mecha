@@ -138,7 +138,7 @@ the call's `ToolOutput::external` and the tool's capabilities.
 |---|---|---|
 | `size(h)` | int | |
 | `slice(h, start, end)` | Handle | |
-| `lines(h)`, `split(h, pattern)`, `chunks(h, n, overlap=0)` | list of Handle | |
+| `lines(h)`, `split(h, pattern)`, `chunks(h, n, overlap=0)` | list of Handle | `n` is each chunk's size in characters, not a count of chunks |
 | `find(h, pattern)` | list of (start, end) | offsets, never text |
 | `count(h, pattern)` | int | |
 | `json_get(h, path)` | Handle for a string, object or array leaf; a number, bool or null as itself | structured tool output without decoding it into the program. A string leaf is text and stays a handle, or it would bypass `peek`'s cap and count |
@@ -246,8 +246,9 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
   because llama.cpp issue #20345 has reports of grammar plus thinking
   failing on Qwen3.6 after the March fix.
 
-`llm_map` runs its passes under `asyncio.gather`, **one at a time by
-default**. The bound is the host's own, because nothing else bounds it:
+`llm_map` is written with `asyncio.gather`, so the program does not
+change when concurrency does, but **its concurrency bound is one by
+default**: the host runs one pass at a time. The bound is the host's own, because nothing else bounds it:
 - `permit.rs` never applies to interactive work ("a chat turn, a voice
   call, a Slack thread — never takes a permit at all").
 - `DEFAULT_BACKGROUND_PERMITS = 3` is one seat short of the server's so
@@ -327,7 +328,7 @@ already the owner's:
 [[subagent]]
 name = "analyst"
 description = "Answers one question over mail, documents or the graph by writing a program. Returns only the declared shape."
-tools = ["code", "mail__mail_search", "mail__mail_get_thread", "document_read", "docs__docs_read", "graph__kg_search", "graph__kg_timeline", "recall"]
+tools = ["code", "mail__mail_search", "mail__mail_get_thread", "document_read", "docs__docs_read", "graph__kg_search", "graph__kg_timeline"]
 max_turns = 12
 trusted_output = true
 answer_shape = ["yes", "no", "unclear"]
@@ -337,6 +338,14 @@ The names are a default install's (`{server}__{tool}`, `prefix_tools`
 defaulting true). A box whose graph server sets `prefix_tools = false`
 registers `kg_search` bare and spells it so. `build_subagent` fails the
 launch on a name that resolves to nothing, rather than running without it.
+
+**`recall` is not in the profile, and cannot be.** It searches *this
+conversation's* history and is registered after `prepare`, so it is not
+in the pool `build_subagent` reads, and naming it fails the launch. If it
+were in the pool, `Arc::clone` would point the child at the parent's
+transcript, which `tool/recall.rs` forbids by name. It is the same clone
+hazard as `code`'s. A program in the parent's own run may read `recall`
+(§2, §9); a child may not.
 
 **A profile that names `code` requires the feature.** `code` is a
 `Feature`, off by default, and a feature that is off registers no tool
@@ -632,6 +641,9 @@ attacker selects from their own text can be an address; that is a
      period, and no sub-call outlives it.
    - A draft staged after a program read a thread joins to that thread
      through `grounding::calls`.
+   - A transcript carrying a `program` record loads in a binary that
+     predates it: the record is skipped as unknown, never failing the
+     file. It is a wire format, read in `Session::messages_ever`'s loop.
    - Each host call pushes a `ToolCallTrace` tagged `in_program`. A
      `pre_tool` hook that denies a host call raises in the program *and*
      increments `tool_denied`.
@@ -649,7 +661,6 @@ attacker selects from their own text can be an address; that is a
      offset past the budget indexes the source correctly.
    - `llm_query` refuses when `structured_output` is disabled.
    - Each budget limit stops a program with its typed error.
-   - A `pre_tool` hook that denies a host call raises inside the program.
 2. **The effect class from `ROLLOUT-DESIGN.md` §3.2** is built and is the
    admission rule; a test asserts `message_send` and `image_generate` are
    absent from a program.
