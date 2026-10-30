@@ -388,7 +388,7 @@ pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) 
                 "properties": {
                     "time_min": relative_time("Start of the window."),
                     "time_max": relative_time("End of the window."),
-                    "account": account("Omit to read every account's primary calendar."),
+                    "account": account("Omit to read every account's primary calendar. With a `calendar_id`, omit it only if one account can read that calendar: that account answers, and the reply names it."),
                     "calendar_id": {"type": "string", "default": "primary"}
                 }
             },
@@ -602,40 +602,98 @@ fn thread_home(
     }
 }
 
+/// One account's answer to "can you read this calendar?", for
+/// [`calendar_home`].
+#[derive(Debug)]
+enum CalendarReach {
+    /// The read succeeded — with events or without.
+    Read,
+    /// A definitive "not this account's": 400 (an id another provider
+    /// minted), 403 or 404.
+    Absent(String),
+    /// Anything else — a timeout, a 5xx, a dead token. Says nothing about
+    /// where the calendar lives.
+    Unknown(String),
+}
+
+impl CalendarReach {
+    fn of<T>(r: &Result<T, MailError>) -> Self {
+        match r {
+            Ok(_) => CalendarReach::Read,
+            Err(MailError::ApiError { status, message }) if matches!(status, 400 | 403 | 404) => {
+                CalendarReach::Absent(format!("API error ({status}): {message}"))
+            }
+            Err(e) => CalendarReach::Unknown(format!("{e}")),
+        }
+    }
+}
+
 /// The account a named calendar lives in, when `calendar_list_events` was
-/// not told: [`thread_home`]'s rule for a calendar id. The model reads the id
-/// off a `calendar_list` row and leaves the row's `account` behind, and the
-/// call used to be refused for it. Every account is asked — no wider than the
-/// same call without a `calendar_id`, which reads them all — and the one
-/// that can read the calendar answers. **Two that can is refused**, not
-/// picked between: a calendar shared into both accounts is the case where
-/// choosing would cross accounts silently. A read that failed for another
-/// reason does not hold it, on `thread_home`'s precedent, and the reply names
-/// the account it came from.
-fn calendar_home(
-    calendar_id: &str,
-    answers: &[(&str, Result<(), String>)],
-) -> Result<usize, String> {
+/// not told. The model reads the id off a `calendar_list` row and leaves the
+/// row's `account` behind, and the call used to be refused for it. Every
+/// account is asked — no wider than the same call without a `calendar_id`,
+/// which reads them all.
+///
+/// **The criterion is a successful read, which is weaker than
+/// [`thread_home`]'s.** That one moved from "the read succeeded" to "the read
+/// returned messages" after Graph answered a filter matching nothing with a
+/// 200 and an empty list, which made an Outlook account look like it held a
+/// Gmail thread. The same move is not available here: an empty window is a
+/// calendar's legitimate answer, so a 200 with no events is the only
+/// evidence there is. What makes the weaker criterion safe enough is the
+/// rest of the rule, which fails closed wherever a 200 could mislead:
+///
+/// - **Two accounts that read it is refused**, never picked between. A
+///   calendar shared into both lands here, and so does a *public* Google
+///   calendar (a holidays feed), which every Google account reads with a 200.
+/// - **Any read that failed for a reason other than "not this account's"**
+///   ([`CalendarReach::Unknown`]: a timeout, a 5xx, a dead token) **is
+///   refused too.** Otherwise a transient failure at the calendar's true home,
+///   while another account reads it publicly, would name the wrong account
+///   with confidence. Asking again, or naming the account, is cheap; a reply
+///   that names the wrong mailbox is not.
+///
+/// So it resolves only when exactly one account read the calendar and every
+/// other one said, definitively, that it is not theirs. The reply names the
+/// account it came from.
+fn calendar_home(calendar_id: &str, answers: &[(&str, CalendarReach)]) -> Result<usize, String> {
+    let every = || {
+        answers
+            .iter()
+            .map(|(name, r)| match r {
+                CalendarReach::Read => format!("{name}: readable"),
+                CalendarReach::Absent(e) | CalendarReach::Unknown(e) => format!("{name}: {e}"),
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
     let held: Vec<usize> = (0..answers.len())
-        .filter(|&i| answers[i].1.is_ok())
+        .filter(|&i| matches!(answers[i].1, CalendarReach::Read))
         .collect();
-    match held.as_slice() {
-        [one] => Ok(*one),
-        [] => Err(format!(
-            "no configured account could read calendar {calendar_id}: {}",
-            answers
-                .iter()
-                .filter_map(|(name, r)| r.as_ref().err().map(|e| format!("{name}: {e}")))
-                .collect::<Vec<_>>()
-                .join("; ")
-        )),
-        several => Err(format!(
+    if held.len() > 1 {
+        return Err(format!(
             "calendar {calendar_id} is readable from several accounts ({}) — pass `account`",
-            several
-                .iter()
+            held.iter()
                 .map(|&i| answers[i].0)
                 .collect::<Vec<_>>()
                 .join(", ")
+        ));
+    }
+    if answers
+        .iter()
+        .any(|(_, r)| matches!(r, CalendarReach::Unknown(_)))
+    {
+        return Err(format!(
+            "could not tell which account holds calendar {calendar_id}: not every account \
+             answered ({}). Pass `account`.",
+            every()
+        ));
+    }
+    match held.as_slice() {
+        [one] => Ok(*one),
+        _ => Err(format!(
+            "no configured account could read calendar {calendar_id}: {}",
+            every()
         )),
     }
 }
@@ -1662,14 +1720,9 @@ impl MailTools {
                 .await;
                 let mut found_in = None;
                 if locate {
-                    let answers: Vec<(&str, Result<(), String>)> = results
+                    let answers: Vec<(&str, CalendarReach)> = results
                         .iter()
-                        .map(|(name, _, r)| {
-                            (
-                                name.as_str(),
-                                r.as_ref().map(|_| ()).map_err(|e| format!("{e}")),
-                            )
-                        })
+                        .map(|(name, _, r)| (name.as_str(), CalendarReach::of(r)))
                         .collect();
                     match calendar_home(&calendar_id, &answers) {
                         Ok(i) => {
@@ -2340,40 +2393,73 @@ mod tests {
         assert_eq!(thread_home("T", &answers).unwrap(), 1);
     }
 
+    fn api(status: u16) -> Result<(), MailError> {
+        Err(MailError::ApiError {
+            status,
+            message: "Not Found".into(),
+        })
+    }
+
     /// `calendar_list_events` with a calendar id off a `calendar_list` row
     /// and the row's `account` left behind: refused in `resolve` before
-    /// this, now answered by the one account that can read it.
+    /// this, now answered by the one account that can read it — when every
+    /// other account said, definitively, that it is not theirs.
     #[test]
     fn a_named_calendar_with_no_account_goes_to_the_one_account_that_reads_it() {
         let answers = [
-            ("personal", Err("API error (404): Not Found".to_string())),
-            ("campus", Ok(())),
+            ("personal", CalendarReach::of(&api(404))),
+            ("campus", CalendarReach::of(&Ok::<(), MailError>(()))),
         ];
         assert_eq!(calendar_home("c1@group.example", &answers).unwrap(), 1);
+        // An Outlook account handed a Google id answers 400: also "not mine".
+        let outlook = [
+            ("personal", CalendarReach::of(&Ok::<(), MailError>(()))),
+            ("campus", CalendarReach::of(&api(400))),
+        ];
+        assert_eq!(calendar_home("c1@group.example", &outlook).unwrap(), 0);
     }
 
-    /// Never crossing accounts silently: a calendar both accounts can read
-    /// (one shared into both) is refused with both named, and a calendar
-    /// neither can read reports every account's answer, so a dead token is
-    /// not read as "no such calendar".
+    /// Never crossing accounts silently: a calendar both accounts can read —
+    /// one shared into both, or a *public* Google calendar every account
+    /// reads with a 200 — is refused with both named, and a calendar neither
+    /// can read reports every account's answer.
     #[test]
     fn a_calendar_two_accounts_read_or_none_reads_is_refused() {
-        let both = [("a", Ok(())), ("b", Ok(()))];
-        let err = calendar_home("shared@group.example", &both).unwrap_err();
+        let both = [("a", CalendarReach::Read), ("b", CalendarReach::Read)];
+        let err = calendar_home("holidays@group.example", &both).unwrap_err();
         assert!(
             err.contains("a, b") && err.contains("pass `account`"),
             "{err}"
         );
 
         let none = [
-            ("a", Err("API error (404): Not Found".to_string())),
-            ("b", Err("token refresh failed".to_string())),
+            ("a", CalendarReach::of(&api(404))),
+            ("b", CalendarReach::of(&api(403))),
         ];
         let err = calendar_home("c1@group.example", &none).unwrap_err();
         assert!(
-            err.contains("a: API error (404)") && err.contains("b: token refresh failed"),
+            err.contains("a: API error (404)") && err.contains("b: API error (403)"),
             "{err}"
         );
+    }
+
+    /// The calendar's true home failed for a passing reason while another
+    /// account read it publicly. Resolving would name the wrong account with
+    /// confidence, so a read that says nothing about where the calendar lives
+    /// refuses the lookup (review of #762).
+    #[test]
+    fn a_failed_read_anywhere_refuses_rather_than_naming_the_wrong_account() {
+        for unknown in [
+            CalendarReach::of(&api(503)),
+            CalendarReach::of(&Err::<(), _>(MailError::AuthError("expired".into()))),
+        ] {
+            let answers = [("home", unknown), ("public-reader", CalendarReach::Read)];
+            let err = calendar_home("c1@group.example", &answers).unwrap_err();
+            assert!(
+                err.contains("could not tell") && err.contains("Pass `account`"),
+                "{err}"
+            );
+        }
     }
 
     #[test]

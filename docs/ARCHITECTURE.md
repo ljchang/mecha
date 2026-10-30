@@ -3701,7 +3701,12 @@ account-scoped, and every row a read returns carries the account, so the
 model always has it — and leaves it behind anyway, so a thread or a named
 calendar with no account asks every account and takes the one that holds it:
 `thread_home` for a thread, `calendar_home` for a named calendar, and two
-that hold it is refused, never picked between; an event update or delete
+that hold it is refused, never picked between. A calendar's criterion is a
+bare 200 — an empty window is a legitimate answer, so `thread_home`'s
+"returned something" is not available — so it also refuses when any account's
+read failed for a reason other than 400/403/404: a public calendar reads 200
+everywhere, and a transient failure at the true home would otherwise name the
+wrong account. An event update or delete
 still names its account);
 **creates use the default or ask** (`mecha-mail
 default <name>`; with several accounts and none, the error says to *ask the
