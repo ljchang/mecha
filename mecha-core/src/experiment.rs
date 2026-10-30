@@ -485,6 +485,10 @@ impl Fixtures {
                 // A fixture offers every tool it lists: the trial measures
                 // the environment as written.
                 disabled_tools: Vec::new(),
+                // Nor does a fixture classify its tools: they are
+                // undeclared, as any server's are until an operator says.
+                effects: BTreeMap::new(),
+                from_operator: false,
                 owner_zone: None,
             });
         }

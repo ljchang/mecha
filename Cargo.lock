@@ -1696,6 +1696,7 @@ dependencies = [
  "image",
  "libc",
  "mecha-core",
+ "mecha-mail",
  "mecha-slack",
  "ratatui",
  "reqwest",

@@ -58,6 +58,13 @@ pub struct McpClient {
     personas: bool,
     /// Listed tools never offered ([`McpServerConfig::disabled_tools`]).
     disabled_tools: Vec<String>,
+    /// Which first-party server this is, when the operator's own entry runs
+    /// one (`effect::FirstParty::of`); `None` for every other server, and
+    /// for any entry that did not come from the operator's global config.
+    first_party: Option<crate::tool::effect::FirstParty>,
+    /// The operator's classes for this server's tools
+    /// ([`McpServerConfig::effects`]).
+    effects: std::collections::BTreeMap<String, crate::tool::effect::Effect>,
     stdin: tokio::sync::Mutex<Option<ChildStdin>>,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>>,
     next_id: AtomicU64,
@@ -260,6 +267,18 @@ impl McpClient {
             trust_result_claims: cfg.trust_result_claims,
             personas: cfg.personas,
             disabled_tools: cfg.disabled_tools.clone(),
+            // Both from the operator's own entry only: a project layer's
+            // `effects` are stripped at load, and its `command` names no
+            // first-party server however it is spelled.
+            first_party: cfg
+                .from_operator
+                .then(|| crate::tool::effect::FirstParty::of(cfg))
+                .flatten(),
+            effects: if cfg.from_operator {
+                cfg.effects.clone()
+            } else {
+                Default::default()
+            },
             stdin: tokio::sync::Mutex::new(Some(stdin)),
             pending,
             next_id: AtomicU64::new(1),
@@ -506,10 +525,25 @@ impl McpClient {
                     // of #666, pass 4).
                     && !hint("openWorldHint")
                     && self.forced.egress != Egress::Chosen;
+                // mecha's table and the operator's word, the more cautious of
+                // the two. Never the annotations: `readOnlyHint` declares
+                // nothing, and `destructiveHint` / `openWorldHint` reach the
+                // class through `capabilities` below, where they can only add
+                // caution. `workspace` is refused at load (`Config::validate`)
+                // and dropped here too, in case an entry skipped that door.
+                let effect = crate::tool::effect::server_tool_effect(
+                    self.first_party
+                        .and_then(|s| crate::tool::effect::first_party(s, &remote_name)),
+                    self.effects
+                        .get(&remote_name)
+                        .copied()
+                        .filter(|e| *e != crate::tool::effect::Effect::Workspace),
+                );
 
                 Some(Arc::new(McpTool {
                     background,
                     persona: None,
+                    effect,
                     // Only a forced `destructive` contradicts a read-only
                     // claim; the others are orthogonal to it and dropping the
                     // exemption for them was wrong. `untrusted_input` says the
@@ -669,6 +703,9 @@ struct McpTool {
     background: bool,
     /// The persona this form serves, when a persona chat holds it (§9).
     persona: Option<crate::tool::PersonaSelf>,
+    /// Declared by mecha's first-party table or the operator's `effects`,
+    /// never by the server (`tool::effect`).
+    effect: Option<crate::tool::effect::Effect>,
     read_only: bool,
     capabilities: Capabilities,
     local_name: String,
@@ -703,6 +740,10 @@ impl Tool for McpTool {
         // is what most of them exist to do — but not to reach the open world,
         // because assuming otherwise would arm the interlock on every call.
         self.capabilities
+    }
+
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        self.effect
     }
 
     fn fixed_workspace(&self) -> Option<PathBuf> {

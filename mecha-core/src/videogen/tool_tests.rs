@@ -1849,3 +1849,18 @@ fn the_names_are_the_constants() {
     assert_eq!(t.name(), NAME);
     assert_eq!(VideoPromptGuide::default().name(), GUIDE_NAME);
 }
+
+/// A clip is a render, though the tool is `read_only()` and declares no
+/// capability at all: a class derived from either would admit it to a
+/// program (CODE-MODE-DESIGN.md §2). The guide beside it is a read.
+#[test]
+fn a_clip_is_a_render_and_its_guide_a_read() {
+    use crate::tool::effect::{class_of, EffectClass};
+    let t = VideoGenerate::new(VideoConfig::default()).unwrap();
+    assert!(t.read_only());
+    assert_eq!(class_of(&t, false), EffectClass::Render);
+    assert_eq!(
+        class_of(&VideoPromptGuide::default(), false),
+        EffectClass::Read
+    );
+}
