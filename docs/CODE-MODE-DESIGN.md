@@ -75,7 +75,7 @@ existing `AnswerShape` rule.
 
 **A program may call a tool only if it is in the registry the run was
 given, its effect class is `Read` or `ReadThatRecords`, its egress is
-`None`, and it is `read_only()`.** Everything else is not registered in the program at all: not
+`None`, it is not `destructive`, and it is `read_only()`.** Everything else is not registered in the program at all: not
 refused at call time, absent. The registry term matters as much as the
 other two. A subagent's registry is an allowlist, a policy can narrow a
 run's tools, and `mecha eval` throws levers off. A global admitted set
@@ -152,6 +152,15 @@ the call's `ToolOutput::external` and the tool's capabilities.
   is, and bounded the same way: a number carries no instruction. They
   change no label, and they are not counted with `peek`, because the cap
   exists to bound prose.
+- **But `find` and `count` take the program's pattern, so they are an
+  oracle.** A program can learn text a character at a time by asking
+  whether a pattern matches, which a number bounded by an attacker's
+  choice is not. It spends the 2,048 handle-operation budget, not the
+  peek cap, and `peeked_bytes` cannot see it. This is not a taint hole:
+  the read armed the run, and the slice has no sinks. It does mean "prose
+  reaches planning only through `peek`" is the default a program follows,
+  not a property the host enforces, and §10 reads `peeked_bytes` as that,
+  never as proof.
 - **`peek` exists** because RLM roots look at a prefix to learn a format,
   and a program that cannot see its data guesses. It is capped, counted,
   and its output takes the ordinary output budget.
@@ -207,6 +216,15 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
 - **Same model only.** Sub-calls go to the model the run already holds. On
   the router, naming another preset swaps the resident model and evicts
   every slot.
+- **On a remote provider, a handle removes a cap that exists today.** Now,
+  `output_budget_bytes` and the spill rule bound how much of an oversized
+  result ever enters a request. A handle chunked into `llm_map` sends all
+  of it to whatever model the run holds. The provider connection is not a
+  tool, so the interlock never covered it. That is harmless on the local
+  router, which is what this slice is for. On a remote provider it is
+  more of the owner's data leaving the box than the same task sends
+  today. Until the owner rules otherwise, `llm_query` refuses on any
+  provider that is not local, by the same rule as `structured_output`.
 - **`max_tokens` sits above the reasoning budget** for every pass, as the
   local clients already require. A tight allowance for a three-label enum
   with thinking on is the HTTP-200-with-empty-`content` failure, and a
@@ -613,6 +631,8 @@ The predictions to falsify:
 - **R6.** Sub-call thinking, after M0 (§4).
 - **R7.** Any `llm_map` concurrency above one, and how much of
   `router::background_seats` it may draw (§4).
+- **R8.** Whether `llm_query` may run on a remote provider, which sends
+  past today's output cap (§4).
 
 ---
 

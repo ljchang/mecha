@@ -48,8 +48,9 @@ Two readings follow.
   *behaviour*: the 200 tool errors, 164 denials, 64 blocked sends and 11
   `max_turns` runs. None of those has been classified by cause. The 164
   are not all the owner's: `RunStats::tool_denied` counts "a human or a
-  policy refusing", and the split lives only in the result text
-  (`"Denied by the user:"` vs `"Blocked by policy:"`). A
+  policy refusing", and the split lives only in the result text, three
+  ways: `"Denied by the user:"`, `"Blocked by policy:"`, and a `pre_tool`
+  hook's `"Blocked by a hook:"`. A
   failure the harness or prompt causes is cheaper to fix with
   `harness ruminate` than with weights.
 - **The owner-labelled signal is tiny.** Fifteen verified successes, and
