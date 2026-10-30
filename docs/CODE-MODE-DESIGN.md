@@ -47,9 +47,9 @@ existing `AnswerShape` rule.
   `re` (fancy-regex; no `subn`, no `VERBOSE`), `json`, `collections`,
   `itertools`, `datetime`, slicing and string methods. Absent: `enum`,
   `string`, `io`, `operator`.
-- **§3.2 shipped.** `QuarantinedPass::response_schema` exists and every
+- **`AUDIT-RESEARCH.md` §3.2 shipped.** `QuarantinedPass::response_schema` exists and every
   local provider is `structured_output = "llama_json"`.
-- **§3.7 did not.** `agent.rs` was 9,400 lines at the audit; it is 20,039
+- **Its §3.7 did not.** `agent.rs` was 9,400 lines at the audit; it is 20,039
   now. The full split is no longer a sensible prerequisite (§7).
 - **RLM evidence** (`RLM-RESEARCH.md`): the handle carries much of the
   gain (Qwen3-Coder CodeQA 20.0 → 66.0 with no sub-calls), depth above 1
@@ -69,9 +69,14 @@ existing `AnswerShape` rule.
 
 ## 2. The first slice is read-only
 
-**A program may call a tool only if its effect class is `Read` or
-`ReadThatRecords` and its egress is `None`.** Everything else is not
-registered in the program at all: not refused at call time, absent.
+**A program may call a tool only if it is in the registry the run was
+given, its effect class is `Read` or `ReadThatRecords`, and its egress is
+`None`.** Everything else is not registered in the program at all: not
+refused at call time, absent. The registry term matters as much as the
+other two. A subagent's registry is an allowlist, a policy can narrow a
+run's tools, and `mecha eval` throws levers off. A global admitted set
+would let `code` reach a tool the run was never given, which would make it
+a bypass of all three.
 
 The effect class is `ROLLOUT-DESIGN.md` §3.2's closed per-tool axis,
 declared in code for built-in and first-party tools and earned from the
@@ -163,6 +168,11 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
   | record | `{"due": "str[32]", "urgent": bool}` | ≤ 8 fields, no nesting past one level |
   | short text | `str[n]` | n ≤ 2,000 |
 
+- **`str[n]` and record fields of it never cross a trust boundary.**
+  `AnswerShape` deliberately has no bounded-string shape, because
+  "ignore previous instructions" fits in very few characters: a length
+  cap vouches for nothing. Here it is a program-internal shape that
+  changes no label. It must not become a `trusted_output` shape (§6).
 - **`structured_output` must be on.** A provider with it `Disabled` makes
   `llm_query` refuse with a typed error, never fall back to parsing prose
   by hope: the silently-degrading-guard rule.
@@ -201,7 +211,15 @@ can catch:
 | memory, allocations, recursion | monty's limits | the pool worker |
 | `peek` bytes | 16 KB | the host |
 
-Each run's total also draws on its existing `RunContext` budget. The
+Each run's total also draws on its existing `RunContext` budget.
+
+**Stop cancels; it does not wait out the budget.** The run's
+`ToolCtx::cancel` token reaches the pool worker and every in-flight
+`llm_query` and `llm_map` pass. The program stops at its next host call,
+and a worker that does not answer within a grace period is killed (a
+dropped `Checkout` already kills its worker). A cancelled program still
+returns a `tool_result` carrying what it printed so far and a line saying
+it was stopped, because the turn owes a result for every `tool_use` id. The
 budget exists because the failure is known: Qwen3-Coder without a warning
 made thousands of sub-calls. The root's prompt for this tool is written
 for Qwen and tested in eval, never ported from the paper's GPT-5 prompt.
@@ -225,6 +243,14 @@ answer_shape = ["yes", "no", "unclear"]
 
 - **Inside the child**, everything above applies: it may peek, it arms
   honestly, and it has no tool that sends, so arming costs it nothing.
+- **What `code` declares.** Its `Capabilities` are the union over its
+  admitted set (§2) as built for this run, with egress `None` because no
+  sender is admitted. `Subagent::new` derives the parent-facing legs
+  statically from the child's registry, so a profile of
+  `tools = ["code", …]` hands the parent a tool whose `private_data` and
+  `untrusted_input` are those of the reads the program can reach. A `code`
+  that declared `Capabilities::default()` would reopen the laundering hole
+  that derivation's own comment says was closed.
 - **At the boundary**, today's rule applies unchanged: an answer that
   parses as a whole as the declared shape returns to the parent not
   `external`, and private data stays private. The parent's interlock, the
@@ -259,11 +285,13 @@ attacker selects from their own text can be an address; that is a
 ## 7. Where it plugs in
 
 - **A gate, extracted, not the whole of §3.7.** The one prerequisite is
-  that a host call and a model call pass through *one* function:
-  `pre_tool` hooks (fail closed), the interlock against the taint as of
-  that call, the approver where the tool requires it, outbox routing
-  (which no admitted tool hits, but the check is part of the gate), and
-  taint armed from the result. Extract `run_tools`'s per-call body into
+  that a host call and a model call pass through *one* function, in
+  `ARCHITECTURE.md`'s order: the interlock against the taint as of that
+  call, then `pre_tool` hooks (fail closed), then the approver where the
+  tool requires it, then outbox routing (which no admitted tool hits, but
+  the check is part of the gate), then taint armed from the result. The
+  interlock runs first, so a hook can narrow policy but never loosen
+  security. Extract `run_tools`'s per-call body into
   `dispatch.rs` as that function, a pure move verified by a diffed
   `cargo test -- --list`, and leave the rest of §3.7 to its own slices.
 - **The interpreter behind a trait** (`start`, `resume`; `dump`/`load`
@@ -279,9 +307,39 @@ attacker selects from their own text can be an address; that is a
     remains the runner-up for the sink slice.
 - **Output.** Printed output plus the final expression, under
   `output_budget_bytes` and the spill rule, exactly as a tool result.
-- **Recording.** New `RunStats` counters: `programs`, `program_errors`,
-  `subcalls`, `subcall_tokens`, `peeked_bytes`, `budget_stops`. These are
-  a wire format, so unknown fields degrade to `None` on load.
+- **Recording a program's reads, so grounding can find them.** A host
+  call is not a `tool_use`/`tool_result` pair, and a handle keeps its
+  bytes out of the transcript. Without a record, everything that walks
+  `grounding::calls` loses its referent for what a program read:
+  - gossip's citation check;
+  - the outbox's "what is this draft answering" join (`outbox_source.rs`);
+  - the diagnostician's carry-over refusal;
+  - the mismatch pointers;
+  - `attribution.rs`'s pack.
+
+  A draft staged after an `analyst` run would join to nothing. That fails
+  closed, but silently. So:
+  - The `code` tool's output carries its host calls: tool, input, result
+    bytes, `external`, in issue order. The loop writes them to the session
+    file as a `program` record beside the `tool_result`, the same way a
+    compaction writes `rewrite`. The model's context never holds them.
+  - `grounding::calls` reads `program` records as calls nested under the
+    `code` call that made them, so a handle's source and a span inside it
+    dereference.
+  - **Through a subagent there is no child session to hold the record:**
+    a child agent writes no session file today. So the subagent tool's
+    output carries its child's `program` records up, and the parent's
+    session writes them nested under the subagent call. They go in the
+    file, never the parent's context. A draft the parent stages after an
+    `analyst` answer then joins to the threads the child read, not just to
+    the shaped answer.
+  - `replay_run` answers a replayed program's host calls from the same
+    record. Without it, a replay of any session that ran a program
+    diverges at the first host call.
+- **Counters.** New `RunStats` counters: `programs`, `program_errors`,
+  `subcalls`, `subcall_tokens`, `peeked_bytes`, `budget_stops`. Each is an
+  `Option<u32>`, as `context_overflows` is, because a row written before
+  the sensor existed is unknown, not zero.
 
 ---
 
@@ -290,6 +348,17 @@ attacker selects from their own text can be an address; that is a
 1. **The hazard tests fail on the naive build and pass:**
    - A tool outside the admitted set cannot be reached by name, by
      `getattr`, or through `NameLookup` — the soundness test §3.12 named.
+   - A subagent whose profile grants `code` but not `mail_search` cannot
+     reach `mail_search` from a program, though its effect class would
+     admit it. A global admitted set passes the test above and fails this
+     one.
+   - A `tools = ["code", …]` profile's subagent tool declares the
+     `private_data` and `untrusted_input` of the reads its program can
+     reach.
+   - A Stop during a program returns its `tool_result` within the grace
+     period, and no sub-call outlives it.
+   - A draft staged after a program read a thread joins to that thread
+     through `grounding::calls`.
    - Taint is armed before `resume` on a host call whose result is never
      printed.
    - `llm_query` refuses when `structured_output` is disabled.

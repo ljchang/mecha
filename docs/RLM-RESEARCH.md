@@ -191,8 +191,10 @@ Three things follow for mecha:
   *which* of the owner's labels returns — is named in that rule's own
   terms. Letting a model choose the labels per call is an owner ruling.
 - **Pointers never cross as trusted.** "The spans that mention a deadline"
-  returns *where*, never *what*, which keeps prose out of the planner and
-  is something `grounding.rs` can dereference. But an id an attacker
+  returns *where*, never *what*, which keeps prose out of the planner. It
+  is something `grounding.rs` can dereference once a program's reads are
+  recorded where its walk reaches (`CODE-MODE-DESIGN.md` §7), and not
+  before. But an id an attacker
   selects out of their own text can be an address, which is a `Chosen`
   destination by another name.
 
