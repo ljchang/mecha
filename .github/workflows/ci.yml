@@ -315,6 +315,17 @@ jobs:
           MECHA_TEST_REQUIRE_BACKENDS: "1"
         run: cargo test --workspace --locked --test sandbox_backends --test mcp_server --test run_lifecycle --test serve_lifecycle
 
+      # Code mode's interpreter: the pinned monty worker inside bwrap. The
+      # test fetches the worker's wheel itself (`worker::ensure`, sha256-
+      # pinned) into a scratch home, so the provisioning path is exercised
+      # too; `monty` is a cargo feature because monty-pool needs a newer Rust
+      # than the MSRV arm promises.
+      - name: Code-mode interpreter, with skips promoted to failures
+        env:
+          MECHA_TEST_REQUIRE_BACKENDS: "1"
+          MECHA_TEST_FETCH_MONTY: "1"
+        run: cargo test -p mecha-core --locked --features monty --test code_interpreter
+
   # macOS's Seatbelt confinement of the PDF parser, measured on a real Mac:
   # the profile denies a read beside the scratch, a write outside it and the
   # network, and poppler still renders under it. `test (macos-latest, pinned)`

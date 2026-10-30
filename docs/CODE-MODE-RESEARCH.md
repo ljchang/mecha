@@ -13,7 +13,9 @@ is settled in `SANDBOX-RESEARCH.md` and not restated here.
 **Since this pass** (2026-10-30): monty reached 1.0 on 2026-09-25 and
 `monty-pool` ships beside it; Littrs, a candidate this pass missed, is
 weighed in `CODE-MODE-DESIGN.md` §7, which is now the plan. The figures
-below are kept as measured on 2026-09-02.
+below are kept as measured on 2026-09-02. The local measurements this file
+asks for (worker start, per-call overhead) are M1, in `CODE-MODE-DESIGN.md`
+§10, which also records that monty 1.4 *does* have `eval` and `exec`.
 
 **Marks**: ✅ verified against a primary source this pass · 📰 vendor's own
 figure, not reproduced · ❓ inferred, not established.
