@@ -79,7 +79,10 @@ other two. A subagent's registry is an allowlist, a policy can narrow a
 run's tools, and `mecha eval` throws levers off. A global admitted set
 would let `code` reach a tool the run was never given, which would make it
 a bypass of all three. The `read_only()` term is not for safety; §7 says
-what it is for.
+what it is for. And one admission is per *call*, not per tool: a host call
+for which the tool's `needs_a_person` answers (a path outside the jail
+with no grant, through `ToolCtx::ask_for_path`) is refused in the program
+and raises. It never reaches a person (§7).
 
 The effect class is `ROLLOUT-DESIGN.md` §3.2's closed per-tool axis,
 declared in code for built-in and first-party tools and earned from the
@@ -275,7 +278,11 @@ answer_shape = ["yes", "no", "unclear"]
   `tools = ["code", …]` hands the parent a tool whose `private_data` and
   `untrusted_input` are those of the reads the program can reach. A `code`
   that declared `Capabilities::default()` would reopen the laundering hole
-  that derivation's own comment says was closed.
+  that derivation's own comment says was closed. Strictly, §2's registry
+  term already puts the reads in the child's registry, where the
+  derivation looks, so this bullet is belt and braces there. The
+  declaration does its real work in `dispatch`'s precomputed `turn_taint`
+  (§7).
 - **At the boundary**, today's rule applies unchanged: an answer that
   parses as a whole as the declared shape returns to the parent not
   `external`, and private data stays private. The parent's interlock, the
@@ -325,16 +332,22 @@ attacker selects from their own text can be an address; that is a
     calls arrive there.
   - **No approver prompt mid-program.** The loop approves sequentially,
     then executes concurrently, and a program runs inside the concurrent
-    phase. A host call that reached the approver would put a human prompt
-    behind tools already executing, under a 300 s clock. The admission
-    rule's `read_only()` term (§2) makes that impossible by construction:
-    an admitted tool skips the approver. A configured `prompt` policy rule
-    that matches a host call refuses it in the program, never prompts.
+    phase. A host call that reached a person would put a prompt behind
+    tools already executing, under a 300 s clock. Two routes lead there,
+    and `read_only()` closes only one of them. It skips the rule-free
+    approver branch. But the branch above it fires on `needs_a_person`,
+    which `fs_read`, `fs_list` and `document_read` (three of §2's set)
+    implement through `ToolCtx::ask_for_path` for a path outside the jail.
+    So the host-call path refuses both: a call `needs_a_person` would
+    escalate, and a call a `prompt` policy rule matches, each raise in the
+    program and never prompt. Existing grants still resolve as they do
+    for a model call.
   - **The turn's taint forecast stays honest.** `dispatch` precomputes
     `turn_taint` from declared capabilities before anything executes, to
     close "read a secret and send it in the same turn". A host call's
     taint arriving mid-turn does not defeat that, because `code` declares
-    the union of its reads (§6).
+    the union of its reads (§6). This, and not the subagent derivation, is
+    where the declaration is load-bearing.
 
   Moving `dispatch_one` into `dispatch.rs` is optional tidying, a pure
   move checked by a diffed `cargo test -- --list`. It is not a
@@ -360,11 +373,13 @@ attacker selects from their own text can be an address; that is a
   call is not a `tool_use`/`tool_result` pair, and a handle keeps its
   bytes out of the transcript. Without a record, everything that walks
   `grounding::calls` loses its referent for what a program read:
-  - gossip's citation check;
+  - gossip's citation check (`gossip.rs`);
   - the outbox's "what is this draft answering" join (`outbox_source.rs`);
-  - the diagnostician's carry-over refusal;
-  - the mismatch pointers;
-  - `attribution.rs`'s pack.
+  - `attribution.rs`'s pack;
+  - appraisal's evidence (`appraisal_store.rs`);
+  - persona citations (`persona/cite.rs`);
+  - and, outside the walk, the diagnostician's carry-over refusal, which
+    reads tool results directly.
 
   A draft staged after an `analyst` run would join to nothing. That fails
   closed, but silently. So:
@@ -373,20 +388,24 @@ attacker selects from their own text can be an address; that is a
     file as a `program` record beside the `tool_result`, the same way a
     compaction writes `rewrite`. The model's context never holds them.
   - **Which list carries them, exactly.** `grounding::calls` takes
-    `&[Message]` and borrows each `Call` out of it. Four of its readers
-    (`gossip::evidence_from`, `attribution::Given::before`,
-    `persona::cite`, and the live half of `outbox_source`) hold a live
-    conversation, where the only message list in scope *is* the model's
-    context. `Session::messages_ever` admits only `Record::Message`. So the
-    records cannot ride in the message list without entering the context.
+    `&[Message]` and borrows each `Call` out of it. Several of its readers
+    hold a live conversation, where the only message list in scope *is*
+    the model's context. `Session::messages_ever` admits only records that
+    yield messages (`Record::Message`, `Record::Rewrite`,
+    `Record::Extend`). So the records cannot ride in the message list
+    without entering the context.
     They live on `Conversation` beside the messages, as taint does: a
     `program_calls` list, persisted as `program` records and loaded by
     `messages_ever`'s sibling.
   - **That is a change to `grounding.rs`, not a record format.** The walk
     gains a second source (`&[ProgramCall]`), and `Call` gains an owned,
     nested variant under the `code` call that made it, so a handle's
-    source and a span inside it dereference. All five call sites change
-    to pass it. §8's join test is what proves it.
+    source and a span inside it dereference. The five readers of the
+    walk change to pass it: `attribution.rs`, `gossip.rs`,
+    `outbox_source.rs`, `appraisal_store.rs` and `persona/cite.rs`. A
+    sixth edit is outside it: the diagnostician's carry-over check in
+    `mecha-cli` reads `Block::ToolResult` out of the conversation directly.
+    §8's join test is what proves the walk.
   - **Through a subagent there is no child session to hold the record:**
     a child agent writes no session file today. So the subagent tool's
     output carries its child's `program` records up, and the parent's
@@ -413,9 +432,12 @@ attacker selects from their own text can be an address; that is a
      reach `mail_search` from a program, though its effect class would
      admit it. A global admitted set passes the test above and fails this
      one.
-   - A `tools = ["code", …]` profile's subagent tool declares the
-     `private_data` and `untrusted_input` of the reads its program can
-     reach.
+   - A turn that calls `code` (whose program reads mail) and a `Chosen`
+     sender in the same assistant message has the sender refused by the
+     precomputed `turn_taint`, because `code` declared the union of its
+     reads. With `Capabilities::default()` on `code`, this test fails.
+   - A program's `fs_read` of a path outside the jail with no grant
+     raises in the program, and no prompt reaches a person.
    - A Stop during a program returns its `tool_result` within the grace
      period, and no sub-call outlives it.
    - A draft staged after a program read a thread joins to that thread

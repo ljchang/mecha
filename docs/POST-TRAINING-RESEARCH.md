@@ -45,12 +45,15 @@ Two readings follow.
 - **Format is solved.** Two malformed-argument calls in 2,797. The
   documented benefit of SFT for tool use is mostly format and schema
   adherence, and here it has nowhere left to go. Training has to target
-  *behaviour*: the 200 tool errors, 164 owner denials, 64 blocked sends and
-  11 `max_turns` runs. None of those has been classified by cause. A
+  *behaviour*: the 200 tool errors, 164 denials, 64 blocked sends and 11
+  `max_turns` runs. None of those has been classified by cause. The 164
+  are not all the owner's: `RunStats::tool_denied` counts "a human or a
+  policy refusing", and the split lives only in the result text
+  (`"Denied by the user: "` vs `"Blocked by policy:"`). A
   failure the harness or prompt causes is cheaper to fix with
   `harness ruminate` than with weights.
 - **The owner-labelled signal is tiny.** Fifteen verified successes, and
-  the 164 denials, are not a training set. They are an evaluation set and
+  the human share of the 164 denials, are not a training set. They are an evaluation set and
   a source of preference pairs at the decision points
   `mecha sessions compare` already extracts. The training data has to be
   manufactured (§4).
@@ -111,8 +114,11 @@ Three conclusions carry to mecha:
   keep what the case graders pass (rejection sampling), and add
   Harness-Zero corrections with a stronger model reviewing each step in
   mecha's own tool schema. Real mail never goes to a teacher API.
-- **The owner's decision points as preference pairs.** A denial, a steer,
-  a rewritten draft: `sessions compare` already finds them. Too few for
+- **The owner's decision points as preference pairs.** A human denial, a
+  steer, a rewritten draft: `sessions compare` already finds them. A
+  denial counts only when it carries `"Denied by the user: "`, as
+  `pointwise.rs` keys it. A policy block is the harness working, never a
+  correction to train on. Too few for
   SFT; enough for a held-out evaluation and possibly a small DPO pass.
 - **Filtered by recorded taint, as `learn` is.** Weights are a
   longer-lived injection path than a learned rule, which rides in one
@@ -180,7 +186,8 @@ Three conclusions carry to mecha:
 
 ## 7. The path, in order
 
-0. **Classify the failures.** The 200 tool errors, 164 denials, 64 blocked
+0. **Classify the failures.** The 200 tool errors, 164 denials (split
+   human from policy first), 64 blocked
    sends and 11 `max_turns` runs, by cause: harness, prompt, tool, or
    model. This costs nothing and decides whether training has a target.
 1. **Build the data** from fixtures (§4), around 1–5k trajectories plus the
