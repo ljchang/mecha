@@ -818,6 +818,21 @@ impl Evidence {
         self
     }
 
+    /// Every session the brief showed the proposer individually: an episode
+    /// digest, or an appraisal note. A candidate's held-out slice is drawn
+    /// from none of them (R36, 2026-10-29). Sorted and deduplicated.
+    pub fn shown_sessions(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .digests
+            .iter()
+            .map(|d| d.session_id().to_string())
+            .chain(self.appraisals.iter().map(|a| a.session_id().to_string()))
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
     /// The appraisal text the brief carries, one string per note — what a
     /// proposal is checked against beside the tool results.
     pub fn appraisal_sources(&self) -> Vec<String> {
@@ -1363,7 +1378,7 @@ const HISTORY_GROUPS: &[(&[HistoryVerdict], &str)] = &[
         ],
         "measured to make no difference, or judged by the owner to do nothing — the \
          instrument that measured them has not changed since, so do not propose these \
-         again yet",
+         again yet, nor another value of the same numeric setting",
     ),
     (
         &[HistoryVerdict::NoHeadroom],
@@ -1385,7 +1400,8 @@ const HISTORY_GROUPS: &[(&[HistoryVerdict], &str)] = &[
     ),
     (
         &[HistoryVerdict::Staged],
-        "waiting on a person — do not propose these again while they wait",
+        "waiting on a person — do not propose these again while they wait, nor another \
+         value of the same numeric setting",
     ),
 ];
 
@@ -3054,6 +3070,28 @@ mod digest_tests {
             &messages,
             Some(&stats(crate::agent::StopCause::Completed)),
         )
+    }
+
+    /// Held out means never shown, in any form: a session the brief showed
+    /// as a digest or as an appraisal note is not held out, each is counted
+    /// once. Fails if only the digests are counted.
+    #[test]
+    fn every_session_the_brief_showed_is_shown_not_held_out() {
+        let mut e = Evidence::default().with_digests(vec![quiet("sess-d")]);
+        e.appraisals = vec![AppraisalNote {
+            session_id: "sess-a".into(),
+            date: "2026-01-01".into(),
+            interpretation: String::new(),
+            judged: Vec::new(),
+            lessons: Vec::new(),
+            clipped: false,
+        }];
+        e.appraisals.push(AppraisalNote {
+            session_id: "sess-d".into(),
+            ..e.appraisals[0].clone()
+        });
+        assert_eq!(e.shown_sessions(), vec!["sess-a", "sess-d"]);
+        assert!(Evidence::default().shown_sessions().is_empty());
     }
 
     /// Episodes with something to look at lead, the bound holds, and what it

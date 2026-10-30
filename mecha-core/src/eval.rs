@@ -1417,6 +1417,7 @@ mod tests {
                 input: json!({}),
                 is_error: false,
                 denied: false,
+                blocked: false,
                 unknown: false,
                 staged: false,
             };
@@ -1435,6 +1436,7 @@ mod tests {
             input: json!({"path": "a.rs"}),
             is_error: true,
             denied: false,
+            blocked: false,
             unknown: false,
             staged: false,
         };
@@ -1525,6 +1527,7 @@ mod tests {
             input,
             is_error: false,
             denied: false,
+            blocked: false,
             unknown: false,
             staged: false,
         }

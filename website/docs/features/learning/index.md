@@ -31,6 +31,7 @@ is the undo, one rule at a time, and `mecha rules restore` reverses it.
 | `rules/<domain>.user.toml` | Yours. Never written by code, only read |
 | `rules/<domain>.learned.toml` | Consolidation's output — edit or delete freely |
 | `validations.jsonl` | Every attempted probe outcome, keyed to the rule set measured |
+| `reflector_replies.jsonl` | One row per reflector reply (lesson, skip, unusable): ids, the lesson's category, the evidence shown and the prompt's hash, never text |
 | `validation-attempts.jsonl` | Input identities, reasons and arm receipts used to schedule retries |
 | `runs.jsonl` | One audit record per consolidation pass |
 | `passes.jsonl` | One line per pass that wrote to the store: when, and what it counted — never content |

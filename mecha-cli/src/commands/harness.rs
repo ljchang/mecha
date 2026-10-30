@@ -325,9 +325,19 @@ async fn ruminate(
             .is_some_and(|(_, _, with)| *with > 0)
     };
     if let Some(prior) = forbidding_prior(&store.all()?, &proposal.change, has_headroom) {
+        let same = mecha_core::harness::canonical_change(&prior.change)
+            == mecha_core::harness::canonical_change(&proposal.change);
         println!(
-            "the diagnostician re-derived `{}`, already on file as {} ({}) — nothing new tonight",
-            proposal.change, prior.id, prior.status
+            "the diagnostician {} `{}`, already on file as {} (`{}`, {}) — nothing new tonight",
+            if same {
+                "re-derived"
+            } else {
+                "proposed another value of a setting held by"
+            },
+            proposal.change,
+            prior.id,
+            prior.change,
+            prior.status
         );
         return Ok(());
     }
@@ -348,6 +358,7 @@ async fn ruminate(
         reason: None,
         rejection: None,
         cites: proposal.cites.as_ref().map(ToString::to_string),
+        shown: Some(evidence.shown_sessions()),
     };
 
     println!("── candidate {} ──", cand.id);
@@ -520,10 +531,12 @@ fn no_served_runs(model: &str, from_workspace: Option<&std::path::Path>) -> Stri
     )
 }
 
-/// A record of the same change that forbids proposing it again, if any.
+/// A record that forbids proposing this change, if any.
 ///
 /// Compared on the canonical spec when the change parses, so spacing
-/// differences cannot re-open a rejection. **Only a prior that forbids a
+/// differences cannot re-open a rejection; and a different value of a
+/// setting a record still holds is forbidden too
+/// ([`mecha_core::harness::setting_holders`]). **Only a prior that forbids a
 /// retry stops it** (P1): this used to stop any re-derivation of anything on
 /// file, so a change the owner had marked "the measurement could not tell" —
 /// which the brief now invites back — would have been refused the night it
@@ -544,11 +557,20 @@ fn forbidding_prior<'a>(
     let new_spec = mecha_core::harness::canonical_change(change);
     // Each record against the metric *it* predicted — what `history_lines`
     // reads too, so the brief and this check cannot disagree about one
-    // record (found on review of #717).
-    on_file.iter().find(|c| {
-        mecha_core::harness::canonical_change(&c.change) == new_spec
-            && c.forbids_retry(has_headroom(c.metric))
-    })
+    // record (found on review of #717). The same change first, so the
+    // record named is the one that re-derives it; then a held setting.
+    let held = mecha_core::harness::setting_of(change);
+    on_file
+        .iter()
+        .find(|c| {
+            mecha_core::harness::canonical_change(&c.change) == new_spec
+                && c.forbids_retry(has_headroom(c.metric))
+        })
+        .or_else(|| {
+            mecha_core::harness::setting_holders(on_file)
+                .into_iter()
+                .find(|h| h.held_setting() == held)
+        })
 }
 
 /// The draw's seed, off the candidate id rather than the clock: re-measuring
@@ -1037,6 +1059,13 @@ async fn measure(
     // re-measurement draws the same points and reuses their comparisons —
     // and not paid for at all when no point-wise outcome could change the
     // verdict (a numeric rejection on a regression).
+    // The episode the proposal cited, as `check_citation` stored it:
+    // `<session id> #<call>`.
+    let origin = cand
+        .cites
+        .as_deref()
+        .and_then(|c| c.rsplit_once(" #"))
+        .map(|(episode, _)| episode.to_string());
     let evidence = if mecha_core::candidate::pointwise_can_change(&numeric) {
         // **A point-wise pass that fails is not a failed measurement.** The
         // whole-session replay above is already paid for; an unwritable
@@ -1055,6 +1084,8 @@ async fn measure(
             crate::pointwise_pass::CandidateScope {
                 workspace,
                 sessions,
+                origin: origin.as_deref(),
+                shown: cand.shown.as_deref(),
             },
         )
         .await
@@ -2016,6 +2047,7 @@ mod tests {
             reason: None,
             rejection,
             cites: None,
+            shown: None,
         }
     }
 
@@ -2066,6 +2098,36 @@ mod tests {
         assert!(forbidding_prior(on_file, "compact_at_tokens=16384", turns_only).is_none());
         let others_only = |m| m != mecha_core::candidate::Metric::Turns;
         assert!(forbidding_prior(on_file, "compact_at_tokens=16384", others_only).is_some());
+    }
+
+    /// The nightly stepped `max_turns` through 5, 4, 20, 100, 200, 60 and 25,
+    /// each staged or tied for the same reason: the ban was on the exact
+    /// `KEY=VALUE`. Fails on the old check, which matched the whole spec.
+    #[test]
+    fn a_held_setting_is_not_proposed_at_another_value() {
+        let mut staged = rejected("hc-d", "max_turns=20", None);
+        staged.status = STATUS_STAGED.into();
+        let on_file = std::slice::from_ref(&staged);
+        assert_eq!(
+            forbidding_prior(on_file, "max_turns=25", |_| true).map(|c| c.id.as_str()),
+            Some("hc-d"),
+            "a setting waiting on a person is not proposed at a neighbouring value"
+        );
+        assert!(
+            forbidding_prior(on_file, "compact_at_tokens=14336", |_| true).is_none(),
+            "another setting is another question"
+        );
+
+        // Measured to do nothing on an instrument that has not changed.
+        let no_effect = rejected("hc-e", "max_turns=100", Some(Rejection::NoEffect));
+        assert!(forbidding_prior(&[no_effect], "max_turns=60", |_| true).is_some());
+
+        // A harm is about one value: `max_turns=3` harmful says nothing of 30.
+        let harmful = rejected("hc-f", "max_turns=3", Some(Rejection::Harmful));
+        assert!(forbidding_prior(&[harmful], "max_turns=30", |_| true).is_none());
+        // And an unmeasured rejection holds nothing at all.
+        let unmeasured = rejected("hc-g", "max_turns=5", Some(Rejection::Unmeasured));
+        assert!(forbidding_prior(&[unmeasured], "max_turns=6", |_| true).is_none());
     }
 
     fn run_stats(tool_calls: u32, turns: u32) -> mecha_core::session::RunStats {
@@ -2180,6 +2242,7 @@ mod tests {
                 undecided: 0,
                 lost_baseline: 0,
                 lost_candidate: 4,
+                ..Default::default()
             },
             basis: Basis::Pointwise,
             not_run: None,

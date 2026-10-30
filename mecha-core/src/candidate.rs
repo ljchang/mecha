@@ -780,15 +780,24 @@ pub fn judge_slices<T>(
 /// against a candidate (R36). A decided point is one where both arms reached
 /// a pass or a fail under a structural validator; an inconclusive or unposed
 /// one says nothing either way. Four matches [`MIN_HOLDOUT_PAIRS`] — the
-/// smallest slice this gate already lets confirm anything — and there is no
-/// separate holdout (R36): every point is graded against the owner's own
-/// recorded verdict, which nothing selected.
+/// smallest slice this gate already lets confirm anything. It counts the
+/// **held-out** points: sessions the proposer's brief never showed. R36 first
+/// said there was no separate holdout, because every point was graded against
+/// the owner's recorded verdict, which nothing selected; a structural
+/// validator's point has no owner act in it, so the warrant became "never
+/// shown to the proposer" (ruled 2026-10-29).
 pub const MIN_DECIDED_POINTS: usize = 4;
 
 /// Points a candidate is compared at in one measurement (R36): 2d-1's
 /// default budget, so a measured candidate costs at most what one nightly
 /// `sessions compare` pass does.
 pub const POINTS_PER_CANDIDATE: usize = crate::pointwise::DEFAULT_POINTS;
+
+/// Points compared at the candidate's **origin** episode, beside
+/// [`POINTS_PER_CANDIDATE`] held-out ones: the origin is one episode, so a
+/// couple of points is all it can pose, and they do not spend the held-out
+/// budget.
+pub const ORIGIN_POINTS: usize = 2;
 
 /// What a candidate's point-wise comparison found, counted over the points
 /// driven for it: at each, the baseline arm (the run's recorded config) and
@@ -818,6 +827,18 @@ pub struct PointwiseTally {
     pub lost_baseline: usize,
     #[serde(default)]
     pub lost_candidate: usize,
+    /// The same three counts at the **origin**: the episode the proposal
+    /// cited, which the proposer was shown. Kept apart from the fields above
+    /// (the held-out slice) because the two answer different questions —
+    /// "does it fix what prompted it" and "does it break anything it was not
+    /// shown". A record written before the split has none, and reads as an
+    /// origin nothing was decided at.
+    #[serde(default)]
+    pub origin_decided: usize,
+    #[serde(default)]
+    pub origin_candidate_only: usize,
+    #[serde(default)]
+    pub origin_baseline_only: usize,
 }
 
 /// Which way a point-wise comparison went (R36).
@@ -856,6 +877,52 @@ impl PointwiseTally {
         }
     }
 
+    /// Count one compared point at the origin episode.
+    pub fn count_origin(
+        &mut self,
+        baseline: crate::comparison::Outcome,
+        candidate: crate::comparison::Outcome,
+    ) {
+        use crate::comparison::Outcome::{Fail, Pass};
+        match (baseline, candidate) {
+            (Pass, Fail) => {
+                self.origin_decided += 1;
+                self.origin_baseline_only += 1;
+            }
+            (Fail, Pass) => {
+                self.origin_decided += 1;
+                self.origin_candidate_only += 1;
+            }
+            (Pass, Pass) | (Fail, Fail) => self.origin_decided += 1,
+            _ => self.undecided += 1,
+        }
+    }
+
+    /// Which way the origin went: `For` when the candidate passed where the
+    /// baseline failed more often than the reverse. One decided point is
+    /// enough, because the origin is one episode and there is no floor to
+    /// reach; nothing decided there is `Undecided`, never a pass.
+    pub fn origin_verdict(&self) -> PointwiseVerdict {
+        if self.origin_decided == 0 {
+            return PointwiseVerdict::Undecided;
+        }
+        match self.origin_candidate_only.cmp(&self.origin_baseline_only) {
+            std::cmp::Ordering::Greater => PointwiseVerdict::For,
+            std::cmp::Ordering::Less => PointwiseVerdict::Against,
+            std::cmp::Ordering::Equal => PointwiseVerdict::Undecided,
+        }
+    }
+
+    /// Whether the origin lost firmly enough to reject: two decided points,
+    /// more baseline-only than candidate-only passes. One decided point is
+    /// not enough — the arms are sampled, and a single flaky pass-to-fail
+    /// must not end a candidate; it reaches a person instead.
+    pub fn origin_rejects(&self) -> bool {
+        self.origin_decided >= 2 && self.origin_verdict() == PointwiseVerdict::Against
+    }
+
+    /// The held-out slice's verdict: [`MIN_DECIDED_POINTS`] decided, and a
+    /// strict majority one way.
     pub fn verdict(&self) -> PointwiseVerdict {
         if self.decided < MIN_DECIDED_POINTS {
             return PointwiseVerdict::Undecided;
@@ -895,19 +962,31 @@ pub fn pointwise_can_change(numeric: &Judgement) -> bool {
         && matches!(numeric.disposition, Disposition::Reject(_)))
 }
 
-/// R26's acceptance rule as R36 refines it — pure, like the rest of the gate:
+/// R26's acceptance rule as R36 refines it, with the origin/held-out split
+/// (ruled 2026-10-29) — pure, like the rest of the gate:
 ///
-/// 1. **Point-wise for, and the numbers held** → `Accept`, when the class
-///    may be accepted by measurement at all; a `Security` or `Architecture`
-///    change still `Propose`s however it scored (a lane must not promote
-///    itself — the same `auto_acceptable` the numeric gate asks). The numbers "hold" when [`Guard::Held`]: nothing got worse,
-///    even if they did not beat the original. A regression
-///    ([`Guard::Regressed`]) rejects — the guard against winning a verdict
-///    by doing less — and a new cost or too few episodes to rule one out
-///    reaches a person.
-/// 2. **Point-wise against** → `Reject`, however the numbers came out.
-/// 3. **Point-wise undecided** → the numeric gate's verdict, unchanged,
-///    recorded as [`Basis::NumericOnly`].
+/// A candidate must **win where it came from and break nothing it was not
+/// shown.** The origin is the episode the proposal cited; the held-out slice
+/// is drawn from sessions the proposer's brief never showed.
+///
+/// 1. **Held-out against** → `Reject`, however the numbers came out. **Origin
+///    against** → `Reject` when two points decided it
+///    ([`PointwiseTally::origin_rejects`]); on a single decided point the
+///    arms' sampling noise is too likely, so it reaches a person — unless
+///    the numbers already rejected on a regression, which stands.
+/// 2. **Origin undecided** → the numeric gate's verdict, unchanged,
+///    recorded as [`Basis::NumericOnly`] (R36's rule 3, and the 2026-08-22
+///    auto-accept of config rumination, are kept). Winning nowhere is not
+///    winning. **One exception:** a numeric `Accept` over any held-out
+///    regression becomes a `Propose`; a change must not introduce one.
+/// 3. **Origin for** → `Accept` only when every other thing holds: the
+///    numbers held ([`Guard::Held`]), the class may be accepted by
+///    measurement at all (a `Security` or `Architecture` change still
+///    `Propose`s however it scored), no arm was lost, at least
+///    [`MIN_DECIDED_POINTS`] held-out points decided, and **not one of them
+///    regressed**. Ties on held-out are fine: most held-out episodes do not
+///    contain the failure a change targets. Otherwise it reaches a person,
+///    and a numeric regression rejects.
 pub fn combine(
     class: ChangeClass,
     numeric: Judgement,
@@ -915,51 +994,97 @@ pub fn combine(
 ) -> (Judgement, Basis) {
     let p = pointwise;
     let points = format!(
-        "{} candidate-only and {} baseline-only pass(es) over {} decided point(s)",
-        p.candidate_only, p.baseline_only, p.decided
+        "origin {} candidate-only and {} baseline-only over {} decided; held-out {} \
+         candidate-only and {} baseline-only over {} decided",
+        p.origin_candidate_only,
+        p.origin_baseline_only,
+        p.origin_decided,
+        p.candidate_only,
+        p.baseline_only,
+        p.decided
     );
-    let disposition = match (pointwise.verdict(), numeric.guard) {
-        (PointwiseVerdict::Undecided, _) => return (numeric, Basis::NumericOnly),
-        (PointwiseVerdict::Against, _) => Disposition::Reject(format!(
-            "lost point-wise ({points}): at the owner's own decision points the current \
-             harness did what the owner decided more often than the candidate did"
-        )),
-        (PointwiseVerdict::For, Guard::Regressed(r)) => Disposition::Reject(format!(
-            "won point-wise ({points}) but the numeric comparison regressed ({r:?}; work {} \
-             → {} tool calls, selection {}+ {}- {}=, holdout {}+ {}- {}=): a verdict won by \
-             doing less is not a win (R26)",
-            numeric.work_baseline,
-            numeric.work_candidate,
-            numeric.selection.wins,
-            numeric.selection.losses,
-            numeric.selection.ties,
-            numeric.holdout.wins,
-            numeric.holdout.losses,
-            numeric.holdout.ties,
-        )),
-        (PointwiseVerdict::For, Guard::NewCost(m)) => Disposition::Propose(format!(
-            "won point-wise ({points}), but {m:?} rose from nothing across the replayed \
-             episodes — the intended effect for some changes and a regression for others"
-        )),
-        (PointwiseVerdict::For, Guard::Unmeasured) => Disposition::Propose(format!(
-            "won point-wise ({points}), but too few episodes paired to rule a numeric \
-             regression out"
-        )),
-        (PointwiseVerdict::For, Guard::Held) if !class.auto_acceptable() => {
-            Disposition::Propose(format!(
-                "won point-wise ({points}) with no numeric regression, but a {class:?} change \
-                 is a person's decision however it scored"
-            ))
+    let (origin, heldout) = (p.origin_verdict(), p.verdict());
+    let disposition = if heldout == PointwiseVerdict::Against {
+        Disposition::Reject(format!(
+            "lost on held-out episodes ({points}): where the proposer was shown nothing, the \
+             current harness did what the owner decided more often than the candidate did"
+        ))
+    } else if p.origin_rejects() {
+        Disposition::Reject(format!(
+            "lost at the episode it came from ({points}): it made the failure it cites worse"
+        ))
+    } else if origin == PointwiseVerdict::Against {
+        // A numeric rejection on a regression stands: one flaky origin point
+        // must not turn it into a proposal.
+        if matches!(numeric.guard, Guard::Regressed(_))
+            && matches!(numeric.disposition, Disposition::Reject(_))
+        {
+            return (numeric, Basis::NumericOnly);
         }
-        (PointwiseVerdict::For, Guard::Held) if p.lost_candidate > 0 => {
+        Disposition::Propose(format!(
+            "lost at the episode it came from on a single decided point ({points}): one sampled \
+             pass-to-fail is too little to reject on, and too much to accept over"
+        ))
+    } else if origin != PointwiseVerdict::For {
+        // Nothing won at the origin leaves the numbers' verdict — but not an
+        // accept over a held-out regression: a change must not introduce
+        // one, whatever the floor or the tie says of the tally (found by the
+        // Codex review of the R36 amendment). Only an accept is held back;
+        // a numeric rejection or proposal stands as it was.
+        if numeric.disposition == Disposition::Accept && p.baseline_only > 0 {
             Disposition::Propose(format!(
-                "won point-wise ({points}) with no numeric regression, but {} point(s) lost the \
-                 candidate arm — the survivors may be only the points where the change did \
+                "the numbers accepted it and nothing was won at its origin ({points}), but it \
+                 regressed {} held-out point(s) — a change that breaks something it was not \
+                 shown is a person's decision",
+                p.baseline_only
+            ))
+        } else {
+            return (numeric, Basis::NumericOnly);
+        }
+    } else {
+        match numeric.guard {
+            Guard::Regressed(r) => Disposition::Reject(format!(
+                "won at its origin ({points}) but the numeric comparison regressed ({r:?}; work \
+                 {} → {} tool calls, selection {}+ {}- {}=, holdout {}+ {}- {}=): a verdict won \
+                 by doing less is not a win (R26)",
+                numeric.work_baseline,
+                numeric.work_candidate,
+                numeric.selection.wins,
+                numeric.selection.losses,
+                numeric.selection.ties,
+                numeric.holdout.wins,
+                numeric.holdout.losses,
+                numeric.holdout.ties,
+            )),
+            Guard::NewCost(m) => Disposition::Propose(format!(
+                "won at its origin ({points}), but {m:?} rose from nothing across the replayed \
+                 episodes — the intended effect for some changes and a regression for others"
+            )),
+            Guard::Unmeasured => Disposition::Propose(format!(
+                "won at its origin ({points}), but too few episodes paired to rule a numeric \
+                 regression out"
+            )),
+            Guard::Held if !class.auto_acceptable() => Disposition::Propose(format!(
+                "won at its origin ({points}) with no numeric regression, but a {class:?} change \
+                 is a person's decision however it scored"
+            )),
+            Guard::Held if p.lost_candidate > 0 => Disposition::Propose(format!(
+                "won at its origin ({points}) with no numeric regression, but {} point(s) lost \
+                 the candidate arm — the survivors may be only the points where the change did \
                  nothing unusual",
                 p.lost_candidate
-            ))
+            )),
+            Guard::Held if p.decided < MIN_DECIDED_POINTS => Disposition::Propose(format!(
+                "won at its origin ({points}), but fewer than {MIN_DECIDED_POINTS} held-out \
+                 points decided, so nothing it was not shown confirms it"
+            )),
+            Guard::Held if p.baseline_only > 0 => Disposition::Propose(format!(
+                "won at its origin ({points}), but it regressed {} held-out point(s) — a change \
+                 that breaks something it was not shown is a person's decision",
+                p.baseline_only
+            )),
+            Guard::Held => Disposition::Accept,
         }
-        (PointwiseVerdict::For, Guard::Held) => Disposition::Accept,
     };
     (
         Judgement {
@@ -1758,6 +1883,13 @@ mod r36_tests {
         t
     }
 
+    /// The tally with one point won at the origin: the candidate passed
+    /// where the baseline failed at the episode the proposal cited.
+    fn won_at_origin(mut t: PointwiseTally) -> PointwiseTally {
+        t.count_origin(Outcome::Fail, Outcome::Pass);
+        t
+    }
+
     /// One rejected-draft point, graded by the real structural validator.
     fn rejected_draft() -> ProbePoint {
         ProbePoint {
@@ -1785,6 +1917,7 @@ mod r36_tests {
                 ..RunStats::default()
             },
             call_base: 2,
+            decision_turn_calls: None,
         }
     }
 
@@ -1804,6 +1937,7 @@ mod r36_tests {
             input: json!({"to": "cleo@example.invalid", "body": "Q3 is done."}),
             is_error: false,
             denied: false,
+            blocked: false,
             unknown: false,
             staged: true,
         }]);
@@ -1817,11 +1951,16 @@ mod r36_tests {
                 Outcome::from(&verdict(&does_nothing, &point)),
             );
         }
+        points.count_origin(
+            Outcome::from(&verdict(&redrafts, &point)),
+            Outcome::from(&verdict(&does_nothing, &point)),
+        );
         assert_eq!(
             points.verdict(),
             PointwiseVerdict::For,
             "it wins every point"
         );
+        assert_eq!(points.origin_verdict(), PointwiseVerdict::For);
 
         // Fewer turns — the metric it predicted — bought with a fifth of the
         // work on every replayed episode.
@@ -1855,7 +1994,7 @@ mod r36_tests {
         let (combined, basis) = combine(ChangeClass::Config, numeric, &tally(1, 3, 1));
         assert_eq!(basis, Basis::Pointwise);
         assert!(
-            matches!(combined.disposition, Disposition::Reject(ref why) if why.contains("lost point-wise")),
+            matches!(combined.disposition, Disposition::Reject(ref why) if why.contains("lost on held-out")),
             "{:?}",
             combined.disposition
         );
@@ -1882,19 +2021,120 @@ mod r36_tests {
             &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (11, 6)),
         );
         assert!(matches!(rejected.disposition, Disposition::Reject(_)));
-        for numeric in [accepted, rejected] {
-            for undecided in [
-                PointwiseTally::default(),
-                tally(3, 0, 0),
-                tally(2, 2, 3),
-                tally(0, 0, 8),
-            ] {
+        for numeric in [accepted.clone(), rejected] {
+            for undecided in [PointwiseTally::default(), tally(3, 0, 0), tally(0, 0, 8)] {
                 assert_eq!(undecided.verdict(), PointwiseVerdict::Undecided);
                 let (combined, basis) = combine(ChangeClass::Config, numeric.clone(), &undecided);
                 assert_eq!(basis, Basis::NumericOnly);
                 assert_eq!(combined.disposition, numeric.disposition);
             }
         }
+    }
+
+    /// A numeric accept does not survive a held-out regression when nothing
+    /// was won at the origin: a tie, or a tally under the floor, is still a
+    /// point where the baseline passed and the candidate failed. A numeric
+    /// reject stands. Fails on the old fall-through.
+    #[test]
+    fn a_numeric_accept_does_not_survive_a_held_out_regression() {
+        let accepted = judge_drawn(
+            ChangeClass::Config,
+            &turns(),
+            &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (10, 4)),
+            &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (10, 4)),
+        );
+        assert_eq!(accepted.disposition, Disposition::Accept);
+        for t in [tally(2, 2, 3), tally(0, 1, 0), tally(3, 1, 0)] {
+            assert_eq!(t.origin_verdict(), PointwiseVerdict::Undecided);
+            let (combined, _) = combine(ChangeClass::Config, accepted.clone(), &t);
+            assert!(
+                matches!(combined.disposition, Disposition::Propose(ref why) if why.contains("regressed")),
+                "{t:?}: {:?}",
+                combined.disposition
+            );
+        }
+        let (kept, basis) = combine(ChangeClass::Config, accepted.clone(), &tally(0, 0, 8));
+        assert_eq!(
+            (kept.disposition, basis),
+            (Disposition::Accept, Basis::NumericOnly),
+            "no regression: the numbers stand"
+        );
+    }
+
+    /// **Winning nowhere is not winning.** A held-out slice that decided for
+    /// the candidate, with nothing decided at its origin, leaves the numbers'
+    /// verdict as it was: the origin is what the proposer was shown, and a
+    /// candidate that does not fix it has not earned a point-wise accept.
+    #[test]
+    fn a_held_out_win_without_an_origin_win_is_numeric_only() {
+        let numeric = judge_drawn(
+            ChangeClass::Config,
+            &turns(),
+            &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (11, 6)),
+            &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (11, 6)),
+        );
+        let t = tally(4, 0, 0);
+        assert_eq!(t.verdict(), PointwiseVerdict::For);
+        assert_eq!(t.origin_verdict(), PointwiseVerdict::Undecided);
+        let (combined, basis) = combine(ChangeClass::Config, numeric.clone(), &t);
+        assert_eq!(
+            (combined.disposition, basis),
+            (numeric.disposition, Basis::NumericOnly)
+        );
+    }
+
+    /// **Win where it came from, break nothing it was not shown** (R36,
+    /// ruled 2026-10-29). Held-out ties are fine; one held-out regression
+    /// reaches a person; too few held-out points reach a person; losing at
+    /// the origin rejects.
+    #[test]
+    fn a_candidate_must_win_at_its_origin_and_not_regress_held_out() {
+        let held = judge_drawn(
+            ChangeClass::Config,
+            &turns(),
+            &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (11, 6)),
+            &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (11, 6)),
+        );
+        let run = |t: &PointwiseTally| combine(ChangeClass::Config, held.clone(), t).0.disposition;
+
+        assert_eq!(
+            run(&won_at_origin(tally(0, 0, 4))),
+            Disposition::Accept,
+            "ties held-out are not a regression"
+        );
+        assert!(
+            matches!(run(&won_at_origin(tally(0, 0, 3))), Disposition::Propose(ref why) if why.contains("nothing it was not shown confirms")),
+            "too few held-out points"
+        );
+        assert!(
+            matches!(run(&won_at_origin(tally(3, 1, 2))), Disposition::Propose(ref why) if why.contains("regressed 1 held-out")),
+            "one regression, though the held-out majority is for it"
+        );
+        let mut lost = PointwiseTally::default();
+        lost.count_origin(Outcome::Pass, Outcome::Fail);
+        assert!(
+            matches!(run(&lost), Disposition::Propose(ref why) if why.contains("single decided point")),
+            "one flaky origin point reaches a person: {:?}",
+            run(&lost)
+        );
+        // ...but never over a numeric rejection on a regression.
+        let regressed = judge_drawn(
+            ChangeClass::Config,
+            &turns(),
+            &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (2, 1)),
+            &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (2, 1)),
+        );
+        let (kept, basis) = combine(ChangeClass::Config, regressed.clone(), &lost);
+        assert_eq!(
+            (kept.disposition, basis),
+            (regressed.disposition, Basis::NumericOnly)
+        );
+        lost.count_origin(Outcome::Pass, Outcome::Fail);
+        assert!(
+            matches!(run(&lost), Disposition::Reject(ref why) if why.contains("lost at the episode it came from")),
+            "{:?}",
+            run(&lost)
+        );
     }
 
     /// A point-wise win over numbers that did not beat the original, but
@@ -1914,7 +2154,8 @@ mod r36_tests {
             "the numbers alone did not carry it"
         );
         assert_eq!(numeric.guard, Guard::Held, "and nothing got worse");
-        let (combined, basis) = combine(ChangeClass::Config, numeric, &tally(3, 1, 2));
+        let (combined, basis) =
+            combine(ChangeClass::Config, numeric, &won_at_origin(tally(0, 0, 4)));
         assert_eq!(
             (combined.disposition, basis),
             (Disposition::Accept, Basis::Pointwise)
@@ -2008,7 +2249,7 @@ mod r36_tests {
             &pairs(MIN_SELECTION_PAIRS, "sel", (10, 6), (11, 6)),
             &pairs(MIN_HOLDOUT_PAIRS, "hold", (10, 6), (11, 6)),
         );
-        let win = tally(4, 0, 0);
+        let win = won_at_origin(tally(4, 0, 0));
         for class in [ChangeClass::Security, ChangeClass::Architecture] {
             let (combined, _) = combine(class, held.clone(), &win);
             assert!(
@@ -2049,7 +2290,11 @@ mod r36_tests {
             numeric.disposition
         );
         assert_eq!(numeric.guard, Guard::Held);
-        let (combined, basis) = combine(ChangeClass::Config, numeric.clone(), &tally(4, 0, 0));
+        let (combined, basis) = combine(
+            ChangeClass::Config,
+            numeric.clone(),
+            &won_at_origin(tally(4, 0, 0)),
+        );
         assert_eq!(
             (combined.disposition, basis),
             (Disposition::Accept, Basis::Pointwise)
@@ -2109,7 +2354,7 @@ mod r36_tests {
         );
         let censored = PointwiseTally {
             lost_candidate: 4,
-            ..tally(3, 1, 0)
+            ..won_at_origin(tally(3, 1, 0))
         };
         assert_eq!(censored.verdict(), PointwiseVerdict::For);
         let (combined, basis) = combine(ChangeClass::Config, held.clone(), &censored);
@@ -2121,7 +2366,7 @@ mod r36_tests {
         );
         let baseline_lost = PointwiseTally {
             lost_baseline: 4,
-            ..tally(3, 1, 0)
+            ..won_at_origin(tally(4, 0, 0))
         };
         let (combined, _) = combine(ChangeClass::Config, held, &baseline_lost);
         assert_eq!(combined.disposition, Disposition::Accept);

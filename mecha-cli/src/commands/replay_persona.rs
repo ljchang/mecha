@@ -834,6 +834,9 @@ impl mecha_core::tool::Tool for AnswerUnparsed {
     fn capabilities(&self) -> mecha_core::tool::Capabilities {
         self.inner.capabilities()
     }
+    fn effect(&self) -> Option<mecha_core::tool::effect::Effect> {
+        self.inner.effect()
+    }
     async fn call(
         &self,
         input: serde_json::Value,

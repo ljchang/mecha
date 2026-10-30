@@ -690,6 +690,7 @@ Repeatable. Each entry is a stdio MCP server connected at startup. Its tools app
 | `personas` | bool | `false` | Offer this server's tools to persona chats. Global config only. See below. |
 | `disabled` | bool | `false` | Skip this server without deleting its config. |
 | `disabled_tools` | array of strings | `[]` | Tools this server lists that the model is never offered, by the server's own (unprefixed) names. See below. |
+| `effects` | table of strings | `{}` | What each of this server's tools does, by its own (unprefixed) name. Global config only. See below. |
 
 The environment is an allowlist, not an inheritance. The child's environment is
 cleared, then given a minimal base (`PATH`, `HOME`, `LANG`, `LC_ALL`, `TZ`) plus
@@ -752,6 +753,27 @@ to persona chats", and `mecha doctor` names the server. A persona's background c
 to such a server names the persona in `_meta["mecha-factory.ai/persona"]`: its
 folder name, its library character and its voice-library voice. It never sends the persona's prompt,
 display name or anything the persona said.
+
+`effects` says what each of the server's tools does to the world, one class per tool:
+`read`, `read_that_records`, `store_write`, `render` or `irreversible`. `mecha tools
+--json` prints the result as each tool's `effect`. A server you did not write has no
+class until you name one: its own annotations never give it one, so a tool marked
+`readOnlyHint` is still `undeclared`. They can only make a named class more cautious:
+a tool you call `read` that the server marks `destructiveHint` or `openWorldHint` is
+`irreversible`. `mecha-mail`, `mecha-docs` and the knowledge graph are classed by
+mecha itself, and naming one of their tools here can only make it more cautious.
+`workspace` is refused, because a server writes where it was started, not in a run's
+workspace. Like `trust_result_claims`, `effects` is honoured only from your global
+config. Nothing acts on the class yet:
+
+```toml
+[[mcp]]
+name = "sketch"
+command = "~/.local/bin/sketch-mcp"
+[mcp.effects]
+look = "read"
+draw = "render"
+```
 
 ### `[[mcp]].capabilities`
 

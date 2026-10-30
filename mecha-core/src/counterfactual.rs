@@ -30,6 +30,11 @@
 //!   one unambiguous failure. Same tool with different arguments is *not* a
 //!   fail — "not that directory" denies an argument, not a tool — and the
 //!   report carries the trace for reading.
+//! - **Repeat**: no intervention at all. The run repeated a failed call it
+//!   had already read fail ([`first_repeats`]), and the branch regenerates
+//!   that turn as a denial's does. Fail iff the regenerated turn makes one of
+//!   the recorded failing calls again: the recording already says what it
+//!   returns, so no one's verdict is needed to call it a dead end.
 //!
 //! Determinism caveat, inherited from replay: seeded sampling repeats only on
 //! backends that honor it and only for sequential requests. On a pinned local
@@ -95,6 +100,148 @@ pub enum ProbeKind {
         /// owner's words would read as a different draft.
         schema: Value,
     },
+    /// The run repeated a failed call unchanged — same target, same error —
+    /// after it had read the failure ([`first_repeats`]; `HARNESS-EVOLUTION-
+    /// DESIGN.md` P8's verdict-free branch points). The branch cuts before
+    /// the turn that repeated it, as a denial's does, and [`repeat_verdict`]
+    /// fails an arm that makes any call in `futile` again in that turn. **No
+    /// one's verdict is behind it:** the recording itself already says what
+    /// each of these calls returns.
+    Repeat {
+        /// Every recorded call of the failure, by tool name and input: the
+        /// attempts before the repeat, then the repeat itself.
+        futile: Vec<(String, Value)>,
+    },
+}
+
+/// The first time a run repeated a failed call after reading the failure:
+/// where, which call, and every recorded call of that failure so far.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FirstRepeat {
+    /// The assistant turn that repeated it.
+    pub message_index: usize,
+    /// The repeat's `tool_use` id.
+    pub call_id: String,
+    /// The failed calls before it and the repeat, in transcript order.
+    pub futile: Vec<(String, Value)>,
+}
+
+/// Every failure a run repeated after reading it, at its **first** repeat —
+/// found from the recording alone, with no one's verdict.
+///
+/// Two failures are one when [`crate::compact::same_failure`] says so: the
+/// same target (`compact::target_of`) and the identical error text, the key
+/// `collapse_repeated_failures` folds on and boredom counts by. So polling —
+/// the same call with a changing result — is never a repeat, and neither is a
+/// person or a policy saying no (a denial is its own point, with the owner
+/// behind it).
+///
+/// - **A later turn, never the same one.** A failure is repeated only by a
+///   turn that came after its result: a call doubled inside one parallel
+///   batch was issued before either answer arrived, so nothing had been read.
+/// - **Within one run.** A top-level user turn between the failure and the
+///   call ends the streak: the owner may have changed the world and asked
+///   for another try, which is no dead end.
+/// - **Once per failure.** The third and fourth attempts are the same
+///   decision made again; counting each would weight one stuck episode
+///   several times in a draw that is meant to be uniform.
+/// - **Only calls a registered tool answered** (`agent::calls_a_tool_answered`),
+///   on #723's rule: an invented tool name has no registered answer to
+///   replay, and its name must not become a point's situation key.
+/// - The harness's own turns are not the model's choices and are skipped.
+pub fn first_repeats(messages: &[Message]) -> Vec<FirstRepeat> {
+    use std::collections::{HashMap, HashSet};
+    let answered = crate::agent::calls_a_tool_answered(messages);
+    let mut result_of: HashMap<&str, (&str, bool)> = HashMap::new();
+    for block in messages.iter().flat_map(|m| &m.content) {
+        if let Block::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+        } = block
+        {
+            result_of.insert(tool_use_id.as_str(), (content.as_str(), *is_error));
+        }
+    }
+    let mut seen: HashMap<(String, String), Vec<(String, Value)>> = HashMap::new();
+    let mut repeated: HashSet<(String, String)> = HashSet::new();
+    let mut out = Vec::new();
+    for (at, message) in messages.iter().enumerate() {
+        // A top-level user turn starts a new run: a failure before it is not
+        // one this run walked into again. The owner may have fixed the cause
+        // and said "try again", and an arm that obeys must not be graded as
+        // walking into a dead end with no one's act to say otherwise —
+        // `truncate_after_run`'s boundary (found on review of #729).
+        if message.role == Role::User
+            && !message
+                .content
+                .iter()
+                .any(|b| matches!(b, Block::ToolResult { .. }))
+        {
+            seen.clear();
+            repeated.clear();
+            continue;
+        }
+        if message.role != Role::Assistant || message.harness {
+            continue;
+        }
+        let mut failed = Vec::new();
+        for (id, name, input) in message.tool_uses() {
+            if !answered.contains(id) {
+                continue;
+            }
+            let Some(&(content, is_error)) = result_of.get(id) else {
+                continue;
+            };
+            let target = crate::compact::target_of(name, input);
+            if let Some(key) = crate::compact::same_failure(target, content, is_error) {
+                failed.push((key, id, name, input));
+            }
+        }
+        // Judged against earlier turns only, before this turn's own failures
+        // join them.
+        for (key, id, name, input) in &failed {
+            let Some(before) = seen.get(key) else {
+                continue;
+            };
+            if !repeated.insert(key.clone()) {
+                continue;
+            }
+            let mut futile = before.clone();
+            futile.push((name.to_string(), (*input).clone()));
+            out.push(FirstRepeat {
+                message_index: at,
+                call_id: id.to_string(),
+                futile,
+            });
+        }
+        for (key, _, name, input) in failed {
+            seen.entry(key)
+                .or_default()
+                .push((name.to_string(), input.clone()));
+        }
+    }
+    out
+}
+
+/// Locate a repeat point by the repeat's `tool_use` id: the turn that
+/// repeated the failure, and its position in the global call order. `None`
+/// when the id is no first repeat in this transcript.
+pub fn locate_repeat(messages: &[Message], call_id: &str) -> Option<ProbePoint> {
+    let repeat = first_repeats(messages)
+        .into_iter()
+        .find(|r| r.call_id == call_id)?;
+    let offset = messages[repeat.message_index]
+        .tool_uses()
+        .iter()
+        .position(|(id, _, _)| *id == call_id)?;
+    Some(ProbePoint {
+        message_index: repeat.message_index,
+        call_index: calls_before(messages, repeat.message_index) + offset,
+        kind: ProbeKind::Repeat {
+            futile: repeat.futile,
+        },
+    })
 }
 
 /// What the owner did with a staged draft — the recorded verdict a draft
@@ -190,8 +337,9 @@ pub fn branch_at(messages: &[Message], point: &ProbePoint) -> Option<Branch> {
         }
         // A draft's staging call is a call the model *proposed*, like a
         // refused one, so its branch regenerates the whole turn too: the
-        // question is what the arm would have drafted there.
-        ProbeKind::Denial { .. } | ProbeKind::Draft { .. } => {
+        // question is what the arm would have drafted there. So is a
+        // repeat: what the arm reaches for once it has read the failure.
+        ProbeKind::Denial { .. } | ProbeKind::Draft { .. } | ProbeKind::Repeat { .. } => {
             let a = assistant_holding(messages, point.call_index)?;
             Some(Branch {
                 seed: messages[..a].to_vec(),
@@ -395,6 +543,45 @@ pub fn verdict(report: &ReplayReport, point: &ProbePoint) -> ProbeVerdict {
             owner,
             schema,
         } => draft_verdict(report, point, tool, staged, owner, schema),
+        ProbeKind::Repeat { futile } => repeat_verdict(report, futile),
+    }
+}
+
+/// Grade one replayed arm at a repeat point: **fail iff the decision turn
+/// makes a call the recording shows failing** (same tool, same input as any
+/// recorded attempt), pass otherwise — including a turn that ends the run
+/// without a call, since the point judges the dead end and nothing more.
+///
+/// Only the decision turn — the first the arm regenerates
+/// ([`ReplayReport::decision_turn_calls`]) — and the reason is the replay's
+/// world. A call to the same tool with other arguments is an `Arguments`
+/// divergence, which is not structural, so the run goes on and is answered
+/// with the *recorded* failure of the call it replaced: an arm that moved
+/// off the dead end would then be told it failed there anyway, and its next
+/// turn reacts to an error it never earned. The denial validator scans the
+/// whole horizon; here the fake answer would be the very error the point is
+/// about. A branch whose first turn cannot be read back is inconclusive.
+fn repeat_verdict(report: &ReplayReport, futile: &[(String, Value)]) -> ProbeVerdict {
+    if let Some(d) = report.structural().find(|d| d.index() < report.call_base) {
+        return ProbeVerdict::Inconclusive(format!(
+            "diverged at call #{} — inside the forced prefix (branch base #{}); the report \
+             does not branch where the point does",
+            d.index(),
+            report.call_base
+        ));
+    }
+    let Some(n) = report.decision_turn_calls else {
+        return ProbeVerdict::Inconclusive("the branch's first turn could not be read back".into());
+    };
+    let repeated = report.replayed_calls.iter().take(n).any(|c| {
+        futile
+            .iter()
+            .any(|(name, input)| c.name == *name && c.input == *input)
+    });
+    if repeated {
+        ProbeVerdict::Fail
+    } else {
+        ProbeVerdict::Pass
     }
 }
 
@@ -583,6 +770,7 @@ mod tests {
             input,
             is_error: false,
             denied: false,
+            blocked: false,
             unknown: false,
             staged: false,
         }
@@ -604,6 +792,7 @@ mod tests {
             final_text: String::new(),
             stats: Default::default(),
             call_base,
+            decision_turn_calls: None,
         }
     }
 
@@ -1237,5 +1426,171 @@ mod tests {
             "the id names another tool"
         );
         assert!(locate("t9", "mail_send").is_none());
+    }
+
+    const MISSING: &str = "no such file: q3.md";
+
+    /// user → read fails → the same read fails again → and again.
+    fn stuck_transcript() -> Vec<Message> {
+        let read = || json!({"path": "q3.md"});
+        vec![
+            Message::user("total the third quarter"),
+            Message::assistant(vec![tool_use("t1", "fs_read", read())]),
+            Message::tool_results(vec![result("t1", MISSING, true)]),
+            Message::assistant(vec![
+                tool_use("t2", "fs_list", json!({})),
+                tool_use("t3", "fs_read", read()),
+            ]),
+            Message::tool_results(vec![
+                result("t2", "q4.md", false),
+                result("t3", MISSING, true),
+            ]),
+            Message::assistant(vec![tool_use("t4", "fs_read", read())]),
+            Message::tool_results(vec![result("t4", MISSING, true)]),
+        ]
+    }
+
+    /// P8's verdict-free point is the failure read and then repeated, found
+    /// at its first repeat only: the third attempt is the same decision again.
+    #[test]
+    fn a_failure_read_and_repeated_is_one_point_at_its_first_repeat() {
+        let messages = stuck_transcript();
+        let repeats = first_repeats(&messages);
+        assert_eq!(repeats.len(), 1, "{repeats:?}");
+        assert_eq!(repeats[0].message_index, 3);
+        assert_eq!(repeats[0].call_id, "t3");
+        let read = ("fs_read".to_string(), json!({"path": "q3.md"}));
+        assert_eq!(repeats[0].futile, vec![read.clone(), read]);
+
+        let p = locate_repeat(&messages, "t3").unwrap();
+        assert_eq!((p.message_index, p.call_index), (3, 2));
+        let b = branch_at(&messages, &p).unwrap();
+        assert_eq!(b.seed.len(), 3, "cut before the turn that repeated it");
+        assert_eq!(b.call_base, 1, "the whole turn regenerates, siblings too");
+        assert!(
+            locate_repeat(&messages, "t4").is_none(),
+            "not a first repeat"
+        );
+        assert!(
+            locate_repeat(&messages, "t1").is_none(),
+            "the failure itself"
+        );
+    }
+
+    /// Nothing is a repeat that the key says is a different failure, or that
+    /// nothing had read, or that no registered tool answered, or that the
+    /// harness made. Fails on a finder that keys on the call alone.
+    #[test]
+    fn polling_a_refusal_a_doubled_batch_and_an_invented_tool_are_not_repeats() {
+        let read = || json!({"path": "q3.md"});
+        let twice = |first: &str, second: &str| {
+            vec![
+                Message::user("total the third quarter"),
+                Message::assistant(vec![tool_use("t1", "fs_read", read())]),
+                Message::tool_results(vec![result("t1", first, true)]),
+                Message::assistant(vec![tool_use("t2", "fs_read", read())]),
+                Message::tool_results(vec![result("t2", second, true)]),
+            ]
+        };
+        assert_eq!(first_repeats(&twice(MISSING, MISSING)).len(), 1);
+        assert!(
+            first_repeats(&twice("job 7: 40% done", "job 7: 80% done")).is_empty(),
+            "a changing result is polling"
+        );
+        let denied = "Denied by the user: not that file";
+        assert!(
+            first_repeats(&twice(denied, denied)).is_empty(),
+            "a refusal"
+        );
+        let mut succeeded = twice(MISSING, MISSING);
+        succeeded[4] = Message::tool_results(vec![result("t2", MISSING, false)]);
+        assert!(first_repeats(&succeeded).is_empty(), "not an error");
+
+        let doubled = vec![
+            Message::user("total the third quarter"),
+            Message::assistant(vec![
+                tool_use("t1", "fs_read", read()),
+                tool_use("t2", "fs_read", read()),
+            ]),
+            Message::tool_results(vec![
+                result("t1", MISSING, true),
+                result("t2", MISSING, true),
+            ]),
+        ];
+        assert!(
+            first_repeats(&doubled).is_empty(),
+            "issued before either answer"
+        );
+
+        let invented = "no tool named `fs_reed`";
+        let mut unknown = twice(invented, invented);
+        for m in &mut unknown {
+            for b in &mut m.content {
+                if let Block::ToolUse { name, .. } = b {
+                    *name = "fs_reed".into();
+                }
+            }
+        }
+        assert!(
+            first_repeats(&unknown).is_empty(),
+            "no registered tool answered"
+        );
+
+        let mut harness = twice(MISSING, MISSING);
+        harness[3].harness = true;
+        assert!(first_repeats(&harness).is_empty(), "the harness's own turn");
+
+        let mut retried = twice(MISSING, MISSING);
+        retried.insert(3, Message::user("I just created it, try again"));
+        assert!(
+            first_repeats(&retried).is_empty(),
+            "the owner asked for another try in a new run (review of #729)"
+        );
+    }
+
+    fn repeat_point() -> ProbePoint {
+        locate_repeat(&stuck_transcript(), "t3").unwrap()
+    }
+
+    fn decided(n: Option<usize>, calls: Vec<ToolCallTrace>) -> ReplayReport {
+        let mut r = branch_report(1, vec![], calls);
+        r.decision_turn_calls = n;
+        r
+    }
+
+    /// The decision turn alone is graded: a turn that makes a failing call
+    /// again fails, one that does anything else — or ends — passes, and a
+    /// failing call after that turn is not held against it, because past a
+    /// departure the replay answers with results recorded for other calls.
+    #[test]
+    fn a_repeat_is_graded_on_the_turn_that_decides_it() {
+        let point = repeat_point();
+        let again = trace("fs_read", json!({"path": "q3.md"}));
+        let list = trace("fs_list", json!({}));
+        let elsewhere = trace("fs_read", json!({"path": "q4.md"}));
+        let v = |r: ReplayReport| verdict(&r, &point);
+        assert_eq!(
+            v(decided(Some(2), vec![list.clone(), again.clone()])),
+            ProbeVerdict::Fail,
+            "a sibling first does not excuse the repeat"
+        );
+        assert_eq!(
+            v(decided(Some(1), vec![elsewhere.clone()])),
+            ProbeVerdict::Pass
+        );
+        assert_eq!(
+            v(decided(Some(1), vec![elsewhere.clone(), again.clone()])),
+            ProbeVerdict::Pass,
+            "the second turn reacted to an answer recorded for another call"
+        );
+        assert_eq!(
+            v(decided(Some(0), vec![])),
+            ProbeVerdict::Pass,
+            "it stopped"
+        );
+        assert!(matches!(
+            v(decided(None, vec![again])),
+            ProbeVerdict::Inconclusive(_)
+        ));
     }
 }
