@@ -8030,7 +8030,8 @@ a run — which **ships off**.
 `HARNESS-EVOLUTION-DESIGN.md` P7, after Hermes's do-not-capture block.
 `REFLECTOR_SYSTEM` (steer, denial, followup, reject) names three kinds of
 moment to skip, as criteria rather than a tone: a failure the
-**environment** caused (a missing program, a server that was down), a
+**environment** caused (a missing program, a server that was down; a
+user's denial is never one, it is the user's correction), a
 **negative claim about a tool** drawn from one bad result, and an approach
 **never resolved** in the excerpts. Each hardens into a self-imposed
 constraint that outlives its cause. The writing frame is left alone (an
@@ -8053,7 +8054,8 @@ carries its own count rule.
   the reflector to prefer a skip when excerpts are withheld, so a skip share
   is read within an evidence class, never across a mix of them. **No text**:
   `error_type` is the model's own string, so the row keeps it only when it
-  is a category a prompt offers (`ERROR_TYPES`). **A source's rows are
+  is a category a prompt offers (`ERROR_TYPES`, tested equal to the
+  prompts' lists) and records `unlisted` otherwise, apart from naming none. **A source's rows are
   written before it is marked mined**, a session's ahead of its
   reflections, and each row names the pass that wrote it. A pass that stops
   in between leaves the source unmined, the retry writes its rows again,
