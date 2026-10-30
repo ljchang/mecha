@@ -47,8 +47,10 @@ existing `AnswerShape` rule.
   `re` (fancy-regex; no `subn`, no `VERBOSE`), `json`, `collections`,
   `itertools`, `datetime`, slicing and string methods. Absent: `enum`,
   `string`, `io`, `operator`.
-- **`AUDIT-RESEARCH.md` §3.2 shipped.** `QuarantinedPass::response_schema` exists and every
-  local provider is `structured_output = "llama_json"`.
+- **`AUDIT-RESEARCH.md` §3.2 shipped.** `QuarantinedPass::response_schema`
+  exists. The shipped default is `structured_output = "disabled"` until an
+  endpoint is verified; the owner's install sets `"llama_json"` on every
+  local provider.
 - **Its §3.7 did not, but the part this design needs exists.** `agent.rs`
   was 9,400 lines at the audit and is 20,039 now. `run_tools` is a thin
   wrapper over `Agent::dispatch`, and `Agent::dispatch_one` is already the
@@ -131,7 +133,7 @@ the call's `ToolOutput::external` and the tool's capabilities.
 | `find(h, pattern)` | list of (start, end) | offsets, never text |
 | `count(h, pattern)` | int | |
 | `json_get(h, path)` | Handle for a string, object or array leaf; a number, bool or null as itself | structured tool output without decoding it into the program. A string leaf is text and stays a handle, or it would bypass `peek`'s cap and count |
-| `peek(h, n=2000)` | str | **the only way a handle's bytes enter the program**; a `str[n]` sub-call result (§4) is the other way prose does, and both draw on one cap and one count |
+| `peek(h, n=2000)` | str | **the only way a handle's text enters the program**; a `str[n]` sub-call result (§4) is the other way prose does, and both draw on one cap and one count |
 
 `print(h)` renders a stub such as
 `<handle 3: 48,213 chars from mail_get_thread>`, so the default spelling of
@@ -144,6 +146,12 @@ the call's `ToolOutput::external` and the tool's capabilities.
   the model's planning only when the model chooses `peek`, which CaMeL
   calls control-flow integrity, and which mecha records rather than
   credits (§10, the `peeked` count).
+- **Numbers do enter without `peek`.** `size`, `count`, `find` offsets and
+  `json_get`'s number, bool or null leaves are values computed over
+  attacker text. They are attacker-influenced, as a typed sub-call answer
+  is, and bounded the same way: a number carries no instruction. They
+  change no label, and they are not counted with `peek`, because the cap
+  exists to bound prose.
 - **`peek` exists** because RLM roots look at a prefix to learn a format,
   and a program that cannot see its data guesses. It is capped, counted,
   and its output takes the ordinary output budget.
@@ -222,10 +230,13 @@ default**. The bound is the host's own, because nothing else bounds it:
   resident model, never fewer than one.
 
 Any concurrency above one is ruling R7, and it is bounded across runs,
-not per run. `DEFAULT_BACKGROUND_PERMITS` counts three background runs,
-and each could fan out. So a sub-call pass beyond a run's first takes a
-seat from the same permit directory the background runs share, and waits
-when none is free. The total of running background passes then never
+not per run. **An interactive run's sub-calls stay at one**: they take no
+permit, as interactive work never does, and so they are never parallel
+either. Otherwise the owner would queue behind their own fan-out, or the
+fan-out would be unbounded. For background runs, `DEFAULT_BACKGROUND_PERMITS`
+counts three, and each could fan out. So a background run's pass beyond
+its first takes a seat from the same permit directory the background runs
+share, and waits when none is free. The total of running background passes then never
 exceeds `router::background_seats`. On a model with two or more slots that
 keeps the owner's reserve whole. On a one-slot model it cannot:
 `seats_for` is never below one, and `permit.rs` concedes the owner can
@@ -302,9 +313,15 @@ launch on a name that resolves to nothing, rather than running without it.
   that declared `Capabilities::default()` would reopen the laundering hole
   that derivation's own comment says was closed. Strictly, §2's registry
   term already puts the reads in the child's registry, where the
-  derivation looks, so this bullet is belt and braces there. The
-  declaration does its real work in `dispatch`'s precomputed `turn_taint`
-  (§7).
+  derivation looks, so the declaration does its work in `dispatch`'s
+  precomputed `turn_taint` (§7). That holds only if the child's `code` was
+  built over the child's registry. `build_subagent` hands a child
+  `Arc::clone` of the parent's tool, so a cloned `code` would carry the
+  *parent's* admitted set and declaration. **`build_subagent` therefore
+  constructs a fresh `code` over the child's registry, after every other
+  tool is inserted**, the way it already special-cases `kg_task_update`
+  (`ClosedStatusGuard::wrap`). §8's allowlist test is what fails if it is
+  cloned.
 - **At the boundary**, today's rule applies unchanged: an answer that
   parses as a whole as the declared shape returns to the parent not
   `external`, and private data stays private. The parent's interlock, the
@@ -346,12 +363,16 @@ attacker selects from their own text can be an address; that is a
   out, the `pre_tool` hooks, outbox staging, the approval rules and the
   approver. It arms the conversation's taint from the result and mints a
   non-model call id. Three things are new:
-  - **A host call is made from inside a running tool.** `dispatch_one`
-    takes the conversation, which the loop holds while a tool executes. So
-    a program's host calls go back to the loop over a channel on
-    `ToolCtx`, and the loop runs each through `dispatch_one` and answers.
-    One gate, not a copy of one; §8's first hazard tests assert that host
-    calls arrive there.
+  - **A host call is made from inside a running tool, so it cannot call
+    `dispatch_one` itself.** `dispatch_one` takes `&mut Conversation`,
+    and by the time a tool executes the loop has passed `&mut
+    convo.taint` down into `dispatch`. It also mints a `HARNESS_CALL` id
+    and re-runs `arm_at_start`, neither of which a mid-turn host call
+    wants. So the gate half is extracted (below) as a function over what
+    `dispatch` holds. `dispatch` serves a channel on `ToolCtx` for the
+    duration of the `code` call and runs each host call through that same
+    function. One gate, not a copy of one; §8's first hazard tests assert
+    that host calls arrive there.
   - **No approver prompt mid-program.** The loop approves sequentially,
     then executes concurrently, and a program runs inside the concurrent
     phase. A host call that reached a person would put a prompt behind
@@ -374,7 +395,8 @@ attacker selects from their own text can be an address; that is a
   - **The gate is reused; the result path is not.** `dispatch_one`
     renders a result for the context: capped at `output_budget_bytes`,
     spilled past it with `CAP_MARKER`, and wrapped by
-    `mark_untrusted_output`. A handle over that rendering would be a view
+    the untrusted-content wrapper that `[security] mark_untrusted_output`
+    switches on. A handle over that rendering would be a view
     of truncated bytes plus wrapper tags, and `find` offsets would point
     into the wrapper. So `dispatch_one` splits into its gate (every check,
     then taint armed from the raw result) and its rendering, and a host
@@ -419,10 +441,20 @@ attacker selects from their own text can be an address; that is a
 
   A draft staged after an `analyst` run would join to nothing. That fails
   closed, but silently. So:
-  - The `code` tool's output carries its host calls: tool, input, result
-    bytes, `external`, in issue order. The loop writes them to the session
-    file as a `program` record beside the `tool_result`, the same way a
-    compaction writes `rewrite`. The model's context never holds them.
+  - The `code` tool's output carries its host calls: tool, input,
+    `external`, and a pointer to the result bytes, in issue order. The
+    loop writes them to the session file as a `program` record beside the
+    `tool_result`, the same way a compaction writes `rewrite`. The model's
+    context never holds them.
+  - **The bytes are not in the JSONL.** A 200-thread sweep would put
+    megabytes into a transcript that every reader loads whole. Capping
+    them there would break `replay_run`, which must answer a replayed host
+    call with the bytes the original got. So each result is stored once,
+    content-addressed, in the session's spill directory (the place spill
+    already puts oversized results, outside the jail). The record holds
+    its hash and length. A missing or mismatched blob makes that call
+    unreplayable and ungrounded, by name, never silently empty. Retention
+    follows the session's, so `sessions delete` removes them.
   - **Which list carries them, exactly.** `grounding::calls` takes
     `&[Message]` and borrows each `Call` out of it. Several of its readers
     hold a live conversation, where the only message list in scope *is*
