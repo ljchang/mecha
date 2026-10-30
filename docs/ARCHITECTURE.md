@@ -3447,7 +3447,9 @@ The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
 - **The worker is identified by its sha256** (`worker.rs`), checked every
   time a pool starts; a path or a version string never stands in for it.
 - **Backstops and the program's own exceptions are different types.**
-  `End::Backstop` names the wall clock, the heap or the suspension count;
+  `End::Backstop` names the wall clock, the heap, the suspension count, or
+  a worker killed under the program (a `[sandbox] memory_mb` cgroup kill
+  lands there, not as an `Err`, because the program brought it about);
   a program that raises a backstop's message itself is `End::Raised`. The
   suspension budget is the host's own count, which kills the worker at the
   first suspension past it (the pool's budget sits one higher, behind it);

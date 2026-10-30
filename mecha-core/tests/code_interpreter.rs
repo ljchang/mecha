@@ -668,6 +668,76 @@ async fn preflight_refuses_when_the_sandbox_cannot_confine_the_worker() {
     }
 }
 
+/// A worker killed under the program — what a cgroup memory limit does —
+/// ends it as a named backstop, never as the backend failing (review of
+/// #765: `Err` is promised to be for nothing the program did).
+#[tokio::test]
+async fn a_worker_killed_under_a_program_ends_it_as_a_backstop() {
+    let Some(interp) = interpreter(Backstops::default()).await else {
+        return;
+    };
+    let (mut program, step) = interp
+        .start(
+            "hold()\nwhile True:\n    pass",
+            &["hold".into()],
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(step, Step::Call(_)));
+    // Killed while it spins, so the death lands mid-turn.
+    let tree = process_tree(program.worker_pid().unwrap());
+    let killer = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        for p in tree {
+            // SAFETY: plain signal syscalls on processes this test's pool spawned.
+            unsafe { libc::kill(p as i32, libc::SIGKILL) };
+        }
+    });
+    let step = program
+        .resume(Value::Null)
+        .await
+        .expect("a killed worker is an ending, not an Err");
+    killer.await.unwrap();
+    let Step::Done(f) = step else { panic!() };
+    assert!(
+        matches!(f.end, End::Backstop(Backstop::WorkerKilled { .. })),
+        "{:?}",
+        f.end
+    );
+}
+
+/// A worker goes back to the pool after a clean or a raised ending, and
+/// the next program must not see the last one's state.
+#[tokio::test]
+async fn a_reused_worker_starts_clean() {
+    let w = pinned_worker().await;
+    if unavailable("the pinned monty worker", w.is_some())
+        || unavailable("a working bwrap", bwrap_works())
+    {
+        return;
+    }
+    let conf = Confinement::for_sandbox(&bwrap_sandbox()).unwrap();
+    // One worker, so every program below runs on the same one.
+    let interp = Monty::new(&w.unwrap(), &conf, Backstops::default(), 1)
+        .await
+        .unwrap();
+    let (f, _) = run_with(&interp, "leak = 1\nleak", &[], |_| Ok(Value::Null)).await;
+    assert!(matches!(f.end, End::Complete { .. }));
+    let (f, _) = run_with(&interp, "leak2 = 2\nraise ValueError('x')", &[], |_| {
+        Ok(Value::Null)
+    })
+    .await;
+    assert!(matches!(f.end, End::Raised(_)));
+    for name in ["leak", "leak2"] {
+        let (f, _) = run_with(&interp, name, &[], |_| Ok(Value::Null)).await;
+        let End::Raised(r) = f.end else {
+            panic!("`{name}` survived into the next program: {:?}", f.end)
+        };
+        assert_eq!(r.exc_type, "NameError");
+    }
+}
+
 fn median(v: &mut [f64]) -> f64 {
     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
     v[v.len() / 2]
