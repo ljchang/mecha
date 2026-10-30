@@ -382,7 +382,7 @@ pub fn tool_definitions(names: &[String], file: &crate::accounts::AccountsFile) 
         },
         {
             "name": "calendar_list_events",
-            "description": "List events in a time window across every account, merged in time order and tagged by account (recurring events arrive expanded). Times are RFC 3339, or one of `now`, `today`, `tomorrow`, `yesterday`, `+3d`, `-1d` — prefer those: this server resolves them against the mailbox timezone, so you do not have to know today's date, and `time_min: today` with `time_max: today` is the whole of today. Omit both to get the next 7 days. Every answer states the window it covered and the clock it was resolved against. calendar_id addresses one account's calendar, so it requires `account`.",
+            "description": "List events in a time window across every account, merged in time order and tagged by account (recurring events arrive expanded). Times are RFC 3339, or one of `now`, `today`, `tomorrow`, `yesterday`, `+3d`, `-1d` — prefer those: this server resolves them against the mailbox timezone, so you do not have to know today's date, and `time_min: today` with `time_max: today` is the whole of today. Omit both to get the next 7 days. Every answer states the window it covered and the clock it was resolved against. calendar_id addresses one account's calendar: pass the `account` its calendar_list row carries — omitted, the one account that can read that calendar answers, and the reply names it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -593,6 +593,44 @@ fn thread_home(
         )),
         several => Err(format!(
             "thread {thread_id} was found in several accounts ({}) — pass `account`",
+            several
+                .iter()
+                .map(|&i| answers[i].0)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
+/// The account a named calendar lives in, when `calendar_list_events` was
+/// not told: [`thread_home`]'s rule for a calendar id. The model reads the id
+/// off a `calendar_list` row and leaves the row's `account` behind, and the
+/// call used to be refused for it. Every account is asked — no wider than the
+/// same call without a `calendar_id`, which reads them all — and the one
+/// that can read the calendar answers. **Two that can is refused**, not
+/// picked between: a calendar shared into both accounts is the case where
+/// choosing would cross accounts silently. A read that failed for another
+/// reason does not hold it, on `thread_home`'s precedent, and the reply names
+/// the account it came from.
+fn calendar_home(
+    calendar_id: &str,
+    answers: &[(&str, Result<(), String>)],
+) -> Result<usize, String> {
+    let held: Vec<usize> = (0..answers.len())
+        .filter(|&i| answers[i].1.is_ok())
+        .collect();
+    match held.as_slice() {
+        [one] => Ok(*one),
+        [] => Err(format!(
+            "no configured account could read calendar {calendar_id}: {}",
+            answers
+                .iter()
+                .filter_map(|(name, r)| r.as_ref().err().map(|e| format!("{name}: {e}")))
+                .collect::<Vec<_>>()
+                .join("; ")
+        )),
+        several => Err(format!(
+            "calendar {calendar_id} is readable from several accounts ({}) — pass `account`",
             several
                 .iter()
                 .map(|&i| answers[i].0)
@@ -1601,11 +1639,20 @@ impl MailTools {
                     _ => Mode::Read,
                 };
                 let calendar_id = calendar_id.unwrap_or_else(|| "primary".into());
-                let picked = match self.pick(account_arg.as_deref(), mode) {
-                    Ok(p) => p,
-                    Err(e) => return fail(e),
+                // A named calendar with no account named, among several:
+                // ask them all and keep the one that can read it
+                // (`calendar_home`), rather than refusing a call whose
+                // account is one read away.
+                let locate = mode == Mode::Item && account_arg.is_none() && self.accounts.len() > 1;
+                let picked: Vec<&Account> = if locate {
+                    self.accounts.iter().collect()
+                } else {
+                    match self.pick(account_arg.as_deref(), mode) {
+                        Ok(p) => p,
+                        Err(e) => return fail(e),
+                    }
                 };
-                let results = futures::future::join_all(picked.iter().map(|a| async {
+                let mut results = futures::future::join_all(picked.iter().map(|a| async {
                     (
                         a.name.clone(),
                         a.provider,
@@ -1613,6 +1660,31 @@ impl MailTools {
                     )
                 }))
                 .await;
+                let mut found_in = None;
+                if locate {
+                    let answers: Vec<(&str, Result<(), String>)> = results
+                        .iter()
+                        .map(|(name, _, r)| {
+                            (
+                                name.as_str(),
+                                r.as_ref().map(|_| ()).map_err(|e| format!("{e}")),
+                            )
+                        })
+                        .collect();
+                    match calendar_home(&calendar_id, &answers) {
+                        Ok(i) => {
+                            let home = results.swap_remove(i);
+                            found_in = Some(home.0.clone());
+                            results = vec![home];
+                        }
+                        Err(e) => return fail(e),
+                    }
+                }
+                // Said even when the window is empty, where no row carries
+                // the account: the reply names the account it read.
+                let found_in = found_in
+                    .map(|name| format!("calendar {calendar_id} is in account `{name}`.\n"))
+                    .unwrap_or_default();
                 let (ok, failures, all_failed) = merge(results);
                 if all_failed {
                     return fail(failures.join("\n"));
@@ -1637,13 +1709,13 @@ impl MailTools {
                     // The window once, not twice: this line used to name it
                     // itself, and `stamp` now says the same thing plus the
                     // clock.
-                    let body = format!("no events in this window.\n{stamp}");
+                    let body = format!("{found_in}no events in this window.\n{stamp}");
                     return Some(Reply::from((with_notes(body, &failures), false)));
                 }
                 finish_events(&mut events, tz);
                 let body = serde_json::to_string_pretty(&events).unwrap_or_else(|_| "[]".into());
                 Some(Reply::from((
-                    with_notes(format!("{body}\n\n{stamp}"), &failures),
+                    with_notes(format!("{found_in}{body}\n\n{stamp}"), &failures),
                     false,
                 )))
             }
@@ -2266,6 +2338,42 @@ mod tests {
             ("campus", Ok(3)),
         ];
         assert_eq!(thread_home("T", &answers).unwrap(), 1);
+    }
+
+    /// `calendar_list_events` with a calendar id off a `calendar_list` row
+    /// and the row's `account` left behind: refused in `resolve` before
+    /// this, now answered by the one account that can read it.
+    #[test]
+    fn a_named_calendar_with_no_account_goes_to_the_one_account_that_reads_it() {
+        let answers = [
+            ("personal", Err("API error (404): Not Found".to_string())),
+            ("campus", Ok(())),
+        ];
+        assert_eq!(calendar_home("c1@group.example", &answers).unwrap(), 1);
+    }
+
+    /// Never crossing accounts silently: a calendar both accounts can read
+    /// (one shared into both) is refused with both named, and a calendar
+    /// neither can read reports every account's answer, so a dead token is
+    /// not read as "no such calendar".
+    #[test]
+    fn a_calendar_two_accounts_read_or_none_reads_is_refused() {
+        let both = [("a", Ok(())), ("b", Ok(()))];
+        let err = calendar_home("shared@group.example", &both).unwrap_err();
+        assert!(
+            err.contains("a, b") && err.contains("pass `account`"),
+            "{err}"
+        );
+
+        let none = [
+            ("a", Err("API error (404): Not Found".to_string())),
+            ("b", Err("token refresh failed".to_string())),
+        ];
+        let err = calendar_home("c1@group.example", &none).unwrap_err();
+        assert!(
+            err.contains("a: API error (404)") && err.contains("b: token refresh failed"),
+            "{err}"
+        );
     }
 
     #[test]

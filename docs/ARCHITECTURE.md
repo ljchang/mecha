@@ -3698,7 +3698,12 @@ design: **reads fan out** (no `account` on a search or calendar window means
 every mailbox, merged in time order, each row tagged with its account);
 **item operations name their account** (thread and event ids are
 account-scoped, and every row a read returns carries the account, so the
-model always has it); **creates use the default or ask** (`mecha-mail
+model always has it — and leaves it behind anyway, so a thread or a named
+calendar with no account asks every account and takes the one that holds it:
+`thread_home` for a thread, `calendar_home` for a named calendar, and two
+that hold it is refused, never picked between; an event update or delete
+still names its account);
+**creates use the default or ask** (`mecha-mail
 default <name>`; with several accounts and none, the error says to *ask the
 user* — worded that way because "use your best judgment" measurably makes
 models invent). **The schema declares a `default` key exactly where omitting
