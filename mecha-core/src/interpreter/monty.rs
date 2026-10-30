@@ -170,12 +170,13 @@ struct Launcher {
 impl Launcher {
     fn write(argv: &[String]) -> Result<Self> {
         let dir = std::env::temp_dir().join(format!("mecha-monty-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        let mut builder = std::fs::DirBuilder::new();
+        // Created 0700, never chmodded after: no window where it is open.
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
-        }
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder
+            .create(&dir)
+            .with_context(|| format!("creating {}", dir.display()))?;
         let script = dir.join("worker");
         let log = dir.join("worker.log");
         let mut body = String::from("#!/bin/sh\nexec");
@@ -196,8 +197,17 @@ impl Launcher {
     }
 
     /// The last lines a worker wrote to stderr, for a refusal's message.
+    /// Reads only the file's last 4 KiB, however long a worker has run.
     fn log_tail(&self) -> String {
-        let text = std::fs::read_to_string(&self.log).unwrap_or_default();
+        use std::io::{Read, Seek, SeekFrom};
+        let mut text = String::new();
+        if let Ok(mut f) = std::fs::File::open(&self.log) {
+            let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+            let _ = f.seek(SeekFrom::Start(len.saturating_sub(4096)));
+            let mut bytes = Vec::new();
+            let _ = f.read_to_end(&mut bytes);
+            text = String::from_utf8_lossy(&bytes).into_owned();
+        }
         let lines: Vec<&str> = text.lines().rev().take(5).collect();
         lines.into_iter().rev().collect::<Vec<_>>().join("\n")
     }
@@ -214,6 +224,9 @@ fn sh_quote(s: &str) -> String {
 }
 
 /// Programs in `monty-pool` workers.
+///
+/// Field order is load-bearing: fields drop in declaration order, so the
+/// pool (and its workers) goes before the launcher's directory is removed.
 pub struct Monty {
     pool: Pool,
     repl: ReplConfig,
@@ -248,7 +261,13 @@ impl Monty {
             .max_feed_duration(backstops.wall_clock)
             .max_memory(backstops.max_memory)
             .max_recursion_depth(backstops.max_recursion_depth)
-            .max_suspensions(usize::try_from(backstops.max_suspensions).unwrap_or(usize::MAX));
+            // One above the backstop: this module counts suspensions itself
+            // and kills the worker at the first one past the limit, so a
+            // program cannot raise the pool's message and be believed. The
+            // pool's own budget stays behind it, one call later.
+            .max_suspensions(
+                usize::try_from(backstops.max_suspensions.saturating_add(1)).unwrap_or(usize::MAX),
+            );
         let repl = ReplConfig {
             limits: Some(limits),
             os_policy: OsPolicy {
@@ -369,8 +388,8 @@ struct MontyProgram {
     started: Instant,
     deadline: Instant,
     cancel: CancellationToken,
-    /// Every suspension the pool handed this program, refused or answered —
-    /// the same count the pool's `max_suspensions` budget keeps.
+    /// Every suspension the pool handed this program, refused or answered:
+    /// the suspension backstop's count, kept by the host.
     suspensions: u64,
     /// A call is waiting on the host.
     pending: bool,
@@ -453,6 +472,18 @@ impl MontyProgram {
                 }
                 Turned::Cancelled => return Ok(self.end(End::Cancelled, false).await),
             };
+            // The suspension backstop, counted here rather than believed from
+            // a message: the first suspension past the limit kills the worker.
+            if !matches!(
+                event,
+                TurnEvent::Complete(_) | TurnEvent::ResolveFutures { .. }
+            ) {
+                self.suspensions += 1;
+                if self.suspensions > self.backstops.max_suspensions {
+                    let b = Backstop::Suspensions(self.backstops.max_suspensions);
+                    return Ok(self.end(End::Backstop(b), false).await);
+                }
+            }
             req = match event {
                 TurnEvent::FunctionCall {
                     function_name,
@@ -460,7 +491,6 @@ impl MontyProgram {
                     object_id,
                     ..
                 } => {
-                    self.suspensions += 1;
                     // Registered functions are plain globals; a call routed to
                     // a host object, or under any other name, has no handler.
                     if object_id.is_some() || !self.externals.contains(&function_name) {
@@ -486,14 +516,8 @@ impl MontyProgram {
                     }
                 }
                 // Files, the environment, sleeps, imports: no handler.
-                TurnEvent::OsCall { .. } => {
-                    self.suspensions += 1;
-                    Req::Resume(ResumeValue::NotHandled)
-                }
-                TurnEvent::NameLookup { .. } => {
-                    self.suspensions += 1;
-                    Req::Undefined
-                }
+                TurnEvent::OsCall { .. } => Req::Resume(ResumeValue::NotHandled),
+                TurnEvent::NameLookup { .. } => Req::Undefined,
                 // Only an answer of `Future` creates one, and this host never
                 // gives that answer.
                 TurnEvent::ResolveFutures { .. } => {
@@ -540,9 +564,12 @@ impl MontyProgram {
     /// Whether an exception is a backstop rather than the program's own.
     /// A program can raise a built-in with any message, so a message alone
     /// is checked against what the host can see for itself: the clock for a
-    /// time limit, its own suspension count for that budget, a dead worker
-    /// for the allocator's kill. The interpreter's own heap check is the one
-    /// read from its message, which carries the configured limit.
+    /// time limit, a dead worker for the allocator's kill. The suspension
+    /// budget never arrives here: [`Self::run`] counts it and kills first.
+    /// The interpreter's own heap check is the one read from its message
+    /// (which carries the configured limit), so a program that raises that
+    /// message verbatim is misreported as the memory backstop — a
+    /// misleading line, not a bypass, since it ends the program either way.
     fn backstop(&self, exc: &MontyException, worker_gone: bool) -> Option<Backstop> {
         let msg = exc.message().unwrap_or_default();
         let b = &self.backstops;
@@ -559,12 +586,6 @@ impl MontyProgram {
                     && self.started.elapsed() >= b.wall_clock =>
             {
                 Some(Backstop::WallClock(b.wall_clock))
-            }
-            ExcType::RuntimeError
-                if self.suspensions >= b.max_suspensions
-                    && msg == format!("suspension limit {} exceeded", b.max_suspensions) =>
-            {
-                Some(Backstop::Suspensions(b.max_suspensions))
             }
             _ => None,
         }
@@ -602,8 +623,10 @@ impl MontyProgram {
 #[async_trait]
 impl Program for MontyProgram {
     async fn resume(&mut self, value: Value) -> Result<Step> {
-        self.take_pending()?;
+        // Converted before the pending call is taken, so a host value that
+        // cannot cross leaves the call still answerable.
         let obj = from_json(&value, 0)?;
+        self.take_pending()?;
         self.run(Req::Resume(ResumeValue::Return(obj))).await
     }
 

@@ -3448,9 +3448,13 @@ The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
   time a pool starts; a path or a version string never stands in for it.
 - **Backstops and the program's own exceptions are different types.**
   `End::Backstop` names the wall clock, the heap or the suspension count;
-  a program that raises a backstop's message itself is `End::Raised`,
-  because the host checks the clock, its own suspension count and the
-  worker's death before believing one. Recursion is monty's *catchable*
+  a program that raises a backstop's message itself is `End::Raised`. The
+  suspension budget is the host's own count, which kills the worker at the
+  first suspension past it (the pool's budget sits one higher, behind it);
+  a time limit is believed only once the clock agrees, and the allocator's
+  kill only with the worker dead. The interpreter's heap message is the
+  one read as written, so raising it verbatim misreports the backstop
+  without escaping one. Recursion is monty's *catchable*
   `RecursionError`, and `request_timeout` bounds one turn, so the program's
   wall clock (host time included) is the backend's own deadline.
 - **Stop kills.** A cancelled program gets `cancel_grace` to reach a turn

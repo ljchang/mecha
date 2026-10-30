@@ -128,7 +128,8 @@ pub fn cached(
     })
 }
 
-fn sha256_file(path: &Path) -> Result<String> {
+/// A file's sha256 as lowercase hex — the form every pin is written in.
+pub fn sha256_file(path: &Path) -> Result<String> {
     use std::io::Read;
     let mut f = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let mut h = Sha256::new();
@@ -301,11 +302,6 @@ pub async fn fetch_pypi_file(
     let url = format!("{PYPI_FILES_BASE}/{path}");
     fetch_to(&url, &dest, sha256, bytes, progress).await?;
     Ok(dest)
-}
-
-/// A file's sha256 as lowercase hex — the form every pin is written in.
-pub fn sha256_hex(path: &Path) -> Result<String> {
-    sha256_file(path)
 }
 
 /// Point the snapshot path at the blob with a relative link, as `hf` does,
