@@ -238,7 +238,7 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
   tool, so the interlock never covered it. That is harmless on the local
   router, which is what this slice is for. On a remote provider it is
   more of the owner's data leaving the box than the same task sends
-  today. Until the owner rules otherwise, `llm_query` refuses on any
+  today. Ruled R8 (no): `llm_query` refuses on any
   provider that is not local, by the same rule as `structured_output`.
   "Local" is the predicate that already exists: the provider's `kind` is
   `local` and `provider::router::is_loopback` holds for its base URL. A
@@ -276,9 +276,16 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
   pass refuses that by name, as the clients do, rather than reading it as
   an answer.
 - **Thinking is off by default** (R6, after M0). A pass asks for
-  `enable_thinking: false`. A program may ask for thinking per call, and
-  that pass then gets `max_tokens` of 8,192, above the server's 4,096
-  reasoning budget. M0 measured thinking at ~40× the latency of a pass
+  `enable_thinking: false`. A program may ask for thinking per call. **The
+  floor above wins either way: every pass gets `max_tokens` of 8,192,
+  above the server's 4,096 reasoning budget.** Thinking off is a request
+  for lower latency, not a licence to drop below the budget. The request
+  cannot prove it was honoured: `enable_thinking` rides in
+  `chat_template_kwargs`, which `LLAMA-SERVER.md` records as accepted and
+  ignored without `--jinja`. The router writes `jinja = true` today, but a
+  preset that lost it would leave thinking on. A 128-token pass would then
+  return HTTP 200 with empty `content`, and every default `llm_query`
+  would raise. M0 measured thinking at ~40× the latency of a pass
   without it, and it was less consistent on an ambiguous message (§10).
 
 `llm_map` is written with `asyncio.gather`, so the program does not
@@ -295,8 +302,10 @@ default**: the host runs one pass at a time. The bound is the host's own, becaus
 - The slot count is not fixed: `router::background_seats` sizes to the
   resident model, never fewer than one.
 
-Any concurrency above one is ruling R7, and it is bounded across runs,
-not per run. **An interactive run's sub-calls stay at one**: they take no
+**R7 is ruled: one at a time.** The rest of this paragraph is the design
+for raising it, kept so a later ruling has it, and it is **not built** in
+this slice: no permit-seat accounting for sub-call passes. Any concurrency
+above one would be bounded across runs, not per run. **An interactive run's sub-calls stay at one**: they take no
 permit, as interactive work never does, and so they are never parallel
 either. Otherwise the owner would queue behind their own fan-out, or the
 fan-out would be unbounded. For background runs, `DEFAULT_BACKGROUND_PERMITS`
@@ -804,7 +813,8 @@ three-label enum and a three-field record (bool, `str` ≤ 32, int range).
 - **Every failure was the envelope failure CLAUDE.md names:** thinking
   used the whole allowance. With thinking on, `max_tokens` must clear the
   reasoning budget.
-- **No pass echoed the injected instruction** (0/34).
+- **No pass that returned content echoed the injected instruction**
+  (0/27; the other 7 returned nothing).
 - **Thinking was less consistent.** On the enum (an arguably ambiguous
   message), thinking gave all three labels across seven runs. Without it,
   eight runs agreed. One message and small numbers, and agreement is not
@@ -874,7 +884,14 @@ with your recs"), except R4, which waits on M1.
 - **And the `code` call itself is `read_only()`.** A program runs
   without a prompt, because every tool it can reach would skip the
   approver individually, so approving the aggregate adds nothing. This was
-  raised by review pass 17 and decided with the rest.
+  raised by review pass 17 and decided with the rest. `read_only()`
+  controls three things, not one: the approver's rule-free branch,
+  `PermissionMode::ReadOnly` (which allows a `read_only()` tool and blocks
+  any other), and the planning phase gate (`Phase::allows`, applied in
+  `Registry::specs_for` and per call). So a read-only `code` is offered
+  and runnable while planning, and in a read-only session. Both are right
+  for this slice. **The flag flips when the sink slice admits a sink**,
+  and §12 says so.
 
 ---
 
@@ -886,7 +903,8 @@ is a design, and its list of named edits rots against the tree faster
 than an architecture section kept beside the code.
 
 - **Sinks of any kind**, pausing at the outbox, and persisted program
-  state. The sink slice is §3.12's original shape, with snapshots MAC'd,
+  state. Admitting a sink also flips `code` off `read_only()`, which takes
+  it out of `Phase::Plan` and `PermissionMode::ReadOnly` (§11). The sink slice is §3.12's original shape, with snapshots MAC'd,
   taint carried beside them, and a version mismatch failing closed.
 - **`Blind` tools.**
 - **Value-level labels inside the program** (CaMeL's capability tags).
