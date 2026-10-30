@@ -237,6 +237,22 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
   "Local" is the predicate that already exists: the provider's `kind` is
   `local` and `provider::router::is_loopback` holds for its base URL. A
   base URL that does not parse is not local.
+
+  **The seam is the request, not the loop.** The analogy to
+  `structured_output` holds for the enforcement, not the plumbing:
+  `structured_output` is a `Provider` trait method, and locality today
+  lives only in `ProviderConfig`. And deciding it once when `code` is
+  constructed is wrong under `Failover`, whose fallback may be remote.
+  So it follows `response_schema`'s precedent end to end:
+  - each pass's `CompletionRequest` carries `local_only: true`;
+  - `Provider` gains `local()`, computed from the predicate above at
+    provider construction, where the config is in hand;
+  - a provider that is not local refuses a `local_only` request, by name;
+  - `Failover` skips a non-local fallback for that request, exactly as it
+    already skips a fallback without structured-output support.
+
+  The loop never learns which provider answered, which is the invariant
+  `CLAUDE.md` names.
 - **`max_tokens` sits above the reasoning budget** for every pass, as the
   local clients already require. A tight allowance for a three-label enum
   with thinking on is the HTTP-200-with-empty-`content` failure, and a
@@ -287,7 +303,7 @@ can catch:
 | Limit | Default (ruling R4) | Enforced by |
 |---|---|---|
 | sub-calls | 32 | the host, **per pass**: `llm_map` over N handles is N, and a schema retry is another. An `llm_map` longer than the remaining budget raises before its first pass |
-| sub-call input tokens | 400k | the host, from `Usage` |
+| sub-call input tokens | 120k | the host, from `Usage`. Sized so that it binds before the clock: `provider/mod.rs` records a cold 170k-token prefill at ~120 s uncontended, so 400k would take ~280 s, and the 300 s clock would end the program first |
 | tool reads | 256 | the host, counted at the gate |
 | handle operations (§3) | 2,048 | the host; monty `max_suspensions` set to the sum as a backstop |
 | wall clock | 300 s | `monty-pool` `request_timeout`, which is **unset by default** and must be set |
@@ -297,7 +313,10 @@ can catch:
 | `peek` bytes plus `str[n]` result bytes | 16 KB together | the host, one count (`peeked_bytes`) |
 
 **The limit a well-behaved program should hit first is the sub-call
-cap.** It is the expensive resource and the one the model's prompt names.
+cap, then the token cap, and the clock never.** The clock is the backstop
+for a hang, not a budget. The defaults above are sized so, from this
+repo's own prefill figure, and R4 sets them only after M0 and M1 measure
+a pass on this box, under contention as well as alone. It is the expensive resource and the one the model's prompt names.
 A long document chunked into handles can reach 256 host calls before 32
 sub-calls, because `find`, `slice` and `chunks` are host calls. So the
 handle operations of §3 count toward their own, larger limit (2,048),
@@ -622,6 +641,12 @@ attacker selects from their own text can be an address; that is a
      reach `mail_search` from a program, though its effect class would
      admit it. A global admitted set passes the test above and fails this
      one.
+   - An active skill restriction (`Tool::narrows_surface_to`) that leaves
+     out `mail_search` keeps it out of the program's function list, and a
+     call to it raises. The restriction is not in the registry: the gate
+     checks it per call, and a `code` that built its function list from
+     the registry alone would widen it. The same holds for a policy that
+     forbids a tool, the third narrowing §2 names.
    - A turn that calls `code` (whose program reads mail) and a `Chosen`
      sender in the same assistant message has the sender refused by the
      precomputed `turn_taint`, because `code` declared the union of its
@@ -749,6 +774,11 @@ The predictions to falsify:
 ---
 
 ## 12. Deliberately not in this slice
+
+When code lands, the invariants §2–§7 assert move to `ARCHITECTURE.md`, in
+a §Code mode section, and this document stops being cited for them. It
+is a design, and its list of named edits rots against the tree faster
+than an architecture section kept beside the code.
 
 - **Sinks of any kind**, pausing at the outbox, and persisted program
   state. The sink slice is §3.12's original shape, with snapshots MAC'd,
