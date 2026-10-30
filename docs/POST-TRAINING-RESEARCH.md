@@ -65,6 +65,54 @@ Two readings follow.
   `mecha sessions compare` already extracts. The training data has to be
   manufactured (§4).
 
+### Step 0, run 2026-10-30 ✅
+
+A read-only pass over every `is_error` tool result in the non-test
+sessions under `~/.mecha/sessions`, bucketed by the result's opening text
+and by tool. Its totals match `sessions health` above (591 runs, 2,797
+calls). It finds 416 error results against the counters' 364, because the
+early-August sessions predate the counters. The script and its output stay
+outside the repo; these are aggregates only.
+
+**Refusals, by who refused:**
+
+| Source | Results |
+|---|---|
+| The owner (`"Denied by the user:"`) | **6** |
+| A policy rule (`"Blocked by policy:"`) | 102 |
+| The trifecta interlock | 83 |
+| A hook (`"Blocked by a hook:"`) | 0 |
+
+**Six owner corrections in three months.** The denial counter is almost
+entirely the harness working. It is not a source of preference pairs
+(§4). Interlock refusals fell from 20–26 per half-month in August and
+early September to 0 in late October, after the provenance work
+(`PROVENANCE-DESIGN.md`).
+
+**Other failures, by cause, and how concentrated they are:**
+
+| Bucket | Errors | Sessions | Held by the top 3 sessions | Reading |
+|---|---|---|---|---|
+| Policy block retried | 102 | 20 | 51 | the model repeats a forbidden `shell`/`fs_write` call |
+| Path outside the workspace | 53 | 10 | 44 | the model loops on a path it cannot reach; 40 of them in early October |
+| File not found | 46 | 12 | 34 | guessed paths, many `image_view` |
+| Mail id without its `account` | 29 | 11 | 17 | an account-scoped id passed without the `account` the tool needs |
+| Environment | ~20 | | | expired Google grant (5), image memory (6), the `research` subagent overflowing a 32k context (5, 2026-08-03/04 only, since fixed), HTTP 403/404 and DNS |
+| Shell exit status | 18–32 | 5 | | the task's own commands failing |
+
+**What it says about training:** almost nothing here needs weights.
+- The model-side failures are **retries of a call that already failed**,
+  concentrated in a few sessions.
+- The largest single model mistake is a missing parameter that the tool
+  could resolve or require.
+
+Three harness fixes follow, and are being built as their own PR: a
+redirect when the same refusal or failure repeats, mail tools that resolve
+an account-scoped id's account, and an out-of-workspace error that names
+the workspace and the grant route. After them, what is left for training
+is the quality of an answer the corpus does not yet grade. That is a
+measurement to build before a dataset to collect.
+
 ---
 
 ## 2. The model ✅
@@ -193,11 +241,10 @@ Three conclusions carry to mecha:
 
 ## 7. The path, in order
 
-0. **Classify the failures.** The 200 tool errors, the 164 denials (which
-   include the 64 blocked sends; sort by the interlock's block, the phase
-   gate, then the three result prefixes, as §1 lists) and the 11
-   `max_turns` runs, by cause: harness, prompt, tool, or
-   model. This costs nothing and decides whether training has a target.
+0. **Classify the failures. Done 2026-10-30 (§1, Step 0):** six owner
+   denials, and the model-side failures are retry loops that harness
+   fixes address. Training has no target yet beyond answer quality, which
+   needs a grader first.
 1. **Build the data** from fixtures (§4), around 1–5k trajectories plus the
    mix, rendered with the router's template.
 2. **LoRA SFT**, rank 32, attention and experts, router frozen, bf16, on one
