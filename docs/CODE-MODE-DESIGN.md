@@ -256,11 +256,14 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
   a program can tell causes apart by: `QueryError:` for a failed pass,
   `ToolError:` for a tool that returned `is_error` or a host call refused
   (§7, followed by the loop's own refusal prefix, so a policy block still
-  never reads as a person's denial), and `LimitError:` for a §5 limit.
-  The text after the tag follows §3's rule: no bytes.
+  never reads as a person's denial), `HandleError:` for a §3 handle
+  operation that cannot apply (`json_get` on bytes that are not JSON, a
+  path that does not exist, a slice out of range), and `LimitError:` for
+  a §5 limit. The text after the tag follows §3's rule: no bytes.
 - **`llm_map` raises at the first failed item, and the passes before it
-  are spent.** The error names the item's index and how many passes
-  completed, as numbers. An exception cannot carry the completed values
+  are spent.** The error names the item's index and how many items
+  completed, as numbers. Items, not passes: a schema retry is another
+  pass (§5). An exception cannot carry the completed values
   (§1), and returning `None` in a failed item's place would be the
   sentinel again: a filter that keeps the `"urgent"` answers drops it
   silently, and the count comes out low with nothing raised. A program
@@ -393,6 +396,14 @@ clock is 600 s, the number `STALL_TIMEOUT` reached by the same arithmetic,
 and not 300. R4 chooses between raising the clock and lowering the token
 cap, after M0 and M1 measure a pass on this box under contention as well
 as alone.
+
+**That ordering holds only with thinking off, the R6 default.** M0
+measured a thinking-on pass at a median of ~14 s, before prefill. 32
+thinking-on sub-calls are ~450 s of decode alone, and ×2.85 under
+contention is past the 600 s clock. So a pass that asks for thinking
+draws on the budget at a higher rate. R4 sets a separate, smaller cap on
+thinking-on passes (8 is a proposal), so the clock still never binds
+first.
 
 A long document chunked into handles can reach 256 host calls before 32
 sub-calls, because `find`, `slice` and `chunks` are host calls. So the
@@ -788,7 +799,7 @@ attacker selects from their own text can be an address; that is a
      `peeked_bytes` is unchanged. Each message opens with its §4 tag. A
      host that quotes the failed output fails the first.
    - `llm_map` over three handles whose second pass fails raises
-     `QueryError:` naming index 1 and one completed pass.
+     `QueryError:` naming index 1 and one completed item.
    - Taint is armed before `resume` on a host call whose result is never
      printed, and the `code` result comes back `external` when any host
      call returned external content, so `Dispatched::external` and the
@@ -950,6 +961,27 @@ with your recs"), except R4, which waits on M1.
 
 ---
 
+## 12. Deliberately not in this slice
+
+When code lands, the invariants §2–§7 assert move to `ARCHITECTURE.md`, in
+a §Code mode section, and this document stops being cited for them. It
+is a design, and its list of named edits rots against the tree faster
+than an architecture section kept beside the code.
+
+- **Sinks of any kind**, pausing at the outbox, and persisted program
+  state. Admitting a sink also flips `code` off `read_only()`, which takes
+  it out of `Phase::Plan` and `PermissionMode::ReadOnly` (§11). The sink slice is §3.12's original shape, with snapshots MAC'd,
+  taint carried beside them, and a version mismatch failing closed.
+- **`Blind` tools.**
+- **Value-level labels inside the program** (CaMeL's capability tags).
+  monty does not track data flow, and filtering it by hand is the approach
+  `CODE-MODE-RESEARCH.md` rules out.
+- **Depth above 1.**
+- **Training** the model on its programs. `POST-TRAINING-RESEARCH.md` §7
+  names it as a later target.
+
+---
+
 ## 13. Adoption risk: will the model use it?
 
 **Raised by the owner on 2026-10-30, and ruled: build the feature, test it,
@@ -1003,24 +1035,3 @@ The literature agrees:
    found none in the current corpus. The precedent is RLM-Qwen3-8B,
    about 1,000 filtered trajectories from a stronger model writing
    programs in the same harness.
-
----
-
-## 12. Deliberately not in this slice
-
-When code lands, the invariants §2–§7 assert move to `ARCHITECTURE.md`, in
-a §Code mode section, and this document stops being cited for them. It
-is a design, and its list of named edits rots against the tree faster
-than an architecture section kept beside the code.
-
-- **Sinks of any kind**, pausing at the outbox, and persisted program
-  state. Admitting a sink also flips `code` off `read_only()`, which takes
-  it out of `Phase::Plan` and `PermissionMode::ReadOnly` (§11). The sink slice is §3.12's original shape, with snapshots MAC'd,
-  taint carried beside them, and a version mismatch failing closed.
-- **`Blind` tools.**
-- **Value-level labels inside the program** (CaMeL's capability tags).
-  monty does not track data flow, and filtering it by hand is the approach
-  `CODE-MODE-RESEARCH.md` rules out.
-- **Depth above 1.**
-- **Training** the model on its programs. `POST-TRAINING-RESEARCH.md` §7
-  names it as a later target.
