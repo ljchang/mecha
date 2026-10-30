@@ -215,6 +215,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let mut interventions_found = 0usize;
     let mut reflections_written = 0usize;
     let mut replies_tally = mecha_core::learning::ReplyTally::default();
+    // Stamped on every reply row: a pass that stops after a source's rows
+    // and before its mined mark is superseded by the retry's rows.
+    let pass = mecha_core::session::Session::new_id();
 
     for (meta, path) in &todo {
         // The workspace the session's rules block was matched against, off
@@ -406,14 +409,18 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         if failed {
             continue;
         }
+        // Rows first: a stop after them leaves the session unmined, and the
+        // retry's rows supersede these (`replies_counting`). Rows after the
+        // reflections would leave a reflection whose reply was never
+        // counted (found on review of #730).
+        for reply in &replies {
+            store.append_reply(&pass, reply)?;
+            replies_tally.count(reply.outcome);
+        }
         for r in &pending {
             store.append_reflexion(r)?;
             reflections_written += 1;
             println!("· [{}] {}", r.trigger, r.reflexion_text);
-        }
-        for reply in &replies {
-            store.append_reply(reply)?;
-            replies_tally.count(reply.outcome);
         }
 
         if !args.remine_untrusted {
@@ -480,6 +487,13 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     evidence,
                     false,
                 );
+                // Before the mined mark, which excludes the item from every
+                // later pass: a row written after it was lost to a stop in
+                // between (found on review of #730).
+                if let Some(reply) = &reply {
+                    store.append_reply(&pass, reply)?;
+                    replies_tally.count(reply.outcome);
+                }
                 if let Some((mut r, answer)) = reflection.outcome.into_lesson() {
                     // A rejection is a correction D3 attributes; what the
                     // run was given is the staging session's results before
@@ -521,10 +535,6 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                 // (a typo fix), and re-arguing it nightly will not change
                 // that.
                 store.mark_outbox_mined(&item.id)?;
-                if let Some(reply) = &reply {
-                    store.append_reply(reply)?;
-                    replies_tally.count(reply.outcome);
-                }
                 match trigger {
                     Trigger::Reject => rejections_mined += 1,
                     _ => edits_mined += 1,

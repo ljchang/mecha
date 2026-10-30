@@ -8039,8 +8039,8 @@ carries its own count rule.
 
 - **A skip is kept apart from a reply that could not be used.**
   `Reflector::reflect_typed` returns `Reflected`: a lesson, `Skipped`
-  (`{"skip": true}`), `Unusable` (no JSON, JSON that does not parse, or
-  `"skip": false` with no lesson), or `NotAsked` (a mismatch whose step is
+  (`{"skip": true}`), `Unusable` (no JSON, JSON that does not parse,
+  `"skip": false` with no lesson, or a skip that carries one), or `NotAsked` (a mismatch whose step is
   not a learnable failure). `reflect`/`reflect_beside` keep their signature
   and return the lesson alone. Folded together, the share of skips, which
   is P7's measure, could not be read.
@@ -8051,10 +8051,19 @@ carries its own count rule.
   apart from another's, and **what the reflector was shown**: the evidence
   class and whether a contrast success was set beside it. The prompt tells
   the reflector to prefer a skip when excerpts are withheld, so a skip share
-  is read within an evidence class, never across a mix of them. **No text.** Rows are written with the reflections
-  they belong to: a session's at its all-or-nothing commit, an outbox
-  item's when it is marked mined. A retried pass therefore counts no reply
-  twice. `--remine-untrusted` records none: that backfill never marks a
+  is read within an evidence class, never across a mix of them. **No text**:
+  `error_type` is the model's own string, so the row keeps it only when it
+  is a category a prompt offers (`ERROR_TYPES`). **A source's rows are
+  written before it is marked mined**, a session's ahead of its
+  reflections, and each row names the pass that wrote it. A pass that stops
+  in between leaves the source unmined, the retry writes its rows again,
+  and `replies_counting` counts a source's rows only once it is marked
+  mined, and only the last pass's, so a retried pass counts no reply twice,
+  loses none, and a pass still in flight counts nothing. Rows after the mark
+  could be lost to a stop, and rows after the reflections could leave a
+  lesson uncounted (both found on review of #730). The reflections
+  themselves are no more atomic than before the ledger: a stop between two
+  appends leaves the first on file, and the retry writes it again. `--remine-untrusted` records none: that backfill never marks a
   session mined and is keyed by the reflections on file, which a skip does
   not add, so a rerun would count the same skip again. `ReplyOutcome` is a
   wire format: an unknown outcome reads as `Unknown` and is counted on its
