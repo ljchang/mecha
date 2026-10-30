@@ -9207,6 +9207,18 @@ errors, so nagging about being stuck is a way of making it stick. It keys on the
 call *and* its result via `compact::target_of` — identical arguments with a
 changing result is polling, which must never grade as stuck.
 
+**A second key counts the same failure on new targets** (`boredom::error_shape`:
+the error with quoted spans, paths and numbers masked, per tool). The first
+key is blind to guessing — `fs_list` on one path outside the jail after
+another, a forbidden `shell` command reworded each turn — because every call
+is a new target; a corpus pass on 2026-10-30 found exactly that shape behind
+most model-side failures. It counts turns that bring the shape back on a
+target the streak had not seen, so an unchanged call (a poll, or the first
+key's stuck repeat) never adds to it. Unlike the loop guard it counts calls the
+harness refused, and says so in its own words (`Rung::Rewording`, no delegate
+offered: a child inherits the policy); the refusal result is never edited, so
+`"Blocked by policy:"` stays `Blocked` for the miner and the guard.
+
 **The closure follow-up gate is `done`-only and reads the derived label
 beside one typed predicate.** `dropped` is the owner declining the work, so
 staging a follow-up there overrides a decision they just made — found on
