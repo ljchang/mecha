@@ -168,6 +168,14 @@ fn seeded(home: &Path) -> Roots {
         &l.join("validations.jsonl"),
         "{\"reflexion_id\":\"refl-gone\"}\n{\"reflexion_id\":\"refl-kept\"}\n",
     );
+    write(
+        &l.join("reflector_replies.jsonl"),
+        &format!(
+            "{{\"session_id\":\"{GONE}\",\"outcome\":\"skip\"}}\n\
+         {{\"session_id\":\"{KEPT}\",\"outcome\":\"lesson\",\"reflexion_id\":\"refl-kept\"}}\n\
+         {{\"item_id\":\"item-x\",\"outcome\":\"lesson\",\"reflexion_id\":\"refl-gone\"}}\n"
+        ),
+    );
     write(&l.join("validation-attempts.jsonl"), &format!(
         "{{\"reflexion_id\":\"refl-gone\",\"arms\":[{{\"text\":\"{CANARY}\"}}]}}\n{{\"reflexion_id\":\"refl-kept\",\"arms\":[]}}\n"
     ));
@@ -357,6 +365,7 @@ fn forgetting_leaves_no_trace_in_any_store_and_touches_nothing_else() {
         ("learning/mined_outbox.jsonl", "item-kept"),
         ("learning/validations.jsonl", "refl-kept"),
         ("learning/validation-attempts.jsonl", "refl-kept"),
+        ("learning/reflector_replies.jsonl", "refl-kept"),
         ("learning/artifact-probes/a-kept.json", "refl-kept"),
         (
             "learning/commit.unfinished.20260928T070000.000Z.json",

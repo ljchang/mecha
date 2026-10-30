@@ -214,6 +214,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     let mut sessions_mined = 0usize;
     let mut interventions_found = 0usize;
     let mut reflections_written = 0usize;
+    let mut replies_tally = mecha_core::learning::ReplyTally::default();
+    // Stamped on every reply row: a pass that stops after a source's rows
+    // and before its mined mark is superseded by the retry's rows.
+    let pass = mecha_core::session::Session::new_id();
 
     for (meta, path) in &todo {
         // The workspace the session's rules block was matched against, off
@@ -301,6 +305,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // inference makes free.
         let reflector = reflector.as_ref().expect("built unless dry-run");
         let mut pending = Vec::new();
+        // Every reply's ledger row (P7), kept with the reflections and
+        // written only when they are, so a retried session counts once.
+        let mut replies = Vec::new();
         let mut failed = false;
         for intervention in &interventions {
             // What the reflector may see, decided per intervention: full
@@ -324,7 +331,28 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             // A verified success in the correction's region, beside it —
             // only with the lever on (R43; `contrasts` is `None` off).
             let beside = contrast_for(contrasts.as_ref(), &t, intervention, &meta.id);
-            match reflector.reflect_beside(&input, beside.as_ref()).await {
+            let reflected = match reflector.reflect_typed(&input, beside.as_ref()).await {
+                // The backfill never marks a session mined and is keyed by
+                // the reflections on file, which a skip does not add: a
+                // rerun asks the same intervention again, so its replies
+                // would be counted on every pass (found on review of #730).
+                Ok(reflected) if args.remine_untrusted => Ok(reflected.outcome.into_lesson()),
+                Ok(reflected) => {
+                    replies.extend(reflected.record(
+                        intervention.trigger,
+                        reflector.model(),
+                        Some(meta.id.clone()),
+                        None,
+                        evidence,
+                        // What `Reflector::prompt` renders: a success it was
+                        // handed, for a trigger the contrast applies to.
+                        beside.is_some() && mecha_core::learning::contrasted(intervention.trigger),
+                    ));
+                    Ok(reflected.outcome.into_lesson())
+                }
+                Err(e) => Err(e),
+            };
+            match reflected {
                 Ok(Some((mut r, answer))) => {
                     r.session_id = meta.id.clone();
                     // D3 (row 2e-3): data error, behaviour error or gap, by
@@ -380,6 +408,14 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         }
         if failed {
             continue;
+        }
+        // Rows first: a stop after them leaves the session unmined, and the
+        // retry's rows supersede these (`replies_counting`). Rows after the
+        // reflections would leave a reflection whose reply was never
+        // counted (found on review of #730).
+        for reply in &replies {
+            store.append_reply(&pass, reply)?;
+            replies_tally.count(reply.outcome);
         }
         for r in &pending {
             store.append_reflexion(r)?;
@@ -441,9 +477,24 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             ),
         };
         let reflector = reflector.as_ref().expect("built unless dry-run");
-        match reflector.reflect(&input).await {
-            Ok(reflected) => {
-                if let Some((mut r, answer)) = reflected {
+        match reflector.reflect_typed(&input, None).await {
+            Ok(reflection) => {
+                let reply = reflection.record(
+                    trigger,
+                    reflector.model(),
+                    item.session_id.clone(),
+                    Some(item.id.clone()),
+                    evidence,
+                    false,
+                );
+                // Before the mined mark, which excludes the item from every
+                // later pass: a row written after it was lost to a stop in
+                // between (found on review of #730).
+                if let Some(reply) = &reply {
+                    store.append_reply(&pass, reply)?;
+                    replies_tally.count(reply.outcome);
+                }
+                if let Some((mut r, answer)) = reflection.outcome.into_lesson() {
                     // A rejection is a correction D3 attributes; what the
                     // run was given is the staging session's results before
                     // the staging call, and what it said includes the draft.
@@ -508,7 +559,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     } else {
         store.log_pass(&format!(
             "reflect: {sessions_mined} session(s), {edits_mined} draft edit(s), \
-             {rejections_mined} draft rejection(s), {reflections_written} reflection(s)"
+             {rejections_mined} draft rejection(s), {reflections_written} reflection(s); \
+             replies: {}",
+            replies_tally.line()
         ));
         println!(
             "mined {sessions_mined} session(s), {edits_mined} draft edit(s) and \
@@ -516,6 +569,7 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
              {reflections_written} reflection(s) → {}",
             store.root().join("reflections.jsonl").display()
         );
+        println!("reflector replies: {}", replies_tally.line());
     }
     Ok(())
 }

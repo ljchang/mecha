@@ -693,6 +693,15 @@ fn purge_learning(roots: &Roots, id: &str, keep_distilled: bool, report: &mut Re
         let mut validation = filter_jsonl(&root.join("validations.jsonl"), by_reflexion)?;
         validation += filter_jsonl(&root.join("validation-attempts.jsonl"), by_reflexion)?;
         report.count("validation ledger", validation);
+        // The reflector's reply ledger (P7): a row names its session, or the
+        // reflection a lesson became; an outbox row names the drafting
+        // session as its `session_id` too.
+        report.count(
+            "reflector replies",
+            filter_jsonl(&root.join("reflector_replies.jsonl"), |v| {
+                field_is(v, "session_id", id) || by_reflexion(v)
+            })?,
+        );
         report.count(
             "artifact probes",
             purge_probe_receipts(&root.join("artifact-probes"), id, &ids)?,

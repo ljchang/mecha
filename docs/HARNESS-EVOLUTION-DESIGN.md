@@ -892,6 +892,12 @@ enough, so the prompt names criteria, not a tone.
   A skip is discarded today (the reply handler drops it and records
   nothing), so recording skips is part of the build.
 - The reflector's prompt is not in any run's prefix.
+- **Built** (ARCHITECTURE "What never becomes a rule, and every reply
+  counted"). Every reply is recorded, not only skips:
+  `reflector_replies.jsonl` carries the outcome, the lesson's category and
+  the prompt's hash, so before and after is a split by prompt. The
+  "before" for skips is partial: only steer and denial skips were ever
+  printed to the learning log, and followup skips were never recorded.
 
 ### P8. Behaviour-changing candidates are measured on continued branches — L
 
