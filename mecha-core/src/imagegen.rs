@@ -3362,6 +3362,12 @@ fn scene_words(scene: &crate::scene::Scene) -> String {
     out.join(" ")
 }
 
+/// Whether a persona's call gave anyone a pose of its own: then no pose is
+/// read for anyone (`merge_read`, `add_owner`).
+fn gave_a_pose(change: &crate::scene::SceneChange) -> bool {
+    change.people.iter().any(|p| p.doing.is_some())
+}
+
 /// The reader's change merged into a persona's call where the call is
 /// silent: a `together` when it has none, and each person's `doing` and
 /// `wearing` when theirs has none, for people the call already names (mecha-
@@ -3376,7 +3382,7 @@ fn merge_read(
     // (mecha-a3, 2026-10-09): asked for a part per person on a one-way act,
     // the reader mirrored the verb onto the receiver 6 of 10 times, where the
     // splitter, given the `together`, inverted 0 of 36.
-    let gave_a_pose = change.people.iter().any(|p| p.doing.is_some());
+    let gave_a_pose = gave_a_pose(change);
     if change.together.is_none() {
         if let Some(t) = read
             .get("together")
@@ -3443,13 +3449,15 @@ fn merge_read(
 /// named themselves ("me", "we"; `edit::Extracted::owner_named`) and the call
 /// left them out, with the clothes and act the reading gave them. The one
 /// person a reading adds (owner, 2026-10-29): a name in the persona's own
-/// words still makes them the viewer. Whether they were added, for the
-/// manifest.
+/// words still makes them the viewer. `gave_a_pose` is read off the call as
+/// it came, before `merge_read` filled anyone's. Whether they were added, for
+/// the manifest.
 fn add_owner(
     change: &mut crate::scene::SceneChange,
     read: &serde_json::Map<String, Value>,
     owner: &str,
     record: Option<&crate::scene::Scene>,
+    gave_a_pose: bool,
 ) -> bool {
     let shown = crate::picture::shown(&crate::scene::Who::Library(owner.to_string()));
     // Never past what a picture draws: a reading must not turn a drawable
@@ -3505,10 +3513,10 @@ fn add_owner(
         at: None,
         wearing: text("wearing"),
         // As `merge_read` reads a pose: only for a call that gave none and
-        // no `together`, where the reader mirrors a one-way act.
-        doing: text("doing").filter(|_| {
-            change.together.is_none() && change.people.iter().all(|p| p.doing.is_none())
-        }),
+        // no `together`, where the reader mirrors a one-way act. Off the call
+        // as it came: the merge's own poses are not the call's (review of
+        // #758, pass 6).
+        doing: text("doing").filter(|_| change.together.is_none() && !gave_a_pose),
         expression: None,
         remove: false,
     });
@@ -4302,6 +4310,7 @@ impl Tool for ImageGenerate {
                                 &extracted.scene,
                                 &owner,
                                 record.as_ref(),
+                                gave_a_pose(&before),
                             ) {
                                 merged.push("owner".to_string());
                             }
@@ -12626,7 +12635,8 @@ mod tests {
             &mut change,
             read.as_object().unwrap(),
             "john",
-            None
+            None,
+            false
         ));
         let keys: Vec<String> = change.people.iter().map(|p| p.who.key()).collect();
         assert_eq!(keys, ["maya", "john"]);
@@ -12636,7 +12646,7 @@ mod tests {
             Some("dozing beside Maya")
         );
         assert!(
-            !add_owner(&mut change, read.as_object().unwrap(), "john", None),
+            !add_owner(&mut change, read.as_object().unwrap(), "john", None, false),
             "once"
         );
         let none = json!({"people": [{"who": "Maya", "doing": "laughing"}]});
@@ -12644,7 +12654,8 @@ mod tests {
             &mut change,
             none.as_object().unwrap(),
             "wren",
-            None
+            None,
+            false
         ));
         // Never past the faces one picture draws (review of #758, pass 2).
         let mut full = crate::scene::SceneChange {
@@ -12666,7 +12677,8 @@ mod tests {
             &mut full,
             wren.as_object().unwrap(),
             "wren",
-            None
+            None,
+            false
         ));
         assert_eq!(full.people.len(), 5);
         // Counted over the picture: five in the record and one in the change
@@ -12701,17 +12713,53 @@ mod tests {
             &mut one,
             wren.as_object().unwrap(),
             "wren",
-            Some(&record)
+            Some(&record),
+            false
         ));
         // A pose the call gave keeps the owner's off, as `merge_read` does.
         let mut posed = maya();
+        let gave = gave_a_pose(&posed);
         assert!(add_owner(
             &mut posed,
             wren.as_object().unwrap(),
             "wren",
-            None
+            None,
+            gave
         ));
         assert_eq!(posed.people[1].doing, None);
+        // In the tool's own order: a reading that poses the persona too
+        // still gives the owner theirs, since the call gave none (review of
+        // #758, pass 6).
+        let mut bare = crate::scene::SceneChange {
+            people: vec![crate::scene::PersonChange {
+                who: crate::scene::Who::Library("maya".into()),
+                at: None,
+                wearing: None,
+                doing: None,
+                expression: None,
+                remove: false,
+            }],
+            ..Default::default()
+        };
+        let both = json!({"people": [
+            {"who": "Maya", "doing": "lying down"},
+            {"who": "John", "wearing": "pyjamas", "doing": "lying down beside Maya"}
+        ]});
+        let before = bare.clone();
+        let merged = merge_read(&mut bare, both.as_object().unwrap());
+        assert_eq!(merged, ["doing×1"]);
+        assert!(add_owner(
+            &mut bare,
+            both.as_object().unwrap(),
+            "john",
+            None,
+            gave_a_pose(&before)
+        ));
+        assert_eq!(bare.people[0].doing.as_deref(), Some("lying down"));
+        assert_eq!(
+            bare.people[1].doing.as_deref(),
+            Some("lying down beside Maya")
+        );
     }
 
     /// The reader's change fills only what the call left out: a `together`,

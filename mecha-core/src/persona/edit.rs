@@ -698,11 +698,15 @@ pub fn read_extraction_for(
             // camera, so asked again it is said once, and moves never pile up
             // past the field's cap, which would refuse every later one
             // (review of #758, passes 1 and 2). Past the cap even so, the ask
-            // alone.
-            let shot: Vec<&str> = old
-                .trim_end_matches(['.', ','])
-                .split(", ")
-                .filter(|clause| !relative_camera(clause))
+            // alone. The first clause is the shot whatever word it opens with
+            // ("zoom in through John's eyes"): a move is only ever appended
+            // (pass 6), and one asked twice is said once.
+            let mut clauses = old.trim_end_matches(['.', ',']).split(", ");
+            let shot: Vec<&str> = clauses
+                .next()
+                .filter(|first| !first.eq_ignore_ascii_case(new.trim()))
+                .into_iter()
+                .chain(clauses.filter(|clause| !relative_camera(clause)))
                 .collect();
             let joined = if shot.is_empty() {
                 new.clone()
@@ -1475,6 +1479,36 @@ mod tests {
             e.scene["camera"],
             "a first-person view from the doorway, pull back a little"
         );
+        // A shot whose own words open with a move is still the shot: only
+        // the moves after it come off (review of #758, pass 6).
+        for (was, ask, now) in [
+            (
+                "zoom in close through John's eyes",
+                "a touch wider",
+                "zoom in close through John's eyes, a touch wider",
+            ),
+            (
+                "pull back to John's first-person view, a touch nearer",
+                "a touch wider",
+                "pull back to John's first-person view, a touch wider",
+            ),
+            ("a touch nearer", "a touch nearer", "a touch nearer"),
+        ] {
+            let record = crate::scene::Scene {
+                camera: Some(crate::scene::Field {
+                    value: was.into(),
+                    origin: crate::scene::Origin::Clean,
+                }),
+                ..Default::default()
+            };
+            let looks = Looks {
+                record: Some(&record),
+                ..Default::default()
+            };
+            let e = read_extraction_for(&format!(r#"{{"camera": "{ask}"}}"#), &known, None, &looks)
+                .unwrap();
+            assert_eq!(e.scene["camera"], now, "{was}");
+        }
         // No recorded camera: the ask is the camera.
         let e = read_extraction(r#"{"camera": "a touch nearer"}"#, &known).unwrap();
         assert_eq!(e.scene["camera"], "a touch nearer");
