@@ -46,11 +46,17 @@ Two readings follow.
   documented benefit of SFT for tool use is mostly format and schema
   adherence, and here it has nowhere left to go. Training has to target
   *behaviour*: the 200 tool errors, 164 denials, 64 blocked sends and 11
-  `max_turns` runs. None of those has been classified by cause. The 164
-  are not all the owner's: `RunStats::tool_denied` counts "a human or a
-  policy refusing", and the split lives only in the result text, three
-  ways: `"Denied by the user:"`, `"Blocked by policy:"`, and a `pre_tool`
-  hook's `"Blocked by a hook:"`. A
+  `max_turns` runs. None of those has been classified by cause, and the
+  counters overlap. `RunStats::tool_denied` counts "a human or a policy
+  refusing", and it is not partitioned by any one field:
+  - The interlock's block sets `denied` *and* increments `blocked_sends`
+    on the same call, so the 64 blocked sends are inside the 164.
+  - The planning phase gate sets `denied` with its own prose.
+  - The rest split by result text: `"Denied by the user:"`,
+    `"Blocked by policy:"`, and a `pre_tool` hook's `"Blocked by a hook:"`.
+
+  So the owner's share of the 164 is unknown until a pass over the
+  transcripts sorts them. A
   failure the harness or prompt causes is cheaper to fix with
   `harness ruminate` than with weights.
 - **The owner-labelled signal is tiny.** Fifteen verified successes, and
@@ -187,9 +193,10 @@ Three conclusions carry to mecha:
 
 ## 7. The path, in order
 
-0. **Classify the failures.** The 200 tool errors, 164 denials (split
-   human from policy first), 64 blocked
-   sends and 11 `max_turns` runs, by cause: harness, prompt, tool, or
+0. **Classify the failures.** The 200 tool errors, the 164 denials (which
+   include the 64 blocked sends; sort by the interlock's block, the phase
+   gate, then the three result prefixes, as §1 lists) and the 11
+   `max_turns` runs, by cause: harness, prompt, tool, or
    model. This costs nothing and decides whether training has a target.
 1. **Build the data** from fixtures (§4), around 1–5k trajectories plus the
    mix, rendered with the router's template.

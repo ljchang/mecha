@@ -255,7 +255,11 @@ fan-out would be unbounded. For background runs, `DEFAULT_BACKGROUND_PERMITS`
 counts three, and each could fan out. So a background run's pass beyond
 its first takes a seat from the same permit directory the background runs
 share, and waits when none is free. The total of running background passes then never
-exceeds `router::background_seats`. On a model with two or more slots that
+exceeds `router::background_seats`. In practice that means a background
+`llm_map` runs one at a time in the steady state: at the pool's designed
+occupancy every seat is already held by a run, so a second pass has
+nothing to take. R7 decides whether that is the policy or a floor. On a
+model with two or more slots that
 keeps the owner's reserve whole. On a one-slot model it cannot:
 `seats_for` is never below one, and `permit.rs` concedes the owner can
 wait behind one background decode there.
@@ -471,8 +475,17 @@ attacker selects from their own text can be an address; that is a
     content-addressed, in the session's spill directory (the place spill
     already puts oversized results, outside the jail). The record holds
     its hash and length. A missing or mismatched blob makes that call
-    unreplayable and ungrounded, by name, never silently empty. Retention
-    follows the session's, so `sessions delete` removes them.
+    unreplayable and ungrounded, by name, never silently empty.
+  - **A root per session, not per workspace.** The spill root is keyed by
+    the workspace's hash, and `forget::purge_workspace` keeps it whenever
+    another conversation shares the workspace, which is the common case.
+    Uncapped mail and document bytes there would survive `sessions delete`
+    and break its "every trace of it" promise on the largest new
+    artifact. So program blobs live under `programs/<session-id>/` inside
+    the spill root, content-addressed within that session only. There is
+    no cross-session sharing to refcount, and `forget` removes the
+    session's directory unconditionally, as a named edit to `forget.rs`
+    with a test that a deleted session leaves no blob behind.
   - **Which list carries them, exactly.** `grounding::calls` takes
     `&[Message]` and borrows each `Call` out of it. Several of its readers
     hold a live conversation, where the only message list in scope *is*
@@ -510,6 +523,15 @@ attacker selects from their own text can be an address; that is a
   - `replay_run` answers a replayed program's host calls from the same
     record. Without it, a replay of any session that ran a program
     diverges at the first host call.
+- **It is a feature and a lever, not just a tool.** `code` follows
+  `ARCHITECTURE.md` §Features → *Adding a feature*: a `Feature` variant,
+  off by default, whose `own_state` asks the predicate its registration
+  asks. It needs a pinned `monty-pool` worker binary as its sidecar, with
+  `Feature::Ocr` and `Feature::System` as the precedent for a one-tool
+  feature with a sidecar and a pin. It is also a `harness::Lever`
+  (`Lever::CodeTool`) that `mecha eval` throws off, with
+  `Lever::CompactTool` as the precedent for a tool registered per request.
+  A scorecard must not grade a model with programs on unless it says so.
 - **Counters.** New `RunStats` counters: `programs`, `program_errors`,
   `subcalls`, `subcall_tokens`, `peeked_bytes`, `budget_stops`. Each is an
   `Option<u32>`, as `context_overflows` is, because a row written before
