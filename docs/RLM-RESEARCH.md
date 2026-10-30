@@ -187,7 +187,8 @@ Three things follow for mecha:
   still pay off in context and reliability.
 - **The trust decision stays where the owner wrote the shape**: a subagent
   profile's `answer_shape`, the rule `trusted_output` already applies and
-  the `classify` profile already uses. The residual — the attacker choosing
+  a `classify` profile in the owner's own config (not this repo)
+  already uses. The residual — the attacker choosing
   *which* of the owner's labels returns — is named in that rule's own
   terms. Letting a model choose the labels per call is an owner ruling.
 - **Pointers never cross as trusted.** "The spans that mention a deadline"
@@ -209,14 +210,16 @@ by the host, because Qwen3-Coder's thousands of sub-calls is the failure
 this model family is known for. And the prompt the root model sees should
 be written and tested for Qwen, not ported (the paper's own finding).
 
-### 3.4 Parallel sub-calls, sized to the server ❓
+### 3.4 Parallel sub-calls, sized to the owner's reserve ❓
 
 RLM's sub-calls were synchronous; Recursive Agent Harnesses gained by
-running children concurrently. Here the ceiling is the router's four slots
-of 262,144, one of them held by the root, and `permit.rs` already rations
-seats. A batched `llm_map` over a list of handles, bounded by free seats,
-is the cheap half of the parallelism; true concurrent child harnesses are
-`subagent.rs` work and not in scope.
+running children concurrently. Here concurrency spends the scarcest thing
+on the box. The router's slots are sized to the resident model
+(`router::background_seats`). `permit.rs` keeps background work one seat
+short of them so the owner's turn never queues, and it bounds interactive
+work not at all. A batched `llm_map` is worth having for its shape alone.
+Its concurrency should start at one and rise only by an owner ruling that
+leaves the reserve whole (`CODE-MODE-DESIGN.md` §4, R7).
 
 ### 3.5 Structured return, and a check that the decomposition happened
 
