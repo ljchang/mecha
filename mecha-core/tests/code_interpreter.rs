@@ -264,34 +264,45 @@ async fn a_program_cannot_open_a_file_read_the_environment_or_reach_the_network(
     let Some(interp) = interpreter(Backstops::default()).await else {
         return;
     };
+    // Statement-form imports: `__import__` is absent in monty 1.4, so a
+    // route through it dies of `NameError` before reaching the host and
+    // measures nothing (review of #765). Every route must fail with an
+    // exception the host's refusal produces, never `NameError`.
     let routes = [
-        "open('/etc/passwd').read()",
-        "open('/tmp/mecha-code-mode-probe', 'w').write('x')",
-        "__import__('pathlib').Path('/etc/hostname').read_text()",
-        "__import__('pathlib').Path('/').iterdir()",
-        "__import__('os').getenv('HOME')",
-        "__import__('os').environ['PATH']",
-        "__import__('socket')",
-        "__import__('urllib.request')",
-        "__import__('subprocess')",
-        "__import__('time').sleep(0.01)",
+        "v = open('/etc/passwd').read()",
+        "v = open('/tmp/mecha-code-mode-probe', 'w').write('x')",
+        "import pathlib\n    v = pathlib.Path('/etc/hostname').read_text()",
+        "import pathlib\n    v = list(pathlib.Path('/').iterdir())",
+        "import os\n    v = os.getenv('HOME')",
+        "import os\n    v = os.environ['PATH']",
+        "import socket\n    v = socket",
+        "import urllib.request\n    v = urllib",
+        "import subprocess\n    v = subprocess",
+        "import time\n    v = time.sleep(0.01)",
     ];
-    let mut src = String::from("denied = 0\n");
+    let mut src = String::from("denied = []\n");
     for r in routes {
         src.push_str(&format!(
-            "try:\n    v = {r}\n    print('ALLOWED', {r:?}, repr(v)[:40])\nexcept BaseException as e:\n    denied += 1\n"
+            "try:\n    {r}\n    print('ALLOWED', {r:?}, repr(v)[:40])\nexcept BaseException as e:\n    denied.append(type(e).__name__)\n"
         ));
     }
-    src.push_str("denied");
+    src.push_str("print(denied)\nlen(denied)");
     let (f, calls) = run_with(&interp, &src, &[], |_| Ok(Value::Null)).await;
     assert!(calls.is_empty());
     assert!(!f.printed.contains("ALLOWED"), "{}", f.printed);
+    assert!(
+        !f.printed.contains("NameError") && !f.printed.contains("SyntaxError"),
+        "a route never reached the host: {}",
+        f.printed
+    );
     assert_eq!(
         f.end,
         End::Complete {
             value: Some(Value::from(routes.len())),
             repr: routes.len().to_string()
-        }
+        },
+        "{}",
+        f.printed
     );
     assert!(!std::path::Path::new("/tmp/mecha-code-mode-probe").exists());
 }
@@ -565,8 +576,10 @@ async fn a_program_cannot_impersonate_a_backstop() {
     for src in [
         "raise TimeoutError('feed time limit exceeded: 61s > 60s')",
         "raise RuntimeError('suspension limit 5 exceeded')",
+        // The budget spent first, so the host's own count is at the limit.
+        "for i in range(5):\n    f(i)\nraise RuntimeError('suspension limit 5 exceeded')",
     ] {
-        let (f, _) = run_with(&interp, src, &[], |_| Ok(Value::Null)).await;
+        let (f, _) = run_with(&interp, src, &["f"], |_| Ok(Value::Null)).await;
         assert!(matches!(f.end, End::Raised(_)), "{src}: {:?}", f.end);
     }
 }

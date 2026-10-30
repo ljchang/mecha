@@ -134,7 +134,7 @@ pub fn verify(path: &Path) -> Result<VerifiedWorker> {
             pin.binary_bytes
         );
     }
-    let sha = crate::fetch::sha256_hex(&path)?;
+    let sha = crate::fetch::sha256_file(&path)?;
     if sha != pin.binary_sha256 {
         bail!(
             "{} does not hash to the pinned monty {MONTY_VERSION} worker (sha256 {sha}, pinned {})",
@@ -372,7 +372,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mecha-monty-pin-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let fake = dir.join("monty");
-        std::fs::write(&fake, vec![0u8; pin.binary_bytes as usize]).unwrap();
+        // Sparse: the right length, all zeros, no 25 MB written.
+        std::fs::File::create(&fake)
+            .unwrap()
+            .set_len(pin.binary_bytes)
+            .unwrap();
         let err = verify(&fake).unwrap_err().to_string();
         assert!(err.contains("does not hash to the pinned"), "{err}");
         std::fs::write(&fake, b"short").unwrap();
