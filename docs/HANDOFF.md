@@ -6973,6 +6973,31 @@ unprefixed, store at `~/.mecha-graph/`). What that arc left open:
   `precheck`). Nothing would notice a build on an older toolchain failing;
   state it in `Cargo.toml` or add an MSRV job.
 
+### Code mode and the RLM arc — designed and ruled, nothing built
+
+`docs/CODE-MODE-DESIGN.md` is the authority. `docs/RLM-RESEARCH.md` and
+`docs/POST-TRAINING-RESEARCH.md` hold the evidence (#760, merged
+9506285a1). The owner ruled R1–R3 and R5–R9 on 2026-10-30. Verified
+unbuilt at 9506285a1: no `code` tool in the registry, no `Lever::CodeTool`,
+no effect-class axis on `Tool`.
+
+- **M1 is owed before R4.** Measure `monty-pool` worker start and
+  per-host-call overhead on this box, alone and under contention. R4 sets
+  the budget defaults from M0 (done, §10) and M1.
+- **The build order is the design's, not §3.12's.**
+  1. `ROLLOUT-DESIGN.md` §3.2's effect class, shared with rollouts.
+  2. Split `Agent::dispatch`'s per-call body into gate and rendering.
+  3. The `code` tool (read-only slice, handles, typed `llm_query`), as a
+     `Feature` and a `harness::Lever`.
+  4. The `analyst` profile.
+
+  Each step has §8 tests that must fail on the naive build.
+- **Post-training is not started, deliberately.** Step 0 (2026-10-30)
+  found six owner denials, with the model-side failures being retry loops.
+  Of the three harness fixes it named, #762 (in review) adds one and
+  finishes one; the third was already in the tree. Training waits on a
+  grader for answer quality.
+
 ### Larger, and deliberately not started
 
 - **Canvas — researched 2026-08-21, blocked on a credential, and the

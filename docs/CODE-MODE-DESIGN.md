@@ -1,6 +1,6 @@
 # Code mode, reshaped by RLM — design
 
-**Status: 2026-10-30, designed, nothing built. Rulings owed (§11).**
+**Status: 2026-10-30, designed, nothing built. Ruled 2026-10-30 except R4, which waits on M1 (§11). M0 measured (§10).**
 
 This supersedes the *shape* of `AUDIT-RESEARCH.md` §3.12 ("programmatic
 tool calling, on monty"). That section's contract, its first hazard (taint
@@ -50,6 +50,14 @@ existing `AnswerShape` rule.
   `re` (fancy-regex; no `subn`, no `VERBOSE`), `json`, `collections`,
   `itertools`, `datetime`, slicing and string methods. Absent: `enum`,
   `string`, `io`, `operator`.
+- **Exceptions are a closed set, each carrying one string.** A program
+  cannot define an exception class (classes cannot inherit), and a host
+  can raise only a built-in `ExcType` with one message: `MontyException`
+  is a type, a message, a traceback, and structured data for the unicode
+  and JSON errors alone (monty's `docs/limitations/exceptions.md`, not this repo's, and
+  `monty-types`' `ExcType`/`ExcData` at tag 1.4.0). So a host failure has
+  no class of its own and carries no value but its message, which §4
+  builds on and §3 constrains.
 - **`AUDIT-RESEARCH.md` §3.2 shipped.** `QuarantinedPass::response_schema`
   exists. The shipped default is `structured_output = "disabled"` until an
   endpoint is verified; the owner's install sets `"llama_json"` on every
@@ -148,6 +156,7 @@ the call's `ToolOutput::external` and the tool's capabilities.
 | `find(h, pattern)` | list of (start, end) | offsets, never text |
 | `count(h, pattern)` | int | |
 | `json_get(h, path)` | Handle for a string, object or array leaf; a number, bool or null as itself | structured tool output without decoding it into the program. A string leaf is text and stays a handle, or it would bypass `peek`'s cap and count |
+| `budget()` | dict of ints | the remaining amount of each **per-program** §5 host limit, read without spending anything, so a program can check before a sweep. The process-wide byte pool is left out: it moves with other programs, and reading it would be a cross-program observable, the `find`/`count` oracle's cousin |
 | `peek(h, n=2000)` | str | **the only way a handle's text enters the program**; a `str[n]` sub-call result (§4) is the other way prose does, and both draw on one cap and one count |
 
 `print(h)` renders a stub such as
@@ -182,6 +191,22 @@ the call's `ToolOutput::external` and the tool's capabilities.
 - **Patterns run host-side** with Rust's `regex` (linear time), not
   monty's backtracking engine, so a pattern cannot cost unbounded time on
   adversarial text.
+- **A host-raised error is a third route for prose, so the host's
+  messages carry no bytes.** A program reads a failure as `str(e)`, and an
+  uncaught one reaches the model as a traceback. A message quoting a
+  handle's text, a tool's error body or a failed pass's raw output would
+  put prose into the program past `peek`'s cap and outside
+  `peeked_bytes`, and into the model's context unasked. So every message
+  the host writes names the handle's number, offsets, the tool and the
+  limit, and for a failed pass what failed to parse (wrong type, a missing
+  field, a label outside the set), never the text. A tool's error body is
+  bytes like any result: the message names a handle that holds it, and a
+  program that wants the reason `peek`s it, counted. Monty's own errors
+  need no rule: a program holds a `str` only from `peek`, a `str[n]`
+  result or its own literals, so an error quoting a value re-quotes
+  counted text. An uncaught error's traceback takes the ordinary output
+  budget, and a cut keeps the raised line and says how many frames it
+  dropped, because that line is the model's only feedback (§5).
 
 ---
 
@@ -218,16 +243,45 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
   cap vouches for nothing. Here it is a program-internal shape that
   changes no label. It must not become a `trusted_output` shape (§6).
 - **`structured_output` must be on.** A provider with it `Disabled` makes
-  `llm_query` refuse with a typed error, never fall back to parsing prose
+  `llm_query` raise (`QueryError:`, below), never fall back to parsing prose
   by hope: the silently-degrading-guard rule.
 - **Results carry the union of their sources' labels.** A shape bounds how
   much an attacker can say; it does not change who said it. Inside a
   program nothing narrows, which is why this slice needs no security
   ruling.
-- **A failure raises.** A pass that fails the schema twice raises
-  `QueryError`, catchable in the program. It never returns a sentinel
-  string: DSPy's `"[ERROR] ..."` string is the kind of value a program
-  aggregates as data.
+- **A failure raises.** A pass that fails the schema twice raises,
+  catchable in the program. It never returns a sentinel string: DSPy's
+  `"[ERROR] ..."` string is the kind of value a program aggregates as
+  data. Monty has no class to raise it as (§1), so every host failure is
+  a `RuntimeError` whose message opens with a fixed tag. The tag is the
+  only thing a program can tell *host* causes apart by; an untagged
+  exception is monty's own (a `TypeError` in the program's code, say), and
+  a backstop (§5) is not an exception at all. The tags are `QueryError:` for a failed pass,
+  `ToolError:` for a tool that returned `is_error` or a host call refused
+  (§7, followed by the loop's own refusal prefix, so a policy block still
+  never reads as a person's denial), `HandleError:` for a §3 handle
+  operation that cannot apply (`json_get` on bytes that are not JSON, a
+  path that does not exist, a slice out of range), and `LimitError:` for
+  a §5 limit. The text after the tag follows §3's rule: no bytes.
+- **`llm_map` raises at the first failed item, and the passes before it
+  are spent.** The error names the item's index and how many items
+  completed, as numbers. Items, not passes: a schema retry is another
+  pass (§5). An exception cannot carry the completed values
+  (§1), and returning `None` in a failed item's place would be the
+  sentinel again: a filter that keeps the `"urgent"` answers drops it
+  silently, and the count comes out low with nothing raised. A program
+  that wants partial results loops `llm_query` under `try`/`except` and
+  keeps its own list of failures. Under R7 that costs nothing, because
+  `llm_map` runs one pass at a time anyway. It does lose one guarantee:
+  `llm_map` refuses up front when the sweep is longer than the remaining
+  sub-call budget, or, for a thinking-on sweep, the remaining thinking
+  passes. One case stays mid-sweep: a thinking-off sweep whose passes think
+  anyway (§11, R6) can still cross the thinking cap partway, and raises
+  there. Meanwhile, a hand-rolled loop spends passes until the cap and then
+  raises mid-sweep. The prompt's example checks the remaining budget
+  first, through `budget()` (§3). The root's prompt shows that
+  loop, and an eval case checks the model uses it when one bad source
+  should not void a sweep.
 - **Same model only.** Sub-calls go to the model the run already holds. On
   the router, naming another preset swaps the resident model and evicts
   every slot.
@@ -238,7 +292,7 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
   tool, so the interlock never covered it. That is harmless on the local
   router, which is what this slice is for. On a remote provider it is
   more of the owner's data leaving the box than the same task sends
-  today. Until the owner rules otherwise, `llm_query` refuses on any
+  today. Ruled R8 (no): `llm_query` refuses on any
   provider that is not local, by the same rule as `structured_output`.
   "Local" is the predicate that already exists: the provider's `kind` is
   `local` and `provider::router::is_loopback` holds for its base URL. A
@@ -275,9 +329,18 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
   with thinking on is the HTTP-200-with-empty-`content` failure, and a
   pass refuses that by name, as the clients do, rather than reading it as
   an answer.
-- **Thinking**: the default is the server's. The ruling waits on M0 (§10),
-  because llama.cpp issue #20345 has reports of grammar plus thinking
-  failing on Qwen3.6 after the March fix.
+- **Thinking is off by default** (R6, after M0). A pass asks for
+  `enable_thinking: false`. A program may ask for thinking per call. **The
+  floor above wins either way: every pass gets `max_tokens` of 8,192,
+  above the server's 4,096 reasoning budget.** Thinking off is a request
+  for lower latency, not a licence to drop below the budget. The request
+  cannot prove it was honoured: `enable_thinking` rides in
+  `chat_template_kwargs`, which `LLAMA-SERVER.md` records as accepted and
+  ignored without `--jinja`. The router writes `jinja = true` today, but a
+  preset that lost it would leave thinking on. A 128-token pass would then
+  return HTTP 200 with empty `content`, and every default `llm_query`
+  would raise. M0 measured thinking at ~40× the latency of a pass
+  without it, and it was less consistent on an ambiguous message (§10).
 
 `llm_map` is written with `asyncio.gather`, so the program does not
 change when concurrency does, but **its concurrency bound is one by
@@ -293,36 +356,48 @@ default**: the host runs one pass at a time. The bound is the host's own, becaus
 - The slot count is not fixed: `router::background_seats` sizes to the
   resident model, never fewer than one.
 
-Any concurrency above one is ruling R7, and it is bounded across runs,
-not per run. **An interactive run's sub-calls stay at one**: they take no
-permit, as interactive work never does, and so they are never parallel
-either. Otherwise the owner would queue behind their own fan-out, or the
-fan-out would be unbounded. For background runs, `DEFAULT_BACKGROUND_PERMITS`
-counts three, and each could fan out. So a background run's pass beyond
-its first takes a seat from the same permit directory the background runs
-share, and waits when none is free. The total of running background passes then never
-exceeds `router::background_seats`. In practice that means a background
-`llm_map` runs one at a time in the steady state: at the pool's designed
-occupancy every seat is already held by a run, so a second pass has
-nothing to take. R7 decides whether that is the policy or a floor. On a
-model with two or more slots that
-keeps the owner's reserve whole. On a one-slot model it cannot:
-`seats_for` is never below one, and `permit.rs` concedes the owner can
-wait behind one background decode there.
+**R7 is ruled: one at a time, for every run.** An interactive run's
+sub-calls take no permit, as interactive work never does. A background
+run's sub-calls run inside the one permit the run already holds. Nothing
+in this slice adds seat accounting for sub-call passes.
+
+*If R7 is ever raised* (design kept for that ruling, not built): any
+concurrency above one would be bounded across runs, not per run. An
+interactive run would still stay at one, or the owner would queue behind
+their own fan-out. A background run's pass beyond its first would take a
+seat from the permit directory the background runs share, and wait when
+none is free, so the total of running background passes would never
+exceed `router::background_seats`. At the pool's designed occupancy every
+seat is already held by a run, so even then a second pass would usually
+have nothing to take. On a model with two or more slots that would keep
+the owner's reserve whole. On a one-slot model it cannot: `seats_for` is
+never below one, and `permit.rs` concedes the owner can wait behind one
+background decode there.
 
 ---
 
 ## 5. The budget
 
-Per program, enforced by the host, every limit a typed error the program
-can catch:
+Per program. **Two kinds of limit, and only the first is catchable:**
+- **Host limits** are counted by mecha at a host call. Crossing one
+  raises a `LimitError:`-tagged `RuntimeError` naming the limit, which the
+  program can catch (§4). These are sub-calls, sub-call input tokens,
+  thinking-on passes, tool reads, handle operations, host bytes (per
+  program and per process), live handles, and `peek` plus `str[n]` bytes.
+- **Backstops** are the wall clock (`monty-pool`'s `request_timeout`), and
+  monty's own memory, allocation and recursion limits with
+  `max_suspensions`. They end the program from outside, uncatchably,
+  because a backstop the program could catch would not be one. The `code`
+  call still returns a `tool_result`: whatever the program printed, then
+  a harness line naming the backstop that fired.
 
 | Limit | Default (ruling R4) | Enforced by |
 |---|---|---|
-| sub-calls | 32 | the host, **per pass**: `llm_map` over N handles is N, and a schema retry is another. An `llm_map` longer than the remaining budget raises before its first pass |
+| sub-calls | 32 | the host, **per pass**: `llm_map` over N handles is N, and a schema retry is another. An `llm_map` longer than the remaining budget raises before its first pass, and so does a thinking-on `llm_map` longer than the remaining thinking passes |
+| thinking passes | 8 (proposed) | the host, counting passes that **did** think, not passes that asked to: a pass whose response carries reasoning (`reasoning_content`, recorded as `Block::Thinking`) counts, whatever it requested. A thinking-off request can be silently ignored (§4), so counting requests would read 0 while every pass thinks and the clock binds first. The pass after the cap raises. This is the row that keeps the clock from binding first (below) |
 | sub-call input tokens | 120k | the host, from `Usage`. Sized so that it binds before the clock even under contention (below) |
 | tool reads | 256 | the host, counted at the gate |
-| handle operations (§3) | 2,048 | the host; monty `max_suspensions` set to the sum as a backstop |
+| handle operations (§3) | 2,048 | the host. `budget()` counts as one, so a loop of it ends in a `LimitError:`, not a backstop. Monty's `max_suspensions` is set to the sum of the counted limits as a backstop |
 | wall clock | 600 s | `monty-pool` `request_timeout`, which is **unset by default** and must be set |
 | host bytes held by handles | 64 MB | the host, summed over every tool read's raw result; the read that would cross it raises |
 | live handles | 4,096 | the host. `split`, `lines` and `chunks` refuse a result that would cross it, and `chunks` refuses `n` below 256, so one counted operation cannot mint a handle per byte |
@@ -342,6 +417,14 @@ clock is 600 s, the number `STALL_TIMEOUT` reached by the same arithmetic,
 and not 300. R4 chooses between raising the clock and lowering the token
 cap, after M0 and M1 measure a pass on this box under contention as well
 as alone.
+
+**That ordering holds only with thinking off, the R6 default.** M0
+measured a thinking-on pass at a median of ~14 s, before prefill. 32
+thinking-on sub-calls are ~450 s of decode alone, and ×2.85 under
+contention is past the 600 s clock. So a pass that asks for thinking
+draws on the budget at a higher rate. R4 sets a separate, smaller cap on
+thinking-on passes (8 is a proposal), so the clock still never binds
+first.
 
 A long document chunked into handles can reach 256 host calls before 32
 sub-calls, because `find`, `slice` and `chunks` are host calls. So the
@@ -731,6 +814,13 @@ attacker selects from their own text can be an address; that is a
      increments `tool_denied`.
    - With the feature off, a profile naming `code` fails at launch with
      the message that names the feature, not the typo message.
+   - A marker string planted in a source whose pass fails its schema
+     twice, in a tool's error body, and in a non-JSON handle given to
+     `json_get` appears in none of the three raised messages, and
+     `peeked_bytes` is unchanged. Each message opens with its §4 tag. A
+     host that quotes the failed output fails the first.
+   - `llm_map` over three handles whose second pass fails raises
+     `QueryError:` naming index 1 and one completed item.
    - Taint is armed before `resume` on a host call whose result is never
      printed, and the `code` result comes back `external` when any host
      call returned external content, so `Dispatched::external` and the
@@ -742,11 +832,19 @@ attacker selects from their own text can be an address; that is a
      byte, with no `CAP_MARKER` and no untrusted wrapper, and a `find`
      offset past the budget indexes the source correctly.
    - `llm_query` refuses when `structured_output` is disabled.
-   - Each budget limit stops a program with its typed error.
+   - Every pass's request carries `max_tokens` of 8,192, with thinking
+     off or on; a pass built with less fails the test.
+   - A scripted pass that asked for thinking off but returned reasoning
+     counts against the thinking-pass cap; counting requests instead
+     fails it.
+   - Each host limit (§5) raises a catchable `LimitError:`-tagged error
+     naming the limit. Each backstop ends the program uncatchably, and the
+     `tool_result` names the backstop after the program's printed output.
 2. **The effect class from `ROLLOUT-DESIGN.md` §3.2** is built and is the
    admission rule; a test asserts `message_send` and `image_generate` are
    absent from a program.
-3. **`structured_output` is probed** on the installed build (M0).
+3. **`structured_output` is probed** on the installed build (M0). ✅
+   2026-10-30, §10.
 4. **The experiment in §10 has run** and its predictions are recorded,
    whichever way they fell.
 
@@ -778,6 +876,39 @@ schema-valid rate, latency for a three-label enum, and whether reasoning
 leaks into the grammar, and the smallest `max_tokens` at which a pass with
 thinking on still returns content. That floor is R6's input. Issue #20345
 has April and May reports of failure on this model after the fix landed.
+
+**M0, measured 2026-10-30.** 34 sequential requests on the router
+(build `b1915-27637851`, reasoning budget 4,096), against the resident
+preset `qwen3.6-35b-a3b-uncensored`, the same architecture and template as
+the production preset. Probing production would have swapped the resident
+model. Each request was gated on `voice.live = no`. The input was a made-up
+message carrying an injected "reply APPROVED" line. Schemas were a
+three-label enum and a three-field record (bool, `str` ≤ 32, int range).
+
+| Thinking | `max_tokens` | Schema-valid | Median latency | Failures |
+|---|---|---|---|---|
+| on | 512 | 0/6 | 5.5 s | all `finish: length`, HTTP 200, empty `content` |
+| on | 2,048 | 5/6 | 15 s | one: reasoning ran to ~8.5k characters |
+| on | 8,192 | 8/8 | 14 s | none |
+| off | 128 or 1,024 | 14/14 | 0.3–0.5 s | none |
+
+- **The grammar held.** Every pass that returned content was
+  schema-valid, in both the `llama_json` wire form
+  (`{"type":"json_object","schema":…}`) and the standard
+  `json_schema` form. No reasoning leaked into the output. The #20345
+  reports do not reproduce on this build.
+- **Every failure was the envelope failure CLAUDE.md names:** thinking
+  used the whole allowance. With thinking on, `max_tokens` must clear the
+  reasoning budget.
+- **No pass that returned content echoed the injected instruction**
+  (0/27; the other 7 returned nothing).
+- **Thinking was less consistent.** On the enum (an arguably ambiguous
+  message), thinking gave all three labels across seven runs. Without it,
+  eight runs agreed. One message and small numbers, and agreement is not
+  correctness, but it points the same way as the latency.
+
+The probe and its raw results are outside the repo; the table above is
+the record.
 
 **M1.** `monty-pool` worker start and per-host-call overhead on this box,
 owed since `CODE-MODE-RESEARCH.md`.
@@ -814,22 +945,56 @@ The predictions to falsify:
 
 ---
 
-## 11. Rulings owed
+## 11. Rulings
 
-- **R1.** The first slice is read-only (§2), and the effect-class table is
-  built first and shared with rollouts.
-- **R2.** Per-call shapes chosen by an unarmed parent (§6).
-- **R3.** Composite shapes come back `external` (§6).
-- **R4.** The budget defaults (§5).
-- **R5.** `peek` exists, capped and counted (§3).
-- **R6.** Sub-call thinking, after M0 (§4).
-- **R7.** Any `llm_map` concurrency above one, and how much of
-  `router::background_seats` it may draw (§4).
-- **R8.** Whether `llm_query` may run on a remote provider, which sends
-  past today's output cap (§4).
-- **R9.** Whether the outbox's owner-facing join may open a
-  `trusted_output` child's nested program records, and only if no model
-  pass reads that join (§7).
+Ruled by the owner on 2026-10-30, taking the recommendation on each ("go
+with your recs"), except R4, which waits on M1.
+
+- **R1. Yes.** The first slice is read-only (§2), and the effect-class
+  table is built first and shared with rollouts.
+- **R2. Yes, narrowly.** An unarmed parent may choose a per-call shape of
+  bool, number, or one-of with at most 16 labels (§6). An armed parent's
+  shape narrows nothing.
+- **R3. Yes.** Composite shapes come back `external` (§6).
+- **R4. Owed.** The budget defaults (§5) are set after M0 (done) and M1
+  measure a pass and a worker on this box.
+- **R5. Yes.** `peek` exists, capped together with `str[n]` results, and
+  counted (§3). The cap's number belongs to R4's budget table (§5), with
+  16 KB as its proposed default.
+- **R6. Thinking off by default**, on per call (§4, from M0). **Every
+  pass gets `max_tokens` of 8,192, thinking or not**, because the
+  thinking-off request can be silently ignored (§4). The floor alone
+  carries a preset that lost `jinja`: the pass thinks, stays under the
+  allowance, and still answers. The thinking-pass cap counts what came
+  back, not what was asked (§5). **Owed, not claimed:** whether a small
+  `CompletionRequest::think_budget` (`reasoning_budget_tokens`) adds a
+  second bound. `provider/openai.rs` records it as honoured only for a
+  template with thinking tags, and `LLAMA-SERVER.md` says per-request
+  template controls are inert without `--jinja`, so it is likely no help
+  in exactly the case it would be for. The build measures it before
+  relying on it.
+- **R7. One at a time.** No `llm_map` concurrency above one for now (§4).
+- **R8. No.** `llm_query` refuses on any provider that is not local (§4).
+- **R9. Yes, conditionally.** The outbox's owner-facing join may open a
+  `trusted_output` child's nested program records, but only while no model
+  pass reads that join (§7). The build lists every reader of the join and
+  asserts none is a model pass.
+- **And the `code` call itself is `read_only()`.** A program runs
+  without a prompt. The reason is not that its tools would all skip the
+  approver: a read-only tool still meets a `prompt` or `forbid` policy
+  rule. The reason is that every host call still goes through the full
+  gate, policy included (§7). A host call that would prompt raises
+  instead, and one that is forbidden is refused. Approving the program as
+  a whole would add a prompt in front of checks that already run per
+  call. This was
+  raised by review pass 17 and decided with the rest. `read_only()`
+  controls three things, not one: the approver's rule-free branch,
+  `PermissionMode::ReadOnly` (which allows a `read_only()` tool and blocks
+  any other), and the planning phase gate (`Phase::allows`, applied in
+  `Registry::specs_for` and per call). So a read-only `code` is offered
+  and runnable while planning, and in a read-only session. Both are right
+  for this slice. **The flag flips when the sink slice admits a sink**,
+  and §12 says so.
 
 ---
 
@@ -841,8 +1006,16 @@ is a design, and its list of named edits rots against the tree faster
 than an architecture section kept beside the code.
 
 - **Sinks of any kind**, pausing at the outbox, and persisted program
-  state. The sink slice is §3.12's original shape, with snapshots MAC'd,
-  taint carried beside them, and a version mismatch failing closed.
+  state. Admitting a sink also flips `code` off `read_only()`, which takes
+  it out of `Phase::Plan` and `PermissionMode::ReadOnly` (§11). That
+  flip is the mechanism, not just a consequence: `ModeApprover` checks
+  `PermissionMode::ReadOnly` per call, and the `code` call meets it once,
+  under its own flag. A host call meets it only on a path that reaches
+  `ModeApprover::permit` (an `allow` rule), and none on the rule-free
+  branch §7 skips. So the `code` flag is what reliably keeps a read-only
+  session from running a program with a sink. The sink slice is §3.12's original
+  shape, with snapshots MAC'd, taint carried beside them, and a version
+  mismatch failing closed.
 - **`Blind` tools.**
 - **Value-level labels inside the program** (CaMeL's capability tags).
   monty does not track data flow, and filtering it by hand is the approach
@@ -850,3 +1023,60 @@ than an architecture section kept beside the code.
 - **Depth above 1.**
 - **Training** the model on its programs. `POST-TRAINING-RESEARCH.md` §7
   names it as a later target.
+
+---
+
+## 13. Adoption risk: will the model use it?
+
+**Raised by the owner on 2026-10-30, and ruled: build the feature, test it,
+then refine.** The concern is that the local model will never call `code`,
+or will call it and write programs that do not work. Nothing below gates
+the build. It is what testing should look at first.
+
+**The evidence for the concern.** Measured over the non-test sessions
+on 2026-10-30, 767 of them:
+
+| Tool | Calls | Sessions |
+|---|---|---|
+| `recall`, `compact`, `skill` | 0 | 0 |
+| the `research` subagent | 48 | 31 |
+| `todo` | 84 | 23 |
+| `shell` running Python | 44 of 319 shell calls | |
+
+The three tools never called were not registered in every session, so
+their zero is measured against an unknown denominator (how many
+sessions offered them), so it is not a refusal rate.
+The pattern still reads plainly:
+- Tools that serve the harness have never been chosen.
+- A tool named for a task is chosen routinely.
+- The model already writes Python when it has a shell.
+
+The literature agrees:
+- `RLM-RESEARCH.md`: Qwen3-Coder needed its prompt changed, and Qwen3-8B
+  needed post-training.
+- Prime Agent reports friction allocating subagents.
+- Recursive Agent Harnesses saw the parent skip spawning.
+
+**What to do about it, in order of cost:**
+
+1. **Name entry points for the task, not the mechanism.** Profiles such
+   as `ask_inbox` and `ask_document` (§6) whose descriptions say what
+   they answer, the shape `research` already proves this model uses. A
+   bare `code` reads like `compact` and `recall`, which it has never
+   called.
+2. **Offer it at the moment of need.** When a read would spill past
+   `output_budget_bytes`, the result can carry a handle and one line
+   saying `code` can query it. The line rides in a tool result, so the
+   cached prefix is untouched.
+3. **Entry points the owner writes**, where no model choice is involved:
+   a trigger, a skill, or a slash command that calls the analyst directly.
+4. **M2, once the slice runs:** on fixture tasks that need aggregation,
+   measure *choice* (how often `code` is picked when offered) and
+   *competence* (whether its programs run and answer correctly). The
+   §10 experiment's decomposition check is the same question at
+   experiment scale.
+5. **Post-training, only if competence is what fails.** That would be
+   the first real target `POST-TRAINING-RESEARCH.md` has found; its step 0
+   found none in the current corpus. The precedent is RLM-Qwen3-8B,
+   about 1,000 filtered trajectories from a stronger model writing
+   programs in the same harness.
