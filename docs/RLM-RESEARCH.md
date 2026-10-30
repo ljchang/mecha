@@ -115,7 +115,7 @@ subagent specs that a background `/refine` pass edits.
 | Long input kept out of the root context | Spill (oversized tool output to a file, read on demand); `recall` over the session's recorded history |
 | A sub-model on a piece of the input | `QuarantinedPass` — no tools, one message, optional `response_schema` (`quarantine.rs`) |
 | Typed answers from the sub-model | `subagent.rs`'s `trusted_output` + `AnswerShape` (`number`, `boolean`, one of a closed set): a shape-proven answer comes back not `external`; prose fails the vouch and stays untrusted |
-| Decoder-enforced types | `structured_output = "llama_json"` on every local provider; llama.cpp applies the grammar after the thinking block closes (`LLAMA-SERVER.md`) |
+| Decoder-enforced types | `structured_output`, off by default until an endpoint is verified, and `"llama_json"` on every local provider in the owner's install; llama.cpp applies the grammar after the thinking block closes (`LLAMA-SERVER.md`) |
 | A child harness | `subagent.rs` — an allowlisted registry, taint inherited downward |
 | Messages between agents | `mailbox.rs`, taint travelling with the message |
 | Retained skills and rules | `skill.rs`, the learning store — behind provenance gates and a measurement gate, which is exactly what Prime Agent's reward-hacked skill lacked |
