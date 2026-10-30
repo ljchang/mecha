@@ -14,7 +14,9 @@ figure, not reproduced · ❓ inferred, not established.
 ## The one-sentence answer
 
 **Take the handle, the typed sub-call and the depth-1 limit, and nothing
-else.** An RLM is the `code` tool `AUDIT-RESEARCH.md` §3.12 already
+else.** On CodeQA the open model did best with the handle and no
+sub-calls at all (66.0 against 56.0 at depth 1), so the sub-call is a tool
+the program may use, never one it is told to. An RLM is the `code` tool `AUDIT-RESEARCH.md` §3.12 already
 planned, plus one host function that is a `QuarantinedPass` with a shape.
 The handle and the budget are a context and reliability win on their own.
 The security win is narrower than it first looks: the literature on typed

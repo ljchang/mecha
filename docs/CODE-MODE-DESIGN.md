@@ -249,7 +249,14 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
     provider construction, where the config is in hand;
   - a provider that is not local refuses a `local_only` request, by name;
   - `Failover` skips a non-local fallback for that request, exactly as it
-    already skips a fallback without structured-output support.
+    already skips a fallback without structured-output support;
+  - `Halting`, which `provider::build` wraps around every provider,
+    forwards `local()` to its inner provider. Its own comment says a new
+    trait method must be forwarded there, after the `Failover::vision`
+    incident. Either default body would be wrong: `false` silently kills
+    the feature on the owner's own router, and `true` decides R8 by
+    omission. So `local()` has **no default body**, and the compiler
+    finds every implementation, including both wrappers.
 
   The loop never learns which provider answered, which is the invariant
   `CLAUDE.md` names.
@@ -309,6 +316,7 @@ can catch:
 | wall clock | 300 s | `monty-pool` `request_timeout`, which is **unset by default** and must be set |
 | host bytes held by handles | 64 MB | the host, summed over every tool read's raw result; the read that would cross it raises |
 | live handles | 4,096 | the host. `split`, `lines` and `chunks` refuse a result that would cross it, and `chunks` refuses `n` below 256, so one counted operation cannot mint a handle per byte |
+| host bytes, all programs in the process | 256 MB | one process-wide pool every program draws from. `dispatch` runs a turn's calls under `join_all`, so two `code` calls in one message, a parent's program beside an `analyst` child's, and `mecha batch` are all concurrent, and per-program limits alone would not bound N × 64 MB. A read that would cross either limit raises |
 | memory, allocations, recursion | monty's limits | the pool worker, which bounds the interpreter's heap. It does not own the handles' bytes, which is why the two rows above exist |
 | `peek` bytes plus `str[n]` result bytes | 16 KB together | the host, one count (`peeked_bytes`) |
 
@@ -599,9 +607,22 @@ attacker selects from their own text can be an address; that is a
     a child agent writes no session file today. So the subagent tool's
     output carries its child's `program` records up, and the parent's
     session writes them nested under the subagent call. They go in the
-    file, never the parent's context. A draft the parent stages after an
-    `analyst` answer then joins to the threads the child read, not just to
-    the shaped answer.
+    file, never the parent's context, and they serve replay and the
+    owner's review.
+  - **The walk stops at a `trusted_output` child's shape.** "Never the
+    parent's context" is true of the message list but not of what reaches
+    a prompt. `gossip.rs` takes `call.result` into a packet a model reads,
+    `persona/cite.rs` checks claims against it, and `attribution.rs` and
+    `appraisal_store.rs` build their evidence from it. Today a
+    `trusted_output` child's reads reach none of them, because a child
+    writes no session. That is §6's whole gain: only the declared shape
+    crosses. Nested records must not undo it. So `grounding::calls`
+    yields a `trusted_output` child's nested calls to no reader by
+    default; for those readers, the subagent call's result is the shaped
+    answer and nothing under it. Whether the outbox's owner-facing
+    "what this draft answers" view may open them is ruling R9. That view
+    is read by a person, but any model pass over a draft that reads the
+    same join (a forecast, a title) would inherit the prose.
   - `replay_run` answers a replayed program's host calls from the same
     record. Without it, a replay of any session that ran a program
     diverges at the first host call.
@@ -669,6 +690,9 @@ attacker selects from their own text can be an address; that is a
    - A transcript carrying a `program` record loads in a binary that
      predates it: the record is skipped as unknown, never failing the
      file. It is a wire format, read in `Session::messages_ever`'s loop.
+   - After an `analyst` child read a thread, a parent-side `gossip` packet
+     and a `persona/cite` pass see the shaped answer and no nested call.
+     With the walk yielding child records, this fails.
    - Each host call pushes a `ToolCallTrace` tagged `in_program`. A
      `pre_tool` hook that denies a host call raises in the program *and*
      increments `tool_denied`.
@@ -770,6 +794,9 @@ The predictions to falsify:
   `router::background_seats` it may draw (§4).
 - **R8.** Whether `llm_query` may run on a remote provider, which sends
   past today's output cap (§4).
+- **R9.** Whether the outbox's owner-facing join may open a
+  `trusted_output` child's nested program records, and only if no model
+  pass reads that join (§7).
 
 ---
 
