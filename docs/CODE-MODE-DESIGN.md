@@ -1,6 +1,6 @@
 # Code mode, reshaped by RLM — design
 
-**Status: 2026-10-30, designed, nothing built. Ruled 2026-10-30 except R4, which waits on M1 (§11). M0 measured (§10).**
+**Status: 2026-10-30, designed; the interpreter backend (slice 3a, `mecha-core/src/interpreter/`) built, nothing wired. Ruled 2026-10-30 except R4, which waits on M1 (§11). M0 and M1 measured (§10).**
 
 This supersedes the *shape* of `AUDIT-RESEARCH.md` §3.12 ("programmatic
 tool calling, on monty"). That section's contract, its first hazard (taint
@@ -384,9 +384,12 @@ Per program. **Two kinds of limit, and only the first is catchable:**
   program can catch (§4). These are sub-calls, sub-call input tokens,
   thinking-on passes, tool reads, handle operations, host bytes (per
   program and per process), live handles, and `peek` plus `str[n]` bytes.
-- **Backstops** are the wall clock (`monty-pool`'s `request_timeout`), and
-  monty's own memory, allocation and recursion limits with
-  `max_suspensions`. They end the program from outside, uncatchably,
+- **Backstops** are the wall clock (the interpreter's own deadline, with
+  `monty-pool`'s per-turn `request_timeout` and `max_feed_duration` behind
+  it), monty's memory limit, and `max_suspensions`. Monty 1.4 has no
+  allocation-count limit, and its recursion limit raises a *catchable*
+  `RecursionError`, so recursion is bounded but is not a backstop (§10,
+  M1). They end the program from outside, uncatchably,
   because a backstop the program could catch would not be one. The `code`
   call still returns a `tool_result`: whatever the program printed, then
   a harness line naming the backstop that fired.
@@ -398,11 +401,11 @@ Per program. **Two kinds of limit, and only the first is catchable:**
 | sub-call input tokens | 120k | the host, from `Usage`. Sized so that it binds before the clock even under contention (below) |
 | tool reads | 256 | the host, counted at the gate |
 | handle operations (§3) | 2,048 | the host. `budget()` counts as one, so a loop of it ends in a `LimitError:`, not a backstop. Monty's `max_suspensions` is set to the sum of the counted limits as a backstop |
-| wall clock | 600 s | `monty-pool` `request_timeout`, which is **unset by default** and must be set |
+| wall clock | 600 s | the interpreter, from the program's start and across the host's answers. `monty-pool`'s `request_timeout` is **unset by default** and is set to the same value, but it bounds one protocol turn, not the program |
 | host bytes held by handles | 64 MB | the host, summed over every tool read's raw result; the read that would cross it raises |
 | live handles | 4,096 | the host. `split`, `lines` and `chunks` refuse a result that would cross it, and `chunks` refuses `n` below 256, so one counted operation cannot mint a handle per byte |
 | host bytes, all programs in the process | 256 MB | one process-wide pool every program draws from. `dispatch` runs a turn's calls under `join_all`, so two `code` calls in one message, a parent's program beside an `analyst` child's, and `mecha batch` are all concurrent, and per-program limits alone would not bound N × 64 MB. A read that would cross either limit raises |
-| memory, allocations, recursion | monty's limits | the pool worker, which bounds the interpreter's heap. It does not own the handles' bytes, which is why the two rows above exist |
+| memory, recursion | monty's limits | the pool worker, which bounds the interpreter's heap. It does not own the handles' bytes, which is why the two rows above exist. Monty 1.4 has no allocation-count limit, and recursion raises a catchable `RecursionError` |
 | `peek` bytes plus `str[n]` result bytes | 16 KB together | the host, one count (`peeked_bytes`) |
 
 **The limit a well-behaved program should hit first is the sub-call
@@ -912,6 +915,66 @@ the record.
 
 **M1.** `monty-pool` worker start and per-host-call overhead on this box,
 owed since `CODE-MODE-RESEARCH.md`.
+
+**M1, measured 2026-10-30** on the workstation (aarch64, 20 cores), through
+the path that ships: the pinned worker (monty 1.4.0, the musllinux wheel's
+static binary) under bwrap 0.13 with only its binary bound, driven by
+`monty-pool` 1.4.0 through the `Interpreter` trait. Release build. Each run
+was gated on `voice.live = no`. "Contended" is the same run with one
+llama-server request in flight on the router's resident preset
+(`qwen3.6-35b-a3b-uncensored`, named so nothing swapped; 3,000 tokens
+decoding at 78 tok/s, one of four slots busy before and after the runs).
+Three runs each; the range is across runs, each a median.
+
+| | Alone | Contended |
+|---|---|---|
+| process start, bare `monty -c 1` (context) | 0.8–0.9 ms | 1.1–1.3 ms |
+| process start, `monty -c 1` under bwrap (context) | 3.2–3.8 ms | 4.4–5.6 ms |
+| **cold program**: spawn, bwrap, `Configure`, feed `1`, n=20 | 3.5–4.0 ms (p90 ≤ 4.7) | 4.2–5.8 ms (p90 ≤ 6.4) |
+| **warm program**: a reused worker, n=200 | 0.05–0.09 ms | 0.08–0.09 ms |
+| **host call round trip**, a loop of 5,000 calls answered at once | 10.8–16.9 µs | 15.8–18.3 µs |
+| **tight-loop throughput**, same loop | 59k–92k calls/s | 55k–63k calls/s |
+| the same loop calling a function defined in the program | 0.10–0.18 µs/iteration | 0.12–0.20 µs/iteration |
+
+```bash
+# the test binary: the M1 test is #[ignore]d, everything else in it runs in CI
+cargo test --release -p mecha-core --features monty --test code_interpreter -- --ignored --nocapture m1_measure
+# alone: the built binary three times, M1_LABEL naming the arm
+MECHA_MONTY_WORKER=<pinned binary> M1_LABEL=alone target/release/deps/code_interpreter-<hash> --ignored --nocapture m1_measure
+# contended: the same, three times, while this was decoding
+curl -s http://127.0.0.1:8080/v1/chat/completions -H 'content-type: application/json' \
+  -d '{"model":"qwen3.6-35b-a3b-uncensored","max_tokens":3000,"chat_template_kwargs":{"enable_thinking":false},"messages":[{"role":"user","content":"Write a very long story about a lighthouse on a fictional island."}]}'
+```
+
+- **The interpreter is not where a program's time goes.** A host call costs
+  10–18 µs, against M0's 0.3–0.5 s for a thinking-off pass: the §5
+  suspension backstop's 2,336 calls would spend about 40 ms in transport.
+  Worker start is about 4 ms cold, most of it bwrap (bare start is under
+  1 ms), and a warm worker is reused in under 0.1 ms.
+- **Contention cost the interpreter a third at most.** One decode in flight
+  raised cold start by about 1 ms and the round trip by a few µs. The decode
+  is on the GPU; this measures the CPU and scheduler cost beside it, not a
+  CPU-saturated box.
+- R4's numbers are not set here; this is its input.
+
+**What the build found that the documents had otherwise** (slice 3a):
+- **Monty 1.4 has `eval` and `exec`.** `CODE-MODE-RESEARCH.md` says they do
+  not exist. So a program reaches a *registered* name from a string it
+  builds (`eval('allo' + 'wed()')`), and its free names are not its reach
+  set: admission must be the registered set, as §2 has it, never a scan of
+  the source. `globals`, `vars`, `compile` and `__import__` are absent; `open`
+  exists and becomes an `OsCall`. A test holds each.
+- **No allocation-count limit, and recursion is catchable** (§5, corrected
+  there). `ResourceLimits` at 1.4.0 is `max_feed_duration`,
+  `max_turn_duration`, `max_memory`, `gc_interval`, `max_recursion_depth`,
+  `max_suspensions` and `max_total_sleep`.
+- **`request_timeout` bounds one protocol turn, not a program.** The
+  program's wall clock is the backend's own deadline, which also counts the
+  host's time answering calls.
+- **`monty-pool` needs Rust 1.96**, above the workspace's 1.89 MSRV, and
+  always builds its WebSocket transport (rustls with aws-lc, a C build;
+  about 50 crates in all). So the backend is behind the cargo feature
+  `monty`, off by default, and CI tests it in the `sandbox backends` job.
 
 **The experiment** (`mecha exp`, fixtures on the fictional cast only):
 
