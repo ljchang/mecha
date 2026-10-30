@@ -837,6 +837,7 @@ mod tests {
             input: json!({}),
             is_error,
             denied,
+            blocked: false,
             unknown,
             staged: false,
         }
@@ -1059,6 +1060,7 @@ mod tests {
             input: json!({"command": command}),
             is_error: false,
             denied: false,
+            blocked: false,
             unknown: false,
             staged: false,
         }
@@ -1411,6 +1413,7 @@ mod tests {
             input: json!({"command": "cargo test -q"}),
             is_error,
             denied,
+            blocked: false,
             unknown: false,
             staged: false,
         }
@@ -1479,6 +1482,7 @@ mod tests {
             input: json!({}),
             is_error: true,
             denied: false,
+            blocked: false,
             unknown: false,
             staged: false,
         };
