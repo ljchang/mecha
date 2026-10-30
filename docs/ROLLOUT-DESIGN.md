@@ -157,6 +157,9 @@ clock.
 
 A new axis, separate from `read_only()`.
 
+It has a second consumer: `CODE-MODE-DESIGN.md` §2 admits a tool into a
+program by this class, so the table is built once, for both.
+
 - **Built-in tools and first-party servers declare it in mecha's code.**
   That covers `mecha-mail`, `mecha-docs` and the graph's pinned revision.
 - **For a third-party MCP tool it is earned from the operator, never
