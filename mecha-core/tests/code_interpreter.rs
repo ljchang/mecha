@@ -740,6 +740,42 @@ async fn a_worker_killed_under_a_program_ends_it_as_a_backstop() {
     );
 }
 
+/// A Stop while every worker is busy ends the waiting program at once,
+/// not after the pool's 60 s checkout timeout (review of #765).
+#[tokio::test]
+async fn cancellation_reaches_a_program_waiting_for_a_worker() {
+    let w = pinned_worker().await;
+    if unavailable("the pinned monty worker", w.is_some())
+        || unavailable("a working bwrap", bwrap_works())
+    {
+        return;
+    }
+    let conf = Confinement::for_sandbox(&bwrap_sandbox()).unwrap();
+    let interp = Monty::new(&w.unwrap(), &conf, Backstops::default(), 1)
+        .await
+        .unwrap();
+    // The pool's only worker, held by a program parked on a call.
+    let (_held, step) = interp
+        .start("hold()", &["hold".into()], CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(matches!(step, Step::Call(_)));
+    let cancel = CancellationToken::new();
+    let c = cancel.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        c.cancel();
+    });
+    let t = Instant::now();
+    let (_p, step) = tokio::time::timeout(Duration::from_secs(30), interp.start("1", &[], cancel))
+        .await
+        .expect("a Stop waited out the checkout")
+        .unwrap();
+    assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+    let Step::Done(f) = step else { panic!() };
+    assert_eq!(f.end, End::Cancelled);
+}
+
 /// A worker goes back to the pool after a clean or a raised ending, and
 /// the next program must not see the last one's state.
 #[tokio::test]

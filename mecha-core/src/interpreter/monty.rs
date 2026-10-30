@@ -335,29 +335,27 @@ impl Interpreter for Monty {
         }
         let started = Instant::now();
         let deadline = started + self.backstops.wall_clock;
+        // A Stop while every worker is busy ends the program here, rather
+        // than waiting out `checkout_timeout` (review of #765).
         let checkout = tokio::select! {
-            c = self.pool.checkout(&self.repl) => c.map_err(|e| anyhow::anyhow!("checking out a monty worker: {e}"))?,
+            c = self.pool.checkout(&self.repl) => Some(c.map_err(|e| anyhow::anyhow!("checking out a monty worker: {e}"))?),
+            _ = cancel.cancelled() => None,
             _ = tokio::time::sleep_until(deadline) => bail!("no monty worker within the program's wall clock"),
         };
+        let cancelled_waiting = checkout.is_none();
         let externals: BTreeSet<String> = externals.iter().cloned().collect();
         let inputs: Vec<(String, MontyObject)> = externals
             .iter()
             .map(|n| (n.clone(), MontyObject::function(n.clone(), None)))
             .collect();
-        let mut program = MontyProgram {
-            checkout: Some(checkout),
-            externals,
-            backstops: self.backstops,
-            printed: Arc::new(Mutex::new(Printed::default())),
-            started,
-            deadline,
-            cancel,
-            suspensions: 0,
-            pending: false,
+        let mut program = MontyProgram::new(checkout, externals, self.backstops, started, cancel);
+        let step = if cancelled_waiting {
+            program.end(End::Cancelled, false).await
+        } else {
+            program
+                .run(Req::Feed(source.to_string(), NamedValues::from(inputs)))
+                .await?
         };
-        let step = program
-            .run(Req::Feed(source.to_string(), NamedValues::from(inputs)))
-            .await?;
         Ok((Box::new(program), step))
     }
 }
@@ -401,6 +399,26 @@ struct MontyProgram {
 }
 
 impl MontyProgram {
+    fn new(
+        checkout: Option<Checkout>,
+        externals: BTreeSet<String>,
+        backstops: Backstops,
+        started: Instant,
+        cancel: CancellationToken,
+    ) -> Self {
+        MontyProgram {
+            checkout,
+            externals,
+            backstops,
+            printed: Arc::new(Mutex::new(Printed::default())),
+            started,
+            deadline: started + backstops.wall_clock,
+            cancel,
+            suspensions: 0,
+            pending: false,
+        }
+    }
+
     /// One protocol turn, bounded by the program's wall clock and its
     /// cancellation token. On cancel the turn gets the grace period to reach
     /// a boundary (so what it printed by then arrives); either way the
