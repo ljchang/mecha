@@ -278,7 +278,9 @@ can catch:
 | tool reads | 256 | the host, counted at the gate |
 | handle operations (§3) | 2,048 | the host; monty `max_suspensions` set to the sum as a backstop |
 | wall clock | 300 s | `monty-pool` `request_timeout`, which is **unset by default** and must be set |
-| memory, allocations, recursion | monty's limits | the pool worker |
+| host bytes held by handles | 64 MB | the host, summed over every tool read's raw result; the read that would cross it raises |
+| live handles | 4,096 | the host. `split`, `lines` and `chunks` refuse a result that would cross it, and `chunks` refuses `n` below 256, so one counted operation cannot mint a handle per byte |
+| memory, allocations, recursion | monty's limits | the pool worker, which bounds the interpreter's heap. It does not own the handles' bytes, which is why the two rows above exist |
 | `peek` bytes plus `str[n]` result bytes | 16 KB together | the host, one count (`peeked_bytes`) |
 
 **The limit a well-behaved program should hit first is the sub-call
@@ -420,16 +422,18 @@ attacker selects from their own text can be an address; that is a
     the untrusted-content wrapper that `[security] mark_untrusted_output`
     switches on. A handle over that rendering would be a view
     of truncated bytes plus wrapper tags, and `find` offsets would point
-    into the wrapper. So `dispatch_one` splits into its gate (every check,
-    then taint armed from the raw result) and its rendering, and a host
-    call takes the gate and the raw `ToolOutput`. The cap, the spill and
+    into the wrapper. The checks and the rendering both live in
+    `dispatch`, which `dispatch_one` and `run_tools` wrap. So it is
+    `dispatch`'s per-call body that splits into its gate (every check, then
+    taint armed from the raw result) and its rendering, and a host call
+    takes the gate and the raw `ToolOutput`. The cap, the spill and
     the wrapper apply to what re-enters the context: printed output,
     `peek`, and `str[n]` results. They apply once, to the `code` call's
     whole `tool_result`, as to any tool's: one cap, one spill, and one
     untrusted wrapper when the result is `external` (§7, below). Markers
     are never interleaved inside a program's stdout.
 
-  Moving `dispatch_one` into `dispatch.rs` is optional tidying, a pure
+  Moving `dispatch` and its wrappers into `dispatch.rs` is optional tidying, a pure
   move checked by a diffed `cargo test -- --list`. It is not a
   prerequisite.
 - **The interpreter behind a trait** (`start`, `resume`; `dump`/`load`
@@ -472,17 +476,26 @@ attacker selects from their own text can be an address; that is a
     megabytes into a transcript that every reader loads whole. Capping
     them there would break `replay_run`, which must answer a replayed host
     call with the bytes the original got. So each result is stored once,
-    content-addressed, in the session's spill directory (the place spill
-    already puts oversized results, outside the jail). The record holds
+    content-addressed, in a blob store the record points into. The record holds
     its hash and length. A missing or mismatched blob makes that call
     unreplayable and ungrounded, by name, never silently empty.
-  - **A root per session, not per workspace.** The spill root is keyed by
-    the workspace's hash, and `forget::purge_workspace` keeps it whenever
-    another conversation shares the workspace, which is the common case.
-    Uncapped mail and document bytes there would survive `sessions delete`
-    and break its "every trace of it" promise on the largest new
-    artifact. So program blobs live under `programs/<session-id>/` inside
-    the spill root, content-addressed within that session only. There is
+  - **Not in the spill directory: it is inside the jail.**
+    `ToolCtx::inside_jail` admits the session's spill directory as "the
+    one sanctioned exception", tested by
+    `the_jail_admits_the_spill_directory_and_nothing_else_new`, because a
+    cap marker tells the model to go and read the rest there. Blobs there
+    would let `fs_list` and `fs_read`, both admitted in §2 and both
+    callable by the model directly, read every handle's raw bytes,
+    uncapped and uncounted. That would bypass §3's `peek` rule and §5's
+    cap completely.
+  - **A root per session, under the mecha home.** Spill is also the wrong
+    lifetime: its root is keyed by the workspace's hash, and
+    `forget::purge_workspace` keeps it whenever another conversation shares
+    the workspace, which is the common case. So program blobs live in
+    `~/.mecha/programs/<session-id>/`. No jail can reach that path,
+    because `setup` refuses any workspace that contains the mecha home,
+    and no grant may name it (`grant.rs`). Blobs are content-addressed
+    within that session only. There is
     no cross-session sharing to refcount, and `forget` removes the
     session's directory unconditionally, as a named edit to `forget.rs`
     with a test that a deleted session leaves no blob behind.
@@ -526,9 +539,9 @@ attacker selects from their own text can be an address; that is a
 - **It is a feature and a lever, not just a tool.** `code` follows
   `ARCHITECTURE.md` §Features → *Adding a feature*: a `Feature` variant,
   off by default, whose `own_state` asks the predicate its registration
-  asks. It needs a pinned `monty-pool` worker binary as its sidecar, with
-  `Feature::Ocr` and `Feature::System` as the precedent for a one-tool
-  feature with a sidecar and a pin. It is also a `harness::Lever`
+  asks. It needs a pinned `monty-pool` worker binary as its sidecar.
+  `Feature::Ocr` is the precedent for a feature with a sidecar and a pin;
+  `Feature::System` is the precedent for a one-tool feature. It is also a `harness::Lever`
   (`Lever::CodeTool`) that `mecha eval` throws off, with
   `Lever::CompactTool` as the precedent for a tool registered per request.
   A scorecard must not grade a model with programs on unless it says so.
@@ -554,6 +567,11 @@ attacker selects from their own text can be an address; that is a
      reads. With `Capabilities::default()` on `code`, this test fails.
    - A program's `fs_read` of a path outside the jail with no grant
      raises in the program, and no prompt reaches a person.
+   - Neither a program nor the model can reach the blob store through
+     `fs_read` or `fs_list`. A `fs_list` of the spill directory after a
+     program ran shows no blob.
+   - `chunks(h, 1)` refuses, and a program that reads past 64 MB of raw
+     results raises at the read that would cross it.
    - A Stop during a program returns its `tool_result` within the grace
      period, and no sub-call outlives it.
    - A draft staged after a program read a thread joins to that thread
