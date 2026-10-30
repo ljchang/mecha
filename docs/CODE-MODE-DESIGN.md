@@ -33,7 +33,7 @@ existing `AnswerShape` rule.
 ## 1. What changed since §3.12
 
 - **monty reached 1.0** (2026-09-25); v1.4.0 is current (2026-10-26).
-  `monty-pool` now ships in the workspace and is "the recommended way to
+  `monty-pool` now ships in monty's own workspace and is "the recommended way to
   run Monty from Rust" for untrusted code. Its workers are CLI
   subprocesses, and a crash becomes `PoolError::Crashed` with the worker
   replaced. `asyncio.gather` runs host calls concurrently, which is what a
@@ -107,7 +107,8 @@ What the slice gives up, and why that is the right trade:
   exactly what the leak guard refuses. Research over the web waits for a
   later slice.
 - **Admitted today** (by egress and effect as `ROLLOUT-DESIGN.md` §3.2
-  assigns them): `fs_read`, `fs_list`, `document_read`, `mail_search`,
+  assigns them; names bare here, registered with their server prefix, such
+  as `mail__mail_search`, in §6): `fs_read`, `fs_list`, `document_read`, `mail_search`,
   `mail_recent`, `mail_get_thread`, `calendar_list_events`,
   `calendar_freebusy`, `docs_read`, `sheets_read`, the graph reads, and
   `recall`. That is the set the uses in §9 need.
@@ -127,7 +128,7 @@ the call's `ToolOutput::external` and the tool's capabilities.
 | `lines(h)`, `split(h, pattern)`, `chunks(h, n, overlap=0)` | list of Handle | |
 | `find(h, pattern)` | list of (start, end) | offsets, never text |
 | `count(h, pattern)` | int | |
-| `json_get(h, path)` | Handle, or a scalar when the leaf is one | structured tool output without decoding it into the program |
+| `json_get(h, path)` | Handle for a string, object or array leaf; a number, bool or null as itself | structured tool output without decoding it into the program. A string leaf is text and stays a handle, or it would bypass `peek`'s cap and count |
 | `peek(h, n=2000)` | str | **the only way bytes enter the program** |
 
 `print(h)` renders a stub such as
@@ -223,7 +224,7 @@ can catch:
 
 | Limit | Default (ruling R4) | Enforced by |
 |---|---|---|
-| sub-calls | 32 | the host, counted at `llm_query`/`llm_map` |
+| sub-calls | 32 | the host, **per pass**: `llm_map` over N handles is N, and a schema retry is another. An `llm_map` longer than the remaining budget raises before its first pass |
 | sub-call input tokens | 400k | the host, from `Usage` |
 | tool reads | 256 | the host, counted at the gate |
 | handle operations (§3) | 2,048 | the host; monty `max_suspensions` set to the sum as a backstop |
@@ -406,6 +407,14 @@ attacker selects from their own text can be an address; that is a
     sixth edit is outside it: the diagnostician's carry-over check in
     `mecha-cli` reads `Block::ToolResult` out of the conversation directly.
     §8's join test is what proves the walk.
+  - **Across a compaction cut**, `program_calls` is carried as taint and
+    tool state are, never summarised, or a draft staged after the cut
+    joins to nothing. §8's join test runs once with a compaction between
+    the program and the draft.
+  - **The `code` result's own `external`** is true when any host call in
+    the program returned external content. That is the same rule that
+    armed the taint, so `Dispatched::external` and the provenance map
+    agree with it.
   - **Through a subagent there is no child session to hold the record:**
     a child agent writes no session file today. So the subagent tool's
     output carries its child's `program` records up, and the parent's
