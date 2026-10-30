@@ -3,8 +3,11 @@
 **Status: 2026-10-30, designed, nothing built. Rulings owed (§11).**
 
 This supersedes the *shape* of `AUDIT-RESEARCH.md` §3.12 ("programmatic
-tool calling, on monty"). That section's contract, its two hazards and its
-tests stand and are not restated. `CODE-MODE-RESEARCH.md` remains the
+tool calling, on monty"). That section's contract, its first hazard (taint
+per host call) and its tests stand and are not restated. Its second hazard
+(approving a capability set for a program's calls) does not arise in the
+read-only slice, and §8 supersedes its "Landed when" item on static
+capability extraction. `CODE-MODE-RESEARCH.md` remains the
 interpreter comparison. The evidence for the changes is in
 `RLM-RESEARCH.md`, and §1 below says what moved since the plan was written.
 
@@ -110,6 +113,12 @@ What the slice gives up, and why that is the right trade:
   leaves the machine, and a query a program composes from private reads is
   exactly what the leak guard refuses. Research over the web waits for a
   later slice.
+- **Outbox routing takes a read out of the set.** `ROLLOUT-DESIGN.md`
+  §3.2 classifies first by "routed by the operator's outbox → `Staged`",
+  so a read the owner routes through `[outbox] tools` is not `Read` and
+  is not admitted. That ordering is what makes "nothing in the program
+  can stage" true. Without it, a routed `mail_search` would stage
+  mid-program and hand the program a draft notice instead of a handle.
 - **Admitted today** (by egress and effect as `ROLLOUT-DESIGN.md` §3.2
   assigns them; names bare here, registered with their server prefix, such
   as `mail__mail_search`, in §6): `fs_read`, `fs_list`, `document_read`, `mail_search`,
@@ -192,7 +201,7 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
   | one of | `["urgent", "fyi", "none"]` | ≤ 32 labels, each ≤ 64 chars |
   | list | `[shape]` | ≤ 64 items |
   | record | `{"due": "str[32]", "urgent": bool}` | ≤ 8 fields, no nesting past one level |
-  | short text | `str[n]` | n ≤ 2,000 |
+  | short text | `str[n]` | n ≤ 2,000; with lists and records, the result must also fit §5's 16 KB prose cap, so `[{"x": "str[2000]"}]` raises on the cap and the program narrows `n`. The table bounds shapes; it is not a menu of shapes that fit |
 
 - **A `str[n]` result is prose entering the program**, so it is counted
   with `peek` against one cap (§5); otherwise it would be a second,
@@ -492,10 +501,18 @@ attacker selects from their own text can be an address; that is a
     lifetime: its root is keyed by the workspace's hash, and
     `forget::purge_workspace` keeps it whenever another conversation shares
     the workspace, which is the common case. So program blobs live in
-    `~/.mecha/programs/<session-id>/`. No jail can reach that path,
-    because `setup` refuses any workspace that contains the mecha home,
-    and no grant may name it (`grant.rs`). Blobs are content-addressed
-    within that session only. There is
+    `~/.mecha/programs/<session-id>/`, content-addressed within that
+    session only.
+  - **Why no jail reaches it, stated exactly.** `ensure_outside_mecha_home`
+    refuses a workspace that *contains* the mecha home. It allows one
+    *inside* it, and `~/.mecha/work/<producer>/` is the default. So that
+    rule alone does not keep blobs out of reach: a workspace at or under
+    `~/.mecha/programs/` would hold them inside its jail. The guarantee
+    takes one named edit: `work::ensure_outside_mecha_home` also refuses a
+    workspace at or under the programs root, exactly as it refuses one
+    over the home. Every workspace it accepts then has the programs root
+    outside it, a sibling of `work/`. No grant may name a path under the
+    mecha home (`grant.rs`), so a grant cannot reopen it. There is
     no cross-session sharing to refcount, and `forget` removes the
     session's directory unconditionally, as a named edit to `forget.rs`
     with a test that a deleted session leaves no blob behind.
@@ -570,6 +587,10 @@ attacker selects from their own text can be an address; that is a
    - Neither a program nor the model can reach the blob store through
      `fs_read` or `fs_list`. A `fs_list` of the spill directory after a
      program ran shows no blob.
+   - A workspace at `~/.mecha/programs/x` is refused at setup. A run in
+     the default `~/.mecha/work/<producer>/` cannot `fs_read` a blob by a
+     `../` path. Without the refusal, the first assertion fails, so the
+     test is not vacuous.
    - `chunks(h, 1)` refuses, and a program that reads past 64 MB of raw
      results raises at the read that would cross it.
    - A Stop during a program returns its `tool_result` within the grace
