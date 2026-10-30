@@ -9220,8 +9220,13 @@ is a new target; a corpus pass on 2026-10-30 found exactly that shape behind
 most model-side failures. It counts turns that bring the shape back on a
 target the streak had not seen, so an unchanged call (a poll, or the first
 key's stuck repeat) never adds to it. Unlike the loop guard it counts calls the
-harness refused, and says so in its own words (`Rung::Rewording`, no delegate
-offered: a child inherits the policy); the refusal result is never edited, so
+*machine* refused (`ToolCallTrace::blocked`: policy, hook, interlock, phase
+gate), and says so in its own words (`Rung::Rewording`, no delegate offered: a
+child inherits the policy). **A person's `Decision::Deny` never enters the
+shape key** — the interactive approvers word every decline alike, so three
+declined calls would share a shape, and naming the owner's corrections as
+rewording would score their steering against the run through
+`boredom_notices` (review of #762). The refusal result is never edited, so
 `"Blocked by policy:"` stays `Blocked` for the miner and the guard.
 
 **The closure follow-up gate is `done`-only and reads the derived label

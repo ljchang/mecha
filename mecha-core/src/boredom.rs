@@ -62,11 +62,15 @@
 //! on a target the streak had *not* seen. The two keys partition the
 //! repeats: an unchanged call is the first key's (and the loop guard's), and
 //! an unchanged call whose error moves is a poll, which this second key
-//! cannot count because its target is not new. A call the harness refused is
-//! told so in different words — a refusal is about what the call does, and
-//! rewording it is the one response guaranteed to be refused again. The
-//! notice is added beside the results; the refusal itself is never touched,
-//! so `"Blocked by policy:"` stays `Blocked` for every reader downstream.
+//! cannot count because its target is not new. A call the *machine* refused
+//! (`ToolCallTrace::blocked`: a policy, a hook, the interlock) is told so in
+//! different words — a refusal is about what the call does, and rewording it
+//! is the one response guaranteed to be refused again. **A person's
+//! `Decision::Deny` never reaches this key**: it is a correction, every
+//! interactive approver words it alike, and "stop asking" is exactly the
+//! wrong thing to say about one (review of #762). The notice is added beside
+//! the results; the refusal itself is never touched, so `"Blocked by
+//! policy:"` stays `Blocked` for every reader downstream.
 
 use std::collections::{HashMap, HashSet};
 
@@ -131,8 +135,9 @@ pub enum Rung {
     /// Rung 1 again, reached by the shape key: one tool failing the same way
     /// on `STUCK` different targets.
     Guessing,
-    /// Rung 1 for a call the harness refused (approver, hook, policy,
-    /// interlock) on `STUCK` different targets. Its own words because the
+    /// Rung 1 for a call the machine refused (policy, hook, interlock, an
+    /// approver's `Blocked`) on `STUCK` different targets — never a person's
+    /// `Deny`, which the loop keeps out of the shape key. Its own words because the
     /// response differs: a refusal is not a puzzle to reword.
     Rewording,
 }
@@ -166,7 +171,8 @@ pub struct Failure {
     class: u64,
     /// `compact::target_of`, so a reworded argument order is not a new guess.
     target: u64,
-    /// The harness refused the call rather than the call failing.
+    /// The machine refused the call (`ToolCallTrace::blocked`) rather than
+    /// the call failing.
     refused: bool,
 }
 
@@ -299,8 +305,9 @@ impl Boredom {
 
     /// An errored call, for the shape key: the tool and [`error_shape`] of
     /// its error as the class, `compact::target_of` as what it was aimed at.
-    /// `refused` is the trace's `denied` — read off the loop's own record,
-    /// never off the result's wording.
+    /// `refused` is the trace's `blocked` — read off the loop's own record,
+    /// never off the result's wording. A person's `Deny` is not passed here
+    /// at all.
     pub fn failure(name: &str, input: &serde_json::Value, error: &str, refused: bool) -> Failure {
         use std::hash::{Hash, Hasher};
         let mut class = std::collections::hash_map::DefaultHasher::new();

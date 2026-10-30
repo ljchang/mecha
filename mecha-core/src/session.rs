@@ -4458,6 +4458,7 @@ mod tests {
             input: serde_json::json!({}),
             is_error,
             denied,
+            blocked: false,
             unknown,
             staged,
         };
@@ -4573,6 +4574,7 @@ mod tests {
                         input: serde_json::json!({}),
                         is_error: errored,
                         denied: false,
+                        blocked: false,
                         unknown: false,
                         staged: false,
                     })
@@ -5184,6 +5186,7 @@ mod tests {
             input: serde_json::json!({}),
             is_error,
             denied,
+            blocked: false,
             unknown: false,
             staged: false,
         };

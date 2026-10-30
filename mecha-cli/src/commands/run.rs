@@ -619,6 +619,7 @@ mod tests {
                 input: serde_json::json!({"command": "ls"}),
                 is_error: true,
                 denied: false,
+                blocked: false,
                 unknown: false,
                 staged: false,
             }],

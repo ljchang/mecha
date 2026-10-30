@@ -1485,6 +1485,15 @@ pub struct ToolCallTrace {
     pub is_error: bool,
     /// Refused by the approver before it ran.
     pub denied: bool,
+    /// Of the `denied`, the ones the *machine* refused — a policy rule, a
+    /// hook, the interlock, the phase gate, a restriction, an in-process
+    /// guard — and never a person's `Decision::Deny`. The split
+    /// `"Denied by the user:"` / `"Blocked by …:"` already makes in the
+    /// result text, carried as a fact so no reader has to recover it from a
+    /// prefix. A record written before the field reads `false`: a refusal of
+    /// unknown origin is never counted against the run as the machine's.
+    #[serde(default)]
+    pub blocked: bool,
     /// The model named a tool that does not exist.
     pub unknown: bool,
     /// Staged in the outbox for the user's review instead of executed.
@@ -3910,19 +3919,45 @@ impl Agent {
                     // Between "proceeding" and the guard's "dead": an approach
                     // that has stopped teaching the run anything, named while
                     // there is still something to do about it.
-                    // Unlike the guard, boredom counts what the harness
-                    // refused: a refusal reworded turn after turn is the model
-                    // not learning from it, and naming that is all this does.
-                    // The refusal itself is never touched.
+                    //
+                    // Unlike the guard, boredom's shape key counts what the
+                    // *machine* refused (`ToolCallTrace::blocked`): a policy
+                    // block reworded turn after turn is the model not learning
+                    // from it, and naming that is all this does. **A person's
+                    // `Deny` is left out entirely** — it is a correction, the
+                    // interactive approvers word every one alike, and a notice
+                    // telling the model to stop asking would turn the owner's
+                    // steering into a `boredom_notices` count appraisal scores
+                    // against the run (review of #762). The refusal itself is
+                    // never touched.
+                    let this_turn = &trace[traced.min(trace.len())..];
+                    let declined_by_person: std::collections::HashSet<(&str, String)> = this_turn
+                        .iter()
+                        .filter(|t| t.denied && !t.blocked)
+                        .map(|t| (t.name.as_str(), t.input.to_string()))
+                        .collect();
+                    let blocked_by_machine: std::collections::HashSet<(&str, String)> = this_turn
+                        .iter()
+                        .filter(|t| t.denied && t.blocked)
+                        .map(|t| (t.name.as_str(), t.input.to_string()))
+                        .collect();
                     let bored = boredom.observe_turn(outcomes.iter().map(
-                        |&(name, input, content, is_error)| crate::boredom::Outcome {
-                            tool: name,
-                            key: crate::boredom::Boredom::key(name, input, content),
-                            failure: is_error.then(|| {
-                                let refused =
-                                    refused_by_harness.contains(&(name, input.to_string()));
-                                crate::boredom::Boredom::failure(name, input, content, refused)
-                            }),
+                        |&(name, input, content, is_error)| {
+                            let call = (name, input.to_string());
+                            crate::boredom::Outcome {
+                                tool: name,
+                                key: crate::boredom::Boredom::key(name, input, content),
+                                failure: (is_error && !declined_by_person.contains(&call)).then(
+                                    || {
+                                        crate::boredom::Boredom::failure(
+                                            name,
+                                            input,
+                                            content,
+                                            blocked_by_machine.contains(&call),
+                                        )
+                                    },
+                                ),
+                            }
                         },
                     ));
 
@@ -5281,6 +5316,7 @@ impl Agent {
                     input: input.clone(),
                     is_error: true,
                     denied: true,
+                    blocked: true,
                     unknown: false,
                     staged: false,
                 });
@@ -5302,6 +5338,7 @@ impl Agent {
                         input: input.clone(),
                         is_error: true,
                         denied: true,
+                        blocked: true,
                         unknown: false,
                         staged: false,
                     });
@@ -5388,6 +5425,7 @@ impl Agent {
                     input: input.clone(),
                     is_error: true,
                     denied: withheld,
+                    blocked: withheld,
                     unknown: !withheld,
                     staged: false,
                 });
@@ -5421,6 +5459,7 @@ impl Agent {
                     input: input.clone(),
                     is_error: true,
                     denied: false,
+                    blocked: false,
                     unknown: false,
                     staged: false,
                 });
@@ -5622,6 +5661,7 @@ impl Agent {
                             input: input.clone(),
                             is_error: true,
                             denied: true,
+                            blocked: true,
                             unknown: false,
                             staged: false,
                         });
@@ -5742,6 +5782,7 @@ impl Agent {
                         input: input.clone(),
                         is_error: true,
                         denied: true,
+                        blocked: true,
                         unknown: false,
                         staged: false,
                     });
@@ -5878,6 +5919,7 @@ impl Agent {
                             input: input.clone(),
                             is_error: false,
                             denied: false,
+                            blocked: false,
                             unknown: false,
                             staged: true,
                         });
@@ -5909,6 +5951,7 @@ impl Agent {
                             input: input.clone(),
                             is_error: true,
                             denied: false,
+                            blocked: false,
                             unknown: false,
                             staged: false,
                         });
@@ -6071,6 +6114,7 @@ impl Agent {
                         input: input.clone(),
                         is_error: true,
                         denied: true,
+                        blocked: matches!(decision, Decision::Blocked(_)),
                         unknown: false,
                         staged: false,
                     });
@@ -6354,6 +6398,7 @@ impl Agent {
                 input: calls[i].2.clone(),
                 is_error: out.is_error,
                 denied: out.refusal,
+                blocked: out.refusal,
                 unknown: false,
                 staged: false,
             });
@@ -13840,6 +13885,72 @@ mod tests {
             notice.contains("refused") && notice.contains("tell the user"),
             "{notice}"
         );
+        assert_eq!(
+            outcome.boredom_notices, 1,
+            "the machine's refusal is counted"
+        );
+    }
+
+    /// The owner declining three different calls is three corrections, not a
+    /// model rewording around a rule. The interactive approvers word every
+    /// decline alike, so all three share one error shape — and before the
+    /// trace carried `blocked`, `denied` alone sent them to `Rung::Rewording`:
+    /// a notice telling the model to stop asking, and a `boredom_notices`
+    /// appraisal scores against the run, for the owner's own steering
+    /// (review of #762).
+    #[tokio::test]
+    async fn the_owner_declining_different_calls_is_never_named_as_rewording() {
+        struct Declines;
+        #[async_trait]
+        impl Approver for Declines {
+            async fn approve(&self, _tool: &dyn Tool, _input: &Value) -> Decision {
+                Decision::Deny("the user declined this call".into())
+            }
+        }
+        let ran = Arc::new(Mutex::new(Vec::new()));
+        let (agent, _) = agent_with_tools(
+            vec![
+                shell_call("t0", "make a"),
+                shell_call("t1", "make b"),
+                shell_call("t2", "make c"),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ],
+            vec![Arc::new(RecordingShell(Arc::clone(&ran)))],
+            PermissionMode::Allow,
+        );
+        let cx = RunContext {
+            approver: Arc::new(Declines),
+            ..agent.context().as_ref().clone()
+        };
+        let mut convo = Conversation::user("build it");
+        let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+
+        assert!(ran.lock().unwrap().is_empty(), "a declined call ran");
+        let turns = results_messages(&convo);
+        assert_eq!(turns.len(), 3);
+        for (results, text) in &turns {
+            assert!(results[0].starts_with("Denied by the user:"), "{results:?}");
+            assert!(
+                !text.starts_with(crate::boredom::NOTICE_STEM),
+                "a person's correction was named as rewording: {text}"
+            );
+        }
+        assert_eq!(outcome.boredom_notices, 0);
+        assert!(
+            outcome.tool_calls.iter().all(|t| t.denied && !t.blocked),
+            "a person's Deny is denied and never blocked"
+        );
+    }
+
+    /// An older session record has no `blocked`: it reads `false`, so a
+    /// refusal of unknown origin is never counted as the machine's.
+    #[test]
+    fn a_trace_from_before_blocked_reads_as_not_blocked() {
+        let old: ToolCallTrace = serde_json::from_value(json!({
+            "name": "shell", "input": {}, "is_error": true, "denied": true, "unknown": false
+        }))
+        .unwrap();
+        assert!(old.denied && !old.blocked);
     }
 
     // --- step appraisal ---
