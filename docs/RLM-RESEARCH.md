@@ -234,8 +234,10 @@ without the tool should score visibly worse.
 
 ## 4. What not to take
 
-- **Depth above 1.** Measured to hurt the open model; impossible by
-  construction under `QuarantinedPass`, and worth keeping so.
+- **Depth above 1.** It hurt the open model on three of four benchmarks
+  and helped on one (BrowseComp+, 44.7 → 68.0), so the evidence is mixed.
+  The exclusion does not rest on it: a `QuarantinedPass` has no tools, so
+  recursion is impossible by construction, and that is worth keeping.
 - **Untyped sub-calls as the default.** DSPy's `dspy.RLM` and the
   reference repo both return prose from `llm_query`, and DSPy returns a
   failure as the string `"[ERROR] ..."`, which a program then aggregates

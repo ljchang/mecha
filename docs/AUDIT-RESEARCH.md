@@ -547,10 +547,13 @@ not on turn 4, and never as its own user message after a tool turn.
 
 **Reshaped 2026-10-30 by `CODE-MODE-DESIGN.md`**: a read-only first slice
 on the effect class, opaque handles, a typed `llm_query`, and the trust
-decision at the subagent boundary. The contract, hazards and tests below
-stand; the sequencing in §4 does not (§3.7's split is no longer the
-prerequisite: `Agent::dispatch` already holds the one gate, which
-`dispatch_one` and `run_tools` wrap).
+decision at the subagent boundary. The contract, the first hazard (taint
+per host call) and the tests below stand. The second hazard (approving a
+capability set) does not arise in the read-only slice, and the design's
+§8 supersedes the "Landed when" item on static capability extraction.
+The §3.7 dependency, both in **Shape** below and in §4's sequencing, no
+longer holds: `Agent::dispatch` already holds the one gate, which
+`dispatch_one` and `run_tools` wrap.
 
 **What it is.** Instead of the model issuing one tool call per turn and
 reading every result back into its context, it writes a short program that

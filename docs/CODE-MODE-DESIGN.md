@@ -60,8 +60,9 @@ existing `AnswerShape` rule.
   one path a harness-made call takes through every gate (§7).
 - **RLM evidence** (`RLM-RESEARCH.md`): the handle carries much of the
   gain (Qwen3-Coder CodeQA 20.0 → 66.0 with no sub-calls), depth above 1
-  hurt the open model, and an unbudgeted open model made thousands of
-  sub-calls.
+  hurt the open model on three of four benchmarks (it helped on
+  BrowseComp+, 44.7 → 68.0), and an unbudgeted open model made thousands
+  of sub-calls.
 - **The typed-extraction literature** says a typed answer from text an
   attacker wrote is *bounded*, not clean. FIDES (arXiv 2505.23643) orders
   labels by capacity, `bool ⊑ enum ⊑ string`, and keeps a typed result
@@ -101,7 +102,12 @@ and once.
 on 2026-10-30: 47 of 83 tools are `read_only` with egress `None` and not
 destructive, and that set includes `message_send`, `image_generate`,
 `video_generate`, `persona_propose`, `hud_propose`, `todo` and `skill`.
-`read_only()` means "skips the approval gate", not "has no effect".
+`read_only()` means "skips the approval gate", not "has no effect". The
+sharpest case is `ask_user`. It is `read_only()`, declares
+`Capabilities::default()`, sits in every run's registry, and blocks on a
+person *inside `call`*. Neither of the two routes §7 refuses would stop
+it; only its effect class (`StoreWrite` in `ROLLOUT-DESIGN.md` §3.2)
+keeps it out of a program.
 
 What the slice gives up, and why that is the right trade:
 
@@ -256,7 +262,11 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
     incident. Either default body would be wrong: `false` silently kills
     the feature on the owner's own router, and `true` decides R8 by
     omission. So `local()` has **no default body**, and the compiler
-    finds every implementation, including both wrappers.
+    finds every implementation, including both wrappers. In-process
+    test doubles (`ScriptedProvider`, the replay doubles, `provider/mod.rs`'s
+    `Failing` and `Recording`) answer `true`, because they send nothing
+    off the box, so `llm_query` is testable without a router. The refusal
+    is tested with one double that answers `false`.
 
   The loop never learns which provider answered, which is the invariant
   `CLAUDE.md` names.
@@ -313,7 +323,7 @@ can catch:
 | sub-call input tokens | 120k | the host, from `Usage`. Sized so that it binds before the clock: `provider/mod.rs` records a cold 170k-token prefill at ~120 s uncontended, so 400k would take ~280 s, and the 300 s clock would end the program first |
 | tool reads | 256 | the host, counted at the gate |
 | handle operations (§3) | 2,048 | the host; monty `max_suspensions` set to the sum as a backstop |
-| wall clock | 300 s | `monty-pool` `request_timeout`, which is **unset by default** and must be set |
+| wall clock | 600 s | `monty-pool` `request_timeout`, which is **unset by default** and must be set |
 | host bytes held by handles | 64 MB | the host, summed over every tool read's raw result; the read that would cross it raises |
 | live handles | 4,096 | the host. `split`, `lines` and `chunks` refuse a result that would cross it, and `chunks` refuses `n` below 256, so one counted operation cannot mint a handle per byte |
 | host bytes, all programs in the process | 256 MB | one process-wide pool every program draws from. `dispatch` runs a turn's calls under `join_all`, so two `code` calls in one message, a parent's program beside an `analyst` child's, and `mecha batch` are all concurrent, and per-program limits alone would not bound N × 64 MB. A read that would cross either limit raises |
@@ -321,10 +331,18 @@ can catch:
 | `peek` bytes plus `str[n]` result bytes | 16 KB together | the host, one count (`peeked_bytes`) |
 
 **The limit a well-behaved program should hit first is the sub-call
-cap, then the token cap, and the clock never.** The clock is the backstop
-for a hang, not a budget. The defaults above are sized so, from this
-repo's own prefill figure, and R4 sets them only after M0 and M1 measure
-a pass on this box, under contention as well as alone. It is the expensive resource and the one the model's prompt names.
+cap, then the token cap, and the clock never.** The sub-call cap is the
+expensive resource and the one the model's prompt names. The clock is the
+backstop for a hang, not a budget, so it is sized against the *contended*
+worst case. `provider/mod.rs`'s `STALL_TIMEOUT` comment gives both
+halves: about 120 s for a 170k-token prefill alone, and a ~2.85× slowdown
+under contention on this hardware. So the whole 120k-token budget is
+about 85 s of prefill alone and about 240 s contended. That is why the
+clock is 600 s, the number `STALL_TIMEOUT` reached by the same arithmetic,
+and not 300. R4 chooses between raising the clock and lowering the token
+cap, after M0 and M1 measure a pass on this box under contention as well
+as alone.
+
 A long document chunked into handles can reach 256 host calls before 32
 sub-calls, because `find`, `slice` and `chunks` are host calls. So the
 handle operations of §3 count toward their own, larger limit (2,048),
@@ -459,8 +477,10 @@ attacker selects from their own text can be an address; that is a
   - **No approver prompt mid-program.** The loop approves sequentially,
     then executes concurrently, and a program runs inside the concurrent
     phase. A host call that reached a person would put a prompt behind
-    tools already executing, under a 300 s clock. Two routes lead there,
-    and `read_only()` closes only one of them. It skips the rule-free
+    tools already executing, under a 600 s clock. Two routes lead there,
+    and `read_only()` closes only one of them. (A third, a tool that asks
+    inside its own `call`, like `ask_user`, is closed by the effect class
+    in §2 rather than here.) It skips the rule-free
     approver branch. But the branch above it fires on `needs_a_person`,
     which `fs_read`, `fs_list` and `document_read` (three of §2's set)
     implement through `ToolCtx::ask_for_path` for a path outside the jail.
@@ -495,6 +515,16 @@ attacker selects from their own text can be an address; that is a
   Moving `dispatch` and its wrappers into `dispatch.rs` is optional tidying, a pure
   move checked by a diffed `cargo test -- --list`. It is not a
   prerequisite.
+- **The parent's `code` is built last too.** `setup.rs` registers the
+  front-end's own tools (`ask_user`, `recall`, the TUI's) *after*
+  `prepare` returns. That comment records the same trap once already, for
+  learned-rule scoping. A `code` built inside `prepare` would not reach
+  `recall`, which §2 admits and §9 leads with. It would also declare a
+  capability union over an incomplete registry, which is exactly the
+  under-declaration `turn_taint` depends on not happening. So the
+  parent's `code` is constructed after the last registration, in the
+  named place in `setup.rs`, and §8 tests that a parent program reaches
+  `recall`.
 - **The interpreter behind a trait** (`start`, `resume`; `dump`/`load`
   reserved for the sink slice), as `CODE-MODE-RESEARCH.md` asked.
   - monty 1.4 through `monty-pool` is the implementation.
@@ -693,6 +723,9 @@ attacker selects from their own text can be an address; that is a
    - After an `analyst` child read a thread, a parent-side `gossip` packet
      and a `persona/cite` pass see the shaped answer and no nested call.
      With the walk yielding child records, this fails.
+   - A program in the parent's own run reaches `recall`, which is
+     registered after `prepare`, and `code`'s declared capabilities
+     include every tool registered before it was built.
    - Each host call pushes a `ToolCallTrace` tagged `in_program`. A
      `pre_tool` hook that denies a host call raises in the program *and*
      increments `tool_denied`.
