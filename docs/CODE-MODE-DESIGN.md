@@ -78,7 +78,9 @@ refused at call time, absent. The registry term matters as much as the
 other two. A subagent's registry is an allowlist, a policy can narrow a
 run's tools, and `mecha eval` throws levers off. A global admitted set
 would let `code` reach a tool the run was never given, which would make it
-a bypass of all three. The `read_only()` term is not for safety; §7 says
+a bypass of all three. The `destructive` term is what excludes
+`request_access`, which is `read_only()` but reaches a person to widen the
+jail; that exclusion is deliberate. The `read_only()` term is not for safety; §7 says
 what it is for. And one admission is per *call*, not per tool: a host call
 for which the tool's `needs_a_person` answers (a path outside the jail
 with no grant, through `ToolCtx::ask_for_path`) is refused in the program
@@ -224,7 +226,10 @@ not per run. `DEFAULT_BACKGROUND_PERMITS` counts three background runs,
 and each could fan out. So a sub-call pass beyond a run's first takes a
 seat from the same permit directory the background runs share, and waits
 when none is free. The total of running background passes then never
-exceeds `router::background_seats`, and the owner's reserve stays whole.
+exceeds `router::background_seats`. On a model with two or more slots that
+keeps the owner's reserve whole. On a one-slot model it cannot:
+`seats_for` is never below one, and `permit.rs` concedes the owner can
+wait behind one background decode there.
 
 ---
 
@@ -275,11 +280,16 @@ already the owner's:
 [[subagent]]
 name = "analyst"
 description = "Answers one question over mail, documents or the graph by writing a program. Returns only the declared shape."
-tools = ["code", "mail__mail_search", "mail__mail_get_thread", "document_read", "docs__docs_read", "kg_search", "kg_timeline", "recall"]
+tools = ["code", "mail__mail_search", "mail__mail_get_thread", "document_read", "docs__docs_read", "graph__kg_search", "graph__kg_timeline", "recall"]
 max_turns = 12
 trusted_output = true
 answer_shape = ["yes", "no", "unclear"]
 ```
+
+The names are a default install's (`{server}__{tool}`, `prefix_tools`
+defaulting true). A box whose graph server sets `prefix_tools = false`
+registers `kg_search` bare and spells it so. `build_subagent` fails the
+launch on a name that resolves to nothing, rather than running without it.
 
 - **Inside the child**, everything above applies: it may peek, it arms
   honestly, and it has no tool that sends, so arming costs it nothing.
@@ -370,7 +380,10 @@ attacker selects from their own text can be an address; that is a
     then taint armed from the raw result) and its rendering, and a host
     call takes the gate and the raw `ToolOutput`. The cap, the spill and
     the wrapper apply to what re-enters the context: printed output,
-    `peek`, and `str[n]` results.
+    `peek`, and `str[n]` results. They apply once, to the `code` call's
+    whole `tool_result`, as to any tool's: one cap, one spill, and one
+    untrusted wrapper when the result is `external` (§7, below). Markers
+    are never interleaved inside a program's stdout.
 
   Moving `dispatch_one` into `dispatch.rs` is optional tidying, a pure
   move checked by a diffed `cargo test -- --list`. It is not a
@@ -477,6 +490,9 @@ attacker selects from their own text can be an address; that is a
      printed, and the `code` result comes back `external` when any host
      call returned external content, so `Dispatched::external` and the
      provenance map agree.
+   - A program that peeks two external handles returns one `tool_result`
+     with exactly one untrusted wrapper around the whole result, capped
+     once.
    - A handle over a result larger than `output_budget_bytes` holds every
      byte, with no `CAP_MARKER` and no untrusted wrapper, and a `find`
      offset past the budget indexes the source correctly.
