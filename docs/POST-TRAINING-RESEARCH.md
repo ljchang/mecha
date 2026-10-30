@@ -91,7 +91,7 @@ entirely the harness working. It is not a source of preference pairs
 early September to 0 in late October, after the provenance work
 (`PROVENANCE-DESIGN.md`).
 
-**Other failures, by cause, and how concentrated they are:**
+**Every error result, by cause, and how concentrated it is.** The policy row is the same 102 as above, read as a retry pattern:
 
 | Bucket | Errors | Sessions | Held by the top 3 sessions | Reading |
 |---|---|---|---|---|
@@ -130,14 +130,15 @@ model-side error classes has occurred in the 70 sessions since
 - The largest single model mistake is a missing parameter that the tool
   could resolve or require.
 
-Three harness fixes followed, in #762:
-- A redirect when the same refusal or failure repeats on new targets.
-  Neither existing detector fired on a model that changes its target
-  every turn.
-- `calendar_list_events` resolving a group calendar's account. The
-  thread case was already fixed in #272.
-- The out-of-workspace error naming the workspace and the grant route.
-  This was already fixed in 2026-10-18's path-grant work.
+Of the three harness fixes named, #762 adds one and finishes one, and
+the third was already in the tree:
+- **New:** a redirect when the same refusal or failure repeats on new
+  targets. Neither existing detector fired on a model that changes its
+  target every turn.
+- **Finished:** `calendar_list_events` resolving a group calendar's
+  account. The thread case was already fixed in #272.
+- **Already done, no change in #762:** the out-of-workspace error naming
+  the workspace and the grant route, from 2026-10-18's path-grant work.
 
 These guard a pattern that was frequent until mid-October and has not
 been seen since. After them, what is left for training
