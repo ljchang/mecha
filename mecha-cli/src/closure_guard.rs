@@ -195,6 +195,9 @@ impl Tool for ClosedStatusGuard {
     fn capabilities(&self) -> Capabilities {
         self.inner.capabilities()
     }
+    fn effect(&self) -> Option<mecha_core::tool::effect::Effect> {
+        self.inner.effect()
+    }
     fn carried_state(&self, ctx: &ToolCtx) -> Option<CarriedState> {
         self.inner.carried_state(ctx)
     }

@@ -908,6 +908,12 @@ impl Tool for WebSearch {
         }
     }
 
+    /// A read whose query leaves blind: the class says what it does, the
+    /// egress (`Blind`) says where the query goes, and the two stay apart.
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        Some(crate::tool::effect::Effect::Read)
+    }
+
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let Some(query) = input.get("query").and_then(Value::as_str) else {
             return Ok(ToolOutput::err("missing required string argument `query`"));
@@ -1265,6 +1271,11 @@ impl Tool for WebOpen {
             obj.insert("url".into(), Value::String(url));
         }
         shown
+    }
+
+    /// Opens a page a search returned; `Blind`, as `web_search`.
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        Some(crate::tool::effect::Effect::Read)
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {

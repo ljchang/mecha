@@ -7,6 +7,7 @@
 pub mod ask;
 pub mod builtin;
 pub mod document;
+pub mod effect;
 pub mod goal_context;
 pub mod hud;
 pub mod image_library;
@@ -316,6 +317,20 @@ pub trait Tool: Send + Sync {
     /// nobody has classified: assume it does nothing special.
     fn capabilities(&self) -> Capabilities {
         Capabilities::default()
+    }
+
+    /// What this tool does to the world, as its author declares it in code
+    /// ([`effect::Effect`]), or `None` — the default — for a tool nobody has
+    /// classified. `None` resolves [`effect::EffectClass::Undeclared`]:
+    /// unknown is never safe, so forgetting this is never a read.
+    ///
+    /// The declaration only. [`effect::class_of`] applies the operator's
+    /// outbox routing and this tool's [`capabilities`](Tool::capabilities)
+    /// in `docs/ROLLOUT-DESIGN.md` §3.2's order to get the class. Metadata
+    /// today: nothing reads it to loosen the interlock, the jail, approval or
+    /// taint. A wrapper must forward it, as it forwards `capabilities`.
+    fn effect(&self) -> Option<effect::Effect> {
+        None
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput>;

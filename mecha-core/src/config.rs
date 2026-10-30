@@ -1230,6 +1230,32 @@ pub struct McpServerConfig {
     /// background only ever uses to poll (2026-10-15). A name the server
     /// does not list is warned about at every start, never ignored quietly.
     pub disabled_tools: Vec<String>,
+    /// The effect class of this server's tools, by the server's own
+    /// (unprefixed) names: `{ draw = "render", scene = "read" }`
+    /// (`docs/ROLLOUT-DESIGN.md` §3.2, `tool::effect`). A third-party tool
+    /// has no class until this names one, and the server's own annotations
+    /// can never give it one: `readOnlyHint` promotes nothing, and
+    /// `destructiveHint` or `openWorldHint` still resolve `irreversible` over
+    /// whatever is named here. For `mecha-mail`, `mecha-docs` and the graph,
+    /// mecha's own table applies, and an entry here can only make a tool more
+    /// cautious than the table says.
+    ///
+    /// **It trusts a server more**, as `trust_result_claims` does: a class is
+    /// what a rollout or a program would believe about a tool. So only the
+    /// operator's own config may name one, and `merge_file` strips it from a
+    /// project or environment layer, loudly. `workspace` is refused at load:
+    /// a server writes where it was spawned, never in a run's workspace.
+    /// Metadata today; `mecha tools --json` prints the result as `effect`.
+    pub effects: BTreeMap<String, crate::tool::effect::Effect>,
+    /// Whether this entry came from the operator's own global config, which
+    /// is what lets mecha recognise a first-party server by its `command`
+    /// (`tool::effect::FirstParty::of`). **Derived, never written:**
+    /// `serde(skip)`, set by `merge_file` for the global layer only, so a
+    /// project file naming `./tools/mecha-mail` cannot buy its own binary
+    /// mecha's classes. `false` by default, which is unrecognised: an entry
+    /// built anywhere else gets no first-party table.
+    #[serde(skip)]
+    pub from_operator: bool,
 }
 
 /// A leading `~` in a path the owner wrote, resolved against the home
@@ -1475,6 +1501,24 @@ impl Config {
     /// name that does not parse is now a load error naming the fix.
     pub fn validate(&self) -> Result<()> {
         self.voice.validate()?;
+        // `workspace` is the one class a server cannot honestly claim: its
+        // writes land where it was spawned, not in a run's workspace, and the
+        // class sits ahead of the destructive row (`tool::effect::resolve`),
+        // so allowing it would let a declaration outrank `destructiveHint`.
+        for server in &self.mcp {
+            if let Some((tool, _)) = server
+                .effects
+                .iter()
+                .find(|(_, e)| **e == crate::tool::effect::Effect::Workspace)
+            {
+                anyhow::bail!(
+                    "[[mcp]] `{}` names `{tool}` \"workspace\" in effects — an MCP server \
+                     writes where it was spawned, not in a run's workspace; name it \
+                     \"store_write\" or \"irreversible\"",
+                    server.name
+                );
+            }
+        }
         // Seatbelt confines document extraction only; `[sandbox]` is shell's
         // and the MCP servers', whose confinement narrows what they declare
         // (`sandbox::Backend::Seatbelt`).
@@ -1572,6 +1616,22 @@ impl Config {
                         path.display()
                     );
                 }
+                // `effects` vouches for what a server's tools do: the class a
+                // rollout or a program would believe (ROLLOUT-DESIGN.md §3.2).
+                if !std::mem::take(&mut server.effects).is_empty() {
+                    tracing::warn!(
+                        "[[mcp]] `{}` in {} sets effects, which is ignored — \
+                         only the global config may classify a server's tools",
+                        server.name,
+                        path.display()
+                    );
+                }
+            }
+        } else {
+            // The operator's own entries, and only these, may be recognised
+            // as a first-party server by their `command`.
+            for server in layer.mcp.iter_mut().flatten() {
+                server.from_operator = true;
             }
         }
         // `[[grant]]` is the jail's way out, and only the operator's own
@@ -3171,6 +3231,78 @@ mod tests {
             .unwrap();
         assert!(!from_environment.mcp[0].personas);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_project_layer_cannot_classify_a_servers_tools() {
+        // `effects` is the operator's word about what a server's tools do,
+        // and `from_operator` is what lets a `command` named `mecha-mail` be
+        // taken for mecha's own (ROLLOUT-DESIGN.md §3.2). A project or an
+        // experiment file may declare the server, never vouch for either.
+        use crate::tool::effect::Effect;
+        let dir = std::env::temp_dir().join(format!("mecha-effects-scope-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("layer.toml");
+        std::fs::write(
+            &path,
+            "[[mcp]]\nname = \"mail\"\ncommand = \"./tools/mecha-mail\"\n\
+             [mcp.effects]\nsketch = \"read\"\n",
+        )
+        .unwrap();
+        let mut from_global = Config::default();
+        from_global.merge_file(&path, LayerTrust::Global).unwrap();
+        assert_eq!(
+            from_global.mcp[0].effects.get("sketch"),
+            Some(&Effect::Read)
+        );
+        assert!(from_global.mcp[0].from_operator);
+
+        let mut from_project = Config::default();
+        from_project.merge_file(&path, LayerTrust::Project).unwrap();
+        assert_eq!(from_project.mcp.len(), 1, "the server itself still loads");
+        assert!(from_project.mcp[0].effects.is_empty());
+        assert!(!from_project.mcp[0].from_operator);
+
+        let mut from_environment = Config::default();
+        from_environment
+            .merge_environment_text(&std::fs::read_to_string(&path).unwrap(), &path)
+            .unwrap();
+        assert!(from_environment.mcp[0].effects.is_empty());
+        assert!(!from_environment.mcp[0].from_operator);
+
+        // And a project layer that replaces the operator's list replaces the
+        // recognition with it: the list is the project's now.
+        let mut layered = Config::default();
+        layered.merge_file(&path, LayerTrust::Global).unwrap();
+        layered.merge_file(&path, LayerTrust::Project).unwrap();
+        assert!(!layered.mcp[0].from_operator);
+        assert!(layered.mcp[0].effects.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_server_cannot_be_classed_as_writing_the_workspace() {
+        // `workspace` resolves ahead of the destructive row, and a server
+        // writes where it was spawned, not in a run's workspace: refused at
+        // load, naming the classes it could have meant.
+        let mut cfg = Config::default();
+        cfg.mcp.push(McpServerConfig {
+            name: "sketch".into(),
+            command: "sketch-mcp".into(),
+            effects: [("wipe".to_string(), crate::tool::effect::Effect::Workspace)].into(),
+            ..Default::default()
+        });
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("wipe") && err.contains("irreversible"),
+            "{err}"
+        );
+        cfg.mcp[0].effects = [(
+            "wipe".to_string(),
+            crate::tool::effect::Effect::Irreversible,
+        )]
+        .into();
+        cfg.validate().unwrap();
     }
 
     #[test]

@@ -474,3 +474,20 @@ async fn a_clean_draft_is_drawn_and_attached() {
     assert_eq!(img.width(), crate::hud::render::WIDTH);
     assert!(img.height() > 100, "the board was drawn, not a blank page");
 }
+
+/// Proposing a board is a store write, previewing one a read, and both are
+/// `read_only()`: the flag cannot tell them apart, the effect class does.
+#[test]
+fn a_proposal_is_a_store_write_and_a_preview_a_read() {
+    use crate::tool::effect::{class_of, EffectClass};
+    let f = Fixture::new("owner");
+    let propose = HudPropose::new(f.store.clone());
+    let preview = HudPreview::new(f.store.clone());
+    assert!(propose.read_only() && preview.read_only());
+    assert_eq!(class_of(&propose, false), EffectClass::StoreWrite);
+    assert_eq!(class_of(&preview, false), EffectClass::Read);
+    assert_eq!(
+        class_of(&HudSources::new(f.store.clone()), false),
+        EffectClass::Read
+    );
+}
