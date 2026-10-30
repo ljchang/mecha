@@ -3672,7 +3672,8 @@ the rule set.
 Three more kinds of moment never become a rule. Skip a failure the \
 environment caused rather than the assistant — a missing program, a server \
 that was down, a network or permission error it could not control — because \
-the next run may never meet it. Skip a negative claim about a tool, such as \
+the next run may never meet it. A user denying a tool call is never such a \
+failure: it is the user's own correction. Skip a negative claim about a tool, such as \
 'tool X does not work' or 'never use Y', drawn from one bad result: a rule \
 against a tool outlives the outage that suggested it. Skip an approach that \
 was tried and never resolved, where nothing in the excerpts shows what would \
@@ -3738,9 +3739,9 @@ extra-content, style, other>\", \"confidence\": 0.0-1.0}
 or {\"skip\": true} when there is no preference to learn.";
 
 /// Every category the three frames offer the reflector. The ledger keeps a
-/// lesson's category only when it is one of these: `error_type` is the
-/// model's own string, and the ledger carries no text (found on review of
-/// #730).
+/// lesson's category only when it is one of these, and [`UNLISTED`] when it
+/// is not: `error_type` is the model's own string, and the ledger carries
+/// no text (found on review of #730).
 const ERROR_TYPES: &[&str] = &[
     "premature-action",
     "wrong-approach",
@@ -3755,6 +3756,11 @@ const ERROR_TYPES: &[&str] = &[
     "extra-content",
     "other",
 ];
+
+/// A lesson's category in the ledger when the reflector named one no prompt
+/// offers: kept apart from naming none, which is `None`, so the category
+/// mix can tell a reflector off its list from one that left the field out.
+const UNLISTED: &str = "unlisted";
 
 /// Which system prompt and learning domain fit an intervention. Pure, so the
 /// trigger→domain routing is testable without a provider.
@@ -4085,11 +4091,14 @@ impl Reflection {
             Reflected::Lesson(lesson) => (
                 ReplyOutcome::Lesson,
                 Some(lesson.0.id.clone()),
-                lesson
-                    .0
-                    .error_type
-                    .clone()
-                    .filter(|t| ERROR_TYPES.contains(&t.as_str())),
+                lesson.0.error_type.as_deref().map(|t| {
+                    if ERROR_TYPES.contains(&t) {
+                        t
+                    } else {
+                        UNLISTED
+                    }
+                    .to_string()
+                }),
             ),
             Reflected::Skipped => (ReplyOutcome::Skip, None, None),
             Reflected::Unusable => (ReplyOutcome::Unusable, None, None),
@@ -9213,25 +9222,40 @@ mod correction_attribution {
         )
         .await;
         assert_eq!(row(&named).outcome, ReplyOutcome::Lesson);
-        assert_eq!(row(&named).error_type, None);
+        assert_eq!(row(&named).error_type.as_deref(), Some(UNLISTED));
+        let unnamed = reflect_typed(r#"{"skip": false, "reflexion": "Ask first."}"#).await;
+        assert_eq!(row(&unnamed).error_type, None);
     }
 
-    /// Every category the ledger keeps is one a prompt offers, so a
-    /// misspelt entry cannot quietly drop a real category from the counts.
+    /// The categories the ledger keeps are exactly the ones the prompts
+    /// offer: a misspelt entry would drop a real category, and a category
+    /// added to a prompt alone would read as unlisted.
     #[test]
-    fn every_ledger_category_is_offered_by_a_prompt() {
-        for category in ERROR_TYPES {
-            assert!(
-                [
-                    REFLECTOR_SYSTEM,
-                    MISMATCH_REFLECTOR_SYSTEM,
-                    WRITING_REFLECTOR_SYSTEM
-                ]
-                .iter()
-                .any(|p| p.contains(category)),
-                "{category}"
-            );
-        }
+    fn the_ledger_keeps_exactly_the_categories_the_prompts_offer() {
+        // Each prompt spells its list as the value of `"error_type"`:
+        // `<one of: a, b, c>` or `a or b or c`.
+        let offered: std::collections::BTreeSet<&str> = [
+            REFLECTOR_SYSTEM,
+            MISMATCH_REFLECTOR_SYSTEM,
+            WRITING_REFLECTOR_SYSTEM,
+        ]
+        .iter()
+        .flat_map(|prompt| {
+            let after = &prompt[prompt.find("\"error_type\":").expect("a list") + 13..];
+            let value = after.trim_start().trim_start_matches('"');
+            let value = &value[..value.find('"').unwrap()];
+            value
+                .trim_start_matches("<one of:")
+                .trim_end_matches('>')
+                .split([','])
+                .flat_map(|part| part.split(" or "))
+                .map(str::trim)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+        let kept: std::collections::BTreeSet<&str> = ERROR_TYPES.iter().copied().collect();
+        assert_eq!(offered, kept);
+        assert!(!kept.contains(UNLISTED));
     }
 
     /// A pass that stopped after a source's rows and before its mined mark
@@ -9383,6 +9407,7 @@ mod correction_attribution {
             "a failure the environment caused",
             "a negative claim about a tool",
             "an approach that was tried and never resolved",
+            "A user denying a tool call is never such a failure",
         ] {
             let flat = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
             assert!(flat(REFLECTOR_SYSTEM).contains(criterion), "{criterion}");
