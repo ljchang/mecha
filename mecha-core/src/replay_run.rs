@@ -488,6 +488,12 @@ impl Tool for ReplayTool {
         }
     }
 
+    /// The live tool's declaration, forwarded with the rest of what only it
+    /// knows; `None` here would be the silently wrong default.
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        self.inner.effect()
+    }
+
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         // Decided under the lock, executed after it: a live call awaits, and a
         // std mutex must not be held across an await point.

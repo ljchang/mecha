@@ -47,6 +47,10 @@ impl Tool for GoalContext {
     fn capabilities(&self) -> Capabilities {
         Capabilities::default().private()
     }
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        Some(crate::tool::effect::Effect::Read)
+    }
+
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let anchor = ctx.goal_track.as_ref().and_then(|g| g.anchor());
         let goal = match input.get("serves") {

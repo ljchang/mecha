@@ -276,6 +276,12 @@ impl Tool for AskUserTool {
         Capabilities::default()
     }
 
+    /// `read_only()` with no capabilities, and it waits on a person inside
+    /// `call`: §3.2 classes it a store write.
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        Some(crate::tool::effect::Effect::StoreWrite)
+    }
+
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let question = input
             .get("question")
@@ -454,6 +460,19 @@ mod tests {
             seen: Mutex::new(Vec::new()),
         });
         (AskUserTool::new(canned.clone()), canned)
+    }
+
+    /// `read_only()`, no capabilities, and it waits on a person inside
+    /// `call`: a class derived from either would admit it to a program or
+    /// let a rollout run it. Its effect class is what keeps it out
+    /// (CODE-MODE-DESIGN.md §2).
+    #[test]
+    fn ask_user_is_a_store_write_whatever_read_only_says() {
+        use crate::tool::effect::{class_of, EffectClass};
+        let (tool, _) = tool(None);
+        assert!(tool.read_only());
+        assert_eq!(tool.capabilities(), Capabilities::default());
+        assert_eq!(class_of(&tool, false), EffectClass::StoreWrite);
     }
 
     #[tokio::test]
