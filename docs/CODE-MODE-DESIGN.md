@@ -950,6 +950,62 @@ with your recs"), except R4, which waits on M1.
 
 ---
 
+## 13. Adoption risk: will the model use it?
+
+**Raised by the owner on 2026-10-30, and ruled: build the feature, test it,
+then refine.** The concern is that the local model will never call `code`,
+or will call it and write programs that do not work. Nothing below gates
+the build. It is what testing should look at first.
+
+**The evidence for the concern.** Measured over the non-test sessions
+on 2026-10-30, 767 of them:
+
+| Tool | Calls | Sessions |
+|---|---|---|
+| `recall`, `compact`, `skill` | 0 | 0 |
+| the `research` subagent | 48 | 31 |
+| `todo` | 84 | 23 |
+| `shell` running Python | 44 of 319 shell calls | |
+
+The three tools never called were not registered in every session, so
+their zero is an upper bound on exposure, not a measured refusal rate.
+The pattern still reads plainly:
+- Tools that serve the harness have never been chosen.
+- A tool named for a task is chosen routinely.
+- The model already writes Python when it has a shell.
+
+The literature agrees:
+- `RLM-RESEARCH.md`: Qwen3-Coder needed its prompt changed, and Qwen3-8B
+  needed post-training.
+- Prime Agent reports friction allocating subagents.
+- Recursive Agent Harnesses saw the parent skip spawning.
+
+**What to do about it, in order of cost:**
+
+1. **Name entry points for the task, not the mechanism.** Profiles such
+   as `ask_inbox` and `ask_document` (§6) whose descriptions say what
+   they answer, the shape `research` already proves this model uses. A
+   bare `code` reads like `compact` and `recall`, which it has never
+   called.
+2. **Offer it at the moment of need.** When a read would spill past
+   `output_budget_bytes`, the result can carry a handle and one line
+   saying `code` can query it. The line rides in a tool result, so the
+   cached prefix is untouched.
+3. **Entry points the owner writes**, where no model choice is involved:
+   a trigger, a skill, or a slash command that calls the analyst directly.
+4. **M2, once the slice runs:** on fixture tasks that need aggregation,
+   measure *choice* (how often `code` is picked when offered) and
+   *competence* (whether its programs run and answer correctly). The
+   §10 experiment's decomposition check is the same question at
+   experiment scale.
+5. **Post-training, only if competence is what fails.** That would be
+   the first real target `POST-TRAINING-RESEARCH.md` has found; its step 0
+   found none in the current corpus. The precedent is RLM-Qwen3-8B,
+   about 1,000 filtered trajectories from a stronger model writing
+   programs in the same harness.
+
+---
+
 ## 12. Deliberately not in this slice
 
 When code lands, the invariants §2–§7 assert move to `ARCHITECTURE.md`, in
