@@ -156,7 +156,7 @@ the call's `ToolOutput::external` and the tool's capabilities.
 | `find(h, pattern)` | list of (start, end) | offsets, never text |
 | `count(h, pattern)` | int | |
 | `json_get(h, path)` | Handle for a string, object or array leaf; a number, bool or null as itself | structured tool output without decoding it into the program. A string leaf is text and stays a handle, or it would bypass `peek`'s cap and count |
-| `budget()` | dict of ints | the remaining amount of every §5 host limit, read without spending anything, so a program can check before a sweep |
+| `budget()` | dict of ints | the remaining amount of each **per-program** §5 host limit, read without spending anything, so a program can check before a sweep. The process-wide byte pool is left out: it moves with other programs, and reading it would be a cross-program observable, the `find`/`count` oracle's cousin |
 | `peek(h, n=2000)` | str | **the only way a handle's text enters the program**; a `str[n]` sub-call result (§4) is the other way prose does, and both draw on one cap and one count |
 
 `print(h)` renders a stub such as
@@ -391,7 +391,7 @@ Per program. **Two kinds of limit, and only the first is catchable:**
 | Limit | Default (ruling R4) | Enforced by |
 |---|---|---|
 | sub-calls | 32 | the host, **per pass**: `llm_map` over N handles is N, and a schema retry is another. An `llm_map` longer than the remaining budget raises before its first pass |
-| thinking-on passes | 8 (proposed) | the host; a pass that asks for thinking past it raises. This is the row that keeps the clock from binding first (below) |
+| thinking passes | 8 (proposed) | the host, counting passes that **did** think, not passes that asked to: a pass whose response carries reasoning (`reasoning_content`, recorded as `Block::Thinking`) counts, whatever it requested. A thinking-off request can be silently ignored (§4), so counting requests would read 0 while every pass thinks and the clock binds first. The pass after the cap raises. This is the row that keeps the clock from binding first (below) |
 | sub-call input tokens | 120k | the host, from `Usage`. Sized so that it binds before the clock even under contention (below) |
 | tool reads | 256 | the host, counted at the gate |
 | handle operations (§3) | 2,048 | the host; monty `max_suspensions` set to the sum as a backstop |
@@ -835,7 +835,8 @@ attacker selects from their own text can be an address; that is a
 2. **The effect class from `ROLLOUT-DESIGN.md` §3.2** is built and is the
    admission rule; a test asserts `message_send` and `image_generate` are
    absent from a program.
-3. **`structured_output` is probed** on the installed build (M0).
+3. **`structured_output` is probed** on the installed build (M0). ✅
+   2026-10-30, §10.
 4. **The experiment in §10 has run** and its predictions are recorded,
    whichever way they fell.
 
@@ -954,7 +955,15 @@ with your recs"), except R4, which waits on M1.
   16 KB as its proposed default.
 - **R6. Thinking off by default**, on per call (§4, from M0). **Every
   pass gets `max_tokens` of 8,192, thinking or not**, because the
-  thinking-off request can be silently ignored (§4).
+  thinking-off request can be silently ignored (§4). A thinking-off pass
+  sends a small `CompletionRequest::think_budget` as well as
+  `enable_thinking: false`. `think_budget` becomes
+  `reasoning_budget_tokens`, which llama-server parses itself (not a
+  template kwarg) and which `provider/openai.rs` records as measured
+  honoured. So it bounds a pass even on a preset that lost `jinja`. The
+  build measures that budget's smallest working value the way M0 measured
+  the floor, and the thinking-pass cap counts what came back, not what was
+  asked (§5).
 - **R7. One at a time.** No `llm_map` concurrency above one for now (§4).
 - **R8. No.** `llm_query` refuses on any provider that is not local (§4).
 - **R9. Yes, conditionally.** The outbox's owner-facing join may open a
