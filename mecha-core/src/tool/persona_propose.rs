@@ -98,6 +98,11 @@ impl Tool for PersonaPropose {
         Capabilities::default()
     }
 
+    /// `read_only()`, and a write to the persona proposal queue.
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        Some(crate::tool::effect::Effect::StoreWrite)
+    }
+
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let relationships: Option<Vec<String>> = match input.get("relationships") {
             None | Some(Value::Null) => None,

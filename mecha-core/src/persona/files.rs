@@ -788,6 +788,10 @@ impl Tool for FileRead {
         Some(self)
     }
 
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        Some(crate::tool::effect::Effect::Read)
+    }
+
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let Some(file) = input.get("file").and_then(Value::as_str) else {
             return Ok(ToolOutput::err(

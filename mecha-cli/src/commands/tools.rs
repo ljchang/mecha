@@ -94,6 +94,17 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     "description": t.description(),
                     "read_only": t.read_only(),
                     "outbox_routed": outbox_routed(t.name()),
+                    // What the tool does to the world: one closed class,
+                    // resolved in ROLLOUT-DESIGN.md §3.2's order from the
+                    // routing above, the declaration made in code (or the
+                    // operator's `[[mcp]] effects`), and the capabilities
+                    // below. A wire format: a reader that meets a name it
+                    // does not know reads `undeclared` (`EffectClass::from_wire`).
+                    "effect": mecha_core::tool::effect::class_of(
+                        t.as_ref(),
+                        outbox_routed(t.name()),
+                    )
+                    .as_str(),
                     // This tool's server is believed when it says a failed
                     // call dispatched nothing — see `trust_result_claims`.
                     "result_claims_believed": if claims_believed(t.name()) {

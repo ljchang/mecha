@@ -149,6 +149,12 @@ impl Tool for RequestAccess {
         ))
     }
 
+    /// A question for a person, as `ask_user` is; it declares `destructive`
+    /// too, so it resolves `Irreversible`.
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        Some(crate::tool::effect::Effect::StoreWrite)
+    }
+
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         if ctx.phase == crate::agent::Phase::Plan {
             return Ok(ToolOutput::err(

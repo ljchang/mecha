@@ -5338,6 +5338,41 @@ silent failure before it was a rule:
   "MCP servers can shadow built-ins" doc comment on `Registry::insert`
   describes the method, not a configurable behaviour.
 
+**A closed effect class per tool, earned in code and never claimed by a
+server** (`tool/effect.rs`; the definition is `ROLLOUT-DESIGN.md` §3.2, the
+second consumer `CODE-MODE-DESIGN.md` §2). It says what a call does to the
+world, which `read_only()` cannot: that flag means "skips the approval
+gate", and `message_send`, `image_generate`, `persona_propose`,
+`hud_propose` and `ask_user` are all `read_only()`.
+
+- **Declared, then resolved.** A tool declares an `Effect` in its own impl
+  (`Tool::effect`, default `None`). `effect::resolve` applies §3.2's
+  first-match order to the declaration, the operator's outbox routing and
+  the tool's `Capabilities`: routed is `Staged`, undeclared is `Undeclared`,
+  `Chosen` is `Irreversible`, `Workspace` comes before the destructive row,
+  and a declared `Irreversible` lands with it. One function, so
+  `mecha tools --json` (`effect`) and every future consumer agree.
+- **Unknown is never safe.** A tool nobody classified is `Undeclared`, never
+  `Read`; a wrapper must forward `effect` as it forwards `capabilities`, or
+  the tool it wraps turns undeclared. `EffectClass` is a wire format, and
+  `from_wire` reads an unknown name as `Undeclared`.
+- **First-party servers are mecha's table, by program.** `effect::first_party`
+  classes `mecha-mail`, `mecha-docs` and the graph at `graph_mcp::REV` by the
+  `command`'s file name (`feature::server_feature`'s match), and only for an
+  entry from the operator's global file (`McpServerConfig::from_operator`,
+  never written by any file), so a project's `./tools/mecha-mail` buys
+  nothing. A tool the table does not list is undeclared.
+- **A third-party tool is undeclared until the operator says.** `[[mcp]]
+  effects` names a class per tool; it is stripped from project and
+  environment layers (the `trust_result_claims` rule), and `workspace` is
+  refused at load, because a server writes where it was spawned and that row
+  outranks `destructive`. Annotations move a class only toward caution:
+  `destructiveHint` and `openWorldHint` reach it through `Capabilities`, and
+  `readOnlyHint` is read by nothing here.
+- **Metadata, for now.** Nothing reads the class to loosen the interlock,
+  the jail, approval or taint. A consumer that admits by it must keep every
+  existing guard and add this one.
+
 ## Background jobs
 
 A tool may hand its slow half to the run's host and answer at once

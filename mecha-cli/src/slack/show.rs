@@ -119,6 +119,11 @@ impl Tool for ShowFileTool {
         Capabilities::default().private()
     }
 
+    /// `read_only()`, and a delivery to the owner's Slack thread.
+    fn effect(&self) -> Option<mecha_core::tool::effect::Effect> {
+        Some(mecha_core::tool::effect::Effect::StoreWrite)
+    }
+
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let Some(raw) = input.get("path").and_then(Value::as_str) else {
             return Ok(ToolOutput::err("show_file needs a `path`"));
