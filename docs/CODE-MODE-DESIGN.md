@@ -234,6 +234,9 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
   more of the owner's data leaving the box than the same task sends
   today. Until the owner rules otherwise, `llm_query` refuses on any
   provider that is not local, by the same rule as `structured_output`.
+  "Local" is the predicate that already exists: the provider's `kind` is
+  `local` and `provider::router::is_loopback` holds for its base URL. A
+  base URL that does not parse is not local.
 - **`max_tokens` sits above the reasoning budget** for every pass, as the
   local clients already require. A tight allowance for a three-label enum
   with thinking on is the HTTP-200-with-empty-`content` failure, and a
@@ -334,6 +337,17 @@ The names are a default install's (`{server}__{tool}`, `prefix_tools`
 defaulting true). A box whose graph server sets `prefix_tools = false`
 registers `kg_search` bare and spells it so. `build_subagent` fails the
 launch on a name that resolves to nothing, rather than running without it.
+
+**A profile that names `code` requires the feature.** `code` is a
+`Feature`, off by default, and a feature that is off registers no tool
+(`Feature::System`'s `system_read` is the precedent in `setup.rs`). So with
+the feature off, this profile fails at launch, which is the right
+fail-closed behaviour. But "asks for tool `code`, which is not available"
+reads like a typo. `build_subagent` names the cause when the missing tool
+belongs to a feature that is off ("needs the `code` feature: `mecha
+features enable code`"), distinct from a misspelled name. `code` is the
+first optional tool a documented profile names, so this is the first
+time that distinction matters.
 
 - **Inside the child**, everything above applies: it may peek, it arms
   honestly, and it has no tool that sends, so arming costs it nothing.
@@ -516,6 +530,16 @@ attacker selects from their own text can be an address; that is a
     no cross-session sharing to refcount, and `forget` removes the
     session's directory unconditionally, as a named edit to `forget.rs`
     with a test that a deleted session leaves no blob behind.
+  - **Retention, for the sessions nobody deletes.** One program may hold
+    64 MB (§5), stored whole for replay, so the store needs a bound on
+    growth, not only a deletion rule. Program blobs follow `work.rs`'s
+    retention model: a session's blob directory is reaped after the
+    retention period of the work directory its run used, and by an
+    owner-set size ceiling on the whole store, oldest session first. A
+    reaped session's programs become unreplayable and ungrounded by
+    name, as a missing blob already is. `doctor` reports the store's size
+    against its ceiling, and any directory whose session no longer
+    exists, so an orphan is a finding rather than silent disk.
   - **Which list carries them, exactly.** `grounding::calls` takes
     `&[Message]` and borrows each `Call` out of it. Several of its readers
     hold a live conversation, where the only message list in scope *is*
@@ -562,6 +586,17 @@ attacker selects from their own text can be an address; that is a
   (`Lever::CodeTool`) that `mecha eval` throws off, with
   `Lever::CompactTool` as the precedent for a tool registered per request.
   A scorecard must not grade a model with programs on unless it says so.
+- **Host calls enter the trace.** `ToolCallTrace` is pushed from
+  `dispatch`'s per-call body at every refusal and execution, and it feeds
+  `RunStats::tool_calls`, `tool_errors`, `tool_denied` and everything
+  `runlog` reads. A host call takes the gate half of that body, so it
+  pushes a trace entry the same way, tagged `in_program`. Otherwise tool
+  use would silently stop being counted the moment a run used a program,
+  and `sessions health` would stop being comparable across the release
+  that ships `code`, which `POST-TRAINING-RESEARCH.md` §7 step 0 relies
+  on. One `code` call can therefore add up to 256 to `tool_calls`.
+  `sessions health` splits by the tag, so a program-heavy week reads as
+  that and not as a jump in tool use.
 - **Counters.** New `RunStats` counters: `programs`, `program_errors`,
   `subcalls`, `subcall_tokens`, `peeked_bytes`, `budget_stops`. Each is an
   `Option<u32>`, as `context_overflows` is, because a row written before
@@ -597,6 +632,11 @@ attacker selects from their own text can be an address; that is a
      period, and no sub-call outlives it.
    - A draft staged after a program read a thread joins to that thread
      through `grounding::calls`.
+   - Each host call pushes a `ToolCallTrace` tagged `in_program`. A
+     `pre_tool` hook that denies a host call raises in the program *and*
+     increments `tool_denied`.
+   - With the feature off, a profile naming `code` fails at launch with
+     the message that names the feature, not the typo message.
    - Taint is armed before `resume` on a host call whose result is never
      printed, and the `code` result comes back `external` when any host
      call returned external content, so `Dispatched::external` and the
