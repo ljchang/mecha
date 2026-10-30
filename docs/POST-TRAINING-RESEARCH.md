@@ -46,8 +46,8 @@ Two readings follow.
   documented benefit of SFT for tool use is mostly format and schema
   adherence, and here it has nowhere left to go. Training has to target
   *behaviour*: the 200 tool errors, 164 denials, 64 blocked sends and 11
-  `max_turns` runs. None of those has been classified by cause, and the
-  counters overlap. `RunStats::tool_denied` counts "a human or a policy
+  `max_turns` runs. Step 0 below sorts them by cause. The counters
+  overlap. `RunStats::tool_denied` counts "a human or a policy
   refusing", and it is not partitioned by any one field:
   - The interlock's block sets `denied` *and* increments `blocked_sends`
     on the same call, so the 64 blocked sends are inside the 164.
@@ -55,8 +55,8 @@ Two readings follow.
   - The rest split by result text: `"Denied by the user:"`,
     `"Blocked by policy:"`, and a `pre_tool` hook's `"Blocked by a hook:"`.
 
-  So the owner's share of the 164 is unknown until a pass over the
-  transcripts sorts them. A
+  So the owner's share cannot be read from the counter; Step 0 below
+  reads it from the result text (six). A
   failure the harness or prompt causes is cheaper to fix with
   `harness ruminate` than with weights.
 - **The owner-labelled signal is tiny.** Fifteen verified successes, and
@@ -82,6 +82,8 @@ outside the repo; these are aggregates only.
 | A policy rule (`"Blocked by policy:"`) | 102 |
 | The trifecta interlock | 83 |
 | A hook (`"Blocked by a hook:"`) | 0 |
+| The planning phase gate (`"…is not available while planning"`) | 0 |
+| A picture already started this run (`"Not run: … already started"`) | 3 |
 
 **Six owner corrections in three months.** The denial counter is almost
 entirely the harness working. It is not a source of preference pairs
@@ -96,9 +98,31 @@ early September to 0 in late October, after the provenance work
 | Policy block retried | 102 | 20 | 51 | the model repeats a forbidden `shell`/`fs_write` call |
 | Path outside the workspace | 53 | 10 | 44 | the model loops on a path it cannot reach; 40 of them in early October |
 | File not found | 46 | 12 | 34 | guessed paths, many `image_view` |
-| Mail id without its `account` | 29 | 11 | 17 | an account-scoped id passed without the `account` the tool needs |
-| Environment | ~20 | | | expired Google grant (5), image memory (6), the `research` subagent overflowing a 32k context (5, 2026-08-03/04 only, since fixed), HTTP 403/404 and DNS |
-| Shell exit status | 18–32 | 5 | | the task's own commands failing |
+| Mail id without its `account` | 29 | 11 | 17 | an account-scoped id passed without the `account` the tool needs; 26 of them were `mail_get_thread`, which resolves the account itself since #272 (2026-09-24), and none has occurred since |
+| Shell exit status | 18 | 5 | 16 | the task's own commands failing |
+| Everything else | 76 | 33 | 26 | a long tail: environment (expired Google grant 5, image memory 6, the `research` subagent overflowing a 32k context 5 on 2026-08-03/04 only, HTTP 403/404 and DNS), mail search syntax rejected by the API, `ask_user` unanswered (4), and one-offs |
+
+The buckets partition the 416: 6 + 102 + 83 + 3 + 53 + 46 + 29 + 18 + 76.
+`image_view` is 11 of the 46 missing-file errors, behind `shell` (14) and
+level with `fs_list` (11).
+
+**The 11 `max_turns` runs.** Stop causes are run-level, not error
+results, so they were read run by run:
+- 3 polled `video_status` 39 times each (2026-10-15). The job clock and
+  `video_status` work of 2026-10-15/16 addressed this.
+- 2 `morning` trigger runs re-read the same mail and calendar dozens of
+  times with identical calls (2026-10-01 and 10-07).
+- 4 retried `fs_list`, `fs_read` or `shell` against errors, or repeated
+  the same `classify` call (2026-10-12 and 10-15).
+- 1 was a long legitimate research run (`web_search` ×19, 2026-10-12).
+- 1 was an early `shell` run (2026-08-28).
+
+Nine of the eleven are loops, of the same kind as the error buckets.
+None has occurred since 2026-10-15.
+
+**Recency** (from the harness-fix PR's own pass, #762): none of the four
+model-side error classes has occurred in the 70 sessions since
+2026-10-19.
 
 **What it says about training:** almost nothing here needs weights.
 - The model-side failures are **retries of a call that already failed**,
@@ -106,10 +130,17 @@ early September to 0 in late October, after the provenance work
 - The largest single model mistake is a missing parameter that the tool
   could resolve or require.
 
-Three harness fixes follow, and are being built as their own PR: a
-redirect when the same refusal or failure repeats, mail tools that resolve
-an account-scoped id's account, and an out-of-workspace error that names
-the workspace and the grant route. After them, what is left for training
+Three harness fixes followed, in #762:
+- A redirect when the same refusal or failure repeats on new targets.
+  Neither existing detector fired on a model that changes its target
+  every turn.
+- `calendar_list_events` resolving a group calendar's account. The
+  thread case was already fixed in #272.
+- The out-of-workspace error naming the workspace and the grant route.
+  This was already fixed in 2026-10-18's path-grant work.
+
+These guard a pattern that was frequent until mid-October and has not
+been seen since. After them, what is left for training
 is the quality of an answer the corpus does not yet grade. That is a
 measurement to build before a dataset to collect.
 
@@ -241,9 +272,10 @@ Three conclusions carry to mecha:
 
 ## 7. The path, in order
 
-0. **Classify the failures. Done 2026-10-30 (§1, Step 0):** six owner
-   denials, and the model-side failures are retry loops that harness
-   fixes address. Training has no target yet beyond answer quality, which
+0. **Classify the failures. Done 2026-10-30 (§1, Step 0)**, including the
+   11 `max_turns` runs read run by run: six owner denials, and the
+   model-side failures, including 9 of the 11 exhausted runs, are retry
+   loops that harness fixes address (#762). Training has no target yet beyond answer quality, which
    needs a grader first.
 1. **Build the data** from fixtures (§4), around 1–5k trajectories plus the
    mix, rendered with the router's template.

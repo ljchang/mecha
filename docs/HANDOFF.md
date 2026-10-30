@@ -6994,8 +6994,7 @@ no effect-class axis on `Tool`.
   Each step has §8 tests that must fail on the naive build.
 - **Post-training is not started, deliberately.** Step 0 (2026-10-30)
   found six owner denials, with the model-side failures being retry loops.
-  The harness fixes it named are being built on `fix/harness-failure-loops`
-  (no PR yet). Training waits on a grader for answer quality.
+  The harness fixes it named are #762 (in review). Training waits on a grader for answer quality.
 
 ### Larger, and deliberately not started
 
