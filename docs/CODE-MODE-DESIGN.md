@@ -320,7 +320,7 @@ can catch:
 | Limit | Default (ruling R4) | Enforced by |
 |---|---|---|
 | sub-calls | 32 | the host, **per pass**: `llm_map` over N handles is N, and a schema retry is another. An `llm_map` longer than the remaining budget raises before its first pass |
-| sub-call input tokens | 120k | the host, from `Usage`. Sized so that it binds before the clock: `provider/mod.rs` records a cold 170k-token prefill at ~120 s uncontended, so 400k would take ~280 s, and the 300 s clock would end the program first |
+| sub-call input tokens | 120k | the host, from `Usage`. Sized so that it binds before the clock even under contention (below) |
 | tool reads | 256 | the host, counted at the gate |
 | handle operations (§3) | 2,048 | the host; monty `max_suspensions` set to the sum as a backstop |
 | wall clock | 600 s | `monty-pool` `request_timeout`, which is **unset by default** and must be set |
