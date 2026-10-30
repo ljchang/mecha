@@ -133,13 +133,17 @@ pub enum Rung {
     /// context that has talked itself into a corner.
     Delegate,
     /// Rung 1 again, reached by the shape key: one tool failing the same way
-    /// on `STUCK` different targets.
-    Guessing,
+    /// across `STUCK` turns that each brought a new target. `arguments` is
+    /// how many distinct targets the streak holds — the number the notice
+    /// states, which is not the turn count: a parallel batch brings several,
+    /// and a target retried is still one.
+    Guessing { arguments: usize },
     /// Rung 1 for a call the machine refused (policy, hook, interlock, an
     /// approver's `Blocked`) on `STUCK` different targets — never a person's
     /// `Deny`, which the loop keeps out of the shape key. Its own words because the
-    /// response differs: a refusal is not a puzzle to reword.
-    Rewording,
+    /// response differs: a refusal is not a puzzle to reword. `arguments` as
+    /// for `Guessing`.
+    Rewording { arguments: usize },
 }
 
 impl Rung {
@@ -149,7 +153,7 @@ impl Rung {
         match self {
             Rung::Delegate => 3,
             Rung::Change => 2,
-            Rung::Rewording | Rung::Guessing => 1,
+            Rung::Rewording { .. } | Rung::Guessing { .. } => 1,
         }
     }
 }
@@ -400,10 +404,11 @@ impl Boredom {
             shape.turns += 1;
             // `==` again: crossed once per streak.
             if shape.turns == STUCK {
+                let arguments = shape.targets.len();
                 let rung = if shape.refused {
-                    Rung::Rewording
+                    Rung::Rewording { arguments }
                 } else {
-                    Rung::Guessing
+                    Rung::Guessing { arguments }
                 };
                 cross(rung, &shape.tool);
             }
@@ -454,8 +459,8 @@ impl Rung {
             // No delegate offered for either: a fresh conversation inherits
             // the same jail and the same policy, so handing a refusal to a
             // child is the reword in a third costume.
-            Rung::Guessing => format!(
-                "{NOTICE_STEM} `{tool}` has now failed the same way on {STUCK} \
+            Rung::Guessing { arguments } => format!(
+                "{NOTICE_STEM} `{tool}` has now failed the same way on {arguments} \
                  different arguments. The arguments are changing and the error is \
                  not, so another variant will fail the same way too. Do not start \
                  the task over — read the error for what it asks for instead (a \
@@ -463,8 +468,8 @@ impl Rung {
                  look at what actually exists before naming something again, or say \
                  what is blocking this piece."
             ),
-            Rung::Rewording => format!(
-                "{NOTICE_STEM} `{tool}` has now been refused for {STUCK} different \
+            Rung::Rewording { arguments } => format!(
+                "{NOTICE_STEM} `{tool}` has now been refused for {arguments} different \
                  calls. A refusal is about what the call does, not how it is \
                  written, so another variant will be refused the same way. Do not \
                  try to route around it — finish what does not need it, and tell \
@@ -629,7 +634,10 @@ mod tests {
         let mut go = |p: &str| b.observe_turn([failed("fs_list", p, &jail(p), false)]);
         assert!(go("/etc").is_none());
         assert!(go("/usr").is_none(), "two guesses is a retry");
-        assert_eq!(go("/var").unwrap(), (Rung::Guessing, "fs_list".to_string()));
+        assert_eq!(
+            go("/var").unwrap(),
+            (Rung::Guessing { arguments: 3 }, "fs_list".to_string())
+        );
         assert!(go("/opt").is_none(), "crossed once per streak");
     }
 
@@ -640,7 +648,7 @@ mod tests {
         let mut go = |p: &str| b.observe_turn([failed("fs_write", p, blocked, true)]);
         go("a.md");
         go("b.md");
-        assert_eq!(go("c.md").unwrap().0, Rung::Rewording);
+        assert_eq!(go("c.md").unwrap().0, Rung::Rewording { arguments: 3 });
     }
 
     #[test]
@@ -667,7 +675,11 @@ mod tests {
         };
         assert!(batch(&mut b, ["/a", "/b", "/c"]).is_none());
         assert!(batch(&mut b, ["/d", "/e", "/f"]).is_none());
-        assert_eq!(batch(&mut b, ["/g", "/h", "/i"]).unwrap().0, Rung::Guessing);
+        assert_eq!(
+            batch(&mut b, ["/g", "/h", "/i"]).unwrap().0,
+            Rung::Guessing { arguments: 9 },
+            "three turns, nine different arguments: the notice states the nine"
+        );
     }
 
     /// An unchanged call is the first key's, never this one's — or a call
@@ -714,23 +726,46 @@ mod tests {
         assert_eq!(b.notices(), 1, "one notice per turn");
     }
 
+    /// The count the notice states is distinct targets: a target retried
+    /// beside the new guesses is one argument, not one per call (review of
+    /// #762 — the notice used to state the turn threshold as an argument
+    /// count).
+    #[test]
+    fn a_retried_target_is_one_argument_in_the_count() {
+        let mut b = Boredom::new(true);
+        let f = |p: &str| failed("fs_list", p, &jail(p), false);
+        assert!(b.observe_turn([f("/a")]).is_none());
+        assert!(b.observe_turn([f("/a"), f("/b")]).is_none());
+        assert_eq!(
+            b.observe_turn([f("/c")]).unwrap().0,
+            Rung::Guessing { arguments: 3 },
+            "four calls, three arguments"
+        );
+    }
+
     #[test]
     fn the_new_notices_say_what_is_true() {
-        let guess = Rung::Guessing.notice("image_view", &Escapes::default());
+        let guess = Rung::Guessing { arguments: 9 }.notice("image_view", &Escapes::default());
         assert!(
             guess.starts_with(NOTICE_STEM),
             "recognisable as the harness"
         );
-        assert!(guess.contains("`image_view`") && guess.contains("different arguments"));
+        assert!(
+            guess.contains("`image_view`") && guess.contains("on 9 different arguments"),
+            "{guess}"
+        );
         assert!(guess.contains("Do not start the task over"));
-        let reword = Rung::Rewording.notice(
+        let reword = Rung::Rewording { arguments: 4 }.notice(
             "shell",
             &Escapes {
                 delegate: Some("researcher".into()),
             },
         );
         assert!(reword.starts_with(NOTICE_STEM));
-        assert!(reword.contains("refused") && reword.contains("tell the user"));
+        assert!(
+            reword.contains("refused for 4 different calls") && reword.contains("tell the user"),
+            "{reword}"
+        );
         assert!(
             !reword.contains("researcher"),
             "a child inherits the policy: delegating a refusal is rewording it"

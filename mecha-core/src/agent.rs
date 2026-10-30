@@ -13831,7 +13831,9 @@ mod tests {
             .filter(|&i| turns[i].1.starts_with(crate::boredom::NOTICE_STEM))
             .collect();
         assert_eq!(named, vec![2], "named on the third guess, and only then");
-        assert!(turns[2].1.contains("`fs_list`") && turns[2].1.contains("different arguments"));
+        assert!(
+            turns[2].1.contains("`fs_list`") && turns[2].1.contains("on 3 different arguments")
+        );
         assert!(
             is_harness_voice(&turns[2].1),
             "never mined as the owner speaking"
@@ -13882,7 +13884,7 @@ mod tests {
         let notice = &turns[2].1;
         assert!(notice.starts_with(crate::boredom::NOTICE_STEM), "{notice}");
         assert!(
-            notice.contains("refused") && notice.contains("tell the user"),
+            notice.contains("refused for 3 different calls") && notice.contains("tell the user"),
             "{notice}"
         );
         assert_eq!(
