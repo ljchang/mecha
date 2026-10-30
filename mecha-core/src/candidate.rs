@@ -1937,6 +1937,7 @@ mod r36_tests {
             input: json!({"to": "cleo@example.invalid", "body": "Q3 is done."}),
             is_error: false,
             denied: false,
+            blocked: false,
             unknown: false,
             staged: true,
         }]);
