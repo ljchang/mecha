@@ -65,9 +65,11 @@ something shipped.
 | [`MESSAGING-RESEARCH.md`](MESSAGING-RESEARCH.md) | How separate mecha sessions should message each other, and what travels with a message |
 | [`PERSONA-MEMORY-TIMESCALES-RESEARCH.md`](PERSONA-MEMORY-TIMESCALES-RESEARCH.md) | What a persona's "fact" should be: lasting facts vs states vs episodes, whether memory should decay, and what the evidence says about each (2026-10-02) |
 | [`POLL-RESEARCH.md`](POLL-RESEARCH.md) | What polling products ship, and which parts are worth copying |
+| [`POST-TRAINING-RESEARCH.md`](POST-TRAINING-RESEARCH.md) | Whether and how to post-train the local model (SFT, RL) to work better in this harness, what the run corpus says to fix first, and what the box can train (2026-10-30) |
 | [`PRIOR-ART-RESEARCH.md`](PRIOR-ART-RESEARCH.md) | What openclaw, codex and the other harnesses do that this one does not |
 | [`PUBLIC-SURFACE-RESEARCH.md`](PUBLIC-SURFACE-RESEARCH.md) | How an agent should meet the world: artifacts, reports, a booking page |
 | [`REMOTE-SURFACE-RESEARCH.md`](REMOTE-SURFACE-RESEARCH.md) | Once voice is a browser page, is Slack still the right remote surface |
+| [`RLM-RESEARCH.md`](RLM-RESEARCH.md) | What recursive language models and the harnesses built on them offer mecha, and which parts the security model can take (2026-10-30) |
 | [`SANDBOX-RESEARCH.md`](SANDBOX-RESEARCH.md) | Which confinement backend to use, and what each one cannot close |
 | [`SELF-IMPROVEMENT-RESEARCH.md`](SELF-IMPROVEMENT-RESEARCH.md) | Whether a harness can measure and improve itself, and where that goes wrong |
 | [`SKILLS-RESEARCH.md`](SKILLS-RESEARCH.md) | What the Agent Skills standard is, and what published skills measured as carrying |
@@ -87,6 +89,7 @@ something shipped.
 | [`ASSISTANT-FOLLOW-THROUGH-DESIGN.md`](ASSISTANT-FOLLOW-THROUGH-DESIGN.md) | Durable delegated work, delivery recovery, verification, commitments and the daily assistant view |
 | [`BACKGROUND-JOBS-DESIGN.md`](BACKGROUND-JOBS-DESIGN.md) | How a slow side effect (a picture first) outlives the turn: the call answers at once, a job owned by the conversation does the work, and the same call's result arrives late — talking never kills it, Stop does, one at a time (PERSONA-CONTEXT-DESIGN §5.4, R3; 2026-10-05) |
 | [`BRANCHING-DESIGN.md`](BRANCHING-DESIGN.md) | Branching a conversation, and why the TUI batch deliberately left it out |
+| [`CODE-MODE-DESIGN.md`](CODE-MODE-DESIGN.md) | The `code` tool redesigned around RLM: a read-only first slice, opaque handles the program cannot read, a typed `llm_query` that is a quarantined pass with a shape, and the budget and gates that keep it honest; supersedes the shape of `AUDIT-RESEARCH.md` §3.12 (2026-10-30) |
 | [`DOCUMENT-EXTRACTION-DESIGN.md`](DOCUMENT-EXTRACTION-DESIGN.md) | PDFs as two outputs per page — the text layer (exact, what a quote is checked against) and a local OCR model's transcript — with the parser confined, the cache by content hash, the OCR server on demand behind a socket, and what whole-page OCR measured as not good enough for (tables) |
 | [`EGRESS-DESIGN.md`](EGRESS-DESIGN.md) | Why the send axis is a class (`None < Blind < Chosen`) rather than a bool, which of the two security controls owns each class, and what a blind send does not close. Read §6 before treating `Blind` as safety rather than risk reduction |
 | [`EXPERIMENT-DESIGN.md`](EXPERIMENT-DESIGN.md) | The instrument that states, from artifacts alone, what differed between two runs and what it cost. §5 depends on `BRANCHING-DESIGN.md`; issue #60 holds the communication policy question. Part II (§13–§21): ablation as a closed lever set, the lifetime trial for cross-session subsystems, the principal simulator, and the datasets for grading the appraisal system |
