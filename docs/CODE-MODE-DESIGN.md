@@ -50,6 +50,14 @@ existing `AnswerShape` rule.
   `re` (fancy-regex; no `subn`, no `VERBOSE`), `json`, `collections`,
   `itertools`, `datetime`, slicing and string methods. Absent: `enum`,
   `string`, `io`, `operator`.
+- **Exceptions are a closed set, each carrying one string.** A program
+  cannot define an exception class (classes cannot inherit), and a host
+  can raise only a built-in `ExcType` with one message: `MontyException`
+  is a type, a message, a traceback, and structured data for the unicode
+  and JSON errors alone (`docs/limitations/exceptions.md` and
+  `monty-types`' `ExcType`/`ExcData` at tag 1.4.0). So a host failure has
+  no class of its own and carries no value but its message, which §4
+  builds on and §3 constrains.
 - **`AUDIT-RESEARCH.md` §3.2 shipped.** `QuarantinedPass::response_schema`
   exists. The shipped default is `structured_output = "disabled"` until an
   endpoint is verified; the owner's install sets `"llama_json"` on every
@@ -182,6 +190,22 @@ the call's `ToolOutput::external` and the tool's capabilities.
 - **Patterns run host-side** with Rust's `regex` (linear time), not
   monty's backtracking engine, so a pattern cannot cost unbounded time on
   adversarial text.
+- **A host-raised error is a third route for prose, so the host's
+  messages carry no bytes.** A program reads a failure as `str(e)`, and an
+  uncaught one reaches the model as a traceback. A message quoting a
+  handle's text, a tool's error body or a failed pass's raw output would
+  put prose into the program past `peek`'s cap and outside
+  `peeked_bytes`, and into the model's context unasked. So every message
+  the host writes names the handle's number, offsets, the tool and the
+  limit, and for a failed pass what failed to parse (wrong type, a missing
+  field, a label outside the set), never the text. A tool's error body is
+  bytes like any result: the message names a handle that holds it, and a
+  program that wants the reason `peek`s it, counted. Monty's own errors
+  need no rule: a program holds a `str` only from `peek`, a `str[n]`
+  result or its own literals, so an error quoting a value re-quotes
+  counted text. An uncaught error's traceback takes the ordinary output
+  budget, and a cut keeps the raised line and says how many frames it
+  dropped, because that line is the model's only feedback (§5).
 
 ---
 
@@ -224,10 +248,27 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
   much an attacker can say; it does not change who said it. Inside a
   program nothing narrows, which is why this slice needs no security
   ruling.
-- **A failure raises.** A pass that fails the schema twice raises
-  `QueryError`, catchable in the program. It never returns a sentinel
-  string: DSPy's `"[ERROR] ..."` string is the kind of value a program
-  aggregates as data.
+- **A failure raises.** A pass that fails the schema twice raises,
+  catchable in the program. It never returns a sentinel string: DSPy's
+  `"[ERROR] ..."` string is the kind of value a program aggregates as
+  data. Monty has no class to raise it as (§1), so every host failure is
+  a `RuntimeError` whose message opens with a fixed tag, the only thing
+  a program can tell causes apart by: `QueryError:` for a failed pass,
+  `ToolError:` for a tool that returned `is_error` or a host call refused
+  (§7, followed by the loop's own refusal prefix, so a policy block still
+  never reads as a person's denial), and `LimitError:` for a §5 limit.
+  The text after the tag follows §3's rule: no bytes.
+- **`llm_map` raises at the first failed item, and the passes before it
+  are spent.** The error names the item's index and how many passes
+  completed, as numbers. An exception cannot carry the completed values
+  (§1), and returning `None` in a failed item's place would be the
+  sentinel again: a filter that keeps the `"urgent"` answers drops it
+  silently, and the count comes out low with nothing raised. A program
+  that wants partial results loops `llm_query` under `try`/`except` and
+  keeps its own list of failures. Under R7 that costs nothing, because
+  `llm_map` runs one pass at a time anyway. The root's prompt shows that
+  loop, and an eval case checks the model uses it when one bad source
+  should not void a sweep.
 - **Same model only.** Sub-calls go to the model the run already holds. On
   the router, naming another preset swaps the resident model and evicts
   every slot.
@@ -742,6 +783,13 @@ attacker selects from their own text can be an address; that is a
      increments `tool_denied`.
    - With the feature off, a profile naming `code` fails at launch with
      the message that names the feature, not the typo message.
+   - A marker string planted in a source whose pass fails its schema
+     twice, in a tool's error body, and in a non-JSON handle given to
+     `json_get` appears in none of the three raised messages, and
+     `peeked_bytes` is unchanged. Each message opens with its §4 tag. A
+     host that quotes the failed output fails the first.
+   - `llm_map` over three handles whose second pass fails raises
+     `QueryError:` naming index 1 and one completed pass.
    - Taint is armed before `resume` on a host call whose result is never
      printed, and the `code` result comes back `external` when any host
      call returned external content, so `Dispatched::external` and the
