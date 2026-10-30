@@ -182,6 +182,8 @@ async fn a_skip_is_recorded_once_with_its_prompt_and_no_text() {
     // tells it to prefer a skip when they are withheld: the class rides.
     assert_eq!(r["evidence"], "full");
     assert!(r["prompt"].as_str().is_some_and(|p| !p.is_empty()), "{r}");
+    // The pass that wrote it: a retry's rows supersede a stopped pass's.
+    assert!(r["pass"].as_str().is_some_and(|p| !p.is_empty()), "{r}");
     let wire =
         std::fs::read_to_string(home.join("learning").join("reflector_replies.jsonl")).unwrap();
     assert!(

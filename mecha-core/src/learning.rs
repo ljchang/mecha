@@ -1494,18 +1494,33 @@ impl LearningStore {
 
     /// Record one reflector reply — a lesson, a skip or an unusable reply —
     /// in `reflector_replies.jsonl` (`HARNESS-EVOLUTION-DESIGN.md` P7). No
-    /// text: kinds, ids, the model and the prompt's hash.
-    pub fn append_reply(&self, r: &ReplyRecord) -> Result<()> {
-        self.append_line(REPLIES_FILE, &serde_json::to_string(r)?)
+    /// text: kinds, ids, the model and the prompt's hash. `pass` names the
+    /// `mecha reflect` pass writing it, the key a retry is told apart by.
+    pub fn append_reply(&self, pass: &str, r: &ReplyRecord) -> Result<()> {
+        let row = ReplyRecord {
+            pass: Some(pass.to_string()),
+            ..r.clone()
+        };
+        self.append_line(REPLIES_FILE, &serde_json::to_string(&row)?)
     }
 
-    /// Every recorded reflector reply, and how many lines could not be read.
+    /// Every counted reflector reply, and how many lines could not be read.
+    /// A row counts once its session or outbox item is marked mined, and
+    /// only from the last pass that answered it: a pass that stopped
+    /// before the mark is retried, and the retry's rows are the ones kept,
+    /// so a retry counts no reply twice and a stopped pass none.
     pub fn replies_counting(&self) -> Result<(Vec<ReplyRecord>, usize)> {
+        // The marks before the rows, the writer's order reversed: a pass
+        // that commits between the two reads is read as still in flight and
+        // counts nothing yet. Read the other way round, its mark could meet
+        // only a stopped pass's rows and count those (found on review of
+        // #730).
+        let (sessions, items) = (self.mined_sessions()?, self.mined_outbox()?);
         let path = self.root.join(REPLIES_FILE);
         if !path.exists() {
             return Ok((Vec::new(), 0));
         }
-        let mut out = Vec::new();
+        let mut out: Vec<ReplyRecord> = Vec::new();
         let mut skipped = 0usize;
         for line in std::fs::read_to_string(&path)?.lines() {
             let line = line.trim();
@@ -1520,6 +1535,29 @@ impl LearningStore {
                 }
             }
         }
+        // File order is append order, and a source is marked mined after
+        // its rows: once it is mined, the last pass seen for it is the one
+        // that marked it. Until then its rows are a pass in flight, or one
+        // that stopped and will be retried, and count for nothing. A row
+        // with no pass is superseded like any other.
+        let latest: std::collections::HashMap<(bool, String), Option<String>> = out
+            .iter()
+            .filter_map(|r| {
+                let (item, id) = r.source()?;
+                Some(((item, id.to_string()), r.pass.clone()))
+            })
+            .collect();
+        out.retain(|r| match r.source() {
+            Some((item, id)) => {
+                let mined = if item {
+                    items.contains(id)
+                } else {
+                    sessions.contains(id)
+                };
+                mined && latest.get(&(item, id.to_string())) == Some(&r.pass)
+            }
+            None => true,
+        });
         Ok((out, skipped))
     }
 
@@ -3699,6 +3737,25 @@ Reply with one JSON object and nothing else:
 extra-content, style, other>\", \"confidence\": 0.0-1.0}
 or {\"skip\": true} when there is no preference to learn.";
 
+/// Every category the three frames offer the reflector. The ledger keeps a
+/// lesson's category only when it is one of these: `error_type` is the
+/// model's own string, and the ledger carries no text (found on review of
+/// #730).
+const ERROR_TYPES: &[&str] = &[
+    "premature-action",
+    "wrong-approach",
+    "overreach",
+    "missed-context",
+    "style",
+    "verification",
+    "register",
+    "structure",
+    "verbosity",
+    "missing-content",
+    "extra-content",
+    "other",
+];
+
 /// Which system prompt and learning domain fit an intervention. Pure, so the
 /// trigger→domain routing is testable without a provider.
 fn reflector_frames(trigger: Trigger) -> (&'static str, &'static str) {
@@ -3923,8 +3980,15 @@ impl Reflector {
                 return Ok(Reflected::Unusable);
             }
         };
+        // A skip that also carries a lesson answered both ways, and counting
+        // it as a skip would move the share P7 measures (found on review of
+        // #730).
         if reply.skip {
-            return Ok(Reflected::Skipped);
+            return Ok(if reply.reflexion.trim().is_empty() {
+                Reflected::Skipped
+            } else {
+                Reflected::Unusable
+            });
         }
         // `"skip": false` with no lesson answered neither way.
         if reply.reflexion.trim().is_empty() {
@@ -4021,7 +4085,11 @@ impl Reflection {
             Reflected::Lesson(lesson) => (
                 ReplyOutcome::Lesson,
                 Some(lesson.0.id.clone()),
-                lesson.0.error_type.clone(),
+                lesson
+                    .0
+                    .error_type
+                    .clone()
+                    .filter(|t| ERROR_TYPES.contains(&t.as_str())),
             ),
             Reflected::Skipped => (ReplyOutcome::Skip, None, None),
             Reflected::Unusable => (ReplyOutcome::Unusable, None, None),
@@ -4042,6 +4110,7 @@ impl Reflection {
                 .ok()
                 .and_then(|v| v.as_str().map(String::from)),
             contrasted,
+            pass: None,
         })
     }
 }
@@ -4134,6 +4203,24 @@ pub struct ReplyRecord {
     /// Whether a verified success was set beside the correction (R43).
     #[serde(default, skip_serializing_if = "is_false")]
     pub contrasted: bool,
+    /// The `mecha reflect` pass that wrote the row, stamped by
+    /// [`LearningStore::append_reply`]. A session's or an outbox item's
+    /// rows are written before it is marked mined, so a pass that stops in
+    /// between leaves rows a retry writes again; the reader keeps the last
+    /// pass's rows for each source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pass: Option<String>,
+}
+
+impl ReplyRecord {
+    /// What the row answered for: the outbox item, else the session.
+    fn source(&self) -> Option<(bool, &str)> {
+        match (&self.item_id, &self.session_id) {
+            (Some(item), _) => Some((true, item)),
+            (None, Some(session)) => Some((false, session)),
+            (None, None) => None,
+        }
+    }
 }
 
 // ─── Counterfactual validation ──────────────────────────────────────────────
@@ -9096,6 +9183,7 @@ mod correction_attribution {
             "no JSON at all",
             r#"{"skip": false, "reflexion": " "}"#,
             r#"{"skip": "maybe"}"#,
+            r#"{"skip": true, "reflexion": "Never use the search tool."}"#,
         ] {
             let r = reflect_typed(unusable).await;
             assert!(matches!(r.outcome, Reflected::Unusable), "{unusable}");
@@ -9118,6 +9206,118 @@ mod correction_attribution {
             !line.contains("employer") && !line.contains("Lakeside"),
             "no text: {line}"
         );
+        // A category off the prompts' lists is the model's own words: the
+        // lesson keeps it, the ledger does not.
+        let named = reflect_typed(
+            r#"{"skip": false, "reflexion": "Ask first.", "error_type": "Lakeside Institute"}"#,
+        )
+        .await;
+        assert_eq!(row(&named).outcome, ReplyOutcome::Lesson);
+        assert_eq!(row(&named).error_type, None);
+    }
+
+    /// Every category the ledger keeps is one a prompt offers, so a
+    /// misspelt entry cannot quietly drop a real category from the counts.
+    #[test]
+    fn every_ledger_category_is_offered_by_a_prompt() {
+        for category in ERROR_TYPES {
+            assert!(
+                [
+                    REFLECTOR_SYSTEM,
+                    MISMATCH_REFLECTOR_SYSTEM,
+                    WRITING_REFLECTOR_SYSTEM
+                ]
+                .iter()
+                .any(|p| p.contains(category)),
+                "{category}"
+            );
+        }
+    }
+
+    /// A pass that stopped after a source's rows and before its mined mark
+    /// counts nothing; the retry that marks it counts, never both.
+    #[test]
+    fn a_retried_source_counts_its_last_pass_only() {
+        let root = std::env::temp_dir().join(format!(
+            "mecha-replies-{}",
+            crate::session::Session::new_id()
+        ));
+        let store = LearningStore::open(&root).unwrap();
+        let reply = |outcome: Reflected, session: &str, item: Option<&str>| {
+            Reflection {
+                outcome,
+                prompt: "p".into(),
+            }
+            .record(
+                Trigger::Followup,
+                "m",
+                Some(session.into()),
+                item.map(String::from),
+                Evidence::Full,
+                false,
+            )
+            .unwrap()
+        };
+        let counted = |store: &LearningStore| {
+            let (rows, _) = store.replies_counting().unwrap();
+            rows.iter()
+                .map(|r| (r.pass.clone(), r.item_id.clone(), r.outcome))
+                .collect::<Vec<_>>()
+        };
+        // Pass one: two replies in session s, then a stop; an outbox item
+        // drafted in s was finished and marked.
+        store
+            .append_reply("one", &reply(Reflected::Skipped, "s", None))
+            .unwrap();
+        store
+            .append_reply("one", &reply(Reflected::Unusable, "s", None))
+            .unwrap();
+        store
+            .append_reply("one", &reply(Reflected::Skipped, "s", Some("draft-1")))
+            .unwrap();
+        store.mark_outbox_mined("draft-1").unwrap();
+        let draft = (
+            Some("one".to_string()),
+            Some("draft-1".to_string()),
+            ReplyOutcome::Skip,
+        );
+        assert_eq!(
+            counted(&store),
+            std::slice::from_ref(&draft),
+            "s is unmined"
+        );
+        // Pass two retries s and stops after one row; pass three finishes.
+        store
+            .append_reply("two", &reply(Reflected::Skipped, "s", None))
+            .unwrap();
+        assert_eq!(
+            counted(&store),
+            std::slice::from_ref(&draft),
+            "s is still unmined"
+        );
+        store
+            .append_reply("three", &reply(Reflected::Unusable, "s", None))
+            .unwrap();
+        store.mark_mined("s").unwrap();
+        // A row from before the pass was stamped is superseded too.
+        let mut unstamped = serde_json::to_value(reply(Reflected::Skipped, "t", None)).unwrap();
+        unstamped.as_object_mut().unwrap().remove("pass");
+        store
+            .append_line(REPLIES_FILE, &unstamped.to_string())
+            .unwrap();
+        store
+            .append_reply("three", &reply(Reflected::Unusable, "t", None))
+            .unwrap();
+        store.mark_mined("t").unwrap();
+        assert_eq!(
+            counted(&store),
+            [
+                draft,
+                (Some("three".to_string()), None, ReplyOutcome::Unusable),
+                (Some("three".to_string()), None, ReplyOutcome::Unusable),
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Nothing asked is no reply, and the ledger round-trips through the
@@ -9149,7 +9349,12 @@ mod correction_attribution {
             false,
         )
         .unwrap();
-        store.append_reply(&skip).unwrap();
+        store.append_reply("pass-1", &skip).unwrap();
+        store.mark_outbox_mined("draft-1").unwrap();
+        let skip = ReplyRecord {
+            pass: Some("pass-1".into()),
+            ..skip
+        };
         let mut future = serde_json::to_value(&skip).unwrap();
         future["outcome"] = serde_json::json!("deferred");
         store
