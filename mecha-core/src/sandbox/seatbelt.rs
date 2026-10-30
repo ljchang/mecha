@@ -1,10 +1,11 @@
 //! The macOS confinement: `sandbox-exec` with a Seatbelt profile built for
 //! each call (`docs/DOCUMENT-EXTRACTION-DESIGN.md` §Seatbelt).
 //!
-//! **Documents only.** It confines the PDF renderer (poppler) and the layout
-//! worker — programs that read one input and write one directory. `[sandbox]`
+//! **Never `shell`'s.** It confines the PDF renderer (poppler) and the layout
+//! worker — programs that read one input and write one directory — and, with
+//! a profile of its own, code mode's interpreter (below). `[sandbox]`
 //! refuses it for `shell` and MCP servers: their confinement is what lets a
-//! tool declare narrower capabilities, and this profile has not been measured
+//! tool declare narrower capabilities, and neither profile has been measured
 //! against a shell's reach (`Config::validate`).
 //!
 //! **Deny by default, then name what the call needs.** The profile starts
@@ -34,6 +35,15 @@
 //! **A path that cannot be written into a profile is refused**, never
 //! mangled: SBPL strings take `\` and `"` escaped, and a control character or
 //! a name that is not UTF-8 stops the call.
+//!
+//! **Code mode's worker has a profile of its own** ([`worker_profile`]),
+//! separate from the documents profile above and used by
+//! `interpreter::monty` alone. It is much narrower: no `system.sb`, no
+//! metadata everywhere, no scratch directory, no write anywhere — exec of the
+//! pinned binary, the root directory's listing and one named sysctl, each
+//! found by measurement on macOS. `[sandbox]` never names it, so it confines no
+//! `shell` and no MCP server ([`live`] reads what a running process's
+//! profile allows, which is how the interpreter's preflight proves it holds).
 
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
@@ -174,6 +184,127 @@ pub fn profile(p: &Policy) -> Result<String> {
         "(deny network*)\n"
     });
     Ok(out)
+}
+
+/// The profile code mode's interpreter runs its worker under
+/// (`interpreter::monty::Confinement::Seatbelt`). **Deny by default, and
+/// allow only what the pinned worker was measured to need.** Everything a
+/// program might reach for arrives at the host as an `OsCall` first and is
+/// refused there, so this is the second wall, and it has to hold if the
+/// first is escaped.
+///
+/// Measured on macOS 26.6 (arm64, CI): the worker traced under `(allow
+/// default (with report))`, each grant then removed in turn and the worker
+/// started without it. Three survive:
+///
+/// - `process-exec` of the worker, by its canonical path: `sandbox-exec`
+///   applies the profile and then execs it. Nothing else may be executed,
+///   so a worker cannot become a shell. Not `file-read*` of it: the kernel
+///   maps the image, and the worker starts with its own bytes unreadable.
+/// - `file-read-data` of `/` itself, a literal and not a subpath: the
+///   worker opens the root directory at start and aborts (SIGABRT) before
+///   `main` without it. It lists the root's entries' names; nothing under
+///   them is readable.
+/// - `sysctl-read` of `hw.pagesize_compat` alone, by name: Rust's runtime
+///   sizes the main thread's guard page from it and panics at start without
+///   it ("failed to allocate a guard page"). The other five the trace showed
+///   (`kern.bootargs` and `security.mac.lockdown_mode_state` for dyld;
+///   `kern.osproductversion`, `kern.iossupportversion` and
+///   `kern.osvariant_status` for libSystem's version checks) are denied,
+///   and the worker starts without them.
+///
+/// And nothing else:
+///
+/// - **No mach-lookup.** The trace showed the worker looks up no service,
+///   CoreFoundation's linkage notwithstanding, so the measured set is empty;
+///   a service a later path wants is denied, which fails the program rather
+///   than opening a route.
+/// - **No network** (`deny network*`, spelled out though `deny default`
+///   already covers it) and **no file write** anywhere — not `/dev/null`:
+///   the worker's stdio are pipes and a log the launcher opened before the
+///   profile applied.
+/// - **No `system.sb`**, whose grants (the dyld cache paths, metadata
+///   everywhere, the logging and notification services) the documents
+///   profile imports and this worker was measured not to need: the dyld
+///   shared cache is mapped by the kernel, not read through the filesystem.
+///   Each start logs the denials of what it reaches for and does without.
+pub fn worker_profile(worker: &Path) -> Result<String> {
+    let w = quote(worker)?;
+    Ok(format!(
+        "(version 1)\n\
+         (deny default)\n\
+         (allow process-exec (literal {w}))\n\
+         (allow file-read-data (literal \"/\"))\n\
+         (allow sysctl-read (sysctl-name \"hw.pagesize_compat\"))\n\
+         (deny network*)\n"
+    ))
+}
+
+/// What a running process's Seatbelt profile allows, asked of the kernel
+/// (`sandbox_check`, libSystem's) — the live reading of a confinement,
+/// never inferred from the argv that was meant to apply it. `None` when the
+/// kernel would not answer, which every caller treats as not confined.
+#[cfg(target_os = "macos")]
+pub mod live {
+    use std::ffi::{c_char, c_int, CString};
+    use std::path::Path;
+
+    extern "C" {
+        fn sandbox_check(pid: libc::pid_t, operation: *const c_char, filter: c_int, ...) -> c_int;
+    }
+
+    /// `SANDBOX_FILTER_NONE`, `SANDBOX_FILTER_PATH` and
+    /// `SANDBOX_FILTER_GLOBAL_NAME` from `sandbox.h`.
+    const FILTER_NONE: c_int = 0;
+    const FILTER_PATH: c_int = 1;
+    const FILTER_GLOBAL_NAME: c_int = 2;
+
+    fn answer(r: c_int) -> Option<bool> {
+        match r {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        }
+    }
+
+    /// Whether `pid` runs under any Seatbelt profile.
+    pub fn is_sandboxed(pid: u32) -> Option<bool> {
+        // SAFETY: a null operation with no filter argument is the documented
+        // "is this process sandboxed" form.
+        answer(unsafe { sandbox_check(pid as libc::pid_t, std::ptr::null(), FILTER_NONE) })
+    }
+
+    /// Whether `pid`'s profile denies `operation` outright (`network-outbound`).
+    pub fn denies(pid: u32, operation: &str) -> Option<bool> {
+        let op = CString::new(operation).ok()?;
+        // SAFETY: a NUL-terminated operation name and no filter argument.
+        answer(unsafe { sandbox_check(pid as libc::pid_t, op.as_ptr(), FILTER_NONE) })
+    }
+
+    /// Whether `pid`'s profile denies `operation` on `path`, which must be
+    /// spelled as the kernel resolves it (`/private/etc`, not `/etc`).
+    pub fn denies_path(pid: u32, operation: &str, path: &Path) -> Option<bool> {
+        let op = CString::new(operation).ok()?;
+        let p = CString::new(path.to_str()?).ok()?;
+        // SAFETY: two NUL-terminated strings, the path the one variadic
+        // argument the path filter takes.
+        answer(unsafe { sandbox_check(pid as libc::pid_t, op.as_ptr(), FILTER_PATH, p.as_ptr()) })
+    }
+
+    /// Whether `pid`'s profile denies looking up the Mach service `name`.
+    pub fn denies_service(pid: u32, name: &str) -> Option<bool> {
+        let op = CString::new("mach-lookup").ok()?;
+        let n = CString::new(name).ok()?;
+        // SAFETY: as `denies_path`, with a service name for the filter.
+        answer(unsafe {
+            sandbox_check(
+                pid as libc::pid_t,
+                op.as_ptr(),
+                FILTER_GLOBAL_NAME,
+                n.as_ptr(),
+            )
+        })
+    }
 }
 
 /// A path as an SBPL string literal, or why it cannot be one.
@@ -671,6 +802,45 @@ mod tests {
         assert!(
             profile(&Policy::default()).is_err(),
             "no program, no profile"
+        );
+    }
+
+    /// The worker's profile allows exactly its measured list: exec of its own
+    /// binary, the root's listing and one sysctl — no read of anything else,
+    /// no write, no network, no service, no other program, and none of the
+    /// documents profile's grants. The list is reviewed here, not by reading
+    /// the format string.
+    #[test]
+    fn the_worker_profile_allows_its_exec_the_root_listing_and_one_sysctl_only() {
+        let t = worker_profile(Path::new("/Users/a/.mecha/sidecars/monty/1.4.0/monty")).unwrap();
+        assert!(t.starts_with("(version 1)\n(deny default)\n"), "{t}");
+        let allows: Vec<&str> = t.lines().filter(|l| l.starts_with("(allow")).collect();
+        assert_eq!(
+            allows,
+            vec![
+                "(allow process-exec (literal \"/Users/a/.mecha/sidecars/monty/1.4.0/monty\"))",
+                "(allow file-read-data (literal \"/\"))",
+                "(allow sysctl-read (sysctl-name \"hw.pagesize_compat\"))",
+            ]
+        );
+        assert!(t.contains("(deny network*)"), "{t}");
+        for absent in [
+            "system.sb",
+            "file-write",
+            "network*)\n(allow",
+            "mach-lookup",
+            "subpath",
+            "file-read-metadata",
+            "file-read*",
+        ] {
+            assert!(
+                !t.contains(absent),
+                "`{absent}` in the worker's profile:\n{t}"
+            );
+        }
+        assert!(
+            worker_profile(Path::new("relative/monty")).is_err(),
+            "a path no profile can name refuses"
         );
     }
 
