@@ -156,6 +156,7 @@ the call's `ToolOutput::external` and the tool's capabilities.
 | `find(h, pattern)` | list of (start, end) | offsets, never text |
 | `count(h, pattern)` | int | |
 | `json_get(h, path)` | Handle for a string, object or array leaf; a number, bool or null as itself | structured tool output without decoding it into the program. A string leaf is text and stays a handle, or it would bypass `peek`'s cap and count |
+| `budget()` | dict of ints | the remaining amount of every §5 host limit, read without spending anything, so a program can check before a sweep |
 | `peek(h, n=2000)` | str | **the only way a handle's text enters the program**; a `str[n]` sub-call result (§4) is the other way prose does, and both draw on one cap and one count |
 
 `print(h)` renders a stub such as
@@ -275,7 +276,7 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
   `llm_map` refuses up front when the sweep is longer than the remaining
   budget, while a hand-rolled loop spends passes until the cap and then
   raises mid-sweep. The prompt's example checks the remaining budget
-  first. The root's prompt shows that
+  first, through `budget()` (§3). The root's prompt shows that
   loop, and an eval case checks the model uses it when one bad source
   should not void a sweep.
 - **Same model only.** Sub-calls go to the model the run already holds. On
@@ -390,6 +391,7 @@ Per program. **Two kinds of limit, and only the first is catchable:**
 | Limit | Default (ruling R4) | Enforced by |
 |---|---|---|
 | sub-calls | 32 | the host, **per pass**: `llm_map` over N handles is N, and a schema retry is another. An `llm_map` longer than the remaining budget raises before its first pass |
+| thinking-on passes | 8 (proposed) | the host; a pass that asks for thinking past it raises. This is the row that keeps the clock from binding first (below) |
 | sub-call input tokens | 120k | the host, from `Usage`. Sized so that it binds before the clock even under contention (below) |
 | tool reads | 256 | the host, counted at the gate |
 | handle operations (§3) | 2,048 | the host; monty `max_suspensions` set to the sum as a backstop |
@@ -988,10 +990,12 @@ than an architecture section kept beside the code.
 - **Sinks of any kind**, pausing at the outbox, and persisted program
   state. Admitting a sink also flips `code` off `read_only()`, which takes
   it out of `Phase::Plan` and `PermissionMode::ReadOnly` (§11). That
-  flip is the mechanism, not just a consequence: a host call skips the
-  approver's rule-free branch where `PermissionMode::ReadOnly` is
-  checked, so only the `code` call's own flag keeps a read-only session
-  from running a program with a sink. The sink slice is §3.12's original
+  flip is the mechanism, not just a consequence: `ModeApprover` checks
+  `PermissionMode::ReadOnly` per call, and the `code` call meets it once,
+  under its own flag. A host call meets it only on a path that reaches
+  `ModeApprover::permit` (an `allow` rule), and none on the rule-free
+  branch §7 skips. So the `code` flag is what reliably keeps a read-only
+  session from running a program with a sink. The sink slice is §3.12's original
   shape, with snapshots MAC'd, taint carried beside them, and a version
   mismatch failing closed.
 - **`Blind` tools.**
