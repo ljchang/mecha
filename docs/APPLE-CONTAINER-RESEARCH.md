@@ -60,6 +60,11 @@ shipped by Apple. Against that:
 - **Its kill semantics break the pool's contract the way docker's did**
   [I]. The pool kills the pid it spawned, which is the CLI client, not the
   VM.
+- **There is no warm VM to hand a worker.** A VM's CPUs, memory and init
+  filesystem are fixed at boot, so a booted VM cannot be pooled and given a
+  workload later (maintainer, #738) [C]. Every new worker pays a boot. If
+  Containerization ever ships VM snapshots, this comparison moves (§7,
+  "When to revisit").
 
 So the recommendation is the third option in the brief:
 - **Seatbelt is the default.**
@@ -200,12 +205,22 @@ the container keeps running. `container run` has the same shape [I]:
 ### Option A: one VM per worker
 
 The launcher script is
-`exec container run --rm -i --network none --no-dns --read-only --cap-drop ALL --user 65534:65534 --memory <m> --cpus 1 --cidfile <launcher-dir>/$$.cid <pinned image> /monty "$@"`.
+`exec container run --rm -i --network none --no-dns --read-only --cap-drop ALL --user 65534:65534 --memory <m> --cpus 1 --cidfile <launcher-dir>/$$.cid <pinned image> "$@"`.
+The image's `ENTRYPOINT` is `["/monty"]`, as in §8's setup, so the
+arguments the pool appends (`subprocess`) reach the worker as its own.
+Naming `/monty` here as well would hand the worker `/monty subprocess`.
+The `$$` in the cidfile path is a problem of its own (the Kill bullet
+below).
 
 - **Start cost.** About 0.7 s per worker [M3], serialized across
   concurrent boots [M3]. This is paid on the first program of each worker,
-  then amortized over up to 100 programs: roughly 7 ms per program at full
-  reuse [I], beside bwrap's 4 ms per *cold* worker.
+  then amortized over up to 100 programs.
+  - **Per cold worker:** ~0.7 s against bwrap's ~4 ms, about 175× [M3]/[V].
+  - **Per program at full reuse:** ~7 ms of VM start, plus a warm program,
+    against bwrap's ~0.04 ms of start plus a warm program at 0.05–0.09 ms
+    (`CODE-MODE-DESIGN.md` §10, M1). That is about 7 ms against about
+    0.1 ms [I]. The ratio stays large; amortizing only makes the absolute
+    cost small.
   - **The first `code` call in a process pays it bare**, and so does
     `preflight`. Both fit inside the 30 s and 60 s timeouts.
   - A cold stall of under a second is visible in a chat, not fatal.
@@ -216,6 +231,14 @@ The launcher script is
   - Each launcher writes its container ID to a file named by its pid
     (`--cidfile`; `exec` keeps the pid). The pid is the one the pool will
     kill.
+  - **Today's launcher writer cannot express that.**
+    `interpreter::monty::Launcher::write` shell-quotes every argv element
+    (`sh_quote`), so a `$$` arrives literally and every worker would write
+    the same file [V]. The reaper therefore needs a new, deliberate
+    affordance in the generated script: one fragment mecha writes
+    unquoted, built from no input but the launcher directory. That is a
+    change to the one piece of code that turns the confinement into an
+    executable, and it raises option A's cost.
   - The backend sweeps its launcher directory after a discarded checkout,
     and on `Drop`. For every cidfile whose pid is gone it runs
     `container kill` and then `container delete`.
@@ -298,13 +321,23 @@ The costs:
 
 | Axis | Linux: bwrap + `systemd-run` | macOS: Seatbelt | macOS: `container` (option A) |
 |---|---|---|---|
-| **Network** | Every namespace unshared, nothing bound [V] (`Confinement::argv`) | `(deny network*)` in the profile [V] (`DOCUMENT-EXTRACTION-DESIGN.md` §3.1) | `--network none` creates **no interface at all** (`Utility.containerConfigFromFlags` sets `config.networks = []`; another network beside `none` is refused) [V]. The VM keeps vsock to its own runtime helper, which carries stdio and the agent [V] (`vminitd` `StandardIO`). Whether a guest process can open `AF_VSOCK` is M-C7: the framework's seccomp profile denies it, but no seccomp is on by default (next row) [V] |
-| **Filesystem** | Only the static binary, read-only at `/monty`. The root is empty and read-only [V] | Deny-default with explicit reads (the library list a Mach-O names). The home is denied [V] (§3.1 there) | The guest sees its image and only the shares named with `-v`/`--mount`, each a virtiofs mount. Option A names none [V] (technical overview, "Privacy"). `--read-only` exists [V]; whether a scratch image boots with it is M-C4, since #1737 reports bootstrap failing on images without a writable `/etc` |
+| **Network** | Every namespace unshared, nothing bound [V] (`Confinement::argv`) | `(deny network*)`, as designed for poppler's per-call profile (`DOCUMENT-EXTRACTION-DESIGN.md` §3.1) [I for the worker] | `--network none` creates **no interface at all** (`Utility.containerConfigFromFlags` sets `config.networks = []`; another network beside `none` is refused) [V]. The VM keeps vsock to its own runtime helper, which carries stdio and the agent [V] (`vminitd` `StandardIO`). Whether a guest process can open `AF_VSOCK` is M-C7: the framework's seccomp profile denies it, but no seccomp is on by default (next row) [V] |
+| **Filesystem** | Only the static binary, read-only at `/monty`. The root is empty and read-only [V] | Deny-default with explicit reads (the libraries a Mach-O names), and the home denied, as designed for poppler (§3.1 there) [I for the worker] | The guest sees its image and only the shares named with `-v`/`--mount`, each a virtiofs mount. Option A names none [V] (technical overview, "Privacy"). `--read-only` exists [V]; whether a scratch image boots with it is M-C4, since #1737 reports bootstrap failing on images without a writable `/etc` |
 | **Memory** | cgroup `memory.max` (`[sandbox] memory_mb`); a kill reads `End::Backstop` [V] | **None.** `ulimit -v`, `-d` and `-m` of 1 GiB all fail to set on macOS 26.6.2, and a 3 GiB string then allocates (RSS 3.23 GB) [V] (CI run 41145654354). Monty's own allocator limit is the only bound | **The VM's RAM is a hard ceiling** (`--memory` + 128 MiB), with a cgroup limit of `--memory` inside the guest [V] (`LinuxContainer.Configuration.memoryInBytes`, `RuntimeService`). Enforcement by the guest's OOM killer is M-C5 |
-| **CPU** | cgroup `cpu.max` (`[sandbox] cpus`) [V] | `RLIMIT_CPU` and the wall clock [V] (§3.1 there) | `--cpus` vCPUs (+1 overhead) and a guest cgroup limit [V] |
+| **CPU** | cgroup `cpu.max` (`[sandbox] cpus`) [V] | `RLIMIT_CPU` and the wall clock, as designed for poppler (§3.1 there) [I for the worker] | `--cpus` vCPUs (+1 overhead) and a guest cgroup limit [V] |
 | **Environment** | `monty-pool` `env_clear()` plus bwrap `--clearenv` [V] | `env_clear()` [V] | `env_clear()` reaches the CLI client, not the guest. The guest gets the image's `Config.Env` plus any `-e`. An image built by mecha has none [I]. Two traps in the CLI [V]: before 1.2.0, a bare-name `Config.Env` entry copied the *host's* value in (GHSA-xwgf-4rc5-p4m4); and `run` forwards `SSH_AUTH_SOCK` from its own environment (`ContainerRun.swift`), which the cleared environment happens to close. Whether the CLI runs at all under an empty environment is M-C8 |
 | **Seccomp, capabilities** | `--unshare-user --disable-userns` [V] | n/a | **No seccomp filter by default.** Containerization's default is `.unconfined`, and its containerd-derived profile needs an experimental OCI runtime path [V] (`main`). `--cap-drop ALL` and `--user` exist [V] |
 | **What an escape requires** | An interpreter escape, then a Linux kernel bug reachable from an empty namespace | An interpreter escape, then **an XNU or system-service bug reachable through the profile, on the kernel mecha itself runs on**. SBPL is an undocumented, unsupported language (§6), so the profile's reach is whatever this macOS release makes of it | An interpreter escape, then container-to-guest-root (a low bar: no seccomp, a debug kernel by default [V]), then **a Virtualization.framework device or host-helper bug**, reachable only through virtio and vsock [I] |
+
+**The Seatbelt column describes a design, not a worker profile.** No
+Seatbelt profile for the worker exists yet: `Confinement::for_sandbox`
+refuses `Backend::Seatbelt` with `SEATBELT_IS_DOCUMENTS_ONLY` [V]. Its
+network, filesystem and CPU rows are what `DOCUMENT-EXTRACTION-DESIGN.md`
+§3.1 built for poppler, carried over by inference. The peer probe's
+deny-default profiles all aborted the macOS worker (exit 134) before it
+printed anything (CI run 41145654354) [V]. So what the worker's profile
+must allow is still being found. Only the memory row is measured for the
+worker itself.
 
 **A boundary in Apple's own history** [V]. The guest-to-host escapes Apple
 has published were all in host tooling that trusted guest output, not in
@@ -546,6 +579,7 @@ hyperfine -w 2 -r 20 --export-json c1.json "container run $F mecha-monty:1.4.0 -
 curl -sSfLo mac.whl https://files.pythonhosted.org/packages/cb/9b/0eedee19d738a168cb4fbcefb1be38cb7c729c750d0293379483e38fa71a/pydantic_monty_runtime-1.4.0-py3-none-macosx_11_0_arm64.whl
 echo "317edf6c62ea62c8a0f456ec13be889387cd16a917441fc087953cae042e6d75  mac.whl" | shasum -a 256 -c
 unzip -p mac.whl pydantic_monty_runtime-1.4.0.data/scripts/monty > monty-mac && chmod +x monty-mac
+echo "6c1d5b14023d213b4a862131739c5431ac980b5f89a3267c75fb6be2c2d39fdd  monty-mac" | shasum -a 256 -c
 hyperfine -w 2 -r 50 "sandbox-exec -p '(version 1)(allow default)(deny network*)' ./monty-mac -c 1"
 ```
 
