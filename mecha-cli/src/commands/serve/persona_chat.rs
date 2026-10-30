@@ -511,6 +511,9 @@ async fn draw_panel_edit(
                 // Read once: the styles offered here, and who is known below.
                 let lib = mecha_core::imagelib::Library::load(&names.library).0;
                 let styles = mecha_core::imagelib::style_names(&lib);
+                let owner = lib
+                    .owner()
+                    .map(|k| mecha_core::picture::shown(&mecha_core::scene::Who::Library(k)));
                 let request = edit::extraction_request(
                     model,
                     record.as_ref(),
@@ -551,6 +554,8 @@ async fn draw_panel_edit(
                     styles: &styles,
                     record: record.as_ref(),
                     library: Some(&lib),
+                    persona: persona.as_deref(),
+                    owner: owner.as_deref(),
                 };
                 match edit::read_extraction_for(&text, &known, sole.as_deref(), &looks) {
                     // A change the reader reads as none is the render a
