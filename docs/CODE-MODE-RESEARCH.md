@@ -10,6 +10,11 @@ This file is about the *interpreter behind a narrow `code` tool*. What it is
 not about — confining `shell`, running `git`/`cargo`, the Landlock verdict —
 is settled in `SANDBOX-RESEARCH.md` and not restated here.
 
+**Since this pass** (2026-10-30): monty reached 1.0 on 2026-09-25 and
+`monty-pool` ships beside it; Littrs, a candidate this pass missed, is
+weighed in `CODE-MODE-DESIGN.md` §7, which is now the plan. The figures
+below are kept as measured on 2026-09-02.
+
 **Marks**: ✅ verified against a primary source this pass · 📰 vendor's own
 figure, not reproduced · ❓ inferred, not established.
 
