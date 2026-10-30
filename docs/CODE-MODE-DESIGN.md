@@ -274,7 +274,10 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
   keeps its own list of failures. Under R7 that costs nothing, because
   `llm_map` runs one pass at a time anyway. It does lose one guarantee:
   `llm_map` refuses up front when the sweep is longer than the remaining
-  budget, while a hand-rolled loop spends passes until the cap and then
+  sub-call budget, or, for a thinking-on sweep, the remaining thinking
+  passes. One case stays mid-sweep: a thinking-off sweep whose passes think
+  anyway (§11, R6) can still cross the thinking cap partway, and raises
+  there. Meanwhile, a hand-rolled loop spends passes until the cap and then
   raises mid-sweep. The prompt's example checks the remaining budget
   first, through `budget()` (§3). The root's prompt shows that
   loop, and an eval case checks the model uses it when one bad source
@@ -390,11 +393,11 @@ Per program. **Two kinds of limit, and only the first is catchable:**
 
 | Limit | Default (ruling R4) | Enforced by |
 |---|---|---|
-| sub-calls | 32 | the host, **per pass**: `llm_map` over N handles is N, and a schema retry is another. An `llm_map` longer than the remaining budget raises before its first pass |
+| sub-calls | 32 | the host, **per pass**: `llm_map` over N handles is N, and a schema retry is another. An `llm_map` longer than the remaining budget raises before its first pass, and so does a thinking-on `llm_map` longer than the remaining thinking passes |
 | thinking passes | 8 (proposed) | the host, counting passes that **did** think, not passes that asked to: a pass whose response carries reasoning (`reasoning_content`, recorded as `Block::Thinking`) counts, whatever it requested. A thinking-off request can be silently ignored (§4), so counting requests would read 0 while every pass thinks and the clock binds first. The pass after the cap raises. This is the row that keeps the clock from binding first (below) |
 | sub-call input tokens | 120k | the host, from `Usage`. Sized so that it binds before the clock even under contention (below) |
 | tool reads | 256 | the host, counted at the gate |
-| handle operations (§3) | 2,048 | the host; monty `max_suspensions` set to the sum as a backstop |
+| handle operations (§3) | 2,048 | the host. `budget()` counts as one, so a loop of it ends in a `LimitError:`, not a backstop. Monty's `max_suspensions` is set to the sum of the counted limits as a backstop |
 | wall clock | 600 s | `monty-pool` `request_timeout`, which is **unset by default** and must be set |
 | host bytes held by handles | 64 MB | the host, summed over every tool read's raw result; the read that would cross it raises |
 | live handles | 4,096 | the host. `split`, `lines` and `chunks` refuse a result that would cross it, and `chunks` refuses `n` below 256, so one counted operation cannot mint a handle per byte |
@@ -829,6 +832,11 @@ attacker selects from their own text can be an address; that is a
      byte, with no `CAP_MARKER` and no untrusted wrapper, and a `find`
      offset past the budget indexes the source correctly.
    - `llm_query` refuses when `structured_output` is disabled.
+   - Every pass's request carries `max_tokens` of 8,192, with thinking
+     off or on; a pass built with less fails the test.
+   - A scripted pass that asked for thinking off but returned reasoning
+     counts against the thinking-pass cap; counting requests instead
+     fails it.
    - Each host limit (§5) raises a catchable `LimitError:`-tagged error
      naming the limit. Each backstop ends the program uncatchably, and the
      `tool_result` names the backstop after the program's printed output.
@@ -955,15 +963,16 @@ with your recs"), except R4, which waits on M1.
   16 KB as its proposed default.
 - **R6. Thinking off by default**, on per call (§4, from M0). **Every
   pass gets `max_tokens` of 8,192, thinking or not**, because the
-  thinking-off request can be silently ignored (§4). A thinking-off pass
-  sends a small `CompletionRequest::think_budget` as well as
-  `enable_thinking: false`. `think_budget` becomes
-  `reasoning_budget_tokens`, which llama-server parses itself (not a
-  template kwarg) and which `provider/openai.rs` records as measured
-  honoured. So it bounds a pass even on a preset that lost `jinja`. The
-  build measures that budget's smallest working value the way M0 measured
-  the floor, and the thinking-pass cap counts what came back, not what was
-  asked (§5).
+  thinking-off request can be silently ignored (§4). The floor alone
+  carries a preset that lost `jinja`: the pass thinks, stays under the
+  allowance, and still answers. The thinking-pass cap counts what came
+  back, not what was asked (§5). **Owed, not claimed:** whether a small
+  `CompletionRequest::think_budget` (`reasoning_budget_tokens`) adds a
+  second bound. `provider/openai.rs` records it as honoured only for a
+  template with thinking tags, and `LLAMA-SERVER.md` says per-request
+  template controls are inert without `--jinja`, so it is likely no help
+  in exactly the case it would be for. The build measures it before
+  relying on it.
 - **R7. One at a time.** No `llm_map` concurrency above one for now (§4).
 - **R8. No.** `llm_query` refuses on any provider that is not local (§4).
 - **R9. Yes, conditionally.** The outbox's owner-facing join may open a

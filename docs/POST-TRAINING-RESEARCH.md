@@ -69,8 +69,10 @@ Two readings follow.
 
 A read-only pass over every `is_error` tool result in the non-test
 sessions under `~/.mecha/sessions`, bucketed by the result's opening text
-and by tool. Its totals match `sessions health` above (591 runs, 2,797
-calls). It finds 416 error results against the counters' 364, because the
+and by tool. Its `RunStats` rows, read the same way `sessions health`
+reads them, match that command above (591 runs, 2,797 calls). The 416
+error results come from a different walk, over every transcript in all
+767 sessions. That walk finds more than the counters' 364 because the
 early-August sessions predate the counters. The script and its output stay
 outside the repo; these are aggregates only.
 
