@@ -3698,7 +3698,17 @@ design: **reads fan out** (no `account` on a search or calendar window means
 every mailbox, merged in time order, each row tagged with its account);
 **item operations name their account** (thread and event ids are
 account-scoped, and every row a read returns carries the account, so the
-model always has it); **creates use the default or ask** (`mecha-mail
+model always has it — and leaves it behind anyway, so a thread or a named
+calendar with no account asks every account and takes the one that holds it:
+`thread_home` for a thread, `calendar_home` for a named calendar, and two
+that hold it is refused, never picked between. A calendar's criterion is a
+bare 200 — an empty window is a legitimate answer, so `thread_home`'s
+"returned something" is not available — so it also refuses when any account's
+read failed for a reason other than 400/403/404: a public calendar reads 200
+everywhere, and a transient failure at the true home would otherwise name the
+wrong account. An event update or delete
+still names its account);
+**creates use the default or ask** (`mecha-mail
 default <name>`; with several accounts and none, the error says to *ask the
 user* — worded that way because "use your best judgment" measurably makes
 models invent). **The schema declares a `default` key exactly where omitting
@@ -9257,6 +9267,23 @@ measurably likelier to fail a step when its context holds its own earlier
 errors, so nagging about being stuck is a way of making it stick. It keys on the
 call *and* its result via `compact::target_of` — identical arguments with a
 changing result is polling, which must never grade as stuck.
+
+**A second key counts the same failure on new targets** (`boredom::error_shape`:
+the error with quoted spans, paths and numbers masked, per tool). The first
+key is blind to guessing — `fs_list` on one path outside the jail after
+another, a forbidden `shell` command reworded each turn — because every call
+is a new target; a corpus pass on 2026-10-30 found exactly that shape behind
+most model-side failures. It counts turns that bring the shape back on a
+target the streak had not seen, so an unchanged call (a poll, or the first
+key's stuck repeat) never adds to it. Unlike the loop guard it counts calls the
+*machine* refused (`ToolCallTrace::blocked`: policy, hook, interlock, phase
+gate), and says so in its own words (`Rung::Rewording`, no delegate offered: a
+child inherits the policy). **A person's `Decision::Deny` never enters the
+shape key** — the interactive approvers word every decline alike, so three
+declined calls would share a shape, and naming the owner's corrections as
+rewording would score their steering against the run through
+`boredom_notices` (review of #762). The refusal result is never edited, so
+`"Blocked by policy:"` stays `Blocked` for the miner and the guard.
 
 **The closure follow-up gate is `done`-only and reads the derived label
 beside one typed predicate.** `dropped` is the owner declining the work, so

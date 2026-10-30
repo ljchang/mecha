@@ -3361,6 +3361,7 @@ mod decision_turn_tests {
             input: json!({}),
             is_error: false,
             denied: false,
+            blocked: false,
             unknown: false,
             staged: false,
         }
