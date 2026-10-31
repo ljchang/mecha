@@ -114,6 +114,11 @@ fn seeded(home: &Path) -> Roots {
     write(&gone_ws.join("inbox/photo.txt"), CANARY);
     let spill = crate::tool::session_spill_dir_under(home, &gone_ws);
     write(&spill.join("out-1.txt"), CANARY);
+    // What each conversation's programs read (`tool::code::record`).
+    let programs =
+        crate::tool::code::record::Store::at(crate::tool::code::record::root_under(home));
+    programs.put(GONE, CANARY).unwrap();
+    programs.put(KEPT, "an ordinary read").unwrap();
 
     let o = &roots.outbox;
     write(
@@ -345,6 +350,10 @@ fn forgetting_leaves_no_trace_in_any_store_and_touches_nothing_else() {
     assert_eq!(holding(&home.0, CANARY), Vec::<PathBuf>::new());
     assert_eq!(holding(&home.0, "refl-gone"), Vec::<PathBuf>::new());
     assert!(!home.0.join("work/web/chat-gone").exists());
+    // What the forgotten session's programs read went with it, whole; the other
+    // session's blob directory is untouched.
+    assert!(!home.0.join("programs").join(GONE).exists());
+    assert!(home.0.join("programs").join(KEPT).is_dir());
 
     // And everything that was not the session's is still there.
     assert_eq!(
