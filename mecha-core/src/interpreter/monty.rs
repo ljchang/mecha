@@ -254,8 +254,13 @@ fn seatbelt_holds(pid: u32) -> Result<()> {
         ("file-write-data", PathBuf::from("/dev/null")),
         ("process-exec*", PathBuf::from("/bin/sh")),
     ];
-    if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
-        probes.push(("file-read-data", canon(PathBuf::from(home))));
+    // Only a home that resolves: an unresolved one would read as denied for
+    // free, and the probes above stand without it (review of #769).
+    if let Some(home) = std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .and_then(|h| PathBuf::from(h).canonicalize().ok())
+    {
+        probes.push(("file-read-data", home));
     }
     for (op, path) in &probes {
         if live::denies_path(pid, op, path) != Some(true) {
