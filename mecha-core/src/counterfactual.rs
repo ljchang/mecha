@@ -774,6 +774,7 @@ mod tests {
             unknown: false,
             staged: false,
             in_program: false,
+            program: None,
         }
     }
     fn report(divergences: Vec<Divergence>, replayed: Vec<ToolCallTrace>) -> ReplayReport {

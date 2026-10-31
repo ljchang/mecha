@@ -386,6 +386,9 @@ pub fn levers_off(
             // A persona is a character, not the assistant: it is never given
             // the owner's directories, standing or asked for.
             Lever::Grants => true,
+            // Not personas (`CODE-MODE-DESIGN.md` §9): a persona keeps its own
+            // boundary, and its registry admits no `code`.
+            Lever::CodeTool => true,
             Lever::StepEscalation => !cfg.step_escalation,
             Lever::StepChecks => !cfg.step_checks,
             Lever::GoalGuidance => !cfg.goal_guidance,
