@@ -3450,9 +3450,13 @@ The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
   (with report))` and removed each grant in turn. The worker reaches for
   more (dyld's and libSystem's sysctls, opendirectoryd and the
   notification center), and every interpreter test passes with those
-  denied. Each start logs those denials. On Linux `none`, docker
-  (the pool kills the client's pid, not the container) and landlock (no
-  network closure) refuse by name. `preflight` runs a program through the
+  denied. macOS's unified log records those denials on each start; mecha
+  logs nothing. The minimum was measured on macOS 26.6. An OS update that
+  adds a startup read stops code mode on that Mac, failing closed:
+  preflight fails with the worker's stderr. Re-measure the profile then,
+  rather than debugging monty. On Linux `none`, docker (the pool kills the
+  client's pid, not the container), landlock (no network closure) and
+  Seatbelt refuse by name. `preflight` runs a program through the
   real launcher, so a sandbox that cannot start the worker stops the start
   rather than degrading. Under Seatbelt it also asks the kernel
   (`sandbox_check`, `seatbelt::live`) whether the live worker is under a
