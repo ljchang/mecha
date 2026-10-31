@@ -51,7 +51,7 @@ gives it a third input.
 ## 1. The owner's requests (2026-10-30 and 2026-10-31)
 
 In the order they were made, paraphrased closely. Each is answered by a
-section; none is ruled yet (§16).
+section; §16 records which are ruled.
 
 - **O1 — Something new.** Personas get repetitive and only ever return to past
   conversations. Real friends talk about what happened to them.
@@ -772,7 +772,7 @@ read every chat, several processes write it).
 | `arcs` | Ongoing situations with a stage and a next-step distribution | Closed arcs collapse to one summary event |
 | `state` | Slow facts about her life: job, relationship status, home, health | **Persists**, superseded by a later row; never decays |
 | `people`, `edge_events` | Her network (§6) | Minor people decay out (§6.3) |
-| `items` | Interest shelves A and B, and pointers to C (§8) | Expire in days |
+| `items` | Interest shelves A and B as typed rows; shelf C's prose (headline, summary, link) in an untrusted column `news_read` alone reads, never rendered into a block (§8) | Five days, all shelves; a feed's items go with the feed when the owner unregisters it |
 
 **State vs events** is what makes aggressive pruning safe. "She changed jobs"
 is state; the leaving-drinks evening is an event. Events decay, state is
@@ -1026,8 +1026,10 @@ staged to the graph's review queue.
    would sit at the start (§4.5). **The block is emitted whenever a card
    *or* a gap note exists.** The ordinary gap turn carries one unfamiliar
    name and nothing else, so it has no card, and today `recall::per_turn`
-   returns no block when nothing matched. §17 step 4 changes that, so the
-   note is never left without the stemmed block around it. Its arming is a no-op, since the recall
+   returns no block when nothing matched, or when the owner's message is
+   below `would_search`'s `MIN_QUERY_CHARS` (a short "who's Theo?"). §17 step
+   4 changes both, so the note is never left without the stemmed block around
+   it. Its arming is a no-op, since the recall
    block already armed `private` and the name is the owner's own word. But a
    separate harness voice would owe the other two predicates, and both
    matter here. Unregistered in `is_harness_voice`, "you haven't mentioned
@@ -1301,7 +1303,13 @@ the headline never rides in the today-block.
 ### 8.3 How she uses them
 
 - **In the today-block** (clean): a game result (A); "good news about one of
-  your interests" (B). The storyteller may turn A and B into lived events —
+  your interests" (B). **It carries only the night's arrivals**, never the
+  live shelf, the same rule as the narrator (§4.4): at most three shelf A and
+  three shelf B items, so **at most about 77 bits a day** of shelf values,
+  against about 385 over the live shelf. That is the constant §14's bit test
+  checks for the block. It rides every turn, which is why it is held to the
+  narrower figure. In the first build, without shelf B, its shelf C lines
+  carry an interest and an opaque id, both code's, for 0 attacker bits. The storyteller may turn A and B into lived events —
   watching the game with friends — that she raises on her own and memory may
   keep.
 - **On demand:** `news_read(item_id)` returns shelf C's prose inside
@@ -1533,8 +1541,20 @@ the headline never rides in the today-block.
       way to send. A recalled persona memory rides only in that one
       persona's chats. It lives in a private per-persona store. The persona
       has no `Chosen` sender. Its origin stays untrusted and re-arms on
-      recall. And it never reaches the assistant or a learned rule. Those
+      recall. And it reaches the assistant **only through a human review
+      gate**: a fact about the owner may be staged to the graph's review
+      queue under D10's standing permission, and nothing crosses until the
+      owner accepts it there. A learned rule crosses nobody. Those
       differences are what make a knob tolerable here and not there.
+    - **A staged item carrying its untrusted origin is a requirement, not a
+      property.** No persona-to-graph staging code exists yet, and
+      `PERSONA-DESIGN.md` §9.11 describes staging without a provenance carry.
+      So when that path is built, a fact staged from a covered stretch must
+      carry its untrusted origin and the "from an article chat" badge into
+      the review queue. Otherwise an article-planted claim about the owner's
+      relative reaches the privileged agent behind one approving tap that
+      cannot see where it came from. The `TRIFECTA.md` row names this path,
+      the only way such a claim leaves the persona's private store.
 - **The writer refinement** (§16 PL10). Today everything after a taint rise
   becomes candidates. Proposed: after the rise, the writer may still extract
   *facts about the owner from the owner's own turns* as `Stated` and clean, while the
