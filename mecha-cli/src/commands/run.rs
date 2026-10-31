@@ -623,6 +623,7 @@ mod tests {
                 unknown: false,
                 staged: false,
                 in_program: false,
+                program: None,
             }],
             malformed_tool_args: 1,
             blocked_sends: 2,

@@ -2545,3 +2545,437 @@ async fn a_stop_during_a_pass_ends_the_program_and_drops_the_pass() {
         "the pass outlived the program's result"
     );
 }
+
+// ---------------------------------------------- registration and accounting
+
+/// An interpreter whose one program is a script rather than Python: each
+/// step calls a host function, built from the value the host last answered,
+/// and the program ends with that value. For the tests about where `code`
+/// is registered and what its programs cost, which need a program's calls
+/// to reach the dispatch but not monty, so they run in every build.
+#[derive(Clone)]
+struct Script {
+    steps: Vec<fn(&Value) -> ExternalCall>,
+    /// The function list each program was started with.
+    started_with: Arc<Mutex<Vec<Vec<String>>>>,
+}
+
+impl Script {
+    fn new(steps: Vec<fn(&Value) -> ExternalCall>) -> Self {
+        Script {
+            steps,
+            started_with: Arc::default(),
+        }
+    }
+}
+
+struct ScriptRun {
+    steps: Vec<fn(&Value) -> ExternalCall>,
+    at: usize,
+    externals: Vec<String>,
+}
+
+impl ScriptRun {
+    fn next(&mut self, last: Value) -> Step {
+        let Some(step) = self.steps.get(self.at) else {
+            let repr = match &last {
+                Value::String(s) => s.clone(),
+                v => v.to_string(),
+            };
+            return Step::Done(Finished {
+                printed: String::new(),
+                printed_dropped: 0,
+                end: End::Complete {
+                    value: Some(last),
+                    repr,
+                },
+            });
+        };
+        self.at += 1;
+        let call = step(&last);
+        if !self.externals.contains(&call.name) {
+            // As monty refuses a name it was not started with: in the
+            // program, never at the host.
+            return Step::Done(Finished {
+                printed: format!("unreachable: {}", call.name),
+                printed_dropped: 0,
+                end: End::Raised(crate::interpreter::Raised {
+                    exc_type: "NameError".into(),
+                    message: Some(format!("name '{}' is not defined", call.name)),
+                    traceback: format!("NameError: name '{}' is not defined", call.name),
+                }),
+            });
+        }
+        Step::Call(call)
+    }
+}
+
+#[async_trait]
+impl Interpreter for Script {
+    fn name(&self) -> &'static str {
+        "script"
+    }
+    async fn preflight(&self) -> Result<()> {
+        Ok(())
+    }
+    async fn start(
+        &self,
+        _source: &str,
+        externals: &[String],
+        _cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<(Box<dyn Program>, Step)> {
+        self.started_with.lock().unwrap().push(externals.to_vec());
+        let mut run = ScriptRun {
+            steps: self.steps.clone(),
+            at: 0,
+            externals: externals.to_vec(),
+        };
+        let step = run.next(Value::Null);
+        Ok((Box::new(run), step))
+    }
+}
+
+#[async_trait]
+impl Program for ScriptRun {
+    async fn resume(&mut self, value: Value) -> Result<Step> {
+        Ok(self.next(value))
+    }
+    async fn raise(&mut self, raise: HostRaise) -> Result<Step> {
+        Ok(Step::Done(Finished {
+            printed: String::new(),
+            printed_dropped: 0,
+            end: End::Raised(crate::interpreter::Raised {
+                exc_type: "RuntimeError".into(),
+                message: Some(raise.message.clone()),
+                traceback: format!("RuntimeError: {}", raise.message),
+            }),
+        }))
+    }
+}
+
+fn calls(name: &'static str) -> ExternalCall {
+    ExternalCall {
+        name: name.into(),
+        args: Vec::new(),
+        kwargs: Vec::new(),
+    }
+}
+
+/// §8: "A program in the parent's own run reaches `recall`, which is
+/// registered after `prepare`, and `code`'s declared capabilities include
+/// every tool registered before it was built." The agent serves `code` from
+/// the start, then a front end inserts `recall` through `registry_mut`, as
+/// `setup::register_recall` does: the guard builds `code` again over it, so
+/// `recall` is in the program's reach and in the union `code` declares.
+/// Without the rebuild `code` keeps the registry it was built over, declares
+/// nothing private, and its first program is refused as one built over
+/// another set of tools.
+#[tokio::test]
+async fn a_program_in_the_parents_own_run_reaches_recall_registered_after_it() {
+    let script = Script::new(vec![|_| calls("recall")]);
+    let mut agent = agent_over(
+        registry_of(vec![Arc::new(Fake::read("fs_read", "a file"))]),
+        Vec::new(),
+    );
+    agent.enable_code(Arc::new(script.clone()));
+    let before = agent.registry().get(NAME).unwrap().capabilities();
+    assert!(!before.private_data, "nothing private is registered yet");
+
+    // What a front end does after `prepare`, from outside the agent.
+    let mut recall = Fake::read("recall", "the exact figure the summary dropped");
+    recall.caps = Capabilities::default().private();
+    let recalled = recall.counter();
+    agent.registry_mut().insert(Arc::new(recall));
+
+    let code = agent.registry().get(NAME).expect("code is still served");
+    assert!(
+        code.capabilities().private_data,
+        "code's declaration misses a read registered before it was rebuilt"
+    );
+    let (d, taint) = run(&agent, "recall()").await;
+    assert!(!d.is_error, "{}", d.content);
+    assert_eq!(recalled.load(Ordering::SeqCst), 1, "recall never ran");
+    assert!(
+        d.content.contains("chars from recall>"),
+        "the program got no handle: {}",
+        d.content
+    );
+    assert!(taint.private, "the read armed the conversation");
+    assert!(
+        script.started_with.lock().unwrap()[0].contains(&"recall".to_string()),
+        "recall was not in the program's function list"
+    );
+}
+
+/// The withheld case beside it: a front end that takes `code` off the
+/// registry keeps it off, though the guard runs on that change too.
+#[test]
+fn a_front_end_that_withholds_code_keeps_it_withheld() {
+    let mut agent = agent_over(registry_of(vec![]), Vec::new());
+    agent.enable_code(Arc::new(NoInterpreter));
+    assert!(agent.registry().get(NAME).is_some());
+    agent.registry_mut().remove(NAME);
+    assert!(agent.registry().get(NAME).is_none());
+    agent
+        .registry_mut()
+        .insert(Arc::new(Fake::read("late", "x")));
+    assert!(
+        agent.registry().get(NAME).is_none(),
+        "a later registration put a withheld `code` back"
+    );
+}
+
+/// §8's turn-taint hazard, through registration: `code` served by the agent,
+/// a mail read registered after it (as a front end's tool is), and a
+/// `Chosen` sender in the same assistant message. The forecast `dispatch`
+/// computes before anything runs reads `code`'s declared union, which
+/// includes the late read only because the guard rebuilt `code` over it.
+#[tokio::test]
+async fn a_sender_beside_a_registered_code_is_refused_by_the_forecast() {
+    let turn = vec![
+        assistant(
+            vec![
+                Block::ToolUse {
+                    id: "a".into(),
+                    name: NAME.into(),
+                    input: json!({"program": "mail_search()"}),
+                },
+                Block::ToolUse {
+                    id: "b".into(),
+                    name: "send".into(),
+                    input: json!({}),
+                },
+            ],
+            StopReason::ToolUse,
+        ),
+        assistant(vec![Block::text("done")], StopReason::EndTurn),
+    ];
+    let mut agent = agent_over(registry_of(vec![Arc::new(Sender)]), turn);
+    agent.enable_code(Arc::new(NoInterpreter));
+    agent
+        .registry_mut()
+        .insert(Arc::new(Fake::mail("mail_search", "a thread")));
+    let mut convo = crate::agent::Conversation::user("go");
+    let outcome = agent.run(&mut convo, None).await.unwrap();
+    assert_eq!(outcome.blocked_sends, 1, "the sender was not refused");
+}
+
+/// A program that reads, then asks one question about what it read.
+fn read_then_ask() -> Script {
+    Script::new(vec![|_| calls("mail_search"), |h| ExternalCall {
+        name: "llm_query".into(),
+        args: vec![json!("Is it urgent?"), h.clone(), json!("bool")],
+        kwargs: Vec::new(),
+    }])
+}
+
+/// The turn, the pass, and the turn after: one provider answers all three,
+/// in that order, as the run's own model does.
+fn code_then_done(pass_usage: Usage) -> Vec<CompletionResponse> {
+    let mut pass = assistant(
+        vec![Block::text(r#"{"answer": true}"#)],
+        StopReason::EndTurn,
+    );
+    pass.usage = pass_usage;
+    vec![
+        assistant(
+            vec![Block::ToolUse {
+                id: "a".into(),
+                name: NAME.into(),
+                input: json!({"program": "..."}),
+            }],
+            StopReason::ToolUse,
+        ),
+        pass,
+        assistant(vec![Block::text("done")], StopReason::EndTurn),
+    ]
+}
+
+fn on_answers(answers: Vec<CompletionResponse>) -> Agent {
+    agent_on(
+        Box::new(Passes {
+            answers: Mutex::new(answers),
+            seen: Arc::default(),
+            structured: true,
+            local: true,
+        }),
+        registry_of(vec![Arc::new(Fake::mail("mail_search", "a thread"))]),
+        None,
+    )
+}
+
+/// A program's pass is one of the run's model calls: its `Usage` joins the
+/// run's own (§5's last line), and `RunStats` counts the program, its
+/// sub-call and the tokens it read (§7, "Counters"). Without the fold the
+/// run's usage is its two turns alone.
+#[tokio::test]
+async fn a_programs_passes_reach_the_runs_usage_and_its_counters() {
+    let mut agent = on_answers(code_then_done(Usage {
+        input_tokens: 400,
+        output_tokens: 7,
+        ..Usage::default()
+    }));
+    agent.enable_code(Arc::new(read_then_ask()));
+    let mut convo = crate::agent::Conversation::user("go");
+    let outcome = agent.run(&mut convo, None).await.unwrap();
+    let code = outcome.tool_calls.iter().find(|t| t.name == NAME).unwrap();
+    assert!(!code.is_error, "the program failed: {code:?}");
+    assert_eq!(
+        (outcome.usage.input_tokens, outcome.usage.output_tokens),
+        (10 + 400 + 10, 5 + 7 + 5),
+        "the pass's usage did not reach the run's"
+    );
+    let stats = crate::session::RunStats::from(&outcome);
+    assert_eq!(stats.programs, Some(1));
+    assert_eq!(stats.program_errors, Some(0));
+    assert_eq!(stats.subcalls, Some(1));
+    assert_eq!(stats.subcall_tokens, Some(400));
+    assert_eq!(stats.peeked_bytes, Some(0));
+    assert_eq!(stats.budget_stops, Some(0));
+    // The host call still enters the trace, tagged, beside the program's row.
+    assert_eq!(host_calls(&outcome.tool_calls).len(), 1);
+}
+
+/// "Each run's total also draws on its existing `RunContext` budget": a
+/// program's pass that takes the run past `max_output_tokens` stops the run
+/// at the next ceiling check, as a turn of its own would. Without the
+/// passes' usage in the run's, the run reads 5 of its 12 and goes on.
+#[tokio::test]
+async fn a_programs_passes_draw_on_the_runs_budget() {
+    let mut answers = code_then_done(Usage {
+        input_tokens: 40,
+        output_tokens: 7,
+        ..Usage::default()
+    });
+    // The forced final answer the ceiling asks for.
+    answers.push(assistant(vec![Block::text("stopped")], StopReason::EndTurn));
+    let mut agent = on_answers(answers);
+    agent.enable_code(Arc::new(read_then_ask()));
+    let cx = (**agent.context())
+        .clone()
+        .with_budget(crate::agent::Budget {
+            max_output_tokens: Some(12),
+            ..Default::default()
+        });
+    let mut convo = crate::agent::Conversation::user("go");
+    let outcome = agent.run_in(&cx, &mut convo, None).await.unwrap();
+    assert_eq!(
+        outcome.stop_cause,
+        crate::agent::StopCause::OutputTokenBudget,
+        "the pass's tokens did not draw on the run's budget"
+    );
+}
+
+/// `budget_stops` counts a program a budget ended: a backstop, or a host
+/// limit's `LimitError:` nothing caught. A program that raises the tag's text
+/// itself, with no limit crossed, failed on its own.
+#[test]
+fn a_budget_stop_is_a_backstop_or_an_uncaught_host_limit() {
+    let raised = |m: &str| {
+        End::Raised(crate::interpreter::Raised {
+            exc_type: "RuntimeError".into(),
+            message: Some(m.into()),
+            traceback: String::new(),
+        })
+    };
+    let mut run = Run::new(HostLimits::default(), BytePool::new(1 << 20));
+    let limit = raised("LimitError: sub-calls: this program has sent all 32 passes");
+    assert!(
+        !run.stats(Some(&limit)).budget_stop,
+        "the program's own raise"
+    );
+    run.limit_raised = true;
+    let s = run.stats(Some(&limit));
+    assert!(s.budget_stop && s.failed());
+    assert!(!run.stats(Some(&raised("ValueError: no"))).budget_stop);
+    let wall = End::Backstop(crate::interpreter::Backstop::WallClock(
+        std::time::Duration::from_secs(600),
+    ));
+    assert!(run.stats(Some(&wall)).budget_stop);
+    let done = run.stats(Some(&End::Complete {
+        value: None,
+        repr: String::new(),
+    }));
+    assert!(done.completed && !done.failed() && !done.budget_stop);
+    let stopped = run.stats(Some(&End::Cancelled));
+    assert!(stopped.cancelled && !stopped.failed());
+    assert!(
+        run.stats(None).failed(),
+        "an interpreter that failed under it"
+    );
+}
+
+/// The counters are a wire format (CLAUDE.md, "a closed enum written to an
+/// append-only store is a wire format"): a row and a trace entry from before
+/// them load, as unknown rather than zero, and a field a later build adds to
+/// a program's numbers does not fail the record.
+#[test]
+fn rows_and_traces_from_before_the_counters_load_as_unknown() {
+    let row: crate::session::RunStats = serde_json::from_str(r#"{"turns": 2}"#).unwrap();
+    assert_eq!(row.programs, None);
+    assert_eq!(row.subcall_tokens, None);
+    let trace: ToolCallTrace = serde_json::from_str(
+        r#"{"name": "code", "input": {}, "is_error": false, "denied": false, "unknown": false,
+            "program": {"subcalls": 3, "a_later_field": [1, 2]}}"#,
+    )
+    .unwrap();
+    assert_eq!(trace.program.unwrap().subcalls, 3);
+    let old: ToolCallTrace = serde_json::from_str(
+        r#"{"name": "fs_read", "input": {}, "is_error": false, "denied": false, "unknown": false}"#,
+    )
+    .unwrap();
+    assert!(old.program.is_none());
+    // A folded episode keeps unknown unknown, and sums what it knows.
+    let mut known = crate::session::RunStats {
+        programs: Some(2),
+        ..Default::default()
+    };
+    known.merge(&row);
+    assert_eq!(known.programs, Some(2));
+    let again = known.clone();
+    known.merge(&again);
+    assert_eq!(known.programs, Some(4));
+}
+
+/// On a Mac `[sandbox] memory_mb` and `cpus` never reach the worker: said,
+/// naming the gap, and nowhere else.
+#[test]
+fn the_mac_limits_gap_is_named_only_on_a_mac_with_limits_set() {
+    use crate::interpreter::limits_not_applied;
+    use crate::sandbox::SandboxConfig;
+    let limited = SandboxConfig {
+        memory_mb: Some(2048),
+        cpus: Some(2.0),
+        ..Default::default()
+    };
+    let said = limits_not_applied(&limited, true).expect("a Mac with limits set");
+    assert!(
+        said.contains("memory_mb = 2048") && said.contains("cpus = 2"),
+        "{said}"
+    );
+    assert!(said.contains("Seatbelt"), "{said}");
+    assert_eq!(
+        limits_not_applied(&limited, false),
+        None,
+        "Linux applies them"
+    );
+    assert_eq!(limits_not_applied(&SandboxConfig::default(), true), None);
+}
+
+/// The same through monty: a real program, in the confined worker, reaches a
+/// read registered after `code` was first built.
+#[cfg(feature = "monty")]
+#[tokio::test]
+async fn a_python_program_reaches_a_read_registered_after_enable_code() {
+    let Some(interp) = monty().await else {
+        return;
+    };
+    let mut agent = agent_over(registry_of(vec![]), Vec::new());
+    agent.enable_code(interp);
+    agent
+        .registry_mut()
+        .insert(Arc::new(Fake::read("recall", "a figure")));
+    let (d, _) = run(&agent, "h = recall()\nprint(size(h))").await;
+    assert!(!d.is_error, "{}", d.content);
+    assert_eq!(d.content.trim(), "8", "{}", d.content);
+}

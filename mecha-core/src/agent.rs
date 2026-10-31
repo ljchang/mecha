@@ -1508,6 +1508,12 @@ pub struct ToolCallTrace {
     /// written before the field reads `false`, which is what it was.
     #[serde(default)]
     pub in_program: bool,
+    /// A `code` call's program, in numbers (`code::ProgramStats`): what
+    /// `RunStats`' program counters are counted from, and the passes' usage
+    /// the loop adds to the run's own. `None` for every other call, and on a
+    /// record written before the field — unknown, never zero programs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<crate::tool::code::ProgramStats>,
 }
 
 impl ToolCallTrace {
@@ -1523,8 +1529,23 @@ impl ToolCallTrace {
             unknown: false,
             staged: false,
             in_program: false,
+            program: out.program.as_deref().cloned(),
         }
     }
+}
+
+/// The sub-call passes' usage of every program in `trace`
+/// (`ToolCallTrace::program`): what the loop adds to the run's own after a
+/// batch, so a pass's tokens count toward the run's total and its
+/// [`Budget`] like any other model call's. A program in flight is not cut
+/// short by the run's budget; its own per-program caps (§5) bound it, and
+/// the run's ceiling is checked again once the batch is done.
+fn program_usage(trace: &[ToolCallTrace]) -> Usage {
+    let mut total = Usage::default();
+    for p in trace.iter().filter_map(|t| t.program.as_ref()) {
+        total.add(&p.usage);
+    }
+    total
 }
 
 /// Why a run is being cancelled, said by the canceller so the outcome can
@@ -2270,6 +2291,35 @@ pub struct Agent {
     /// Whether one-turn harness nudges in earlier owner turns go back to the
     /// model. Kept unless a driver says otherwise; see [`PriorNudges`].
     prior_nudges: PriorNudges,
+    /// Code mode's interpreter, when this agent serves `code`
+    /// ([`Agent::enable_code`]): kept so `code` can be built again over the
+    /// registry each time it changes, and so stay built last.
+    code: Option<Arc<dyn crate::interpreter::Interpreter>>,
+}
+
+/// [`Agent::registry_mut`]'s guard: the registry, and on drop `code` built
+/// again over whatever it now holds.
+pub struct RegistryMut<'a> {
+    agent: &'a mut Agent,
+}
+
+impl std::ops::Deref for RegistryMut<'_> {
+    type Target = Registry;
+    fn deref(&self) -> &Registry {
+        &self.agent.registry
+    }
+}
+
+impl std::ops::DerefMut for RegistryMut<'_> {
+    fn deref_mut(&mut self) -> &mut Registry {
+        &mut self.agent.registry
+    }
+}
+
+impl Drop for RegistryMut<'_> {
+    fn drop(&mut self) {
+        self.agent.build_code(false);
+    }
 }
 
 impl Agent {
@@ -2297,6 +2347,7 @@ impl Agent {
             prior_thinking: PriorThinking::Keep,
             prior_tails: PriorTails::Keep,
             prior_nudges: PriorNudges::Keep,
+            code: None,
         })
     }
 
@@ -2594,8 +2645,59 @@ impl Agent {
     ///
     /// For tools that need something only the front-end has — `ask_user` needs
     /// somebody to ask, and core must not assume a terminal exists.
-    pub fn registry_mut(&mut self) -> &mut Registry {
-        &mut self.registry
+    ///
+    /// **A guard, not a bare `&mut`**, because of `code`
+    /// (`CODE-MODE-DESIGN.md` §7, "the parent's `code` is built last too"):
+    /// it admits and declares the union of the registry it was built over,
+    /// and the front ends insert `recall`, `ask_user` and their own tools
+    /// after `prepare` returns, from half a dozen places. So when the guard
+    /// drops, a `code` this agent serves is built again over the registry as
+    /// it now stands. However late a tool arrives, `code` is built after it,
+    /// and no front end has to remember to say so. A change that took `code`
+    /// itself off the registry (`withhold_tool`) is left as it is.
+    pub fn registry_mut(&mut self) -> RegistryMut<'_> {
+        RegistryMut { agent: self }
+    }
+
+    /// Serve `code` over this agent's registry, with `interpreter` running
+    /// its programs (`CODE-MODE-DESIGN.md` §7). `interpreter` must already
+    /// have passed its `preflight`: nothing in the trait enforces it, and the
+    /// caller that switches code mode on refuses to start when it fails.
+    ///
+    /// `code` is built here over the registry as it stands, and built again
+    /// whenever the registry changes through [`Agent::registry_mut`] or the
+    /// outbox route changes ([`Agent::set_outbox`]). So its admitted set and
+    /// its declared capabilities are always those of every tool registered
+    /// before it, which is what the turn's taint forecast reads (`dispatch`)
+    /// and what a program's start checks again (`Agent::program_reach`). One
+    /// interpreter serves every run of this agent; its pool spawns a worker
+    /// per program (`interpreter::monty::PROGRAMS_PER_WORKER`).
+    pub fn enable_code(&mut self, interpreter: Arc<dyn crate::interpreter::Interpreter>) {
+        self.code = Some(interpreter);
+        self.build_code(true);
+    }
+
+    /// Build `code` over the registry as it stands: always when `force`, and
+    /// otherwise only where this agent serves code mode and `code` is still
+    /// registered (a front end that withheld it keeps it withheld).
+    fn build_code(&mut self, force: bool) {
+        let Some(interpreter) = self.code.as_ref().map(Arc::clone) else {
+            return;
+        };
+        let present = self
+            .registry
+            .get(crate::tool::code::NAME)
+            .is_some_and(|t| t.hosts_programs());
+        if !force && !present {
+            return;
+        }
+        let outbox = self.cx.outbox.clone();
+        let code = crate::tool::code::CodeTool::over(
+            &self.registry,
+            |n| outbox.as_ref().is_some_and(|o| o.routes(n)),
+            interpreter,
+        );
+        self.registry.insert(Arc::new(code));
     }
 
     /// The connection this agent talks over, for a caller that needs a
@@ -2651,6 +2753,9 @@ impl Agent {
     /// context. Copy-on-write, like [`Agent::set_hooks`].
     pub fn set_outbox(&mut self, route: Arc<crate::outbox::OutboxRoute>) {
         Arc::make_mut(&mut self.cx).outbox = Some(route);
+        // A routed read is not admitted (`code::Admission::over`), so the
+        // route is a term of `code`'s admitted set.
+        self.build_code(false);
     }
 
     /// Deliver inter-agent mail to runs on the agent's own context. Attaching
@@ -3828,6 +3933,10 @@ impl Agent {
                                 .and_then(|limit| pressure.forecast(limit, transcript_bytes)),
                         )
                         .await;
+                    // A program's passes are this run's model calls too
+                    // (`CODE-MODE-DESIGN.md` §5's last line): their tokens join
+                    // the run's usage before the next ceiling check reads it.
+                    usage.add(&program_usage(&trace[traced..]));
 
                     // Written back the moment it changes — here and at the
                     // mailbox delivery above, the only two places it does —
@@ -4099,6 +4208,7 @@ impl Agent {
                                 None,
                             )
                             .await;
+                        usage.add(&program_usage(&trace[start..]));
                         convo.taint = taint;
                         for result in &mut trace[start..] {
                             result.name = crate::step::CHECK_TRACE.into();
@@ -6064,6 +6174,7 @@ impl Agent {
                 unknown: false,
                 staged: false,
                 in_program: false,
+                program: None,
             });
             return Checked::Refused(content);
         }
@@ -6086,6 +6197,7 @@ impl Agent {
                     unknown: false,
                     staged: false,
                     in_program: false,
+                    program: None,
                 });
                 emit(
                     events,
@@ -6163,6 +6275,7 @@ impl Agent {
                 unknown: !withheld,
                 staged: false,
                 in_program: false,
+                program: None,
             });
             return Checked::Refused(content);
         };
@@ -6192,6 +6305,7 @@ impl Agent {
                 unknown: false,
                 staged: false,
                 in_program: false,
+                program: None,
             });
             return Checked::Refused(content);
         }
@@ -6388,6 +6502,7 @@ impl Agent {
                         unknown: false,
                         staged: false,
                         in_program: false,
+                        program: None,
                     });
                     return Checked::Refused(reason);
                 }
@@ -6503,6 +6618,7 @@ impl Agent {
                     unknown: false,
                     staged: false,
                     in_program: false,
+                    program: None,
                 });
                 return Checked::Refused(format!("Blocked by a hook: {reason}"));
             }
@@ -6635,6 +6751,7 @@ impl Agent {
                         unknown: false,
                         staged: true,
                         in_program: false,
+                        program: None,
                     });
                     Checked::Staged(content)
                 }
@@ -6664,6 +6781,7 @@ impl Agent {
                         unknown: false,
                         staged: false,
                         in_program: false,
+                        program: None,
                     });
                     Checked::Refused(content)
                 }
@@ -6839,6 +6957,7 @@ impl Agent {
                     unknown: false,
                     staged: false,
                     in_program: false,
+                    program: None,
                 });
                 return Checked::Refused(content);
             }
