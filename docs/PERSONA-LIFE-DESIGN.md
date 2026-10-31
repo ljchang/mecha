@@ -1,7 +1,7 @@
 # Persona lives — design
 
 > **Status (2026-10-31):** designed, nothing built. **Rulings are in
-> progress** (§16): PL1–PL8, PL22 and PL26 are ruled, and PL23, PL27 and
+> progress** (§16): PL1–PL12, PL21, PL22 and PL26 are ruled, and PL23, PL27 and
 > PL28 carry the owner's direction (no approval queue for news; every part
 > opt-in per persona). The rest are open. §1 is the owner's requests, in the order they were made; §2 is
 > the evidence, researched the same day, with a source on every figure that
@@ -1851,10 +1851,10 @@ this document's; the ruling is the owner's.
 | PL6 | People already in `identity.md` | **Ruled (2026-10-31): people live in one place.** They are proposed once as owner nodes; after approval the network is their only home and `identity.md` keeps personality (§6.6) |
 | PL7 | Pruning | **Ruled (2026-10-31):** the world hard-prunes, except owner-origin rows; memory soft-prunes (out of recall, kept in the store); hard deletion of memories only by amending D26 after D28's readout. **The decay parameters are exposed per persona** in `[life.decay]`: half-lives, retelling boost, both thresholds, read live (§9, §3.1) |
 | PL8 | Importance to the owner | **Ruled (2026-10-31):** inferred from engagement and pins, with no rating prompts or UI control; and she may ask in conversation when it is natural and the inference is unsure, within §7.3's one-question-a-chat budget, the answer counting as a `Stated` signal (§9) |
-| PL9 | News shelves | Build A and C first, with shelf A's per-field render bounds and stated figures (at most 16 bits an item, three a day, five-day expiry; §8.2), and shelf A through all three gate parts, steering included, before it reaches a prompt. B ships behind the three-part gate (§14): schema conformance, a bit ceiling (about 9.6 bits per item and under 30 a day, as §8.2 computes it) enforced by a test, and the steering arm, all three read by the owner. Alternative: all three shelves at once |
-| PL10 | The writer after a taint rise | Keep today's rule (everything after the rise is a candidate). PL23's typed episode keeps the gist by default, and PL27's switch gives full memory where the owner wants it, which is what PL10 was reaching for. Alternative: rescue owner turns that neither follow a persona turn in the tainted stretch nor overlap the `news_read` prose; structural, residual paraphrase, modest gain (§8.4) |
-| PL11 | Feed sources | Registered per persona and per group, in their folders under `~/.mecha/personas/`, never in layered config; any future global table global-layer-only and stripped from project layers loudly (§8.1) |
-| PL12 | Topics withheld by default | Politics, deaths, disasters and crime, unless a feed is opted in |
+| PL9 | News shelves | **Ruled (2026-10-31):** Build A and C first, with shelf A's per-field render bounds and stated figures (at most 16 bits an item, three a day, five-day expiry; §8.2), and shelf A through all three gate parts, steering included, before it reaches a prompt. B ships behind the three-part gate (§14): schema conformance, a bit ceiling (about 9.6 bits per item and under 30 a day, as §8.2 computes it) enforced by a test, and the steering arm, all three read by the owner |
+| PL10 | The writer after a taint rise | **Ruled (2026-10-31):** Keep today's rule (everything after the rise is a candidate). PL23's typed episode keeps the gist and PL27's switch gives full memory where the owner wants it, which is what PL10 was reaching for (§8.4) |
+| PL11 | Feed sources | **Ruled (2026-10-31):** Registered per persona, per group and for everyone (PL4), in their folders under `~/.mecha/personas/`, never in layered config; any future global table global-layer-only and stripped from project layers loudly (§8.1) |
+| PL12 | Topics withheld by default | **Ruled (2026-10-31):** Politics, deaths, disasters and crime, unless a feed is opted in |
 | PL13 | The owner's network | A structured layer over facts about the owner, in `memory.db` under memory's pruning rules, with existing people-facts migrated into it |
 | PL14 | Search on the owner's people | A filter that refuses an exactly spelled name. It narrows a cost and catches the accidental case; the blind path is what holds (§7.5). Alternative: no filter, and rely on the blind path alone |
 | PL15 | The "supports, never competes" sensor | In the safety layer (§12 of the persona design): on by default, switchable per persona, recorded |
@@ -1863,7 +1863,7 @@ this document's; the ruling is the owner's.
 | PL18 | Proactive messages | Not in the first build; their own evidence first, beside D25 |
 | PL19 | Camera roll and feed | After the sampler and today-block are measured (§17 steps 6–7) |
 | PL20 | The today-block's taint | Its own stem pair from the first build, arming `private`, or `private` and `untrusted`, as the recall pair does, because stated plans and chat-sourced people ride in it. The owner's roster rides in the recall block under its existing pair (§4.5, §7.2, §13). Alternative: keep chat-sourced rows out of the today-block and arm nothing |
-| PL21 | Stated plans after a taint rise | Candidates by default, shown on the week view as waiting plans. Alternative: admit them as typed records checked against their turn (§4.5) |
+| PL21 | Stated plans after a taint rise | **Ruled (2026-10-31):** Candidates by default, shown on the week view as waiting plans |
 | PL22 | `forget` over the world | **Ruled (2026-10-31):** delete what is sourced to the chat and re-fold, in pure code, which is D27's rebuild done where it is cheap; a derived value whose support falls below a floor reverts to a candidate (D27's second half); owner events never go with a chat (§5) |
 | PL23 | Episodes after a `news_read` | **Owner's direction (2026-10-31):** the default. A typed episode (`item_id`, interest, date, a closed-set reaction) is admitted clean; free text is left as candidates that go unrecalled, with no approval queue (§8.4) |
 | PL24 | `forget` over the owner's network | Re-fold from the events that remain, which is D27's rebuild applied in memory for this graph; an `Inferred` edge left on too little support reverts to a candidate. Alternative: today's fallback, so the person goes with any of their chats (§7.1) |
