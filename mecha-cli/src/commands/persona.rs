@@ -1133,12 +1133,20 @@ fn routine_cmd(dir: &Path, cmd: RoutineCmd, edit_file: &dyn Fn(&Path) -> Result<
             edit_file(&file)?;
             // Read back through the store's door, so a save is checked as
             // strictly as the sampler will load it.
-            let texts = routine::read(dir, &name);
-            let saved = texts.and_then(|t| {
-                let text = if draft { t.draft } else { t.routine };
-                routine::parse(&text.unwrap_or_default())
-            });
-            match saved {
+            let texts = routine::read(dir, &name)?;
+            let Some(text) = (if draft { texts.draft } else { texts.routine }) else {
+                println!(
+                    "{} was removed{}.",
+                    file.file_name().unwrap_or_default().to_string_lossy(),
+                    if draft {
+                        ""
+                    } else {
+                        ": her days come from time-use data alone"
+                    }
+                );
+                return Ok(());
+            };
+            match routine::parse(&text) {
                 Ok(r) => println!(
                     "Saved: {} anchor(s){}.",
                     r.anchors.len(),
