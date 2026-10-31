@@ -244,20 +244,21 @@ fn seatbelt_holds(pid: u32) -> Result<()> {
     if live::is_sandboxed(pid) != Some(true) {
         bail!("process {pid} is not under a Seatbelt profile");
     }
-    // The kernel matches resolved paths: `/etc` is `/private/etc`.
-    let canon = |p: PathBuf| p.canonicalize().unwrap_or(p);
     // Each operation is one the kernel answers both ways, measured against
     // an unsandboxed process on macOS 26: `process-exec` has to be asked
     // as `process-exec*` (the bare name is an error), and a path that does
     // not exist reads as denied even unsandboxed, so every path asked about
     // exists — a write is asked of `/dev/null`.
     let mut probes: Vec<(&str, PathBuf)> = vec![
-        ("file-read-data", canon(PathBuf::from("/etc/passwd"))),
         ("file-write-data", PathBuf::from("/dev/null")),
         ("process-exec*", PathBuf::from("/bin/sh")),
     ];
-    // Only a home that resolves: an unresolved one would read as denied for
-    // free, and the probes above stand without it (review of #769).
+    // Only paths that resolve, as the kernel matches them (`/etc` is
+    // `/private/etc`): an unresolved one would read as denied for free, and
+    // the probes above stand without either (review of #769).
+    if let Ok(passwd) = Path::new("/etc/passwd").canonicalize() {
+        probes.push(("file-read-data", passwd));
+    }
     if let Some(home) = std::env::var_os("HOME")
         .filter(|h| !h.is_empty())
         .and_then(|h| PathBuf::from(h).canonicalize().ok())
@@ -274,6 +275,13 @@ fn seatbelt_holds(pid: u32) -> Result<()> {
     }
     if live::denies(pid, "network-outbound") != Some(true) {
         bail!("the worker's profile does not deny the network");
+    }
+    // The profile grants no mach-lookup. Asked of the one service macOS CI
+    // measured both ways (`code_interpreter.rs`'s live check): denied to the
+    // worker, allowed to the unsandboxed test.
+    const SERVICE: &str = "com.apple.system.notification_center";
+    if live::denies_service(pid, SERVICE) != Some(true) {
+        bail!("the worker's profile does not deny mach-lookup of {SERVICE}");
     }
     // The control: the one read the profile grants must read as allowed on
     // the same process, or a check that answered "denied" to everything

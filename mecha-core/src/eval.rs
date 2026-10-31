@@ -2064,6 +2064,9 @@ mod grounding_tests {
     struct EvidenceJudge;
     #[async_trait]
     impl Provider for EvidenceJudge {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "test"
         }

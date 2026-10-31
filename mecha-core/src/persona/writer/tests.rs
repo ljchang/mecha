@@ -406,6 +406,9 @@ struct Recording {
 
 #[async_trait::async_trait]
 impl crate::provider::Provider for Recording {
+    fn local(&self) -> bool {
+        true
+    }
     fn id(&self) -> &str {
         "recording"
     }

@@ -41,6 +41,9 @@ impl Provider for RecordedProvider {
     fn default_model(&self) -> &str {
         self.inner.default_model()
     }
+    fn local(&self) -> bool {
+        self.inner.local()
+    }
     async fn complete(
         &self,
         req: &CompletionRequest,
