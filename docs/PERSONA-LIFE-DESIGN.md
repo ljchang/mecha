@@ -410,7 +410,9 @@ threshold per persona once the access log says where it should sit. The
     and neither threshold is safe to guess; shared rows fold on PL29's shipped
     default, which needs no file). Rows the threshold never reads still fold:
     owner-origin rows and `state`, which §9 exempts from decay, and `days`
-    and `items`, which are pruned on a fixed age (§5). So a typo empties the part of the block that
+    and `items`, which are pruned on a fixed age (§5). A day's companions
+    who are decaying `people` rows are withheld with them and render as
+    "someone", as a pruned id does (§6.3). So a typo empties the part of the block that
     needs the owner's numbers, not the whole of it. The decay knobs have no "off", and shipped defaults
     could be looser than what the owner wrote, which is the substitution §9
     refuses. So nothing is deleted on a read that failed. It never falls back to the pinned value or the last
@@ -715,8 +717,9 @@ one more reason §14's gate part 1 exists.
     before shelf B exists, which is not a row's fields but a line code
     composes: the interest from the owner's feed
     mapping and the harness-minted id, carrying no value the publisher
-    chose. Its presence, count and timing are the residual §14's steering
-    arm covers. Nothing else is exempt. Once shelf B ships, the id rides
+    wrote. Its presence, count and timing, and for a publisher reaching
+    feeds under several interests which one a line shows (§8.3), are the
+    residual §14's steering arm covers. Nothing else is exempt. Once shelf B ships, the id rides
     shelf B's interest line instead (§8.3), and which stem that line takes
     is settled with shelf B's build, behind its gate (§14). It is not
     inherited from this exception.
@@ -1462,8 +1465,8 @@ the headline never rides in the today-block.
   narrower figure. In the first build, without shelf B, its shelf C lines
   carry an interest and an opaque id, both code's, so a line's *fields* carry
   0 attacker bits from a publisher whose feeds map to one interest. A
-  publisher reaching k feeds the owner mapped to different interests picks
-  among them by choosing where to publish, at most log₂k bits a line, a
+  publisher reaching feeds the owner mapped under k interests picks among
+  them by choosing where to publish, at most log₂k bits a line, a
   channel beside the count and timing below and covered with them. Its **presence, count and timing** are still the
   publisher's: whether 0–3 lines appear (about 2 bits a day) and when
   (a bit a day). That is the same channel §8.2 counts for shelf B, and §14's
@@ -1556,7 +1559,7 @@ the headline never rides in the today-block.
       the first build, which ships C before B (PL9)**, it is a code-supplied
       line per shelf C item: the interest, from the owner's feed mapping
       (0 attacker bits for one publisher's feeds under one interest, at most
-      log₂k a line across k, as above), and the opaque id, with no feed-authored string at
+      log₂k a line across k interests, as above), and the opaque id, with no feed-authored string at
       all ("something new about [interest] — item 41"). That is strictly
       narrower than shelf B's line, so it costs the ceilings nothing. Without
       it `news_read` would have no callable argument, and the tempting patch,
@@ -2273,7 +2276,7 @@ this document's; the ruling is the owner's.
 | PL6 | People already in `identity.md` | **Ruled (2026-10-31): people live in one place.** They are proposed once as owner nodes; after approval the network is their only home and `identity.md` keeps personality (§6.6) |
 | PL7 | Pruning | **Ruled (2026-10-31):** the world hard-prunes, except owner-origin rows; memory soft-prunes (out of recall, kept in the store); hard deletion of memories only by amending D26 after D28's readout. **The decay parameters are exposed per persona**, read live: the world's half-lives, retelling boost and threshold in `[life.decay]`, and memory's recall threshold in `[memory] recall_below`, off by default (§9, §3.1) |
 | PL8 | Importance to the owner | **Ruled (2026-10-31):** inferred from engagement and pins, with no rating prompts or UI control; and she may ask in conversation when it is natural and the inference is unsure, within §7.3's one-question-a-chat budget, the answer counting as a `Stated` signal (§9) |
-| PL9 | News shelves | **Ruled (2026-10-31):** Build A and C first, with shelf A's per-field render bounds and stated figures (at most 16 bits an item, three a day, five-day expiry; §8.2), and shelves A and C through all three gate parts, steering included, before either reaches a prompt. In that first build, shelf C's count-and-timing channel (about 3 bits a day) is the entire residual, and only the steering arm sees it. B ships behind the three-part gate (§14): schema conformance, a bit ceiling (about 9.6 bits per item and under 30 a day, as §8.2 computes it) enforced by a test, and the steering arm, all three read by the owner |
+| PL9 | News shelves | **Ruled (2026-10-31):** Build A and C first, with shelf A's per-field render bounds and stated figures (at most 16 bits an item, three a day, five-day expiry; §8.2), and shelves A and C through all three gate parts, steering included, before either reaches a prompt. In that first build, shelf C's count-and-timing channel (about 3 bits a day), with log₂k bits a line for a publisher reaching feeds under k interests (§8.3), is the entire residual, and only the steering arm sees it. B ships behind the three-part gate (§14): schema conformance, a bit ceiling (about 9.6 bits per item and under 30 a day, as §8.2 computes it) enforced by a test, and the steering arm, all three read by the owner |
 | PL10 | The writer after a taint rise | **Ruled (2026-10-31):** Keep today's rule (everything after the rise is a candidate). PL23's typed episode keeps the gist and PL27's switch gives full memory where the owner wants it, which is what PL10 was reaching for (§8.4) |
 | PL11 | Feed sources | **Ruled (2026-10-31):** Registered per persona, per group and for everyone (PL4), in their folders under `~/.mecha/personas/`, never in layered config; any future global table global-layer-only and stripped from project layers loudly (§8.1) |
 | PL12 | Topics withheld by default | **Ruled (2026-10-31):** Politics, deaths, disasters and crime, unless a feed is opted in |
