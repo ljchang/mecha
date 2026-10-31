@@ -919,11 +919,11 @@ pub fn announcements(facts: &Facts) -> Vec<Announcement> {
         .collect()
 }
 
-/// What `enable world` and `disable world` say: the world's lever is each
+/// What `enable world` and `disable world` both say: the world's lever is each
 /// persona's `[life]` table, never `[features]` (PL26).
 pub const WORLD_IS_PER_PERSONA: &str =
-    "`world` is part of `personas` and is switched per persona, never here — `[life] world = \
-     true` in a persona's persona.toml turns it on for that persona";
+    "`world` is part of `personas` and is switched per persona, never here — `[life] world` in \
+     a persona's persona.toml turns it on or off for that persona";
 
 /// Check a request to switch features on, before anything is written.
 ///

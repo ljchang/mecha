@@ -1539,7 +1539,9 @@ fn quoted_list(items: &[String]) -> String {
 
 /// The commented `persona.toml` a new persona starts with. Every switch is
 /// written out at its default, so the owner reads what is on rather than
-/// having to know it.
+/// having to know it. Tuning numbers are not switches and stay out:
+/// `[life.decay]` written here would freeze today's guesses into every new
+/// persona, where a later change to the defaults could never reach them.
 fn render_settings(new: &NewPersona, tools: &[String], answers: Answers) -> String {
     let opt = |key: &str, v: &Option<String>, hint: &str| match v {
         Some(v) => format!("{key:<12} = {}\n", quoted(v)),
@@ -2390,7 +2392,9 @@ const UNBUILT: &str = "Not built yet: saved now, used once it is.";
 
 /// `persona.toml` as a form (`tomlform`): every key [`Settings`] reads
 /// except `voice_speed`, a number the form has no field kind for (it is
-/// edited as text). Edited in place — the owner's comments stay — and saved
+/// edited as text), and `[life]`, which joins once `world` does something,
+/// so its help text is true when it ships (its `[life.decay]` knobs are
+/// numbers too). Edited in place — the owner's comments stay — and saved
 /// through [`edit_settings`].
 pub fn settings_form(c: &FormChoices) -> crate::tomlform::Form {
     use crate::tomlform::{Field, Form, Kind, Opt, Section};
