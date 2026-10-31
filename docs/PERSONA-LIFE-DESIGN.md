@@ -731,6 +731,11 @@ one more reason §14's gate part 1 exists.
     - **`known_to_owner`** flips when she first mentions a person. Set from a
       tainted stretch, it would make her stop introducing someone she never
       actually named to the owner. So a tainted stretch never sets it either.
+  - **Under `remember_articles`, the approve and reject branches are
+    unreachable for an article chat.** Its episodes are recalled rather than
+    queued, so nothing is reviewed. The exception keys on the `told`'s
+    source, not on candidacy, so PL25's floor still bounds it: the row prunes
+    on its ordinary score.
   - **On the main path, only one of §9's branches fires.** PL23 makes
     "unreviewed" the ordinary state of an article chat's candidates, so a
     tainted-only `told` normally just suppresses until its row prunes. The
@@ -772,13 +777,28 @@ one more reason §14's gate part 1 exists.
     - **a date**, within the next 90 days (about 6.5 bits);
     - **an activity** from a closed set fixed in code, at most 32 entries
       (5 bits);
-    - **at most two people**, by id, from her network's clean-origin people
-      (or the owner's people, for the owner's plans): up to about 12 bits.
+    - **at most two people**, each an index into a **candidate list code
+      supplies**: the clean-origin people whose names appear in that turn,
+      matched against the roster by string, capped at 15 plus none (4 bits
+      each, 8 bits for two). These are her network's people, or the owner's
+      people for the owner's plans. The writer never ranges over the whole
+      network, the way shelf B's entity field never ranges over the whole
+      registry (§8.2).
 
-    That is **at most about 24 bits a plan**, and at most three typed plans
-    a day per persona, chosen by a seeded draw as typed episodes are (§8.4).
-    The total is **at most about 72 bits a day**, and plans expire when their
-    date passes. Each record is checked against the turn it was said in: the
+    That is **at most about 20 bits a plan** (6.5 + 5 + 8), and at most three
+    typed plans a day per persona, chosen by a seeded draw as typed episodes
+    are (§8.4). The total is **at most about 60 bits a day**, the constant
+    §14's bit test checks for plans.
+    - **For an owner-stated plan, transparent endorsement does not hold,
+      and that is stated.** The writer picking the people indices sees the
+      article-steered turns *and* the owner's own, and the list is the
+      owner's real people. So the choice is attacker × private data, the
+      shape §8.2 rejects for shelf B and §8.4 flags for `owner_reaction`.
+      It is acceptable for the same reason as there: with no `Chosen` sender
+      (`PERSONA-DESIGN.md` §3.3), the 8 bits can tilt which real person her
+      week pencils in, but cannot be read back out.
+
+    Plans expire when their date passes. Each record is checked against the turn it was said in: the
     date and activity must both be stated there, or the plan is dropped and
     named in the persona's notes, never stored loosely. The record keeps its
     untrusted origin and the "from an article chat" badge, so the week view
@@ -1153,7 +1173,11 @@ These are third parties who never agreed to be in a database.
   beside the dose meters. It records and shows; it never blocks or rewrites a
   reply. It is **configurable per persona**, as R21 requires of every safety
   feature: `[safety] relationships = true` by default, and the owner can
-  switch it off.
+  switch it off. **That is two edits, not one**: the field, and its row in
+  `Safety::switched_off`, the hand-written list that prints "safety: OFF for
+  this persona" and the list view's "safety off" flag. Without the row, a
+  switched-off sensor would be hidden on both surfaces with the suite green,
+  and R21's promise is that a removed protection is said loudly.
 - **Locked and plaintext.** It lives in her folder under the library lock and
   is plaintext on disk; the page says so (§8.3 of the persona design).
 
@@ -2114,8 +2138,8 @@ ruled for repetition.
   - the typed episode's `owner_reaction`, 2 bits per episode (§8.4);
   - the retelling boost and `known_to_owner`, which a tainted stretch never
     writes at all (§4.5);
-  - typed plans under `remember_articles` (PL21), at most about 24 bits a
-    plan and 72 a day, each checked against its turn and badged (§4.5).
+  - typed plans under `remember_articles` (PL21), at most about 20 bits a
+    plan and 60 a day, each checked against its turn and badged (§4.5).
 
   The steering arm drives a feed and never writes from a chat. Part 1's
   conformance test does cover the typed episode, since a canary must never
@@ -2174,7 +2198,7 @@ this document's; the ruling is the owner's.
 | PL18 | Proactive messages | **Ruled (2026-10-31): designed now, opt-in per persona, off by default.** `[life] proactive`, needing `world`; prompted only by her life, never an inactivity timer; at most one a day by default, jittered, mood-gated, quiet hours kept; never guilt or a farewell hook; backs off after two unanswered; opens a new chat (§12) |
 | PL19 | Camera roll and feed | **Ruled (2026-10-31):** after the sampler and today-block are measured (§17 steps 6–7) |
 | PL20 | The today-block's taint | **Ruled (2026-10-31):** its own stem pair from the first build, arming `private`, or `private` and `untrusted`, as the recall pair does; the owner's roster rides in the recall block under its existing pair (§4.5, §7.2, §13) |
-| PL21 | Stated plans after a taint rise | **Ruled (2026-10-31):** by default a candidate, shown on the week view as a waiting plan. **With `remember_articles` on**, hers and the owner's from a covered stretch are admitted with no approval as typed plans (a date within 90 days, an activity from a closed set of 32, at most two clean-origin people by id), checked against the turn, at most about 24 bits a plan and three a day by seeded draw, badged and removable; never as text (§4.5) |
+| PL21 | Stated plans after a taint rise | **Ruled (2026-10-31):** by default a candidate, shown on the week view as a waiting plan. **With `remember_articles` on**, hers and the owner's from a covered stretch are admitted with no approval as typed plans (a date within 90 days, an activity from a closed set of 32, at most two people from a code-supplied list of those named in the turn), checked against the turn, at most about 20 bits a plan and three a day by seeded draw, badged and removable; never as text (§4.5) |
 | PL22 | `forget` over the world | **Ruled (2026-10-31):** delete what is sourced to the chat and re-fold, in pure code, which is D27's rebuild done where it is cheap; a derived value whose support falls below a floor reverts to a candidate (D27's second half); owner events never go with a chat (§5) |
 | PL23 | Episodes after a `news_read` | **Owner's direction (2026-10-31):** the default. A typed episode (`item_id`, interest, date, a closed-set reaction) is admitted clean; free text is left as candidates that go unrecalled, with no approval queue (§8.4) |
 | PL24 | `forget` over the owner's network | **Ruled (2026-10-31):** provenance is stored on every record, so forgetting a chat removes everything it contributed, in every store; what other chats support is re-folded, and an `Inferred` edge left on too little support reverts to a candidate (§5, §7.1) |
