@@ -230,11 +230,6 @@ pub fn price(plan: &mut Plan, chat_here: bool, nvidia: impl FnOnce() -> crate::e
                 && not_needed(s.id, feature, chat_here).is_none()
         })
     };
-    // The speech server's default voice is fetched beside the slot's model
-    // and codec, which the plan prices already; the clip is priced here so
-    // nothing it fetches goes uncounted (review of #649). A machine
-    // `speech_unit::fits` refuses is not offered the server, so neither the
-    // clip nor the slot's model is its plan's (review of #649).
     // Code mode's worker: the pinned wheel it is unpacked from.
     if wanted(plan, crate::interpreter::worker::SIDECAR)
         && installable(crate::interpreter::worker::SIDECAR)
@@ -250,6 +245,11 @@ pub fn price(plan: &mut Plan, chat_here: bool, nvidia: impl FnOnce() -> crate::e
             plan.download_bytes += pin.wheel_bytes;
         }
     }
+    // The speech server's default voice is fetched beside the slot's model
+    // and codec, which the plan prices already; the clip is priced here so
+    // nothing it fetches goes uncounted (review of #649). A machine
+    // `speech_unit::fits` refuses is not offered the server, so neither the
+    // clip nor the slot's model is its plan's (review of #649).
     // The graph's MCP server is a build: nothing to price but the wait, and
     // a machine without cargo is not offered it, with why (§13).
     if wanted(plan, crate::graph_mcp::ID) {

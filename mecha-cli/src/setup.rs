@@ -227,6 +227,24 @@ pub async fn prepare_carrying(
     build(tools, code, opts)
 }
 
+/// Take `code` off `registry` where `profile` would not keep it, judging
+/// `code` alone: narrowing the registry again would judge the subagents,
+/// inserted since `prepare_tools` narrowed it, for the first time, and drop
+/// them silently with code mode on and keep them with it off (review of
+/// #774).
+pub(crate) fn narrow_code(
+    registry: &mut Registry,
+    profile: mecha_core::tool::profile::ToolProfile,
+    routed: &[String],
+) {
+    let kept = registry
+        .get(mecha_core::tool::code::NAME)
+        .is_some_and(|code| profile.keeps(code.as_ref(), routed));
+    if !kept {
+        registry.remove(mecha_core::tool::code::NAME);
+    }
+}
+
 /// Code mode's interpreter for an agent built from `tools`, or `None` when
 /// the run serves no `code` (`CODE-MODE-DESIGN.md` §7): the switch, then
 /// `--no-code-tool` (`Lever::CodeTool`, which `mecha eval` throws), `--tool`
@@ -696,7 +714,7 @@ fn build(
             Arc::clone(interpreter),
         )));
         if let Some(profile) = opts.tool_profile {
-            profile.narrow(&mut registry, &cfg.outbox.tools);
+            narrow_code(&mut registry, profile, &cfg.outbox.tools);
         }
     }
 
@@ -1090,8 +1108,14 @@ pub fn levers_off(opts: &GlobalOpts, cfg: &Config) -> Vec<Lever> {
                     || !mecha_core::feature::switched_on(cfg, mecha_core::feature::Feature::System)
             }
             Lever::Grants => opts.no_grants,
+            // Off wherever `code_interpreter` registers nothing for the
+            // switch's sake: thrown, switched off, or not in this build. A run
+            // record must not say programs were on in a build that cannot run
+            // them (review of #774). `[tools]` and `--tool` are `tools`' to
+            // say, as `Lever::CodeTool`'s doc has it.
             Lever::CodeTool => {
                 opts.no_code_tool
+                    || mecha_core::feature::unbuilt(mecha_core::feature::Feature::Code).is_some()
                     || !mecha_core::feature::switched_on(cfg, mecha_core::feature::Feature::Code)
             }
         })
@@ -3800,6 +3824,7 @@ mod tests {
     async fn code_mode_starts_no_worker_off_and_a_broken_one_stops_the_start() {
         use super::{code_interpreter, PreparedTools};
         use mecha_core::config::PermissionMode;
+        use mecha_core::harness::Lever;
         use mecha_core::tool::{ModeApprover, Registry};
         use std::sync::Arc;
         let home = crate::testenv::HomeGuard::new("code-interpreter");
@@ -3850,6 +3875,20 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+        // The record agrees: wherever the switch's side registers nothing
+        // (off, thrown, or not in this build) the lever reads off, so a run
+        // record never says programs were on that could not be (review of
+        // #774). `--tool` and `[tools]` are `tools`' to say.
+        let lever_off = |opts: &GlobalOpts, code: bool| {
+            super::levers_off(opts, &tools(code).config).contains(&Lever::CodeTool)
+        };
+        assert!(lever_off(&plain, false));
+        assert!(lever_off(&thrown, true));
+        assert_eq!(
+            lever_off(&plain, true),
+            !mecha_core::interpreter::BUILT,
+            "a build without the interpreter records the lever off"
+        );
         // No worker in this scratch home, and no `[sandbox]` on Linux.
         let started = code_interpreter(&tools(true), &plain).await;
         if mecha_core::interpreter::BUILT {
@@ -3857,6 +3896,104 @@ mod tests {
             assert!(e.contains("cannot start"), "{e}");
         } else {
             assert!(started.unwrap().is_none());
+        }
+    }
+
+    /// `--tool-profile` judges `code` alone, after it is built: a second
+    /// narrowing of the whole registry judged the subagents for the first
+    /// time and dropped a child holding a private read under `coding`, with
+    /// no line said, only when code mode was on (review of #774).
+    #[test]
+    fn a_tool_profile_narrows_code_and_leaves_the_subagents_alone() {
+        use mecha_core::tool::profile::ToolProfile;
+        use mecha_core::tool::Registry;
+        struct Read(&'static str, bool);
+        #[async_trait::async_trait]
+        impl mecha_core::tool::Tool for Read {
+            fn name(&self) -> &str {
+                self.0
+            }
+            fn description(&self) -> &str {
+                "a read"
+            }
+            fn input_schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                true
+            }
+            fn effect(&self) -> Option<mecha_core::tool::effect::Effect> {
+                Some(mecha_core::tool::effect::Effect::Read)
+            }
+            fn capabilities(&self) -> mecha_core::tool::Capabilities {
+                if self.1 {
+                    mecha_core::tool::Capabilities::default().private()
+                } else {
+                    mecha_core::tool::Capabilities::default()
+                }
+            }
+            async fn call(
+                &self,
+                _input: serde_json::Value,
+                _ctx: &mecha_core::tool::ToolCtx,
+            ) -> anyhow::Result<mecha_core::tool::ToolOutput> {
+                Ok(mecha_core::tool::ToolOutput::ok(""))
+            }
+        }
+        // A subagent whose child holds a private read: `coding` keeps it by
+        // nothing it would ask again, and `prepare_tools` never judged it.
+        let mut registry = Registry::new();
+        registry.insert(std::sync::Arc::new(Read("fs_read", true)));
+        registry.insert(std::sync::Arc::new(Read("researcher", true)));
+        let code = mecha_core::tool::code::CodeTool::over(
+            &registry,
+            |_| false,
+            std::sync::Arc::new(NoInterpreter),
+        );
+        registry.insert(std::sync::Arc::new(code));
+        super::narrow_code(&mut registry, ToolProfile::Coding, &[]);
+        assert!(
+            registry.get("researcher").is_some(),
+            "a subagent was dropped"
+        );
+        assert!(registry.get("fs_read").is_some());
+        assert!(
+            registry.get("code").is_none(),
+            "`coding` keeps no private read it does not name, `code` included"
+        );
+        let mut public = Registry::new();
+        public.insert(std::sync::Arc::new(Read("page", false)));
+        let code = mecha_core::tool::code::CodeTool::over(
+            &public,
+            |_| false,
+            std::sync::Arc::new(NoInterpreter),
+        );
+        public.insert(std::sync::Arc::new(code));
+        super::narrow_code(&mut public, ToolProfile::Research, &[]);
+        assert!(public.get("code").is_some(), "a public `code` stays");
+    }
+
+    /// An interpreter for the tests that build `code` and never run it.
+    struct NoInterpreter;
+
+    #[async_trait::async_trait]
+    impl mecha_core::interpreter::Interpreter for NoInterpreter {
+        fn name(&self) -> &'static str {
+            "none"
+        }
+        async fn preflight(&self) -> anyhow::Result<()> {
+            anyhow::bail!("none")
+        }
+        async fn start(
+            &self,
+            _source: &str,
+            _externals: &[String],
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> anyhow::Result<(
+            Box<dyn mecha_core::interpreter::Program>,
+            mecha_core::interpreter::Step,
+        )> {
+            anyhow::bail!("none")
         }
     }
 
