@@ -1958,7 +1958,8 @@ alone still switches images on.
 comments, the order of the file and any key a newer build added are kept, and
 the table is created when it is missing. `enable` refuses a part (`ocr`: switch
 on `documents` and set `[documents] ocr`; `incognito`: part of the web app,
-offered wherever the chat model runs on this machine), and a feature whose
+offered wherever the chat model runs on this machine; `world`: switched per
+persona by `[life]` in its `persona.toml`), and a feature whose
 dependency is not on, printing the command that switches both. `disable` says
 what it leaves blocked — `disable web` names voice's dictation, calls and
 cloning, which live in the web app. A service that is already
