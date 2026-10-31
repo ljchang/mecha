@@ -7,6 +7,10 @@
 //! or installed under `~/.mecha`; missing either is a skip, and
 //! `MECHA_TEST_REQUIRE_BACKENDS=1` makes it a failure. The reads are fake
 //! in-process tools; the agent is the real loop over a scripted provider.
+//!
+//! Without the `monty` feature only the first kind runs, and the doubles
+//! the program tests share are unused there.
+#![cfg_attr(not(feature = "monty"), allow(dead_code, unused_imports))]
 
 use super::*;
 use crate::agent::{Agent, Taint, ToolCallTrace};
