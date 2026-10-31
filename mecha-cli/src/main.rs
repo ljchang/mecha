@@ -190,6 +190,12 @@ pub struct GlobalOpts {
     #[arg(long, global = true)]
     pub no_grants: bool,
 
+    /// Don't register `code`, code mode's program tool, even with
+    /// `[features] code` on. `mecha eval` forces it: a scorecard does not
+    /// grade a model with programs on unless it says so.
+    #[arg(long, global = true)]
+    pub no_code_tool: bool,
+
     /// Don't run configured [[hook]] commands.
     #[arg(long, global = true)]
     pub no_hooks: bool,

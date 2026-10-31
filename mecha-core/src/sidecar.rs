@@ -226,7 +226,25 @@ pub const SIDECARS: &[Sidecar] = &[
         installer: "15",
         models_in_hub: false,
     },
+    // Code mode's worker (`interpreter::worker`): the `monty` binary from
+    // PyPI's pinned wheel, identified by its sha256 at its fixed path under
+    // mecha's tree. Never provided — a `monty` on PATH is whatever somebody
+    // installed last, and only the pinned bytes may run under the sandbox —
+    // so it has no evidence ([`ONLY_MECHAS`]).
+    Sidecar {
+        id: crate::interpreter::worker::SIDECAR,
+        label: "code mode's interpreter (the pinned monty worker)",
+        needed_by: &[Feature::Code],
+        serves: &[],
+        evidence: &[],
+        installer: "code",
+        models_in_hub: false,
+    },
 ];
+
+/// The sidecars only mecha's own install can supply, so nothing on a machine
+/// shows them provided: a pinned binary checked by its hash at a fixed path.
+pub const ONLY_MECHAS: &[&str] = &[crate::interpreter::worker::SIDECAR];
 
 /// The package and the build a copy of one of mecha's own servers must be,
 /// for a sidecar that is one (§15): the graph's server at its pin, the mail
@@ -875,6 +893,19 @@ pub fn plan(
         // whose binary is gone, reads unfinished — offered, and rebuilt by
         // `enable` — or a bump of `graph_mcp::REV` would never reach a
         // machine that built the last one (review of #683).
+        // Code mode's worker is the pinned bytes or nothing: installed when
+        // the file at its path hashes to its pin, whatever the record says,
+        // and unfinished when the record says installed and it does not.
+        let state = if s.id == crate::interpreter::worker::SIDECAR {
+            let worker = crate::interpreter::worker::installed_path(&m.mecha_home);
+            match crate::interpreter::worker::verify(&worker) {
+                Ok(_) => SidecarState::Installed,
+                Err(_) if state == SidecarState::Installed => SidecarState::Incomplete,
+                Err(_) => state,
+            }
+        } else {
+            state
+        };
         let state = match state {
             SidecarState::Installed
                 if s.id == crate::graph_mcp::ID && !crate::graph_mcp::installed(&m.mecha_home) =>
@@ -1218,9 +1249,10 @@ mod tests {
         let mut ids = std::collections::HashSet::new();
         for s in SIDECARS {
             assert!(ids.insert(s.id), "two sidecars named {}", s.id);
-            assert!(
-                !s.evidence.is_empty(),
-                "{}: nothing could ever show it provided",
+            assert_eq!(
+                s.evidence.is_empty(),
+                ONLY_MECHAS.contains(&s.id),
+                "{}: nothing could ever show it provided, and it is not one only mecha supplies",
                 s.id
             );
             for slot in s.serves {
@@ -1231,13 +1263,48 @@ mod tests {
                 );
             }
             assert!(
-                ["7a-3", "7b", "7c-1", "7c-2", "7d-1", "7d-2", "7e", "7f", "13", "15"]
+                ["7a-3", "7b", "7c-1", "7c-2", "7d-1", "7d-2", "7e", "7f", "13", "15", "code"]
                     .contains(&s.installer),
                 "{}: installer step {}",
                 s.id,
                 s.installer
             );
         }
+    }
+
+    /// Code mode's worker is the pinned bytes at mecha's path or nothing: a
+    /// `monty` on `PATH` never provides it, and a file at its path that is
+    /// not the pin is not installed, whatever the record says.
+    #[test]
+    fn code_modes_worker_is_its_pin_at_its_path_or_missing() {
+        use crate::interpreter::worker;
+        let root = scratch();
+        let m = machinery(&root);
+        let hub = root.join("hub");
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        std::fs::write(root.join("bin/monty"), "somebody's monty").unwrap();
+        let state = |m: &Machinery| {
+            plan(Feature::Code, m, &GB10, &hub, false)
+                .unwrap()
+                .sidecars
+                .into_iter()
+                .find(|s| s.id == worker::SIDECAR)
+                .expect("code's plan names its worker")
+                .state
+        };
+        assert_eq!(state(&m), SidecarState::Missing { step: "code" });
+        let at = worker::installed_path(&m.mecha_home);
+        std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+        std::fs::write(&at, "not the pinned worker").unwrap();
+        Manifest::begin(&m.mecha_home, worker::SIDECAR).unwrap();
+        Manifest::record(&m.mecha_home, worker::SIDECAR, at.parent().unwrap()).unwrap();
+        Manifest::finish(&m.mecha_home, worker::SIDECAR).unwrap();
+        assert_eq!(
+            state(&m),
+            SidecarState::Incomplete,
+            "a recorded install whose file is not the pin is unfinished, and offered again"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// An empty machine: every sidecar the feature needs is missing, with the

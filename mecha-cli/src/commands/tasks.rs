@@ -2745,7 +2745,8 @@ async fn work(
             holders.join(", ")
         );
     }
-    let Some((_withheld, update)) = withhold_tool(prepared.agent.registry_mut(), "kg_task_update")
+    let Some((_withheld, update)) =
+        withhold_tool(&mut prepared.agent.registry_mut(), "kg_task_update")
     else {
         bail!("`kg_task_update` is not on the tool surface — this run could not be recorded");
     };
