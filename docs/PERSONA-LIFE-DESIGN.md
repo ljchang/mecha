@@ -1,7 +1,7 @@
 # Persona lives — design
 
 > **Status (2026-10-31):** designed, nothing built. **Rulings are in
-> progress** (§16): PL1, PL2, PL3, PL7 and PL26 are ruled, and PL23, PL27 and
+> progress** (§16): PL1–PL7 and PL26 are ruled, and PL23, PL27 and
 > PL28 carry the owner's direction (no approval queue for news; every part
 > opt-in per persona). The rest are open. §1 is the owner's requests, in the order they were made; §2 is
 > the evidence, researched the same day, with a source on every figure that
@@ -393,10 +393,55 @@ because memory carries what it was.
 Her past, as the owner knows it, is consistent by construction: she can only
 retell what the owner heard, or what is still fresh in her world.
 
-**Groups share a world the way `shared.db` shares facts** (§4.5 of the
-persona design): a group's `world.db` holds places, local events and shared
-people; each persona's own world holds her life on top. What a persona *knows*
-stays hers.
+### 3.2 Three levels of world (ruled 2026-10-31, PL4)
+
+The world is hierarchical, on the same three levels the persona store
+already uses for files and facts (`PERSONA-DESIGN.md` §4.5):
+
+```
+ everyone      seasons · holidays · the calendar · feeds registered for everyone
+   │           (a game result is the same fact for every persona)
+   ▼
+ group         a town, a workplace, a campus: places, local events,
+   │           a shared minor cast (the hospital, the coffee shop, a reorg)
+   ▼
+ persona       her own life: routine, days, her people, her arcs, her state
+```
+
+Each level is its own `world.db`: `~/.mecha/personas/world.db` for everyone,
+`groups/<group>/world.db`, and `<persona>/world.db`.
+
+- **A shared event exists once, and each persona experiences it her own
+  way.** A snowstorm in a town is one group-level row. Each member persona
+  whose sampler is affected gets her own derived event pointing at it: one is
+  stuck on a double shift, another is home with a toddler and no power. The
+  facts agree because there is one storm, and the experiences differ because
+  the lives do.
+- **Existence is not knowledge.** A shared event has a visibility: *public*
+  (everyone in the group knows: weather, a festival) or *participants* (only
+  personas the sampler placed there know: a staff meeting). Two personas can
+  share a world without learning anything about each other, and personas
+  still never know that another persona exists (`PERSONA-DESIGN.md` §8.1).
+- **Only clean sources write above the persona level.** The everyone and
+  group worlds are written only by the owner, the simulation and feeds
+  registered at that level. Nothing from a chat moves up a level on its own,
+  as with `shared.db`. So a tainted chat with one persona cannot plant an
+  event that reaches every member, and `forget` on a chat never has to reach
+  across personas.
+- **Several groups at once.** A persona can belong to a workplace and a town.
+  Both groups' shared events flow into her life, and place names are unique
+  within a group, so the two never collide.
+- **Each level paces and decays on its own.** A group has one storyteller and
+  one nightly narration pass shared by its members, rather than one per
+  persona, which costs less model time. A persona's derived events decay
+  under her own `[life.decay]`.
+- **Feeds attach at any level.** A team's feed or local news is registered
+  once at the group or everyone level (§8.1), and every member persona sees
+  it.
+
+The group-level storyteller, and the step that derives each persona's
+experience of a shared event, arrive in §17 step 3 with storylets. Step 1
+builds only the persona level.
 
 ---
 
@@ -791,10 +836,22 @@ that importing a CV. So:
 ### 6.6 Storage, and a deviation
 
 The network has **mixed authorship**, and `PERSONA-DESIGN.md` §4.3 puts what
-the owner writes in TOML and Markdown. The recommendation is the network in
-`world.db` with a per-event origin and owner precedence — the generated layer
-never overwrites an owner event — plus a TOML/Markdown export, rather than a
-`people.toml` the UI rewrites and the simulation overlays (§16 PL5). People
+the owner writes in TOML and Markdown.
+
+**Ruled (2026-10-31, PL5): built the way memories are.** The owner left the
+form to whatever gives the best functionality: a store like memories, or a
+`network.md`. The answer is memory's own machinery:
+- a SQLite store in `world.db`, with a per-event origin and owner precedence,
+  so the generated layer never overwrites an owner event;
+- the People tab as the place to view and edit it, like the Memories tab;
+- the CLI's `show` and `export`, like `mecha persona memory`;
+- **a rendered `network.md`** beside it, for reading anywhere.
+
+A hand-edited Markdown file could not carry what makes the network good:
+dated history with a precision, the source of each change, the `forget`
+cascade (PL22), merge and split, and the time slider. So edits go through
+the page or the CLI, and `network.md` is regenerated from the store, never
+parsed back into it. People
 already written into `identity.md` are proposed once as owner nodes; after
 approval the network is their home and `identity.md` keeps personality, so the
 fact lives in one place (§16 PL6).
@@ -1782,9 +1839,9 @@ this document's; the ruling is the owner's.
 | PL1 | Who authors the routine | **Ruled (2026-10-31): A, with editing.** A model drafts it from `identity.md` as a candidate. The owner may edit the draft before approving it, as `persona_propose` works, and may edit the approved routine directly at any time; the owner's edit always wins (§4.1) |
 | PL2 | A separate world store | **Ruled (2026-10-31):** `world.db` beside `memory.db`; memory stays "only what was discussed" |
 | PL3 | How intense events may be | **Ruled (2026-10-31):** a per-persona configuration setting, `intensity`, defaulting to `"capped"`; `"full"` opens major life events (illness, breakups, deaths) for that persona (§4.3, §3.1) |
-| PL4 | Shared worlds across personas | Through a group's world: places, local events, shared people; what each knows stays hers. Alternative: fully separate |
-| PL5 | Where the network lives | `world.db` with per-event origin and owner precedence, plus an export — a stated deviation from §4.3's files-for-owner-text. Alternative: owner people in TOML |
-| PL6 | People already in `identity.md` | Proposed once as owner nodes; after approval the network is their only home |
+| PL4 | Shared worlds across personas | **Ruled (2026-10-31):** a three-level hierarchy (everyone, group, persona), each its own `world.db`. A shared event exists once and each persona experiences it her own way; visibility decides who knows; only the owner, the simulation and level-registered feeds write above the persona level (§3.2) |
+| PL5 | Where the network lives | **Ruled (2026-10-31): built like memories.** SQLite in `world.db` with per-event origin and owner precedence, edited on the People tab and the CLI, with a rendered `network.md` for reading; a stated deviation from §4.3 (§6.6) |
+| PL6 | People already in `identity.md` | **Ruled (2026-10-31): people live in one place.** They are proposed once as owner nodes; after approval the network is their only home and `identity.md` keeps personality (§6.6) |
 | PL7 | Pruning | **Ruled (2026-10-31):** the world hard-prunes, except owner-origin rows; memory soft-prunes (out of recall, kept in the store); hard deletion of memories only by amending D26 after D28's readout. **The decay parameters are exposed per persona** in `[life.decay]`: half-lives, retelling boost, both thresholds, read live (§9, §3.1) |
 | PL8 | Importance to the owner | Inferred from engagement and pins; no rating prompts |
 | PL9 | News shelves | Build A and C first, with shelf A's per-field render bounds and stated figures (at most 16 bits an item, three a day, five-day expiry; §8.2), and shelf A through all three gate parts, steering included, before it reaches a prompt. B ships behind the three-part gate (§14): schema conformance, a bit ceiling (about 9.6 bits per item and under 30 a day, as §8.2 computes it) enforced by a test, and the steering arm, all three read by the owner. Alternative: all three shelves at once |
