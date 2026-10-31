@@ -324,6 +324,14 @@ news      = false          # interests and feeds, shelves A/B/C, news_read (§8)
 camera    = false          # the camera roll and share_photo (§10); needs world
 feed      = false          # the in-app feed (§11); needs camera
 remember_articles = false  # PL27; needs news
+intensity = "capped"       # PL3: "capped" (default) or "full" (§4.3)
+
+[life.decay]               # PL7: the decay and pruning knobs (§9); defaults shown
+event_half_life_days     = 4     # a momentary world event
+arc_half_life_days       = 21    # an ongoing situation
+retell_boost             = 1.5   # strength multiplier each time it comes up again
+world_prune_below        = 0.05  # world rows below this strength are deleted
+memory_recall_below      = 0.05  # memory below this strength leaves recall (kept in the store)
 ```
 
 - **A switch decides what exists, not what is refused.** A tool whose
@@ -338,9 +346,17 @@ remember_articles = false  # PL27; needs news
 - **`my_people` stands alone.** It is memory of the owner, not of her world
   (§7.1), so a persona can learn the owner's people without having a
   simulated life of its own.
-- **Switches are fixed per persona version.** A chat pins the persona
-  version it started with (`PERSONA-DESIGN.md` §8.1), so turning a part on
-  applies to new chats, and nothing toggles mid-chat.
+- **Two rules, by what a setting does.**
+  - **Switches that decide which tools and blocks exist** (`world`,
+    `people`, `my_people`, `news`, `camera`, `feed`) are fixed per persona
+    version. A chat pins the version it started with (`PERSONA-DESIGN.md`
+    §8.1), because the tool list is the front of the cached prefix, so
+    turning one on applies to new chats.
+  - **Behaviour settings** (`remember_articles`, `intensity`, the decay
+    knobs) are read live, at each use, as the memory switches already are
+    (`setup::persona_agent`: "turning memory off reaches the chat at its
+    next call"). `remember_articles` in particular is the one an owner may
+    want to revoke in a hurry, and turning it off stops the next recall.
 - **The page shows them together**, each with a line on what it adds and,
   for `news` and `remember_articles`, what it costs.
 
@@ -448,8 +464,10 @@ owner's deck is the owner's.
   peak, and a forced event after a long drought — one budget of drama shared
   by every source, so a big game, a fight with a friend and a hard shift
   compete rather than pile up.
-- A **severity cap**: Holmes–Rahe-scale events (a death, a divorce, a serious
-  diagnosis) only on a per-persona opt-in (§16 PL3).
+- A **severity cap, as a per-persona setting** (ruled, §16 PL3):
+  `intensity = "capped"` by default, so Holmes–Rahe-scale events (a death, a
+  divorce, a serious diagnosis) never fire; `"full"` opens them for that
+  persona, still under the director's pacing.
 - **Most events involve other people** (§2.1): the director weights storylets
   with a cast member above solo ones.
 
@@ -484,12 +502,20 @@ The narrator's prose is long-lived: it is snapshotted into memory (§5) and
 rides in later prompts. So the claim that it is clean rests on its inputs, and
 specifically on shelf B being typed. §2.7's "summarising does not launder"
 concerns prose inputs, and the narrator has none. What reaches it from outside
-is a handful of enum values under §8.2's ceiling, about 29 bits a night.
+is typed values from **both** shelves, and it reads **only that night's
+arrivals**, never the live shelf:
+- shelf B, under 30 bits;
+- shelf A, at most 48 bits, the larger channel, and clean by provider trust
+  under render ranges rather than by capacity alone (§8.2).
+
+That is **at most about 77 bits a night**. (Reading the live shelf over five
+days would be about 385, which is why it reads arrivals.)
 That influence can *select among* narrations the model would write anyway,
 but it cannot *author* a string. That is a stronger argument than the model
 resisting, and it survives §2.7's warning that a local writer should be
-assumed weak. If shelf B ever gained a
-free-text field, the narrator's output would stop being `ModelClean`. That is
+assumed weak. If shelf B ever gained a free-text field, or shelf A ever
+stored an unparsed string (the case §8.2's "stored, never rendered" rule
+exists to prevent), the narrator's output would stop being `ModelClean`. That is
 one more reason §14's gate part 1 exists.
 
 ### 4.5 The teller: the today-block and the told-ledger
@@ -1186,8 +1212,8 @@ the headline never rides in the today-block.
       would add log₂k bits. So the count is set by the recorded `news_read`
       calls: one episode for each distinct item read in the chat. The
       per-day figure is then 2 bits × distinct items read. Reads are bounded
-      by what is on the shelf, at most three shelf C items a day (§8.5),
-      which gives **at most 6 bits a day**. That is the constant gate part 2
+      by what is on the shelf, at most three shelf C items a day (§8.5's own
+      cap for shelf C), which gives **at most 6 bits a day**. That is the constant gate part 2
       checks.
     - **Transparent endorsement does not hold here, and that is stated.**
       The writer that picks the reaction sees the article-steered turns *and*
@@ -1211,11 +1237,19 @@ the headline never rides in the today-block.
     owner's) are **recalled without approval**. **The owner's network is
     outside its reach**: edges and people about the owner's real relatives
     and friends from such a stretch stay unrecalled candidates, like the
-    default. The alternative is worse. With `Inferred` edges auto-accepted
-    under D18, an article could plant *fabricated claims about real people*,
-    recalled with no tap and shown on the People tab as hers. That is §2.7's
-    "capacity does not bound truth" landing in the one store that holds third
-    parties who never agreed to be in a database (§7.5). Their origin stays untrusted, because
+    default. **That carve-out alone is narrower than it looks.** The owner's
+    network is a layer over facts about the owner (§7.1). If the switch
+    admitted a *fact* naming a real person while holding back the edge, a
+    planted claim about that person would still be recalled with no tap.
+    Holding back the edge would only stop the claim being drawn on the People
+    tab and auto-accepted under D18. So the recommended carve-out covers
+    **any fact from such a stretch that names a person in the owner's
+    network**. Code checks this by person id, not by reading the text; those
+    facts stay unrecalled candidates too. Otherwise an article could plant
+    *fabricated claims about real people*. That is §2.7's "capacity does not
+    bound truth" landing in the one store that holds third parties who never
+    agreed to be in a database (§7.5). The switch then remembers the
+    conversation in full, except what it says about the owner's real people. Their origin stays untrusted, because
     the switch changes what is recalled, never what is clean.
     - **Recall still re-arms the taint** they were written under (§9.6). So
       a later chat that recalls one opens untrusted, and its own records are
@@ -1302,7 +1336,10 @@ the headline never rides in the today-block.
 
 - One nightly job per persona; at most six items a day across its
   feeds: at most three of shelf A and at most three of shelf B, chosen by
-  code (§8.2). Both shelves expire at five days, the figure each ceiling is
+  code (§8.2). **Shelf C has its own cap of three a day**, chosen by the same
+  round-robin and seeded draw. When shelf B exists, they are the same three
+  items, since B and C are two halves of one record. In the first build,
+  which ships A and C before B (PL9), the cap stands alone. Both shelves expire at five days, the figure each ceiling is
   computed from.
 - An unprompted mention only on an entity match or high salience, and at most
   one a chat (Chirpy, Pulse, Meta's one-follow-up rule).
@@ -1331,6 +1368,15 @@ the headline never rides in the today-block.
 comes up again** — retrieval strengthens (`PERSONA-MEMORY-TIMESCALES-RESEARCH.md`
 §1.3). Half-lives scale by tier: days for a momentary event, weeks for an arc,
 none for state.
+
+**The knobs are the owner's, per persona** (ruled, §16 PL7): the half-lives,
+the retelling boost and both thresholds sit in `[life.decay]` (§3.1),
+owner-written and outside `persona_propose`'s schema, and are read live. The
+defaults are this design's guesses until D28's access log and the world's own
+pruning counts show where they should sit. A value out of range (a negative
+half-life, a threshold outside 0–1) is a load error naming the key, never
+clamped quietly. Owner-origin rows and state ignore the world threshold
+entirely: they never decay.
 
 **Pruning differs by store** (§16 PL7):
 
@@ -1500,9 +1546,9 @@ tool owes three things and one list row:**
   `<= Blind`, so `None` is a stated choice, not something the test enforces;
 - a row in the hand-written `ELIGIBLE` list.
 
-The fixture test checks that the declaration and `ELIGIBLE` *agree*. A
-forgotten declaration alone defaults to `None`, so the tool is quietly
-ineligible and the build stays green. So the pair is two edits, the shape of
+The fixture test checks that the declaration and `ELIGIBLE` *agree*. An
+`ELIGIBLE` row without a declaration fails loudly, but forgetting *both*
+leaves the tool quietly ineligible with the build green. So the pair is two edits, the shape of
 CLAUDE.md's "a new field on `Config` is two edits", and §17's steps name
 both. For `news_read` and `share_photo` specifically, the `ELIGIBLE` row is
 documentation: that test's pool cannot construct a tool that needs a store,
@@ -1664,11 +1710,11 @@ this document's; the ruling is the owner's.
 |---|---|---|
 | PL1 | Who authors the routine | **Ruled (2026-10-31): A, with editing.** A model drafts it from `identity.md` as a candidate. The owner may edit the draft before approving it, as `persona_propose` works, and may edit the approved routine directly at any time; the owner's edit always wins (§4.1) |
 | PL2 | A separate world store | **Ruled (2026-10-31):** `world.db` beside `memory.db`; memory stays "only what was discussed" |
-| PL3 | How intense events may be | **Ruled (2026-10-31):** a severity cap by default; major life events (illness, breakups, deaths) a per-persona opt-in |
+| PL3 | How intense events may be | **Ruled (2026-10-31):** a per-persona configuration setting, `intensity`, defaulting to `"capped"`; `"full"` opens major life events (illness, breakups, deaths) for that persona (§4.3, §3.1) |
 | PL4 | Shared worlds across personas | Through a group's world: places, local events, shared people; what each knows stays hers. Alternative: fully separate |
 | PL5 | Where the network lives | `world.db` with per-event origin and owner precedence, plus an export — a stated deviation from §4.3's files-for-owner-text. Alternative: owner people in TOML |
 | PL6 | People already in `identity.md` | Proposed once as owner nodes; after approval the network is their only home |
-| PL7 | Pruning | **Ruled (2026-10-31):** the world hard-prunes, except owner-origin rows; memory soft-prunes (out of recall, kept in the store); hard deletion of memories only by amending D26 after D28's readout |
+| PL7 | Pruning | **Ruled (2026-10-31):** the world hard-prunes, except owner-origin rows; memory soft-prunes (out of recall, kept in the store); hard deletion of memories only by amending D26 after D28's readout. **The decay parameters are exposed per persona** in `[life.decay]`: half-lives, retelling boost, both thresholds, read live (§9, §3.1) |
 | PL8 | Importance to the owner | Inferred from engagement and pins; no rating prompts |
 | PL9 | News shelves | Build A and C first, with shelf A's per-field render bounds and stated figures (at most 16 bits an item, three a day, five-day expiry; §8.2), and shelf A through all three gate parts, steering included, before it reaches a prompt. B ships behind the three-part gate (§14): schema conformance, a bit ceiling (about 9.6 bits per item and under 30 a day, as §8.2 computes it) enforced by a test, and the steering arm, all three read by the owner. Alternative: all three shelves at once |
 | PL10 | The writer after a taint rise | Keep today's rule (everything after the rise is a candidate). PL23's typed episode keeps the gist by default, and PL27's switch gives full memory where the owner wants it, which is what PL10 was reaching for. Alternative: rescue owner turns that neither follow a persona turn in the tainted stretch nor overlap the `news_read` prose; structural, residual paraphrase, modest gain (§8.4) |
@@ -1688,7 +1734,7 @@ this document's; the ruling is the owner's.
 | PL24 | `forget` over the owner's network | Re-fold from the events that remain, which is D27's rebuild applied in memory for this graph; an `Inferred` edge left on too little support reverts to a candidate. Alternative: today's fallback, so the person goes with any of their chats (§7.1) |
 | PL25 | A `told` set only by a tainted stretch | Suppresses but does not license pruning; unchanged while unreviewed, since silence is not a rejection. Since PL23 keeps news off any queue, unreviewed is the ordinary state, so suppression usually lasts until the row prunes on its own score. Approval from the Memories tab makes the flag ordinary; rejection there clears it (§9). Alternative: lapse after five days unreviewed, at the cost of repeating what the owner heard |
 | PL26 | The feature registry | **Ruled (2026-10-31):** `part_of = Personas`, with the per-persona `[life]` switches (PL28) as the lever. A top-level switch would buy nothing, since personas are operator-only and no trial home can run one; §14's comparison is read offline. Settled before step 1 (§17) |
-| PL27 | Remembering article chats in full | **Owner's direction (2026-10-31):** a per-persona `remember_articles` switch, off by default, owner-written in `persona.toml`. With it on, episodes and facts from a stretch after a `news_read` are recalled without approval, origin still untrusted and re-armed on recall. The cost (possible persistent steering, no way to send) is shown beside the switch and in a `TRIFECTA.md` row. *Recommended within it:* the owner's network stays outside its reach (§8.4) |
+| PL27 | Remembering article chats in full | **Owner's direction (2026-10-31):** a per-persona `remember_articles` switch, off by default, owner-written in `persona.toml`. With it on, episodes and facts from a stretch after a `news_read` are recalled without approval, origin still untrusted and re-armed on recall. The cost (possible persistent steering, no way to send) is shown beside the switch and in a `TRIFECTA.md` row. *Recommended within it:* the owner's network stays outside its reach, including facts that name a person in it (§8.4) |
 | PL28 | Which personas get which parts | **Owner's direction (2026-10-31):** every part is an opt-in switch per persona, off by default: `world`, `people`, `my_people`, `news`, `camera`, `feed`, `remember_articles`. A tool whose switch is off is never built; dependencies are refused by name; switches are fixed per persona version (§3.1) |
 
 ---
