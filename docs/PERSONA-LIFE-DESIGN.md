@@ -2063,8 +2063,12 @@ persona, which fails open. So:
   halves**: `news_read` is absent, and `file_read`, `file_search`,
   `memory_search` and `memory_read` are present.
 
-Until that exists, the claim that `news_read` "follows D16 and D24" is a
-requirement, not a property.
+**Built in #778** (`persona::agent::admit_own`, closing #776): the
+admission check, the pool membership and the fail-closed default, with
+`persona_agent_admits_every_tool_through_the_persona_checks` holding the
+wiring. The `news_read`-absent half of the second test waits for
+`news_read`, which declares nothing and so is withheld from a files-only
+persona by default.
 
 ---
 
@@ -2285,8 +2289,8 @@ Feed tab (step 7).
 5. **The world outside.** Shelf A parsers, shelf C with `news_read` (its
    eligibility declaration, `untrusted_input` declared, `external` set
    unconditionally, and withheld by `answers = "files"` through the admission
-   check on the per-persona path (§13). Until that check exists, the D16/D24
-   claim is a requirement, not a property), stances,
+   check on the per-persona path, built in #778 (§13); `news_read` declares
+   nothing, so it is withheld by default), stances,
    filters, the reading list; the typed episode (PL23) and the
    `remember_articles` switch with its `TRIFECTA.md` row (PL27). **The
    three-part gate runs over shelves A and C before either reaches a
