@@ -41,7 +41,7 @@ gives it a third input.
 | Pictures? | A camera roll rendered overnight from moments the simulation found photo-worthy, shared instantly in chat | §10 |
 | Social media? | An in-app feed only. Never a real account | §11 |
 | Does she message first? | Not in the first build. If ever: off by default, capped, gated by mood, never at fixed times | §12 |
-| How do we know it works? | `persona::echo` already measures repetition; an initiative reading measures who brings new things; a three-part gate (schema conformance, a stated bit ceiling, a steering arm) decides the shelf that endorses by capacity | §14 |
+| How do we know it works? | `persona::echo` already measures repetition; an initiative reading measures who brings new things; a three-part gate (schema conformance, a stated bit ceiling, a steering arm) decides each news shelf, the parsed-facts shelf before it reaches a prompt and the typed-gist shelf before it is built | §14 |
 
 ---
 
@@ -963,8 +963,10 @@ the headline never rides in the today-block.
   split keeps everything before it clean. Three details carry the "honestly":
   - **Both halves of the loop's rule.** Taint rises on
     `caps.untrusted_input && out.external` (`jobs::settle`), and the
-    `<untrusted-content>` wrapper is gated on the same pair. `external` alone
-    arms nothing. So `news_read` **declares `untrusted_input: true` in its
+    `<untrusted-content>` wrapper is gated on the same pair, plus the
+    `[security] mark_untrusted_output` switch (on by default). Arming is
+    structural; the wrapper is advisory armour the owner can switch off.
+    `external` alone arms nothing. So `news_read` **declares `untrusted_input: true` in its
     `Capabilities`** *and* **marks every result `external`**. A tool built
     with only the second half would return attacker prose unwrapped and arm
     nothing, and §9.6's split would never fire: the article's steering, and
@@ -1141,8 +1143,19 @@ none for state.
 - In chat, `share_photo(event_id)` attaches an existing picture at once: no
   job, no wait, and the picture matches an event she remembers. What makes it
   feel alive is what she chooses to share, not the render.
-- **Lean solo and object.** Two-person renders doubled faces in about half of
-  one measured set (`IMAGE-DESIGN.md` and the 2026-10-17 review); a recurring
+- **An id is a lookup key, never part of a path.** `share_photo`'s
+  `event_id` and `news_read`'s `item_id` are model-supplied.
+  - Each is **looked up** in the camera index or in `items`, and refused as
+    an expected failure if it isn't there.
+  - A render's file name is chosen by the harness when it writes the file.
+  - The path stored in the index is what gets resolved under the persona's
+    jail (`ToolCtx::resolve`), never `camera_dir.join(id)`.
+
+  The precedent is `mail_triage::Record::file_name`, which turns a provider's
+  thread id into a file name rather than joining it. An `event_id` of
+  `../../identity.md` must find no row, rather than a file.
+- **Lean solo and object.** A touching cast of two drew someone twice in 6
+  of 13 live pictures (`IMAGE-COMPILER-RESEARCH.md` E14, 2026-10-17); a recurring
   person needs a library character to stay recognisable (§6.5). Selfies, food,
   places and things first; group shots rare until doubling is fixed.
 - Pictures are locked when the persona is, as chat pictures are.
@@ -1349,12 +1362,25 @@ owner's.
 | PL23 | Episodes after a `news_read` | Admit a typed episode (`item_id`, interest, date, a closed-set reaction) as clean, with free text left as candidates. Alternative: accept one approval per news conversation (§8.4) |
 | PL24 | `forget` over the owner's network | Re-fold from the events that remain, which is D27's rebuild applied in memory for this graph; an `Inferred` edge left on too little support reverts to a candidate. Alternative: today's fallback, so the person goes with any of their chats (§7.1) |
 | PL25 | A `told` set only by a tainted stretch | Does not license pruning; becomes ordinary on approval; cleared by the harness on rejection or after about five days unreviewed (§9) |
+| PL26 | The feature registry | The world as `part_of = Personas`, a sub-feature switched with personas, rather than a new top-level `Feature`; settled before step 1 (§17) |
 
 ---
 
 ## 17. Build order
 
 Each step is usable alone and measured before the next.
+
+**Before step 1: the feature registry.** This is a new optional feature, so
+it starts at `ARCHITECTURE.md` §Features → *Adding a feature*. That touches a
+dozen places across core, the CLI, the server and the web app, and #654
+missed one. The first question is whether the world is a new `Feature` or
+`part_of = Personas`, beside `Personas`, `Image`, `Library` and `Video` in
+`Feature::ALL`. The answer decides the `own_state` arm, the starter config
+line, the web app's `VIEW_FEATURE` entries and the server routes' owner, so
+it is settled before step 1 (§16 PL26). Each step below then names the
+surfaces it adds to that registry: the week view and People tab (steps 1–2),
+the nightly job's switch (steps 3 and 5), the camera roll (step 6) and the
+Feed tab (step 7).
 
 1. **A day.** The routine (owner-approved), the ATUS table, the sampler,
    `world.db` with `days` and `state`, and a today-block holding only what she
