@@ -933,7 +933,10 @@ Shelf B meets §2.7's three conditions in code:
     themselves, adding nothing. **The count does add something**: whether 0,
     1, 2 or 3 items survive is up to the publisher, about 2 bits a day. That
     sits outside the per-item ceiling, with the timing bit (§14 part 3);
-  - **kind** is one of 8 (3 bits) and **tone** one of 3 (1.6 bits).
+  - **kind** is one of 8 (3 bits) and **tone** one of 3 (1.6 bits). The
+    serious kinds (deaths, disasters, crime) are inside the 8. PL12's
+    withholding is a separate filter over the extracted kind, so the 3-bit
+    figure stands.
   - **entity** is *an index the pass picks into a candidate list that code
     supplies with that feed*: at most 31 public names the owner registered for
     that feed's interest (a team's roster, a field's labs), plus none, for
@@ -984,7 +987,9 @@ Shelf B meets §2.7's three conditions in code:
     The only attacker-chosen bits are then the surviving items' own fields.
 
   That puts the ceiling at **about 9.6 bits per item**. With **at most three
-  shelf B items a day** per persona, the ceiling is **under 30 bits a day**.
+  shelf B items a day** per persona, the ceiling is **under 30 bits a day**
+  (28.8), the constant the bit test enforces. The surviving count's 2 bits
+  are counted separately, under the steering arm.
   Shelf B items **expire at five days**, a figure fixed for this shelf, so
   the ceiling is **under 150 bits live at once**.
 
@@ -1089,7 +1094,25 @@ the headline never rides in the today-block.
   answer has two layers, and neither ever asks the owner anything:
   - **By default, a typed episode** (PL23). An article conversation is
     remembered as `{item_id, interest, discussed_at, owner_reaction}`, clean
-    and recalled without a tap. The free text of that stretch is stored as
+    and recalled without a tap.
+    - **Its capacity is stated, like every clean crossing in this design.**
+      `item_id` and `interest` come from the chat's recorded `news_read`
+      calls and the item's feed, and `discussed_at` from the transcript, all
+      supplied by code (0 attacker bits). Only `owner_reaction` is chosen by
+      the writer, from a closed set of four (2 bits). So the ceiling is **2
+      bits per episode**.
+    - **Transparent endorsement does not hold here, and that is stated.**
+      The writer that picks the reaction sees the article-steered turns *and*
+      the owner's own, so the reaction is attacker × private data, the shape
+      §8.2 rejects for shelf B's entity field. It is acceptable at 2 bits
+      only because, with no `Chosen` sender (`PERSONA-DESIGN.md` §3.3), they
+      cannot be read back out; they can only tilt how she remembers the
+      owner took it.
+    - **The gate covers it.** Part 1's conformance test extends to what
+      crosses out of a `news_read` stretch: a canary in the article must
+      never appear in the typed episode, which catches a free-text field
+      creeping in. Steering through the reaction is in-chat, and is named
+      beside the `told` write as out of the steering arm's reach (§14). The free text of that stretch is stored as
     candidates, which simply go unrecalled: nothing waits on the owner,
     nothing nags, and the chat itself is unaffected. She remembers *that* you
     talked about the game and how you took it, not every line.
@@ -1389,10 +1412,31 @@ that reach further out of the registry of a persona set to `answers =
 "files"`, and D24 applies that to `document_read` by name, "since its results
 are third-party content." `news_read` is the third tool of that class on the
 same reasoning, so it is left out **at registry build**, never refused inside
-the tool, because §10.4 rejected offering a tool the model cannot use. That
-happens without a name list: `answers = "files"` filters the registry on
-`untrusted_input`, so declaring the capability (§8.3) is what withholds it. A
+the tool, because §10.4 rejected offering a tool the model cannot use. A
 `teacher` persona, whose starter suggests `"files"`, has no `news_read`.
+
+**The per-persona path bypasses `registry_as`, so it needs the checks
+written in.** `answers = "files"`'s `untrusted_input` filter,
+`registry_as`'s `read_only()` refusal and the `for_persona` declaration only
+see tools looked up from the install's pool by name. `news_read` and
+`share_photo` read per-persona stores (`world.db`, `camera/`), so they are
+built in `setup::persona_agent` with the persona's path, as `FileRead`,
+`FileSearch`, `MemorySearch` and `MemoryRead` are. Those are inserted *past*
+`registry_as`, where only an ad-hoc `Egress::None` check runs, and the code
+says so ("`answers = "files"` does not withhold" them). The `ELIGIBLE`
+fixture test cannot see them either, since its pool cannot build a tool that
+needs a store. Left as is, `news_read` would be offered to a files-only
+persona, which fails open. So:
+- **one admission check** runs on both paths: eligibility, `read_only()`,
+  `Egress::None`, and the `answers = "files"` filter on `untrusted_input`.
+  It is factored out of `registry_as` and applied in `setup::persona_agent`
+  to every per-persona tool;
+- **a test constructs the per-persona tools over a fixture store** and
+  asserts each one's declarations and the files-only withholding, the
+  coverage the `ELIGIBLE` test cannot give them.
+
+Until that exists, the claim that `news_read` "follows D16 and D24" is a
+requirement, not a property.
 
 ---
 
@@ -1468,10 +1512,14 @@ ruled for repetition.
   by capacity leaves over.
 - **Cost:** narrator tokens and wall clock per night, against the scheduled
   jobs' windows.
-- **Out of the gate's reach:** an in-chat `told` write from a tainted
-  stretch. The steering arm drives a feed and never writes a flag from a
-  chat. That channel is bounded by construction instead, to events the chat
-  was shown (§4.5).
+- **Out of the gate's reach:** two in-chat writes from a tainted stretch,
+  each bounded by construction instead:
+  - the `told` flag, bounded to events the chat was shown (§4.5);
+  - the typed episode's `owner_reaction`, 2 bits per episode (§8.4).
+
+  The steering arm drives a feed and never writes from a chat. Part 1's
+  conformance test does cover the typed episode, since a canary must never
+  reach it.
 
 ---
 

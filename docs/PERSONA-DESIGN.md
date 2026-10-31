@@ -1821,7 +1821,9 @@ Every row is ruled; the ruling is the owner's, in §1 where it was said in words
 rulings: a network store that deviates from §4.3 (its PL5), memory pruning
 against D26 (PL7), the owner's network inside `memory.db` (PL13), and D27's
 rebuild applied to the world and that network (PL22, PL24). Its `news_read`
-follows D16 and D24 (withheld by `answers = "files"`). It also proposes
+must follow D16 and D24 (withheld by `answers = "files"`), which needs an
+admission check on the per-persona tool path, since that path bypasses
+`registry_as`. It also proposes
 narrowing §9.6's provenance split: PL10 (owner turns stay `Stated`), PL21
 (stated plans), PL23 (typed episodes) and PL27 (a per-persona switch that
 recalls untrusted records without approval). PL23 and PL27 carry the owner's
