@@ -411,9 +411,14 @@ writes how it felt.
 
 It runs nightly beside `persona memory write`, on the model the router already
 holds — the no-swap ruling of 2026-09-27, as `writer::pick_model` keeps it for
-memory. Its inputs are owner files, code and typed records from shelves A and
-B (§8), so its output is `ModelClean`. **The simulated life has no taint
-problem.** Only shelf C does, and shelf C never reaches the narrator.
+memory. Its inputs are owner files, code, typed records from shelves A and B
+(§8), and **only those world rows whose origin is clean**. Chat-sourced rows
+from a clean stretch qualify. A row written under taint does not, *even after
+the owner approves it*. Approval makes a record recallable, never clean:
+`PERSONA-DESIGN.md` §9.6 has an approved record re-arm the taint it was
+written under. So the narrator never reads such a row, and its output is
+`ModelClean`. **The simulated life has no taint problem.** Only shelf C does,
+and shelf C never reaches the narrator.
 
 The narrator's prose is long-lived: it is snapshotted into memory (§5) and
 rides in later prompts. So the claim that it is clean rests on its inputs, and
@@ -730,9 +735,11 @@ staged to the graph's review queue.
    `persona::recall::stem_of`'s existing pair**: the clean stem arms
    `private`, and the untrusted stem arms both when any folded fact's origin
    is not clean. That is one fold `arm_for_content` already re-derives, rather
-   than a new one. It matters beyond bookkeeping. `private` armed beside
-   `news_read`'s `untrusted` is what keeps `web_search` on the forced blind
-   path, and it is what `block_sends_after_private` keys off. A roster folded
+   than a new one. It matters beyond bookkeeping: `block_sends_after_private`
+   keys off `private`, and the writer's §9.6 split classifies by what was
+   armed. (The blind path is not one of the reasons. A persona's
+   `web_search` is built with `blind_only` (`WebSearch::for_persona`) and
+   takes the blind chain whatever is armed, §7.5.) A roster folded
    silently would leave the owner's social graph in context with nothing
    recording that it is there.
 2. **An unknown name is a gap.** A capitalised name matching no one gets a
@@ -836,6 +843,25 @@ so its rules must hold before any of §14's gate exists:**
   [category]". A title is prose, so it is shelf C. Without this rule, shelf A
   would be a wider path than shelf B on a weaker argument, the shape
   `digests_in_brief` arms untrusted for.
+- **Shelf A's argument is provider trust, bounded by render ranges, not
+  capacity alone.** A closed type is not a small one: a score is an unbounded
+  integer and a date is about 15 bits, and §8.5 allows about five shelf A
+  items a day. What shelf A really leans on is that its sources are
+  structured APIs the owner registered, which serve data, not
+  attacker-authored prose. That is a different claim from shelf B's, so it is
+  stated as one. What makes it safe to lean on is a **per-field render
+  bound**, fixed in code:
+  - an integer has a plausible range for its field (a score of 0–200, a
+    temperature in its unit's window);
+  - a date falls within a window around today;
+  - an enum comes from its taxonomy.
+
+  An out-of-range value is dropped and named on the reading list, like any
+  unparseable one. Under those bounds, a compromised or erroneous provider
+  steers within a few plausible values per field. The gate's part 2 computes
+  shelf A's per-item ceiling from those ranges, beside shelf B's, so an
+  integer field cannot slip past the bit test for want of a vocabulary
+  (§16 PL9).
 - **Gate part 1 covers shelf A from its first build.** The conformance test
   (§14) runs over shelf A's parsers too: a canary in any feed field must
   never reach the world or a prompt.
@@ -1066,14 +1092,17 @@ none for state.
 
 - **The world hard-prunes** below the threshold. An untold event is
   simulation, and deleting it costs nothing anyone saw. A *told* event was
-  seen. It may be pruned only once its memory record holds a snapshot of it
-  **that recall can reach**. A candidate episode, which is every episode from
-  a stretch after a `news_read` (§8.4), is stored but not recalled. So a told
-  event's world row is **held while its episode is a candidate**. An approved
-  episode releases it to normal pruning. A rejected one returns it to the
-  ordinary score, as if untold. Otherwise "one tap per news conversation"
-  would defer back to nothing: the world copy gone, and the only remaining
-  copy unrecallable.
+  seen. It may be pruned because its episode carries **a snapshot** (§5):
+  kind, date, people ids and the narration, everything recall needs. That
+  holds for a candidate episode too, which is every episode from a stretch
+  after a `news_read` (§8.4). Until the owner approves it, nothing about the
+  event is recallable, and the world row would not change that: being told,
+  the event is never re-introduced from the world anyway. When the owner
+  approves, recall reads the snapshot, so the pruned world row costs nothing.
+  When the owner rejects, the snapshot goes with the episode, which is the
+  owner's choice working as intended. So **no world row is held for a
+  candidate**, and the world's growth stays bounded whatever the owner
+  leaves unreviewed.
 - **Memory soft-prunes first:** below the threshold a record leaves recall and
   stays in the store, which is what D26 already says ("states expire from
   recall, never from the store"). D28's access log then shows whether the
@@ -1191,8 +1220,10 @@ ruled for repetition.
      **A canary that reaches shelf C is expected and correct**: shelf C is
      untrusted by design and `news_read` arms taint. The pass/fail reads only
      shelf B and what is downstream of it.
-  2. **Bit budget.** The ceiling computed from the shipped vocabularies
-     (§8.2), checked by a test that fails when a vocabulary change raises it.
+  2. **Bit budget.** The ceiling computed from the shipped vocabularies for
+     shelf B, and from the per-field render ranges for shelf A (§8.2),
+     checked by a test that fails when a vocabulary or a range change raises
+     either.
   3. **Steering.** An adversarial feed that chooses `kind`, `tone` and
      `entity` to push one direction across several days, against an honest
      feed over the same days. The measure: does it move what the persona
@@ -1251,7 +1282,7 @@ owner's.
 | PL6 | People already in `identity.md` | Proposed once as owner nodes; after approval the network is their only home |
 | PL7 | Pruning | World hard-prunes; memory soft-prunes (out of recall, kept in the store); hard deletion of memories only by amending D26 after D28's readout |
 | PL8 | Importance to the owner | Inferred from engagement and pins; no rating prompts |
-| PL9 | News shelves | Build A and C first. B ships behind the three-part gate (§14): schema conformance, a bit ceiling (about 9.6 bits per item and under 30 a day, as §8.2 computes it) enforced by a test, and the steering arm, all three read by the owner. Alternative: all three shelves at once |
+| PL9 | News shelves | Build A and C first, with shelf A's per-field render bounds and its ceiling computed beside shelf B's (§8.2). B ships behind the three-part gate (§14): schema conformance, a bit ceiling (about 9.6 bits per item and under 30 a day, as §8.2 computes it) enforced by a test, and the steering arm, all three read by the owner. Alternative: all three shelves at once |
 | PL10 | The writer after a taint rise | Facts about the owner from the owner's own turns stay clean (`Stated`), extracted from those turns and pointers only, except turns that answer a question she asked inside the tainted stretch or overlap the chat's `news_read` prose; her side stays candidates. The residual is paraphrase: a trade of convenience against a durable write reachable through the owner. Alternative: today's rule, where everything after the rise is a candidate (§8.4) |
 | PL11 | Feed sources | Registered per persona and per group |
 | PL12 | Topics withheld by default | Politics, deaths, disasters and crime, unless a feed is opted in |

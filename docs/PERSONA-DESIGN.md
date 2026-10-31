@@ -1821,7 +1821,9 @@ Every row is ruled; the ruling is the owner's, in §1 where it was said in words
 rulings: a network store that deviates from §4.3 (its PL5), memory pruning
 against D26 (PL7), the owner's network inside `memory.db` (PL13), and D27's
 rebuild applied to the world and that network (PL22, PL24). Its `news_read`
-follows D16 and D24 (withheld by `answers = "files"`). None is ruled;
+follows D16 and D24 (withheld by `answers = "files"`). It also proposes
+narrowing §9.6's provenance split: PL10 (owner turns stay `Stated`), PL21
+(stated plans) and PL23 (typed episodes). None is ruled;
 until one is, these rows stand as written.
 
 | # | Decision | Recommendation |
