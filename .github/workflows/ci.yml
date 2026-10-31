@@ -43,7 +43,12 @@ jobs:
         run: |
           macos=true
           if [ "$EVENT" = pull_request ]; then
-            files=$(git diff --name-only "$BASE...$HEAD")
+            # An unreadable diff leaves `files` empty, which takes macOS:
+            # the step must not fail, or `needs: scope` would skip the
+            # Ubuntu legs too, and a skipped job reports as success.
+            # `--no-renames` lists a moved file under both paths, so code
+            # moved into docs/ still counts as code.
+            files=$(git diff --no-renames --name-only "$BASE...$HEAD") || files=
             # The paths that are not docs; none (and some files) means
             # docs-only. Not `grep -qv`, whose exit differs between greps.
             rest=$(printf '%s\n' "$files" \
