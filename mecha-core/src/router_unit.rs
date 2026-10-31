@@ -149,6 +149,32 @@ pub fn presets_text(p: &Preset) -> String {
     out
 }
 
+/// The whole presets file: the base section, then one section per catalog
+/// model in the record (`catalog::sections`). A recorded model left out — its
+/// files gone, or unknown to this build — is said, never written as a
+/// section naming a file that is not there.
+pub fn presets_with_catalog(
+    p: &Preset,
+    mecha_home: &Path,
+    hub: &Path,
+    tier: Option<u32>,
+    say: Say<'_>,
+) -> Result<String> {
+    let (sections, skipped) = crate::catalog::sections(mecha_home, hub, tier, &p.alias)?;
+    for why in skipped {
+        say(&format!("left out of the router's presets — {why}"));
+    }
+    let mut out = presets_text(p);
+    if !sections.is_empty() {
+        out.push_str(
+            "\n# Models from mecha's catalog (`mecha model add`), one per id in the `catalog`\n\
+             # record beside this file — kept when `mecha setup chat` changes the model above.\n",
+        );
+        out.push_str(&sections);
+    }
+    Ok(out)
+}
+
 /// A preset name for a model the owner brings: its file stem, lowercased,
 /// anything but letters, digits, `.` and `-` made `-`.
 pub fn alias_for(model: &Path) -> String {
@@ -185,6 +211,15 @@ pub fn presets_path(mecha_home: &Path) -> PathBuf {
         .join("sidecars")
         .join("router")
         .join("models.ini")
+}
+
+/// The base section's name for `choice`: the alias a provider's `model`
+/// names. A catalog entry by that name cannot be added beside it.
+pub fn choice_alias(choice: &Choice) -> String {
+    match choice {
+        Choice::Recommended => PINNED_ALIAS.to_string(),
+        Choice::Own { model, .. } => alias_for(model),
+    }
 }
 
 /// What the installed router's presets serve, read back from the file mecha
@@ -447,7 +482,15 @@ pub async fn install(
         .collect::<Result<Vec<_>>>()
         .context("the model is downloaded; the router was not restarted")?;
     let presets = presets_path(home);
-    write_owned(home, ID, &presets, &presets_text(&preset), 0o644)?;
+    // The catalog's models after the base section (MODEL-CATALOG-DESIGN C5):
+    // the record is theirs, so a new base model keeps them.
+    write_owned(
+        home,
+        ID,
+        &presets,
+        &presets_with_catalog(&preset, home, hub, machine.tier_gb(), &mut *say)?,
+        0o644,
+    )?;
     let r = |t: &str| render(t, naming, &bin, &presets);
     write_owned(
         home,
@@ -711,6 +754,11 @@ pub fn remove(m: &Machinery, naming: &Naming) -> Result<()> {
     let bin = bin_dir(home);
     gone(&bin.join("mecha-router"), &[ID])?;
     gone(&presets_path(home), &[ID])?;
+    // The catalog's record goes with the presets it renders into, or the
+    // directory stays and `installed_by_mecha` answers for a router that is
+    // gone (review of #727). Its progress file is never recorded.
+    gone(&crate::catalog::record_path(home), &[ID])?;
+    crate::catalog::progress_clear(home);
     // The launcher makes `no-cache` beside the presets on every start: the
     // tree goes with the record, as the drop-in directory does above.
     let _ = std::fs::remove_dir(presets_path(home).with_file_name("no-cache"));
@@ -1175,6 +1223,68 @@ mod tests {
             assert!(!recorded(&m.mecha_home), "nothing recorded");
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The catalog's sections follow the base one, so the base is still what
+    /// the file says the router was installed with (`installed_choice` reads
+    /// the first section), and a recorded model whose files are missing is
+    /// said and left out rather than written as a section naming nothing.
+    #[cfg(unix)]
+    #[test]
+    fn catalog_sections_follow_the_base_and_never_name_a_missing_file() {
+        let home =
+            std::env::temp_dir().join(format!("mecha-catalog-presets-{}", uuid::Uuid::new_v4()));
+        let hub = home.join("hub");
+        Manifest::begin(&home, ID).unwrap();
+        let base = Preset {
+            alias: PINNED_ALIAS.into(),
+            model: "/m/w.gguf".into(),
+            mmproj: Some("/m/p.gguf".into()),
+            ctx: 8192,
+            slots: 1,
+            cache_ram_mb: None,
+            pinned: true,
+        };
+        let mut said = Vec::new();
+        let none = presets_with_catalog(&base, &home, &hub, Some(128), &mut |s| {
+            said.push(s.to_string())
+        })
+        .unwrap();
+        assert_eq!(none, presets_text(&base));
+
+        // A recorded model whose files are all in place gets its section.
+        let e = crate::catalog::entry("gemma-4-26b-a4b").unwrap();
+        for p in e.pins {
+            let snap = crate::fetch::snapshot_path(&hub, p.repo, p.revision, &p.file);
+            std::fs::create_dir_all(snap.parent().unwrap()).unwrap();
+            std::fs::File::create(&snap)
+                .unwrap()
+                .set_len(p.file.bytes)
+                .unwrap();
+            // Named by its sha256, as `hf` stores a blob: the cheap check.
+            let blob = snap.parent().unwrap().join(p.file.sha256);
+            std::fs::rename(&snap, &blob).unwrap();
+            std::os::unix::fs::symlink(&blob, &snap).unwrap();
+        }
+        crate::catalog::record_add(&home, e.id).unwrap();
+        crate::catalog::record_add(&home, "qwen3.8-27b").unwrap();
+        said.clear();
+        let text = presets_with_catalog(&base, &home, &hub, Some(128), &mut |s| {
+            said.push(s.to_string())
+        })
+        .unwrap();
+        assert!(text.starts_with(&presets_text(&base)));
+        assert!(text.contains("\n[gemma-4-26b-a4b]\nmodel = "));
+        assert!(!text.contains("[qwen3.8-27b]"), "its files are not here");
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(said[0].contains("mecha model add qwen3.8-27b"));
+        std::fs::create_dir_all(presets_path(&home).parent().unwrap()).unwrap();
+        std::fs::write(presets_path(&home), &text).unwrap();
+        assert!(matches!(
+            installed_choice(&home).unwrap(),
+            Some(Choice::Recommended)
+        ));
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// The presets file says what the router serves: the pinned row by its

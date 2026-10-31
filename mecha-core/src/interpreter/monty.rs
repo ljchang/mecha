@@ -5,13 +5,18 @@
 //! sandboxed MCP servers (CODE-MODE-DESIGN.md §7), and it gets the whole of
 //! `mcp::McpClient::connect`'s treatment:
 //! - **The environment is cleared.** `monty-pool` spawns its workers with
-//!   `env_clear`, and the launcher passes bwrap `--clearenv` on top, so no
-//!   provider key reaches a worker by either route.
+//!   `env_clear`, and the launcher clears it again on top — bwrap
+//!   `--clearenv`, or `env -i` ahead of `sandbox-exec` — so no provider key
+//!   reaches a worker by either route.
 //! - **The worker is confined, with no network and no filesystem beyond its
-//!   own binary.** bwrap unshares every namespace it can, binds the pinned
-//!   binary read-only at `/monty` and nothing else — no `/usr`, no `/proc`,
-//!   no `/dev`, a read-only empty root. The Linux worker is a static musl
-//!   build, which is what makes that possible.
+//!   own binary.** On Linux bwrap unshares every namespace it can, binds the
+//!   pinned binary read-only at `/monty` and nothing else — no `/usr`, no
+//!   `/proc`, no `/dev`, a read-only empty root. The Linux worker is a static
+//!   musl build, which is what makes that possible. On a Mac `sandbox-exec`
+//!   runs it under its own Seatbelt profile
+//!   ([`crate::sandbox::seatbelt::worker_profile`]): deny by default, exec of
+//!   the binary, the root's listing and one named sysctl — no other read, no
+//!   write, no network, no service.
 //! - **No mounts, and every `OsCall` and `NameLookup` is refused.** Monty's
 //!   files, environment, clock-driven sleeps and unknown imports all arrive
 //!   as `OsCall`s; this backend answers each `NotHandled`, so the program
@@ -20,13 +25,25 @@
 //!   functions are globals, so no lookup is ever needed to reach one.
 //! - **`preflight` runs a program through the real confinement**, and a
 //!   sandbox this backend cannot use refuses at construction: the silently
-//!   degrading guard is the one shape this module must never take.
+//!   degrading guard is the one shape this module must never take. Under
+//!   Seatbelt it also asks the kernel what the running worker's profile
+//!   denies (`sandbox::seatbelt::live`), so a launcher that ran the worker
+//!   bare fails the start rather than passing it.
 //!
-//! Only bwrap confines a worker today. Docker would leave a killed worker's
-//! container running (the pool kills one pid, `docker run`'s client),
-//! landlock cannot close the network and applies its rules in a `pre_exec`
-//! the pool does not expose, and Seatbelt is documents-only. Each refuses by
-//! name rather than running a worker unconfined.
+//! **Which confinement is the platform's, not a setting.** On Linux it is
+//! `[sandbox] kind = "bwrap"`, which also carries `memory_mb` and `cpus` to
+//! the worker; docker would leave a killed worker's container running (the
+//! pool kills one pid, `docker run`'s client), landlock cannot close the
+//! network and applies its rules in a `pre_exec` the pool does not expose,
+//! and `none` is no second wall, so each refuses by name. On a Mac it is
+//! Seatbelt whatever `[sandbox]` names: `[sandbox]` is `shell`'s table and
+//! cannot name Seatbelt (`SEATBELT_IS_DOCUMENTS_ONLY`), the profile is fixed
+//! in code, and no value loosens it or runs the worker bare.
+//!
+//! **A Mac has no memory wall outside the worker.** There are no cgroups, so
+//! `[sandbox] memory_mb` never reaches it, and the bound is monty's own
+//! allocator ceiling (`Backstops::max_memory`) alone (CODE-MODE-DESIGN.md
+//! §5).
 
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
@@ -51,8 +68,13 @@ use super::{
 };
 use crate::sandbox::{Backend, Sandbox};
 
-/// How a worker is confined. One variant today; see the module docs for why
-/// the other backends refuse.
+/// `sandbox-exec`, and `env`, which clears what the launcher's `/bin/sh`
+/// would export ahead of it. System paths, so no `PATH` is searched.
+const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
+const ENV: &str = "/usr/bin/env";
+
+/// How a worker is confined; see the module docs for why the other backends
+/// refuse.
 #[derive(Debug, Clone)]
 pub enum Confinement {
     /// `launcher` is what starts bwrap — bwrap itself, or `systemd-run`
@@ -60,13 +82,22 @@ pub enum Confinement {
     /// it resolved to an absolute path, because the worker's environment is
     /// empty and has no `PATH` to search.
     Bwrap { launcher: Vec<String> },
+    /// macOS: `sandbox_exec` runs the worker under
+    /// [`crate::sandbox::seatbelt::worker_profile`], behind `env -i`.
+    Seatbelt { sandbox_exec: PathBuf },
 }
 
 impl Confinement {
-    /// The confinement the configured sandbox gives a worker, or a refusal
-    /// naming why it gives none. `none` refuses too: the sandbox is the
-    /// second wall (§7), because round 1 of Hack Monty was an escape.
+    /// The confinement this platform gives a worker, or a refusal naming why
+    /// it gives none. On Linux that is the configured sandbox, and `none`
+    /// refuses too: the sandbox is the second wall (§7), because round 1 of
+    /// Hack Monty was an escape. On a Mac it is [`Self::seatbelt`] whatever
+    /// `sandbox` names — `[sandbox]` is `shell`'s, and its one value that
+    /// could name Seatbelt is a load error.
     pub fn for_sandbox(sandbox: &Sandbox) -> Result<Self> {
+        if cfg!(target_os = "macos") {
+            return Self::seatbelt();
+        }
         match sandbox.backend() {
             Backend::Bwrap => {
                 if !cfg!(target_os = "linux") {
@@ -100,7 +131,33 @@ impl Confinement {
                  network, and its rules apply in a pre_exec the worker pool does not expose; \
                  set [sandbox] kind = \"bwrap\""
             ),
-            Backend::Seatbelt => bail!("{}", crate::sandbox::SEATBELT_IS_DOCUMENTS_ONLY),
+            Backend::Seatbelt => bail!(
+                "the seatbelt sandbox is macOS's own; here code mode's interpreter is confined \
+                 by [sandbox] kind = \"bwrap\""
+            ),
+        }
+    }
+
+    /// macOS's confinement for a worker: `sandbox-exec` with the worker's
+    /// own profile. Refuses anywhere else, and where `sandbox-exec` is gone.
+    pub fn seatbelt() -> Result<Self> {
+        if !cfg!(target_os = "macos") {
+            bail!("the seatbelt sandbox is macOS's own; it does not run here");
+        }
+        let sandbox_exec = PathBuf::from(SANDBOX_EXEC);
+        if !sandbox_exec.is_file() {
+            bail!("{SANDBOX_EXEC} is missing, so code mode has no worker sandbox here");
+        }
+        Ok(Confinement::Seatbelt { sandbox_exec })
+    }
+
+    /// Seatbelt through an explicit `sandbox-exec` — for a test that needs
+    /// one which fails, or one that ignores its profile. Not a construction
+    /// path, as [`Self::bwrap_at`] is not.
+    #[doc(hidden)]
+    pub fn seatbelt_at(program: impl Into<PathBuf>) -> Self {
+        Confinement::Seatbelt {
+            sandbox_exec: program.into(),
         }
     }
 
@@ -116,8 +173,25 @@ impl Confinement {
 
     /// The full argv that starts one worker, up to the worker's own
     /// arguments (`monty-pool` appends `subprocess`).
-    fn argv(&self, worker: &Path) -> Vec<String> {
-        let Confinement::Bwrap { launcher } = self;
+    fn argv(&self, worker: &Path) -> Result<Vec<String>> {
+        let launcher = match self {
+            Confinement::Bwrap { launcher } => launcher,
+            // `env -i` execs `sandbox-exec`, which applies the profile and
+            // execs the worker: one process from the launcher's shell to the
+            // program, so the pid the pool holds is the confined worker.
+            // There is no `--die-with-parent` here: a worker outlives a
+            // `SIGKILL`ed mecha (`CODE-MODE-DESIGN.md` §12).
+            Confinement::Seatbelt { sandbox_exec } => {
+                return Ok(vec![
+                    ENV.into(),
+                    "-i".into(),
+                    sandbox_exec.display().to_string(),
+                    "-p".into(),
+                    crate::sandbox::seatbelt::worker_profile(worker)?,
+                    worker.display().to_string(),
+                ])
+            }
+        };
         let mut a = launcher.clone();
         a.extend(
             [
@@ -145,8 +219,82 @@ impl Confinement {
             ]
             .map(String::from),
         );
-        a
+        Ok(a)
     }
+
+    /// The running worker's confinement, read from the kernel rather than
+    /// believed from the argv. bwrap's is proven by the worker starting at
+    /// all inside an empty root; Seatbelt's by asking what the profile on
+    /// the live process denies.
+    fn check_live(&self, pid: u32) -> Result<()> {
+        match self {
+            Confinement::Bwrap { .. } => Ok(()),
+            Confinement::Seatbelt { .. } => seatbelt_holds(pid),
+        }
+    }
+}
+
+/// The preflight's reading of a Seatbelt worker: under a profile, and one
+/// that denies `/etc`, the home, a write to `/dev/null`, a shell and the
+/// network, and grants its one read — the control. Each is a question to the kernel, and an answer
+/// it will not give fails the start like a wrong one.
+#[cfg(target_os = "macos")]
+fn seatbelt_holds(pid: u32) -> Result<()> {
+    use crate::sandbox::seatbelt::live;
+    if live::is_sandboxed(pid) != Some(true) {
+        bail!("process {pid} is not under a Seatbelt profile");
+    }
+    // Each operation is one the kernel answers both ways, measured against
+    // an unsandboxed process on macOS 26: `process-exec` has to be asked
+    // as `process-exec*` (the bare name is an error), and a path that does
+    // not exist reads as denied even unsandboxed, so every path asked about
+    // exists — a write is asked of `/dev/null`.
+    let mut probes: Vec<(&str, PathBuf)> = vec![
+        ("file-write-data", PathBuf::from("/dev/null")),
+        ("process-exec*", PathBuf::from("/bin/sh")),
+    ];
+    // Only paths that resolve, as the kernel matches them (`/etc` is
+    // `/private/etc`): an unresolved one would read as denied for free, and
+    // the probes above stand without either (review of #769).
+    if let Ok(passwd) = Path::new("/etc/passwd").canonicalize() {
+        probes.push(("file-read-data", passwd));
+    }
+    if let Some(home) = std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .and_then(|h| PathBuf::from(h).canonicalize().ok())
+    {
+        probes.push(("file-read-data", home));
+    }
+    for (op, path) in &probes {
+        if live::denies_path(pid, op, path) != Some(true) {
+            bail!(
+                "the worker's profile does not deny {op} on {}",
+                path.display()
+            );
+        }
+    }
+    if live::denies(pid, "network-outbound") != Some(true) {
+        bail!("the worker's profile does not deny the network");
+    }
+    // The profile grants no mach-lookup. Asked of the one service macOS CI
+    // measured both ways (`code_interpreter.rs`'s live check): denied to the
+    // worker, allowed to the unsandboxed test.
+    const SERVICE: &str = "com.apple.system.notification_center";
+    if live::denies_service(pid, SERVICE) != Some(true) {
+        bail!("the worker's profile does not deny mach-lookup of {SERVICE}");
+    }
+    // The control: the one read the profile grants must read as allowed on
+    // the same process, or a check that answered "denied" to everything
+    // would have passed every probe above (review of #769).
+    if live::denies_path(pid, "file-read-data", Path::new("/")) != Some(false) {
+        bail!("the kernel does not read the worker's own profile back: its one granted read is not allowed");
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn seatbelt_holds(_pid: u32) -> Result<()> {
+    bail!("the seatbelt sandbox is macOS's own; it does not run here")
 }
 
 /// `name` on mecha's own `PATH` — read once here, at construction, because
@@ -226,6 +374,18 @@ fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// How many programs one worker process runs before the pool retires it:
+/// one. The pool serves every conversation in the process, so a worker
+/// that ran a second program could run it for a different conversation,
+/// with a different taint, owner-facing posture or trust context, inside
+/// the process that had held the first one's state; a program that escaped
+/// the interpreter once (Hack Monty round 1) would then be waiting for the
+/// next one. Pinning workers to a conversation would keep reuse, but one
+/// process per program is the stronger boundary and costs about 4 ms of
+/// cold start per program (`CODE-MODE-DESIGN.md` §10, M1), against passes
+/// and tool reads measured in tenths of a second (review of #765).
+pub const PROGRAMS_PER_WORKER: u32 = 1;
+
 /// Programs in `monty-pool` workers.
 ///
 /// Field order is load-bearing: fields drop in declaration order, so the
@@ -234,6 +394,7 @@ pub struct Monty {
     pool: Pool,
     repl: ReplConfig,
     backstops: Backstops,
+    confinement: Confinement,
     launcher: Launcher,
 }
 
@@ -249,7 +410,7 @@ impl Monty {
         // Hashed again here, so "verified" means "at this pool's start",
         // not whenever a `VerifiedWorker` was last made.
         let worker = super::worker::verify(worker.path())?;
-        let launcher = Launcher::write(&confinement.argv(worker.path()))?;
+        let launcher = Launcher::write(&confinement.argv(worker.path())?)?;
         let mut cfg = PoolConfig::subprocess(&launcher.script);
         cfg.min_processes = 0;
         cfg.max_processes = max_workers.max(1);
@@ -258,8 +419,9 @@ impl Monty {
         // clock (which spans turns) is this module's, below.
         cfg.request_timeout = Some(backstops.wall_clock);
         cfg.checkout_timeout = Some(Duration::from_secs(60));
-        // Bound any slow leak in a long-lived child.
-        cfg.max_checkouts_per_worker = Some(100);
+        // One program per worker (`PROGRAMS_PER_WORKER`): a worker is never
+        // handed back to serve another.
+        cfg.max_checkouts_per_worker = Some(PROGRAMS_PER_WORKER);
         let pool = Pool::new(cfg)
             .await
             .map_err(|e| anyhow::anyhow!("starting the monty pool: {e}"))?;
@@ -287,6 +449,7 @@ impl Monty {
             pool,
             repl,
             backstops,
+            confinement: confinement.clone(),
             launcher,
         })
     }
@@ -298,10 +461,20 @@ impl Interpreter for Monty {
         "monty"
     }
 
+    /// A program that stops at a host call, so the live worker's
+    /// confinement is read while it runs, and then finishes.
     async fn preflight(&self) -> Result<()> {
         let ran = async {
-            let (_p, step) = self.start("21 * 2", &[], CancellationToken::new()).await?;
-            match step {
+            let (mut p, step) = self
+                .start("21 * probe()", &["probe".into()], CancellationToken::new())
+                .await?;
+            if !matches!(&step, Step::Call(c) if c.name == "probe") {
+                bail!("a preflight program reached {step:?} instead of its call");
+            }
+            let pid = p.worker_pid().context("a preflight worker with no pid")?;
+            // A refusal drops `p`, which kills the worker.
+            self.confinement.check_live(pid)?;
+            match p.resume(Value::from(2)).await? {
                 Step::Done(Finished {
                     end: End::Complete { value: Some(v), .. },
                     ..
@@ -792,10 +965,18 @@ fn from_json(v: &Value, depth: usize) -> Result<MontyObject> {
     })
 }
 
+/// The integration tests' process helpers (`/proc`, libproc), shared so the
+/// unit tests below ask the kernel the same way.
+#[cfg(test)]
+#[path = "../../tests/support/process.rs"]
+mod test_process;
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::sandbox::SandboxConfig;
+
+    use super::test_process as process;
 
     fn sandbox(kind: Backend) -> Sandbox {
         Sandbox::new(SandboxConfig {
@@ -817,34 +998,17 @@ mod tests {
         } else {
             None
         };
-        let bwrap = Confinement::for_sandbox(&sandbox(Backend::Bwrap)).is_ok();
-        if found.is_none() || !bwrap {
+        // bwrap on Linux, Seatbelt on a Mac: the platform's confinement.
+        let confined = Confinement::for_sandbox(&sandbox(Backend::Bwrap)).is_ok();
+        if found.is_none() || !confined {
             assert!(
                 std::env::var_os("MECHA_TEST_REQUIRE_BACKENDS").is_none(),
-                "the pinned monty worker or bwrap is unavailable, and MECHA_TEST_REQUIRE_BACKENDS is set"
+                "the pinned monty worker or its sandbox is unavailable, and MECHA_TEST_REQUIRE_BACKENDS is set"
             );
-            eprintln!("SKIPPED: the pinned monty worker or bwrap is unavailable");
+            eprintln!("SKIPPED: the pinned monty worker or its sandbox is unavailable");
             return None;
         }
         found
-    }
-
-    /// Every process under `pid`, itself included.
-    fn process_tree(pid: u32) -> Vec<u32> {
-        let mut out = vec![pid];
-        let mut i = 0;
-        while i < out.len() {
-            let tasks = std::fs::read_dir(format!("/proc/{}/task", out[i]));
-            for t in tasks.into_iter().flatten().flatten() {
-                let kids = std::fs::read_to_string(t.path().join("children")).unwrap_or_default();
-                out.extend(
-                    kids.split_whitespace()
-                        .filter_map(|k| k.parse::<u32>().ok()),
-                );
-            }
-            i += 1;
-        }
-        out
     }
 
     /// The hand-back is a protocol turn too. A worker stopped after it sent
@@ -879,17 +1043,14 @@ mod tests {
             p.turn(feed).await,
             Turned::Event(TurnEvent::Complete(_))
         ));
-        let tree = process_tree(launcher);
+        let tree = process::tree(launcher);
         for pid in &tree {
             // SAFETY: plain signal syscalls on processes this test's pool spawned.
             unsafe { libc::kill(*pid as i32, libc::SIGSTOP) };
         }
         // A stop is pending until the kernel delivers it; wait until every
         // process reads stopped, so the hand-back below cannot be answered.
-        let stopped = |pid: &u32| {
-            std::fs::read_to_string(format!("/proc/{pid}/stat"))
-                .is_ok_and(|s| s.rsplit_once(") ").is_some_and(|(_, r)| r.starts_with('T')))
-        };
+        let stopped = |pid: &u32| process::state(*pid) == Some(process::State::Stopped);
         for _ in 0..100 {
             if tree.iter().all(stopped) {
                 break;
@@ -915,27 +1076,24 @@ mod tests {
         .expect("a stopped worker held the hand-back past the grace period");
         assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
         assert!(matches!(step, Step::Done(_)));
-        // Killed, not left stopped and checked out. The sandbox's inner
+        // Killed, not left stopped and checked out. Under bwrap the inner
         // process goes by its parent-death signal, a beat after the outer.
-        let gone = |pid: &u32| {
-            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
-            stat.is_empty() || stat.contains(") Z ")
-        };
         for _ in 0..50 {
-            if tree.iter().all(gone) {
+            if tree.iter().all(|p| process::is_gone(*p)) {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         for pid in tree {
-            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
             assert!(
-                stat.is_empty() || stat.contains(") Z "),
-                "process {pid} outlived its hand-back: {stat}"
+                process::is_gone(pid),
+                "process {pid} outlived its hand-back: {:?}",
+                process::state(pid)
             );
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn every_backend_but_bwrap_refuses_to_confine_a_worker() {
         for kind in [
@@ -951,11 +1109,67 @@ mod tests {
         }
     }
 
+    /// On a Mac the worker's confinement is Seatbelt whatever `[sandbox]`
+    /// names: `shell`'s table never chooses it, and no value runs it bare.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn on_a_mac_every_sandbox_kind_gives_the_worker_seatbelt() {
+        for kind in [
+            Backend::None,
+            Backend::Bwrap,
+            Backend::Docker,
+            Backend::Landlock,
+            Backend::Seatbelt,
+        ] {
+            assert!(
+                matches!(
+                    Confinement::for_sandbox(&sandbox(kind)),
+                    Ok(Confinement::Seatbelt { .. })
+                ),
+                "{kind:?}"
+            );
+        }
+    }
+
+    /// Off a Mac, Seatbelt refuses by name rather than standing in for bwrap.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn seatbelt_refuses_off_a_mac() {
+        let err = Confinement::seatbelt().unwrap_err().to_string();
+        assert!(err.contains("macOS"), "{err}");
+    }
+
+    /// The Seatbelt argv clears the environment ahead of `sandbox-exec`, and
+    /// hands it the worker's own profile and the worker, nothing more.
+    #[test]
+    fn the_seatbelt_worker_starts_behind_env_i_under_its_own_profile() {
+        let argv = Confinement::seatbelt_at("/usr/bin/sandbox-exec")
+            .argv(Path::new("/opt/m/monty"))
+            .unwrap();
+        let profile = crate::sandbox::seatbelt::worker_profile(Path::new("/opt/m/monty")).unwrap();
+        assert_eq!(
+            argv,
+            vec![
+                "/usr/bin/env".to_string(),
+                "-i".into(),
+                "/usr/bin/sandbox-exec".into(),
+                "-p".into(),
+                profile,
+                "/opt/m/monty".into(),
+            ]
+        );
+        assert!(Confinement::seatbelt_at("/x")
+            .argv(Path::new("relative"))
+            .is_err());
+    }
+
     /// The worker's argv binds its binary and nothing else, unshares the
     /// network with everything, and clears the environment.
     #[test]
     fn the_worker_sees_its_binary_and_nothing_else() {
-        let argv = Confinement::bwrap_at("/usr/bin/bwrap").argv(Path::new("/opt/m/monty"));
+        let argv = Confinement::bwrap_at("/usr/bin/bwrap")
+            .argv(Path::new("/opt/m/monty"))
+            .unwrap();
         let binds: Vec<_> = argv
             .iter()
             .enumerate()

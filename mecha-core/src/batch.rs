@@ -387,6 +387,9 @@ mod tests {
 
     #[async_trait]
     impl Provider for EchoProvider {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "echo"
         }
@@ -456,6 +459,9 @@ mod tests {
         struct Shared(Arc<EchoProvider>);
         #[async_trait]
         impl Provider for Shared {
+            fn local(&self) -> bool {
+                true
+            }
             fn id(&self) -> &str {
                 self.0.id()
             }
@@ -496,6 +502,9 @@ mod tests {
         struct Sees(bool, Arc<Mutex<Vec<usize>>>);
         #[async_trait]
         impl Provider for Sees {
+            fn local(&self) -> bool {
+                true
+            }
             fn id(&self) -> &str {
                 "sees"
             }

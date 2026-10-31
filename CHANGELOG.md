@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **More chat models, one approval away.** `mecha model catalog` lists the
+  chat models mecha knows how to serve — Qwen3.6-35B-A3B uncensored, Qwen3.8-27B
+  and its uncensored and abliterated builds, and Gemma 4 26B-A4B — with what
+  each would download and hold in memory on this machine, and whether its
+  memory tier is offered it. `mecha model add <id>` shows that, asks, then
+  fetches every file against its pinned sha256, restarts the router once no
+  run is using it, and writes the provider entry — and `follow_loaded = true` on a
+  default that names the router, so the model chip has something to switch between. In the web
+  chat the chip lists them under **Available to download**, with **Install and
+  switch** behind the download and memory figures. `mecha model remove`
+  takes one back off. Catalog models now survive `mecha setup chat`. The
+  uncensored Qwen3.6 comes with the production model's MTP head already
+  grafted on, hosted at `mecha-factory/Qwen3.6-35B-A3B-Uncensored-MTP-GGUF`.
+  (`docs/MODEL-CATALOG-DESIGN.md`)
 - **One LoRA registry for pictures and clips, checked against the files.**
   `~/.mecha/loras.toml` holds both kinds; each entry says `model =
   "qwen-image"` or `"h3"`, and mecha reads each file's header to check it,
