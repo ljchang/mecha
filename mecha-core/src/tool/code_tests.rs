@@ -3233,6 +3233,39 @@ async fn a_program_record_loads_in_a_build_that_predates_it() {
     assert!(Session::programs_ever(&older).is_empty());
 }
 
+/// A conversation holds one run's raw reads at most (review of #784): the
+/// record's `Arc` outlives the program, past the byte pool that counted it,
+/// so without a release every program a chat ever ran stays resident. At the
+/// next run's start the earlier run's bytes go — the store has a recorded
+/// run's — and the calls stay for the walk to place.
+#[tokio::test]
+async fn an_earlier_runs_reads_are_let_go_at_the_next_runs_start() {
+    let mut agent = agent_over(
+        registry_of(vec![Arc::new(Fake::mail("mail_get_thread", THREAD_TEXT))]),
+        vec![
+            tool_use("c1", NAME, json!({"program": "read"})),
+            said("read"),
+            said("and again"),
+        ],
+    );
+    agent.enable_code(Arc::new(Script::new(vec![read_the_thread])));
+    let mut convo = crate::agent::Conversation::user("read the thread");
+    agent.run(&mut convo, None).await.unwrap();
+    assert_eq!(convo.program_calls.len(), 1);
+    assert_eq!(
+        convo.program_calls[0].text(),
+        Some(THREAD_TEXT),
+        "in hand for its own run"
+    );
+    convo.push(crate::message::Message::user("anything else?"));
+    agent.run(&mut convo, None).await.unwrap();
+    assert_eq!(convo.program_calls.len(), 1, "the call is kept");
+    assert!(
+        matches!(convo.program_calls[0].bytes, record::Bytes::Unloaded),
+        "an earlier run's bytes are still resident"
+    );
+}
+
 /// A program refused at its start — its `code` built over another set of
 /// tools — is still a program, and a failed one: before, its output carried
 /// no numbers, so it counted in neither `programs` nor `program_errors`

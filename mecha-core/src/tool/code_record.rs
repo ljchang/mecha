@@ -118,7 +118,9 @@ pub enum Bytes {
     /// In hand: from the program that read them, or loaded from the store
     /// and checked against the record.
     Held(Arc<str>),
-    /// Not loaded: a record read without its store.
+    /// Not in hand: a record read without its store, or a call of an earlier
+    /// run of a live conversation, whose bytes the loop let go at the next
+    /// run's start (the store has them if that run was recorded).
     #[default]
     Unloaded,
     /// The record names no blob, or the store has none at its address — a

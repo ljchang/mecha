@@ -3710,7 +3710,10 @@ The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
   dispatch moves them onto `Conversation::program_calls`, beside the
   messages as taint is, so a compaction carries them, and `Session::record_run`
   writes the run's (`program_calls_from` on) as one `Record::Program`, after
-  the messages. That record holds each blob's sha256 and length and never a
+  the messages. **A conversation holds one run's raw reads at most**: the
+  record's `Arc` outlives the program and the byte pool that counted it, so
+  the next run's start lets an earlier run's bytes go (`Bytes::Unloaded`;
+  the store has a recorded run's) and keeps the calls for the walk. That record holds each blob's sha256 and length and never a
   byte: the bytes go once, content-addressed, to
   `~/.mecha/programs/<session-id>/` (`record::Store`), mode 0600 in 0700.
   Nothing that rebuilds a conversation reads it, and a build from before it

@@ -635,14 +635,14 @@ pub async fn run_diagnostician(global: &GlobalOpts, evidence: &Evidence) -> Resu
             Block::ToolResult { content, .. } => Some(content.clone()),
             _ => None,
         })
-        .chain(
-            convo
-                .program_calls
-                .iter()
-                .filter_map(|p| p.text().map(str::to_string)),
-        )
         .collect();
-    let refs: Vec<&str> = sources.iter().map(String::as_str).collect();
+    // Borrowed, not copied: one run's raw reads, which the loop holds only
+    // for the run that made them.
+    let refs: Vec<&str> = sources
+        .iter()
+        .map(String::as_str)
+        .chain(convo.program_calls.iter().filter_map(|p| p.text()))
+        .collect();
     let quoted = lifted(&proposal, &refs, evidence);
 
     Ok(Diagnosis {

@@ -332,13 +332,15 @@ impl<'m> Received<'m> {
     }
 }
 
-/// Everything the chat received of its files, by the end of `messages`.
-///
-/// The files' own text, as the chat's own reads gave it: what a page shows
-/// beside a citation, never a program's reads, which a persona never runs
-/// (`CODE-MODE-DESIGN.md` §9, "Not personas").
-fn received(messages: &[Message]) -> Vec<Page> {
-    let mut r = Received::new(messages, &[]);
+/// Everything the chat received of its files, by the end of `messages`,
+/// with what its programs read: the same [`Received`] the verdicts come
+/// from, so a page a citation opens is the page its verdict was checked
+/// against (review of #784).
+fn received(
+    messages: &[Message],
+    programs: &[crate::tool::code::record::ProgramCall],
+) -> Vec<Page> {
+    let mut r = Received::new(messages, programs);
     for m in messages {
         r.absorb(m);
     }
@@ -711,8 +713,13 @@ fn check(c: &Citation, received: &mut Received<'_>) -> Checked {
 /// reader result, each piece once, joined for reading (the check keeps them
 /// apart) — for the page to show beside a citation. `None` for a page it
 /// never received. A text file's pieces answer any page.
-pub fn page_text(messages: &[Message], file: &str, page: Option<u32>) -> Option<String> {
-    let pages = received(messages);
+pub fn page_text(
+    messages: &[Message],
+    programs: &[crate::tool::code::record::ProgramCall],
+    file: &str,
+    page: Option<u32>,
+) -> Option<String> {
+    let pages = received(messages, programs);
     let mut files: Vec<&str> = pages.iter().map(|p| p.file.as_str()).collect();
     files.sort_unstable();
     files.dedup();
@@ -734,11 +741,12 @@ pub fn page_text(messages: &[Message], file: &str, page: Option<u32>) -> Option<
 /// #465, pass 5: the page alone marked nothing).
 pub fn passage(
     messages: &[Message],
+    programs: &[crate::tool::code::record::ProgramCall],
     file: &str,
     page: Option<u32>,
     quote: &str,
 ) -> Option<Passage> {
-    let text = page_text(messages, file, page)?;
+    let text = page_text(messages, programs, file, page)?;
     if let Some(span) = mark(&text, quote) {
         return Some(Passage {
             text,
@@ -748,7 +756,7 @@ pub fn passage(
     }
     if let Some(next) = page.and_then(|p| {
         let n = p + 1;
-        Some((n, page_text(messages, file, Some(n))?))
+        Some((n, page_text(messages, programs, file, Some(n))?))
     }) {
         let joined = format!("{text}\n\n{}", next.1);
         if let Some(span) = mark(&joined, quote) {
@@ -887,6 +895,13 @@ mod tests {
         assert_eq!(shaped[0].verdict, Verdict::NoSuchFile, "{shaped:?}");
         let prose = check_conversation(&messages, &[read(false)]);
         assert_eq!(prose[0].verdict, Verdict::Quoted { found: Some(1) });
+        // And what the citation opens agrees with its verdict both ways: the
+        // page the check found, and none behind the shape (review of #784).
+        let quote = "Sea urchins graze kelp holdfasts at night";
+        let opened = passage(&messages, &[read(false)], "kelp.pdf", Some(1), quote)
+            .expect("a quoted citation opens its page");
+        assert!(opened.span.is_some(), "{}", opened.text);
+        assert!(passage(&messages, &[read(true)], "kelp.pdf", Some(1), quote).is_none());
     }
 
     #[test]
@@ -1035,20 +1050,20 @@ mod tests {
     #[test]
     fn the_cited_page_comes_back_with_its_passage_marked() {
         let msgs = chat(PAPER, "ok");
-        let page = page_text(&msgs, "kelp.pdf", Some(1)).unwrap();
+        let page = page_text(&msgs, &[], "kelp.pdf", Some(1)).unwrap();
         assert!(page.starts_with("Sea urchins graze kelp hold-"), "{page}");
         let (a, b) = mark(&page, "urchins graze kelp holdfasts").unwrap();
         assert_eq!(&page[a..b], "urchins graze kelp hold-\nfasts");
-        let two = page_text(&msgs, "kelp.pdf", Some(2)).unwrap();
+        let two = page_text(&msgs, &[], "kelp.pdf", Some(2)).unwrap();
         let (a, b) = mark(&two, "keep urchin barrens in check").unwrap();
         assert_eq!(&two[a..b], "keep urchin \u{201c}barrens\u{201d} in check");
         assert_eq!(mark(&two, "otters eat urchins"), None);
         assert_eq!(
-            page_text(&msgs, "kelp.pdf", Some(3)),
+            page_text(&msgs, &[], "kelp.pdf", Some(3)),
             None,
             "never received"
         );
-        assert_eq!(page_text(&msgs, "other.pdf", Some(1)), None);
+        assert_eq!(page_text(&msgs, &[], "other.pdf", Some(1)), None);
     }
 
     /// Review of #465: a file received twice, with another between, is one
@@ -1075,7 +1090,7 @@ mod tests {
         );
         assert_eq!(got[0].file, "@kelp/survey.pdf");
         // Received twice, shown once (review of #465, pass 2).
-        let page = page_text(&msgs, "survey.pdf", Some(4)).unwrap();
+        let page = page_text(&msgs, &[], "survey.pdf", Some(4)).unwrap();
         assert_eq!(page.matches("run monthly").count(), 1, "{page}");
     }
 
@@ -1100,7 +1115,7 @@ mod tests {
             [Verdict::NotFound, Verdict::NotFound, Verdict::TooShort]
         );
         // And what the check admits, the page can mark.
-        let page = page_text(&msgs, "kelp.pdf", Some(1)).unwrap();
+        let page = page_text(&msgs, &[], "kelp.pdf", Some(1)).unwrap();
         assert!(mark(&page, "urchins graze kelp holdfasts").is_some());
         assert!(mark(&page, "urchins graze kelp holdfast").is_none());
     }
@@ -1129,7 +1144,7 @@ mod tests {
                 Verdict::Quoted { found: Some(1) },
             ]
         );
-        let text = page_text(&msgs, "hist.pdf", Some(1)).unwrap();
+        let text = page_text(&msgs, &[], "hist.pdf", Some(1)).unwrap();
         let (a, b) = mark(&text, "Anglo-Saxon chronicle").unwrap();
         assert_eq!(&text[a..b], "Anglo-\nSaxon chronicle");
     }
@@ -1202,6 +1217,7 @@ mod tests {
             through: last,
         } = passage(
             &msgs,
+            &[],
             "kelp.pdf",
             Some(1),
             "six sites, and the counts fell every winter",
@@ -1276,7 +1292,7 @@ mod tests {
             .collect();
         assert_eq!(got, [Verdict::Quoted { found: None }, Verdict::NotFound]);
         // Shown together, kept apart.
-        let page = page_text(&msgs, "notes.md", None).unwrap();
+        let page = page_text(&msgs, &[], "notes.md", None).unwrap();
         assert!(page.contains("at night.") && page.contains("Otters keep"));
     }
 }
