@@ -405,10 +405,13 @@ threshold per persona once the access log says where it should sit. The
     unreadable live file then fails toward the safe side for each setting:
     no recall under `remember_articles`, `intensity` at `"capped"`,
     `name_search_filter` **on** (the one setting whose safe direction is on),
-    and **no pruning that night**, and **no persona-level world rows in that
-    turn's today-block** (the fold reads `world_prune_below` too, §3.2, and
-    neither threshold is safe to guess; shared rows fold on PL29's shipped
-    default, which needs no file). The decay knobs have no "off", and shipped defaults
+    and **no pruning that night**, and **no persona-level decaying rows in
+    that turn's today-block** (the fold reads `world_prune_below` too, §3.2,
+    and neither threshold is safe to guess; shared rows fold on PL29's shipped
+    default, which needs no file). Rows the threshold never reads still fold:
+    owner-origin rows and `state`, which §9 exempts from decay, and `days`,
+    which are hard-pruned on a fixed age (§5). So a typo empties the part of the block that
+    needs the owner's numbers, not the whole of it. The decay knobs have no "off", and shipped defaults
     could be looser than what the owner wrote, which is the substitution §9
     refuses. So nothing is deleted on a read that failed. It never falls back to the pinned value or the last
     value read, and the persona's notes say the file could not be read. That
@@ -492,7 +495,11 @@ Each level is its own `world.db`: `~/.mecha/personas/world.db` for everyone,
   (§6.5) is held by the members' nodes that point at it: the group's node
   is pruned only once no member's node is above the threshold, so a
   colleague two personas keep mentioning never decays out from under
-  them. So a tainted chat
+  them. For that test each member's node is scored under the shipped
+  defaults (PL29), never under the member's own `[life.decay]`, so one
+  persona's `world_prune_below = 0` keeps her own node but cannot pin the
+  shared one for the group. A node of hers that outlives it points at a
+  pruned id, which renders as "someone" (§6.3). So a tainted chat
   with one persona cannot plant an event that reaches every member, nor
   silence one for them all: a tainted `told` stays within §4.5's bound,
   what was in front of her. (What `forget` removes, in the persona's store
@@ -703,11 +710,14 @@ one more reason §14's gate part 1 exists.
     folded row's origin is not clean. Origin is per row (§5), and a row
     whose fields are all from code-fixed sets still arms it: a typed plan
     (PL21) has code's vocabulary and about 20 attacker-chosen bits of value.
-    **The one exception is a shelf C line (PL30)**, which is not a row's
-    fields but a line code composes: the interest from the owner's feed
+    **The one exception is a shelf C line in the first build (PL30)**,
+    before shelf B exists, which is not a row's fields but a line code
+    composes: the interest from the owner's feed
     mapping and the harness-minted id, carrying no value the publisher
     chose. Its presence, count and timing are the residual §14's steering
-    arm covers. Nothing else is exempt.
+    arm covers. Nothing else is exempt. Once shelf B ships, the id rides
+    shelf B's interest line (§8.3), which folds by its row's origin under
+    the rule above, so the exception does not carry over to it.
 
   The untrusted variant exists from the first build, so a dirty result at the
   shelf B gate (§14), or a candidate row approved by mistake, needs no new fold
@@ -1446,14 +1456,19 @@ the headline never rides in the today-block.
   checks for the block. It rides every turn, which is why it is held to the
   narrower figure. In the first build, without shelf B, its shelf C lines
   carry an interest and an opaque id, both code's, so a line's *fields* carry
-  0 attacker bits. Its **presence, count and timing** are still the
+  0 attacker bits from a publisher whose feeds map to one interest. A
+  publisher reaching k feeds the owner mapped to different interests picks
+  among them by choosing where to publish, at most log₂k bits a line, which
+  the bit test counts with the count and timing below. Its **presence, count and timing** are still the
   publisher's: whether 0–3 lines appear (about 2 bits a day) and when
   (a bit a day). That is the same channel §8.2 counts for shelf B, and §14's
   steering arm covers it for shelf C too. The storyteller may turn A and B into lived events —
   watching the game with friends — that she raises on her own and memory may
   keep.
 - **On demand:** `news_read(item_id)` returns shelf C's prose inside
-  `<untrusted-content>`. **Taint rises at that turn, honestly**, and §9.6's
+  `<untrusted-content>`. **It refuses an item past its five-day expiry**,
+  by name, whether or not the prune pass has run (§3.2), so a stale id in
+  an old transcript or a recalled episode opens nothing. **Taint rises at that turn, honestly**, and §9.6's
   split keeps everything before it clean. Three details carry the "honestly":
   - **Both halves of the loop's rule.** Taint rises on
     `caps.untrusted_input && out.external` (`jobs::settle`), and the
@@ -1535,7 +1550,8 @@ the headline never rides in the today-block.
       that is the interest line ("good news about [interest] — item 41"). **In
       the first build, which ships C before B (PL9)**, it is a code-supplied
       line per shelf C item: the interest, from the owner's feed mapping
-      (0 attacker bits), and the opaque id, with no feed-authored string at
+      (0 attacker bits for one publisher's feeds under one interest, at most
+      log₂k a line across k, as above), and the opaque id, with no feed-authored string at
       all ("something new about [interest] — item 41"). That is strictly
       narrower than shelf B's line, so it costs the ceilings nothing. Without
       it `news_read` would have no callable argument, and the tempting patch,
@@ -2339,9 +2355,10 @@ Feed tab (step 7).
    sensor.
 5. **The world outside.** Shelf A parsers, shelf C with `news_read` (its
    eligibility declaration, `untrusted_input` declared, `external` set
-   unconditionally, and withheld by `answers = "files"` through the admission
-   check on the per-persona path, built in #778 (§13); `news_read` declares
-   nothing, so it is withheld by default), stances,
+   unconditionally, refusing an item past its expiry (§8.3), and withheld by
+   `answers = "files"` through the admission check on the per-persona path,
+   built in #778 (§13); `news_read` declares nothing, so it is withheld by
+   default), stances,
    filters, the reading list; the typed episode (PL23) and the
    `remember_articles` switch with its `TRIFECTA.md` row (PL27). **The
    three-part gate runs over shelves A and C before either reaches a
