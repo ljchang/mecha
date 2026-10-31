@@ -432,6 +432,21 @@ async fn the_live_worker_s_profile_denies_files_the_environment_services_and_the
         names.is_empty(),
         "the worker inherited an environment: {names:?}"
     );
+    // The control: the same parse of this test's own `KERN_PROCARGS2` finds
+    // what is in this test's environment, so an empty answer above is the
+    // worker's, not a parser that lost its place (review of #769).
+    let mine = process::environment_names(std::process::id()).expect("reading this test's");
+    let expected: Vec<String> = std::env::vars_os()
+        .filter_map(|(k, _)| k.into_string().ok())
+        .collect();
+    assert!(
+        !mine.is_empty() && mine.iter().all(|n| expected.contains(n)),
+        "the parser misreads this test's own environment: {mine:?}"
+    );
+    assert!(
+        expected.iter().any(|n| n == "PATH") && mine.iter().any(|n| n == "PATH"),
+        "the parser did not find PATH in this test's environment: {mine:?}"
+    );
 
     assert_eq!(
         live::is_sandboxed(worker),
@@ -704,8 +719,9 @@ async fn the_memory_backstop_fires_uncatchably_and_is_named() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_memory_backstop_bounds_what_the_worker_holds() {
     const LIMIT: usize = 64 * 1024 * 1024;
-    // The worker's own resident baseline (about 9 MB on macOS, measured),
-    // monty's 4 MiB allocator headroom, and room for a sample's lag.
+    // The worker's own resident baseline (measured: about 2 MiB on macOS,
+    // 6 MiB on Linux), monty's 4 MiB allocator headroom, and room for a
+    // sample's lag.
     const SLACK: u64 = 64 * 1024 * 1024;
     let backstops = Backstops {
         max_memory: LIMIT,
