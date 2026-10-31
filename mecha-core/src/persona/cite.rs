@@ -217,6 +217,11 @@ struct Page {
 /// never evidence).
 struct Received<'m> {
     read: HashMap<&'m str, &'m str>,
+    /// Reader results a program read (`CODE-MODE-DESIGN.md` §7), by the
+    /// call they ran under: received when that call's result is. Never a
+    /// `trusted_output` child's — for this check the subagent's result is
+    /// its shaped answer and nothing under it.
+    under: HashMap<&'m str, Vec<&'m str>>,
     pages: Vec<Page>,
     /// Files the files block named without their text (too long to include,
     /// still being read, read on request).
@@ -224,14 +229,26 @@ struct Received<'m> {
 }
 
 impl<'m> Received<'m> {
-    fn new(messages: &'m [Message]) -> Self {
-        let read = grounding::calls(messages)
-            .into_iter()
-            .filter(|c| READERS.contains(&c.name))
-            .filter_map(|c| Some((c.id, c.result?)))
-            .collect();
+    fn new(
+        messages: &'m [Message],
+        programs: &'m [crate::tool::code::record::ProgramCall],
+    ) -> Self {
+        let mut read = HashMap::new();
+        let mut under: HashMap<&str, Vec<&str>> = HashMap::new();
+        for c in grounding::calls(messages, programs) {
+            let (true, Some(text)) = (READERS.contains(&c.name), c.result) else {
+                continue;
+            };
+            match c.within {
+                Some(anchor) => under.entry(anchor).or_default().push(text),
+                None => {
+                    read.insert(c.id, text);
+                }
+            }
+        }
         Received {
             read,
+            under,
             pages: Vec::new(),
             listed: Vec::new(),
         }
@@ -253,10 +270,18 @@ impl<'m> Received<'m> {
                     text.as_str()
                 }
                 Block::ToolResult { tool_use_id, .. } => {
-                    match self.read.get(tool_use_id.as_str()) {
-                        Some(text) => text,
-                        None => continue,
+                    let own = self.read.get(tool_use_id.as_str()).copied();
+                    let nested = self
+                        .under
+                        .get(tool_use_id.as_str())
+                        .cloned()
+                        .unwrap_or_default();
+                    for text in own.into_iter().chain(nested) {
+                        for page in documents(text) {
+                            self.add(page);
+                        }
                     }
+                    continue;
                 }
                 _ => continue,
             };
@@ -307,9 +332,15 @@ impl<'m> Received<'m> {
     }
 }
 
-/// Everything the chat received of its files, by the end of `messages`.
-fn received(messages: &[Message]) -> Vec<Page> {
-    let mut r = Received::new(messages);
+/// Everything the chat received of its files, by the end of `messages`,
+/// with what its programs read: the same [`Received`] the verdicts come
+/// from, so a page a citation opens is the page its verdict was checked
+/// against (review of #784).
+fn received(
+    messages: &[Message],
+    programs: &[crate::tool::code::record::ProgramCall],
+) -> Vec<Page> {
+    let mut r = Received::new(messages, programs);
     for m in messages {
         r.absorb(m);
     }
@@ -508,8 +539,15 @@ fn resolve<'a>(cited: &str, files: &[&'a str]) -> Option<&'a str> {
 /// In conversation order, one per citation as written: the page pairs them
 /// with the citations on screen counting from the end (`citeEntries` in
 /// `persona.js`), so reordering these misattributes every badge.
-pub fn check_conversation(messages: &[Message]) -> Vec<Checked> {
-    let mut received = Received::new(messages);
+///
+/// `programs` are what the chat's programs read (`Conversation::program_calls`,
+/// or `tool::code::record::ever` for the file): a file a program read counts
+/// as received when the call that ran it returned.
+pub fn check_conversation(
+    messages: &[Message],
+    programs: &[crate::tool::code::record::ProgramCall],
+) -> Vec<Checked> {
+    let mut received = Received::new(messages, programs);
     let mut out = Vec::new();
     for m in messages {
         if m.role != Role::Assistant {
@@ -675,8 +713,13 @@ fn check(c: &Citation, received: &mut Received<'_>) -> Checked {
 /// reader result, each piece once, joined for reading (the check keeps them
 /// apart) — for the page to show beside a citation. `None` for a page it
 /// never received. A text file's pieces answer any page.
-pub fn page_text(messages: &[Message], file: &str, page: Option<u32>) -> Option<String> {
-    let pages = received(messages);
+pub fn page_text(
+    messages: &[Message],
+    programs: &[crate::tool::code::record::ProgramCall],
+    file: &str,
+    page: Option<u32>,
+) -> Option<String> {
+    let pages = received(messages, programs);
     let mut files: Vec<&str> = pages.iter().map(|p| p.file.as_str()).collect();
     files.sort_unstable();
     files.dedup();
@@ -698,11 +741,12 @@ pub fn page_text(messages: &[Message], file: &str, page: Option<u32>) -> Option<
 /// #465, pass 5: the page alone marked nothing).
 pub fn passage(
     messages: &[Message],
+    programs: &[crate::tool::code::record::ProgramCall],
     file: &str,
     page: Option<u32>,
     quote: &str,
 ) -> Option<Passage> {
-    let text = page_text(messages, file, page)?;
+    let text = page_text(messages, programs, file, page)?;
     if let Some(span) = mark(&text, quote) {
         return Some(Passage {
             text,
@@ -712,7 +756,7 @@ pub fn passage(
     }
     if let Some(next) = page.and_then(|p| {
         let n = p + 1;
-        Some((n, page_text(messages, file, Some(n))?))
+        Some((n, page_text(messages, programs, file, Some(n))?))
     }) {
         let joined = format!("{text}\n\n{}", next.1);
         if let Some(span) = mark(&joined, quote) {
@@ -809,6 +853,57 @@ mod tests {
         vec![user, said(reply)]
     }
 
+    /// §8: "After an `analyst` child read a thread, … a `persona/cite` pass
+    /// see[s] the shaped answer and no nested call. With the walk yielding
+    /// child records, this fails." The child's `document_read` came up under
+    /// the subagent call `a1`: under a `trusted_output` child the file was
+    /// never received, so a quote from it cannot read as quoted; under a
+    /// child whose answer is prose, the same read counts — so the verdict is
+    /// the shape's, not a check that ignores programs.
+    #[test]
+    fn a_shaped_childs_read_is_never_a_file_the_chat_received() {
+        use crate::tool::code::record::ProgramCall;
+        let messages = vec![
+            Message::user("What do urchins do?"),
+            Message::assistant(vec![Block::ToolUse {
+                id: "a1".into(),
+                name: "analyst".into(),
+                input: serde_json::json!({"task": "do urchins graze at night?"}),
+            }]),
+            Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: "a1".into(),
+                content: "yes".into(),
+                is_error: false,
+            }]),
+            said("They do [kelp.pdf, p. 1: \"Sea urchins graze kelp holdfasts at night\"]."),
+        ];
+        let read = |trusted: bool| {
+            ProgramCall::ran(
+                "c1.host-1",
+                "c1",
+                "document_read",
+                serde_json::json!({"path": "kelp.pdf"}),
+                false,
+                false,
+                std::sync::Arc::from(PAPER),
+            )
+            .carried_up("analyst", trusted)
+            .anchored_at("a1")
+        };
+        let shaped = check_conversation(&messages, &[read(true)]);
+        assert_eq!(shaped.len(), 1);
+        assert_eq!(shaped[0].verdict, Verdict::NoSuchFile, "{shaped:?}");
+        let prose = check_conversation(&messages, &[read(false)]);
+        assert_eq!(prose[0].verdict, Verdict::Quoted { found: Some(1) });
+        // And what the citation opens agrees with its verdict both ways: the
+        // page the check found, and none behind the shape (review of #784).
+        let quote = "Sea urchins graze kelp holdfasts at night";
+        let opened = passage(&messages, &[read(false)], "kelp.pdf", Some(1), quote)
+            .expect("a quoted citation opens its page");
+        assert!(opened.span.is_some(), "{}", opened.text);
+        assert!(passage(&messages, &[read(true)], "kelp.pdf", Some(1), quote).is_none());
+    }
+
     #[test]
     fn citations_parse_in_the_forms_models_write() {
         let text = "Urchins graze [kelp.pdf, p. 1: \"graze kelp holdfasts\"] and otters \
@@ -843,7 +938,7 @@ mod tests {
             "They graze [kelp.pdf, p. 1: \"Sea urchins graze kelp holdfasts at night\"]; \
              otters hold them [kelp.pdf, p. 2: \"keep urchin \"barrens\" in check - mostly\"].",
         );
-        let got = check_conversation(&msgs);
+        let got = check_conversation(&msgs, &[]);
         assert_eq!(got.len(), 2, "{got:?}");
         assert_eq!(got[0].verdict, Verdict::Quoted { found: Some(1) });
         assert_eq!(got[1].verdict, Verdict::Quoted { found: Some(2) });
@@ -858,7 +953,7 @@ mod tests {
              [other.pdf, p. 1: \"anything at all here\"] \
              [kelp.pdf, p. 1: \"at night\"]",
         );
-        let got: Vec<Verdict> = check_conversation(&msgs)
+        let got: Vec<Verdict> = check_conversation(&msgs, &[])
             .into_iter()
             .map(|c| c.verdict)
             .collect();
@@ -895,7 +990,7 @@ mod tests {
             "[survey.pdf, p. 4: \"transects were run monthly\"] but not \
              [@kelp/survey.pdf, p. 5: \"transects were run monthly\"]",
         );
-        let got = check_conversation(&[user, early, ask, answer, late]);
+        let got = check_conversation(&[user, early, ask, answer, late], &[]);
         let v: Vec<(&str, &Verdict)> = got.iter().map(|c| (c.file.as_str(), &c.verdict)).collect();
         assert_eq!(
             v,
@@ -915,7 +1010,7 @@ mod tests {
         let ask = calls("t1", json!({"file": "kelp.pdf"}));
         let failed = result("t1", true, PAPER);
         let reply = said("[kelp.pdf, p. 1: \"Sea urchins graze kelp\"]");
-        let got = check_conversation(&[Message::user("hi"), ask, failed, reply]);
+        let got = check_conversation(&[Message::user("hi"), ask, failed, reply], &[]);
         assert_eq!(got[0].verdict, Verdict::NoSuchFile);
     }
 
@@ -926,7 +1021,7 @@ mod tests {
             "[notes.md, p. 3: \"Urchins graze kelp holdfasts\"]",
         );
         assert_eq!(
-            check_conversation(&msgs)[0].verdict,
+            check_conversation(&msgs, &[])[0].verdict,
             Verdict::Quoted { found: None }
         );
     }
@@ -955,20 +1050,20 @@ mod tests {
     #[test]
     fn the_cited_page_comes_back_with_its_passage_marked() {
         let msgs = chat(PAPER, "ok");
-        let page = page_text(&msgs, "kelp.pdf", Some(1)).unwrap();
+        let page = page_text(&msgs, &[], "kelp.pdf", Some(1)).unwrap();
         assert!(page.starts_with("Sea urchins graze kelp hold-"), "{page}");
         let (a, b) = mark(&page, "urchins graze kelp holdfasts").unwrap();
         assert_eq!(&page[a..b], "urchins graze kelp hold-\nfasts");
-        let two = page_text(&msgs, "kelp.pdf", Some(2)).unwrap();
+        let two = page_text(&msgs, &[], "kelp.pdf", Some(2)).unwrap();
         let (a, b) = mark(&two, "keep urchin barrens in check").unwrap();
         assert_eq!(&two[a..b], "keep urchin \u{201c}barrens\u{201d} in check");
         assert_eq!(mark(&two, "otters eat urchins"), None);
         assert_eq!(
-            page_text(&msgs, "kelp.pdf", Some(3)),
+            page_text(&msgs, &[], "kelp.pdf", Some(3)),
             None,
             "never received"
         );
-        assert_eq!(page_text(&msgs, "other.pdf", Some(1)), None);
+        assert_eq!(page_text(&msgs, &[], "other.pdf", Some(1)), None);
     }
 
     /// Review of #465: a file received twice, with another between, is one
@@ -987,7 +1082,7 @@ mod tests {
         let answer = result("t1", false, survey);
         let reply = said("[survey.pdf, p. 4: \"transects were run monthly\"]");
         let msgs = [user, ask, answer, reply];
-        let got = check_conversation(&msgs);
+        let got = check_conversation(&msgs, &[]);
         assert_eq!(
             got[0].verdict,
             Verdict::Quoted { found: Some(4) },
@@ -995,7 +1090,7 @@ mod tests {
         );
         assert_eq!(got[0].file, "@kelp/survey.pdf");
         // Received twice, shown once (review of #465, pass 2).
-        let page = page_text(&msgs, "survey.pdf", Some(4)).unwrap();
+        let page = page_text(&msgs, &[], "survey.pdf", Some(4)).unwrap();
         assert_eq!(page.matches("run monthly").count(), 1, "{page}");
     }
 
@@ -1011,7 +1106,7 @@ mod tests {
              [kelp.pdf, p. 1: \"rchins graze kelp holdfasts\"] \
              [kelp.pdf, p. 7: \"at night\"]",
         );
-        let got: Vec<Verdict> = check_conversation(&msgs)
+        let got: Vec<Verdict> = check_conversation(&msgs, &[])
             .into_iter()
             .map(|c| c.verdict)
             .collect();
@@ -1020,7 +1115,7 @@ mod tests {
             [Verdict::NotFound, Verdict::NotFound, Verdict::TooShort]
         );
         // And what the check admits, the page can mark.
-        let page = page_text(&msgs, "kelp.pdf", Some(1)).unwrap();
+        let page = page_text(&msgs, &[], "kelp.pdf", Some(1)).unwrap();
         assert!(mark(&page, "urchins graze kelp holdfasts").is_some());
         assert!(mark(&page, "urchins graze kelp holdfast").is_none());
     }
@@ -1038,7 +1133,7 @@ mod tests {
             "[hist.pdf, p. 1: \"The Anglo-Saxon chronicle is a well-known source\"] \
              [hist.pdf, p. 1: \"a well-known source - mostly\"]",
         );
-        let got: Vec<Verdict> = check_conversation(&msgs)
+        let got: Vec<Verdict> = check_conversation(&msgs, &[])
             .into_iter()
             .map(|c| c.verdict)
             .collect();
@@ -1049,7 +1144,7 @@ mod tests {
                 Verdict::Quoted { found: Some(1) },
             ]
         );
-        let text = page_text(&msgs, "hist.pdf", Some(1)).unwrap();
+        let text = page_text(&msgs, &[], "hist.pdf", Some(1)).unwrap();
         let (a, b) = mark(&text, "Anglo-Saxon chronicle").unwrap();
         assert_eq!(&text[a..b], "Anglo-\nSaxon chronicle");
     }
@@ -1071,7 +1166,7 @@ mod tests {
              [kelp.pdf, p. 1: \"six sites, and the counts fell every winter\"] \
              [kelp.pdf, p. 2: \"layout stage is unavailable\"]",
         );
-        let got: Vec<Verdict> = check_conversation(&msgs)
+        let got: Vec<Verdict> = check_conversation(&msgs, &[])
             .into_iter()
             .map(|c| c.verdict)
             .collect();
@@ -1104,7 +1199,7 @@ mod tests {
              [kelp.pdf, p. 1: \"six sites, and the counts fell every winter\"] \
              [survey.pdf, p. 3: \"an invented sentence about otters\"]",
         );
-        let got: Vec<Verdict> = check_conversation(&msgs)
+        let got: Vec<Verdict> = check_conversation(&msgs, &[])
             .into_iter()
             .map(|c| c.verdict)
             .collect();
@@ -1122,6 +1217,7 @@ mod tests {
             through: last,
         } = passage(
             &msgs,
+            &[],
             "kelp.pdf",
             Some(1),
             "six sites, and the counts fell every winter",
@@ -1144,7 +1240,10 @@ mod tests {
             &cjk,
             "[\u{6587}.pdf, p. 1: \"\u{6d77}\u{80c6}\u{98df}\u{6d77}\u{85fb}\u{306f}\"]",
         );
-        assert_eq!(check_conversation(&msgs)[0].verdict, Verdict::CannotCheck);
+        assert_eq!(
+            check_conversation(&msgs, &[])[0].verdict,
+            Verdict::CannotCheck
+        );
     }
 
     /// Review of #465, pass 6: a page that hyphenates with a soft hyphen at
@@ -1159,7 +1258,7 @@ mod tests {
             "[kelp.pdf, p. 1: \"urchins graze kelp holdfasts at night\"]",
         );
         assert_eq!(
-            check_conversation(&msgs)[0].verdict,
+            check_conversation(&msgs, &[])[0].verdict,
             Verdict::Quoted { found: Some(1) }
         );
     }
@@ -1187,13 +1286,13 @@ mod tests {
                  [notes.md: \"at night. Otters keep the barrens\"]",
             ),
         ];
-        let got: Vec<Verdict> = check_conversation(&msgs)
+        let got: Vec<Verdict> = check_conversation(&msgs, &[])
             .into_iter()
             .map(|c| c.verdict)
             .collect();
         assert_eq!(got, [Verdict::Quoted { found: None }, Verdict::NotFound]);
         // Shown together, kept apart.
-        let page = page_text(&msgs, "notes.md", None).unwrap();
+        let page = page_text(&msgs, &[], "notes.md", None).unwrap();
         assert!(page.contains("at night.") && page.contains("Otters keep"));
     }
 }
