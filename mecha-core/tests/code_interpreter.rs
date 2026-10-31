@@ -444,10 +444,11 @@ async fn the_live_worker_s_profile_denies_files_the_environment_services_and_the
     let canon = |p: &str| std::path::Path::new(p).canonicalize().unwrap();
     let home = dirs::home_dir().expect("a home").canonicalize().unwrap();
     let tmp = std::env::temp_dir().canonicalize().unwrap();
-    // An existing file to write and unlink: `file-write-create` reads as
-    // denied even for this unsandboxed test (macOS 26), so it measures
-    // nothing and is not asked. `process-exec` is asked as `process-exec*`;
-    // the bare name is an error to `sandbox_check`.
+    // An existing file to read, write and unlink, kept until every answer
+    // is in: `sandbox_check` reads a path that does not exist as denied even
+    // for this unsandboxed test (macOS 26), which would measure nothing.
+    // `process-exec` is asked as `process-exec*`; the bare name is an error
+    // to `sandbox_check`.
     let existing = tmp.join(format!("mecha-code-mode-probe-{}", std::process::id()));
     std::fs::write(&existing, b"x").unwrap();
     let denied: Vec<(&str, std::path::PathBuf)> = vec![
@@ -514,7 +515,6 @@ async fn the_live_worker_s_profile_denies_files_the_environment_services_and_the
     }
     let table = table.join("\n");
     println!("the live worker's profile, asked of the kernel:\n{table}");
-    std::fs::remove_file(&existing).ok();
     for (op, path) in &denied {
         assert_eq!(
             live::denies_path(worker, op, path),
@@ -535,6 +535,12 @@ async fn the_live_worker_s_profile_denies_files_the_environment_services_and_the
         Some(false),
         "{table}"
     );
+    assert_eq!(
+        live::denies_path(worker, "process-exec*", w.path()),
+        Some(false),
+        "{table}"
+    );
+    std::fs::remove_file(&existing).ok();
     for op in ops {
         assert_eq!(
             live::denies(worker, op),

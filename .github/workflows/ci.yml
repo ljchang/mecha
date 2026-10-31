@@ -371,7 +371,7 @@ jobs:
         run: |
           cargo test -p mecha-core --locked --features monty --test code_interpreter -- --nocapture
           cargo test -p mecha-core --locked --features monty --lib interpreter
-          cargo test -p mecha-core --locked --lib sandbox::seatbelt
+          cargo test -p mecha-core --locked --features monty --lib sandbox::seatbelt
 
   # `mecha tools` runs with no provider configured, which makes it the cheapest
   # end-to-end check that the binary starts and the tool registry builds.

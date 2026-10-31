@@ -3457,11 +3457,13 @@ The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
   rather than degrading. Under Seatbelt it also asks the kernel
   (`sandbox_check`, `seatbelt::live`) whether the live worker is under a
   profile that denies `/etc`, the home, a write to `/dev/null`, `/bin/sh`
-  and the network. So a launcher that ran the worker bare fails there,
+  and the network. As a control, it also asks whether the one read the
+  profile grants (`/`) reads as allowed. So a launcher that ran the worker bare fails there,
   though every program would have succeeded. Ask `sandbox_check` only
   what was measured to answer both ways. The bare `process-exec` is an
-  error to it (ask `process-exec*`), and `file-write-create` reads as
-  denied even for an unsandboxed process.
+  error to it (ask `process-exec*`), and a path that does not exist reads
+  as denied even for an unsandboxed process, so only existing paths are
+  asked about.
 - **On a Mac the confinement is the platform's, never a setting.**
   `Confinement::for_sandbox` returns Seatbelt whatever `[sandbox]` names.
   `[sandbox]` is `shell`'s table, `kind = "seatbelt"` stays a load error
