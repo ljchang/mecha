@@ -51,6 +51,9 @@ pub enum Feature {
     /// `video_generate`: clips with sound from a local video server.
     Video,
     Personas,
+    /// A persona's simulated life beside its memory
+    /// (`PERSONA-LIFE-DESIGN.md`), switched per persona by `[life]`.
+    World,
     Voice,
     Dictate,
     Calls,
@@ -80,6 +83,7 @@ impl Feature {
         Feature::Library,
         Feature::Video,
         Feature::Personas,
+        Feature::World,
         Feature::Voice,
         Feature::Dictate,
         Feature::Calls,
@@ -107,6 +111,7 @@ impl Feature {
             Feature::Library => "library",
             Feature::Video => "video",
             Feature::Personas => "personas",
+            Feature::World => "world",
             Feature::Voice => "voice",
             Feature::Dictate => "dictate",
             Feature::Calls => "calls",
@@ -135,6 +140,7 @@ impl Feature {
             Feature::Library => "Character and style library",
             Feature::Video => "Video generation",
             Feature::Personas => "Personas",
+            Feature::World => "Persona lives",
             Feature::Voice => "Voice",
             Feature::Dictate => "Dictation",
             Feature::Calls => "Voice calls",
@@ -165,6 +171,10 @@ impl Feature {
             // The owner, 2026-10-14: no separate approval — a part of the web
             // app, on wherever the chat model is local.
             Feature::Incognito => Some(Feature::Web),
+            // PL26: no switch of its own — personas are operator-only, so a
+            // trial home cannot run one and a switch would buy nothing; the
+            // lever is each persona's `[life]` table.
+            Feature::World => Some(Feature::Personas),
             _ => None,
         }
     }
@@ -229,6 +239,7 @@ impl Feature {
             | Feature::Ocr
             | Feature::Layout
             | Feature::Library
+            | Feature::World
             | Feature::Dictate
             | Feature::Calls
             | Feature::Cloning
@@ -278,6 +289,7 @@ impl Feature {
             | Feature::Ocr
             | Feature::Layout
             | Feature::Library
+            | Feature::World
             | Feature::Dictate
             | Feature::Calls
             | Feature::Cloning
@@ -851,6 +863,7 @@ fn evidence(facts: &Facts, f: Feature) -> bool {
         | Feature::Ocr
         | Feature::Layout
         | Feature::Library
+        | Feature::World
         | Feature::Dictate
         | Feature::Calls
         | Feature::Cloning
@@ -906,6 +919,12 @@ pub fn announcements(facts: &Facts) -> Vec<Announcement> {
         .collect()
 }
 
+/// What `enable world` and `disable world` say: the world's lever is each
+/// persona's `[life]` table, never `[features]` (PL26).
+pub const WORLD_IS_PER_PERSONA: &str =
+    "`world` is part of `personas` and is switched per persona, never here — `[life] world = \
+     true` in a persona's persona.toml turns it on for that persona";
+
 /// Check a request to switch features on, before anything is written.
 ///
 /// A part id is refused by name, pointing at its parent and the setting that
@@ -927,6 +946,9 @@ pub fn plan_enable(cfg: &Config, ids: &[String]) -> Result<Vec<Feature>, String>
                  incognito chat is offered wherever the chat model runs on this machine"
                     .into(),
             );
+        }
+        if f == Feature::World {
+            return Err(WORLD_IS_PER_PERSONA.into());
         }
         if let Some(parent) = f.part_of() {
             return Err(format!(
@@ -1552,6 +1574,7 @@ fn own_state(facts: &Facts, f: Feature) -> State {
             "",
         ),
         Feature::Tasks => on("rides the graph's kg_task_* tools"),
+        Feature::World => on("switched per persona by the [life] table in its persona.toml"),
         // Asked as `build_search_chain` asks it: a listed backend with no
         // key, no instance URL or an unknown kind is dropped there, and with
         // none left no `web_search` is registered (found on review of #428).
@@ -2187,6 +2210,7 @@ mod tests {
                 | Feature::Library
                 | Feature::Video
                 | Feature::Personas
+                | Feature::World
                 | Feature::Voice
                 | Feature::Dictate
                 | Feature::Calls
@@ -2198,9 +2222,9 @@ mod tests {
                 | Feature::System => {}
             }
         }
-        // The match above lists 23 — raise this with it, and a variant
+        // The match above lists 24 — raise this with it, and a variant
         // added to the match but not to `ALL` fails here.
-        assert_eq!(Feature::ALL.len(), 23);
+        assert_eq!(Feature::ALL.len(), 24);
     }
 
     #[test]
@@ -2766,6 +2790,31 @@ mod tests {
         assert!(announcements(&facts).iter().all(|a| a.id.has_switch()));
     }
 
+    /// PL26: no switch of its own, so the world is available exactly when
+    /// personas are; the per-persona `[life]` table is the real gate.
+    #[test]
+    fn the_world_follows_personas_and_has_no_switch() {
+        assert!(!Feature::World.has_switch());
+        assert_eq!(Feature::World.switch_owner(), Feature::Personas);
+        for on in [true, false] {
+            let mut config = Config::default();
+            set_switch(&mut config, Feature::Personas, on);
+            let facts = Facts {
+                config,
+                ..empty_machine()
+            };
+            let personas = state(&facts, Feature::Personas);
+            let world = state(&facts, Feature::World);
+            // Not vacuous: personas itself is on, then off.
+            assert_eq!(personas.word() == "on", on, "{personas:?}");
+            assert_eq!(
+                personas.word() == "on",
+                world.word() == "on",
+                "personas {personas:?}, world {world:?}"
+            );
+        }
+    }
+
     #[test]
     fn enabling_refuses_parts_and_names_the_chain() {
         let cfg = Config::default();
@@ -2783,6 +2832,12 @@ mod tests {
         );
         let err = plan_enable(&cfg, &ids(&["calls"])).unwrap_err();
         assert!(err.contains("part of `voice`"), "{err}");
+        // The world's lever is per persona, and the refusal says where.
+        let err = plan_enable(&cfg, &ids(&["world"])).unwrap_err();
+        assert!(
+            err.contains("part of `personas`") && err.contains("[life] world"),
+            "{err}"
+        );
         // And every off row's own fix is a command `enable` accepts — the row
         // must not print one this binary refuses (review of #443).
         let facts = Facts {
