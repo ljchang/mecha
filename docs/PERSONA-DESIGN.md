@@ -1817,6 +1817,21 @@ not care, and says so.
 
 Every row is ruled; the ruling is the owner's, in §1 where it was said in words.
 
+`PERSONA-LIFE-DESIGN.md` (2026-10-31, rulings in progress) reaches these rulings
+in a few places. Ruled there: its network store deviates from §4.3, built like
+memories with a rendered `network.md` (PL5); memory only leaves recall, as D26
+says, with the threshold off by default until D28's readout (PL7); D27's
+rebuild is applied to the world (PL22). §9.6's provenance split is narrowed
+only for article chats: PL23 (a clean typed episode) and PL27 (a per-persona
+switch that recalls untrusted records without approval, owner's people
+included), both the owner's direction. PL10 and PL21 were ruled *against*
+narrowing it: owner turns and stated plans after a taint rise stay
+candidates. Its `news_read` must follow D16 and D24 (withheld by `answers =
+"files"`), which needs an admission check on the per-persona tool path,
+since that path bypasses `registry_as`. Still open there: the owner's network
+inside `memory.db` (PL13) and D27's rebuild applied to it (PL24). Until those
+are ruled, these rows stand as written.
+
 | # | Decision | Recommendation |
 |---|---|---|
 | D1 | Where personas live | **Ruled (R15):** `~/.mecha/personas/`, a folder per persona — Markdown and TOML for what the owner writes, a SQLite `memory.db` per persona plus a `shared.db`, transcripts as JSONL sessions; three levels (everyone, a group, one persona); links by name; never `graph.db` (§4) |
