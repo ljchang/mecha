@@ -2725,6 +2725,32 @@ fn a_front_end_that_withholds_code_keeps_it_withheld() {
     );
 }
 
+/// A `--tool-profile` holds after a rebuild too: `research` keeps `code`
+/// while its union is public, and a private read registered later, which
+/// the rebuild folds into the union, takes `code` off rather than widening
+/// what the profile kept (review of #774).
+#[test]
+fn a_tool_profile_still_judges_code_after_a_rebuild() {
+    use crate::tool::profile::ToolProfile;
+    let mut agent = agent_over(
+        registry_of(vec![Arc::new(Fake::read("page", "public"))]),
+        Vec::new(),
+    );
+    agent.enable_code(Arc::new(NoInterpreter));
+    agent.narrow_code_by(ToolProfile::Research, Vec::new());
+    assert!(
+        agent.registry().get(NAME).is_some(),
+        "a public `code` stays"
+    );
+    agent
+        .registry_mut()
+        .insert(Arc::new(Fake::mail("mail_search", "a thread")));
+    assert!(
+        agent.registry().get(NAME).is_none(),
+        "the rebuild widened `code` past what `research` keeps"
+    );
+}
+
 /// §8's turn-taint hazard, through registration: `code` served by the agent,
 /// a mail read registered after it (as a front end's tool is), and a
 /// `Chosen` sender in the same assistant message. The forecast `dispatch`

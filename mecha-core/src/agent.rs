@@ -2295,6 +2295,11 @@ pub struct Agent {
     /// ([`Agent::enable_code`]): kept so `code` can be built again over the
     /// registry each time it changes, and so stay built last.
     code: Option<Arc<dyn crate::interpreter::Interpreter>>,
+    /// The `--tool-profile` a run's surface was narrowed by, with the outbox's
+    /// routed names, asked of `code` again after every rebuild
+    /// ([`Agent::narrow_code_by`]): a rebuild widens `code`'s union to what
+    /// was registered since, and the profile must judge that union too.
+    code_profile: Option<(crate::tool::profile::ToolProfile, Vec<String>)>,
 }
 
 /// [`Agent::registry_mut`]'s guard: the registry, and on drop `code` built
@@ -2348,6 +2353,7 @@ impl Agent {
             prior_tails: PriorTails::Keep,
             prior_nudges: PriorNudges::Keep,
             code: None,
+            code_profile: None,
         })
     }
 
@@ -2677,6 +2683,33 @@ impl Agent {
         self.build_code(true);
     }
 
+    /// Hold `code` to `profile` from now on: judged now, and again after
+    /// every rebuild, so a read registered later that widens `code`'s union
+    /// past what the profile keeps takes `code` off the surface rather than
+    /// widening it (review of #774). Narrowing only: once off, it stays off.
+    pub fn narrow_code_by(
+        &mut self,
+        profile: crate::tool::profile::ToolProfile,
+        routed: Vec<String>,
+    ) {
+        self.code_profile = Some((profile, routed));
+        self.judge_code();
+    }
+
+    /// Take `code` off the registry where the run's profile would not keep it.
+    fn judge_code(&mut self) {
+        let Some((profile, routed)) = &self.code_profile else {
+            return;
+        };
+        let kept = self
+            .registry
+            .get(crate::tool::code::NAME)
+            .is_none_or(|code| profile.keeps(code.as_ref(), routed));
+        if !kept {
+            self.registry.remove(crate::tool::code::NAME);
+        }
+    }
+
     /// Build `code` over the registry as it stands: always when `force`, and
     /// otherwise only where this agent serves code mode and `code` is still
     /// registered (a front end that withheld it keeps it withheld).
@@ -2698,6 +2731,7 @@ impl Agent {
             interpreter,
         );
         self.registry.insert(Arc::new(code));
+        self.judge_code();
     }
 
     /// The connection this agent talks over, for a caller that needs a
