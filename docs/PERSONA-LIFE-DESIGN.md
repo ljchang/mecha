@@ -3,7 +3,7 @@
 > **Status (2026-10-31):** designed; §17's registry step and the `[life]`
 > switches of step 1 are built (`Feature::World`, `persona::Life`), and the
 > rest of step 1 is next. **Every decision in §16
-> is ruled** by the owner, the same day: PL1–PL22 and PL24–PL26 as rulings,
+> is ruled** by the owner, the same day: PL1–PL22, PL24–PL26, PL29 and PL30 as rulings,
 > and PL23, PL27 and PL28 as the owner's direction (no approval queue for
 > news; every part opt-in per persona). §1 is the owner's requests, in the order they were made; §2 is
 > the evidence, researched the same day, with a source on every figure that
@@ -405,7 +405,10 @@ threshold per persona once the access log says where it should sit. The
     unreadable live file then fails toward the safe side for each setting:
     no recall under `remember_articles`, `intensity` at `"capped"`,
     `name_search_filter` **on** (the one setting whose safe direction is on),
-    and **no pruning that night**. The decay knobs have no "off", and shipped defaults
+    and **no pruning that night**, and **no persona-level world rows in that
+    turn's today-block** (the fold reads `world_prune_below` too, §3.2, and
+    neither threshold is safe to guess; shared rows fold on PL29's shipped
+    default, which needs no file). The decay knobs have no "off", and shipped defaults
     could be looser than what the owner wrote, which is the substitution §9
     refuses. So nothing is deleted on a read that failed. It never falls back to the pinned value or the last
     value read, and the persona's notes say the file could not be read. That
@@ -477,12 +480,23 @@ Each level is its own `world.db`: `~/.mecha/personas/world.db` for everyone,
   personas the sampler placed there know: a staff meeting). Two personas can
   share a world without learning anything about each other, and personas
   still never know that another persona exists (`PERSONA-DESIGN.md` §8.1).
-- **Only clean sources write above the persona level.** The everyone and
+- **Nothing from a chat writes above the persona level.** The everyone and
   group worlds are written only by the owner, the simulation and feeds
-  registered at that level. Nothing from a chat moves up a level on its own,
-  as with `shared.db`. So a tainted chat with one persona cannot plant an
-  event that reaches every member, and `forget` on a chat never has to reach
-  across personas.
+  registered at that level. Those writers are not all clean: a feed's items
+  keep their shelf's origin (§8.2), and shelf C's are untrusted wherever
+  they are stored. What the levels rule out is a chat. Nothing from a chat
+  moves up a level on its own, as with `shared.db`. That covers writes to
+  rows that already exist: the `told` flag, the retelling boost and
+  `known_to_owner` (§4.5) land on her own derived row (§3.2's first bullet)
+  or her own person node, **never on the shared row**. A shared person
+  (§6.5) is held by the members' nodes that point at it: the group's node
+  is pruned only once no member's node is above the threshold, so a
+  colleague two personas keep mentioning never decays out from under
+  them. So a tainted chat
+  with one persona cannot plant an event that reaches every member, nor
+  silence one for them all: a tainted `told` stays within §4.5's bound,
+  what was in front of her. (What `forget` removes, in the persona's store
+  and the group's, is §5's.)
 - **Several groups at once.** A persona can belong to a workplace and a town.
   Both groups' shared events flow into her life, and place names are unique
   within a group, so the two never collide.
@@ -492,6 +506,30 @@ Each level is its own `world.db`: `~/.mecha/personas/world.db` for everyone,
   work runs only when at least one member persona has `world` on**, so §3.1's
   "no nightly job for a persona with `world` off" holds at every level. A persona's derived events decay
   under her own `[life.decay]`.
+  - **A shared row that decays does so under the shipped defaults** (ruled,
+    §16 PL29); §9's owner-origin and `state` exemptions hold at every level.
+    (Seasons, holidays and a term calendar live in the routine file or a
+    group's, §4.1, never in a `world.db`, so no decay reaches them.)
+    Members may disagree, and a shared row is one row, so no one member's
+    `[life.decay]` can govern it, even in a group of one. A level's own
+    knobs, if wanted, arrive with the group world in step 3, in the owner's
+    files and never in layered config.
+  - **No pruner runs while no member has `world` on, and none is needed.**
+    Strength is a function of age, computed when the pruner reads a row, so
+    skipped nights lose nothing. **The fold computes strength too**, and
+    folds no row below `world_prune_below` (the shipped default for a
+    shared row, PL29), so a chat started the morning a member turns `world`
+    back on, before that night's prune pass, folds nothing the pass would
+    delete. The pass then removes what decayed meanwhile. Until then
+    nothing machine-written lands in the level's `world.db`; the owner's
+    edits still may.
+  - **`items` are not a curve, and their expiry holds without a pruner.**
+    Their five days are a fixed lifetime (§5). `news_read` refuses an item
+    past its expiry whether or not the prune pass has run, and the
+    today-block's shelf C lines carry only the night's arrivals, never the
+    live shelf (§8.3), and no arrivals land on a night when no member has
+    `world` on. So the day a member turns `world` and `news` back on cannot
+    reopen a stale article by either path.
 - **Feeds attach at any level.** A team's feed or local news is registered
   once at the group or everyone level (§8.1), and every member persona sees
   it.
@@ -652,7 +690,8 @@ one more reason §14's gate part 1 exists.
   that remembered anything untrusted." The today-block is a seventh fold and
   takes the recall pair's shape:
   - **the clean stem arms `private`.** Most of the block is code, owner
-    files, clean narration and shelves A and B. But stated plans and people she
+    files, clean narration and shelves A and B. Shelf C's lines ride here
+    too (§16 PL30), as the one named exception below. But stated plans and people she
     mentioned in a chat ride in it too (§13): a plan the two of them made is
     memory of a conversation with the owner, the case §9.7 arms `private` for.
     Arming is close to free here, since D11 already lifts the leak guard in
@@ -661,7 +700,14 @@ one more reason §14's gate part 1 exists.
     of the block and sending them through the recall block, splits one day
     across two folds for no gain.
   - **the untrusted stem arms `private` and `untrusted`** the moment any
-    folded row's origin is not clean.
+    folded row's origin is not clean. Origin is per row (§5), and a row
+    whose fields are all from code-fixed sets still arms it: a typed plan
+    (PL21) has code's vocabulary and about 20 attacker-chosen bits of value.
+    **The one exception is a shelf C line (PL30)**, which is not a row's
+    fields but a line code composes: the interest from the owner's feed
+    mapping and the harness-minted id, carrying no value the publisher
+    chose. Its presence, count and timing are the residual §14's steering
+    arm covers. Nothing else is exempt.
 
   The untrusted variant exists from the first build, so a dirty result at the
   shelf B gate (§14), or a candidate row approved by mistake, needs no new fold
@@ -715,6 +761,9 @@ one more reason §14's gate part 1 exists.
     direction. A tainted stretch **never clears** a flag. Each flag records
     its source chat and taint, so the week view can show which events went
     quiet from a tainted chat (§13).
+  - **A flag lands on her own row.** For a shared event, `told` marks her
+    derived event, never the group's row (§3.2), so one persona's chat
+    never decides what the others have left to say.
   - **The set is bounded by what the chat was shown.** A tainted stretch may
     set `told` only on events that rode in *that chat's* today-block or recall
     block, never on arbitrary world rows. So an injection that makes her
@@ -1970,14 +2019,14 @@ to keep proactive messages from ever becoming one.
 | The `told` flag, from a tainted stretch | the stretch's taint | set only, never cleared, source recorded | — | it shapes what reaches the today-block |
 | Shelf A | code, closed types only | yes | yes | its closed fields; shape-matched ids never |
 | Shelf B | quarantined, typed | minor events | as pointers | yes |
-| Shelf C | untrusted | never | never as text; a typed episode by default, or full records recalled under PL27 | only through `news_read`, which declares `untrusted_input` and marks every result `external` |
+| Shelf C | untrusted | never | never as text; a typed episode by default, or full records recalled under PL27 | its prose only through `news_read`, which declares `untrusted_input` and marks every result `external`; in the first build, without shelf B, and only once the owner has read the gate's readings (§17 step 5), the today-block carries one line per item, its interest and an opaque id, both code's, whose presence, count and timing are the publisher's (§8.3) |
 
 The folds, which arrive in no tool result and so arm at the fold
 (`PERSONA-DESIGN.md` §9.7):
 
 | Fold | Arms | Stem |
 |---|---|---|
-| Today-block (§4.5) | `private`; both when any row's origin is not clean | a new pair shaped like the recall pair, riding as **its own run note** so its prefix matches, registered in `arm_for_content`, `is_recorded_note` and `is_harness_voice` |
+| Today-block (§4.5) | `private`; both when any folded row's origin is not clean, except a code-composed shelf C line, which carries no value the publisher chose (PL30) | a new pair shaped like the recall pair, riding as **its own run note** so its prefix matches, registered in `arm_for_content`, `is_recorded_note` and `is_harness_voice` |
 | Owner's roster, per-turn people cards and the unknown-name note (§7.2) | `private`; both when any fact's origin is not clean | `persona::recall::stem_of`'s existing pair, inside the recall block; the note is a line of the cards fold, never its own block |
 | `news_read` result (§8.3) | `untrusted`, always: `untrusted_input` declared and `external` on every result, the loop's conjunction | none; a tool result is re-armed from `Record::Taint`, like every external tool |
 | Proactive framing turn (§12) | nothing of its own; the run's today-block carries the arming | its own stem, registered in `arm_for_content`, `is_recorded_note` and `is_harness_voice` |
@@ -2220,7 +2269,9 @@ this document's; the ruling is the owner's.
 | PL25 | A `told` set only by a tainted stretch | **Ruled (2026-10-31):** suppresses but never licenses pruning; unchanged while unreviewed, since silence is not a rejection; becomes ordinary on approval, cleared on rejection (§9) |
 | PL26 | The feature registry | **Ruled (2026-10-31):** `part_of = Personas`, with the per-persona `[life]` switches (PL28) as the lever. A top-level switch would buy nothing, since personas are operator-only and no trial home can run one; §14's comparison is read offline. Settled before step 1 (§17) |
 | PL27 | Remembering article chats in full | **Owner's direction (2026-10-31):** a per-persona `remember_articles` switch, off by default, owner-written in `persona.toml`. With it on, episodes and facts from a stretch after a `news_read` are recalled without approval, origin still untrusted and re-armed on recall. The cost (possible persistent steering, no way to send) is shown beside the switch and in a `TRIFECTA.md` row. **Ruled within it (2026-10-31): no carve-out.** Facts about the owner and the owner's people are recalled too, with the residual (a planted claim about a real person) accepted, kept visible by an "from an article chat" badge and stated in the `TRIFECTA.md` row (§8.4) |
-| PL28 | Which personas get which parts | **Owner's direction (2026-10-31):** every part is an opt-in switch per persona, off by default: `world`, `people`, `my_people`, `news`, `camera`, `feed`, `remember_articles`. A tool whose switch is off is never built; dependencies are refused by name; switches are fixed per persona version (§3.1) |
+| PL28 | Which personas get which parts | **Owner's direction (2026-10-31):** every part is an opt-in switch per persona, off by default: `world`, `people`, `my_people`, `news`, `camera`, `feed`, `proactive`, `remember_articles`. A tool whose switch is off is never built; dependencies are refused by name; the switches that decide which tools, blocks and runs exist are fixed per persona version (`proactive` at the scheduler's next check), and `remember_articles` is read live, never reaching backwards (§3.1) |
+| PL29 | How a shared row decays | **Ruled (2026-10-31), as recommended:** a group's and everyone's rows that decay do so under the shipped `[life.decay]` defaults (§9's owner-origin and `state` exemptions hold at every level), since members may disagree and a shared row is one row; a level's own knobs, if wanted, come with the group world (§17 step 3), in the owner's files. This carves an exception out of PL7, whose knobs are per persona (§3.2) |
+| PL30 | Which stem the today-block takes on a day with a shelf C line | **Ruled (2026-10-31), as recommended:** the clean stem. The line's two fields are code's (an interest from the owner's feed mapping and a harness-minted id), so what folds carries no attacker text; the row it was selected from is untrusted, and its presence, count and timing (about 3 bits a day) are the residual §14's steering arm covers. §4.5 names the line as the one exception to its per-row rule, because it is a line code composes, not a row's fields; a typed plan, whose fields are code-shaped but attacker-chosen, gets no such exemption. The alternative, the untrusted stem, rejected: it makes every chat on a news day a candidate under §9.6 from the first build, on the feature's main path, which PL23's typed episode was ruled to avoid (§4.5, §8.3, §13) |
 
 ---
 
