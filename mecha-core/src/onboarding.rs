@@ -1073,6 +1073,7 @@ pub fn blurb(f: crate::feature::Feature) -> &'static str {
         | Feature::Ocr
         | Feature::Layout
         | Feature::Library
+        | Feature::World
         | Feature::Dictate
         | Feature::Calls
         | Feature::Cloning
