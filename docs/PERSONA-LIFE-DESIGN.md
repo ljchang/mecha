@@ -1,8 +1,9 @@
 # Persona lives — design
 
-> **Status (2026-10-31):** designed, nothing built. Every decision in §16 is
-> **open** except PL23, PL27 and PL28, which carry the owner's direction of
-> the same day (no approval queue for news; every part opt-in per persona). §1 is the owner's requests, in the order they were made; §2 is
+> **Status (2026-10-31):** designed, nothing built. **Rulings are in
+> progress** (§16): PL1, PL2, PL3, PL7 and PL26 are ruled, and PL23, PL27 and
+> PL28 carry the owner's direction (no approval queue for news; every part
+> opt-in per persona). The rest are open. §1 is the owner's requests, in the order they were made; §2 is
 > the evidence, researched the same day, with a source on every figure that
 > carries a decision. Personas, their chats and real people appear nowhere in
 > this document: every example is invented.
@@ -404,7 +405,12 @@ approved on the Personas page as `persona_propose` candidates are
 (`persona::approve_as_shown` in `mecha-core/src/persona.rs`, the persona
 side's twin of `imagelib::approve_as_shown`, and the function
 `PERSONA-DESIGN.md` §4.4 names); nothing reaches a sampler until the owner
-approves (§16 PL1). A term calendar, holidays and seasons ride in the same
+approves (§16 PL1). **The owner can edit at both ends** (ruled 2026-10-31):
+the draft before approving it, and the approved routine at any time
+afterwards, on the persona page or in an editor. An owner edit is an
+owner-origin change, so the model never overwrites it, and a redraft
+requested later comes back as a new candidate beside the owner's version,
+never over it. A term calendar, holidays and seasons ride in the same
 file or a group's.
 
 ### 4.2 The day sampler
@@ -1650,19 +1656,19 @@ ruled for repetition.
 
 ## 16. Open decisions
 
-Every row is open except PL23, PL27 and PL28, which record the owner's
-direction of 2026-10-31. The recommendation is this document's; the ruling is the
-owner's.
+A row marked **Ruled** or **Owner's direction** is decided, in the owner's
+words where they were given; every other row is open. The recommendation is
+this document's; the ruling is the owner's.
 
 | # | Decision | Recommendation |
 |---|---|---|
-| PL1 | Who authors the routine | A model drafts it from `identity.md` as a candidate; the owner approves, as `persona_propose` works. Alternative: the owner writes it alone |
-| PL2 | A separate world store | `world.db` beside `memory.db`; memory stays "only what was discussed" |
-| PL3 | How intense events may be | A severity cap by default; major life events (illness, breakups, deaths) a per-persona opt-in |
+| PL1 | Who authors the routine | **Ruled (2026-10-31): A, with editing.** A model drafts it from `identity.md` as a candidate. The owner may edit the draft before approving it, as `persona_propose` works, and may edit the approved routine directly at any time; the owner's edit always wins (§4.1) |
+| PL2 | A separate world store | **Ruled (2026-10-31):** `world.db` beside `memory.db`; memory stays "only what was discussed" |
+| PL3 | How intense events may be | **Ruled (2026-10-31):** a severity cap by default; major life events (illness, breakups, deaths) a per-persona opt-in |
 | PL4 | Shared worlds across personas | Through a group's world: places, local events, shared people; what each knows stays hers. Alternative: fully separate |
 | PL5 | Where the network lives | `world.db` with per-event origin and owner precedence, plus an export — a stated deviation from §4.3's files-for-owner-text. Alternative: owner people in TOML |
 | PL6 | People already in `identity.md` | Proposed once as owner nodes; after approval the network is their only home |
-| PL7 | Pruning | World hard-prunes; memory soft-prunes (out of recall, kept in the store); hard deletion of memories only by amending D26 after D28's readout |
+| PL7 | Pruning | **Ruled (2026-10-31):** the world hard-prunes, except owner-origin rows; memory soft-prunes (out of recall, kept in the store); hard deletion of memories only by amending D26 after D28's readout |
 | PL8 | Importance to the owner | Inferred from engagement and pins; no rating prompts |
 | PL9 | News shelves | Build A and C first, with shelf A's per-field render bounds and stated figures (at most 16 bits an item, three a day, five-day expiry; §8.2), and shelf A through all three gate parts, steering included, before it reaches a prompt. B ships behind the three-part gate (§14): schema conformance, a bit ceiling (about 9.6 bits per item and under 30 a day, as §8.2 computes it) enforced by a test, and the steering arm, all three read by the owner. Alternative: all three shelves at once |
 | PL10 | The writer after a taint rise | Keep today's rule (everything after the rise is a candidate). PL23's typed episode keeps the gist by default, and PL27's switch gives full memory where the owner wants it, which is what PL10 was reaching for. Alternative: rescue owner turns that neither follow a persona turn in the tainted stretch nor overlap the `news_read` prose; structural, residual paraphrase, modest gain (§8.4) |
@@ -1681,7 +1687,7 @@ owner's.
 | PL23 | Episodes after a `news_read` | **Owner's direction (2026-10-31):** the default. A typed episode (`item_id`, interest, date, a closed-set reaction) is admitted clean; free text is left as candidates that go unrecalled, with no approval queue (§8.4) |
 | PL24 | `forget` over the owner's network | Re-fold from the events that remain, which is D27's rebuild applied in memory for this graph; an `Inferred` edge left on too little support reverts to a candidate. Alternative: today's fallback, so the person goes with any of their chats (§7.1) |
 | PL25 | A `told` set only by a tainted stretch | Suppresses but does not license pruning; unchanged while unreviewed, since silence is not a rejection. Since PL23 keeps news off any queue, unreviewed is the ordinary state, so suppression usually lasts until the row prunes on its own score. Approval from the Memories tab makes the flag ordinary; rejection there clears it (§9). Alternative: lapse after five days unreviewed, at the cost of repeating what the owner heard |
-| PL26 | The feature registry | `part_of = Personas`, with the per-persona `[life]` switches (PL28) as the lever. A top-level switch would buy nothing, since personas are operator-only and no trial home can run one; §14's comparison is read offline. Settled before step 1 (§17) |
+| PL26 | The feature registry | **Ruled (2026-10-31):** `part_of = Personas`, with the per-persona `[life]` switches (PL28) as the lever. A top-level switch would buy nothing, since personas are operator-only and no trial home can run one; §14's comparison is read offline. Settled before step 1 (§17) |
 | PL27 | Remembering article chats in full | **Owner's direction (2026-10-31):** a per-persona `remember_articles` switch, off by default, owner-written in `persona.toml`. With it on, episodes and facts from a stretch after a `news_read` are recalled without approval, origin still untrusted and re-armed on recall. The cost (possible persistent steering, no way to send) is shown beside the switch and in a `TRIFECTA.md` row. *Recommended within it:* the owner's network stays outside its reach (§8.4) |
 | PL28 | Which personas get which parts | **Owner's direction (2026-10-31):** every part is an opt-in switch per persona, off by default: `world`, `people`, `my_people`, `news`, `camera`, `feed`, `remember_articles`. A tool whose switch is off is never built; dependencies are refused by name; switches are fixed per persona version (§3.1) |
 
