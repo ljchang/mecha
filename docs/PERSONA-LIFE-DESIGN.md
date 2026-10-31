@@ -416,7 +416,9 @@ how it felt. Everything else stays a typed record nobody narrates. That is the
 whole of the model's role: code decides what happened and when; the model
 writes how it felt.
 
-It runs nightly beside `persona memory write`. The narrator is not per chat,
+It runs nightly beside `persona memory write`, as a **one-shot with no
+tools**, so an unattended nightly model run has nothing to call. The
+narrator is not per chat,
 but `writer::pick_model` already has the shape it needs: called with the
 persona's pinned model (`PERSONA-DESIGN.md` §12.6) against the router's
 resident one, it answers `Use` when they match or the router is empty and
@@ -436,8 +438,11 @@ The narrator's prose is long-lived: it is snapshotted into memory (§5) and
 rides in later prompts. So the claim that it is clean rests on its inputs, and
 specifically on shelf B being typed. §2.7's "summarising does not launder"
 concerns prose inputs, and the narrator has none. What reaches it from outside
-is a handful of enum values under §8.2's ceiling, which can tilt what it
-writes but cannot spell an instruction into it. If shelf B ever gained a
+is a handful of enum values under §8.2's ceiling, about 29 bits a night.
+That influence can *select among* narrations the model would write anyway,
+but it cannot *author* a string. That is a stronger argument than the model
+resisting, and it survives §2.7's warning that a local writer should be
+assumed weak. If shelf B ever gained a
 free-text field, the narrator's output would stop being `ModelClean`. That is
 one more reason §14's gate part 1 exists.
 
@@ -788,6 +793,17 @@ staged to the graph's review queue.
 2. **An unknown name is a gap.** A capitalised name matching no one gets a
    harness note, and she may ask. The writer also records it nightly in a
    **gap ledger**, so it never depends on her noticing live.
+
+   **The note rides inside the per-turn people-cards fold**, under
+   `persona::recall::stem_of`'s pair, as one more line of that block, never
+   as a separate block concatenated after it, where only the first stem
+   would sit at the start (§4.5). Its arming is a no-op, since the recall
+   block already armed `private` and the name is the owner's own word. But a
+   separate harness voice would owe the other two predicates, and both
+   matter here. Unregistered in `is_harness_voice`, "you haven't mentioned
+   them before" would be mined as the owner's correction. Unregistered in
+   `is_recorded_note`, a stored note would ride on the wire for the rest of
+   the chat. Riding inside the cards fold inherits all three registrations.
 3. **Gaps are ranked and expire.** Priority is mentions × emotional charge ×
    recency. A name said once in passing decays unasked; a name said three
    times with feeling becomes "you've mentioned them twice now — a friend from
@@ -1119,6 +1135,14 @@ the headline never rides in the today-block.
       supplied by code (0 attacker bits). Only `owner_reaction` is chosen by
       the writer, from a closed set of four (2 bits). So the ceiling is **2
       bits per episode**.
+    - **One typed episode per item read, fixed by code.** If the writer could
+      choose which of several read items an episode is about, that choice
+      would add log₂k bits. So the count is set by the recorded `news_read`
+      calls: one episode for each distinct item read in the chat. The
+      per-day figure is then 2 bits × distinct items read. Reads are bounded
+      by what is on the shelf, at most three shelf C items a day (§8.5),
+      which gives **at most 6 bits a day**. That is the constant gate part 2
+      checks.
     - **Transparent endorsement does not hold here, and that is stated.**
       The writer that picks the reaction sees the article-steered turns *and*
       the owner's own, so the reaction is attacker × private data, the shape
@@ -1153,9 +1177,16 @@ the headline never rides in the today-block.
       on memory is in effect off. That is what the switch means, and the
       persona page says so beside it.
     - **It gets a `TRIFECTA.md` row**, the home CLAUDE.md gives every opt-in
-      switch with its cost. The row's *Owned by:* line names where the
-      promise lives in code: the origin stays untrusted and recall still
-      re-arms. A future reader tempted to also mark the origin clean finds
+      switch with its cost. The row's *Owned by:* line names the **two**
+      places the promise lives in code:
+      - the origin stays untrusted, and recall still re-arms;
+      - `persona_propose`'s schema has **no field** for it.
+        `persona_propose` is the one door a model has to `persona.toml`, and
+        its module doc already enumerates what no model may set (tools,
+        files, memory, safety switches, the lock). `remember_articles` and
+        `world` join that enumeration. Otherwise a later change adding a
+        settings field to the proposal schema would let a tainted chat stage
+        a persona with the switch on behind one approving tap. A future reader tempted to also mark the origin clean finds
       the reason not to there, not only on the persona page. The cost also
       goes beside D11's in `PERSONA-DESIGN.md` §3.3.
     - **What it costs:** a planted instruction in an article could persist
@@ -1169,6 +1200,10 @@ the headline never rides in the today-block.
       world rows (§4.4); world writes from a tainted stretch (stated plans,
       people) still follow PL21; nothing reaches `shared.db` except by the
       owner's share (D17), and a share of an untrusted-origin record says so.
+      Facts about the owner recalled under the switch may still be staged
+      to the graph's review queue under D10's standing permission. That is
+      human-gated, so no lane promotes itself, but a staged item carries its
+      untrusted origin to the reviewer.
     - It is the same kind of trade as D11: an owner-made, per-persona
       choice to accept a stated cost for a feature that otherwise doesn't
       work as wanted.
@@ -1404,7 +1439,7 @@ The folds, which arrive in no tool result and so arm at the fold
 | Fold | Arms | Stem |
 |---|---|---|
 | Today-block (§4.5) | `private`; both when any row's origin is not clean | a new pair shaped like the recall pair, riding as **its own run note** so its prefix matches, registered in `arm_for_content`, `is_recorded_note` and `is_harness_voice` |
-| Owner's roster and per-turn people cards (§7.2) | `private`; both when any fact's origin is not clean | `persona::recall::stem_of`'s existing pair, inside the recall block |
+| Owner's roster, per-turn people cards and the unknown-name note (§7.2) | `private`; both when any fact's origin is not clean | `persona::recall::stem_of`'s existing pair, inside the recall block; the note is a line of the cards fold, never its own block |
 | `news_read` result (§8.3) | `untrusted`, always: `untrusted_input` declared and `external` on every result, the loop's conjunction | none; a tool result is re-armed from `Record::Taint`, like every external tool |
 
 **New persona tools declare eligibility.** `news_read`, `share_photo`, and
@@ -1423,7 +1458,9 @@ The fixture test checks that the declaration and `ELIGIBLE` *agree*. A
 forgotten declaration alone defaults to `None`, so the tool is quietly
 ineligible and the build stays green. So the pair is two edits, the shape of
 CLAUDE.md's "a new field on `Config` is two edits", and §17's steps name
-both.
+both. For `news_read` and `share_photo` specifically, the `ELIGIBLE` row is
+documentation: that test's pool cannot construct a tool that needs a store,
+so the real check is the fixture-store test below.
 
 **The roster's share of the recall budget.** The owner's roster and people
 cards ride in the recall block (§7.2), which has a fixed budget
@@ -1625,8 +1662,8 @@ question is whether it gets its own `[features]` switch.
   dormant chain branch for the first time. That is a new pattern, not an
   established one: `Dictate`'s `requires` is on a part.
 - **So the world is `part_of = Personas`**, on whenever personas are, with
-  **a per-persona `world = false` in `persona.toml`**, owner-written, as the
-  lever. That lever is what §14's offline comparison reads, and what lets
+  **a per-persona `world = false` in `persona.toml`**, owner-written and
+  outside `persona_propose`'s schema (§8.4), as the lever. That lever is what §14's offline comparison reads, and what lets
   the owner turn the world off for one persona.
 
 That decides the `own_state` arm, the starter config line, the web app's
