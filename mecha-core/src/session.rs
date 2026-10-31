@@ -1959,6 +1959,12 @@ impl Session {
                         unstored.1.get_or_insert_with(|| format!("{e:#}"));
                     }
                 }
+            } else {
+                // Let go in the run, past `record::RETAINED_BYTES`.
+                unstored.0 += 1;
+                unstored.1.get_or_insert_with(|| {
+                    "its bytes were let go past the conversation's retained ceiling".into()
+                });
             }
             calls.push(call);
         }
@@ -2567,7 +2573,7 @@ impl Session {
         for line in transcript.lines().filter(|l| !l.trim().is_empty()) {
             // Only a line that names the record is parsed whole: a long
             // session's messages are most of its bytes.
-            if !line.contains("\"program\"") {
+            if !line.contains(r#""record":"program""#) {
                 continue;
             }
             if let Ok(Record::Program { calls }) = serde_json::from_str::<Record>(line) {
