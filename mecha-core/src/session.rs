@@ -1920,16 +1920,20 @@ impl Session {
         self.append(&Record::GoalAnchor {
             goal: convo.goal_anchor.clone(),
         })?;
-        // Last, so a store that cannot be written costs this record and
-        // nothing a resume needs: the grants and the anchor are on file.
         self.record_programs(convo)
     }
 
     /// What this run's programs read (`Record::Program`): each call's bytes
     /// stored once in the session's blob directory, then one record of the
-    /// calls pointing into it. Nothing when the run ran no program. A blob
-    /// that cannot be stored fails the recording, loudly, rather than
-    /// writing a pointer to nothing.
+    /// calls pointing into it. Nothing when the run ran no program.
+    ///
+    /// **A blob that cannot be stored fails no recording.** Its call is
+    /// written with no address, which loads as `Bytes::Missing` — ungrounded
+    /// by name, never an empty result — and the failure is warned. Failing
+    /// `record_run` instead took the records its callers write after it with
+    /// it: `Record::Taint`, whose absence resumes a run that read a
+    /// stranger's text with both interlock legs clear, and the run's outcome
+    /// (review of #784). Only a failure of the session file itself fails here.
     fn record_programs(&self, convo: &Conversation) -> Result<()> {
         let fresh = convo
             .program_calls
@@ -1938,14 +1942,33 @@ impl Session {
         if fresh.is_empty() {
             return Ok(());
         }
-        let store = crate::tool::code::record::Store::default_root()?;
+        let store = crate::tool::code::record::Store::default_root();
+        let mut unstored = (0usize, None);
         let mut calls = Vec::with_capacity(fresh.len());
         for call in fresh {
             let mut call = call.clone();
             if let Some(text) = call.text() {
-                call.blob = Some(store.put(&self.meta.id, text)?);
+                let put = match &store {
+                    Ok(s) => s.put(&self.meta.id, text),
+                    Err(e) => Err(anyhow::anyhow!("the program store cannot be found: {e:#}")),
+                };
+                match put {
+                    Ok(blob) => call.blob = Some(blob),
+                    Err(e) => {
+                        unstored.0 += 1;
+                        unstored.1.get_or_insert_with(|| format!("{e:#}"));
+                    }
+                }
             }
             calls.push(call);
+        }
+        if let (n @ 1.., Some(error)) = unstored {
+            tracing::warn!(
+                session = %self.meta.id,
+                unstored = n,
+                %error,
+                "program reads recorded without their bytes: they ground nothing"
+            );
         }
         self.append(&Record::Program { calls })
     }

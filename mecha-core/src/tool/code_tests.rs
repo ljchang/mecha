@@ -3233,6 +3233,34 @@ async fn a_program_record_loads_in_a_build_that_predates_it() {
     assert!(Session::programs_ever(&older).is_empty());
 }
 
+/// A program store that cannot be written fails no recording (review of
+/// #784): `record_run` returning the error took with it the `Record::Taint`
+/// its callers append after it — a resume with both interlock legs clear —
+/// and the run's outcome. The call is recorded without an address, and
+/// loads as missing by name, never as an empty result.
+#[tokio::test]
+async fn a_store_that_cannot_be_written_records_the_call_without_its_bytes() {
+    let home = crate::work::tests::HomeGuard::new();
+    // A file where the store's directory would go: every put fails.
+    std::fs::write(home.dir().join("programs"), "not a directory").unwrap();
+    let (session, _) = drafted(home.dir(), false).await;
+    session
+        .append(&crate::session::Record::Taint(Taint {
+            private: true,
+            untrusted: true,
+        }))
+        .expect("the caller's taint record still lands");
+    let text = std::fs::read_to_string(&session.path).unwrap();
+    let calls = crate::tool::code::record::ever(&text, &session.meta.id);
+    assert_eq!(calls.len(), 1, "the call is recorded");
+    assert!(calls[0].blob.is_none());
+    assert!(
+        matches!(calls[0].bytes, record::Bytes::Missing),
+        "{:?}",
+        calls[0].bytes
+    );
+}
+
 /// A conversation holds one run's raw reads at most (review of #784): the
 /// record's `Arc` outlives the program, past the byte pool that counted it,
 /// so without a release every program a chat ever ran stays resident. At the
