@@ -445,8 +445,8 @@ impl Interpreter for Monty {
             let (mut p, step) = self
                 .start("21 * probe()", &["probe".into()], CancellationToken::new())
                 .await?;
-            if !matches!(step, Step::Call(_)) {
-                bail!("a preflight program ended {step:?} before its call");
+            if !matches!(&step, Step::Call(c) if c.name == "probe") {
+                bail!("a preflight program reached {step:?} instead of its call");
             }
             let pid = p.worker_pid().context("a preflight worker with no pid")?;
             // A refusal drops `p`, which kills the worker.

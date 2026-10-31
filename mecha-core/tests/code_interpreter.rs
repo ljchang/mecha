@@ -562,12 +562,22 @@ async fn the_live_worker_s_profile_denies_files_the_environment_services_and_the
             Some(true),
             "the worker may {op}\n{table}"
         );
+        assert_eq!(
+            live::denies(me, op),
+            Some(false),
+            "{op} is denied to this test too, so the check measures nothing\n{table}"
+        );
     }
     for service in services {
         assert_eq!(
             live::denies_service(worker, service),
             Some(true),
             "the worker may look up {service}\n{table}"
+        );
+        assert_eq!(
+            live::denies_service(me, service),
+            Some(false),
+            "{service} is denied to this test too, so the check measures nothing\n{table}"
         );
     }
     let step = program.resume(Value::Null).await.unwrap();
@@ -770,20 +780,30 @@ async fn the_memory_backstop_bounds_what_the_worker_holds() {
         let tree = process::tree(program.worker_pid().unwrap());
         let baseline = tree.iter().filter_map(|p| process::peak_bytes(*p)).max();
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // The sampler says when its first reading is in, so it is already
+        // reading when the program resumes. The peak is a lifetime maximum,
+        // so what goes unseen is at most the last 2 ms before the worker
+        // dies.
+        let (ready, started) = tokio::sync::oneshot::channel::<()>();
         let sampler = {
             let stop = stop.clone();
             let tree = tree.clone();
             tokio::spawn(async move {
                 let mut peak = 0u64;
+                let mut ready = Some(ready);
                 while !stop.load(std::sync::atomic::Ordering::Relaxed) {
                     for p in &tree {
                         peak = peak.max(process::peak_bytes(*p).unwrap_or(0));
+                    }
+                    if let Some(r) = ready.take() {
+                        let _ = r.send(());
                     }
                     tokio::time::sleep(Duration::from_millis(2)).await;
                 }
                 peak
             })
         };
+        started.await.unwrap();
         let t = Instant::now();
         let step = program.resume(Value::Null).await.unwrap();
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -799,7 +819,10 @@ async fn the_memory_backstop_bounds_what_the_worker_holds() {
             t.elapsed().as_secs_f64() * 1e3,
             f.end
         ));
-        if matches!(f.end, End::Complete { .. }) || peak > LIMIT as u64 + SLACK {
+        // A peak below the parked worker's own is no reading at all: the
+        // sampler missed the worker (review of #769).
+        let floor = baseline.expect("reading the parked worker's footprint");
+        if matches!(f.end, End::Complete { .. }) || peak < floor || peak > LIMIT as u64 + SLACK {
             over.push(name);
         }
     }
@@ -811,7 +834,7 @@ async fn the_memory_backstop_bounds_what_the_worker_holds() {
     );
     assert!(
         over.is_empty(),
-        "these programs completed or held more than {} MiB + {} MiB: {over:?}\n{}",
+        "these programs completed, went unsampled, or held more than {} MiB + {} MiB: {over:?}\n{}",
         LIMIT / (1024 * 1024),
         SLACK / (1024 * 1024),
         rows.join("\n")
