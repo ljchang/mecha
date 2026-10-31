@@ -450,6 +450,12 @@ impl Tool for ReplayTool {
     fn runs_a_fresh_conversation(&self) -> bool {
         self.inner.runs_a_fresh_conversation()
     }
+    /// Delegated too: a replayed `code` answering `false` would get no host
+    /// channel, and would read as a plain read that a program may call
+    /// (review of #768).
+    fn hosts_programs(&self) -> bool {
+        self.inner.hosts_programs()
+    }
     /// The live tool's capabilities, minus `external_send` in the modes where
     /// nothing executes — the sandbox's rule in the other direction. A
     /// replayed "send" sends nothing: its answer comes from the recording, so
@@ -1418,6 +1424,45 @@ mod tests {
             cancel.clone(),
         )
         .unwrap()
+    }
+
+    /// `ReplayTool` forwards `hosts_programs` with the rest of its family
+    /// (review of #768): a replayed `code` answering `false` would get no
+    /// host channel and read as a plain read.
+    #[test]
+    fn a_replayed_tool_says_whether_it_hosts_programs() {
+        struct Hosts;
+        #[async_trait]
+        impl Tool for Hosts {
+            fn name(&self) -> &str {
+                "code"
+            }
+            fn description(&self) -> &str {
+                "runs programs"
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn hosts_programs(&self) -> bool {
+                true
+            }
+            async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::ok("ran"))
+            }
+        }
+        let mut live = Registry::new();
+        live.insert(Arc::new(Hosts));
+        let (replayed, _) = registry_with_state(
+            &["code".to_string()],
+            &live,
+            None,
+            &[],
+            Vec::new(),
+            OnDivergence::Stop,
+            CancellationToken::new(),
+        )
+        .unwrap();
+        assert!(replayed.get("code").unwrap().hosts_programs());
     }
 
     /// A gate that guards `echo` the way an operator's config would.

@@ -564,10 +564,13 @@ pub trait Tool: Send + Sync {
     /// The `code` tool answers `true`, and it is the only tool whose context
     /// [`Agent::dispatch`](crate::agent::Agent) stamps with
     /// [`ToolCtx::host_calls`]. Every other tool's context carries `None`, so
-    /// no tool can reach the gate from inside its own call by accident. A
-    /// wrapper that does not forward this leaves the tool it wraps without a
-    /// channel, and `code` then refuses to run a program: the safe direction.
-    /// A tool that answers `true` is never admitted into a program itself.
+    /// no tool can reach the gate from inside its own call by accident. **A
+    /// wrapper must forward it**, as it forwards `capabilities` and `effect`:
+    /// one that does not leaves the tool it wraps without a channel (so
+    /// `code` refuses to run a program), and makes it read as a plain read.
+    /// Admission also excludes `code` by name for that reason, but the
+    /// channel needs the method. A tool that answers `true` is never
+    /// admitted into a program itself.
     fn hosts_programs(&self) -> bool {
         false
     }
