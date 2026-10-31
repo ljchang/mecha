@@ -1530,8 +1530,8 @@ pub fn write_switches(path: &Path, changes: &[(Feature, bool)]) -> anyhow::Resul
 }
 
 /// Why this binary cannot run `f` at all, or `None`. Only code mode can be
-/// built out: its interpreter is the cargo feature `monty`, off by default
-/// (`monty-pool` needs a newer Rust than the workspace promises).
+/// built out: its interpreter is the cargo feature `monty`, on by default and
+/// left out by `--no-default-features`.
 pub fn unbuilt(f: Feature) -> Option<&'static str> {
     (f == Feature::Code && !crate::interpreter::BUILT).then_some(
         "this mecha was built without code mode's interpreter (the cargo feature `monty`)",

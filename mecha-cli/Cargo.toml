@@ -12,7 +12,10 @@ name = "mecha"
 path = "src/main.rs"
 
 [dependencies]
-mecha-core = { path = "../mecha-core", version = "0.1.1" }
+# Not core's defaults: this crate's own `monty` feature (below) decides
+# whether core has code mode's interpreter, so `--no-default-features` here
+# leaves it out of both.
+mecha-core = { path = "../mecha-core", version = "0.1.1", default-features = false }
 # One call: resolving `~/.mecha/mail` the way `mecha-mail` does, to find the
 # bookings ledger. Already in the tree via mecha-core; direct here so the rule
 # can be copied exactly rather than approximated.
@@ -78,7 +81,8 @@ rusqlite.workspace = true
 toml_edit = "0.25"
 
 [features]
-# Code mode's interpreter (`mecha-core`'s `monty`, CODE-MODE-DESIGN.md §7):
-# off by default, so a default build knows code mode and says by name that it
-# cannot run it (`feature::unbuilt`). `cargo build --features monty` turns it on.
+# Code mode's interpreter (`mecha-core`'s `monty`, CODE-MODE-DESIGN.md §7): on
+# by default. A `--no-default-features` build knows code mode and says by name
+# that it cannot run it (`feature::unbuilt`).
+default = ["monty"]
 monty = ["mecha-core/monty"]

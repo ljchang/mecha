@@ -473,7 +473,7 @@ setup` asks about it. `mecha features enable <id>` writes `true` in place; a
 # frontdoor = false  # inbound requests, polls and publishing
 # messages = false   # messages between sessions on this machine
 # system = false     # the assistant reads this machine's state (system_read)
-# code = false       # programs over tool results (code; a build with --features monty)
+# code = false       # programs over tool results (code)
 ```
 
 The switch is the only switch; a settings table such as `[image]` or
