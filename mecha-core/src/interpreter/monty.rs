@@ -338,14 +338,13 @@ impl Launcher {
             .with_context(|| format!("creating {}", dir.display()))?;
         let script = dir.join("worker");
         let log = dir.join("worker.log");
-        let quoted_log = sh_quote(&log.display().to_string());
         let mut body = String::from("#!/bin/sh\nexec");
         for a in argv {
             body.push(' ');
             body.push_str(&sh_quote(a));
         }
         body.push_str(" \"$@\" 2>>");
-        body.push_str(&quoted_log);
+        body.push_str(&sh_quote(&log.display().to_string()));
         body.push('\n');
         std::fs::write(&script, body)?;
         #[cfg(unix)]
@@ -525,16 +524,31 @@ impl Interpreter for Monty {
             _ = cancel.cancelled() => None,
             _ = tokio::time::sleep_until(deadline) => bail!("no monty worker within the program's wall clock"),
         };
-        let cancelled_waiting = checkout.is_none();
         // Before the worker runs a line: a refusal drops the checkout, which
-        // kills the worker, and the program never starts.
-        let watchdog = match &checkout {
+        // kills the worker, and the program never starts. Raced against the
+        // Stop and the wall clock as the checkout is, so a handshake slowed
+        // by a starved fork cannot hold either (review of #772).
+        let mut checkout = checkout;
+        let guarded = match &checkout {
             Some(co) if self.confinement.watchdog() => {
-                let pid = co.pid().context("a monty worker with no pid")?;
-                Some(Watchdog::arm(pid, std::process::id(), watchdog::PS).await?)
+                Some(co.pid().context("a monty worker with no pid")?)
             }
             _ => None,
         };
+        let watchdog = match guarded {
+            Some(pid) => tokio::select! {
+                w = Watchdog::arm(pid, std::process::id(), watchdog::PS) => Some(w?),
+                _ = cancel.cancelled() => {
+                    checkout = None;
+                    None
+                }
+                _ = tokio::time::sleep_until(deadline) => {
+                    bail!("the monty worker's watchdog did not arm within the program's wall clock")
+                }
+            },
+            None => None,
+        };
+        let cancelled_waiting = checkout.is_none();
         let externals: BTreeSet<String> = externals.iter().cloned().collect();
         let inputs: Vec<(String, MontyObject)> = externals
             .iter()

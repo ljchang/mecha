@@ -120,7 +120,12 @@ impl Watchdog {
         if matches!(said, Ok(Ok(_))) && line.trim() == "ok" {
             return Ok(Watchdog { child });
         }
-        let _ = child.start_kill();
+        // The whole group: a `ps` hung long enough to time the handshake out
+        // would otherwise outlive the loop that forked it (review of #772).
+        if let Some(pid) = child.id() {
+            // SAFETY: a plain signal to the group this call created.
+            unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
+        }
         let _ = child.wait().await;
         let why = match said {
             Err(_) => format!("no answer within {} s", HANDSHAKE.as_secs()),
@@ -290,6 +295,30 @@ mod tests {
             "the worker outlived its killed mecha once ps answered again"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A dropped [`Watchdog`] is never killed: the program that held it is
+    /// gone, but the worker may not be, and the loop has to outlive mecha
+    /// itself. With `kill_on_drop(true)` the loop dies here and the worker of
+    /// a killed mecha lives on (review of #772).
+    #[tokio::test]
+    async fn a_dropped_watchdog_keeps_guarding() {
+        let mut kids = Kids(vec![sleeper(), sleeper()]);
+        let (worker, mecha) = (kids.0[0].id(), kids.0[1].id());
+        let dog = Watchdog::arm(worker, mecha, PS).await.unwrap();
+        let loop_pid = dog.pid().unwrap();
+        drop(dog);
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert!(
+            !process::is_gone(loop_pid),
+            "dropping the watchdog ended its loop"
+        );
+        let _ = kids.0[1].kill();
+        let _ = kids.0[1].wait();
+        assert!(
+            gone_within(worker, Duration::from_secs(10)).await,
+            "a dropped watchdog stopped guarding"
+        );
     }
 
     /// A loop that cannot read the start times is refused, and says why:

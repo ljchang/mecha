@@ -1167,7 +1167,7 @@ with your recs"), except R4, which waited on M1 and was ruled on
   `trusted_output` child's nested program records, but only while no model
   pass reads that join (§7). The build lists every reader of the join and
   asserts none is a model pass.
-- **R10. A watchdog in the launcher** (2026-10-31, taking the
+- **R10. A watchdog over the worker** (2026-10-31, taking the
   recommendation): on a Mac a worker must not outlive a `SIGKILL`ed
   mecha. It was raised by #769's review. Built as §7's watchdog. The other
   option was reaping leftover workers at the next start, which only
