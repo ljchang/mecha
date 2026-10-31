@@ -850,6 +850,11 @@ fn api() -> gate::Owned {
             Owner::Core,
             axum::routing::post(model::cancel),
         )
+        .at(
+            "/api/model/add",
+            Owner::Core,
+            axum::routing::post(model::add),
+        )
         .at("/api/outbox", Owner::Core, get(review::list))
         .at("/api/outbox/{id}", Owner::Core, get(review::detail))
         .at(
@@ -2693,8 +2698,12 @@ mod tests {
             ("GET", "/api/model", false),
             ("POST", "/api/model/use", false),
             ("POST", "/api/model/cancel", false),
+            ("POST", "/api/model/add", false),
             ("POST", "/api/model/use", true),
             ("POST", "/api/model/cancel", true),
+            // An install fetches tens of GB onto the machine: the owner's,
+            // verified, alone (MODEL-CATALOG-DESIGN C4).
+            ("POST", "/api/model/add", true),
         ] {
             let mut req = Request::builder()
                 .method(method)
@@ -2735,6 +2744,25 @@ mod tests {
             response.status(),
             StatusCode::BAD_REQUEST,
             "the owner did not reach the use handler"
+        );
+        let response = test_router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/model/add")
+                    .header("Tailscale-User-Login", "owner@example.com")
+                    .header("x-mecha-request", "1")
+                    .header("sec-fetch-site", "same-origin")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"id":" "}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "the owner did not reach the add handler"
         );
     }
 
