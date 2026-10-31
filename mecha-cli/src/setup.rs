@@ -290,6 +290,9 @@ pub async fn code_interpreter(
         }
         return Ok(None);
     }
+    if named && !cfg.tools.registers(NAME) {
+        eprintln!("mecha: {NAME} not registered — it is turned off in [tools]");
+    }
     if opts.no_code_tool || !(opts.tools.is_empty() || named) || !cfg.tools.registers(NAME) {
         return Ok(None);
     }
@@ -1032,6 +1035,10 @@ fn build(
     if let Some(interpreter) = code {
         if agent.registry().get(mecha_core::tool::code::NAME).is_some() {
             agent.enable_code(interpreter);
+            // And held to the profile after each rebuild, not only this once.
+            if let Some(profile) = opts.tool_profile {
+                agent.narrow_code_by(profile, cfg.outbox.tools.clone());
+            }
         }
     }
 

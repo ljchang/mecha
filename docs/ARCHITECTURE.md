@@ -3619,7 +3619,11 @@ The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
   and `set_outbox` does too, so `recall`, `ask_user` and the TUI's tools,
   inserted after `prepare` from half a dozen front ends, are admitted and
   declared without any of them remembering to. A front end that took `code`
-  off (`withhold_tool`) keeps it off.
+  off (`withhold_tool`) keeps it off. A `--tool-profile` judges `code` alone
+  (`ToolProfile::keeps`, never a second narrowing of the whole registry,
+  which would judge the subagents for the first time), and judges it again
+  after every rebuild (`Agent::narrow_code_by`), so a later read cannot widen
+  it past what the profile kept.
 - **A subagent profile naming `code` fails at launch**, naming the feature
   when it is off or not in the build (`setup::subagent_code_refusal`),
   never with the typo message, since `code` is no tool of the pool a child
