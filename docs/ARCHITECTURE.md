@@ -332,6 +332,43 @@ The model is **hybrid attention** — 11 of 41 layers hold a KV cache, the other
 here (63 tok/s at 108k against 92 at 1k) and why the KV cost is 22 KiB/token
 rather than the 82 the naive per-layer arithmetic predicts.
 
+## The chat model catalog
+
+`mecha_core::catalog`, `mecha model catalog | add | remove`, and the chip's
+**Available to download** (design: `MODEL-CATALOG-DESIGN.md`). The invariants:
+
+- **Compiled in, never fetched.** Every entry is a reviewed pin per file
+  (repository, revision, path, sha256, size) and its preset lines are flags
+  handed to llama-server, so a new model is a pull request. No tool reaches
+  it: installing is the owner's, from the CLI or the owner-only
+  `POST /api/model/add`, which runs `model add --yes --use` as a child.
+- **The record, not the presets file, is the truth.** Installed ids live in
+  `~/.mecha/sidecars/router/catalog` (written through `write_owned`); the
+  presets are always rendered as the base section then one section per
+  recorded id (`router_unit::presets_with_catalog`), so `setup chat` and
+  `features enable --reinstall` keep them. A recorded id whose files are not
+  in place, that this build does not know, that the tier is not offered, or
+  that is the base section's own name, is left out and said — never a
+  section naming a file that is not there. Only `presets_text` is hashed by
+  the router's revision; the catalog's sections are not (`assert_rev`).
+- **Downloads before the switch, and the wait the plan promises.** `add`
+  fetches first, then waits for the router's live holds on every spelling of
+  its address (`router_unit::hold_bases`), then records the id and restarts
+  through `router_unit::install`, which still declines rather than waits for
+  a run that starts in between. The record is edited only after the wait and
+  restored if the restart fails, so a stopped `add` or `remove` can be run
+  again. SIGINT is not captured by the wait: a handler outliving it would
+  leave the restart unstoppable (#350).
+- **Provider entries come from the pin, never `/props`**, since asking an
+  unloaded alias's `/props` loads it. `add` writes `[providers.<entry>]` and,
+  on the default that names this router, `follow_loaded = true` — through
+  `apply_or_add`, so the built-in `local` entry keeps its kind and address in
+  the table that overrides it. `remove` refuses while the default, a
+  fallback, a subagent or a trigger still names the table.
+- **One fit rule.** No entry asks more of a tier than the production chat
+  model does there, to a tenth (`every_offered_tier_has_a_geometry_that_fits`),
+  since the router holds one chat model at a time.
+
 ## Images
 
 `Block::Image` is a fifth variant on `message.rs`'s block type, and it is
@@ -1702,10 +1739,19 @@ module.
   `state.toml` beside `persona.toml`, because the `toml` crate cannot edit a
   file in place and `lock` would otherwise erase the owner's comments.
 - **Unknown keys fail the load; unknown values narrow.** `persona.toml` denies
-  unknown fields. An unknown value in a closed set loads as the narrowest variant
-  (`answers` → `files`, `user_facts` → `off`) and is reported in
-  `Persona::notes`. A persona folder without `state.toml` loads unapproved and
-  of untrusted origin, and `--yes` cannot approve it unread.
+  unknown fields. An unknown value in a closed set loads as the narrowest
+  variant (`answers` → `files`, `user_facts` → `off`, `intensity` → `capped`)
+  and is reported in `Persona::notes`. A persona folder without `state.toml`
+  loads unapproved and of untrusted origin, and `--yes` cannot approve it
+  unread.
+- **`[life]` decides what exists, and an unmet need is a load error**
+  (`PERSONA-LIFE-DESIGN.md` §3.1, `persona::Life::check`). Every part of a
+  persona's world is off by default; `camera` without `world` fails the load
+  naming both, and is never quietly satisfied. A `[life.decay]` number out of
+  range fails by name too, never clamped: unlike an enum it has no narrowest
+  value, and a clamped threshold could loosen pruning as easily as tighten it.
+  The world is `Feature::World`, `part_of = Personas` with no switch of its
+  own (PL26); `enable world` names the `[life]` table instead.
 - **Group membership lives once**, in each persona's `groups`. `groups.toml`
   only declares groups; a persona naming an undeclared group is a broken link.
 - **Links are by name, resolved on load, broken ones named**
@@ -1879,9 +1925,14 @@ module.
   is no model-supplied path to resolve, so nothing to escape the three
   `files/` folders with. `list` follows no symlink, lists no hidden entry,
   and proves every file inside its folder after canonicalising.
-  - `file_read` is inserted *after* `registry_as`, in `setup::persona_agent`,
-    over the chat store's own path. Inside `registry_as`, `answers = "files"`
-    would withhold it: it declares `untrusted_input`, like `document_read`.
+  - `file_read` is built in `setup::persona_agent`, over the chat store's
+    own path, and admitted through `persona::agent::admit_own` (#776): the
+    persona declaration, a read-only form with `Egress::None`, and for
+    `answers = "files"` `Tool::reaches_beyond_persona_files`, which defaults
+    to yes. It declares no, so a files-only persona keeps it though it
+    declares `untrusted_input`. **The keeping is by declaration, never by
+    position**: a tool inserted past the checks is a bug that
+    `persona_agent_admits_every_tool_through_the_persona_checks` refuses.
     It is never in the assistant's registry.
   - The whole collection rides before the chat's first reply, when it fits
     about a quarter of the window (D15); otherwise the list of files does.
@@ -2133,8 +2184,10 @@ module.
       unreadable counts as untrusted). The chat comes from the stored
       episode, never from the model, and a chat id that is not a session id
       is refused before it can become a path.
-    - `answers = "files"` does not withhold them: they are inserted past
-      `registry_as`, and the `[memory]` switches are memory's control. A
+    - `answers = "files"` does not withhold them: each declares
+      `reaches_beyond_persona_files` false and passes `admit_own` (#776),
+      the `[memory]` switches being memory's control, and what may enter
+      memory the provenance gate's. A
       files-only `memory_read` returns the owner's words and the
       persona's; each tool result reads as left out where it stood, and its
       call and the harness's folded blocks are dropped (`words_only`, owner

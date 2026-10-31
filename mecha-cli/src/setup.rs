@@ -2487,14 +2487,10 @@ pub fn persona_agent(
         pinned.name.clone(),
         extractor,
     );
-    // It skips `registry_as`'s refusal of anything that can aim: so it
-    // must never be able to, and is left out — in a release build too —
-    // if it ever could (review of #459).
-    if mecha_core::tool::Tool::capabilities(&reader).egress == mecha_core::tool::Egress::None {
-        tools.registry.insert(Arc::new(reader));
-    } else {
-        eprintln!("mecha: file_read can send, so this persona chat goes without it");
-    }
+    // Past `registry_as`, through its checks all the same (#776): a form
+    // that could send is refused by name — in a release build too (review
+    // of #459).
+    persona::admit_own(&mut tools, Arc::new(reader), &pinned.name, &pinned.settings);
     // Its search beside it, on the same terms (§10.4).
     let search = mecha_core::persona::search::FileSearch::new(
         store.to_path_buf(),
@@ -2502,19 +2498,16 @@ pub fn persona_agent(
         file_embedder(&bound.config),
         max_doc_bytes,
     );
-    if mecha_core::tool::Tool::capabilities(&search).egress == mecha_core::tool::Egress::None {
-        tools.registry.insert(Arc::new(search));
-    } else {
-        eprintln!("mecha: file_search can send, so this persona chat goes without it");
-    }
+    persona::admit_own(&mut tools, Arc::new(search), &pinned.name, &pinned.settings);
     // Its own memory, on the same terms (§9.7, "on demand"): offered when
     // the pinned version's memory is on, so the tool list — the front of the
     // cached prefix — never changes mid-chat; each call reads the switches
     // live, so turning memory off reaches the chat at its next call.
-    // Inserted past `registry_as`, so `answers = "files"` does not withhold
-    // them: the `[memory]` switches are memory's control, and a files-only
-    // `memory_read` returns the owner's words and the persona's, never what
-    // a tool brought back (owner ruling 2026-10-02).
+    // `answers = "files"` keeps them — each declares it reaches nothing
+    // beyond the persona's own store: the `[memory]` switches are memory's
+    // control, and a files-only `memory_read` returns the owner's words and
+    // the persona's, never what a tool brought back (owner ruling
+    // 2026-10-02).
     use mecha_core::persona::memory_tools;
     if memory_tools::offers_search(&pinned.settings) {
         let search = memory_tools::MemorySearch::new(
@@ -2523,11 +2516,7 @@ pub fn persona_agent(
             file_embedder(&bound.config),
             bound.config.agent.timezone(),
         );
-        if mecha_core::tool::Tool::capabilities(&search).egress == mecha_core::tool::Egress::None {
-            tools.registry.insert(Arc::new(search));
-        } else {
-            eprintln!("mecha: memory_search can send, so this persona chat goes without it");
-        }
+        persona::admit_own(&mut tools, Arc::new(search), &pinned.name, &pinned.settings);
     }
     if memory_tools::offers_read(&pinned.settings) {
         let read = memory_tools::MemoryRead::new(
@@ -2535,11 +2524,7 @@ pub fn persona_agent(
             pinned.name.clone(),
             bound.config.agent.timezone(),
         );
-        if mecha_core::tool::Tool::capabilities(&read).egress == mecha_core::tool::Egress::None {
-            tools.registry.insert(Arc::new(read));
-        } else {
-            eprintln!("mecha: memory_read can send, so this persona chat goes without it");
-        }
+        persona::admit_own(&mut tools, Arc::new(read), &pinned.name, &pinned.settings);
     }
     let system = persona::system_prompt(pinned)?;
     let ctx = bound.agent.ctx();
@@ -3088,6 +3073,32 @@ mod surface_only_tests {
 
 #[cfg(test)]
 mod tests {
+    /// Every tool `persona_agent` builds over the persona's own store goes
+    /// through `persona::admit_own` (#776): the rule lives where the compiler
+    /// cannot see it, and a bare insert there skips the persona declaration,
+    /// the read-only refusal and `answers = "files"` without a test noticing
+    /// — the four tools it builds today would pass either way (review of
+    /// #778).
+    #[test]
+    fn persona_agent_admits_every_tool_through_the_persona_checks() {
+        let src = include_str!("setup.rs");
+        let start = src
+            .find("pub fn persona_agent(")
+            .expect("persona_agent is here");
+        let body = &src[start..];
+        let body = &body[..body.find("\n}\n").expect("persona_agent ends")];
+        assert!(
+            !body.contains("registry.insert("),
+            "persona_agent inserts a tool directly; use persona::admit_own"
+        );
+        assert_eq!(
+            body.matches("persona::admit_own(").count(),
+            4,
+            "a tool was added to or removed from the persona's own store; \
+             check it goes through `admit_own` and bump the count"
+        );
+    }
+
     /// A routed name under a server that did not start is that server
     /// down, not a typo; a typo under a live server, or a name under no
     /// server, still warns (the owner's fresh Mac, 2026-10-14).

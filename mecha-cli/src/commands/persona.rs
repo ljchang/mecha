@@ -568,6 +568,7 @@ fn summary_json(store: &Store, lib: &Library, p: &Persona) -> serde_json::Value 
         "safety": p.settings.safety,
         "files": p.settings.files,
         "memory": p.settings.memory,
+        "life": p.settings.life,
         "status": p.state.status,
         "origin": p.state.origin,
         "locked": p.state.locked,
@@ -1278,6 +1279,9 @@ mod tests {
         let (lib, _) = Library::load(&lib_dir);
         let summary = summary_json(&loaded, &lib, loaded.get("ada").unwrap());
         assert!(summary.get("echo").is_none(), "{summary}");
+        // The one place the `[life]` switches are read back per persona:
+        // the settings form does not carry them yet (review of #775).
+        assert_eq!(summary["life"]["world"], false, "{summary}");
         std::fs::remove_dir_all(dir).ok();
     }
 

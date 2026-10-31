@@ -525,6 +525,21 @@ pub trait Tool: Send + Sync {
         self.for_persona()
     }
 
+    /// For a tool built over one persona's own store
+    /// (`persona::agent::admit_own`): whether what it returns can come from
+    /// beyond that persona's files and memory — content an `answers =
+    /// "files"` persona is never offered (`docs/PERSONA-LIFE-DESIGN.md` §13).
+    ///
+    /// **Defaults to yes**, the fail-closed direction: a per-persona tool
+    /// that forgets to say is withheld from a files-only persona. Not
+    /// [`Capabilities::untrusted_input`], which the persona's file reader
+    /// declares and keeps (the owner's ruling of 2026-10-02). Read on that
+    /// path only; a tool from the install's pool is still judged by
+    /// `untrusted_input` in `registry_as`.
+    fn reaches_beyond_persona_files(&self) -> bool {
+        true
+    }
+
     /// Does this tool do its work in a conversation of its own?
     ///
     /// The fourth method in the family with

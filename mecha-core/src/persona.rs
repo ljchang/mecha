@@ -192,6 +192,8 @@ pub struct Settings {
     pub files: FilesSettings,
     #[serde(default)]
     pub memory: MemorySettings,
+    #[serde(default)]
+    pub life: Life,
 }
 
 /// `[tools]`: what the owner wants the persona to have. Intersected, when a
@@ -328,12 +330,193 @@ impl Default for MemorySettings {
     }
 }
 
+/// How intense the events of a persona's simulated life may be
+/// (PERSONA-LIFE-DESIGN.md §4.3, PL3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Intensity {
+    /// Major life events (illness, breakups, deaths) are open.
+    Full,
+    /// The narrower, so an unreadable value lands here.
+    #[default]
+    #[serde(other)]
+    Capped,
+}
+
+/// `[life]` (PERSONA-LIFE-DESIGN.md §3.1, PL28): every part of a persona's
+/// world is a switch, off by default, so a persona with none on is the
+/// persona of before. Owner-written and outside `persona_propose`'s schema.
+///
+/// A switch decides what *exists* — tools, blocks, nightly runs — and a
+/// dependency left unmet is a load error naming the missing switch
+/// ([`Life::check`]), never quietly satisfied.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Life {
+    /// Her simulated day, events, arcs and the today-block (§4–§5).
+    #[serde(default)]
+    pub world: bool,
+    /// Her own network (§6); needs `world`.
+    #[serde(default)]
+    pub people: bool,
+    /// Her model of the owner's network (§7); needs `[memory] user_facts`
+    /// not `"off"`.
+    #[serde(default)]
+    pub my_people: bool,
+    /// Interests and feeds (§8); needs `world`.
+    #[serde(default)]
+    pub news: bool,
+    /// The camera roll and `share_photo` (§10); needs `world`.
+    #[serde(default)]
+    pub camera: bool,
+    /// The in-app feed (§11); needs `camera`.
+    #[serde(default)]
+    pub feed: bool,
+    /// She may message first (§12, PL18); needs `world`.
+    #[serde(default)]
+    pub proactive: bool,
+    /// Article chats remembered in full (§8.4, PL27); needs `news`.
+    #[serde(default)]
+    pub remember_articles: bool,
+    #[serde(default)]
+    pub intensity: Intensity,
+    /// Refuse web searches naming the owner's people (§7.5, PL14); needs
+    /// `my_people`.
+    #[serde(default)]
+    pub name_search_filter: bool,
+    #[serde(default)]
+    pub decay: Decay,
+}
+
+impl Life {
+    /// Each switch that is on with what it needs off, as the load error that
+    /// names both. `memory` is the same file's `[memory]`, which `my_people`
+    /// is built over.
+    pub fn check(&self, memory: &MemorySettings) -> Result<()> {
+        let needs = [
+            ("people", self.people, "world", self.world),
+            ("news", self.news, "world", self.world),
+            ("camera", self.camera, "world", self.world),
+            ("feed", self.feed, "camera", self.camera),
+            ("proactive", self.proactive, "world", self.world),
+            (
+                "remember_articles",
+                self.remember_articles,
+                "news",
+                self.news,
+            ),
+            (
+                "name_search_filter",
+                self.name_search_filter,
+                "my_people",
+                self.my_people,
+            ),
+        ];
+        for (part, on, need, need_on) in needs {
+            if on && !need_on {
+                bail!("[life] {part} needs [life] {need} = true");
+            }
+        }
+        // Memory of the owner's people is memory of the owner: with the
+        // writer recording no facts about them, it would be stored by
+        // another route (§3.1).
+        if self.my_people && memory.user_facts == UserFacts::Off {
+            bail!("[life] my_people needs [memory] user_facts to be \"own\" or \"shared\", not \"off\"");
+        }
+        self.decay.check()
+    }
+}
+
+/// `[life.decay]` (§9, PL7): the world's decay and pruning knobs, read live.
+/// Every value is a guess until the pruning counts say otherwise.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Decay {
+    /// A momentary world event.
+    #[serde(default = "Decay::event_half_life")]
+    pub event_half_life_days: f64,
+    /// An ongoing situation.
+    #[serde(default = "Decay::arc_half_life")]
+    pub arc_half_life_days: f64,
+    /// The strength multiplier each time a row comes up again.
+    #[serde(default = "Decay::retell")]
+    pub retell_boost: f64,
+    /// World rows below this strength are deleted, owner-origin rows never.
+    #[serde(default = "Decay::prune_below")]
+    pub world_prune_below: f64,
+}
+
+impl Default for Decay {
+    fn default() -> Decay {
+        Decay {
+            event_half_life_days: Decay::event_half_life(),
+            arc_half_life_days: Decay::arc_half_life(),
+            retell_boost: Decay::retell(),
+            world_prune_below: Decay::prune_below(),
+        }
+    }
+}
+
+impl Decay {
+    fn event_half_life() -> f64 {
+        4.0
+    }
+    fn arc_half_life() -> f64 {
+        21.0
+    }
+    fn retell() -> f64 {
+        1.5
+    }
+    fn prune_below() -> f64 {
+        0.05
+    }
+
+    /// A value out of range is a load error naming the key, never clamped:
+    /// unlike `intensity`, a number has no narrowest value to land on, and a
+    /// clamped threshold could as easily loosen pruning as tighten it (§9).
+    fn check(&self) -> Result<()> {
+        let rules = [
+            (
+                "event_half_life_days",
+                self.event_half_life_days,
+                self.event_half_life_days > 0.0,
+                "a number of days above 0",
+            ),
+            (
+                "arc_half_life_days",
+                self.arc_half_life_days,
+                self.arc_half_life_days > 0.0,
+                "a number of days above 0",
+            ),
+            (
+                "retell_boost",
+                self.retell_boost,
+                self.retell_boost >= 1.0,
+                "at least 1, since below 1 a retelling would weaken a row",
+            ),
+            (
+                "world_prune_below",
+                self.world_prune_below,
+                (0.0..=1.0).contains(&self.world_prune_below),
+                "a strength from 0 to 1",
+            ),
+        ];
+        for (key, value, ok, want) in rules {
+            if !(value.is_finite() && ok) {
+                bail!("[life.decay] {key} = {value} is out of range: it must be {want}");
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Closed-set values in a `persona.toml` that this binary does not know.
 /// `serde(other)` has already narrowed them; this is what makes it audible.
 fn unknown_values(raw: &toml::Table) -> Vec<String> {
-    let checks: [(&str, &str, &[&str]); 2] = [
+    let checks: [(&str, &str, &[&str]); 3] = [
         ("files", "answers", &["files", "open"]),
         ("memory", "user_facts", &["own", "shared", "off"]),
+        ("life", "intensity", &["capped", "full"]),
     ];
     let mut out = Vec::new();
     for (table, key, known) in checks {
@@ -1111,6 +1294,7 @@ fn load_persona(dir: &Path, name: &str) -> Result<Persona> {
     let table: toml::Table = toml::from_str(&raw)?;
     let mut notes = unknown_values(&table);
     notes.extend(retired_keys(&table));
+    settings.life.check(&settings.memory)?;
     if settings.display.chars().count() > MAX_DISPLAY || settings.display.contains(['\n', '\t']) {
         bail!("display is one line of at most {MAX_DISPLAY} characters");
     }
@@ -1355,7 +1539,9 @@ fn quoted_list(items: &[String]) -> String {
 
 /// The commented `persona.toml` a new persona starts with. Every switch is
 /// written out at its default, so the owner reads what is on rather than
-/// having to know it.
+/// having to know it. Tuning numbers are not switches and stay out:
+/// `[life.decay]` written here would freeze today's guesses into every new
+/// persona, where a later change to the defaults could never reach them.
 fn render_settings(new: &NewPersona, tools: &[String], answers: Answers) -> String {
     let opt = |key: &str, v: &Option<String>, hint: &str| match v {
         Some(v) => format!("{key:<12} = {}\n", quoted(v)),
@@ -1401,7 +1587,19 @@ fn render_settings(new: &NewPersona, tools: &[String], answers: Answers) -> Stri
          user_facts  = \"shared\"   # own | shared | off\n\
          about_me    = true\n\
          self_update = false      # let identity.md's sections evolve on their own\n\
-         fixed       = []         # sections that never evolve; Core never does\n",
+         fixed       = []         # sections that never evolve; Core never does\n\
+         \n\
+         [life]   # a life of its own, every part off; docs/PERSONA-LIFE-DESIGN.md §3.1\n\
+         world     = false        # its simulated day and what happens in it\n\
+         people    = false        # its own network; needs world\n\
+         my_people = false        # what it learns of your people; needs user_facts\n\
+         news      = false        # feeds you register; needs world\n\
+         camera    = false        # a camera roll; needs world\n\
+         feed      = false        # an in-app feed; needs camera\n\
+         proactive = false        # it may message first; needs world\n\
+         remember_articles  = false   # article chats remembered in full; needs news\n\
+         name_search_filter = false   # no web searches naming your people; needs my_people\n\
+         intensity = \"capped\"     # capped | full: whether major life events happen\n",
         name = new.name,
         display = quoted(&new.display),
         character = opt(
@@ -1527,6 +1725,7 @@ fn create_with(
             safety: Safety::default(),
             files: FilesSettings::default(),
             memory: MemorySettings::default(),
+            life: Life::default(),
         },
         state: State {
             status: Status::Approved,
@@ -2193,7 +2392,9 @@ const UNBUILT: &str = "Not built yet: saved now, used once it is.";
 
 /// `persona.toml` as a form (`tomlform`): every key [`Settings`] reads
 /// except `voice_speed`, a number the form has no field kind for (it is
-/// edited as text). Edited in place — the owner's comments stay — and saved
+/// edited as text), and `[life]`, which joins once `world` does something,
+/// so its help text is true when it ships (its `[life.decay]` knobs are
+/// numbers too). Edited in place — the owner's comments stay — and saved
 /// through [`edit_settings`].
 pub fn settings_form(c: &FormChoices) -> crate::tomlform::Form {
     use crate::tomlform::{Field, Form, Kind, Opt, Section};
@@ -2866,6 +3067,142 @@ mod tests {
         assert_eq!(p.notes.len(), 2, "{:?}", p.notes);
         assert!(p.notes[0].contains("opne"));
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Load `mara` with her `[life]` table replaced by `life` (and `edit`
+    /// applied to the rest), as the store would: the persona, or every load
+    /// error joined.
+    fn load_life(life: &str, edit: &dyn Fn(String) -> String) -> Result<Persona, String> {
+        let dir = scratch();
+        create(&dir, &no_lib(), new("mara")).unwrap();
+        let path = dir.join("mara/persona.toml");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let (before, _) = text
+            .split_once("\n[life]")
+            .expect("the starter writes [life]");
+        std::fs::write(&path, format!("{}\n{life}", edit(before.to_string()))).unwrap();
+        let store = Store::load(&dir);
+        let out = match store.get("mara") {
+            Some(p) => Ok(p.clone()),
+            None => Err(store
+                .errors()
+                .iter()
+                .map(|e| e.why.clone())
+                .collect::<Vec<_>>()
+                .join("; ")),
+        };
+        std::fs::remove_dir_all(dir).ok();
+        out
+    }
+
+    #[test]
+    fn a_new_persona_writes_every_life_switch_off_and_loads_as_before() {
+        let dir = scratch();
+        create(&dir, &no_lib(), new("mara")).unwrap();
+        let text = std::fs::read_to_string(dir.join("mara/persona.toml")).unwrap();
+        let p = Store::load(&dir).get("mara").unwrap().clone();
+        assert_eq!(p.settings.life, Life::default());
+        assert!(p.notes.is_empty(), "{:?}", p.notes);
+        // Every switch is written out, so the owner reads what is off.
+        let written: toml::Table = toml::from_str(&text).unwrap();
+        let written = written["life"].as_table().unwrap();
+        let typed = serde_json::to_value(Life::default()).unwrap();
+        for key in typed.as_object().unwrap().keys().filter(|k| *k != "decay") {
+            assert!(written.contains_key(key), "the starter leaves out `{key}`");
+        }
+        std::fs::remove_dir_all(dir).ok();
+        // A file written before `[life]` existed has every part off.
+        assert_eq!(
+            load_life("", &|t| t).unwrap().settings.life,
+            Life::default()
+        );
+    }
+
+    #[test]
+    fn an_unknown_intensity_narrows_to_capped_and_says_so() {
+        let p = load_life("[life]\nintensity = \"fulll\"\n", &|t| t).unwrap();
+        assert_eq!(p.settings.life.intensity, Intensity::Capped);
+        assert_eq!(p.notes.len(), 1, "{:?}", p.notes);
+        assert!(
+            p.notes[0].contains("[life] intensity = \"fulll\""),
+            "{:?}",
+            p.notes
+        );
+        let p = load_life("[life]\nintensity = \"full\"\n", &|t| t).unwrap();
+        assert_eq!(p.settings.life.intensity, Intensity::Full);
+        assert!(p.notes.is_empty(), "{:?}", p.notes);
+    }
+
+    #[test]
+    fn a_life_part_without_what_it_needs_fails_the_load_naming_both() {
+        for (part, need) in [
+            ("people", "world"),
+            ("news", "world"),
+            ("camera", "world"),
+            ("feed", "camera"),
+            ("proactive", "world"),
+            ("remember_articles", "news"),
+            ("name_search_filter", "my_people"),
+        ] {
+            let why = load_life(&format!("[life]\n{part} = true\n"), &|t| t).unwrap_err();
+            assert!(
+                why.contains(&format!("[life] {part} needs [life] {need} = true")),
+                "{part}: {why}"
+            );
+        }
+        // Never satisfied quietly: with what it needs written, it loads,
+        // and nothing else was turned on.
+        let p = load_life("[life]\nworld = true\ncamera = true\nfeed = true\n", &|t| t).unwrap();
+        let life = &p.settings.life;
+        assert!(life.world && life.camera && life.feed);
+        assert!(!life.people && !life.news && !life.proactive);
+    }
+
+    #[test]
+    fn my_people_needs_facts_about_the_owner_not_a_world() {
+        let p = load_life("[life]\nmy_people = true\n", &|t| t).unwrap();
+        assert!(p.settings.life.my_people && !p.settings.life.world);
+        let why = load_life("[life]\nmy_people = true\n", &|t| {
+            t.replace("user_facts  = \"shared\"", "user_facts  = \"off\"")
+        })
+        .unwrap_err();
+        assert!(
+            why.contains("[life] my_people needs [memory] user_facts"),
+            "{why}"
+        );
+    }
+
+    #[test]
+    fn a_decay_value_out_of_range_is_refused_by_name_never_clamped() {
+        for (line, key) in [
+            ("event_half_life_days = -1.0", "event_half_life_days"),
+            ("arc_half_life_days = 0.0", "arc_half_life_days"),
+            ("event_half_life_days = nan", "event_half_life_days"),
+            ("retell_boost = 0.5", "retell_boost"),
+            ("world_prune_below = 1.5", "world_prune_below"),
+            ("world_prune_below = -0.1", "world_prune_below"),
+        ] {
+            let why = load_life(&format!("[life.decay]\n{line}\n"), &|t| t).unwrap_err();
+            assert!(
+                why.contains(&format!("[life.decay] {key} =")) && why.contains("out of range"),
+                "{line}: {why}"
+            );
+        }
+        let p = load_life(
+            "[life.decay]\nevent_half_life_days = 2.5\nworld_prune_below = 0\n",
+            &|t| t,
+        )
+        .unwrap();
+        let decay = p.settings.life.decay;
+        assert_eq!(decay.event_half_life_days, 2.5);
+        assert_eq!(decay.world_prune_below, 0.0);
+        assert_eq!(
+            decay.arc_half_life_days,
+            Decay::default().arc_half_life_days
+        );
+        // An unknown knob is an unknown key, as anywhere else in the file.
+        let why = load_life("[life.decay]\nhalf_life = 3.0\n", &|t| t).unwrap_err();
+        assert!(why.contains("half_life"), "{why}");
     }
 
     #[test]

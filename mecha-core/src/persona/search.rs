@@ -515,6 +515,11 @@ impl Tool for FileSearch {
         Some(self)
     }
 
+    /// The persona's own folders, as `file_read` reads them.
+    fn reaches_beyond_persona_files(&self) -> bool {
+        false
+    }
+
     fn effect(&self) -> Option<crate::tool::effect::Effect> {
         Some(crate::tool::effect::Effect::Read)
     }
