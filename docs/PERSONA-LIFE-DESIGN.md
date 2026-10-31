@@ -374,6 +374,17 @@ threshold per persona once the access log says where it should sit. The
     the switch is on**, and recall admits a record only when it carries that
     mark *and* the switch is on now. Turning the switch off stops recall at
     once. Turning it on admits only what is written from then on.
+  - **A live read that fails falls toward off.** `[life.decay]` is a
+    subtable of `[life]`, and a bad decay value is a load error (§9). So an
+    owner's edit can leave the live `persona.toml` unreadable while the
+    chat's pinned snapshot still parses with `remember_articles = true`. An
+    unreadable live file then reads as **every behaviour setting off**: no
+    recall under `remember_articles`, `intensity` at `"capped"`, and decay at
+    the shipped defaults. It never falls back to the pinned value or the last
+    value read, and the persona's notes say the file could not be read. That
+    is `memory_tools::live`'s pattern, where a `None` refuses rather than
+    guessing, and it keeps the revoke-in-a-hurry promise true even when the
+    revoking edit has a typo elsewhere.
 - **The page shows them together**, each with a line on what it adds and,
   for `news` and `remember_articles`, what it costs.
 
@@ -561,7 +572,9 @@ persona's pinned model (`PERSONA-DESIGN.md` §12.6) against the router's
 resident one, it answers `Use` when they match or the router is empty and
 `Wait` when another model is resident. The narrator calls it as-is. For a
 persona with no pinned model that means the resident model narrates, so the
-narrator's model is not always one the persona chats on. Otherwise it waits for a later night, never
+narrator's model is not always one the persona chats on. A group-level
+narration pass (§3.2) has no one persona, so, like the group-level extractor
+(§8.5), it asks with no pin and uses whatever is resident. Otherwise it waits for a later night, never
 swapping a model (the 2026-09-27 ruling). Its inputs are owner files, code, typed records from shelves A and B
 (§8), and **only those world rows whose origin is clean**. Chat-sourced rows
 from a clean stretch qualify. A row written under taint does not, *even after
@@ -1290,7 +1303,12 @@ the headline never rides in the today-block.
     and recalled without a tap.
     - **Its capacity is stated, like every clean crossing in this design.**
       `item_id` and `interest` come from the chat's recorded `news_read`
-      calls and the item's feed, and `discussed_at` from the transcript, all
+      calls and the item's feed. **`item_id` is a harness-minted opaque row
+      key**, never the feed's GUID, link or slug, so no feed-authored string
+      reaches a prompt or the clean episode. That is §8.2's "stored, never
+      rendered" rule for feed-chosen ids, with the `mail_triage::Record::file_name`
+      precedent. The model reads these ids from one place, the today-block's
+      interest lines ("good news about [interest] — item 41"), and `discussed_at` from the transcript, all
       supplied by code (0 attacker bits). Only `owner_reaction` is chosen by
       the writer, from a closed set of four (2 bits). So the ceiling is **2
       bits per episode**.
@@ -1663,6 +1681,7 @@ dropped the farewell check (D25), so it would need its own evidence first.
 | Routine, sampler, storylets | code | yes | only once told | yes |
 | Narrator over clean inputs | model, clean | yes | only once told | yes |
 | Her mentions in a clean chat | model, clean | as people and stated plans | yes | yes |
+| Owner's words in a clean chat | `Stated` facts, origin clean | no; the owner's people live in `memory.db` (§7.1) | yes, as facts about the owner and the owner's people | yes |
 | Her mentions after a taint rise | model, untrusted | as candidates | as candidates; with `remember_articles`, recalled (marked, badged) | only after approval; with `remember_articles`, yes |
 | Owner's words, after a taint rise | model, untrusted (whatever the record's `Stated`/`Inferred` kind) | no; the owner's people live in `memory.db` (§7.1) | by default as candidates (PL10, ruled); with `remember_articles`, recalled, owner's people included (PL27: no carve-out), marked and badged | by default only after approval; with `remember_articles`, yes |
 | The `told` flag, from a tainted stretch | the stretch's taint | set only, never cleared, source recorded | — | it shapes what reaches the today-block |
@@ -1932,7 +1951,10 @@ gain rows is **`PANE_FEATURE`**, which keys on `view/sub`:
 `part_of = Personas` those rows carry the world part's id, which is on
 exactly when personas are. The per-persona `[life]` switch is a second gate
 in the pane itself: a persona with `world` off shows the pane's "off for
-this persona" state, never a route error. It is
+this persona" state, never a route error. So the rows change no behaviour
+of their own, and the real gate is the per-persona switch. They exist so the
+registry's completeness check knows these panes and never reads them as
+shown by omission. The `PANE_FEATURE` entry is
 the one #654 missed, and a miss there fails **open**: a missing row reads as
 shown, so the pane renders with the world switched off and its route answers
 `feature_off`. `QUEUE_FEATURE` gains a row if any of the world's waiting
