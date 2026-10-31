@@ -331,8 +331,18 @@ event_half_life_days     = 4     # a momentary world event
 arc_half_life_days       = 21    # an ongoing situation
 retell_boost             = 1.5   # strength multiplier each time it comes up again
 world_prune_below        = 0.05  # world rows below this strength are deleted
-memory_recall_below      = 0.05  # memory below this strength leaves recall (kept in the store)
+
+[memory]                   # memory's own table (PERSONA-DESIGN §4.3), not [life]
+recall_below             = 0      # PL7: memory below this strength leaves recall; 0 = off
 ```
+
+`[memory] recall_below` lives in memory's table because memory exists for
+every persona, with or without a world. Its default is **off**, so a persona
+with no `[life]` part on is exactly the persona of today, and no existing
+persona's recall changes on upgrade. That also matches D28: measure memory
+in use, and read the report before any ranking change. The owner sets a
+threshold per persona once the access log says where it should sit. The
+`[life.decay]` knobs govern only the world.
 
 - **A switch decides what exists, not what is refused.** A tool whose
   switch is off is never built into that persona's registry: `news_read`
@@ -357,6 +367,13 @@ memory_recall_below      = 0.05  # memory below this strength leaves recall (kep
     (`setup::persona_agent`: "turning memory off reaches the chat at its
     next call"). `remember_articles` in particular is the one an owner may
     want to revoke in a hurry, and turning it off stops the next recall.
+  - **But `remember_articles` never reaches backwards.** Read live, it would
+    also work in the other direction: switching it on after weeks of `news`
+    would admit every candidate already stored from past article chats, a
+    backlog nobody reviewed. So the writer **marks each record written while
+    the switch is on**, and recall admits a record only when it carries that
+    mark *and* the switch is on now. Turning the switch off stops recall at
+    once. Turning it on admits only what is written from then on.
 - **The page shows them together**, each with a line on what it adds and,
   for `news` and `remember_articles`, what it costs.
 
@@ -484,7 +501,14 @@ activity, and a who-was-present distribution from the Who file. Each day:
 1. Place the routine's anchors (each drawn against its probability).
 2. Fill the gaps from the chain, conditioned on day type and cell.
 3. Draw who was present for each episode from her network (§6), weighted by
-   closeness and the Who file's distribution for that activity.
+   closeness and the Who file's distribution for that activity. **Only
+   clean-origin people are cast**, by the sampler and by the director (§4.3).
+   A person who entered her network from a tainted stretch is never drawn
+   into a simulated day. A derived row's origin is the union of its inputs',
+   so a clean `days` or `events` row never carries an untrusted person. The
+   narrator also receives people as ids and closed fields only, so a
+   person's description line never crosses into its prompt (§4.4, and §5's
+   ids-not-names rule).
 
 Seeded per persona per day (a seeded draw in `sample.rs`'s manner, without
 widening that module's holdout role), so a day is reproducible and a
@@ -1025,7 +1049,7 @@ These are third parties who never agreed to be in a database.
 | Shelf | Holds | Produced by | Trust | Drives the world? | Enters memory? |
 |---|---|---|---|---|---|
 | **A — parsed facts** | Scores, airdates, weather, release dates, new papers in a category | **Code**, from structured sources (sports and TV listings APIs, the weather service, arXiv metadata), parsed **into closed types with refusal** (below) | Clean only as rendered: integers, dates, registry ids, closed taxonomies | Yes | Yes |
-| **B — typed gist** | `{kind, tone, entity}` for prose feeds, plus fields code supplies (below) | A quarantined pass that sees **only the article** (`quarantine.rs`), under a schema fixed in code | Clean by capacity, under the stated bit ceiling | Minor events only; serious kinds (deaths, disasters) need shelf A or stay on C | As pointers |
+| **B — typed gist** | `{kind, tone, entity}` for prose feeds, plus fields code supplies (below) | A quarantined pass that sees **only the article** and that feed's candidate list of public names (`quarantine.rs`), under a schema fixed in code | Clean by capacity, under the stated bit ceiling | Minor events only; serious kinds (deaths, disasters) need shelf A or stay on C | As pointers |
 | **C — prose** | Headline, a short neutral summary, a link | The same pass | **Untrusted**; expires in ~five days | Never | Never as text |
 
 **Shelf A is clean only because its parse is closed, and it is built first,
@@ -1287,7 +1311,7 @@ the headline never rides in the today-block.
     - **The live total is not bounded by an expiry**, unlike shelves A and B,
       because typed episodes are memory and persist. It is 6 bits × the days
       an episode stays recalled, bounded by memory's own soft-pruning
-      (`memory_recall_below`, §9). The document states that rather than
+      (`[memory] recall_below`, §9). The document states that rather than
       giving a live ceiling it cannot have.
     - **Transparent endorsement does not hold here, and that is stated.**
       The writer that picks the reaction sees the article-steered turns *and*
@@ -1484,7 +1508,7 @@ comes up again** — retrieval strengthens (`PERSONA-MEMORY-TIMESCALES-RESEARCH.
 none for state.
 
 **The knobs are the owner's, per persona** (ruled, §16 PL7): the half-lives,
-the retelling boost and both thresholds sit in `[life.decay]` (§3.1),
+the retelling boost and the world threshold sit in `[life.decay]`, and memory's recall threshold in `[memory]` (§3.1),
 owner-written and outside `persona_propose`'s schema, and are read live. The
 defaults are this design's guesses until D28's access log and the world's own
 pruning counts show where they should sit. A value out of range (a negative
@@ -1505,8 +1529,12 @@ entirely: they never decay.
   simulation, and deleting it costs nothing anyone saw. A *told* event was
   seen. It may be pruned because its episode carries **a snapshot** (§5):
   kind, date, people ids and the narration, everything recall needs. That
-  holds for a candidate episode too: a told world event in a stretch after a
-  `news_read` gets a free-text episode, which is a candidate (§8.4). (The
+  licence needs a `told` with a **clean** source, which a candidate episode
+  never has: an episode is a candidate exactly when its stretch was tainted,
+  and the `told` from that stretch is tainted too. So a told event whose only
+  episode is a candidate prunes on its ordinary score, under the exception
+  below, never on its snapshot. The snapshot licence is live only for an
+  event also mentioned in a clean chat. (The
   clean typed episode PL23 admits for the article itself carries no snapshot.
   It is four fields about an item, not about a world event, so it never
   licenses a world row's prune.) Until the owner approves it, nothing about the
@@ -1635,8 +1663,8 @@ dropped the farewell check (D25), so it would need its own evidence first.
 | Routine, sampler, storylets | code | yes | only once told | yes |
 | Narrator over clean inputs | model, clean | yes | only once told | yes |
 | Her mentions in a clean chat | model, clean | as people and stated plans | yes | yes |
-| Her mentions after a taint rise | model, untrusted | as candidates | as candidates | only after approval |
-| Owner's words, after a taint rise | model, untrusted (whatever the record's `Stated`/`Inferred` kind) | no; the owner's people live in `memory.db` (§7.1) | as candidates (today's rule, PL10's recommendation); PL27 does not reach the owner's network | only after approval |
+| Her mentions after a taint rise | model, untrusted | as candidates | as candidates; with `remember_articles`, recalled (marked, badged) | only after approval; with `remember_articles`, yes |
+| Owner's words, after a taint rise | model, untrusted (whatever the record's `Stated`/`Inferred` kind) | no; the owner's people live in `memory.db` (§7.1) | by default as candidates (PL10, ruled); with `remember_articles`, recalled, owner's people included (PL27: no carve-out), marked and badged | by default only after approval; with `remember_articles`, yes |
 | The `told` flag, from a tainted stretch | the stretch's taint | set only, never cleared, source recorded | — | it shapes what reaches the today-block |
 | Shelf A | code, closed types only | yes | yes | its closed fields; shape-matched ids never |
 | Shelf B | quarantined, typed | minor events | as pointers | yes |
@@ -1915,7 +1943,10 @@ the nightly job's switch (steps 3 and 5), the camera roll (step 6) and the
 Feed tab (step 7).
 
 1. **A day.** The `[life]` switches (§3.1), all off by default, with
-   dependencies refused by name; the routine (owner-approved), the ATUS
+   dependencies refused by name, and `intensity`'s row in
+   `persona::unknown_values` beside its `#[serde(other)]`. The attribute
+   narrows; only that hand-written row reports the note, so it is the second
+   of two edits; the routine (owner-approved), the ATUS
    table, the sampler,
    `world.db` with `days` and `state`, and a today-block holding only what she
    is doing now, as its own run note with its stem pair registered in all
