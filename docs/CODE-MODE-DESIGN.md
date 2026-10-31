@@ -675,6 +675,26 @@ attacker selects from their own text can be an address; that is a
     `ARCHITECTURE.md` §Code mode's interpreter. There, `preflight` also asks
     the kernel what the live worker's profile denies, because a launcher
     that dropped the profile would otherwise pass it.
+  - **On a Mac a watchdog stands in for `--die-with-parent`** (R10).
+    bwrap takes the worker down with a killed mecha. The Seatbelt chain is
+    all `exec`s (`env -i` → `sandbox-exec` → worker), so the pool's kill on
+    drop is the only thing that ends a worker, and a `SIGKILL`ed mecha
+    never runs it. A worker computing at that moment never reads its
+    stdin's EOF, and the wall clock lived in the host that died.
+    - So the launcher starts a loop before it `exec`s (`monty::WATCHDOG`).
+      Once a second the loop checks, with the `kill -0` builtin, that the
+      worker and mecha are still alive, and it ends when the worker does.
+    - When mecha is gone first, it kills the worker, but only if that pid
+      still has the worker's start time. `exec` keeps a process's start
+      time, so a pid the kernel has since reused is never killed.
+    - An unreadable start time fails the launch, so preflight refuses
+      rather than running unguarded.
+    - The loop forks twice to leave the worker's process tree. It holds
+      none of its pipes. It runs outside the profile, as fixed text that
+      takes no input from a program.
+    - The worker outlives mecha by at most about a second:
+      `the_watchdog_ends_a_worker_whose_mecha_was_killed` measured about
+      0.6 s, and that test fails without the watchdog.
   - Littrs (0.6.2, Apache-2.0) is a fallback for this slice only. It has
     no pause API but needs none here, and its limits are weaker (no memory
     or time limit outside its WASM mode). wasmtime with a Python guest
@@ -1095,6 +1115,11 @@ with your recs"), except R4, which waits on M1.
   `trusted_output` child's nested program records, but only while no model
   pass reads that join (§7). The build lists every reader of the join and
   asserts none is a model pass.
+- **R10. A watchdog in the launcher** (2026-10-31, taking the
+  recommendation): on a Mac a worker must not outlive a `SIGKILL`ed
+  mecha. It was raised by #769's review. Built as §7's watchdog. The other
+  option was reaping leftover workers at the next start, which only
+  clears up after the fact.
 - **And the `code` call itself is `read_only()`.** A program runs
   without a prompt. The reason is not that its tools would all skip the
   approver: a read-only tool still meets a `prompt` or `forbid` policy
@@ -1157,27 +1182,10 @@ than an architecture section kept beside the code.
     ends the program as `Backstop::WorkerKilled`. Its overshoot is one
     polling interval of allocation, so it is weaker than a kernel limit and
     needs no knowledge of the map size.
-- **A worker that outlives a killed mecha on a Mac.** On Linux bwrap's
-  `--die-with-parent` makes an orphan impossible: when mecha dies, bwrap gets
-  the parent-death signal and takes the worker with it. On a Mac the launch
-  chain is all `exec`s (`env -i` → `sandbox-exec` → worker), so the only
-  thing that ends a worker is the pool's own kill when it drops, and a
-  `SIGKILL`ed mecha never runs that. A worker computing at that moment does
-  not read its stdin, so it never sees the EOF. The wall clock lived in the
-  host that died, so the orphan spins a core until someone kills it, holding
-  up to `max_memory`. Seatbelt bounds what the worker can reach, not how
-  long it lives. A clean exit, or a panic that unwinds, drops the pool and is
-  not affected. The fix is the owner's call (review of #769), not built:
-  - **A watchdog in the launcher**: a shell that starts a loop waiting on
-    mecha's pid, then `exec`s the chain, so the worker keeps the shell's
-    pid. When mecha dies, the loop kills that pid. The loop has to stop on
-    its own when the worker exits, or it will kill a reused pid. It must not
-    hold the worker's pipes, and it runs outside the profile. A polling loop
-    in `sh` can do this. A `kqueue` `NOTE_EXIT` wait is exact but needs a
-    helper binary.
-  - **The pool noticing**: nothing in the host survives a `SIGKILL`, so
-    this only covers the next start. It would reap leftover workers by
-    their recorded pids at preflight.
+- **A killed mecha that its parent never reaps** leaves its Mac worker
+  running. `kill -0` reads a zombie as alive, so the watchdog (§7, R10)
+  waits for as long as the zombie lasts. A shell, launchd and systemd all
+  reap their children.
 
 ---
 
