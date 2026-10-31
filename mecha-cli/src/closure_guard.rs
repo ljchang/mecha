@@ -219,6 +219,9 @@ impl Tool for ClosedStatusGuard {
     fn runs_a_fresh_conversation(&self) -> bool {
         self.inner.runs_a_fresh_conversation()
     }
+    fn hosts_programs(&self) -> bool {
+        self.inner.hosts_programs()
+    }
     fn forget_conversation_state(&self) {
         self.inner.forget_conversation_state()
     }

@@ -1158,7 +1158,8 @@ async fn a_reused_worker_starts_clean() {
         return;
     }
     let conf = confinement();
-    // One worker, so every program below runs on the same one.
+    // One worker at a time. `PROGRAMS_PER_WORKER` is 1, so each program
+    // below gets a fresh one; this holds the property should that change.
     let interp = Monty::new(&w.unwrap(), &conf, Backstops::default(), 1)
         .await
         .unwrap();

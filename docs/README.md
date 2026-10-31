@@ -41,6 +41,7 @@ something shipped.
 
 | Document | The question it went and answered |
 |---|---|
+| [`APPLE-CONTAINER-RESEARCH.md`](APPLE-CONTAINER-RESEARCH.md) | Whether Apple's `container` (a Linux VM per container) is a better or a second macOS confinement for code mode's monty worker beside Seatbelt, what fits `monty-pool`'s launcher contract, whether `sandbox-exec` is deprecated, and what to measure on a Mac (2026-10-30) |
 | [`APPRAISAL-RESEARCH.md`](APPRAISAL-RESEARCH.md) | Why the appraisal label is still degenerate a week after it shipped, what the live corpus actually holds, and what appraisal theory and the harness literature say to change first |
 | [`APPRAISAL-INVENTORY-RESEARCH.md`](APPRAISAL-INVENTORY-RESEARCH.md) | What appraisal-related functionality exists across mecha and its sibling repos, what reads each signal, which owner verdicts go unread, the full measured record, every interpretive model pass, the context supply, the local-model budget, and counterfactual policy evaluation (2026-09-24) |
 | [`ARMED-READING-RESEARCH.md`](ARMED-READING-RESEARCH.md) | What an armed conversation can still read, which refusals protect something, and how to open a search result without a destination |
