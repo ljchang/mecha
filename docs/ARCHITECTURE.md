@@ -3481,7 +3481,7 @@ sandbox, and `mecha tools --json` prints each tool's capabilities.
 `mecha-core/src/interpreter/` runs a model's program for code mode
 (`CODE-MODE-DESIGN.md`; slice 3a, the backend; the `code` tool below).
 The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
-(cargo feature `monty`, off by default) is the one backend. The invariants:
+(cargo feature `monty`, on by default since 2026-10-31) is the one backend. The invariants:
 
 - **A program reaches the host only through the names it was started
   with.** They are globals; every `NameLookup` is answered `Undefined`,

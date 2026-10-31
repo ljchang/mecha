@@ -216,6 +216,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Building mecha needs Rust 1.96 or newer** (it was 1.89). Code mode's
+  interpreter (`monty-pool` 1.4) is now built in by default, and every one
+  of its crates needs 1.96. A build adds about 50 crates, including a C
+  build (aws-lc). `cargo build --no-default-features` still builds a mecha
+  without code mode, and `mecha features` says so by name.
 - **Continue on a picture is the only way to build on it.** Every picture in
   a persona chat has a Continue button beside Edit and Regenerate: press it,
   say what changes, and the next picture builds on that one. Typing without
