@@ -184,7 +184,7 @@ pool's own worker reuse, which holds within one VM.
 | Kill | A discarded worker is `start_kill()`ed, which is SIGKILL, and reaped by its pid | [V] `kill_and_reap` |
 | No handshake | "A wrong or broken binary surfaces as an error on the first request" | [V] |
 | What mecha passes | One executable, a 0700 script that `exec`s the confinement (`interpreter::monty::Launcher`). The pool appends `subprocess`. `min_processes = 0`, `max_checkouts_per_worker = 100`, `checkout_timeout` 60 s, and a 30 s `preflight` | [V] `monty.rs` |
-| The other transport | `MontyTransport::Websocket` dials a `ws://`/`wss://` URL per checkout. Its workers are single-use, never pooled. The worker binary has one mode, `subprocess` (stdio). There is no server mode, so a WebSocket child needs a relay | [V] `lib.rs`; `monty-runtime/src/main.rs` |
+| The other transport | `MontyTransport::Websocket` dials a `ws://`/`wss://` URL per checkout. Its workers are single-use, never pooled. The worker binary has no *server* mode: it serves the pool over stdio (`subprocess`), and also runs one-off programs (`monty -c …`, which §8 uses), but cannot listen. So a WebSocket child needs a relay | [V] `lib.rs`; `monty-runtime/src/main.rs` |
 
 **The constraint that decides everything.** Whatever the launcher script
 `exec`s *is* the worker, as far as the pool knows. The pool kills that pid
@@ -567,7 +567,12 @@ echo "ae4e68d623b9038f8a41baa95e06e8d32402ad972120b068d14c336bb924eb03  m.whl" |
 unzip -p m.whl pydantic_monty_runtime-1.4.0.data/scripts/monty > monty && chmod +x monty
 echo "989eb5bacc6844fce2472820d28f0ab3247846d29ab62d0dbb521004f3224cc7  monty" | shasum -a 256 -c
 printf 'FROM scratch\nCOPY monty /monty\nENTRYPOINT ["/monty"]\n' > Containerfile
-container build -t mecha-monty:1.4.0 .
+# Build the image the way §1 proposes mecha ship it: a one-layer OCI
+# archive loaded with `container image load`, not `container build`. The
+# latter needs the BuildKit builder VM (`container builder start`), which
+# reserves its own memory and would perturb M-C13. Either works for the
+# measurements, but only the load path is the one that would ship.
+container build -t mecha-monty:1.4.0 .   # if used: run `container builder stop` before M-C13
 container image inspect mecha-monty:1.4.0 > image.json
 F='--rm --network none --no-dns --cap-drop ALL --user 65534:65534'
 ```
@@ -644,7 +649,10 @@ FOO_SECRET=leak SSH_AUTH_SOCK=/tmp/x container run $F alpine:3.22 env | grep -E 
 
 **M-C9 (decisive): what a SIGKILLed client leaves running.** (a) Run a
 busy worker, as the pool would kill it. (b) Run an idle `subprocess`
-worker whose stdin closes with the kill. (c) Run the `exec` path. For each,
+worker whose stdin closes with the kill. In (b) the client is killed
+*before* stdin closes, deliberately: the question is whether the VM
+outlives its client, so the EOF must not arrive first and end the worker
+on its own. (c) Run the `exec` path. For each,
 note whether the VM or process is still running 10 s and 60 s later, and
 whether the host CPU stays busy.
 
@@ -699,10 +707,21 @@ launchctl print gui/$(id -u) | grep -i com.apple.container; launchctl print user
 back.**
 
 ```bash
-container run -d --name ac-mem --network none --memory 512M alpine:3.22 sleep infinity; sleep 5
-ps -axo pid,rss,command | grep -E 'Virtualization.VirtualMachine|container-runtime-linux' | grep -v grep
-container exec ac-mem sh -c 'head -c 400m /dev/zero > /dev/shm/x; rm /dev/shm/x'; sleep 5
-ps -axo pid,rss,command | grep -E 'Virtualization.VirtualMachine' | grep -v grep
+# Size the VM well above the allocation, so the guest's own limit is not
+# what gets measured. Allocate through the pinned worker itself: an anonymous
+# allocation the guest kernel charges and then releases, which is the path
+# code mode takes. (A /dev/shm write is tmpfs-limited and cgroup-charged, so
+# it fails or OOM-kills instead of freeing, and the before/after readings
+# would wrongly agree.)
+container run -d --name ac-mem --network none --memory 1G --entrypoint /bin/sh mecha-monty:1.4.0 -c 'sleep infinity' 2>/dev/null \
+  || container run -d --name ac-mem --network none --memory 1G alpine:3.22 sleep infinity
+sleep 5
+ps -axo pid,rss,command | grep -E 'Virtualization.VirtualMachine|container-runtime-linux' | grep -v grep   # idle
+container cp ./monty ac-mem:/w/monty 2>/dev/null || true
+container exec ac-mem /w/monty -c 'x = "a" * (300 * 1024 ** 2); print(len(x))'
+ps -axo pid,rss,command | grep -E 'Virtualization.VirtualMachine' | grep -v grep   # after the allocation was freed
+sleep 30
+ps -axo pid,rss,command | grep -E 'Virtualization.VirtualMachine' | grep -v grep   # and 30 s later
 ```
 
 **M-C14: what the pin would hash, and the JSON it would parse.** Record
