@@ -36,6 +36,14 @@ use tokio_util::sync::CancellationToken;
 
 #[cfg(feature = "monty")]
 pub mod monty;
+#[cfg(feature = "monty")]
+mod watchdog;
+
+/// The integration tests' process helpers (`/proc`, libproc), loaded once
+/// for this module's unit tests, so they ask the kernel the same way.
+#[cfg(all(test, feature = "monty"))]
+#[path = "../../tests/support/process.rs"]
+mod test_process;
 pub mod worker;
 
 /// A value crossing between the program and the host. JSON's shapes,
