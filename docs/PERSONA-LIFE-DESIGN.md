@@ -411,11 +411,10 @@ whole of the model's role: code decides what happened and when; the model
 writes how it felt.
 
 It runs nightly beside `persona memory write`. The narrator is not per chat,
-so neither branch of `writer::pick_model` covers it directly (that function
-writes a chat with the model the chat ran on, and waits when that model isn't
-resident). The narrator takes the same waiting shape, keyed to the persona:
-it runs only while the persona's pinned model (`PERSONA-DESIGN.md` §12.6) is
-resident or the router is empty. Otherwise it waits for a later night, never
+but `writer::pick_model` already has the shape it needs: called with the
+persona's pinned model (`PERSONA-DESIGN.md` §12.6) against the router's
+resident one, it answers `Use` when they match or the router is empty and
+`Wait` when another model is resident. The narrator calls it as-is. Otherwise it waits for a later night, never
 swapping a model (the 2026-09-27 ruling). Its inputs are owner files, code, typed records from shelves A and B
 (§8), and **only those world rows whose origin is clean**. Chat-sourced rows
 from a clean stretch qualify. A row written under taint does not, *even after
@@ -865,10 +864,13 @@ so its rules must hold before any of §14's gate exists:**
   attacker-authored prose. That is a different claim from shelf B's, so it is
   stated as one. What makes it safe to lean on is a **per-field render
   bound**, fixed in code:
-  - an integer has a plausible range for its field (a score of 0–200, a
-    temperature in its unit's window);
-  - a date falls within a window around today;
-  - an enum comes from its taxonomy.
+  - an integer has a plausible range stated per field: a score is 0–200
+    (about 7.65 bits), a temperature is a whole degree Celsius from −40 to
+    50 (91 values, about 6.5 bits);
+  - a date falls within **±7 days of today** (15 values, about 3.9 bits);
+  - an enum comes from its taxonomy, sized by its entries;
+  - an id from the owner's registry follows shelf B's rule (at most 31 plus
+    none, 5 bits).
 
   An out-of-range value is dropped and named on the reading list, like any
   unparseable one.
@@ -876,10 +878,11 @@ so its rules must hold before any of §14's gate exists:**
   **Shelf A has stated figures, as shelf B does, so its test has a constant
   to fail against:**
   - **at most 16 bits per item**, summed over the item type's rendered fields
-    at their bounds. For example, a game result: two scores of 0–200 (about
-    7.6 bits each) would already exceed it, so a result renders one score
-    pair as a win, loss or draw plus a margin band, or the type is narrowed
-    until it fits;
+    at their bounds. For example, a game result rendered as two scores and a
+    date costs 15.3 + 3.9 ≈ 19.2 bits, which fails. So it renders as a win,
+    loss or draw (1.6 bits), a margin band of eight (3 bits), the date (3.9)
+    and the opponent's registry id (5): about 13.5 bits, which passes. A
+    weather item, a temperature and a date, is about 10.4 bits;
   - **at most three shelf A items a day**;
   - **expiry fixed at five days**.
 
@@ -1080,19 +1083,26 @@ the headline never rides in the today-block.
     elicitation, this is invisible in turn structure.
   - **So PL10 is narrowed twice, and still carries a residual.** A fact from
     an owner turn stays clean, *except*:
-    - where that turn answers a question the persona asked inside the
-      tainted stretch. The writer can tell from the turn structure (a persona
-      turn ending in a question, followed by the owner's turn) without
-      reading her words;
+    - where that turn **immediately follows a persona turn inside the
+      tainted stretch**. The check is structural, not lexical. Keying on a
+      question mark would let "tell me about your sister" walk past it, and
+      this repo has measured a model routing around a string-shaped filter
+      (§7.5). The writer can tell from turn order alone, without reading her
+      words;
     - where that turn overlaps the chat's `news_read` results. Code checks
       word n-gram overlap between the owner's turn and the returned prose.
       Code, not a model, so no model reads the article.
 
     Those facts are candidates. **The residual is paraphrase:** an owner who
-    restates an article in their own words passes both checks. That makes
-    PL10 a trade, the convenience of remembering what the owner says after a
-    news read against a durable write an injection can reach through the
-    owner. The recommendation says so.
+    restates an article in their own words passes both checks.
+  - **Made non-bypassable, PL10 buys less than it first appeared to.** In a
+    conversational stretch, nearly every owner turn follows a persona turn,
+    so most owner facts after a `news_read` become candidates again. What
+    PL10 still rescues is the owner's *opening* turn of a resumed or later
+    chat segment, and owner turns that follow a harness note or a tool
+    result rather than her words. That is a modest gain. Today's rule,
+    everything after the rise is a candidate, is a reasonable ruling here,
+    and the recommendation weighs the two plainly.
 
 ### 8.5 Selection, stances and filtering
 
@@ -1182,7 +1192,12 @@ none for state.
   leave the GPU clear, into `<persona>/camera/`, with the event id.
 - In chat, `share_photo(event_id)` attaches an existing picture at once: no
   job, no wait, and the picture matches an event she remembers. What makes it
-  feel alive is what she chooses to share, not the render.
+  feel alive is what she chooses to share, not the render. It travels the
+  path pictures already take: `ToolOutput`'s image field, folded into the
+  user turn that carries the results as a `Block::Image`, never inside the
+  `tool_result`. Since `arm_for_content` arms `private` for any image block,
+  every chat that uses `share_photo` is armed `private`. That is the safe
+  direction, and costs nothing after a recall.
 - **An id is a lookup key, never part of a path.** `share_photo`'s
   `event_id` and `news_read`'s `item_id` are model-supplied.
   - Each is **looked up** in the camera index or in `items`, and refused as
@@ -1331,7 +1346,10 @@ ruled for repetition.
      raises, her mood, or the director's choices beyond what the honest feed
      does? This is the per-day × days accumulation the capacity argument is
      actually about (30 bits a day is 210 in a week), and it needs no string
-     to survive.
+     to survive. It also covers what the per-item ceiling cannot: a
+     publisher who controls *when* to publish gets a presence-or-absence bit
+     per day on top of the item's fields. That timing channel would show
+     here, and nowhere else.
 
   **Each shelf ships only when the owner has read all three parts for it:
   shelf A before its first build reaches a prompt, shelf B before it is
@@ -1386,7 +1404,7 @@ owner's.
 | PL7 | Pruning | World hard-prunes; memory soft-prunes (out of recall, kept in the store); hard deletion of memories only by amending D26 after D28's readout |
 | PL8 | Importance to the owner | Inferred from engagement and pins; no rating prompts |
 | PL9 | News shelves | Build A and C first, with shelf A's per-field render bounds and stated figures (at most 16 bits an item, three a day, five-day expiry; §8.2), and shelf A through all three gate parts, steering included, before it reaches a prompt. B ships behind the three-part gate (§14): schema conformance, a bit ceiling (about 9.6 bits per item and under 30 a day, as §8.2 computes it) enforced by a test, and the steering arm, all three read by the owner. Alternative: all three shelves at once |
-| PL10 | The writer after a taint rise | Facts about the owner from the owner's own turns stay clean (`Stated`), extracted from those turns and pointers only, except turns that answer a question she asked inside the tainted stretch or overlap the chat's `news_read` prose; her side stays candidates. The residual is paraphrase: a trade of convenience against a durable write reachable through the owner. Alternative: today's rule, where everything after the rise is a candidate (§8.4) |
+| PL10 | The writer after a taint rise | Either keep today's rule (everything after the rise is a candidate), or rescue owner turns that do not immediately follow a persona turn in the tainted stretch and do not overlap the chat's `news_read` prose. The check is structural, so imperative elicitation cannot bypass it; the residual is paraphrase. The gain is modest once the check is non-bypassable, so either ruling is defensible (§8.4) |
 | PL11 | Feed sources | Registered per persona and per group, in their folders under `~/.mecha/personas/`, never in layered config; any future global table global-layer-only and stripped from project layers loudly (§8.1) |
 | PL12 | Topics withheld by default | Politics, deaths, disasters and crime, unless a feed is opted in |
 | PL13 | The owner's network | A structured layer over facts about the owner, in `memory.db` under memory's pruning rules, with existing people-facts migrated into it |
