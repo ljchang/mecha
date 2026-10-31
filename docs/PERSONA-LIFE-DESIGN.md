@@ -465,6 +465,13 @@ one more reason §14's gate part 1 exists.
   shelf B gate (§14), or a candidate row approved by mistake, needs no new fold
   (§16 PL20).
 
+  **There is a ratchet, stated rather than hidden.** Approval makes a row
+  recallable, never clean (§4.4). Once the owner approves one untrusted-origin
+  world row, every later chat that folds it opens under the untrusted stem,
+  and §9.6 makes that chat's memories candidates. The recall block already
+  behaves this way and it is accepted there, but it lands on shelf C's main
+  path, beside §8.4's cost.
+
   **The today-block rides as its own run note, never concatenated with the
   recall block.** The stem pairs this fold is shaped on (`recall::stem_of`,
   `scene::stem_of`) match a prefix after trimming. (The appraisal and digest
@@ -1179,6 +1186,12 @@ none for state.
     lapsing the flag on silence would re-introduce events the owner already
     heard, which is ComPeer's duplicate failure on the feature's main path.
 
+  **Pruning, not review, is the floor.** §4.5 lets a tainted stretch set
+  `told` on anything that rode in the chat's blocks, which is wider than
+  what gets an episode. So some suppressed events have no episode to approve
+  or reject. Those stay quiet until their row prunes on its ordinary score,
+  so suppression is bounded in time even with nothing to review.
+
   Suppression by an injection therefore stays bounded to what the chat was
   shown (§4.5), visible on the week view, and never reaches deletion. The
   cost of the rule is that a suppressed event stays quiet until the owner
@@ -1211,7 +1224,11 @@ none for state.
   - A render's file name is chosen by the harness when it writes the file.
   - The path stored in the index is checked against **the persona's own
     root**, the way `persona::files` does it ("a file is named, never
-    pathed"): `canonicalize` and `strip_prefix(root)`. It is never
+    pathed"). That is three checks, not two: a symlink is refused outright
+    (`symlink_metadata`, "a link is neither followed nor listed"), then
+    `canonicalize` and `strip_prefix(root)`. Without the first, a link from
+    `camera/` to another file inside the root would pass the other two and
+    attach that file's bytes as an image. It is never
     `camera_dir.join(id)`. `ToolCtx::resolve` is the wrong tool here: it
     proves containment in the chat's *workspace*, which by construction
     never contains the mecha home, and no grant can cover `~/.mecha`. So it
@@ -1282,13 +1299,20 @@ The folds, which arrive in no tool result and so arm at the fold
 **New persona tools declare eligibility.** `news_read`, `share_photo`, and
 any tool that reads a network each declare persona eligibility beside their
 `Capabilities`, with the default no (`PERSONA-DESIGN.md` §3.3: "a rule derived
-from them would make the next tool added eligible by omission"). The fixture
-test that walks the registry fails the build on a missing declaration, and
-§17's steps are where each one is written.
+from them would make the next tool added eligible by omission"). **Each
+tool owes three things and one list row:**
+- the `for_persona` declaration;
+- `read_only()` true, which `registry_as` refuses at build otherwise;
+- an `Egress::None` class. `news_read` reads a local row and `share_photo`
+  attaches a file already in the persona's folder. The test only asserts
+  `<= Blind`, so `None` is a stated choice, not something the test enforces;
+- a row in the hand-written `ELIGIBLE` list.
 
-**Egress classes.** `news_read` and `share_photo` are both `Egress::None`:
-one reads a local row, the other attaches a file already in the persona's
-folder. The fixture test fails a declaration that disagrees with its class.
+The fixture test checks that the declaration and `ELIGIBLE` *agree*. A
+forgotten declaration alone defaults to `None`, so the tool is quietly
+ineligible and the build stays green. So the pair is two edits, the shape of
+CLAUDE.md's "a new field on `Config` is two edits", and §17's steps name
+both.
 
 **The roster's share of the recall budget.** The owner's roster and people
 cards ride in the recall block (§7.2), which has a fixed budget
@@ -1448,8 +1472,16 @@ dozen places across core, the CLI, the server and the web app, and #654
 missed one. The first question is whether the world is a new `Feature` or
 `part_of = Personas`, beside `Personas`, `Image`, `Library` and `Video` in
 `Feature::ALL`. The answer decides the `own_state` arm, the starter config
-line, the web app's `VIEW_FEATURE` entries and the server routes' owner, so
-it is settled before step 1 (§16 PL26). Each step below then names the
+line, the web app's entries and the server routes' owner, so it is settled
+before step 1 (§16 PL26). Under PL26's recommendation (`part_of = Personas`),
+`VIEW_FEATURE` already has `personas` and needs nothing. The entry that must
+gain rows is **`PANE_FEATURE`**, which keys on `view/sub`:
+`personas/week`, `personas/people`, `personas/camera` and the Feed. It is
+the one #654 missed, and a miss there fails **open**: a missing row reads as
+shown, so the pane renders with the world switched off and its route answers
+`feature_off`. `QUEUE_FEATURE` gains a row if any of the world's waiting
+items (episodes, plans, proposed merges) gets a Home card, and
+`OPENS_ANYWAY` names any pane Home should still land on. Each step below then names the
 surfaces it adds to that registry: the week view and People tab (steps 1–2),
 the nightly job's switch (steps 3 and 5), the camera roll (step 6) and the
 Feed tab (step 7).
