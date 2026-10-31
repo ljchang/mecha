@@ -88,6 +88,13 @@ pub enum Confinement {
 }
 
 impl Confinement {
+    /// Whether the launcher must start [`WATCHDOG`] beside the worker:
+    /// Seatbelt has no `--die-with-parent`, so nothing else ends a worker
+    /// whose mecha was `SIGKILL`ed (`CODE-MODE-DESIGN.md` §7).
+    fn watchdog(&self) -> bool {
+        matches!(self, Confinement::Seatbelt { .. })
+    }
+
     /// The confinement this platform gives a worker, or a refusal naming why
     /// it gives none. On Linux that is the configured sandbox, and `none`
     /// refuses too: the sandbox is the second wall (§7), because round 1 of
@@ -179,8 +186,8 @@ impl Confinement {
             // `env -i` execs `sandbox-exec`, which applies the profile and
             // execs the worker: one process from the launcher's shell to the
             // program, so the pid the pool holds is the confined worker.
-            // There is no `--die-with-parent` here: a worker outlives a
-            // `SIGKILL`ed mecha (`CODE-MODE-DESIGN.md` §12).
+            // There is no `--die-with-parent` here; the launcher's
+            // [`WATCHDOG`] stands in for it.
             Confinement::Seatbelt { sandbox_exec } => {
                 return Ok(vec![
                     ENV.into(),
@@ -311,7 +318,8 @@ struct Launcher {
 }
 
 impl Launcher {
-    fn write(argv: &[String]) -> Result<Self> {
+    /// `watchdog` puts [`WATCHDOG`] ahead of the `exec`.
+    fn write(argv: &[String], watchdog: bool) -> Result<Self> {
         let dir = std::env::temp_dir().join(format!("mecha-monty-{}", uuid::Uuid::new_v4()));
         let mut builder = std::fs::DirBuilder::new();
         // Created 0700, never chmodded after: no window where it is open.
@@ -322,13 +330,18 @@ impl Launcher {
             .with_context(|| format!("creating {}", dir.display()))?;
         let script = dir.join("worker");
         let log = dir.join("worker.log");
-        let mut body = String::from("#!/bin/sh\nexec");
+        let quoted_log = sh_quote(&log.display().to_string());
+        let mut body = String::from("#!/bin/sh\n");
+        if watchdog {
+            body.push_str(&WATCHDOG.replace("{log}", &quoted_log));
+        }
+        body.push_str("exec");
         for a in argv {
             body.push(' ');
             body.push_str(&sh_quote(a));
         }
         body.push_str(" \"$@\" 2>>");
-        body.push_str(&sh_quote(&log.display().to_string()));
+        body.push_str(&quoted_log);
         body.push('\n');
         std::fs::write(&script, body)?;
         #[cfg(unix)]
@@ -361,6 +374,41 @@ impl Drop for Launcher {
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
+
+/// What ends a Seatbelt worker whose mecha died without dropping the pool.
+///
+/// bwrap's `--die-with-parent` has no macOS counterpart, and the launch
+/// chain is all `exec`s, so the pool's kill on drop is the only thing that
+/// ends a worker, and a `SIGKILL`ed mecha never runs it. A worker computing
+/// at that moment never reads its stdin's EOF, and the wall clock died with
+/// the host, so it would spin until someone killed it.
+///
+/// The launcher runs this before it `exec`s the chain, so `$$` is the
+/// worker's pid from then on, and `$PPID` is mecha. A loop polls both with
+/// `kill -0` (a builtin, so nothing forks but `sleep`) once a second, and
+/// ends when the worker does. When mecha is gone first, it kills the worker,
+/// but only if that pid still started when the worker did. `exec` keeps a
+/// process's start time, so a pid the kernel has since reused is never
+/// killed. A start time that cannot be read fails the launch: the worker
+/// never starts, and preflight refuses code mode, rather than running it
+/// unguarded. The loop forks twice to leave the worker's process tree, so
+/// it neither outlives the worker inside it nor stops with it, and it holds
+/// none of the worker's pipes. It runs outside the profile: it is this
+/// fixed text, with no input from a program. `PATH` is empty here, so every
+/// command it forks is named absolutely. `{log}` is the quoted stderr log.
+const WATCHDOG: &str = r#"w=$$ p=$PPID
+t=$(/bin/ps -o lstart= -p "$w" 2>>{log})
+if [ -z "$t" ]; then echo "watchdog: the worker's start time is unreadable" >>{log}; exit 1; fi
+( (
+while kill -0 "$w" 2>/dev/null; do
+if ! kill -0 "$p" 2>/dev/null; then
+[ "$(/bin/ps -o lstart= -p "$w" 2>/dev/null)" = "$t" ] && kill -9 "$w"
+exit 0
+fi
+/bin/sleep 1
+done
+) </dev/null >/dev/null 2>&1 & ) </dev/null >/dev/null 2>&1
+"#;
 
 fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
@@ -402,7 +450,7 @@ impl Monty {
         // Hashed again here, so "verified" means "at this pool's start",
         // not whenever a `VerifiedWorker` was last made.
         let worker = super::worker::verify(worker.path())?;
-        let launcher = Launcher::write(&confinement.argv(worker.path())?)?;
+        let launcher = Launcher::write(&confinement.argv(worker.path())?, confinement.watchdog())?;
         let mut cfg = PoolConfig::subprocess(&launcher.script);
         cfg.min_processes = 0;
         cfg.max_processes = max_workers.max(1);
@@ -1191,7 +1239,7 @@ mod tests {
 
     #[test]
     fn the_launcher_quotes_every_argument() {
-        let l = Launcher::write(&["/x/b'w rap".into(), "--ro-bind".into()]).unwrap();
+        let l = Launcher::write(&["/x/b'w rap".into(), "--ro-bind".into()], false).unwrap();
         let body = std::fs::read_to_string(&l.script).unwrap();
         assert!(
             body.starts_with("#!/bin/sh\nexec '/x/b'\\''w rap' '--ro-bind' \"$@\" 2>>'"),
@@ -1202,6 +1250,63 @@ mod tests {
         assert!(
             !dir.exists(),
             "the private directory outlived the interpreter"
+        );
+    }
+
+    /// A worker whose mecha was `SIGKILL`ed is ended by the launcher's
+    /// watchdog, and one whose mecha lives is left alone. The script is plain
+    /// `sh`, so this runs on Linux too, though only Seatbelt starts it. A
+    /// stand-in mecha (a shell) starts the launcher, whose worker is
+    /// `/bin/sleep`. Without the watchdog the sleep outlives the kill by ten
+    /// minutes.
+    #[test]
+    fn the_watchdog_ends_a_worker_whose_mecha_was_killed() {
+        use std::io::BufRead;
+        use test_process as process;
+        let l = Launcher::write(&["/bin/sleep".into()], true).unwrap();
+        let mut mecha = std::process::Command::new("/bin/sh")
+            .args([
+                "-c",
+                "\"$0\" 600 </dev/null >/dev/null 2>&1 & echo $!; exec /bin/sleep 600",
+            ])
+            .arg(&l.script)
+            .env_clear()
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(mecha.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let worker: u32 = line.trim().parse().unwrap();
+        struct Reap(u32);
+        impl Drop for Reap {
+            fn drop(&mut self) {
+                // SAFETY: a plain signal to the process this test started.
+                unsafe { libc::kill(self.0 as i32, libc::SIGKILL) };
+            }
+        }
+        let _reap = Reap(worker);
+        // Past two polls: the watchdog leaves a worker whose mecha lives, and
+        // the launcher did not refuse.
+        std::thread::sleep(Duration::from_millis(2500));
+        assert!(
+            !process::is_gone(worker),
+            "the worker ended while its mecha lived: {}",
+            l.log_tail()
+        );
+        mecha.kill().unwrap();
+        // Reaped, as a real mecha's parent would: `kill -0` succeeds on a
+        // zombie.
+        mecha.wait().unwrap();
+        let t = std::time::Instant::now();
+        while !process::is_gone(worker) && t.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(
+            process::is_gone(worker),
+            "the worker outlived its killed mecha by {:?}",
+            t.elapsed()
         );
     }
 
