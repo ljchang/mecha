@@ -1259,14 +1259,28 @@ the headline never rides in the today-block.
     admitted a *fact* naming a real person while holding back the edge, a
     planted claim about that person would still be recalled with no tap.
     Holding back the edge would only stop the claim being drawn on the People
-    tab and auto-accepted under D18. So the recommended carve-out covers
-    **any fact from such a stretch that names a person in the owner's
-    network**. Code checks this by person id, not by reading the text; those
-    facts stay unrecalled candidates too. Otherwise an article could plant
+    tab and auto-accepted under D18. Otherwise an article could plant
     *fabricated claims about real people*. That is §2.7's "capacity does not
     bound truth" landing in the one store that holds third parties who never
-    agreed to be in a database (§7.5). The switch then remembers the
-    conversation in full, except what it says about the owner's real people. Their origin stays untrusted, because
+    agreed to be in a database (§7.5).
+    - **A carve-out by person id would be vacuous where it matters.** It
+      needs the owner's-network graph, and `my_people` is off by default and
+      independent of this switch. With `news` and `remember_articles` on and
+      `my_people` off, the configuration an owner who wants news and no taps
+      arrives at, there are no ids to check, and nothing would be held back.
+    - **So the recommended carve-out is structural: under the switch, facts
+      about the owner are not admitted at all.** The switch recalls the
+      stretch's episodes and her own persona facts. Facts in the owner's
+      tables (`User`, `Inferred`), and so everything about the owner's
+      people, stay unrecalled candidates, as by default. That works with or
+      without `my_people`, needs no graph, and needs no judgement by the
+      writer, which reads the tainted stretch and could be steered not to tag
+      a fact. What it costs: something the owner said about themselves after
+      an article is not remembered without approval. The episode still says
+      they talked about it.
+    - The alternatives, for the owner's ruling: make `remember_articles`
+      require `my_people`, refused by name, and hold back facts naming a
+      person in the graph by id; or apply no carve-out and accept the risk. Their origin stays untrusted, because
     the switch changes what is recalled, never what is clean.
     - **Recall still re-arms the taint** they were written under (§9.6). So
       a later chat that recalls one opens untrusted, and its own records are
@@ -1360,6 +1374,16 @@ the headline never rides in the today-block.
 
 ### 8.5 Selection, stances and filtering
 
+- **The extraction pass picks its model as the narrator does.** It is a
+  `quarantine.rs` one-shot, so something names a model to the `:8080`
+  router, and naming one loads it (the 2026-09-27 ruling). So it goes
+  through `writer::pick_model`, never naming a model directly.
+  - Extraction is not in a persona's voice, and a group-level feed has no
+    one persona. So it asks with no pin: it uses whatever is resident, and
+    waits if the router does not answer.
+  - The extractor runs **before** the narrator on a night, because the
+    narrator consumes its output. Neither ever swaps: if one would need a
+    different model than the resident one, it waits for a later night.
 - One nightly job per persona; at most six items a day across its
   feeds: at most three of shelf A and at most three of shelf B, chosen by
   code (§8.2). **Shelf C has its own cap of three a day**, chosen by the same
@@ -1401,7 +1425,10 @@ owner-written and outside `persona_propose`'s schema, and are read live. The
 defaults are this design's guesses until D28's access log and the world's own
 pruning counts show where they should sit. A value out of range (a negative
 half-life, a threshold outside 0–1) is a load error naming the key, never
-clamped quietly. Owner-origin rows and state ignore the world threshold
+clamped quietly. The asymmetry with `intensity` (an unknown value loads as
+`"capped"` with a note) is deliberate. An enum has a safe narrowest value to
+land on. A number out of range has none: clamping a threshold could as easily
+loosen pruning as tighten it, so the owner is told instead. Owner-origin rows and state ignore the world threshold
 entirely: they never decay.
 
 **Pruning differs by store** (§16 PL7):
@@ -1612,15 +1639,26 @@ says so ("`answers = "files"` does not withhold" them). The `ELIGIBLE`
 fixture test cannot see them either, since its pool cannot build a tool that
 needs a store. Left as is, `news_read` would be offered to a files-only
 persona, which fails open. So:
-- **one admission check** runs on both paths: eligibility, `read_only()`,
-  `Egress::None`, and the `answers = "files"` filter on `untrusted_input`.
-  It is factored out of `registry_as` and applied in `setup::persona_agent`
-  to every per-persona tool;
+- **one admission check** runs on both paths, in two arms:
+  - **for every per-persona tool:** eligibility, `read_only()` and
+    `Egress::None`. That part is factored out of `registry_as` and applied
+    in `setup::persona_agent`;
+  - **only for tools that return third-party content from beyond the
+    persona's own files:** the `answers = "files"` withholding. `news_read`
+    is in this class, as `document_read` is.
+
+  The `untrusted_input` capability is **not** the test on this path.
+  `file_read`, `file_search`, `memory_search` and `memory_read` all declare
+  it, and the owner's ruling of 2026-10-02 (recorded in §9.7 and in
+  `setup::persona_agent`'s comments) keeps them for a files-only persona. A
+  `teacher` persona must keep its file reader. So the class is a per-tool
+  declaration ("reaches beyond the persona's files"), made beside
+  eligibility;
 - **the per-persona tools join the `ELIGIBLE` test's pool** over a scratch
-  persona store, as above, and a second test builds a persona through
-  `setup::persona_agent` with `answers = "files"`. It asserts that
-  `news_read` is absent, which covers the withholding on the path where it
-  can actually fail.
+  persona store, as above. A second test builds a persona through
+  `setup::persona_agent` with `answers = "files"` and asserts **both
+  halves**: `news_read` is absent, and `file_read`, `file_search`,
+  `memory_search` and `memory_read` are present.
 
 Until that exists, the claim that `news_read` "follows D16 and D24" is a
 requirement, not a property.
@@ -1767,7 +1805,7 @@ this document's; the ruling is the owner's.
 | PL24 | `forget` over the owner's network | Re-fold from the events that remain, which is D27's rebuild applied in memory for this graph; an `Inferred` edge left on too little support reverts to a candidate. Alternative: today's fallback, so the person goes with any of their chats (§7.1) |
 | PL25 | A `told` set only by a tainted stretch | Suppresses but does not license pruning; unchanged while unreviewed, since silence is not a rejection. Since PL23 keeps news off any queue, unreviewed is the ordinary state, so suppression usually lasts until the row prunes on its own score. Approval from the Memories tab makes the flag ordinary; rejection there clears it (§9). Alternative: lapse after five days unreviewed, at the cost of repeating what the owner heard |
 | PL26 | The feature registry | **Ruled (2026-10-31):** `part_of = Personas`, with the per-persona `[life]` switches (PL28) as the lever. A top-level switch would buy nothing, since personas are operator-only and no trial home can run one; §14's comparison is read offline. Settled before step 1 (§17) |
-| PL27 | Remembering article chats in full | **Owner's direction (2026-10-31):** a per-persona `remember_articles` switch, off by default, owner-written in `persona.toml`. With it on, episodes and facts from a stretch after a `news_read` are recalled without approval, origin still untrusted and re-armed on recall. The cost (possible persistent steering, no way to send) is shown beside the switch and in a `TRIFECTA.md` row. *Recommended within it:* the owner's network stays outside its reach, including facts that name a person in it (§8.4) |
+| PL27 | Remembering article chats in full | **Owner's direction (2026-10-31):** a per-persona `remember_articles` switch, off by default, owner-written in `persona.toml`. With it on, episodes and facts from a stretch after a `news_read` are recalled without approval, origin still untrusted and re-armed on recall. The cost (possible persistent steering, no way to send) is shown beside the switch and in a `TRIFECTA.md` row. *Recommended within it:* facts about the owner (and so the owner's people) are not admitted under the switch, structurally, with no dependency on `my_people`; alternatives are requiring `my_people` with a by-id carve-out, or none (§8.4) |
 | PL28 | Which personas get which parts | **Owner's direction (2026-10-31):** every part is an opt-in switch per persona, off by default: `world`, `people`, `my_people`, `news`, `camera`, `feed`, `remember_articles`. A tool whose switch is off is never built; dependencies are refused by name; switches are fixed per persona version (§3.1) |
 
 ---
@@ -1798,7 +1836,11 @@ entries and the server routes' owner, so it is settled before step 1 (§16
 PL26). `VIEW_FEATURE` already has `personas`, and the world's surfaces stay
 under that view. The entry that must
 gain rows is **`PANE_FEATURE`**, which keys on `view/sub`:
-`personas/week`, `personas/people`, `personas/camera` and the Feed. It is
+`personas/week`, `personas/people`, `personas/camera` and the Feed. Under
+`part_of = Personas` those rows carry the world part's id, which is on
+exactly when personas are. The per-persona `[life]` switch is a second gate
+in the pane itself: a persona with `world` off shows the pane's "off for
+this persona" state, never a route error. It is
 the one #654 missed, and a miss there fails **open**: a missing row reads as
 shown, so the pane renders with the world switched off and its route answers
 `feature_off`. `QUEUE_FEATURE` gains a row if any of the world's waiting
