@@ -6050,6 +6050,9 @@ pub(super) fn test_chat() -> Arc<ChatState> {
     struct NoRequests;
     #[async_trait::async_trait]
     impl mecha_core::provider::Provider for NoRequests {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "test"
         }
@@ -6100,6 +6103,9 @@ struct Answers(&'static str);
 #[cfg(test)]
 #[async_trait::async_trait]
 impl mecha_core::provider::Provider for Answers {
+    fn local(&self) -> bool {
+        true
+    }
     fn id(&self) -> &str {
         "local"
     }
@@ -6146,6 +6152,9 @@ pub(super) fn test_chat_seeing(
     );
     #[async_trait::async_trait]
     impl mecha_core::provider::Provider for Sees {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "local"
         }
@@ -6335,6 +6344,9 @@ pub(super) fn test_chat_drawing(
     }
     #[async_trait::async_trait]
     impl mecha_core::provider::Provider for Draws {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "local"
         }
@@ -6420,6 +6432,9 @@ pub(super) fn test_chat_waiting_counted(
     );
     #[async_trait::async_trait]
     impl mecha_core::provider::Provider for Waits {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "local"
         }
@@ -6781,6 +6796,9 @@ mod held_tests {
         struct Sees(Arc<StdMutex<Vec<mecha_core::message::CompletionRequest>>>);
         #[async_trait::async_trait]
         impl mecha_core::provider::Provider for Sees {
+            fn local(&self) -> bool {
+                true
+            }
             fn id(&self) -> &str {
                 "local"
             }
