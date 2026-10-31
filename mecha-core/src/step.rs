@@ -841,6 +841,7 @@ mod tests {
             unknown,
             staged: false,
             in_program: false,
+            program: None,
         }
     }
 
@@ -1065,6 +1066,7 @@ mod tests {
             unknown: false,
             staged: false,
             in_program: false,
+            program: None,
         }
     }
 
@@ -1419,6 +1421,7 @@ mod tests {
             unknown: false,
             staged: false,
             in_program: false,
+            program: None,
         }
     }
 
@@ -1489,6 +1492,7 @@ mod tests {
             unknown: false,
             staged: false,
             in_program: false,
+            program: None,
         };
         let work = Work::of(&[mcp_tool_called_check]);
         assert_eq!((work.calls, work.checks_declared), (1, 0));

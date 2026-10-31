@@ -76,3 +76,9 @@ rusqlite.workspace = true
 # Only to edit the starter config as `features enable` does, in its test.
 # Editing belongs to mecha-core (`config::append_table`).
 toml_edit = "0.25"
+
+[features]
+# Code mode's interpreter (`mecha-core`'s `monty`, CODE-MODE-DESIGN.md §7):
+# off by default, so a default build knows code mode and says by name that it
+# cannot run it (`feature::unbuilt`). `cargo build --features monty` turns it on.
+monty = ["mecha-core/monty"]

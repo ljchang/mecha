@@ -232,6 +232,14 @@ pub enum Lever {
     /// a scorecard must not read files the fixture never held. An empty
     /// `[[grant]]` list leaves it on — a list's emptiness is not a switch.
     Grants,
+    /// `--no-code-tool`, or `[features] code` not on: the `code` tool is not
+    /// registered (`CODE-MODE-DESIGN.md` §7). A lever so `mecha eval` forces
+    /// it off: a scorecard must not grade a model with programs on unless
+    /// it says so, and whether this machine has the worker installed is not
+    /// the model's. `Lever::CompactTool` is the precedent for a tool
+    /// registered by request. A `[tools]` list that withholds `code` leaves
+    /// it on; that is `tools`' to say.
+    CodeTool,
 }
 
 impl Lever {
@@ -245,7 +253,7 @@ impl Lever {
     /// on review). The test `all_names_every_variant_serde_knows` closes
     /// it from the derive: serde's unknown-variant error lists every
     /// variant, and the test asserts this array covers that list.
-    pub const ALL: [Lever; 22] = [
+    pub const ALL: [Lever; 23] = [
         Lever::Mcp,
         Lever::LearnedRules,
         Lever::Hooks,
@@ -268,6 +276,7 @@ impl Lever {
         Lever::SuccessExamples,
         Lever::SystemRead,
         Lever::Grants,
+        Lever::CodeTool,
     ];
 
     pub fn parse(name: &str) -> Option<Lever> {
@@ -298,6 +307,7 @@ impl Lever {
             Lever::SuccessExamples => "success_examples",
             Lever::SystemRead => "system_read",
             Lever::Grants => "grants",
+            Lever::CodeTool => "code_tool",
         }
     }
 
@@ -1736,7 +1746,8 @@ mod tests {
                 | Lever::PastAppraisals
                 | Lever::SuccessExamples
                 | Lever::SystemRead
-                | Lever::Grants => {}
+                | Lever::Grants
+                | Lever::CodeTool => {}
             }
         }
         let mut seen = std::collections::BTreeSet::new();

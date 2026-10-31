@@ -1421,6 +1421,7 @@ mod tests {
                 unknown: false,
                 staged: false,
                 in_program: false,
+                program: None,
             };
             assert!(grade(&c, &result_with(vec![trace], "No conflicts")).passed);
         }
@@ -1441,6 +1442,7 @@ mod tests {
             unknown: false,
             staged: false,
             in_program: false,
+            program: None,
         };
         let mut over = result_with(vec![failed], "Done — the call site is fixed.");
         over.ended_on_failed_call = true;
@@ -1533,6 +1535,7 @@ mod tests {
             unknown: false,
             staged: false,
             in_program: false,
+            program: None,
         }
     }
 
