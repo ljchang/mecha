@@ -3565,8 +3565,9 @@ The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
 - **Stop kills.** A cancelled program gets `cancel_grace` to reach a turn
   boundary, then its checkout is dropped, which kills the worker; it ends
   `End::Cancelled` with what it printed. A Stop while it waits for a free
-  worker ends it there, and handing a worker back is bounded by the same
-  grace, so no turn awaits a worker bare.
+  worker ends it there, and so does one during a Mac watchdog's handshake.
+  Handing a worker back is bounded by the same grace, so no turn awaits a
+  worker bare.
 - **Nothing in the trait enforces `preflight` before `start`.** The caller
   that registers code mode must run it once, at start, and refuse the
   feature when it fails.

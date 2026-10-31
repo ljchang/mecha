@@ -1195,6 +1195,8 @@ fn setup_offers_every_feature_and_minimal_declines_them_without_touching_config(
         "frontdoor",
         "messages",
         "system",
+        // Built in by default since #781: the newest question setup asks.
+        "code",
     ];
     let plan = steps(&mecha(&home, &["setup", "--json"]));
     for id in features {
