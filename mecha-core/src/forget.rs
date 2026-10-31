@@ -276,6 +276,14 @@ pub fn forget(roots: &Roots, id: &str, graph: &dyn GraphRedactor) -> Result<Repo
         }
     };
     report.attempt("messages", purge_mailbox(&roots.messages, id));
+    // What the conversation's programs read (`CODE-MODE-DESIGN.md` §7): the
+    // session's own blob directory, whole and unconditionally. Content is
+    // addressed within one session only, so nothing else shares a blob.
+    report.attempt(
+        "program blobs",
+        crate::tool::code::record::Store::at(crate::tool::code::record::root_under(&roots.home))
+            .forget(id),
+    );
     // The chat's picture records (IMAGE-DESIGN.md §6): its copy, and each
     // index entry it last advanced. One that cannot be read cannot be shown
     // to be this chat's, so it is kept and said.

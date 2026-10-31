@@ -789,9 +789,15 @@ fn reader_shape(config: &mecha_core::config::Config) -> (u64, bool) {
 /// that almost never ran).
 async fn citations(session: &Session) -> Vec<mecha_core::persona::cite::Checked> {
     let path = session.path.clone();
+    let id = session.meta.id.clone();
     tokio::task::spawn_blocking(move || {
         std::fs::read_to_string(&path)
-            .map(|t| mecha_core::persona::cite::check_conversation(&Session::messages_ever(&t)))
+            .map(|t| {
+                mecha_core::persona::cite::check_conversation(
+                    &Session::messages_ever(&t),
+                    &mecha_core::tool::code::record::ever(&t, &id),
+                )
+            })
             .unwrap_or_default()
     })
     .await

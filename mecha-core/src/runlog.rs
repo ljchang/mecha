@@ -862,6 +862,7 @@ fn exhaustive(record: &Record) {
         | Record::Outcome(_)
         | Record::LateResult { .. }
         | Record::PendingNote { .. }
+        | Record::Program { .. }
         | Record::GoalAnchor { .. }
         | Record::Grants { .. } => {}
         // Not ignored: `Session::outcomes_attributed`, which the scan reads,

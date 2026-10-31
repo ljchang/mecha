@@ -858,10 +858,15 @@ pub(crate) fn review_reads(item: &OutboxItem) -> ReviewReads {
             serves: None,
         };
     };
-    let messages = mecha_core::outbox_source::messages_for_item(item, &dir);
+    let drafting = mecha_core::outbox_source::drafting(item, &dir);
     ReviewReads {
-        reads: mecha_core::outbox_source::from_messages(item, &messages),
-        serves: mecha_core::outbox_source::serves_at_staging(item, &messages).map(serves_note),
+        reads: mecha_core::outbox_source::from_messages(
+            item,
+            &drafting.messages,
+            &drafting.programs,
+        ),
+        serves: mecha_core::outbox_source::serves_at_staging(item, &drafting.messages)
+            .map(serves_note),
     }
 }
 
@@ -2195,6 +2200,7 @@ mod tests {
                 _: &mecha_core::tool::ToolCtx,
             ) -> anyhow::Result<mecha_core::tool::ToolOutput> {
                 Ok(mecha_core::tool::ToolOutput {
+                    reads: Vec::new(),
                     content: "unknown account `work`".into(),
                     is_error: true,
                     external: true,
