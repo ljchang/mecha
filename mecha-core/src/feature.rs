@@ -2389,9 +2389,9 @@ mod tests {
                 | Feature::Code => {}
             }
         }
-        // The match above lists 24 — raise this with it, and a variant
+        // The match above lists 25 — raise this with it, and a variant
         // added to the match but not to `ALL` fails here.
-        assert_eq!(Feature::ALL.len(), 24);
+        assert_eq!(Feature::ALL.len(), 25);
     }
 
     #[test]
