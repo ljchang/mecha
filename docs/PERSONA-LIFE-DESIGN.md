@@ -715,7 +715,12 @@ one more reason §14's gate part 1 exists.
     block, never on arbitrary world rows. So an injection that makes her
     "mention" things can silence at most what was in front of her, a handful
     of events per chat. This channel is outside the reach of §14's steering
-    arm, which drives a feed, not a chat, and §14 says so.
+    arm, which drives a feed, not a chat, and §14 says so. **The shown set has
+    a recorded home**: each today-block and recall fold records the world
+    event ids it carried, as a typed list beside the note in the session
+    (alongside `Record::Notes`), so the writer checks a tainted `told`
+    against ids, never against the note's rendered text. An id not in that
+    chat's recorded set is refused.
   - **The same nightly read makes two other writes to existing rows, and a
     tainted stretch makes neither.**
     - **The retelling boost** raises a row's strength each time it comes up.
@@ -1808,6 +1813,13 @@ entirely: they never decay.
 - When the sifter finds a photo-worthy moment — the game, the party, a meal,
   a view — it queues a render **overnight**, in the hours the scheduled jobs
   leave the GPU clear, into `<persona>/camera/`, with the event id.
+- **Only clean-origin events are photographed.** The sifter's render path
+  follows the same origin rule as the narrator (§4.4) and casting (§4.2). An
+  event whose origin is untrusted is never rendered, and that includes a
+  typed plan admitted from an article stretch under PL21. Otherwise an
+  article would have a path to a picture that outlives every expiry in the
+  design. A picture also carries its event's provenance, so `forget` on the
+  source chat removes it (PL24).
 - In chat, `share_photo(event_id)` attaches an existing picture at once: no
   job, no wait, and the picture matches an event she remembers. What makes it
   feel alive is what she chooses to share, not the render. It travels the
@@ -1895,7 +1907,11 @@ to keep proactive messages from ever becoming one.
   a row unanswered, she stops until the owner next writes. Silence is read as
   "not now", never as a reason to try harder.
 - **Where it goes:** a proactive message opens a new chat, with a harness
-  turn naming why ("a note she chose to send") and her reply. It never
+  turn naming why ("a note she chose to send") and her reply. That framing
+  turn is harness text in a user turn and is stored, so it is registered in
+  the three predicates (§4.5): `arm_for_content`, `is_recorded_note` and,
+  most importantly, `is_harness_voice`, so it is never mined as the owner's
+  words. It never
   appends to an open chat, where two assistant turns in a row would be
   invalid. It reaches the owner as an unread chat, and as a web push only if
   the owner enabled pushes for that persona.
@@ -1932,6 +1948,7 @@ The folds, which arrive in no tool result and so arm at the fold
 | Today-block (§4.5) | `private`; both when any row's origin is not clean | a new pair shaped like the recall pair, riding as **its own run note** so its prefix matches, registered in `arm_for_content`, `is_recorded_note` and `is_harness_voice` |
 | Owner's roster, per-turn people cards and the unknown-name note (§7.2) | `private`; both when any fact's origin is not clean | `persona::recall::stem_of`'s existing pair, inside the recall block; the note is a line of the cards fold, never its own block |
 | `news_read` result (§8.3) | `untrusted`, always: `untrusted_input` declared and `external` on every result, the loop's conjunction | none; a tool result is re-armed from `Record::Taint`, like every external tool |
+| Proactive framing turn (§12) | nothing of its own; the run's today-block carries the arming | its own stem, registered in `arm_for_content`, `is_recorded_note` and `is_harness_voice` |
 
 **New persona tools declare eligibility.** `news_read`, `share_photo`, and
 any tool that reads a network each declare persona eligibility beside their
