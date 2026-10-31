@@ -482,9 +482,14 @@ Each level is its own `world.db`: `~/.mecha/personas/world.db` for everyone,
   registered at that level. Those writers are not all clean: a feed's items
   keep their shelf's origin (§8.2), and shelf C's are untrusted wherever
   they are stored. What the levels rule out is a chat. Nothing from a chat
-  moves up a level on its own, as with `shared.db`. So a tainted chat with
-  one persona cannot plant an event that reaches every member. (What
-  `forget` removes, in the persona's store and the group's, is §5's.)
+  moves up a level on its own, as with `shared.db`. That covers writes to
+  rows that already exist: the `told` flag, the retelling boost and
+  `known_to_owner` (§4.5) land on her own derived row (§3.2's first bullet)
+  or her own person node, **never on the shared row**. So a tainted chat
+  with one persona cannot plant an event that reaches every member, nor
+  silence one for them all: a tainted `told` stays within §4.5's bound,
+  what was in front of her. (What `forget` removes, in the persona's store
+  and the group's, is §5's.)
 - **Several groups at once.** A persona can belong to a workplace and a town.
   Both groups' shared events flow into her life, and place names are unique
   within a group, so the two never collide.
@@ -495,17 +500,20 @@ Each level is its own `world.db`: `~/.mecha/personas/world.db` for everyone,
   "no nightly job for a persona with `world` off" holds at every level. A persona's derived events decay
   under her own `[life.decay]`.
   - **A shared row that decays does so under the shipped defaults** (ruled,
-    §16 PL29); §9's owner-origin and `state` exemptions hold at every level,
-    so the everyone level's seasons and calendar never decay.
+    §16 PL29); §9's owner-origin and `state` exemptions hold at every level.
+    (Seasons, holidays and a term calendar live in the routine file or a
+    group's, §4.1, never in a `world.db`, so no decay reaches them.)
     Members may disagree, and a shared row is one row, so no one member's
     `[life.decay]` can govern it, even in a group of one. A level's own
     knobs, if wanted, arrive with the group world in step 3, in the owner's
     files and never in layered config.
   - **No pruner runs while no member has `world` on, and none is needed.**
     Strength is a function of age, computed when the pruner reads a row, so
-    skipped nights lose nothing. The first night a member has `world` on
-    again, that level's prune pass runs **before** any block folds a row
-    from it, and removes everything that decayed meanwhile. Until then
+    skipped nights lose nothing. **The fold computes strength too**, and
+    folds no row below `world_prune_below` (the shipped default for a
+    shared row, PL29), so a chat started the morning a member turns `world`
+    back on, before that night's prune pass, folds nothing the pass would
+    delete. The pass then removes what decayed meanwhile. Until then
     nothing machine-written lands in the level's `world.db`; the owner's
     edits still may.
   - **`items` are not a curve, and their expiry holds without a pruner.**
@@ -687,8 +695,8 @@ one more reason §14's gate part 1 exists.
     of the block and sending them through the recall block, splits one day
     across two folds for no gain.
   - **the untrusted stem arms `private` and `untrusted`** the moment any
-    folded row's origin is not clean: the origin of the fields that fold, so
-    a shelf C line, whose fields are code's, never arms it (PL30).
+    folded field's origin is not clean. A shelf C line's fields are code's,
+    so it never arms it (PL30).
 
   The untrusted variant exists from the first build, so a dirty result at the
   shelf B gate (§14), or a candidate row approved by mistake, needs no new fold
@@ -742,6 +750,9 @@ one more reason §14's gate part 1 exists.
     direction. A tainted stretch **never clears** a flag. Each flag records
     its source chat and taint, so the week view can show which events went
     quiet from a tainted chat (§13).
+  - **A flag lands on her own row.** For a shared event, `told` marks her
+    derived event, never the group's row (§3.2), so one persona's chat
+    never decides what the others have left to say.
   - **The set is bounded by what the chat was shown.** A tainted stretch may
     set `told` only on events that rode in *that chat's* today-block or recall
     block, never on arbitrary world rows. So an injection that makes her
