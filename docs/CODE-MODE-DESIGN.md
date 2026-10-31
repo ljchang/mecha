@@ -1107,10 +1107,16 @@ curl -s http://127.0.0.1:8080/v1/chat/completions -H 'content-type: application/
 - **`request_timeout` bounds one protocol turn, not a program.** The
   program's wall clock is the backend's own deadline, which also counts the
   host's time answering calls.
-- **`monty-pool` needs Rust 1.96**, above the workspace's 1.89 MSRV, and
-  always builds its WebSocket transport (rustls with aws-lc, a C build;
-  about 50 crates in all). So the backend is behind the cargo feature
-  `monty`, off by default, and CI tests it in the `sandbox backends` job.
+- **`monty-pool` needs Rust 1.96**, and always builds its WebSocket
+  transport (rustls with aws-lc, a C build). The backend is the cargo
+  feature `monty`.
+  - It was off by default while the workspace promised 1.89.
+  - **Since 2026-10-31 it is on by default (owner's ruling)**, and the
+    workspace's `rust-version` is 1.96. Every monty crate declares 1.96,
+    the highest in the tree.
+  - It adds 51 crates to `mecha-cli`'s build, from 284 to 335.
+  - `--no-default-features` still builds a mecha without it, and that
+    mecha says so by name.
 
 **The experiment** (`mecha exp`, fixtures on the fictional cast only):
 
