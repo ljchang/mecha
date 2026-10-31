@@ -34,6 +34,10 @@ sha2 = "0.11"
 # hashed with a vetted KDF rather than a hand-rolled one.
 argon2 = "0.6"
 toml_edit = "0.25"
+# Code mode's handle patterns (`tool/code.rs`, CODE-MODE-DESIGN.md §3): linear
+# time on adversarial text, unlike monty's backtracking `re`. Already in the
+# lockfile, under termwiz's fancy-regex.
+regex = "1"
 # Code mode's interpreter (`interpreter/monty.rs`, CODE-MODE-DESIGN.md §7):
 # programs run in `monty-pool`'s subprocess workers, never in-process. Pinned
 # exactly, because the worker binary (`interpreter/worker.rs`) is pinned to

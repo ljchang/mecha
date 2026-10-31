@@ -622,6 +622,7 @@ mod tests {
                 blocked: false,
                 unknown: false,
                 staged: false,
+                in_program: false,
             }],
             malformed_tool_args: 1,
             blocked_sends: 2,

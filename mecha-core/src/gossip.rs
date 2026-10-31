@@ -2785,6 +2785,9 @@ mod exchange_control_tests {
     }
     #[async_trait]
     impl Provider for Script {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "script"
         }

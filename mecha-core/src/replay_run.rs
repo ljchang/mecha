@@ -450,6 +450,12 @@ impl Tool for ReplayTool {
     fn runs_a_fresh_conversation(&self) -> bool {
         self.inner.runs_a_fresh_conversation()
     }
+    /// Delegated too: a replayed `code` answering `false` would get no host
+    /// channel, and would read as a plain read that a program may call
+    /// (review of #768).
+    fn hosts_programs(&self) -> bool {
+        self.inner.hosts_programs()
+    }
     /// The live tool's capabilities, minus `external_send` in the modes where
     /// nothing executes — the sandbox's rule in the other direction. A
     /// replayed "send" sends nothing: its answer comes from the recording, so
@@ -1420,6 +1426,45 @@ mod tests {
         .unwrap()
     }
 
+    /// `ReplayTool` forwards `hosts_programs` with the rest of its family
+    /// (review of #768): a replayed `code` answering `false` would get no
+    /// host channel and read as a plain read.
+    #[test]
+    fn a_replayed_tool_says_whether_it_hosts_programs() {
+        struct Hosts;
+        #[async_trait]
+        impl Tool for Hosts {
+            fn name(&self) -> &str {
+                "code"
+            }
+            fn description(&self) -> &str {
+                "runs programs"
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn hosts_programs(&self) -> bool {
+                true
+            }
+            async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::ok("ran"))
+            }
+        }
+        let mut live = Registry::new();
+        live.insert(Arc::new(Hosts));
+        let (replayed, _) = registry_with_state(
+            &["code".to_string()],
+            &live,
+            None,
+            &[],
+            Vec::new(),
+            OnDivergence::Stop,
+            CancellationToken::new(),
+        )
+        .unwrap();
+        assert!(replayed.get("code").unwrap().hosts_programs());
+    }
+
     /// A gate that guards `echo` the way an operator's config would.
     fn gate_routing(names: &[&str]) -> LiveGate {
         LiveGate::new(
@@ -1628,6 +1673,9 @@ mod tests {
                 Some("recall"),
                 PURE,
             ),
+            // Its program reaches admitted plain reads only, each through
+            // the gate, which refuses where a turn's call would ask.
+            ("mecha-core/src/tool/code.rs", "CodeTool", None, PURE),
             (
                 "mecha-core/src/tool/skill.rs",
                 "SkillTool",
@@ -1652,9 +1700,16 @@ mod tests {
         fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
             for entry in std::fs::read_dir(dir).unwrap().flatten() {
                 let path = entry.path();
+                // A sibling test file (`#[cfg(test)] #[path = "x_tests.rs"]
+                // mod tests;`) is test code, as an inline test module is, and
+                // its doubles are not tools in the tree.
+                let sibling_tests = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|s| s.ends_with("_tests"));
                 if path.is_dir() {
                     walk(&path, out);
-                } else if path.extension().is_some_and(|e| e == "rs") {
+                } else if path.extension().is_some_and(|e| e == "rs") && !sibling_tests {
                     out.push(path);
                 }
             }
@@ -2457,6 +2512,9 @@ decision = "prompt"
     struct Scripted(Mutex<Vec<CompletionResponse>>);
     #[async_trait]
     impl Provider for Scripted {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "scripted"
         }
@@ -3370,6 +3428,7 @@ mod decision_turn_tests {
             blocked: false,
             unknown: false,
             staged: false,
+            in_program: false,
         }
     }
 
