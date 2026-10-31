@@ -179,6 +179,8 @@ impl Confinement {
             // `env -i` execs `sandbox-exec`, which applies the profile and
             // execs the worker: one process from the launcher's shell to the
             // program, so the pid the pool holds is the confined worker.
+            // There is no `--die-with-parent` here: a worker outlives a
+            // `SIGKILL`ed mecha (`CODE-MODE-DESIGN.md` §12).
             Confinement::Seatbelt { sandbox_exec } => {
                 return Ok(vec![
                     ENV.into(),

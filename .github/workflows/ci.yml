@@ -361,7 +361,8 @@ jobs:
 
       # Code mode's interpreter on a Mac: the pinned macOS worker under its
       # own Seatbelt profile, the same tests as `sandbox backends` runs under
-      # bwrap, plus the macOS-only ones (the live profile read with
+      # bwrap (the `code` tool over a real worker among them), plus the
+      # macOS-only ones (the live profile read with
       # `sandbox_check`, a launcher that drops the profile). The worker's
       # wheel is fetched sha256-pinned into a scratch home, as on Linux.
       # `--nocapture` so the memory backstop's measured table is in the log.
@@ -372,6 +373,7 @@ jobs:
         run: |
           cargo test -p mecha-core --locked --features monty --test code_interpreter -- --nocapture
           cargo test -p mecha-core --locked --features monty --lib interpreter
+          cargo test -p mecha-core --locked --features monty --lib tool::code
           cargo test -p mecha-core --locked --features monty --lib sandbox::seatbelt
 
   # `mecha tools` runs with no provider configured, which makes it the cheapest

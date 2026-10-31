@@ -355,7 +355,8 @@ fn host_calls(trace: &[ToolCallTrace]) -> Vec<&ToolCallTrace> {
     trace.iter().filter(|t| t.in_program).collect()
 }
 
-/// The pinned worker and its bwrap confinement, or `None` (a skip).
+/// The pinned worker and the platform's confinement for it (bwrap on Linux,
+/// Seatbelt on a Mac), or `None` (a skip).
 #[cfg(feature = "monty")]
 async fn worker() -> Option<(
     crate::interpreter::worker::VerifiedWorker,
@@ -383,8 +384,15 @@ async fn worker() -> Option<(
     } else {
         dirs::home_dir().and_then(|h| worker::installed(&h.join(".mecha")).ok())
     };
-    let bwrap_works = std::process::Command::new("bwrap")
-        .args([
+    // The platform's sandbox, able to run something here: `sandbox-exec`
+    // applying a profile on a Mac, bwrap building namespaces elsewhere.
+    let mut probe = if cfg!(target_os = "macos") {
+        let mut c = std::process::Command::new("/usr/bin/sandbox-exec");
+        c.args(["-p", "(version 1)(allow default)", "/usr/bin/true"]);
+        c
+    } else {
+        let mut c = std::process::Command::new("bwrap");
+        c.args([
             "--unshare-all",
             "--unshare-user",
             "--disable-userns",
@@ -392,22 +400,28 @@ async fn worker() -> Option<(
             "/",
             "/",
             "true",
-        ])
+        ]);
+        c
+    };
+    let sandbox_works = probe
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
         .is_ok_and(|s| s.success());
+    // `[sandbox] kind = "bwrap"`; on a Mac the worker's confinement ignores
+    // it and is Seatbelt.
     let sandbox = Sandbox::new(SandboxConfig {
         kind: Backend::Bwrap,
         ..Default::default()
     });
-    let (Some(w), true, Ok(conf)) = (found, bwrap_works, Confinement::for_sandbox(&sandbox)) else {
+    let (Some(w), true, Ok(conf)) = (found, sandbox_works, Confinement::for_sandbox(&sandbox))
+    else {
         assert!(
             std::env::var_os("MECHA_TEST_REQUIRE_BACKENDS").is_none(),
-            "the pinned monty worker or a working bwrap is unavailable, and \
+            "the pinned monty worker or the platform's sandbox is unavailable, and \
              MECHA_TEST_REQUIRE_BACKENDS is set"
         );
-        eprintln!("SKIPPED: the pinned monty worker or a working bwrap is unavailable");
+        eprintln!("SKIPPED: the pinned monty worker or the platform's sandbox is unavailable");
         return None;
     };
     Some((w, conf))
