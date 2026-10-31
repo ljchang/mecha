@@ -149,6 +149,9 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Provider for Fixed {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "test"
         }

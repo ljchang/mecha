@@ -102,6 +102,22 @@ pub trait Provider: Send + Sync {
         false
     }
 
+    /// Whether a request sent here stays on this machine: the config's
+    /// `kind` is `local` and [`router::is_loopback`] holds for its base URL
+    /// (a base URL that does not parse is not local). Computed when the
+    /// provider is built, where the config is in hand, and asked for every
+    /// [`CompletionRequest::local_only`] request — a code-mode sub-call
+    /// (`CODE-MODE-DESIGN.md` §4, R8), which hands a handle's bytes to
+    /// whatever model answers. A provider that is not local refuses such a
+    /// request by name ([`LocalOnlyRefused`]).
+    ///
+    /// **No default body, on purpose.** `false` would silently kill the
+    /// feature on the owner's own router; `true` would decide R8 by
+    /// omission. So the compiler finds every implementation, the two
+    /// wrappers included (`Halting`, [`Failover`]). An in-process test
+    /// double answers `true`: it sends nothing off the box.
+    fn local(&self) -> bool;
+
     /// Whether changing `CompletionRequest::effort` changes the wire request.
     /// Unknown adapters opt out so a measurement cannot compare identical arms.
     fn supports_effort(&self) -> bool {
@@ -124,6 +140,42 @@ pub trait Provider: Send + Sync {
         req: &CompletionRequest,
         sink: Option<&StreamSink>,
     ) -> Result<CompletionResponse>;
+}
+
+/// A provider that is not local refused a [`CompletionRequest::local_only`]
+/// request (R8). Not a [`retry::ProviderError`]: nothing about it is
+/// transient, so nothing retries it, and a [`Failover`] never sends it on to
+/// a fallback that is not local either.
+#[derive(Debug, Clone)]
+pub struct LocalOnlyRefused {
+    /// The refusing provider's [`Provider::id`].
+    pub provider: String,
+}
+
+impl std::fmt::Display for LocalOnlyRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "provider `{}` refused a local-only request: it is not local (a `local` \
+             provider on a loopback address), and this request's bytes must not leave the \
+             machine",
+            self.provider
+        )
+    }
+}
+
+impl std::error::Error for LocalOnlyRefused {}
+
+/// The refusal a provider that is not local owes a `local_only` request, or
+/// `Ok` when the request may go. Every provider that sends anywhere calls it
+/// before it sends.
+pub fn refuse_unless_local(p: &dyn Provider, req: &CompletionRequest) -> Result<()> {
+    if req.local_only && !p.local() {
+        return Err(anyhow::Error::new(LocalOnlyRefused {
+            provider: p.id().to_string(),
+        }));
+    }
+    Ok(())
 }
 
 /// Build a provider from a config entry.
@@ -187,6 +239,9 @@ impl Provider for Halting {
     }
     fn structured_output(&self) -> bool {
         self.inner.structured_output()
+    }
+    fn local(&self) -> bool {
+        self.inner.local()
     }
     fn supports_effort(&self) -> bool {
         self.inner.supports_effort()
@@ -535,6 +590,14 @@ impl Provider for Failover {
     fn structured_output(&self) -> bool {
         self.primary.structured_output()
     }
+
+    /// The primary's, like `structured_output`: a `local_only` request goes
+    /// to the primary only if it is local, and to a fallback only if that
+    /// one is too (`complete`).
+    fn local(&self) -> bool {
+        self.primary.local()
+    }
+
     fn id(&self) -> &str {
         self.primary.id()
     }
@@ -567,6 +630,7 @@ impl Provider for Failover {
             req.response_schema.is_none() || self.structured_output(),
             "primary provider does not support structured output"
         );
+        refuse_unless_local(self.primary.as_ref(), req)?;
         let mut last = match self.primary.complete(req, sink).await {
             Ok(response) => return Ok(response),
             Err(e) if failover_worthy(&e) => e,
@@ -576,6 +640,13 @@ impl Provider for Failover {
         for (name, provider) in &self.fallbacks {
             if req.response_schema.is_some() && !provider.structured_output() {
                 tracing::warn!(fallback = %name, "skipping fallback without structured output support");
+                continue;
+            }
+            // A local-only request (a code-mode sub-call, R8) never leaves
+            // the machine through a fallback, exactly as a schema never goes
+            // to a fallback that cannot enforce it.
+            if req.local_only && !provider.local() {
+                tracing::warn!(fallback = %name, "skipping a fallback that is not local for a local-only request");
                 continue;
             }
             tracing::warn!(
@@ -616,6 +687,9 @@ mod failover_tests {
 
     #[async_trait]
     impl Provider for Failing {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "failing"
         }
@@ -640,6 +714,9 @@ mod failover_tests {
 
     #[async_trait]
     impl Provider for Recording {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "recording"
         }
@@ -677,6 +754,7 @@ mod failover_tests {
             cache_prompt: false,
             think: None,
             think_budget: None,
+            local_only: false,
             trailing_notes: 0,
             tool_choice: crate::message::ToolChoice::Auto,
         }
@@ -752,6 +830,9 @@ mod failover_tests {
 
     #[async_trait]
     impl Provider for Sighted {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "sighted"
         }
@@ -809,6 +890,9 @@ mod schema_failover_tests {
     }
     #[async_trait]
     impl Provider for Endpoint {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "endpoint"
         }
@@ -880,12 +964,163 @@ mod schema_failover_tests {
 }
 
 #[cfg(test)]
+mod local_only_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// An endpoint that is local or not, failing transiently or answering,
+    /// counting how often it was asked.
+    struct Site {
+        local: bool,
+        fail: bool,
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Provider for Site {
+        fn id(&self) -> &str {
+            if self.local {
+                "here"
+            } else {
+                "elsewhere"
+            }
+        }
+        fn default_model(&self) -> &str {
+            "m"
+        }
+        fn local(&self) -> bool {
+            self.local
+        }
+        async fn complete(
+            &self,
+            req: &CompletionRequest,
+            _: Option<&StreamSink>,
+        ) -> Result<CompletionResponse> {
+            refuse_unless_local(self, req)?;
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail {
+                return Err(retry::ProviderError::Overloaded.into());
+            }
+            Ok(CompletionResponse {
+                message: crate::message::Message::assistant(vec![crate::message::Block::text(
+                    self.id(),
+                )]),
+                stop_reason: crate::message::StopReason::EndTurn,
+                usage: Usage::default(),
+                refusal: None,
+                model: "m".into(),
+                malformed_tool_args: 0,
+            })
+        }
+    }
+
+    fn endpoint(local: bool, fail: bool) -> (Box<dyn Provider>, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        (
+            Box::new(Site {
+                local,
+                fail,
+                calls: Arc::clone(&calls),
+            }),
+            calls,
+        )
+    }
+
+    fn local_only() -> CompletionRequest {
+        let r = crate::quarantine::QuarantinedPass::new("m", 16)
+            .local_only()
+            .ask("q");
+        assert!(r.local_only);
+        r
+    }
+
+    /// `Failover` skips a fallback that is not local for a local-only
+    /// request, as it skips one without structured output for a schema; an
+    /// ordinary request still fails over to it.
+    #[tokio::test]
+    async fn a_local_only_request_never_fails_over_off_the_machine() {
+        let (primary, _) = endpoint(true, true);
+        let (remote, remote_calls) = endpoint(false, false);
+        let (near, near_calls) = endpoint(true, false);
+        let f = Failover::new(
+            primary,
+            vec![("remote".into(), remote), ("near".into(), near)],
+        );
+        assert!(f.local(), "the primary's answer");
+        let r = f.complete(&local_only(), None).await.unwrap();
+        assert_eq!(r.message.text(), "here");
+        assert_eq!(remote_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(near_calls.load(Ordering::SeqCst), 1);
+
+        // The control: the same chain, an ordinary request, reaches the
+        // remote fallback first.
+        let (primary, _) = endpoint(true, true);
+        let (remote, remote_calls) = endpoint(false, false);
+        let f = Failover::new(primary, vec![("remote".into(), remote)]);
+        let plain = crate::quarantine::QuarantinedPass::new("m", 16).ask("q");
+        assert_eq!(
+            f.complete(&plain, None).await.unwrap().message.text(),
+            "elsewhere"
+        );
+        assert_eq!(remote_calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// A primary that is not local refuses by name and is never asked, and
+    /// nothing falls over: the refusal is not transient.
+    #[tokio::test]
+    async fn a_remote_primary_refuses_a_local_only_request_by_name() {
+        let (primary, primary_calls) = endpoint(false, false);
+        let (near, near_calls) = endpoint(true, false);
+        let f = Failover::new(primary, vec![("near".into(), near)]);
+        assert!(!f.local());
+        let err = f.complete(&local_only(), None).await.unwrap_err();
+        assert!(err.downcast_ref::<LocalOnlyRefused>().is_some(), "{err:#}");
+        assert_eq!(primary_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(near_calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// `Halting`, around every provider `build` returns, forwards `local()`:
+    /// left to a default it would answer for every provider in the process.
+    #[test]
+    fn halting_forwards_local() {
+        static FLAG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        for local in [true, false] {
+            let (inner, _) = endpoint(local, false);
+            let h = Halting {
+                inner,
+                halted: &FLAG,
+            };
+            assert_eq!(h.local(), local);
+        }
+        // And `build` computes it from the config.
+        let built = build(&crate::config::ProviderConfig {
+            kind: "local".into(),
+            base_url: Some("http://127.0.0.1:8080".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(built.local());
+        let remote = build(&crate::config::ProviderConfig {
+            kind: "anthropic".into(),
+            api_key: Some("k".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(!remote.local());
+    }
+}
+
+#[cfg(test)]
 mod halt_tests {
     use super::*;
 
     struct Answers;
     #[async_trait]
     impl Provider for Answers {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "answers"
         }
@@ -931,6 +1166,7 @@ mod halt_tests {
             cache_prompt: false,
             think: None,
             think_budget: None,
+            local_only: false,
             trailing_notes: 0,
             tool_choice: crate::message::ToolChoice::Auto,
         };
