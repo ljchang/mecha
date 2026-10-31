@@ -26,6 +26,9 @@ pub const FILE: &str = "routine.toml";
 pub const DRAFT: &str = "routine.draft.toml";
 /// The routine an approved draft replaced, kept so approval loses nothing.
 pub const PREVIOUS: &str = "routine.previous.toml";
+/// The digest of the draft as a model last staged it. A waiting draft that
+/// no longer hashes to it was edited by the owner, and is theirs.
+const STAGED: &str = ".routine.draft.staged";
 
 /// More anchors than a week can sensibly hold is a draft gone wrong.
 pub const MAX_ANCHORS: usize = 64;
@@ -190,7 +193,8 @@ fn days_of(words: &[String]) -> std::result::Result<u8, String> {
 
 fn time_of(at: &str) -> Option<u32> {
     let (h, m) = at.trim().split_once(':')?;
-    if h.is_empty() || h.len() > 2 || m.len() != 2 {
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if !digits(h) || h.len() > 2 || !digits(m) || m.len() != 2 {
         return None;
     }
     let (h, m): (u32, u32) = (h.parse().ok()?, m.parse().ok()?);
@@ -297,8 +301,9 @@ pub fn read(dir: &Path, name: &str) -> Result<Texts> {
 
 /// Stage a model's draft beside the owner's routine, replacing a draft
 /// still waiting (revision until approval) and never the routine itself.
-/// Refused unless it parses and holds an anchor, and unless the run that
-/// wrote it was clean.
+/// Refused unless it parses and holds an anchor, unless the run that wrote
+/// it was clean, and over a waiting draft the owner has edited: a model
+/// never overwrites the owner's text (§4.1).
 pub fn stage_draft(dir: &Path, name: &str, text: &str, origin: Origin) -> Result<()> {
     match origin {
         Origin::Owner => bail!("a draft is a model's; the owner edits {FILE} directly"),
@@ -322,7 +327,19 @@ pub fn stage_draft(dir: &Path, name: &str, text: &str, origin: Origin) -> Result
     if routine.anchors.is_empty() {
         bail!("the draft holds no anchors");
     }
-    super::write_private(&pdir.join(DRAFT), text.as_bytes())
+    if let Some(waiting) = read_if_there(&pdir.join(DRAFT))? {
+        // No record, or one that disagrees, is an edit: unknown is the
+        // owner's here, because the cost of guessing wrong is their work.
+        let staged = std::fs::read_to_string(pdir.join(STAGED)).unwrap_or_default();
+        if staged.trim() != super::text_digest(&waiting) {
+            bail!(
+                "`{name}`'s waiting routine draft has been edited since it was staged; \
+                 approve or discard it before another is drafted"
+            );
+        }
+    }
+    super::write_private(&pdir.join(DRAFT), text.as_bytes())?;
+    super::write_private(&pdir.join(STAGED), super::text_digest(text).as_bytes())
 }
 
 /// Make the waiting draft the routine, only if it still hashes to
@@ -347,6 +364,7 @@ pub fn approve_draft_as_shown(dir: &Path, name: &str, digest: &str) -> Result<Ro
     super::write_private(&pdir.join(FILE), text.as_bytes())?;
     std::fs::remove_file(pdir.join(DRAFT))
         .with_context(|| format!("the routine is approved, but {DRAFT} could not be removed"))?;
+    let _ = std::fs::remove_file(pdir.join(STAGED));
     Ok(routine)
 }
 
@@ -354,7 +372,10 @@ pub fn approve_draft_as_shown(dir: &Path, name: &str, digest: &str) -> Result<Ro
 pub fn discard_draft(dir: &Path, name: &str) -> Result<()> {
     let pdir = persona_dir(dir, name)?;
     match std::fs::remove_file(pdir.join(DRAFT)) {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            let _ = std::fs::remove_file(pdir.join(STAGED));
+            Ok(())
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             bail!("`{name}` has no routine draft waiting")
         }
@@ -431,6 +452,7 @@ chance = 0.7
                 "anchor 1 (gym): at = \"7am\" is not a time",
             ),
             ("at = \"07:00\"", "at = \"24:00\"", "not a time"),
+            ("at = \"07:00\"", "at = \"+7:00\"", "not a time"),
             ("minutes = 60", "minutes = 2", "minutes = 2 is out of range"),
             (
                 "minutes = 60",
@@ -543,6 +565,26 @@ chance = 0.7
             got.contains("routine.toml does not load") && got.contains("7am"),
             "{got}"
         );
+    }
+
+    #[test]
+    fn a_model_never_restages_over_a_draft_the_owner_edited() {
+        let dir = made();
+        let draft = dir.join("mara").join(DRAFT);
+        stage_draft(&dir, "mara", GYM, Origin::ModelClean).unwrap();
+        // Revising its own waiting draft is allowed.
+        let revised = GYM.replace("0.7", "0.6");
+        stage_draft(&dir, "mara", &revised, Origin::ModelClean).unwrap();
+        std::fs::write(&draft, revised.replace("0.6", "0.9")).unwrap();
+        let got = format!(
+            "{:#}",
+            stage_draft(&dir, "mara", GYM, Origin::ModelClean).unwrap_err()
+        );
+        assert!(got.contains("edited since it was staged"), "{got}");
+        assert!(std::fs::read_to_string(&draft).unwrap().contains("0.9"));
+        // Once it is dealt with, a new draft may be staged.
+        discard_draft(&dir, "mara").unwrap();
+        stage_draft(&dir, "mara", GYM, Origin::ModelClean).unwrap();
     }
 
     #[test]
