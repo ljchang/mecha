@@ -59,6 +59,7 @@ pub mod build_source;
 pub mod cache_lens;
 pub mod candidate;
 pub mod capture;
+pub mod catalog;
 pub mod charter;
 pub mod clock;
 pub mod closure;
