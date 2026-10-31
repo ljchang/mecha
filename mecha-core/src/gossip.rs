@@ -873,9 +873,13 @@ pub struct GroundedClaim {
 /// skipped, as `replay::extract` skipped them before this walk replaced
 /// it: a reader's evidence is what *it* retrieved, and widening that was
 /// never measured (found on review).
-fn evidence_from(messages: &[crate::message::Message], vantage: &Vantage) -> Vec<GossipEvidence> {
+fn evidence_from(
+    messages: &[crate::message::Message],
+    programs: &[crate::tool::code::record::ProgramCall],
+    vantage: &Vantage,
+) -> Vec<GossipEvidence> {
     let mut out = Vec::new();
-    for call in crate::grounding::calls(messages) {
+    for call in crate::grounding::calls(messages, programs) {
         if call.name != "kg_search" || call.harness {
             continue;
         }
@@ -1135,7 +1139,7 @@ pub async fn exchange_with_followup(
                 .await
                 .with_context(|| format!("{} reader, round {n}", vantage.label))?;
             let answer = strip_user_directed(outcome.text.trim());
-            let packet = evidence_from(&convo.messages, vantage);
+            let packet = evidence_from(&convo.messages, &convo.program_calls, vantage);
             let claims = grounded_claims(&answer, &packet, n, &vantage.label);
             let carried = if claims.is_empty() {
                 if is_abstention(&answer) {
@@ -1660,6 +1664,66 @@ mod tests {
         )
         .is_some());
         assert!(grounded_question("Where does she work?", "Dana Rowe").is_none());
+    }
+
+    /// §8: "After an `analyst` child read a thread, a parent-side `gossip`
+    /// packet … see[s] the shaped answer and no nested call. With the walk
+    /// yielding child records, this fails." The child's `kg_search` came up
+    /// under the subagent call `a1`; under a `trusted_output` child it is no
+    /// evidence, and the same read under a child whose answer is not shaped
+    /// is — so the absence is the shape's, not a walk that ignores programs.
+    #[test]
+    fn a_shaped_childs_read_is_no_evidence_for_the_parents_packet() {
+        use crate::message::{Block, Message};
+        use crate::tool::code::record::ProgramCall;
+        let messages = vec![
+            Message::user("ask the analyst"),
+            Message::assistant(vec![Block::ToolUse {
+                id: "a1".into(),
+                name: "analyst".into(),
+                input: serde_json::json!({"task": "who chairs the seminar?"}),
+            }]),
+            Message::tool_results(vec![Block::ToolResult {
+                tool_use_id: "a1".into(),
+                content: "yes".into(),
+                is_error: false,
+            }]),
+        ];
+        let packet = serde_json::json!({"items": [{
+            "id": "episode:7",
+            "kind": "episode",
+            "source": "slack.thread",
+            "text": "Dana Rowe chairs the seminar this term.",
+        }]})
+        .to_string();
+        let read = |trusted: bool| {
+            ProgramCall::ran(
+                "c1.host-1",
+                "c1",
+                "kg_search",
+                serde_json::json!({"query": "seminar"}),
+                true,
+                false,
+                std::sync::Arc::from(packet.as_str()),
+            )
+            .carried_up("analyst", trusted)
+            .anchored_at("a1")
+        };
+        let vantage = Vantage {
+            label: "written".into(),
+            sources: vec!["slack.thread".into()],
+        };
+        assert!(
+            evidence_from(&messages, &[read(true)], &vantage).is_empty(),
+            "the packet holds what the shape kept from the parent"
+        );
+        let open = evidence_from(&messages, &[read(false)], &vantage);
+        assert_eq!(
+            open.len(),
+            1,
+            "a program's kg_search is a reader's retrieval"
+        );
+        assert_eq!(open[0].id, "episode:7");
     }
 
     #[test]

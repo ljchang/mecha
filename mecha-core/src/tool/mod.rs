@@ -87,6 +87,12 @@ pub struct ToolOutput {
     /// (`code::ProgramStats`): counts only, read into the call's trace entry
     /// and from there into `RunStats` and the run's usage. Never rendered.
     pub program: Option<Box<code::ProgramStats>>,
+    /// What a program read (`code::record`, `CODE-MODE-DESIGN.md` §7): each
+    /// host call that ran, in issue order — a `code` call's own, or a
+    /// child's carried up by a subagent. The dispatch moves them onto the
+    /// conversation, which the session records; never rendered, and never
+    /// part of the model's context.
+    pub reads: Vec<code::record::ProgramCall>,
 }
 
 impl ToolOutput {
@@ -100,6 +106,7 @@ impl ToolOutput {
             image: None,
             deferred: None,
             program: None,
+            reads: Vec::new(),
         }
     }
 
@@ -113,6 +120,7 @@ impl ToolOutput {
             image: None,
             deferred: None,
             program: None,
+            reads: Vec::new(),
         }
     }
 
@@ -128,6 +136,7 @@ impl ToolOutput {
             image: None,
             deferred: None,
             program: None,
+            reads: Vec::new(),
         }
     }
 

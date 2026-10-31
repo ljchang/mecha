@@ -967,7 +967,10 @@ async fn the_tool_read_past_its_limit_raises_before_the_gate() {
         while let Some(req) = rx.recv().await {
             if let HostRequest::Call { reply, .. } = req {
                 seen.fetch_add(1, Ordering::SeqCst);
-                let _ = reply.send(HostAnswer::Ran(ToolOutput::ok("a result")));
+                let _ = reply.send(HostAnswer::Ran {
+                    id: "t.host-1".into(),
+                    output: ToolOutput::ok("a result"),
+                });
             }
         }
     });
@@ -1003,7 +1006,10 @@ async fn the_host_refuses_a_name_outside_the_reach_without_the_interpreter() {
         while let Some(req) = rx.recv().await {
             if let HostRequest::Call { reply, .. } = req {
                 seen.fetch_add(1, Ordering::SeqCst);
-                let _ = reply.send(HostAnswer::Ran(ToolOutput::ok("sent")));
+                let _ = reply.send(HostAnswer::Ran {
+                    id: "t.host-1".into(),
+                    output: ToolOutput::ok("sent"),
+                });
             }
         }
     });
@@ -3005,4 +3011,467 @@ async fn a_python_program_reaches_a_read_registered_after_enable_code() {
     let (d, _) = run(&agent, "h = recall()\nprint(size(h))").await;
     assert!(!d.is_error, "{}", d.content);
     assert_eq!(d.content.trim(), "8", "{}", d.content);
+}
+
+// ------------------------------------------------ the program record (§7)
+
+/// A thread id as a provider names one: long enough to join on its value.
+const THREAD: &str = "1a035af8bbc75864";
+const THREAD_TEXT: &str = "Rhea: could you send the slides from the reading group?";
+
+fn read_the_thread(_: &Value) -> ExternalCall {
+    ExternalCall {
+        name: "mail_get_thread".into(),
+        args: Vec::new(),
+        kwargs: vec![("thread_id".into(), json!(THREAD))],
+    }
+}
+
+fn tool_use(id: &str, name: &str, input: Value) -> CompletionResponse {
+    assistant(
+        vec![Block::ToolUse {
+            id: id.into(),
+            name: name.into(),
+            input,
+        }],
+        StopReason::ToolUse,
+    )
+}
+
+fn said(text: &str) -> CompletionResponse {
+    assistant(vec![Block::text(text)], StopReason::EndTurn)
+}
+
+/// A session in `home`'s store, as a front end creates one.
+fn session_in(home: &std::path::Path) -> crate::session::Session {
+    crate::session::Session::create(
+        &home.join("sessions"),
+        crate::session::SessionMeta {
+            id: crate::session::Session::new_id(),
+            created_at: chrono::Utc::now(),
+            provider: "scripted".into(),
+            model: "scripted-1".into(),
+            workspace: home.join("work"),
+            title: None,
+            kind: None,
+        },
+    )
+    .unwrap()
+}
+
+/// One recorded run: a program reads the thread (`c1`), then — with
+/// `compact`, after a compaction that cuts the program out of the live
+/// list — the model calls `mail_reply` on it (`r1`), as a run that drafts a
+/// reply does. Returns the session and the conversation as the run left it.
+async fn drafted(
+    home: &std::path::Path,
+    compact: bool,
+) -> (crate::session::Session, crate::agent::Conversation) {
+    let mut tools: Vec<Arc<dyn Tool>> = vec![
+        Arc::new(Fake::mail("mail_get_thread", THREAD_TEXT)),
+        Arc::new(Fake::read("mail_reply", "Drafted, not sent.")),
+    ];
+    let reply = json!({"thread_id": THREAD, "body": "Attached."});
+    let mut turns = vec![tool_use("c1", NAME, json!({"program": "read the thread"}))];
+    if compact {
+        // Two more turns, so the cut has a head to summarise that holds the
+        // program, and a tail to keep.
+        tools.push(Arc::new(Fake::read("note", "noted")));
+        tools.push(Arc::new(crate::tool::builtin::CompactTool));
+        turns.push(tool_use("n1", "note", json!({})));
+        turns.push(tool_use("n2", "note", json!({})));
+        turns.push(tool_use("k1", "compact", json!({})));
+        turns.push(said("summary: a program read one thread"));
+    }
+    turns.push(tool_use("r1", "mail_reply", reply));
+    turns.push(said("drafted"));
+    let jail = home.join("work").join("drafting");
+    std::fs::create_dir_all(&jail).unwrap();
+    let mut agent = Agent::new(
+        Box::new(Scripted(Mutex::new(turns))),
+        registry_of(tools),
+        Arc::new(Nobody),
+        ToolCtx {
+            workspace: jail,
+            spill_dir: None,
+            ..Default::default()
+        },
+        AgentConfig {
+            // Nothing reaches this ceiling: only the model's own `compact`
+            // can summarise here.
+            compact_at_tokens: Some(u64::MAX),
+            compact_keep_recent: 2,
+            force_final_answer: false,
+            compact_validate: false,
+            ..AgentConfig::default()
+        },
+        None,
+    )
+    .unwrap();
+    if compact {
+        agent.ctx_mut().compact_requested =
+            Some(Arc::new(std::sync::atomic::AtomicBool::new(false)));
+    }
+    agent.enable_code(Arc::new(Script::new(vec![read_the_thread])));
+
+    let session = session_in(home);
+    let mut convo = crate::agent::Conversation::user("answer the thread");
+    session.append_messages(&convo.messages).unwrap();
+    let before = convo.messages.clone();
+    let outcome = agent.run(&mut convo, None).await.unwrap();
+    if compact {
+        assert_eq!(outcome.compactions, 1, "the run summarised nothing");
+        assert!(
+            !convo
+                .messages
+                .iter()
+                .any(|m| m.tool_uses().iter().any(|(id, ..)| *id == "c1")),
+            "the compaction did not cut the program out of the live list"
+        );
+    }
+    session.record_run(&before, &convo).unwrap();
+    (session, convo)
+}
+
+/// The draft `r1` staged in `session`.
+fn the_reply(session: &crate::session::Session) -> crate::outbox::OutboxItem {
+    let args = json!({"thread_id": THREAD, "body": "Attached."});
+    crate::outbox::OutboxItem {
+        predictions: Vec::new(),
+        outcomes: Vec::new(),
+        delivery_attempts: Vec::new(),
+        output: None,
+        author: Default::default(),
+        id: "i1".into(),
+        status: "pending".into(),
+        tool: "mail_reply".into(),
+        kind: crate::outbox::OutboxKind::Message,
+        args_before: args.clone(),
+        args,
+        summary: String::new(),
+        session_id: Some(session.meta.id.clone()),
+        workspace: None,
+        taint: Taint::default(),
+        created_at: "now".into(),
+        resolved_at: None,
+        reason: None,
+        edited_by: None,
+        resolved_by: None,
+        error: None,
+        call_id: Some("r1".into()),
+        filled_defaults: Vec::new(),
+    }
+}
+
+/// §8: "A draft staged after a program read a thread joins to that thread
+/// through `grounding::calls`", and "once with a compaction between the
+/// program and the draft". The thread was read by a host call, which is no
+/// `tool_use` the transcript holds, and its bytes were a handle: without the
+/// `program` record and its blob the join finds nothing, which fails closed
+/// but silently. Through the whole path: the loop carries the program's
+/// reads, the session stores them, and the outbox's own reader of the file
+/// joins on them.
+#[tokio::test]
+async fn a_draft_staged_after_a_program_read_a_thread_joins_to_it() {
+    let home = crate::work::tests::HomeGuard::new();
+    for compact in [false, true] {
+        let (session, convo) = drafted(home.dir(), compact).await;
+        assert_eq!(convo.program_calls.len(), 1, "compact = {compact}");
+        let reads =
+            crate::outbox_source::for_item(&the_reply(&session), &home.dir().join("sessions"));
+        assert_eq!(reads.len(), 1, "compact = {compact}: {reads:?}");
+        assert_eq!(reads[0].tool, "mail_get_thread");
+        assert_eq!(reads[0].join, crate::outbox_source::Join::Asked);
+        assert_eq!(reads[0].keys, vec!["thread_id".to_string()]);
+        assert!(reads[0].text.contains(THREAD_TEXT), "{}", reads[0].text);
+    }
+}
+
+/// §8: "A transcript carrying a `program` record loads in a binary that
+/// predates it: the record is skipped as unknown, never failing the file."
+/// An older build's `Record` is this one's without `program`, so the line
+/// is to it what a tag no build has written is to this one; read through
+/// the same loop, the file loads whole, with the same messages and the same
+/// outcome. And the record holds the blob's address, never a byte of what
+/// the program read, which this build reads back from the store.
+#[tokio::test]
+async fn a_program_record_loads_in_a_build_that_predates_it() {
+    use crate::session::Session;
+    let home = crate::work::tests::HomeGuard::new();
+    let (session, _) = drafted(home.dir(), false).await;
+    let text = std::fs::read_to_string(&session.path).unwrap();
+    let line = text
+        .lines()
+        .find(|l| l.contains(r#""record":"program""#))
+        .expect("the run recorded no program record");
+    assert!(
+        !line.contains("could you send the slides"),
+        "the record carries the bytes: {line}"
+    );
+    let calls = crate::tool::code::record::ever(&text, &session.meta.id);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0].text(),
+        Some(THREAD_TEXT),
+        "read back from the store"
+    );
+    assert_eq!(calls[0].anchor(), "c1");
+
+    let older = text.replace(r#""record":"program""#, r#""record":"from_a_later_build""#);
+    assert_ne!(older, text);
+    let at = session.path.with_file_name("older.jsonl");
+    std::fs::write(&at, &older).unwrap();
+    let now = Session::read(&session.path).unwrap();
+    let then = Session::read(&at).expect("an unknown record failed the file");
+    assert_eq!(then.convo.messages, now.convo.messages);
+    assert_eq!(then.outcomes.len(), now.outcomes.len());
+    assert_eq!(
+        Session::messages_ever(&older),
+        Session::messages_ever(&text),
+        "the union a reader of the file walks"
+    );
+    assert!(Session::programs_ever(&older).is_empty());
+}
+
+/// A program store that cannot be written fails no recording (review of
+/// #784): `record_run` returning the error took with it the `Record::Taint`
+/// its callers append after it — a resume with both interlock legs clear —
+/// and the run's outcome. The call is recorded without an address, and
+/// loads as missing by name, never as an empty result.
+#[tokio::test]
+async fn a_store_that_cannot_be_written_records_the_call_without_its_bytes() {
+    let home = crate::work::tests::HomeGuard::new();
+    // A file where the store's directory would go: every put fails.
+    std::fs::write(home.dir().join("programs"), "not a directory").unwrap();
+    let (session, _) = drafted(home.dir(), false).await;
+    session
+        .append(&crate::session::Record::Taint(Taint {
+            private: true,
+            untrusted: true,
+        }))
+        .expect("the caller's taint record still lands");
+    let text = std::fs::read_to_string(&session.path).unwrap();
+    let calls = crate::tool::code::record::ever(&text, &session.meta.id);
+    assert_eq!(calls.len(), 1, "the call is recorded");
+    assert!(calls[0].blob.is_none());
+    assert!(
+        matches!(calls[0].bytes, record::Bytes::Missing),
+        "{:?}",
+        calls[0].bytes
+    );
+}
+
+/// A conversation holds one run's raw reads at most (review of #784): the
+/// record's `Arc` outlives the program, past the byte pool that counted it,
+/// so without a release every program a chat ever ran stays resident. At the
+/// next run's start the earlier run's bytes go — the store has a recorded
+/// run's — and the calls stay for the walk to place.
+#[tokio::test]
+async fn an_earlier_runs_reads_are_let_go_at_the_next_runs_start() {
+    let mut agent = agent_over(
+        registry_of(vec![Arc::new(Fake::mail("mail_get_thread", THREAD_TEXT))]),
+        vec![
+            tool_use("c1", NAME, json!({"program": "read"})),
+            said("read"),
+            said("and again"),
+        ],
+    );
+    agent.enable_code(Arc::new(Script::new(vec![read_the_thread])));
+    let mut convo = crate::agent::Conversation::user("read the thread");
+    agent.run(&mut convo, None).await.unwrap();
+    assert_eq!(convo.program_calls.len(), 1);
+    assert_eq!(
+        convo.program_calls[0].text(),
+        Some(THREAD_TEXT),
+        "in hand for its own run"
+    );
+    convo.push(crate::message::Message::user("anything else?"));
+    agent.run(&mut convo, None).await.unwrap();
+    assert_eq!(convo.program_calls.len(), 1, "the call is kept");
+    assert!(
+        matches!(convo.program_calls[0].bytes, record::Bytes::Unloaded),
+        "an earlier run's bytes are still resident"
+    );
+}
+
+/// A program refused at its start — its `code` built over another set of
+/// tools — is still a program, and a failed one: before, its output carried
+/// no numbers, so it counted in neither `programs` nor `program_errors`
+/// (review of #774).
+#[tokio::test]
+async fn a_program_refused_at_its_start_counts_as_a_failed_program() {
+    let doc: Arc<dyn Tool> = Arc::new(Fake::read("document_read", "a page"));
+    let mail: Arc<dyn Tool> = Arc::new(Fake::mail("mail_search", "a thread"));
+    let other = registry_of(vec![Arc::clone(&doc), mail]);
+    let stale = CodeTool::over(&other, |_| false, Arc::new(Script::new(vec![])));
+    let mut registry = registry_of(vec![doc]);
+    registry.insert(Arc::new(stale));
+    let agent = agent_over(
+        registry,
+        vec![
+            tool_use("c1", NAME, json!({"program": "anything"})),
+            said("done"),
+        ],
+    );
+    let mut convo = crate::agent::Conversation::user("go");
+    let outcome = agent.run(&mut convo, None).await.unwrap();
+    let call = outcome
+        .tool_calls
+        .iter()
+        .find(|t| t.name == NAME)
+        .expect("the code call was traced");
+    assert!(call.denied, "the start was not refused: {call:?}");
+    let program = call
+        .program
+        .as_ref()
+        .expect("a refused program carried no numbers");
+    assert!(program.failed());
+    let row = crate::session::RunStats::from(&outcome);
+    assert_eq!((row.programs, row.program_errors), (Some(1), Some(1)));
+}
+
+/// A subagent is not admitted into a parent's program (§6, §12: depth above
+/// one is not in this slice). It declares no effect class, so it resolves
+/// `Undeclared`, and a typed `analyst` child stays a call the model makes in
+/// the loop, never one a program makes.
+#[test]
+fn a_subagent_is_never_a_program_function() {
+    let child = agent_over(registry_of(vec![]), Vec::new());
+    let analyst = crate::subagent::Subagent::new(
+        crate::subagent::SubagentProfile {
+            name: "analyst".into(),
+            trusted_output: true,
+            answer_shape: Some(crate::subagent::AnswerShape::OneOf(vec![
+                "yes".into(),
+                "no".into(),
+                "unclear".into(),
+            ])),
+            ..Default::default()
+        },
+        Arc::new(child),
+    )
+    .unwrap();
+    assert_eq!(
+        effect::class_of(&analyst, false),
+        EffectClass::Undeclared,
+        "a subagent's effect class decides its admission"
+    );
+    let registry = registry_of(vec![Arc::new(analyst)]);
+    assert!(!Admission::over(&registry, |_| false).contains("analyst"));
+}
+
+/// The `analyst` shape of §6, end to end over the real loop: a parent calls
+/// a `trusted_output` child, the child's own `code` — built over the child's
+/// registry, which has no `mail_search` — reads a thread, and the answer
+/// crosses as its shape. The child writes no session, so its read comes up
+/// on the subagent call's output, under that call, marked as a shaped
+/// child's: carried for the owner, yielded by the grounding walk to no reader
+/// but the owner's (R9). And `mail_search`, in the parent's pool and
+/// admitted by its effect class, is unreachable from the child's program.
+#[tokio::test]
+async fn an_analyst_childs_reads_come_up_under_its_call_and_stop_at_its_shape() {
+    fn try_mail_search(_: &Value) -> ExternalCall {
+        ExternalCall {
+            name: "mail_search".into(),
+            args: Vec::new(),
+            kwargs: vec![("query".into(), json!("slides"))],
+        }
+    }
+    let mail_search = Fake::mail("mail_search", "every thread");
+    let searched = mail_search.counter();
+    let mail_search: Arc<dyn Tool> = Arc::new(mail_search);
+    let thread: Arc<dyn Tool> = Arc::new(Fake::mail("mail_get_thread", THREAD_TEXT));
+    let pool = registry_of(vec![Arc::clone(&mail_search), Arc::clone(&thread)]);
+
+    // The profile's allowlist, then the child's own `code`, last. Its one
+    // program reads the thread, then reaches for `mail_search`.
+    let mut child = agent_on(
+        Box::new(Scripted(Mutex::new(vec![
+            tool_use("c1", NAME, json!({"program": "read it, then search"})),
+            said("yes"),
+        ]))),
+        registry_of(vec![Arc::clone(pool.get("mail_get_thread").unwrap())]),
+        None,
+    );
+    let script = Script::new(vec![read_the_thread, try_mail_search]);
+    child.enable_code(Arc::new(script.clone()));
+    let analyst = crate::subagent::Subagent::new(
+        crate::subagent::SubagentProfile {
+            name: "analyst".into(),
+            tools: vec!["code".into(), "mail_get_thread".into()],
+            trusted_output: true,
+            answer_shape: Some(crate::subagent::AnswerShape::OneOf(vec![
+                "yes".into(),
+                "no".into(),
+                "unclear".into(),
+            ])),
+            ..Default::default()
+        },
+        Arc::new(child),
+    )
+    .unwrap();
+    let parent = agent_over(
+        registry_of(vec![Arc::new(analyst)]),
+        vec![
+            tool_use(
+                "a1",
+                "analyst",
+                json!({"task": "did Rhea ask for the slides?"}),
+            ),
+            said("done"),
+        ],
+    );
+    let mut convo = crate::agent::Conversation::user("check the thread");
+    parent.run(&mut convo, None).await.unwrap();
+
+    assert_eq!(convo.program_calls.len(), 1, "{:?}", convo.program_calls);
+    let read = &convo.program_calls[0];
+    assert_eq!(
+        (read.tool.as_str(), read.code.as_str()),
+        ("mail_get_thread", "c1")
+    );
+    let under = read
+        .under
+        .as_ref()
+        .expect("not carried up under the subagent");
+    assert_eq!(
+        (under.call.as_str(), under.tool.as_str(), under.trusted),
+        ("a1", "analyst", true)
+    );
+    let answered = convo
+        .messages
+        .iter()
+        .flat_map(|m| &m.content)
+        .find_map(|b| match b {
+            Block::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            } if tool_use_id == "a1" => Some(content.as_str()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(answered, "yes", "the shaped answer, unwrapped");
+
+    let walked = crate::grounding::calls(&convo.messages, &convo.program_calls);
+    assert!(
+        walked.iter().all(|c| c.within.is_none()),
+        "a reader of the walk saw under the shape: {walked:?}"
+    );
+    let owners = crate::grounding::calls_for_the_owner(&convo.messages, &convo.program_calls);
+    let nested: Vec<_> = owners.iter().filter(|c| c.within == Some("a1")).collect();
+    assert_eq!(nested.len(), 1);
+    assert_eq!(nested[0].result, Some(THREAD_TEXT));
+
+    // The program reached for `mail_search` and found no such function: the
+    // child's `code` was built over the child's registry, not the pool.
+    assert_eq!(searched.load(Ordering::SeqCst), 0, "mail_search ran");
+    let started = script.started_with.lock().unwrap().clone();
+    assert_eq!(started.len(), 1);
+    assert!(started[0].iter().any(|n| n == "mail_get_thread"));
+    assert!(
+        !started[0].iter().any(|n| n == "mail_search"),
+        "the child's program could reach the pool's mail_search: {:?}",
+        started[0]
+    );
 }
