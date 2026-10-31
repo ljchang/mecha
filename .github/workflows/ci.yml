@@ -385,7 +385,7 @@ jobs:
               echo "--- processes at $(date -u +%T), load $(sysctl -n vm.loadavg)"
               ps -axo pid,ppid,pgid,stat,etime,rss,command \
                 | grep -E 'monty|mecha_core-|code_interpreter-|/bin/sleep|/bin/sh|lstart' \
-                | grep -v -E 'grep|while sleep'
+                | grep -v -E 'grep|while sleep' || true
             done ) &
           sampler=$!
           trap 'kill "$sampler" 2>/dev/null' EXIT

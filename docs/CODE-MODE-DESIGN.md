@@ -1224,6 +1224,11 @@ than an architecture section kept beside the code.
   start time, so the watchdog (§7, R10) waits for as long as the zombie
   lasts. A shell, launchd and systemd all
   reap their children.
+- **A killed mecha leaves its launcher's directory behind.** The
+  `mecha-monty-*` directory in the temp dir, holding the launcher script
+  and the workers' stderr log, is removed by `Launcher`'s `Drop`, which a
+  `SIGKILL` skips. The watchdog ends the worker but not the directory. It
+  is mecha's own, mode 0700, and nothing sweeps it yet.
 
 ---
 
