@@ -319,7 +319,7 @@ no world, no today-block, no new tools, no nightly work.
 [life]                     # owner-written; outside persona_propose's schema
 world     = false          # her simulated day, events, arcs, the today-block (§4–§5)
 people    = false          # her own network (§6); needs world
-my_people = false          # her model of the owner's network, and gap questions (§7)
+my_people = false          # her model of the owner's network, and gap questions (§7); needs [memory] on, user_facts != "off"
 news      = false          # interests and feeds, shelves A/B/C, news_read (§8); needs world
 camera    = false          # the camera roll and share_photo (§10); needs world
 feed      = false          # the in-app feed (§11); needs camera
@@ -353,9 +353,17 @@ threshold per persona once the access log says where it should sit. The
 - **Dependencies are refused by name, never silently satisfied.** `camera`
   without `world` is a load error naming the missing switch, the way an
   unknown key is. It never quietly turns `world` on.
-- **`my_people` stands alone.** It is memory of the owner, not of her world
-  (§7.1), so a persona can learn the owner's people without having a
-  simulated life of its own.
+- **`my_people` needs no world, but it needs memory of the owner.** It is
+  memory of the owner, not of her world (§7.1), so a persona can learn the
+  owner's people without a simulated life of its own. But it is built over
+  the facts about the owner, and `[memory] user_facts = "off"` stops the
+  writer recording those (`persona::writer`'s gate on `Table::User` and
+  `Table::Inferred`). With memory off there is also no recall block to carry
+  the roster, the cards and the gap note, so nothing arms `private`. So
+  `my_people` **requires memory on and `user_facts` not `"off"`, refused by
+  name** like any other dependency. The gap ledger and any people tables sit
+  behind the same gate, so a persona whose owner turned off memory of them
+  never stores the owner's relatives by another route.
 - **Two rules, by what a setting does.**
   - **Switches that decide which tools and blocks exist** (`world`,
     `people`, `my_people`, `news`, `camera`, `feed`) are fixed per persona
@@ -832,9 +840,19 @@ friend from my study group, …"); afterwards she can name them in passing.
 
 ### 6.3 Decay
 
-Owner people never decay. Chat people decay slowly and only from recall
-ranking, as memory does (§9). Sim people never mentioned decay out of the
-outer layers when untouched and are pruned below a floor, like any event.
+Owner people never decay, the one exception PL7 and §9 rule. Everyone else
+in her network is a world row, pruned below the world threshold like any
+event:
+- **a person she has mentioned** (`known_to_owner`) gains strength each time
+  they come up (the retelling boost), so they rarely fall that far. If one
+  does, the episodes that mention them name them by id, and a pruned id
+  renders as "someone" (§5);
+- **a sim person never mentioned** decays out of the outer layers when
+  untouched.
+
+The world has no recall ranking to demote a person out of, so memory's
+soft-prune does not apply here. The owner's people (§7) are the ones that
+soft-prune, because they live in memory.
 
 ### 6.4 Identity: when two mentions are one person
 
@@ -904,7 +922,7 @@ A structured layer over the facts about the owner that already exist
 the owner shares them, D17/D18) — the people-shaped part, as a second graph
 centred on the owner. Same event model and the same two dates as §6.1.
 
-**It lives in `memory.db`, not `world.db`.** It is memory of the owner, so it
+**Recommended (PL13, open): it lives in `memory.db`, not `world.db`.** It is memory of the owner, so it
 follows memory's rules rather than the world's: it is soft-pruned out of recall
 and never hard-deleted (PL7). A graph of the owner's real relatives silently
 hard-pruned by a world threshold would be the wrong half of that split.
@@ -1197,7 +1215,10 @@ Shelf B meets §2.7's three conditions in code:
   (28.8), the constant the bit test enforces. The surviving count's 2 bits
   are counted separately, under the steering arm.
   Shelf B items **expire at five days**, a figure fixed for this shelf, so
-  the ceiling is **under 150 bits live at once**.
+  the ceiling is **under 150 bits live at once** on the shelf. That bounds
+  the shelf, not its influence: narration steered by shelf B is snapshotted
+  into memory and persists (§4.4, §5), like the typed episode (§8.4). What
+  persists is narration that the shelf's bits could only tilt, never author.
 
 **Measured against what already ships, that is conservative.** Mail triage's
 privileged record carries about 19 bits per thread from closed vocabularies
@@ -1306,9 +1327,19 @@ the headline never rides in the today-block.
       calls and the item's feed. **`item_id` is a harness-minted opaque row
       key**, never the feed's GUID, link or slug, so no feed-authored string
       reaches a prompt or the clean episode. That is §8.2's "stored, never
-      rendered" rule for feed-chosen ids, with the `mail_triage::Record::file_name`
-      precedent. The model reads these ids from one place, the today-block's
-      interest lines ("good news about [interest] — item 41"), and `discussed_at` from the transcript, all
+      rendered" rule for feed-chosen ids. (The nearest precedent is
+      `mail_triage::Record::for_privileged_run`, not `file_name`, which
+      sanitises an id rather than minting one.) The model
+      reads these ids from one place, the today-block. With shelf B built,
+      that is the interest line ("good news about [interest] — item 41"). **In
+      the first build, which ships C before B (PL9)**, it is a code-supplied
+      line per shelf C item: the interest, from the owner's feed mapping
+      (0 attacker bits), and the opaque id, with no feed-authored string at
+      all ("something new about [interest] — item 41"). That is strictly
+      narrower than shelf B's line, so it costs the ceilings nothing. Without
+      it `news_read` would have no callable argument, and the tempting patch,
+      rendering the headline, is the leak §8.2's single constructor forbids.
+      `discussed_at` comes from the transcript, all
       supplied by code (0 attacker bits). Only `owner_reaction` is chosen by
       the writer, from a closed set of four (2 bits). So the ceiling is **2
       bits per episode**.
@@ -1952,9 +1983,10 @@ gain rows is **`PANE_FEATURE`**, which keys on `view/sub`:
 exactly when personas are. The per-persona `[life]` switch is a second gate
 in the pane itself: a persona with `world` off shows the pane's "off for
 this persona" state, never a route error. So the rows change no behaviour
-of their own, and the real gate is the per-persona switch. They exist so the
-registry's completeness check knows these panes and never reads them as
-shown by omission. The `PANE_FEATURE` entry is
+of their own, and the real gate is the per-persona switch. They record the
+panes against a real feature id, and the registry's test checks that each
+id names one. No test checks that a pane *has* a row, so a missing row is
+caught only by review. The `PANE_FEATURE` entry is
 the one #654 missed, and a miss there fails **open**: a missing row reads as
 shown, so the pane renders with the world switched off and its route answers
 `feature_off`. `QUEUE_FEATURE` gains a row if any of the world's waiting
