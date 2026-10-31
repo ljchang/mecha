@@ -67,7 +67,9 @@ pub enum Shape {
     /// `str[n]`: at most `n` characters.
     Text(usize),
     List(Box<Shape>),
-    /// Fields in the order the program wrote them.
+    /// Fields in the order the program wrote them: serde_json keeps an
+    /// object's order here because the workspace enables `preserve_order`
+    /// (root `Cargo.toml`), and the schema's `required` follows it.
     Record(Vec<(String, Shape)>),
 }
 

@@ -626,11 +626,13 @@ fn describe(admission: &Admission) -> String {
          item. Pass thinking=True only when a question needs reasoning: it is far slower. \
          Sub-calls are few (budget()[\"sub_calls\"]), so find or slice first and ask about \
          what matters. To keep going past one bad source, loop instead, checking the budget \
-         first: for h in hs: if budget()[\"sub_calls\"] < 2: break; try: \
-         out.append(llm_query(q, h, \"bool\")) except RuntimeError as e: \
-         failed.append(str(e)). A failure raises RuntimeError whose message starts \
-         QueryError:, ToolError:, HandleError: or LimitError:. The result is what the \
-         program printed, then its final expression.",
+         first:\n\
+         for h in hs:\n    if budget()[\"sub_calls\"] < 2:\n        break\n    try:\n        \
+         out.append(llm_query(q, h, \"bool\"))\n    except RuntimeError as e:\n        \
+         failed.append(str(e))\n\
+         A failure raises RuntimeError whose message starts QueryError:, ToolError:, \
+         HandleError: or LimitError:. The result is what the program printed, then its \
+         final expression.",
     );
     if admission.is_empty() {
         d.push_str(" No tool may be called from a program in this run.");
@@ -1180,9 +1182,9 @@ impl Run {
             return Err(raise(
                 Tag::LimitError,
                 format!(
-                    "peek bytes: this shape's text could come to {most} characters over {n} \
-                     pass(es), past the {text_left} bytes left of this program's {} (peek and \
-                     str[n] results share it); narrow n or the sweep",
+                    "peek bytes: this shape's text could come to {most} characters (at least \
+                     as many bytes) over {n} pass(es), past the {text_left} bytes left of this \
+                     program's {} (peek and str[n] results share it); narrow n or the sweep",
                     l.peek_bytes
                 ),
             ));
@@ -1210,6 +1212,24 @@ impl Run {
             ));
         }
         self.pass_limits().map_err(|(tag, m)| raise(tag, m))?;
+        // The sweep's input, estimated before anything is sent: a source the
+        // size of a handle's 64 MB is refused here, never handed to the
+        // server to overflow on (review of #773).
+        let tokens: u64 = items
+            .iter()
+            .map(|sources| pass_tokens(instruction, sources, &shape))
+            .sum();
+        let tokens_left = l.subcall_tokens.saturating_sub(self.subcall_tokens);
+        if tokens > tokens_left {
+            return Err(raise(
+                Tag::LimitError,
+                format!(
+                    "sub-call input tokens: `{f}` would send about {tokens} over {n} pass(es), \
+                     and this program has {tokens_left} of its {} left; slice or find first",
+                    l.subcall_tokens
+                ),
+            ));
+        }
         // A shape bounds how much an attacker can say, not who said it: the
         // answer carries its sources' labels (§4), and nothing here narrows.
         self.external |= items.iter().flatten().any(|h| h.buf.external);
@@ -1289,14 +1309,36 @@ impl Run {
         think: bool,
         cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<Value, (Tag, String)> {
+        let estimate = pass_tokens(instruction, sources, shape);
         let pass = Pass {
-            user: pass_message(instruction, sources, shape),
+            user: pass_message(instruction, sources, shape).ok_or_else(|| {
+                (
+                    Tag::QueryError,
+                    "every marker tag tried occurs in a source, so its bytes could not be \
+                     delimited and no pass was sent"
+                        .to_string(),
+                )
+            })?,
             schema: shape.schema(),
             think,
         };
         let mut last = String::new();
         for _ in 0..2 {
             self.pass_limits()?;
+            let left = self
+                .limits
+                .subcall_tokens
+                .saturating_sub(self.subcall_tokens);
+            if estimate > left {
+                return Err((
+                    Tag::LimitError,
+                    format!(
+                        "sub-call input tokens: this pass would send about {estimate}, and this \
+                         program has {left} of its {} left",
+                        self.limits.subcall_tokens
+                    ),
+                ));
+            }
             // A Stop reaches a pass in flight (§5): the wait ends here, and
             // the dispatch drops the request when the program ends.
             let answer = tokio::select! {
@@ -1309,12 +1351,20 @@ impl Run {
                 PassAnswer::Refused(why) => return Err((Tag::QueryError, why)),
                 PassAnswer::Failed(why) => {
                     self.subcalls += 1;
+                    // The server read it (a context overflow is what an
+                    // oversized source produces), so it costs its estimate.
+                    self.subcall_tokens = self.subcall_tokens.saturating_add(estimate);
                     return Err((Tag::QueryError, format!("the pass failed: {why}")));
                 }
                 PassAnswer::Answered(r) => r,
             };
             self.subcalls += 1;
-            self.subcall_tokens = self.subcall_tokens.saturating_add(resp.usage.total_input());
+            // What the server says it read; the estimate where it says none.
+            let read = match resp.usage.total_input() {
+                0 => estimate,
+                n => n,
+            };
+            self.subcall_tokens = self.subcall_tokens.saturating_add(read);
             if resp
                 .message
                 .content
@@ -1647,20 +1697,49 @@ fn envelope(resp: &CompletionResponse) -> Result<String, String> {
     Ok(text)
 }
 
+/// A pass's input tokens, estimated before it is sent: every byte it will
+/// carry (the frame, the instruction, the sources, the markers and the
+/// schema) over four, the usual reading for prose. Checked against what is
+/// left of the token cap before each pass, and charged for a pass the
+/// provider failed; an answered pass is charged its `Usage`.
+fn pass_tokens(instruction: &str, sources: &[Handle], shape: &shape::Shape) -> u64 {
+    let bytes = PASS_FRAME.len()
+        + instruction.len()
+        + sources.iter().map(|h| h.text().len() + 64).sum::<usize>()
+        + shape.schema().to_string().len()
+        + 256;
+    (bytes / 4) as u64
+}
+
+/// The tag a pass's marker lines carry: `SOURCE-` and sixteen hex digits of
+/// a hash of the sources themselves, so a source would have to contain the
+/// hash of a text that contains it to close its own block. Found in one
+/// pass over the bytes and checked once: no search whose length a
+/// stranger's bytes decide (review of #773, where a source of
+/// `<<<SOURCE-1 … <<<SOURCE-N` drove the old search N times over every
+/// source). Salted and tried a fixed few times on a collision, then `None`.
+fn marker_tag(texts: &[&str]) -> Option<String> {
+    use std::hash::{Hash, Hasher};
+    (0u8..4).find_map(|salt| {
+        // `DefaultHasher::new()` is the same hasher every time, so a pass's
+        // bytes are a function of its inputs.
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        salt.hash(&mut h);
+        for t in texts {
+            t.hash(&mut h);
+        }
+        let tag = format!("SOURCE-{:016x}", h.finish());
+        (!texts.iter().any(|t| t.contains(&tag))).then_some(tag)
+    })
+}
+
 /// A pass's one user message (§4): the program's instruction, then each
 /// source between marker lines, then the schema. The markers' tag is one no
-/// source contains, so a source cannot close its own block early.
-fn pass_message(instruction: &str, sources: &[Handle], shape: &shape::Shape) -> String {
+/// source contains ([`marker_tag`]), so a source cannot close its own block
+/// early; `None` when no such tag was found.
+fn pass_message(instruction: &str, sources: &[Handle], shape: &shape::Shape) -> Option<String> {
     let texts: Vec<&str> = sources.iter().map(Handle::text).collect();
-    let mut tag = "SOURCE".to_string();
-    let mut k = 0u32;
-    while texts
-        .iter()
-        .any(|t| t.contains(&format!("<<<{tag}")) || t.contains(&format!("<<<END {tag}")))
-    {
-        k += 1;
-        tag = format!("SOURCE-{k}");
-    }
+    let tag = marker_tag(&texts)?;
     let n = texts.len();
     let mut m = String::with_capacity(texts.iter().map(|t| t.len() + 64).sum::<usize>() + 512);
     m.push_str(instruction.trim());
@@ -1674,7 +1753,7 @@ fn pass_message(instruction: &str, sources: &[Handle], shape: &shape::Shape) -> 
     }
     m.push_str("\nAnswer with JSON matching this schema, and nothing else:\n");
     m.push_str(&shape.schema().to_string());
-    m
+    Some(m)
 }
 
 /// A tool call's input from a program's arguments: keywords, or one dict,
