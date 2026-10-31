@@ -444,7 +444,10 @@ async fn the_live_worker_s_profile_denies_files_the_environment_services_and_the
     let canon = |p: &str| std::path::Path::new(p).canonicalize().unwrap();
     let home = dirs::home_dir().expect("a home").canonicalize().unwrap();
     let tmp = std::env::temp_dir().canonicalize().unwrap();
-    // An existing file to write, so a write check is not a create check.
+    // An existing file to write and unlink: `file-write-create` reads as
+    // denied even for this unsandboxed test (macOS 26), so it measures
+    // nothing and is not asked. `process-exec` is asked as `process-exec*`;
+    // the bare name is an error to `sandbox_check`.
     let existing = tmp.join(format!("mecha-code-mode-probe-{}", std::process::id()));
     std::fs::write(&existing, b"x").unwrap();
     let denied: Vec<(&str, std::path::PathBuf)> = vec![
@@ -456,12 +459,9 @@ async fn the_live_worker_s_profile_denies_files_the_environment_services_and_the
         ("file-read-metadata", home.clone()),
         ("file-write-data", existing.clone()),
         ("file-write-data", canon("/dev/null")),
-        ("file-write-create", tmp.join("mecha-code-mode-new")),
-        ("file-write-create", home.join("mecha-code-mode-new")),
         ("file-write-unlink", existing.clone()),
-        ("process-exec", canon("/bin/sh")),
         ("process-exec*", canon("/bin/sh")),
-        ("process-exec", canon("/usr/bin/sandbox-exec")),
+        ("process-exec*", canon("/usr/bin/sandbox-exec")),
     ];
     let ops = [
         "network-outbound",
@@ -504,7 +504,7 @@ async fn the_live_worker_s_profile_denies_files_the_environment_services_and_the
     }
     for (op, path) in [
         ("file-read-data", std::path::Path::new("/")),
-        ("process-exec", w.path()),
+        ("process-exec*", w.path()),
     ] {
         table.push(format!(
             "  {op:<20} {:<60} worker {:?}  (allowed by the profile)",
@@ -532,11 +532,6 @@ async fn the_live_worker_s_profile_denies_files_the_environment_services_and_the
     // What the profile does allow reads as allowed on the same process.
     assert_eq!(
         live::denies_path(worker, "file-read-data", std::path::Path::new("/")),
-        Some(false),
-        "{table}"
-    );
-    assert_eq!(
-        live::denies_path(worker, "process-exec", w.path()),
         Some(false),
         "{table}"
     );

@@ -405,8 +405,54 @@ Per program. **Two kinds of limit, and only the first is catchable:**
 | host bytes held by handles | 64 MB | the host, summed over every tool read's raw result; the read that would cross it raises |
 | live handles | 4,096 | the host. `split`, `lines` and `chunks` refuse a result that would cross it, and `chunks` refuses `n` below 256, so one counted operation cannot mint a handle per byte |
 | host bytes, all programs in the process | 256 MB | one process-wide pool every program draws from. `dispatch` runs a turn's calls under `join_all`, so two `code` calls in one message, a parent's program beside an `analyst` child's, and `mecha batch` are all concurrent, and per-program limits alone would not bound N × 64 MB. A read that would cross either limit raises |
-| memory, recursion | monty's limits | the pool worker, which bounds the interpreter's heap. It does not own the handles' bytes, which is why the two rows above exist. Monty 1.4 has no allocation-count limit, and recursion raises a catchable `RecursionError` |
+| memory, recursion | monty's limits | the pool worker, which bounds the interpreter's heap. It does not own the handles' bytes, which is why the two rows above exist. Monty 1.4 has no allocation-count limit, and recursion raises a catchable `RecursionError`. On a Mac monty's ceiling is the only memory bound (below) |
 | `peek` bytes plus `str[n]` result bytes | 16 KB together | the host, one count (`peeked_bytes`) |
+
+**Memory on a Mac: monty's ceiling holds, and nothing stands behind it.**
+On Linux, `[sandbox] memory_mb` puts the worker in a cgroup, a wall
+outside the worker. A Mac has no cgroups, so the only bound there is
+monty's own: its global allocator (`monty-alloc`) arms a hard ceiling of
+`max_memory` plus 4 MiB of headroom over the worker's baseline and exits
+the worker (code 65) past it. A soft check raises the uncatchable
+`MemoryError` at the interpreter's checkpoints, and operations that would
+build a large result check its size first.
+
+**Measured 2026-10-31**: `the_memory_backstop_bounds_what_the_worker_holds`
+(`code_interpreter.rs`), at a 64 MiB limit. Each program tries for far more,
+gradually or in one operation, while a sampler reads the worker's lifetime
+peak: `ri_lifetime_max_phys_footprint` on macOS, which counts compressed
+and swapped pages too, and `VmHWM` on Linux. On macOS that was CI, macOS
+26.6 arm64, the pinned worker under its Seatbelt profile. On Linux it was
+the workstation, under bwrap with no cgroup. Every program ended
+`Backstop::Memory`:
+
+| Program | Peak, macOS | Peak, Linux |
+|---|---|---|
+| a list grown 100 kB at a time | 70.6 MiB | 69.1 MiB |
+| a string doubled | 66.3 MiB | 53.2 MiB |
+| a dict grown | 55.2 MiB | 47.8 MiB |
+| a join of a list of 2 M strings | 68.7 MiB | 73.0 MiB |
+| `list(range(300_000_000))` | 35.2 MiB | 38.0 MiB |
+| one 2 GiB `str`, `list` or `tuple`, a 1 GiB `int`, a 2 GiB `ljust`, a multiplying `replace` | 2.1–4.2 MiB (refused before allocating) | 5.6–5.9 MiB |
+
+So **the backstop holds on macOS**, to within the headroom and the
+worker's ~2 MiB baseline. The test asserts the bound (the limit plus
+64 MiB) on both platforms, so a monty release that loosens it fails CI.
+
+**The gap that remains is the second wall.** Above monty's own ceiling
+nothing caps a Mac worker. A bug in monty's allocator accounting, or an
+allocation outside the Rust allocator, would take memory until the wall
+clock ended the program. Measured on the same runner:
+- **`RLIMIT_DATA` and `RLIMIT_RSS` at 1 GiB were refused.** `ulimit -d`
+  failed with `EINVAL`, `ulimit -m` failed too, and a 3 GiB string then
+  reached 3 GiB resident.
+- **`RLIMIT_AS` is refused below the process's map size and enforced
+  above it.** The map size is about 415 GiB at start on arm64, the shared
+  region's reservation. With the limit at the shell's map size plus
+  512 MiB or 1 GiB, a 3 GiB allocation failed. At plus 4 GiB it succeeded.
+
+So a kernel-enforced ceiling exists, relative to a baseline that has to be
+read rather than configured. §12 proposes it, and it is not built.
 
 **The limit a well-behaved program should hit first is the sub-call
 cap, then the token cap, and the clock never.** The sub-call cap is the
@@ -622,6 +668,13 @@ attacker selects from their own text can be an address; that is a
     `NameLookup`, with no mounts, is the first wall. The sandbox is the
     second, because round 1 of Hack Monty was an escape. `preflight`
     fails the run if a worker will not start inside it.
+  - **On a Mac the second wall is Seatbelt** (slice 3a-mac): the worker's
+    own profile (`seatbelt::worker_profile`), chosen by the platform and
+    never by `[sandbox]`, which stays `shell`'s and still refuses
+    `seatbelt`. Its allow-list and how it was measured are in
+    `ARCHITECTURE.md` §Code mode's interpreter. There, `preflight` also asks
+    the kernel what the live worker's profile denies, because a launcher
+    that dropped the profile would otherwise pass it.
   - Littrs (0.6.2, Apache-2.0) is a fallback for this slice only. It has
     no pause API but needs none here, and its limits are weaker (no memory
     or time limit outside its WASM mode). wasmtime with a Python guest
@@ -1086,6 +1139,24 @@ than an architecture section kept beside the code.
 - **Depth above 1.**
 - **Training** the model on its programs. `POST-TRAINING-RESEARCH.md` §7
   names it as a later target.
+- **A memory wall outside the worker on a Mac** (§5, *Memory on a Mac*).
+  Monty's allocator ceiling holds there, but nothing behind it does, and
+  Linux's cgroup has no macOS equivalent that `sandbox-exec` can apply.
+  The proposal is the owner's call (2026-10-31), not built:
+  - **`RLIMIT_AS` above the worker's own map size**, set by the launcher
+    (`ulimit -v`) before it execs `sandbox-exec`. XNU enforces it, by
+    measurement, but only relative to the whole address space, which on
+    macOS 26 arm64 starts at about 415 GiB (the shared region), and it
+    refuses any limit below that. So the ceiling would be the worker's map
+    size, read from the live worker at preflight (libproc's
+    `pti_virtual_size`), plus `max_memory` and headroom. That size depends
+    on the OS release and the hardware, so it must be read and never
+    written down. A launcher that cannot set it refuses the start.
+  - **A host-side watchdog** as the fallback: poll the worker's
+    `phys_footprint` (`proc_pid_rusage`) and kill it past a ceiling, which
+    ends the program as `Backstop::WorkerKilled`. Its overshoot is one
+    polling interval of allocation, so it is weaker than a kernel limit and
+    needs no knowledge of the map size.
 
 ---
 
