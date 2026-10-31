@@ -338,14 +338,13 @@ impl Launcher {
             .with_context(|| format!("creating {}", dir.display()))?;
         let script = dir.join("worker");
         let log = dir.join("worker.log");
-        let quoted_log = sh_quote(&log.display().to_string());
         let mut body = String::from("#!/bin/sh\nexec");
         for a in argv {
             body.push(' ');
             body.push_str(&sh_quote(a));
         }
         body.push_str(" \"$@\" 2>>");
-        body.push_str(&quoted_log);
+        body.push_str(&sh_quote(&log.display().to_string()));
         body.push('\n');
         std::fs::write(&script, body)?;
         #[cfg(unix)]
@@ -404,6 +403,9 @@ pub struct Monty {
     repl: ReplConfig,
     backstops: Backstops,
     confinement: Confinement,
+    /// What a program's [`Watchdog`] reads start times with: [`watchdog::PS`],
+    /// or a test's stand-in.
+    watchdog_ps: String,
     launcher: Launcher,
 }
 
@@ -459,6 +461,7 @@ impl Monty {
             repl,
             backstops,
             confinement: confinement.clone(),
+            watchdog_ps: watchdog::PS.into(),
             launcher,
         })
     }
@@ -520,21 +523,35 @@ impl Interpreter for Monty {
         let deadline = started + self.backstops.wall_clock;
         // A Stop while every worker is busy ends the program here, rather
         // than waiting out `checkout_timeout` (review of #765).
-        let checkout = tokio::select! {
+        let mut checkout = tokio::select! {
             c = self.pool.checkout(&self.repl) => Some(c.map_err(|e| anyhow::anyhow!("checking out a monty worker: {e}"))?),
             _ = cancel.cancelled() => None,
             _ = tokio::time::sleep_until(deadline) => bail!("no monty worker within the program's wall clock"),
         };
-        let cancelled_waiting = checkout.is_none();
         // Before the worker runs a line: a refusal drops the checkout, which
-        // kills the worker, and the program never starts.
-        let watchdog = match &checkout {
+        // kills the worker, and the program never starts. Raced against the
+        // Stop and the wall clock as the checkout is, so a handshake slowed
+        // by a starved fork cannot hold either (review of #772).
+        let guarded = match &checkout {
             Some(co) if self.confinement.watchdog() => {
-                let pid = co.pid().context("a monty worker with no pid")?;
-                Some(Watchdog::arm(pid, std::process::id(), watchdog::PS).await?)
+                Some(co.pid().context("a monty worker with no pid")?)
             }
             _ => None,
         };
+        let watchdog = match guarded {
+            Some(pid) => tokio::select! {
+                w = Watchdog::arm(pid, std::process::id(), &self.watchdog_ps) => Some(w?),
+                _ = cancel.cancelled() => {
+                    checkout = None;
+                    None
+                }
+                _ = tokio::time::sleep_until(deadline) => {
+                    bail!("the monty worker's watchdog did not arm within the program's wall clock")
+                }
+            },
+            None => None,
+        };
+        let cancelled_waiting = checkout.is_none();
         let externals: BTreeSet<String> = externals.iter().cloned().collect();
         let inputs: Vec<(String, MontyObject)> = externals
             .iter()
@@ -1340,6 +1357,131 @@ mod tests {
                 "the watchdog outlived its worker"
             );
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A Seatbelt interpreter whose watchdog's handshake hangs: Seatbelt
+    /// stood in for as above, and a `ps` that records its pid in the
+    /// returned file and then never answers.
+    async fn hung_handshake(w: &VerifiedWorker, backstops: Backstops) -> (Monty, PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("mecha-fake-sbx-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let (fake, ps, pids) = (dir.join("sandbox-exec"), dir.join("ps"), dir.join("pids"));
+        std::fs::write(&fake, "#!/bin/sh\nshift 2\nexec \"$@\"\n").unwrap();
+        std::fs::write(
+            &ps,
+            format!(
+                "#!/bin/sh\necho $$ >>'{}'\nexec /bin/sleep 300\n",
+                pids.display()
+            ),
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for f in [&fake, &ps] {
+                std::fs::set_permissions(f, std::fs::Permissions::from_mode(0o700)).unwrap();
+            }
+        }
+        let mut interp = Monty::new(w, &Confinement::seatbelt_at(&fake), backstops, 1)
+            .await
+            .unwrap();
+        interp.watchdog_ps = ps.display().to_string();
+        (interp, dir, pids)
+    }
+
+    /// The hung `ps` a handshake recorded, once there is one.
+    fn hung_pid(pids: &Path) -> Option<u32> {
+        std::fs::read_to_string(pids)
+            .ok()?
+            .lines()
+            .find_map(|l| l.trim().parse().ok())
+    }
+
+    /// Whether the hung `ps` is gone within 3 s; killed here if not, so a
+    /// failing test leaves nothing behind.
+    async fn hung_ps_gone(pid: u32) -> bool {
+        let t = std::time::Instant::now();
+        while !test_process::is_gone(pid) && t.elapsed() < Duration::from_secs(3) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let gone = test_process::is_gone(pid);
+        if !gone {
+            // SAFETY: a plain signal to the stand-in this test started.
+            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        }
+        gone
+    }
+
+    /// A Stop during the watchdog's handshake ends the program `Cancelled`
+    /// at once, as a Stop while waiting for a worker does, rather than
+    /// waiting out the handshake, and the abandoned handshake's hung `ps`
+    /// goes with it (reviews of #772 and #780). The Stop is sent once the
+    /// stand-in has recorded its pid, so it lands in the handshake and not
+    /// in the checkout before it, however long the worker takes to spawn.
+    #[tokio::test]
+    async fn a_stop_during_the_watchdogs_handshake_ends_the_program() {
+        let Some(w) = worker_for_tests().await else {
+            return;
+        };
+        let (interp, dir, pids) = hung_handshake(&w, Backstops::default()).await;
+        let cancel = CancellationToken::new();
+        let stop = cancel.clone();
+        let in_handshake = pids.clone();
+        let stopper = tokio::spawn(async move {
+            let t = std::time::Instant::now();
+            while hung_pid(&in_handshake).is_none() && t.elapsed() < Duration::from_secs(60) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            stop.cancel();
+            std::time::Instant::now()
+        });
+        let (_program, step) = interp.start("1", &[], cancel).await.unwrap();
+        let returned = std::time::Instant::now();
+        let stopped = stopper.await.unwrap();
+        let hung = hung_pid(&pids).expect("the handshake never reached its ps");
+        assert!(
+            matches!(&step, Step::Done(f) if f.end == End::Cancelled),
+            "{step:?}"
+        );
+        assert!(
+            returned.duration_since(stopped) < Duration::from_secs(3),
+            "the Stop waited out the handshake: {:?}",
+            returned.duration_since(stopped)
+        );
+        assert!(
+            hung_ps_gone(hung).await,
+            "the abandoned handshake's ps outlived the Stop"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A handshake still hanging when the program's wall clock runs out
+    /// refuses the program, by a message apart from the checkout's own
+    /// deadline, and its hung `ps` goes with it (review of #780).
+    #[tokio::test]
+    async fn a_handshake_past_the_wall_clock_refuses_the_program() {
+        let Some(w) = worker_for_tests().await else {
+            return;
+        };
+        let backstops = Backstops {
+            wall_clock: Duration::from_secs(4),
+            ..Backstops::default()
+        };
+        let (interp, dir, pids) = hung_handshake(&w, backstops).await;
+        let e = interp
+            .start("1", &[], CancellationToken::new())
+            .await
+            .err()
+            .expect("a program ran with no watchdog armed");
+        assert!(
+            format!("{e:#}").contains("watchdog did not arm within the program's wall clock"),
+            "{e:#}"
+        );
+        let hung = hung_pid(&pids).expect("the handshake never reached its ps");
+        assert!(
+            hung_ps_gone(hung).await,
+            "the abandoned handshake's ps outlived the refusal"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

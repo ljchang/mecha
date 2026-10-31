@@ -451,6 +451,7 @@ jobs:
       # is still alive, and its log shows what was running. #772's runs lost
       # the runner twice with no log at all.
       - name: Build the code-mode tests
+        timeout-minutes: 30
         run: cargo test -p mecha-core --locked --features monty --no-run --lib --test code_interpreter
       - name: Code-mode interpreter under Seatbelt, with skips promoted to failures
         timeout-minutes: 20
