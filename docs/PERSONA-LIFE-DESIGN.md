@@ -255,8 +255,11 @@ The only large-scale evidence from real users.
   ([Beurer-Kellner et al.](https://arxiv.org/html/2506.08837v3)). No benchmark
   isolates closed-vocabulary extraction. The repo already draws this line.
   Mail triage's record crosses to a privileged reader only through
-  `mail_triage::Record::for_privileged_run`, which carries the three-valued
-  `Bucket` (about 1.6 bits) and leaves the verdict's prose behind. Its test
+  `mail_triage::Record::for_privileged_run`. That carries closed vocabularies
+  only: `bucket` (3 values), `urgency` (4), `proposed` (7), any subset of
+  the ten `TAGS`, and a `request_type`. Together that is about 19 bits a
+  thread, before a grounded deadline and the sender's address, and it runs
+  over every thread that arrives. The verdict's prose stays behind, and a test
   serialises the record and asserts the prose is absent. The diagnostician's
   episode digests carry tool names, and *those* arm untrusted, because "a
   sentence can be shaped like an identifier" (`TRIFECTA.md`, the switches
@@ -412,6 +415,15 @@ memory. Its inputs are owner files, code and typed records from shelves A and
 B (§8), so its output is `ModelClean`. **The simulated life has no taint
 problem.** Only shelf C does, and shelf C never reaches the narrator.
 
+The narrator's prose is long-lived: it is snapshotted into memory (§5) and
+rides in later prompts. So the claim that it is clean rests on its inputs, and
+specifically on shelf B being typed. §2.7's "summarising does not launder"
+concerns prose inputs, and the narrator has none. What reaches it from outside
+is a handful of enum values under §8.2's ceiling, which can tilt what it
+writes but cannot spell an instruction into it. If shelf B ever gained a
+free-text field, the narrator's output would stop being `ModelClean`. That is
+one more reason §14's gate part 1 exists.
+
 ### 4.5 The teller: the today-block and the told-ledger
 
 - **The today-block** rides in the message stream, as the recall block does
@@ -423,15 +435,22 @@ problem.** Only shelf C does, and shelf C never reaches the narrator.
   `PERSONA-DESIGN.md` §9.7's rule governs any fold: the text arrives in no
   tool result, so the harness arms taint where it folds, and
   `Taint::arm_for_content` must be able to re-derive it from the transcript at
-  every run start. `arm_for_content` already recognises six stems, the last
-  three as clean/untrusted pairs, because one stem arming both "would have made
-  every chat that remembered anything untrusted." The today-block is a seventh
-  fold and takes the same two-stem shape:
-  - **the clean stem** arms nothing, since everything in the block is code,
-    owner files, clean narration and shelves A and B, none of it memory of
-    the owner;
-  - **the untrusted stem** arms `untrusted` the moment any folded row's origin
-    is not clean.
+  every run start. `arm_for_content` already recognises six folds. Two of
+  them are clean/untrusted stem pairs (`persona::recall::stem_of` and
+  `scene::stem_of`), because one stem arming both "would have made every chat
+  that remembered anything untrusted." The today-block is a seventh fold and
+  takes the recall pair's shape:
+  - **the clean stem arms `private`.** Most of the block is code, owner
+    files, clean narration and shelves A and B. But stated plans and people she
+    mentioned in a chat ride in it too (§13): a plan the two of them made is
+    memory of a conversation with the owner, the case §9.7 arms `private` for.
+    Arming is close to free here, since D11 already lifts the leak guard in
+    persona chats and a persona's `web_search` is blind at every depth
+    (`PERSONA-DESIGN.md` §3.3). The alternative, keeping chat-sourced rows out
+    of the block and sending them through the recall block, splits one day
+    across two folds for no gain.
+  - **the untrusted stem arms `private` and `untrusted`** the moment any
+    folded row's origin is not clean.
 
   The untrusted variant exists from the first build, so a dirty result at the
   shelf B gate (§14), or a candidate row approved by mistake, needs no new fold
@@ -620,7 +639,14 @@ fact lives in one place (§16 PL6).
 A structured layer over the facts about the owner that already exist
 (`PERSONA-DESIGN.md` §9.5: stated and inferred, private to the persona unless
 the owner shares them, D17/D18) — the people-shaped part, as a second graph
-centred on the owner. Same event model, same two dates, same `forget` cascade.
+centred on the owner. Same event model and the same two dates as §6.1.
+
+**It lives in `memory.db`, not `world.db`.** It is memory of the owner, so it
+follows memory's rules rather than the world's: it is soft-pruned out of recall
+and never hard-deleted (PL7), and `forget` cascades as memory's does, re-folded
+from the events that remain (§5's approach, applied here). A graph of the
+owner's real relatives silently hard-pruned by a world threshold would be the
+wrong half of that split.
 
 | | Her network (§6) | Her model of the owner's |
 |---|---|---|
@@ -725,7 +751,11 @@ These are third parties who never agreed to be in a database.
   recent news, because a model's effective cutoff varies by topic (§2.6).
 - **Freshness** comes from feeds the owner registers, per persona or per
   group (§16 PL11), fetched nightly **by the harness, never by a model** — the
-  HUD's rule for loaders: one read of one owner-registered source.
+  HUD's rule for loaders: one read of one owner-registered source. The fetch
+  is **capped at the door**, the way `image.rs` caps an image: a feed larger
+  than its limit, or with more items than its limit, is refused by the fetcher
+  and named on the reading list. It is never truncated into the extractor's
+  context.
 
 ### 8.2 Three shelves, sorted by capacity
 
@@ -749,20 +779,33 @@ Shelf B meets §2.7's three conditions in code:
     (0 bits);
   - **the order** of the items is a lexical sort over the extracted values
     themselves, adding nothing;
-  - **kind** is one of 8 (3 bits), **tone** one of 3 (1.6 bits), and
-    **entity** is *at most one* id from that interest's registry, capped at
-    31 entries plus none (5 bits).
+  - **kind** is one of 8 (3 bits) and **tone** one of 3 (1.6 bits).
+  - **entity** is *an index the pass picks into a candidate list that code
+    supplies with that feed*: at most 31 public names the owner registered for
+    that feed's interest (a team's roster, a field's labs), plus none, for
+    5 bits. The pass sees only that feed's list, never the owner's registry as
+    a whole, and never anyone from either network. Two other shapes fail
+    §2.7:
+    - letting the pass resolve names against the full registry puts owner
+      data in its context, so the endorsed value becomes attacker × secret;
+    - letting it emit a name for code to resolve sends an attacker-authored
+      string across the boundary, which is what §14's gate part 1 exists to
+      catch (§16 PL9).
 
   That puts the ceiling at **about 9.6 bits per item**. With **at most three
   shelf B items a day** per persona, the ceiling is **under 30 bits a day**,
   and with expiry at five days, **under 150 bits live at once**.
 
-That is roughly 18 times `Bucket`'s 1.6 bits a day per thread, and the document
-says so rather than hiding it behind "clean". What makes it acceptable here,
-and not in the assistant, is what bits can do in a persona chat. A persona has
-no `Chosen` tool (§18 of the persona design), so the bits cannot be read back
-out; they can only *steer* what she raises, her mood, or the director's
-choices. The steering arm (§14) measures that residual directly.
+**Measured against what already ships, that is conservative.** Mail triage's
+privileged record carries about 19 bits per thread from closed vocabularies
+alone, over every thread in an inbox (§2.7). Shelf B carries half that per
+item, over at most three items a day.
+
+What bits can do in a persona chat is narrower still. A persona registry holds
+no `Chosen` sender, so the trifecta interlock has nothing to refuse
+(`PERSONA-DESIGN.md` §3.3). The bits cannot be read back out; they can only
+*steer* what she raises, her mood, or the director's choices. The steering arm
+(§14) measures that residual directly.
 
 A test computes the ceiling from the shipped vocabularies, and a vocabulary
 change that raises it past the stated figure fails the build (§16 PL9).
@@ -813,6 +856,24 @@ the headline never rides in the today-block.
   never the article. The told-ledger is item ids. Weeks later she remembers
   that they talked about the game on Thursday; the article has expired, and
   nothing its author wrote survives.
+- **But as `PERSONA-DESIGN.md` §9.6 stands, that episode is a candidate.**
+  `news_read` raises taint at its turn, and the writer classifies everything
+  after the first rise untrusted: stored, never recalled until the owner
+  approves. So shelf C as designed costs **one approval per news
+  conversation**, and until that tap she remembers nothing of the
+  conversation. That is a real cost on the feature's main path, chosen here
+  rather than discovered later (§16 PL23):
+  - **Accept the cost.** One tap per news conversation, on the waiting
+    section that already exists.
+  - **Admit a typed episode.** For the stretch after a `news_read`, the
+    writer may emit a clean episode made only of typed fields:
+    `{item_id, interest, discussed_at, owner_reaction}`, with the reaction
+    from a small closed set. This is the security research's "conversation
+    remembrance as typed pointers". Its residual is a few bits of steering
+    per record, because the reaction is chosen in a context the article
+    influenced. Free text from that stretch stays a candidate.
+  - Either way, **shelf A first** looks better still, since parsed facts
+    raise no taint and their conversations remember freely.
 - **The writer refinement** (§16 PL10). Today everything after a taint rise
   becomes candidates. Proposed: after the rise, the writer may still extract
   *facts about the owner from the owner's own turns* as `Stated` and clean, while the
@@ -929,7 +990,7 @@ The folds, which arrive in no tool result and so arm at the fold
 
 | Fold | Arms | Stem |
 |---|---|---|
-| Today-block (§4.5) | nothing; `untrusted` when any row's origin is not clean | a new clean/untrusted pair |
+| Today-block (§4.5) | `private`; both when any row's origin is not clean | a new pair, shaped like the recall pair |
 | Owner's roster and per-turn people cards (§7.2) | `private`; both when any fact's origin is not clean | `persona::recall::stem_of`'s existing pair, inside the recall block |
 | `news_read` result (§8.3) | `untrusted`, always, via `external` | a stem `arm_for_content` knows, for resumed chats |
 
@@ -1028,16 +1089,17 @@ owner's.
 | PL10 | The writer after a taint rise | Facts about the owner from the owner's own turns stay clean (`Stated`), extracted from those turns and pointers only; her side stays candidates |
 | PL11 | Feed sources | Registered per persona and per group |
 | PL12 | Topics withheld by default | Politics, deaths, disasters and crime, unless a feed is opted in |
-| PL13 | The owner's network | A structured layer over facts about the owner, with existing people-facts migrated into it |
+| PL13 | The owner's network | A structured layer over facts about the owner, in `memory.db` under memory's pruning and `forget` rules, with existing people-facts migrated into it |
 | PL14 | Search on the owner's people | A filter that refuses an exactly spelled name. It narrows a cost and catches the accidental case; the blind path is what holds (§7.5). Alternative: no filter, and rely on the blind path alone |
 | PL15 | The "supports, never competes" sensor | In the safety layer (§12 of the persona design): on by default, switchable per persona, recorded |
 | PL16 | Faces for the owner's people | Only by the owner's explicit link |
 | PL17 | Gap questions | At most one a chat; never while the owner is upset or mid-story |
 | PL18 | Proactive messages | Not in the first build; their own evidence first, beside D25 |
 | PL19 | Camera roll and feed | After the sampler and today-block are measured (§17 steps 6–7) |
-| PL20 | The today-block's taint | Its own clean/untrusted stem pair from the first build; the owner's roster rides in the recall block under its existing pair (§4.5, §7.2, §13) |
+| PL20 | The today-block's taint | Its own stem pair from the first build, arming `private`, or `private` and `untrusted`, as the recall pair does, because stated plans and chat-sourced people ride in it. The owner's roster rides in the recall block under its existing pair (§4.5, §7.2, §13). Alternative: keep chat-sourced rows out of the today-block and arm nothing |
 | PL21 | Stated plans after a taint rise | Candidates by default, shown on the week view as waiting plans. Alternative: admit them as typed records checked against their turn (§4.5) |
 | PL22 | `forget` over the world | Delete what is sourced to the chat and re-fold, which is D27's rebuild done where it is cheap; owner events never go with a chat (§5) |
+| PL23 | Episodes after a `news_read` | Admit a typed episode (`item_id`, interest, date, a closed-set reaction) as clean, with free text left as candidates. Alternative: accept one approval per news conversation (§8.4) |
 
 ---
 
