@@ -467,7 +467,11 @@ owner's deck is the owner's.
 - A **severity cap, as a per-persona setting** (ruled, §16 PL3):
   `intensity = "capped"` by default, so Holmes–Rahe-scale events (a death, a
   divorce, a serious diagnosis) never fire; `"full"` opens them for that
-  persona, still under the director's pacing.
+  persona, still under the director's pacing. It is a closed set, so it
+  follows the house rule for one. An **unknown value loads as `"capped"`**
+  (`#[serde(other)]`, the narrowest variant) and is reported in the
+  persona's notes; only an unknown *key* fails the load. That way a typo
+  narrows a persona and never opens Holmes–Rahe events.
 - **Most events involve other people** (§2.1): the director weights storylets
   with a cast member above solo ones.
 
@@ -522,7 +526,9 @@ one more reason §14's gate part 1 exists.
 
 - **The today-block** rides in the message stream, as the recall block does
   (`PERSONA-DESIGN.md` §8.2) — never the system prompt, so it never costs the
-  cached prefix. Under a fixed budget it holds: what she is doing now (the
+  tools-and-system prefix that matters. It is not quite free: a per-turn
+  note makes the last turn re-prefill once it is projected off the wire,
+  and the today-block makes that two notes a turn beside the recall block. Under a fixed budget it holds: what she is doing now (the
   clock is already per turn), what is on her mind (top events and arcs by
   importance and freshness), her mood, and the people she saw today.
 - **The today-block arms taint at the fold, under its own stems.**
@@ -1210,11 +1216,22 @@ the headline never rides in the today-block.
     - **One typed episode per item read, fixed by code.** If the writer could
       choose which of several read items an episode is about, that choice
       would add log₂k bits. So the count is set by the recorded `news_read`
-      calls: one episode for each distinct item read in the chat. The
-      per-day figure is then 2 bits × distinct items read. Reads are bounded
-      by what is on the shelf, at most three shelf C items a day (§8.5's own
-      cap for shelf C), which gives **at most 6 bits a day**. That is the constant gate part 2
-      checks.
+      calls: one episode for each distinct item read.
+    - **And a per-day cap, because reads are not bounded by arrivals.**
+      `news_read` can open anything still on the shelf, about fifteen items
+      over the five-day expiry, and nothing caps chats per day. So the clean
+      typed episode is **capped at three per persona per day**: the first
+      three distinct items read that day, across all chats, in the order the
+      recorded `news_read` calls happened. A fourth read still works and is
+      still discussed. Its free text is stored as candidates like any other,
+      and it simply gets no clean typed episode, with nothing asked of the
+      owner. That makes the ceiling **at most 6 bits a day**, the constant
+      gate part 2 checks.
+    - **The live total is not bounded by an expiry**, unlike shelves A and B,
+      because typed episodes are memory and persist. It is 6 bits × the days
+      an episode stays recalled, bounded by memory's own soft-pruning
+      (`memory_recall_below`, §9). The document states that rather than
+      giving a live ceiling it cannot have.
     - **Transparent endorsement does not hold here, and that is stated.**
       The writer that picks the reaction sees the article-steered turns *and*
       the owner's own, so the reaction is attacker × private data, the shape
@@ -1287,6 +1304,15 @@ the headline never rides in the today-block.
     - It is the same kind of trade as D11: an owner-made, per-persona
       choice to accept a stated cost for a feature that otherwise doesn't
       work as wanted.
+    - **The learning store has "deliberately no knob" for the same gate, and
+      the reasons it does not extend here are stated.** A learned rule's
+      provenance gate has no switch because a rule rides in *every* future
+      prompt of the *assistant*, the agent that holds the owner's mail and a
+      way to send. A recalled persona memory rides only in that one
+      persona's chats. It lives in a private per-persona store. The persona
+      has no `Chosen` sender. Its origin stays untrusted and re-arms on
+      recall. And it never reaches the assistant or a learned rule. Those
+      differences are what make a knob tolerable here and not there.
 - **The writer refinement** (§16 PL10). Today everything after a taint rise
   becomes candidates. Proposed: after the rise, the writer may still extract
   *facts about the owner from the owner's own turns* as `Stated` and clean, while the
@@ -1551,8 +1577,13 @@ The fixture test checks that the declaration and `ELIGIBLE` *agree*. An
 leaves the tool quietly ineligible with the build green. So the pair is two edits, the shape of
 CLAUDE.md's "a new field on `Config` is two edits", and §17's steps name
 both. For `news_read` and `share_photo` specifically, the `ELIGIBLE` row is
-documentation: that test's pool cannot construct a tool that needs a store,
-so the real check is the fixture-store test below.
+not checked as things stand. That test builds store-backed tools over a
+scratch directory (`ImageLibrary`, `PersonaPropose`, `Recall`), so needing a
+store is no obstacle. These two are invisible to it only because they are
+never in the install's pool: `setup::persona_agent` builds them with the
+persona's path. **The cheap fix is to insert them into that test's pool over
+a scratch persona store**, as `ImageLibrary` is, which keeps the
+declaration/`ELIGIBLE` agreement check live for them.
 
 **The roster's share of the recall budget.** The owner's roster and people
 cards ride in the recall block (§7.2), which has a fixed budget
@@ -1585,9 +1616,11 @@ persona, which fails open. So:
   `Egress::None`, and the `answers = "files"` filter on `untrusted_input`.
   It is factored out of `registry_as` and applied in `setup::persona_agent`
   to every per-persona tool;
-- **a test constructs the per-persona tools over a fixture store** and
-  asserts each one's declarations and the files-only withholding, the
-  coverage the `ELIGIBLE` test cannot give them.
+- **the per-persona tools join the `ELIGIBLE` test's pool** over a scratch
+  persona store, as above, and a second test builds a persona through
+  `setup::persona_agent` with `answers = "files"`. It asserts that
+  `news_read` is absent, which covers the withholding on the path where it
+  can actually fail.
 
 Until that exists, the claim that `news_read` "follows D16 and D24" is a
 requirement, not a property.
