@@ -436,8 +436,12 @@ the workstation, under bwrap with no cgroup. Every program ended
 | one 2 GiB `str`, `list` or `tuple`, a 1 GiB `int`, a 2 GiB `ljust`, a multiplying `replace` | 2.1–4.2 MiB (refused before allocating) | 5.6–5.9 MiB |
 
 So **the backstop holds on macOS**, to within the headroom and the
-worker's ~2 MiB baseline. The test asserts the bound (the limit plus
-64 MiB) on both platforms, so a monty release that loosens it fails CI.
+worker's ~2 MiB baseline. A later CI run started the worker at
+18.7 MiB and the list peaked at 86.9 MiB, 68 MiB above its start
+as before (Linux on the workstation, 2026-10-31: 81.7 MiB from
+14.6 MiB). So the test asserts the bound from each program's own
+start (that start, plus the limit, plus 16 MiB) on both platforms,
+and a monty release that loosens it fails CI.
 
 **The gap that remains is the second wall.** Above monty's own ceiling
 nothing caps a Mac worker. A bug in monty's allocator accounting, or an
@@ -984,7 +988,7 @@ Three runs each; the range is across runs, each a median.
 | process start, bare `monty -c 1` (context) | 0.8–0.9 ms | 1.1–1.3 ms |
 | process start, `monty -c 1` under bwrap (context) | 3.2–3.8 ms | 4.4–5.6 ms |
 | **cold program**: spawn, bwrap, `Configure`, feed `1`, n=20 | 3.5–4.0 ms (p90 ≤ 4.7) | 4.2–5.8 ms (p90 ≤ 6.4) |
-| **warm program**: a reused worker, n=200 | 0.05–0.09 ms | 0.08–0.09 ms |
+| **warm program**: a reused worker, n=200 (before #768; see below) | 0.05–0.09 ms | 0.08–0.09 ms |
 | **host call round trip**, a loop of 5,000 calls answered at once | 10.8–16.9 µs | 15.8–18.3 µs |
 | **tight-loop throughput**, same loop | 59k–92k calls/s | 55k–63k calls/s |
 | the same loop calling a function defined in the program | 0.10–0.18 µs/iteration | 0.12–0.20 µs/iteration |
@@ -1008,6 +1012,11 @@ curl -s http://127.0.0.1:8080/v1/chat/completions -H 'content-type: application/
   raised cold start by about 1 ms and the round trip by a few µs. The decode
   is on the GPU; this measures the CPU and scheduler cost beside it, not a
   CPU-saturated box.
+- **The warm row no longer describes the shipped path.** It was measured
+  while a worker served many programs. Since #768 a worker runs one
+  (`PROGRAMS_PER_WORKER`), and the pool keeps none spawned ahead, so
+  every program pays the cold row's spawn. The test's second loop now
+  prints that as "pooled program (a fresh worker each)".
 - R4's numbers are not set here; this is its input.
 
 **What the build found that the documents had otherwise** (slice 3a):

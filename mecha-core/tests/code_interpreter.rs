@@ -466,6 +466,15 @@ async fn the_live_worker_s_profile_denies_files_the_environment_services_and_the
     // to `sandbox_check`.
     let existing = tmp.join(format!("mecha-code-mode-probe-{}", std::process::id()));
     std::fs::write(&existing, b"x").unwrap();
+    // Removed when this test ends, however it ends: a failing assert below
+    // would otherwise leave the file behind in the runner's temp directory.
+    struct Removed(std::path::PathBuf);
+    impl Drop for Removed {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let _removed = Removed(existing.clone());
     let denied: Vec<(&str, std::path::PathBuf)> = vec![
         ("file-read-data", canon("/etc/passwd")),
         ("file-read-data", home.clone()),
@@ -555,7 +564,6 @@ async fn the_live_worker_s_profile_denies_files_the_environment_services_and_the
         Some(false),
         "{table}"
     );
-    std::fs::remove_file(&existing).ok();
     for op in ops {
         assert_eq!(
             live::denies(worker, op),
@@ -729,10 +737,13 @@ async fn the_memory_backstop_fires_uncatchably_and_is_named() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_memory_backstop_bounds_what_the_worker_holds() {
     const LIMIT: usize = 64 * 1024 * 1024;
-    // The worker's own resident baseline (measured: about 2 MiB on macOS,
-    // 6 MiB on Linux), monty's 4 MiB allocator headroom, and room for a
-    // sample's lag.
-    const SLACK: u64 = 64 * 1024 * 1024;
+    // Above the parked worker's own footprint, which is measured per program
+    // (`start` below) rather than assumed: it read about 2 MiB on macOS once
+    // and 18.7 MiB on a later CI run, the same program peaking at 70.6 and
+    // 86.9 MiB, 68 MiB above it both times. The slack is monty's 4 MiB
+    // allocator headroom and room for a sample's lag; every measured peak
+    // has sat within 8 MiB of the start plus the limit, on both platforms.
+    const SLACK: u64 = 16 * 1024 * 1024;
     let backstops = Backstops {
         max_memory: LIMIT,
         ..short(30)
@@ -827,7 +838,7 @@ async fn the_memory_backstop_bounds_what_the_worker_holds() {
         // clock, or raised, would otherwise pass (review of #769).
         if !matches!(f.end, End::Backstop(Backstop::Memory(_)))
             || peak < floor
-            || peak > LIMIT as u64 + SLACK
+            || peak > floor + LIMIT as u64 + SLACK
         {
             over.push(name);
         }
@@ -840,7 +851,7 @@ async fn the_memory_backstop_bounds_what_the_worker_holds() {
     );
     assert!(
         over.is_empty(),
-        "these programs did not end at the memory backstop, went unsampled, or held more than {} MiB + {} MiB: {over:?}\n{}",
+        "these programs did not end at the memory backstop, went unsampled, or held more than their start + {} MiB + {} MiB: {over:?}\n{}",
         LIMIT / (1024 * 1024),
         SLACK / (1024 * 1024),
         rows.join("\n")
@@ -1262,7 +1273,14 @@ async fn m1_measure() {
         assert!(matches!(step, Step::Done(_)));
     }
 
-    // Warm: one pool, its worker reused (checkout, Configure, feed, Reset).
+    // Pooled: one long-lived pool, 200 programs. Since #768 a worker runs one
+    // program (`PROGRAMS_PER_WORKER` is 1) and the pool keeps none spawned
+    // ahead (`min_processes` is 0), so each program here still spawns a
+    // fresh worker at checkout, as the cold rows do; what it leaves out is
+    // only a pool's first checkout. So it is a spawn, not a reuse: a debug
+    // build on the workstation (2026-10-31) read 3.9 ms here against 6.1 ms
+    // cold. Before #768 it measured a reused worker (§10's 0.05-0.09 ms row),
+    // and the label says which it measured.
     let interp = Monty::new(&w, &conf, backstops, 1).await.unwrap();
     interp.preflight().await.unwrap();
     let mut warm = Vec::new();
@@ -1313,7 +1331,12 @@ async fn m1_measure() {
         pct(&mut cold, 0.9)
     );
     println!(
-        "  warm program (reused worker):            median {:.2} ms (p10 {:.2}, p90 {:.2}, n=200)",
+        "  {:<40} median {:.2} ms (p10 {:.2}, p90 {:.2}, n=200)",
+        if mecha_core::interpreter::monty::PROGRAMS_PER_WORKER == 1 {
+            "pooled program (a fresh worker each):"
+        } else {
+            "pooled program (a reused worker):"
+        },
         median(&mut warm),
         pct(&mut warm, 0.1),
         pct(&mut warm, 0.9)
