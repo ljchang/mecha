@@ -596,7 +596,14 @@ silent gap.
 writer copies a discussed event into an episode, it stores a typed snapshot
 with the pointer: kind, date, people ids, and the narration, which is
 `ModelClean`. After that the world row may be pruned and the episode still
-says what it was. Shelf C is the exception: an episode keeps only its pointer
+says what it was. **The snapshot's narration names people by id, never by
+name.** The narrator writes placeholders, and names are rendered at recall
+from the nodes that remain. A person forgotten with chat B (§6.2's
+chat-sourced origin) then renders as "someone", rather than surviving as a
+name in chat A's snapshot. That is `PERSONA-DESIGN.md` §9.13's rule: "that
+sentence may be the last trace of what was erased". It also lets the
+dangling-pointer rule above cover names, since a broken link reported by
+name works on an id and not on a sentence. Shelf C is the exception: an episode keeps only its pointer
 (§8.4), so nothing an article's author wrote is copied anywhere.
 
 ---
@@ -921,7 +928,9 @@ Shelf B meets §2.7's three conditions in code:
   - **salience** is computed by code from kind and entity, never extracted
     (0 bits);
   - **the order** of the items is a lexical sort over the extracted values
-    themselves, adding nothing;
+    themselves, adding nothing. **The count does add something**: whether 0,
+    1, 2 or 3 items survive is up to the publisher, about 2 bits a day. That
+    sits outside the per-item ceiling, with the timing bit (§14 part 3);
   - **kind** is one of 8 (3 bits) and **tone** one of 3 (1.6 bits).
   - **entity** is *an index the pass picks into a candidate list that code
     supplies with that feed*: at most 31 public names the owner registered for
@@ -1084,14 +1093,27 @@ the headline never rides in the today-block.
   - **Per persona, a switch to remember article chats in full** (PL27):
     `remember_articles = true` in that persona's `persona.toml`, owner-written,
     never in layered config, and off by default. With it on, records written
-    from a stretch after a `news_read` (episodes, facts, the owner's people)
-    are **recalled without approval**. Their origin stays untrusted, because
+    from a stretch after a `news_read` (episodes and facts, her own and the
+    owner's) are **recalled without approval**. **The owner's network is
+    outside its reach**: edges and people about the owner's real relatives
+    and friends from such a stretch stay unrecalled candidates, like the
+    default. The alternative is worse. With `Inferred` edges auto-accepted
+    under D18, an article could plant *fabricated claims about real people*,
+    recalled with no tap and shown on the People tab as hers. That is §2.7's
+    "capacity does not bound truth" landing in the one store that holds third
+    parties who never agreed to be in a database (§7.5). Their origin stays untrusted, because
     the switch changes what is recalled, never what is clean.
     - **Recall still re-arms the taint** they were written under (§9.6). So
       a later chat that recalls one opens untrusted, and its own records are
       recalled under the same switch. For that persona, the provenance gate
       on memory is in effect off. That is what the switch means, and the
       persona page says so beside it.
+    - **It gets a `TRIFECTA.md` row**, the home CLAUDE.md gives every opt-in
+      switch with its cost. The row's *Owned by:* line names where the
+      promise lives in code: the origin stays untrusted and recall still
+      re-arms. A future reader tempted to also mark the origin clean finds
+      the reason not to there, not only on the persona page. The cost also
+      goes beside D11's in `PERSONA-DESIGN.md` §3.3.
     - **What it costs:** a planted instruction in an article could persist
       in that persona's memory and steer her later. It **cannot send
       anything**: personas have no `Chosen` sender (§3.3), and the only
@@ -1424,7 +1446,8 @@ ruled for repetition.
      actually about (30 bits a day is 210 in a week), and it needs no string
      to survive. It also covers what the per-item ceiling cannot: a
      publisher who controls *when* to publish gets a presence-or-absence bit
-     per day on top of the item's fields. That timing channel would show
+     per day on top of the item's fields, and the number of surviving items
+     (0–3) adds about 2 bits more. Those count and timing channels would show
      here, and nowhere else.
 
   **Each shelf ships only when the owner has read all three parts for it:
@@ -1497,8 +1520,8 @@ owner's.
 | PL23 | Episodes after a `news_read` | **Owner's direction (2026-10-31):** the default. A typed episode (`item_id`, interest, date, a closed-set reaction) is admitted clean; free text is left as candidates that go unrecalled, with no approval queue (§8.4) |
 | PL24 | `forget` over the owner's network | Re-fold from the events that remain, which is D27's rebuild applied in memory for this graph; an `Inferred` edge left on too little support reverts to a candidate. Alternative: today's fallback, so the person goes with any of their chats (§7.1) |
 | PL25 | A `told` set only by a tainted stretch | Suppresses but does not license pruning; becomes ordinary on approval; cleared by the harness on rejection; unchanged while unreviewed, since silence is not a rejection (§9). Alternative: lapse after five days unreviewed, at the cost of repeating what the owner heard |
-| PL26 | The feature registry | The world as `part_of = Personas`, a sub-feature switched with personas, rather than a new top-level `Feature`; settled before step 1 (§17) |
-| PL27 | Remembering article chats in full | **Owner's direction (2026-10-31):** a per-persona `remember_articles` switch, off by default, owner-written in `persona.toml`. With it on, records from a stretch after a `news_read` are recalled without approval, origin still untrusted and re-armed on recall; the cost (possible persistent steering, no way to send) is shown beside the switch (§8.4) |
+| PL26 | The feature registry | A top-level `Feature` with its own switch that `requires` Personas (as `Dictate` requires `Web`), because a part has no switch and §14's world-on/off comparison needs one; plus a per-persona `world = false` in `persona.toml`; settled before step 1 (§17) |
+| PL27 | Remembering article chats in full | **Owner's direction (2026-10-31):** a per-persona `remember_articles` switch, off by default, owner-written in `persona.toml`. With it on, episodes and facts from a stretch after a `news_read` are recalled without approval, origin still untrusted and re-armed on recall. The cost (possible persistent steering, no way to send) is shown beside the switch and in a `TRIFECTA.md` row. *Recommended within it:* the owner's network stays outside its reach (§8.4) |
 
 ---
 
@@ -1509,12 +1532,24 @@ Each step is usable alone and measured before the next.
 **Before step 1: the feature registry.** This is a new optional feature, so
 it starts at `ARCHITECTURE.md` §Features → *Adding a feature*. That touches a
 dozen places across core, the CLI, the server and the web app, and #654
-missed one. The first question is whether the world is a new `Feature` or
-`part_of = Personas`, beside `Personas`, `Image`, `Library` and `Video` in
-`Feature::ALL`. The answer decides the `own_state` arm, the starter config
-line, the web app's entries and the server routes' owner, so it is settled
-before step 1 (§16 PL26). Under PL26's recommendation (`part_of = Personas`),
-`VIEW_FEATURE` already has `personas` and needs nothing. The entry that must
+missed one. The world is a new `Feature::ALL` variant either way. The
+question is whether it gets **its own `[features]` switch**, and §14 decides
+it: a part has none. `has_switch()` is `part_of().is_none()`, `set_switch` on
+a part is a silent no-op, `switches_on` (which a trial's condition hash
+reads) omits parts, and a trial environment's `[features] <part>` is a hard
+error. Under `part_of = Personas`, then, "world on vs off through the
+experiment instrument" would have no lever. So the world is **a top-level
+`Feature` with its own switch that `requires` Personas**, the way `Dictate`
+requires `Web`. That decides the `own_state` arm, the starter config line,
+the web app's entries and the server routes' owner, so it is settled before
+step 1 (§16 PL26).
+- **Per-persona comparison** is a persona-level `world = false` in
+  `persona.toml`, owner-written. The experiment instrument sets the global
+  switch per arm. A per-persona arm would need trial homes to carry persona
+  folders, which `trial_env` does not build today, and §14's build names
+  that as work.
+- `VIEW_FEATURE` already has `personas`, and the world's surfaces stay under
+  that view. The entry that must
 gain rows is **`PANE_FEATURE`**, which keys on `view/sub`:
 `personas/week`, `personas/people`, `personas/camera` and the Feed. It is
 the one #654 missed, and a miss there fails **open**: a missing row reads as
@@ -1540,8 +1575,9 @@ Feed tab (step 7).
    sensor.
 5. **The world outside.** Shelf A parsers, shelf C with `news_read` (its
    eligibility declaration, `untrusted_input` declared, `external` set unconditionally, withheld by `answers = "files"`), stances,
-   filters, the reading list; the three-part gate; then shelf B if the owner
-   accepts the readings.
+   filters, the reading list; the typed episode (PL23) and the
+   `remember_articles` switch with its `TRIFECTA.md` row (PL27); the
+   three-part gate; then shelf B if the owner accepts the readings.
 6. **The camera roll** and `share_photo`, with its eligibility declaration.
 7. **The feed.**
 8. **Proactive messages** — only if PL18 is ruled otherwise.
