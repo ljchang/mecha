@@ -373,7 +373,8 @@ activity, and a who-was-present distribution from the Who file. Each day:
 3. Draw who was present for each episode from her network (§6), weighted by
    closeness and the Who file's distribution for that activity.
 
-Seeded per persona per day (`sample.rs`), so a day is reproducible and a
+Seeded per persona per day (a seeded draw in `sample.rs`'s manner, without
+widening that module's holdout role), so a day is reproducible and a
 replay can recompute it. **Traits move the numbers**, never just the prose
 (§2.4): an adventurous persona's novelty weight, an athlete's workout slots,
 a night owl's shifted sleep.
@@ -409,9 +410,13 @@ how it felt. Everything else stays a typed record nobody narrates. That is the
 whole of the model's role: code decides what happened and when; the model
 writes how it felt.
 
-It runs nightly beside `persona memory write`, on the model the router already
-holds — the no-swap ruling of 2026-09-27, as `writer::pick_model` keeps it for
-memory. Its inputs are owner files, code, typed records from shelves A and B
+It runs nightly beside `persona memory write`. The narrator is not per chat,
+so neither branch of `writer::pick_model` covers it directly (that function
+writes a chat with the model the chat ran on, and waits when that model isn't
+resident). The narrator takes the same waiting shape, keyed to the persona:
+it runs only while the persona's pinned model (`PERSONA-DESIGN.md` §12.6) is
+resident or the router is empty. Otherwise it waits for a later night, never
+swapping a model (the 2026-09-27 ruling). Its inputs are owner files, code, typed records from shelves A and B
 (§8), and **only those world rows whose origin is clean**. Chat-sourced rows
 from a clean stretch qualify. A row written under taint does not, *even after
 the owner approves it*. Approval makes a record recallable, never clean:
@@ -1103,6 +1108,23 @@ none for state.
   owner's choice working as intended. So **no world row is held for a
   candidate**, and the world's growth stays bounded whatever the owner
   leaves unreviewed.
+
+  **One exception: a `told` that only a tainted stretch set.** The snapshot
+  argument assumes the mention was real. A flag written from a tainted
+  stretch (§4.5) might instead be an injection silencing an event she never
+  mentioned. If such a flag licensed pruning, a rejected candidate episode
+  would destroy the event in both stores, and the week view's record of
+  which events went quiet would go with it. So a `told` whose only source is
+  a tainted stretch does **not** count as told for pruning:
+  - the row prunes on its ordinary score, as if untold;
+  - if the episode is **approved**, the flag becomes an ordinary told;
+  - if the episode is **rejected**, the harness clears the flag. The tainted
+    stretch never clears one itself; this is the owner's rejection, applied;
+  - if the episode sits **unreviewed** for the flag's lifetime (about the
+    shelf B expiry, five days), the flag lapses the same way.
+
+  Suppression by an injection is therefore temporary, visible while it
+  lasts, and never reaches deletion (§16 PL25).
 - **Memory soft-prunes first:** below the threshold a record leaves recall and
   stays in the store, which is what D26 already says ("states expire from
   recall, never from the store"). D28's access log then shows whether the
@@ -1115,7 +1137,7 @@ none for state.
 
 - When the sifter finds a photo-worthy moment — the game, the party, a meal,
   a view — it queues a render **overnight**, in the hours the scheduled jobs
-  leave the GPU clear, into `<persona>/world/camera/`, with the event id.
+  leave the GPU clear, into `<persona>/camera/`, with the event id.
 - In chat, `share_photo(event_id)` attaches an existing picture at once: no
   job, no wait, and the picture matches an event she remembers. What makes it
   feel alive is what she chooses to share, not the render.
@@ -1184,6 +1206,17 @@ from them would make the next tool added eligible by omission"). The fixture
 test that walks the registry fails the build on a missing declaration, and
 §17's steps are where each one is written.
 
+**Egress classes.** `news_read` and `share_photo` are both `Egress::None`:
+one reads a local row, the other attaches a file already in the persona's
+folder. The fixture test fails a declaration that disagrees with its class.
+
+**The roster's share of the recall budget.** The owner's roster and people
+cards ride in the recall block (§7.2), which has a fixed budget
+(`recall::BUDGET_CHARS`). They take a share of their own, like about-me's
+third, so the owner's social graph never crowds out episodes and facts or is
+crowded out by them. The split is set when §17 step 4 is built and is
+measured under D28.
+
 **`news_read` is withheld by `answers = "files"`.** D16 leaves the tools
 that reach further out of the registry of a persona set to `answers =
 "files"`, and D24 applies that to `document_read` by name, "since its results
@@ -1204,6 +1237,18 @@ ruled for repetition.
 - **Initiative:** the share of persona turns that introduce a person or event
   not in the transcript or memory before that turn — computed the same way,
   offline, recomputable over the whole history.
+  - **Alone, this reading cannot fail.** With the world off it sits near the
+    floor by construction, and with it on it rises by construction. A rise is
+    also what ComPeer's complaints looked like: a companion bringing up its
+    own life when nobody asked.
+  - **So it is read only beside uptake**: what the owner does with a topic
+    the persona introduced. Did the owner reply to it, ask a follow-up, or
+    come back to it in a later chat, against deflecting or changing the
+    subject? Those are the D28-style behavioural signals already proposed for
+    importance to the owner (§9), never a rating.
+  - **The claim the comparison tests** is that world-on raises initiative
+    *without* lowering the uptake rate of persona-introduced topics. Rising
+    initiative with falling uptake is the ComPeer failure, measured.
 - **The comparison:** world on vs off, per persona, through the experiment
   instrument; the replay judge for consistency (does she contradict her own
   world, or the owner's people?).
@@ -1224,15 +1269,20 @@ ruled for repetition.
      shelf B, and from the per-field render ranges for shelf A (§8.2),
      checked by a test that fails when a vocabulary or a range change raises
      either.
-  3. **Steering.** An adversarial feed that chooses `kind`, `tone` and
-     `entity` to push one direction across several days, against an honest
-     feed over the same days. The measure: does it move what the persona
+  3. **Steering.** An adversarial source that pushes one direction across
+     several days, against an honest one over the same days. For shelf B it
+     is a feed that chooses `kind`, `tone` and `entity`. For shelf A it is a
+     fake structured provider that chooses in-range values: scores, dates,
+     taxonomy codes. Shelf A ships first and its argument is provider trust,
+     so it needs this arm as much as shelf B does. The measure: does it move what the persona
      raises, her mood, or the director's choices beyond what the honest feed
      does? This is the per-day × days accumulation the capacity argument is
      actually about (30 bits a day is 210 in a week), and it needs no string
      to survive.
 
-  Shelf B ships only when the owner has read all three (§16 PL9). Part 3 would
+  **Each shelf ships only when the owner has read all three parts for it:
+  shelf A before its first build reaches a prompt, shelf B before it is
+  built** (§16 PL9). Part 3 would
   be, as far as the research found, the first measurement of what endorsement
   by capacity leaves over.
 - **Cost:** narrator tokens and wall clock per night, against the scheduled
@@ -1282,7 +1332,7 @@ owner's.
 | PL6 | People already in `identity.md` | Proposed once as owner nodes; after approval the network is their only home |
 | PL7 | Pruning | World hard-prunes; memory soft-prunes (out of recall, kept in the store); hard deletion of memories only by amending D26 after D28's readout |
 | PL8 | Importance to the owner | Inferred from engagement and pins; no rating prompts |
-| PL9 | News shelves | Build A and C first, with shelf A's per-field render bounds and its ceiling computed beside shelf B's (§8.2). B ships behind the three-part gate (§14): schema conformance, a bit ceiling (about 9.6 bits per item and under 30 a day, as §8.2 computes it) enforced by a test, and the steering arm, all three read by the owner. Alternative: all three shelves at once |
+| PL9 | News shelves | Build A and C first, with shelf A's per-field render bounds and its ceiling computed beside shelf B's (§8.2), and shelf A through all three gate parts, steering included, before it reaches a prompt. B ships behind the three-part gate (§14): schema conformance, a bit ceiling (about 9.6 bits per item and under 30 a day, as §8.2 computes it) enforced by a test, and the steering arm, all three read by the owner. Alternative: all three shelves at once |
 | PL10 | The writer after a taint rise | Facts about the owner from the owner's own turns stay clean (`Stated`), extracted from those turns and pointers only, except turns that answer a question she asked inside the tainted stretch or overlap the chat's `news_read` prose; her side stays candidates. The residual is paraphrase: a trade of convenience against a durable write reachable through the owner. Alternative: today's rule, where everything after the rise is a candidate (§8.4) |
 | PL11 | Feed sources | Registered per persona and per group |
 | PL12 | Topics withheld by default | Politics, deaths, disasters and crime, unless a feed is opted in |
@@ -1298,6 +1348,7 @@ owner's.
 | PL22 | `forget` over the world | Delete what is sourced to the chat and re-fold, in pure code, which is D27's rebuild done where it is cheap; a derived value whose support falls below a floor reverts to a candidate (D27's second half); owner events never go with a chat (§5) |
 | PL23 | Episodes after a `news_read` | Admit a typed episode (`item_id`, interest, date, a closed-set reaction) as clean, with free text left as candidates. Alternative: accept one approval per news conversation (§8.4) |
 | PL24 | `forget` over the owner's network | Re-fold from the events that remain, which is D27's rebuild applied in memory for this graph; an `Inferred` edge left on too little support reverts to a candidate. Alternative: today's fallback, so the person goes with any of their chats (§7.1) |
+| PL25 | A `told` set only by a tainted stretch | Does not license pruning; becomes ordinary on approval; cleared by the harness on rejection or after about five days unreviewed (§9) |
 
 ---
 
