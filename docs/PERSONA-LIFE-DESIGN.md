@@ -1504,6 +1504,12 @@ the headline never rides in the today-block.
         from some other tainted chat, the ratchet in §4.5 would put every
         later chat outside coverage, even one with no `news_read` in it.
 
+      (Under PL21's default every untrusted world row arrives by owner
+      approval, which never cleans it, so this clause is reachable only if
+      PL21's sub-question admits typed plans under the switch. Otherwise any
+      untrusted-stem today-block falls outside coverage, which is the safe
+      direction.)
+
       **When a chat falls outside coverage, the persona page says why**, by
       naming the source ("this chat also read a document", "an approved world
       row from 3 Nov"). The owner then sees why its free text went
@@ -1738,8 +1744,10 @@ entirely: they never decay.
     not re-introduced, as with any told, but its row prunes on its ordinary
     score, as if untold;
   - if the episode is **approved**, the flag becomes an ordinary told;
-  - if the episode is **rejected**, the harness clears the flag and the event
-    may be re-introduced. The tainted stretch never clears one itself; this
+  - if the episode is **rejected**, the harness clears the flag, and the
+    event may be re-introduced if its row is still there. If the row has
+    already pruned on its ordinary score (the floor below), rejection
+    restores nothing, which is also acceptable. The tainted stretch never clears one itself; this
     is the owner's rejection, applied;
   - if the episode sits **unreviewed**, nothing changes. Silence is not a
     rejection. Unreviewed is the default after a `news_read` (§8.4), so
@@ -2071,7 +2079,7 @@ this document's; the ruling is the owner's.
 | PL6 | People already in `identity.md` | **Ruled (2026-10-31): people live in one place.** They are proposed once as owner nodes; after approval the network is their only home and `identity.md` keeps personality (§6.6) |
 | PL7 | Pruning | **Ruled (2026-10-31):** the world hard-prunes, except owner-origin rows; memory soft-prunes (out of recall, kept in the store); hard deletion of memories only by amending D26 after D28's readout. **The decay parameters are exposed per persona** in `[life.decay]`: half-lives, retelling boost, both thresholds, read live (§9, §3.1) |
 | PL8 | Importance to the owner | **Ruled (2026-10-31):** inferred from engagement and pins, with no rating prompts or UI control; and she may ask in conversation when it is natural and the inference is unsure, within §7.3's one-question-a-chat budget, the answer counting as a `Stated` signal (§9) |
-| PL9 | News shelves | **Ruled (2026-10-31):** Build A and C first, with shelf A's per-field render bounds and stated figures (at most 16 bits an item, three a day, five-day expiry; §8.2), and shelf A through all three gate parts, steering included, before it reaches a prompt. B ships behind the three-part gate (§14): schema conformance, a bit ceiling (about 9.6 bits per item and under 30 a day, as §8.2 computes it) enforced by a test, and the steering arm, all three read by the owner |
+| PL9 | News shelves | **Ruled (2026-10-31):** Build A and C first, with shelf A's per-field render bounds and stated figures (at most 16 bits an item, three a day, five-day expiry; §8.2), and shelves A and C through all three gate parts, steering included, before either reaches a prompt. In that first build, shelf C's count-and-timing channel (about 3 bits a day) is the entire residual, and only the steering arm sees it. B ships behind the three-part gate (§14): schema conformance, a bit ceiling (about 9.6 bits per item and under 30 a day, as §8.2 computes it) enforced by a test, and the steering arm, all three read by the owner |
 | PL10 | The writer after a taint rise | **Ruled (2026-10-31):** Keep today's rule (everything after the rise is a candidate). PL23's typed episode keeps the gist and PL27's switch gives full memory where the owner wants it, which is what PL10 was reaching for (§8.4) |
 | PL11 | Feed sources | **Ruled (2026-10-31):** Registered per persona, per group and for everyone (PL4), in their folders under `~/.mecha/personas/`, never in layered config; any future global table global-layer-only and stripped from project layers loudly (§8.1) |
 | PL12 | Topics withheld by default | **Ruled (2026-10-31):** Politics, deaths, disasters and crime, unless a feed is opted in |
@@ -2162,8 +2170,10 @@ Feed tab (step 7).
    check on the per-persona path (§13). Until that check exists, the D16/D24
    claim is a requirement, not a property), stances,
    filters, the reading list; the typed episode (PL23) and the
-   `remember_articles` switch with its `TRIFECTA.md` row (PL27); the
-   three-part gate; then shelf B if the owner accepts the readings.
+   `remember_articles` switch with its `TRIFECTA.md` row (PL27). **The
+   three-part gate runs over shelves A and C before either reaches a
+   prompt**: `news_read` and the today-block's shelf lines stay off until the
+   owner has read the readings. Shelf B follows, behind the same gate.
 6. **The camera roll** and `share_photo`, with its eligibility declaration.
 7. **The feed.**
 8. **Proactive messages** — only if PL18 is ruled otherwise.
