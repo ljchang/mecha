@@ -739,25 +739,37 @@ one more reason §14's gate part 1 exists.
     - it goes with `forget` on its chat, being chat-sourced. Only owner
       *edits* on the week view are exempt from that.
 
-    After a taint rise it follows PL10, so it is a candidate, like the
-    owner's other words there. The week view is still there for plans
-    nobody said aloud.
+    After a taint rise it enters as a typed plan, the same as hers (below),
+    with no approval. The week view is still there for plans nobody said
+    aloud.
   - **These are not commitments in `guilt.rs`'s sense, deliberately.** That
     module's rule is "an expectation is a recorded commitment, never a claimed
     one": a model *saying* something creates no obligation, and its stores
     are all owner-visible queues. A stated plan is the opposite case, a
     model's claim written into her world. It shapes a simulation and owes
     nobody anything, so it is named differently to keep the two apart.
-  - **After a taint rise, a stated plan is a candidate**, as §13 and §6.2
-    already say for every mention of hers in a tainted stretch. It does not
-    enter the world until the owner approves it. Candidates show on the week
-    view as *waiting plans*, so a news-following chat whose later plans
-    never happen is visible rather than silent.
-  - Whether a stated plan from a tainted stretch could be admitted instead,
-    as a typed record (a date, an activity from a closed set, people ids) that
-    is checked against the turn it was said in, is an open decision (§16
-    PL21). The argument for: it is low-capacity and verifiable. The argument
-    against: it is the persona's own utterance after an injection.
+  - **After a taint rise, a stated plan enters as a typed plan, with no
+    approval** (ruled 2026-10-31, PL21). The owner does not want an approval
+    queue, and a plan held out of the world would make memory and world
+    disagree. So the writer admits it as a typed record, never as text:
+    - **a date**, within the next 90 days (about 6.5 bits);
+    - **an activity** from a closed set fixed in code, at most 32 entries
+      (5 bits);
+    - **at most two people**, by id, from her network's clean-origin people
+      (or the owner's people, for the owner's plans): up to about 12 bits.
+
+    That is **at most about 24 bits a plan**, and at most three typed plans
+    a day per persona, chosen by a seeded draw as typed episodes are (§8.4).
+    The total is **at most about 72 bits a day**, and plans expire when their
+    date passes. Each record is checked against the turn it was said in: the
+    date and activity must both be stated there, or the plan is dropped and
+    named in the persona's notes, never stored loosely. The record keeps its
+    untrusted origin and the "from an article chat" badge, so the week view
+    shows which plans came from such a stretch. Free text from that stretch
+    still never enters the world. The residual is a planted plan, steered by
+    an article, that her week then runs. That is bounded by the fields and
+    the cap, visible by the badge, and removable on the week view or with
+    `forget`.
 
 ---
 
@@ -1504,10 +1516,9 @@ the headline never rides in the today-block.
         from some other tainted chat, the ratchet in §4.5 would put every
         later chat outside coverage, even one with no `news_read` in it.
 
-      (Under PL21's default every untrusted world row arrives by owner
-      approval, which never cleans it, so this clause is reachable only if
-      PL21's sub-question admits typed plans under the switch. Otherwise any
-      untrusted-stem today-block falls outside coverage, which is the safe
+      (The rows that make this clause live are PL21's typed plans, admitted
+      from article stretches. Any other untrusted world row, such as one the
+      owner approved, takes a chat outside coverage, which is the safe
       direction.)
 
       **When a chat falls outside coverage, the persona page says why**, by
@@ -1540,21 +1551,10 @@ the headline never rides in the today-block.
       the owner registered. `forget` works as ever, and it is one persona,
       never the assistant.
     - **What it leaves alone:** the narrator still reads only clean-origin
-      world rows (§4.4); world writes from a tainted stretch (stated plans,
-      people) still follow PL21; nothing reaches `shared.db` except by the
+      world rows (§4.4); a typed plan from a tainted stretch follows PL21
+      with or without the switch, and people she mentions there stay
+      candidates (§6.2); nothing reaches `shared.db` except by the
       owner's share (D17), and a share of an untrusted-origin record says so.
-    - **Stated plans under the switch (awaiting the owner).** PL21 holds a
-      plan stated after an article out of the world until approved. Under
-      this switch, nothing asks the owner anything, so she would remember
-      "there's a game on Saturday" while her world never runs it. That is
-      exactly the disagreement §4.5's stated plans exist to prevent. The
-      recommendation: **under `remember_articles`, a stated plan from such a
-      stretch is admitted as a typed row**, made of a date, an activity from a
-      closed set, and people ids, checked against the turn it was said in. That
-      is the shape PL21 weighed for the default and declined. The default
-      without the switch is unchanged. The alternatives are to accept the
-      inconsistency, or to drop such plans rather than queue them (§16
-      PL21).
       Facts about the owner recalled under the switch may still be staged
       to the graph's review queue under D10's standing permission. That is
       human-gated, so no lane promotes itself, but a staged item carries its
@@ -1853,8 +1853,8 @@ dropped the farewell check (D25), so it would need its own evidence first.
 | Narrator over clean inputs | model, clean | yes | only once told | yes |
 | Her mentions in a clean chat | model, clean | as people and stated plans | yes | yes |
 | Owner's words in a clean chat | `Stated` facts, origin clean | as owner-stated plans only (§4.5); the owner's people live in `memory.db` (§7.1, PL13's recommendation) | yes, as facts about the owner and the owner's people | yes |
-| Her mentions after a taint rise | model, untrusted | as candidates | as candidates; with `remember_articles`, recalled (marked, badged) | only after approval; with `remember_articles`, yes |
-| Owner's words, after a taint rise | model, untrusted (whatever the record's `Stated`/`Inferred` kind) | no; the owner's people live in `memory.db` (§7.1, PL13's recommendation) | by default as candidates (PL10, ruled); with `remember_articles`, recalled, owner's people included (PL27: no carve-out), marked and badged | by default only after approval; with `remember_articles`, yes |
+| Her mentions after a taint rise | model, untrusted | stated plans as typed plans (PL21); people as candidates | as candidates; with `remember_articles`, recalled (marked, badged) | only after approval; with `remember_articles`, yes |
+| Owner's words, after a taint rise | model, untrusted (whatever the record's `Stated`/`Inferred` kind) | owner-stated plans as typed plans (PL21); the owner's people live in `memory.db` (§7.1, PL13's recommendation) | by default as candidates (PL10, ruled); with `remember_articles`, recalled, owner's people included (PL27: no carve-out), marked and badged | by default only after approval; with `remember_articles`, yes |
 | The `told` flag, from a tainted stretch | the stretch's taint | set only, never cleared, source recorded | — | it shapes what reaches the today-block |
 | Shelf A | code, closed types only | yes | yes | its closed fields; shape-matched ids never |
 | Shelf B | quarantined, typed | minor events | as pointers | yes |
@@ -2032,7 +2032,9 @@ ruled for repetition.
   - the `told` flag, bounded to events the chat was shown (§4.5);
   - the typed episode's `owner_reaction`, 2 bits per episode (§8.4);
   - the retelling boost and `known_to_owner`, which a tainted stretch never
-    writes at all (§4.5).
+    writes at all (§4.5);
+  - typed plans (PL21), at most about 24 bits a plan and 72 a day, each
+    checked against its turn and badged (§4.5).
 
   The steering arm drives a feed and never writes from a chat. Part 1's
   conformance test does cover the typed episode, since a canary must never
@@ -2091,7 +2093,7 @@ this document's; the ruling is the owner's.
 | PL18 | Proactive messages | Not in the first build; their own evidence first, beside D25 |
 | PL19 | Camera roll and feed | After the sampler and today-block are measured (§17 steps 6–7) |
 | PL20 | The today-block's taint | Its own stem pair from the first build, arming `private`, or `private` and `untrusted`, as the recall pair does, because stated plans and chat-sourced people ride in it. The owner's roster rides in the recall block under its existing pair (§4.5, §7.2, §13). Alternative: keep chat-sourced rows out of the today-block and arm nothing |
-| PL21 | Stated plans after a taint rise | **Ruled (2026-10-31):** Candidates by default, shown on the week view as waiting plans. *Open sub-question:* under `remember_articles`, admit them as typed rows so memory and world agree (recommended), accept the inconsistency, or drop them (§8.4) |
+| PL21 | Stated plans after a taint rise | **Ruled (2026-10-31): typed, no approval.** Hers and the owner's are admitted as typed plans (a date within 90 days, an activity from a closed set of 32, at most two clean-origin people by id), checked against the turn, at most about 24 bits a plan and three a day by seeded draw, badged and removable; never as text (§4.5) |
 | PL22 | `forget` over the world | **Ruled (2026-10-31):** delete what is sourced to the chat and re-fold, in pure code, which is D27's rebuild done where it is cheap; a derived value whose support falls below a floor reverts to a candidate (D27's second half); owner events never go with a chat (§5) |
 | PL23 | Episodes after a `news_read` | **Owner's direction (2026-10-31):** the default. A typed episode (`item_id`, interest, date, a closed-set reaction) is admitted clean; free text is left as candidates that go unrecalled, with no approval queue (§8.4) |
 | PL24 | `forget` over the owner's network | Re-fold from the events that remain, which is D27's rebuild applied in memory for this graph; an `Inferred` edge left on too little support reverts to a candidate. Alternative: today's fallback, so the person goes with any of their chats (§7.1) |
