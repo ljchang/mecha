@@ -179,6 +179,15 @@ impl Tool for MemorySearch {
         Some(self)
     }
 
+    /// The persona's own memory, kept for a files-only persona by the
+    /// owner's ruling of 2026-10-02. Reading its own store is not what
+    /// carries that: what may enter memory, and be recalled, is the
+    /// provenance gate's job (`Filter::Recallable`, PERSONA-DESIGN.md §9.6),
+    /// so a later store-backed tool does not earn `false` by analogy.
+    fn reaches_beyond_persona_files(&self) -> bool {
+        false
+    }
+
     fn effect(&self) -> Option<crate::tool::effect::Effect> {
         Some(crate::tool::effect::Effect::Read)
     }
@@ -437,6 +446,15 @@ impl Tool for MemoryRead {
 
     fn for_persona(self: Arc<Self>) -> Option<Arc<dyn Tool>> {
         Some(self)
+    }
+
+    /// The persona's own memory, kept for a files-only persona by the
+    /// owner's ruling of 2026-10-02. Reading its own store is not what
+    /// carries that: what may enter memory, and be recalled, is the
+    /// provenance gate's job (`Filter::Recallable`, PERSONA-DESIGN.md §9.6),
+    /// so a later store-backed tool does not earn `false` by analogy.
+    fn reaches_beyond_persona_files(&self) -> bool {
+        false
     }
 
     fn effect(&self) -> Option<crate::tool::effect::Effect> {
