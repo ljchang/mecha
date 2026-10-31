@@ -1739,10 +1739,11 @@ module.
   `state.toml` beside `persona.toml`, because the `toml` crate cannot edit a
   file in place and `lock` would otherwise erase the owner's comments.
 - **Unknown keys fail the load; unknown values narrow.** `persona.toml` denies
-  unknown fields. An unknown value in a closed set loads as the narrowest variant
-  (`answers` → `files`, `user_facts` → `off`, `intensity` → `capped`) and is
-  reported in `Persona::notes`. A persona folder without `state.toml` loads unapproved and
-  of untrusted origin, and `--yes` cannot approve it unread.
+  unknown fields. An unknown value in a closed set loads as the narrowest
+  variant (`answers` → `files`, `user_facts` → `off`, `intensity` → `capped`)
+  and is reported in `Persona::notes`. A persona folder without `state.toml`
+  loads unapproved and of untrusted origin, and `--yes` cannot approve it
+  unread.
 - **`[life]` decides what exists, and an unmet need is a load error**
   (`PERSONA-LIFE-DESIGN.md` §3.1, `persona::Life::check`). Every part of a
   persona's world is off by default; `camera` without `world` fails the load
