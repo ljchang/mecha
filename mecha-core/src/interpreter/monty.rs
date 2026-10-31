@@ -1371,8 +1371,8 @@ mod tests {
         std::fs::write(
             &ps,
             format!(
-                "#!/bin/sh\necho $$ >>'{}'\nexec /bin/sleep 300\n",
-                pids.display()
+                "#!/bin/sh\necho $$ >>{}\nexec /bin/sleep 300\n",
+                sh_quote(&pids.display().to_string())
             ),
         )
         .unwrap();
@@ -1397,19 +1397,28 @@ mod tests {
             .find_map(|l| l.trim().parse().ok())
     }
 
-    /// Whether the hung `ps` is gone within 3 s; killed here if not, so a
-    /// failing test leaves nothing behind.
-    async fn hung_ps_gone(pid: u32) -> bool {
+    /// Whether the hung `ps` is gone within 10 s, its group having been sent
+    /// `SIGKILL` (a loaded runner once took longer than 3 s to finish one);
+    /// killed here if not, so a failing test leaves nothing behind, and the
+    /// error says what it was doing.
+    async fn hung_ps_gone(pid: u32) -> Result<(), String> {
         let t = std::time::Instant::now();
-        while !test_process::is_gone(pid) && t.elapsed() < Duration::from_secs(3) {
+        while !test_process::is_gone(pid) && t.elapsed() < Duration::from_secs(10) {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        let gone = test_process::is_gone(pid);
-        if !gone {
-            // SAFETY: a plain signal to the stand-in this test started.
-            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        if test_process::is_gone(pid) {
+            return Ok(());
         }
-        gone
+        let left = format!(
+            "{:?}, stat {:?}",
+            test_process::state(pid),
+            std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                .unwrap_or_default()
+                .trim()
+        );
+        // SAFETY: a plain signal to the stand-in this test started.
+        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        Err(left)
     }
 
     /// A Stop during the watchdog's handshake ends the program `Cancelled`
@@ -1448,10 +1457,9 @@ mod tests {
             "the Stop waited out the handshake: {:?}",
             returned.duration_since(stopped)
         );
-        assert!(
-            hung_ps_gone(hung).await,
-            "the abandoned handshake's ps outlived the Stop"
-        );
+        if let Err(left) = hung_ps_gone(hung).await {
+            panic!("the abandoned handshake's ps outlived the Stop: {left}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1478,10 +1486,9 @@ mod tests {
             "{e:#}"
         );
         let hung = hung_pid(&pids).expect("the handshake never reached its ps");
-        assert!(
-            hung_ps_gone(hung).await,
-            "the abandoned handshake's ps outlived the refusal"
-        );
+        if let Err(left) = hung_ps_gone(hung).await {
+            panic!("the abandoned handshake's ps outlived the refusal: {left}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
