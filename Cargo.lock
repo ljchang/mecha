@@ -1948,6 +1948,7 @@ dependencies = [
  "matrixmultiply",
  "monty-pool",
  "monty-types",
+ "regex",
  "reqwest",
  "rusqlite",
  "serde",

@@ -226,6 +226,18 @@ fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// How many programs one worker process runs before the pool retires it:
+/// one. The pool serves every conversation in the process, so a worker
+/// that ran a second program could run it for a different conversation,
+/// with a different taint, owner-facing posture or trust context, inside
+/// the process that had held the first one's state; a program that escaped
+/// the interpreter once (Hack Monty round 1) would then be waiting for the
+/// next one. Pinning workers to a conversation would keep reuse, but one
+/// process per program is the stronger boundary and costs about 4 ms of
+/// cold start per program (`CODE-MODE-DESIGN.md` §10, M1), against passes
+/// and tool reads measured in tenths of a second (review of #765).
+pub const PROGRAMS_PER_WORKER: u32 = 1;
+
 /// Programs in `monty-pool` workers.
 ///
 /// Field order is load-bearing: fields drop in declaration order, so the
@@ -258,8 +270,9 @@ impl Monty {
         // clock (which spans turns) is this module's, below.
         cfg.request_timeout = Some(backstops.wall_clock);
         cfg.checkout_timeout = Some(Duration::from_secs(60));
-        // Bound any slow leak in a long-lived child.
-        cfg.max_checkouts_per_worker = Some(100);
+        // One program per worker (`PROGRAMS_PER_WORKER`): a worker is never
+        // handed back to serve another.
+        cfg.max_checkouts_per_worker = Some(PROGRAMS_PER_WORKER);
         let pool = Pool::new(cfg)
             .await
             .map_err(|e| anyhow::anyhow!("starting the monty pool: {e}"))?;
