@@ -384,13 +384,19 @@ impl Drop for Launcher {
 /// the host, so it would spin until someone killed it.
 ///
 /// The launcher runs this before it `exec`s the chain, so `$$` is the
-/// worker's pid from then on, and `$PPID` is mecha. A loop polls both with
-/// `kill -0` (a builtin, so nothing forks but `sleep`) once a second, and
-/// ends when the worker does. When mecha is gone first, it kills the worker,
-/// but only if that pid still started when the worker did. `exec` keeps a
-/// process's start time, so a pid the kernel has since reused is never
-/// killed. A start time that cannot be read fails the launch: the worker
-/// never starts, and preflight refuses code mode, rather than running it
+/// worker's pid from then on, and `$PPID` is mecha. Each pid is recorded
+/// with its start time (`ps -o lstart`), because a pid alone names a
+/// process only until the kernel reuses it, and `exec` keeps a process's
+/// start time. Once a second the loop checks both:
+///
+/// - It ends when the worker does (`kill -0`, a builtin).
+/// - It reads mecha as gone when mecha's pid no longer has mecha's start
+///   time, so a reused pid cannot pass for a live mecha.
+/// - It then kills the worker, but only if that pid still has the worker's
+///   start time, so a pid that has since been reused is never killed.
+///
+/// A start time that cannot be read fails the launch: the worker never
+/// starts, and preflight refuses code mode, rather than running it
 /// unguarded. The loop forks twice to leave the worker's process tree, so
 /// it neither outlives the worker inside it nor stops with it, and it holds
 /// none of the worker's pipes. It runs outside the profile: it is this
@@ -398,10 +404,11 @@ impl Drop for Launcher {
 /// command it forks is named absolutely. `{log}` is the quoted stderr log.
 const WATCHDOG: &str = r#"w=$$ p=$PPID
 t=$(/bin/ps -o lstart= -p "$w" 2>>{log})
-if [ -z "$t" ]; then echo "watchdog: the worker's start time is unreadable" >>{log}; exit 1; fi
+tp=$(/bin/ps -o lstart= -p "$p" 2>>{log})
+if [ -z "$t" ] || [ -z "$tp" ]; then echo "watchdog: a start time is unreadable" >>{log}; exit 1; fi
 ( (
 while kill -0 "$w" 2>/dev/null; do
-if ! kill -0 "$p" 2>/dev/null; then
+if [ "$(/bin/ps -o lstart= -p "$p" 2>/dev/null)" != "$tp" ]; then
 [ "$(/bin/ps -o lstart= -p "$w" 2>/dev/null)" = "$t" ] && kill -9 "$w"
 exit 0
 fi
@@ -1253,6 +1260,23 @@ mod tests {
         );
     }
 
+    /// The gate that decides whether the guard exists at all: Seatbelt's
+    /// launcher starts the watchdog, and bwrap's is the bare `exec` it was
+    /// (review of #772).
+    #[test]
+    fn only_seatbelt_starts_the_watchdog() {
+        let worker = Path::new("/x/monty");
+        let body = |c: &Confinement| {
+            let l = Launcher::write(&c.argv(worker).unwrap(), c.watchdog()).unwrap();
+            std::fs::read_to_string(&l.script).unwrap()
+        };
+        let seatbelt = body(&Confinement::seatbelt_at(SANDBOX_EXEC));
+        assert!(seatbelt.contains("/bin/ps -o lstart="), "{seatbelt}");
+        let bwrap = body(&Confinement::bwrap_at("/usr/bin/bwrap"));
+        assert!(bwrap.starts_with("#!/bin/sh\nexec "), "{bwrap}");
+        assert!(!bwrap.contains("lstart"), "{bwrap}");
+    }
+
     /// A worker whose mecha was `SIGKILL`ed is ended by the launcher's
     /// watchdog, and one whose mecha lives is left alone. The script is plain
     /// `sh`, so this runs on Linux too, though only Seatbelt starts it. A
@@ -1272,6 +1296,9 @@ mod tests {
             .arg(&l.script)
             .env_clear()
             .stdout(std::process::Stdio::piped())
+            // Not this test's stderr: a stand-in left by a failed assert
+            // would hold the harness's pipe for ten minutes.
+            .stderr(std::process::Stdio::null())
             .spawn()
             .unwrap();
         let mut line = String::new();
@@ -1279,14 +1306,20 @@ mod tests {
             .read_line(&mut line)
             .unwrap();
         let worker: u32 = line.trim().parse().unwrap();
-        struct Reap(u32);
+        // On a failed assert, neither the worker nor the stand-in outlives
+        // the test. Disarmed on success, when both pids are reaped and free
+        // for the kernel to reuse.
+        struct Reap(u32, u32);
         impl Drop for Reap {
             fn drop(&mut self) {
-                // SAFETY: a plain signal to the process this test started.
-                unsafe { libc::kill(self.0 as i32, libc::SIGKILL) };
+                // SAFETY: plain signals to the processes this test started.
+                unsafe {
+                    libc::kill(self.0 as i32, libc::SIGKILL);
+                    libc::kill(self.1 as i32, libc::SIGKILL);
+                }
             }
         }
-        let _reap = Reap(worker);
+        let reap = Reap(worker, mecha.id());
         // Past two polls: the watchdog leaves a worker whose mecha lives, and
         // the launcher did not refuse.
         std::thread::sleep(Duration::from_millis(2500));
@@ -1295,6 +1328,9 @@ mod tests {
             "the worker ended while its mecha lived: {}",
             l.log_tail()
         );
+        // The loop left the worker's tree: the pool kills one pid, and a
+        // backstop stops the whole tree.
+        assert_eq!(process::tree(worker), vec![worker]);
         mecha.kill().unwrap();
         // Reaped, as a real mecha's parent would: `kill -0` succeeds on a
         // zombie.
@@ -1308,6 +1344,7 @@ mod tests {
             "the worker outlived its killed mecha by {:?}",
             t.elapsed()
         );
+        std::mem::forget(reap);
     }
 
     #[test]
