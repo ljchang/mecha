@@ -1,7 +1,8 @@
 # Persona lives — design
 
 > **Status (2026-10-31):** designed, nothing built. Every decision in §16 is
-> **open**. §1 is the owner's requests, in the order they were made; §2 is
+> **open** except PL23 and PL27, which carry the owner's direction of the same
+> day (no approval queue for news). §1 is the owner's requests, in the order they were made; §2 is
 > the evidence, researched the same day, with a source on every figure that
 > carries a decision. Personas, their chats and real people appear nowhere in
 > this document: every example is invented.
@@ -37,7 +38,7 @@ gives it a third input.
 | Who is in her life? | A network of her own: people the owner writes, people she mentions, people the simulation needs. Edges carry their history, dated | §6 |
 | Does she know my people? | A separate network, learned **only** from what the owner tells her. An unknown name is a gap she may ask about — at most once a chat | §7 |
 | Does she follow the news? | Through feeds the owner registers, sorted into three shelves by how much a value can carry: parsed facts, typed gists, and prose read on demand | §8 |
-| Can news poison her memory? | Prose never enters memory or the world as text. Memory keeps a pointer — "we talked about that" — never what an article said | §8.4 |
+| Can news poison her memory? | Not by default: prose never enters memory or the world as text, and an article chat is remembered as a typed episode with no approval queue. A per-persona switch remembers article chats in full, at a stated cost | §8.4 |
 | Pictures? | A camera roll rendered overnight from moments the simulation found photo-worthy, shared instantly in chat | §10 |
 | Social media? | An in-app feed only. Never a real account | §11 |
 | Does she message first? | Not in the first build. If ever: off by default, capped, gated by mood, never at fixed times | §12 |
@@ -78,6 +79,9 @@ section; none is ruled yet (§16).
 - **O10 — The owner's network, as she knows it.** She tracks the owner's
   relationships from conversation and updates them; a name she does not know
   is a surprise, and she can ask about it to fill the gap.
+- **O11 — No approval queue for news.** The owner does not want to approve
+  everything that follows her reading an article. Typed memory of article
+  chats by default, and a per-persona switch for full memory (PL23, PL27).
 
 ---
 
@@ -1068,6 +1072,40 @@ the headline never rides in the today-block.
     influenced. Free text from that stretch stays a candidate.
   - Either way, **shelf A first** looks better still, since parsed facts
     raise no taint and their conversations remember freely.
+- **The owner's direction (2026-10-31): no approval queue for news.** The
+  owner does not want to approve what follows an article. So the design's
+  answer has two layers, and neither ever asks the owner anything:
+  - **By default, a typed episode** (PL23). An article conversation is
+    remembered as `{item_id, interest, discussed_at, owner_reaction}`, clean
+    and recalled without a tap. The free text of that stretch is stored as
+    candidates, which simply go unrecalled: nothing waits on the owner,
+    nothing nags, and the chat itself is unaffected. She remembers *that* you
+    talked about the game and how you took it, not every line.
+  - **Per persona, a switch to remember article chats in full** (PL27):
+    `remember_articles = true` in that persona's `persona.toml`, owner-written,
+    never in layered config, and off by default. With it on, records written
+    from a stretch after a `news_read` (episodes, facts, the owner's people)
+    are **recalled without approval**. Their origin stays untrusted, because
+    the switch changes what is recalled, never what is clean.
+    - **Recall still re-arms the taint** they were written under (§9.6). So
+      a later chat that recalls one opens untrusted, and its own records are
+      recalled under the same switch. For that persona, the provenance gate
+      on memory is in effect off. That is what the switch means, and the
+      persona page says so beside it.
+    - **What it costs:** a planted instruction in an article could persist
+      in that persona's memory and steer her later. It **cannot send
+      anything**: personas have no `Chosen` sender (§3.3), and the only
+      residual way out is a blind search query reaching the configured
+      search backends, the cost D11 already accepted. The feeds are ones
+      the owner registered. `forget` works as ever, and it is one persona,
+      never the assistant.
+    - **What it leaves alone:** the narrator still reads only clean-origin
+      world rows (§4.4); world writes from a tainted stretch (stated plans,
+      people) still follow PL21; nothing reaches `shared.db` except by the
+      owner's share (D17), and a share of an untrusted-origin record says so.
+    - It is the same kind of trade as D11: an owner-made, per-persona
+      choice to accept a stated cost for a feature that otherwise doesn't
+      work as wanted.
 - **The writer refinement** (§16 PL10). Today everything after a taint rise
   becomes candidates. Proposed: after the rise, the writer may still extract
   *facts about the owner from the owner's own turns* as `Stated` and clean, while the
@@ -1285,7 +1323,7 @@ dropped the farewell check (D25), so it would need its own evidence first.
 | The `told` flag, from a tainted stretch | the stretch's taint | set only, never cleared, source recorded | — | it shapes what reaches the today-block |
 | Shelf A | code, closed types only | yes | yes | its closed fields; shape-matched ids never |
 | Shelf B | quarantined, typed | minor events | as pointers | yes |
-| Shelf C | untrusted | never | never as text | only through `news_read`, which declares `untrusted_input` and marks every result `external` |
+| Shelf C | untrusted | never | never as text; a typed episode by default, or full records recalled under PL27 | only through `news_read`, which declares `untrusted_input` and marks every result `external` |
 
 The folds, which arrive in no tool result and so arm at the fold
 (`PERSONA-DESIGN.md` §9.7):
@@ -1428,7 +1466,8 @@ ruled for repetition.
 
 ## 16. Open decisions
 
-Every row is open. The recommendation is this document's; the ruling is the
+Every row is open except PL23 and PL27, which record the owner's direction
+of 2026-10-31. The recommendation is this document's; the ruling is the
 owner's.
 
 | # | Decision | Recommendation |
@@ -1442,7 +1481,7 @@ owner's.
 | PL7 | Pruning | World hard-prunes; memory soft-prunes (out of recall, kept in the store); hard deletion of memories only by amending D26 after D28's readout |
 | PL8 | Importance to the owner | Inferred from engagement and pins; no rating prompts |
 | PL9 | News shelves | Build A and C first, with shelf A's per-field render bounds and stated figures (at most 16 bits an item, three a day, five-day expiry; §8.2), and shelf A through all three gate parts, steering included, before it reaches a prompt. B ships behind the three-part gate (§14): schema conformance, a bit ceiling (about 9.6 bits per item and under 30 a day, as §8.2 computes it) enforced by a test, and the steering arm, all three read by the owner. Alternative: all three shelves at once |
-| PL10 | The writer after a taint rise | Either keep today's rule (everything after the rise is a candidate), or rescue owner turns that do not immediately follow a persona turn in the tainted stretch and do not overlap the chat's `news_read` prose. The check is structural, so imperative elicitation cannot bypass it; the residual is paraphrase. The gain is modest once the check is non-bypassable, so either ruling is defensible (§8.4) |
+| PL10 | The writer after a taint rise | Keep today's rule (everything after the rise is a candidate). PL23's typed episode keeps the gist by default, and PL27's switch gives full memory where the owner wants it, which is what PL10 was reaching for. Alternative: rescue owner turns that neither follow a persona turn in the tainted stretch nor overlap the `news_read` prose; structural, residual paraphrase, modest gain (§8.4) |
 | PL11 | Feed sources | Registered per persona and per group, in their folders under `~/.mecha/personas/`, never in layered config; any future global table global-layer-only and stripped from project layers loudly (§8.1) |
 | PL12 | Topics withheld by default | Politics, deaths, disasters and crime, unless a feed is opted in |
 | PL13 | The owner's network | A structured layer over facts about the owner, in `memory.db` under memory's pruning rules, with existing people-facts migrated into it |
@@ -1455,10 +1494,11 @@ owner's.
 | PL20 | The today-block's taint | Its own stem pair from the first build, arming `private`, or `private` and `untrusted`, as the recall pair does, because stated plans and chat-sourced people ride in it. The owner's roster rides in the recall block under its existing pair (§4.5, §7.2, §13). Alternative: keep chat-sourced rows out of the today-block and arm nothing |
 | PL21 | Stated plans after a taint rise | Candidates by default, shown on the week view as waiting plans. Alternative: admit them as typed records checked against their turn (§4.5) |
 | PL22 | `forget` over the world | Delete what is sourced to the chat and re-fold, in pure code, which is D27's rebuild done where it is cheap; a derived value whose support falls below a floor reverts to a candidate (D27's second half); owner events never go with a chat (§5) |
-| PL23 | Episodes after a `news_read` | Admit a typed episode (`item_id`, interest, date, a closed-set reaction) as clean, with free text left as candidates. Alternative: accept one approval per news conversation (§8.4) |
+| PL23 | Episodes after a `news_read` | **Owner's direction (2026-10-31):** the default. A typed episode (`item_id`, interest, date, a closed-set reaction) is admitted clean; free text is left as candidates that go unrecalled, with no approval queue (§8.4) |
 | PL24 | `forget` over the owner's network | Re-fold from the events that remain, which is D27's rebuild applied in memory for this graph; an `Inferred` edge left on too little support reverts to a candidate. Alternative: today's fallback, so the person goes with any of their chats (§7.1) |
 | PL25 | A `told` set only by a tainted stretch | Suppresses but does not license pruning; becomes ordinary on approval; cleared by the harness on rejection; unchanged while unreviewed, since silence is not a rejection (§9). Alternative: lapse after five days unreviewed, at the cost of repeating what the owner heard |
 | PL26 | The feature registry | The world as `part_of = Personas`, a sub-feature switched with personas, rather than a new top-level `Feature`; settled before step 1 (§17) |
+| PL27 | Remembering article chats in full | **Owner's direction (2026-10-31):** a per-persona `remember_articles` switch, off by default, owner-written in `persona.toml`. With it on, records from a stretch after a `news_read` are recalled without approval, origin still untrusted and re-armed on recall; the cost (possible persistent steering, no way to send) is shown beside the switch (§8.4) |
 
 ---
 

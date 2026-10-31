@@ -1823,7 +1823,8 @@ against D26 (PL7), the owner's network inside `memory.db` (PL13), and D27's
 rebuild applied to the world and that network (PL22, PL24). Its `news_read`
 follows D16 and D24 (withheld by `answers = "files"`). It also proposes
 narrowing §9.6's provenance split: PL10 (owner turns stay `Stated`), PL21
-(stated plans) and PL23 (typed episodes). None is ruled;
+(stated plans), PL23 (typed episodes) and PL27 (a per-persona switch that
+recalls untrusted records without approval). None is ruled;
 until one is, these rows stand as written.
 
 | # | Decision | Recommendation |
