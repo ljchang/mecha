@@ -403,6 +403,9 @@ pub struct Monty {
     repl: ReplConfig,
     backstops: Backstops,
     confinement: Confinement,
+    /// What a program's [`Watchdog`] reads start times with: [`watchdog::PS`],
+    /// or a test's stand-in.
+    watchdog_ps: String,
     launcher: Launcher,
 }
 
@@ -458,6 +461,7 @@ impl Monty {
             repl,
             backstops,
             confinement: confinement.clone(),
+            watchdog_ps: watchdog::PS.into(),
             launcher,
         })
     }
@@ -519,7 +523,7 @@ impl Interpreter for Monty {
         let deadline = started + self.backstops.wall_clock;
         // A Stop while every worker is busy ends the program here, rather
         // than waiting out `checkout_timeout` (review of #765).
-        let checkout = tokio::select! {
+        let mut checkout = tokio::select! {
             c = self.pool.checkout(&self.repl) => Some(c.map_err(|e| anyhow::anyhow!("checking out a monty worker: {e}"))?),
             _ = cancel.cancelled() => None,
             _ = tokio::time::sleep_until(deadline) => bail!("no monty worker within the program's wall clock"),
@@ -528,7 +532,6 @@ impl Interpreter for Monty {
         // kills the worker, and the program never starts. Raced against the
         // Stop and the wall clock as the checkout is, so a handshake slowed
         // by a starved fork cannot hold either (review of #772).
-        let mut checkout = checkout;
         let guarded = match &checkout {
             Some(co) if self.confinement.watchdog() => {
                 Some(co.pid().context("a monty worker with no pid")?)
@@ -537,7 +540,7 @@ impl Interpreter for Monty {
         };
         let watchdog = match guarded {
             Some(pid) => tokio::select! {
-                w = Watchdog::arm(pid, std::process::id(), watchdog::PS) => Some(w?),
+                w = Watchdog::arm(pid, std::process::id(), &self.watchdog_ps) => Some(w?),
                 _ = cancel.cancelled() => {
                     checkout = None;
                     None
@@ -1354,6 +1357,80 @@ mod tests {
                 "the watchdog outlived its worker"
             );
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A Stop during the watchdog's handshake ends the program `Cancelled`
+    /// at once, as a Stop while waiting for a worker does, rather than
+    /// waiting out the handshake (review of #772). The handshake hangs on a
+    /// stand-in `ps`, and Seatbelt is stood in for as above.
+    #[tokio::test]
+    async fn a_stop_during_the_watchdogs_handshake_ends_the_program() {
+        let Some(w) = worker_for_tests().await else {
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("mecha-fake-sbx-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let (fake, ps) = (dir.join("sandbox-exec"), dir.join("ps"));
+        std::fs::write(&fake, "#!/bin/sh\nshift 2\nexec \"$@\"\n").unwrap();
+        let pids = dir.join("pids");
+        std::fs::write(
+            &ps,
+            format!(
+                "#!/bin/sh\necho $$ >>'{}'\nexec /bin/sleep 300\n",
+                pids.display()
+            ),
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for f in [&fake, &ps] {
+                std::fs::set_permissions(f, std::fs::Permissions::from_mode(0o700)).unwrap();
+            }
+        }
+        let mut interp = Monty::new(
+            &w,
+            &Confinement::seatbelt_at(&fake),
+            Backstops::default(),
+            1,
+        )
+        .await
+        .unwrap();
+        interp.watchdog_ps = ps.display().to_string();
+        let cancel = CancellationToken::new();
+        let stop = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            stop.cancel();
+        });
+        let t = std::time::Instant::now();
+        let (_program, step) = interp.start("1", &[], cancel).await.unwrap();
+        let took = t.elapsed();
+        assert!(
+            matches!(&step, Step::Done(f) if f.end == End::Cancelled),
+            "{step:?}"
+        );
+        assert!(
+            took < Duration::from_secs(5),
+            "the Stop waited out the handshake: {took:?}"
+        );
+        // And the abandoned handshake's hung `ps` went with it.
+        let hung: Vec<u32> = std::fs::read_to_string(&pids)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| l.trim().parse().ok())
+            .collect();
+        assert_eq!(hung.len(), 1, "{hung:?}");
+        let t = std::time::Instant::now();
+        while !test_process::is_gone(hung[0]) && t.elapsed() < Duration::from_secs(3) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let gone = test_process::is_gone(hung[0]);
+        if !gone {
+            // SAFETY: a plain signal to the stand-in this test started.
+            unsafe { libc::kill(hung[0] as libc::pid_t, libc::SIGKILL) };
+        }
+        assert!(gone, "the abandoned handshake's ps outlived the Stop");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
