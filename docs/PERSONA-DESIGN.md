@@ -1819,7 +1819,7 @@ Every row is ruled; the ruling is the owner's, in §1 where it was said in words
 
 `PERSONA-LIFE-DESIGN.md` (open, 2026-10-31) proposes changes that reach these
 rulings: a network store that deviates from §4.3 (its PL5), memory pruning
-against D26 (PL7), the owner's network inside `memory.db` (PL13), and D27's
+against D26 (PL7, ruled 2026-10-31: memory only leaves recall, as D26 says), the owner's network inside `memory.db` (PL13), and D27's
 rebuild applied to the world and that network (PL22, PL24). Its `news_read`
 must follow D16 and D24 (withheld by `answers = "files"`), which needs an
 admission check on the per-persona tool path, since that path bypasses
