@@ -47,9 +47,8 @@ mod test_process;
 pub mod worker;
 
 /// Whether this binary has an interpreter at all: the cargo feature `monty`,
-/// off by default while `monty-pool` needs a newer Rust than the workspace
-/// promises. A build without it still knows code mode, and says by name
-/// that it cannot run it (`feature::unbuilt`).
+/// on by default. A build without it (`--no-default-features`) still knows
+/// code mode, and says by name that it cannot run it (`feature::unbuilt`).
 pub const BUILT: bool = cfg!(feature = "monty");
 
 /// Workers one run's interpreter may hold at once: two `code` calls in one

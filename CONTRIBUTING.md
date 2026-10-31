@@ -216,6 +216,8 @@ number costs nobody anything; the first crate that depends on `mecha-core` is
 the moment it starts to.
 
 *Raised to 1.89 on 2026-08-10 for `rustyline` 18, which uses `file_lock`.*
+*Raised to 1.96 on 2026-10-31 for `monty-pool` 1.4 (code mode's interpreter,
+on by default from then): every monty crate declares `rust-version` 1.96.*
 
 ## Releases
 

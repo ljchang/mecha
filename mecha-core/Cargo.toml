@@ -41,15 +41,18 @@ regex = "1"
 # Code mode's interpreter (`interpreter/monty.rs`, CODE-MODE-DESIGN.md §7):
 # programs run in `monty-pool`'s subprocess workers, never in-process. Pinned
 # exactly, because the worker binary (`interpreter/worker.rs`) is pinned to
-# the same release and the two speak one wire protocol. Optional and off by
-# default: monty-pool needs Rust 1.96 (the workspace promises 1.89), and its
-# WebSocket transport, which mecha never uses, brings rustls with aws-lc.
+# the same release and the two speak one wire protocol. On by default
+# (owner, 2026-10-31), which is why the workspace's rust-version is 1.96:
+# every monty crate declares it. Its WebSocket transport, which mecha never
+# uses, brings rustls with aws-lc (a C build). `--no-default-features` builds
+# a mecha that knows code mode and says it cannot run it.
 monty-pool = { version = "=1.4.0", optional = true }
 monty-types = { version = "=1.4.0", optional = true }
 # Unpacking the worker from its wheel (a zip); already in the tree.
 flate2 = "1"
 
 [features]
+default = ["monty"]
 # The monty backend for code mode, and the worker pool it drives.
 monty = ["dep:monty-pool", "dep:monty-types"]
 
