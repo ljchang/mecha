@@ -478,7 +478,9 @@ Each level is its own `world.db`: `~/.mecha/personas/world.db` for everyone,
   within a group, so the two never collide.
 - **Each level paces and decays on its own.** A group has one storyteller and
   one nightly narration pass shared by its members, rather than one per
-  persona, which costs less model time. A persona's derived events decay
+  persona, which costs less model time. **Group and everyone-level nightly
+  work runs only when at least one member persona has `world` on**, so §3.1's
+  "no nightly job for a persona with `world` off" holds at every level. A persona's derived events decay
   under her own `[life.decay]`.
 - **Feeds attach at any level.** A team's feed or local news is registered
   once at the group or everyone level (§8.1), and every member persona sees
@@ -792,7 +794,9 @@ from several sources (§6.1), and dropping a whole edge would take
 owner-authored events with it. So the world does the rebuild D27 describes:
 
 - `forget` deletes the rows and edge events **sourced to that chat**, then
-  re-folds what remains. Owner events are never removed by forgetting a chat.
+  re-folds what remains. **Owner-edit** events (written on the week view or
+  People tab, sourced to no chat) are never removed by forgetting a chat.
+  Owner-*stated* plans are sourced to their chat (§4.5), so they go with it.
 - A person who exists *only* through that chat's events goes with it.
 - A stated plan from that chat is deleted.
 
@@ -1028,8 +1032,11 @@ staged to the graph's review queue.
    name and nothing else, so it has no card, and today `recall::per_turn`
    returns no block when nothing matched, or when the owner's message is
    below `would_search`'s `MIN_QUERY_CHARS` (a short "who's Theo?"). §17 step
-   4 changes both, so the note is never left without the stemmed block around
-   it. Its arming is a no-op, since the recall
+   4 changes **what emits the block**, not the search gate. `MIN_QUERY_CHARS`
+   stays, so a short "ok" still embeds nothing (the reason for it, from the
+   review of #481). The gap note comes from a roster match, a string lookup
+   with no search, and its presence alone makes `per_turn` emit the stemmed
+   block. Its arming is a no-op, since the recall
    block already armed `private` and the name is the owner's own word. But a
    separate harness voice would owe the other two predicates, and both
    matter here. Unregistered in `is_harness_voice`, "you haven't mentioned
@@ -1309,7 +1316,11 @@ the headline never rides in the today-block.
   against about 385 over the live shelf. That is the constant §14's bit test
   checks for the block. It rides every turn, which is why it is held to the
   narrower figure. In the first build, without shelf B, its shelf C lines
-  carry an interest and an opaque id, both code's, for 0 attacker bits. The storyteller may turn A and B into lived events —
+  carry an interest and an opaque id, both code's, so a line's *fields* carry
+  0 attacker bits. Its **presence, count and timing** are still the
+  publisher's: whether 0–3 lines appear (about 2 bits a day) and when
+  (a bit a day). That is the same channel §8.2 counts for shelf B, and §14's
+  steering arm covers it for shelf C too. The storyteller may turn A and B into lived events —
   watching the game with friends — that she raises on her own and memory may
   keep.
 - **On demand:** `news_read(item_id)` returns shelf C's prose inside
@@ -1486,7 +1497,18 @@ the headline never rides in the today-block.
         and the cost argument here (registered feeds, article prose) covers
         only them;
       - an unknown source counts as not covered, so a torn taint record
-        never widens the switch.
+        never widens the switch;
+      - **the today-block's untrusted stem** (§4.5) counts as covered only
+        when every untrusted row it folded was itself admitted through this
+        lineage. Otherwise, for instance after the owner approved a world row
+        from some other tainted chat, the ratchet in §4.5 would put every
+        later chat outside coverage, even one with no `news_read` in it.
+
+      **When a chat falls outside coverage, the persona page says why**, by
+      naming the source ("this chat also read a document", "an approved world
+      row from 3 Nov"). The owner then sees why its free text went
+      unrecalled, rather than finding PL27's "nothing asks the owner
+      anything" quietly untrue.
 
       Within that lineage the provenance gate on memory is in effect off,
       and the persona page says so beside the switch.
@@ -1554,7 +1576,11 @@ the headline never rides in the today-block.
       the review queue. Otherwise an article-planted claim about the owner's
       relative reaches the privileged agent behind one approving tap that
       cannot see where it came from. The `TRIFECTA.md` row names this path,
-      the only way such a claim leaves the persona's private store.
+      the only way such a claim leaves the persona's private store. It is
+      also the table's first row for a **per-persona** switch, since every
+      row today is global config. So it states where the switch lives as
+      plainly as the `[[mcp]]` rows say "global config only": `persona.toml`
+      `[life]`, owner-written, outside `persona_propose`'s schema.
 - **The writer refinement** (§16 PL10). Today everything after a taint rise
   becomes candidates. Proposed: after the rise, the writer may still extract
   *facts about the owner from the owner's own turns* as `Stated` and clean, while the
@@ -1972,8 +1998,11 @@ ruled for repetition.
      several days, against an honest one over the same days. For shelf B it
      is a feed that chooses `kind`, `tone` and `entity`. For shelf A it is a
      fake structured provider that chooses in-range values: scores, dates,
-     taxonomy codes. Shelf A ships first and its argument is provider trust,
-     so it needs this arm as much as shelf B does. The measure: does it move what the persona
+     taxonomy codes. For shelf C it is a feed that chooses only *when* and
+     *how many* items to publish, the one thing it controls in a line whose
+     fields are code's. Shelves A and C ship first, A on provider trust and C
+     on a channel no other part of the gate can see, so they need this arm
+     as much as shelf B does. The measure: does it move what the persona
      raises, her mood, or the director's choices beyond what the honest feed
      does? This is the per-day × days accumulation the capacity argument is
      actually about (30 bits a day is 210 in a week), and it needs no string
@@ -1984,8 +2013,8 @@ ruled for repetition.
      here, and nowhere else.
 
   **Each shelf ships only when the owner has read all three parts for it:
-  shelf A before its first build reaches a prompt, shelf B before it is
-  built** (§16 PL9). Part 3 would
+  shelves A and C before their first build reaches a prompt, shelf B before
+  it is built** (§16 PL9). Part 3 would
   be, as far as the research found, the first measurement of what endorsement
   by capacity leaves over.
 - **Cost:** narrator tokens and wall clock per night, against the scheduled
