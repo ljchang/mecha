@@ -393,9 +393,11 @@ threshold per persona once the access log says where it should sit. The
     subtable of `[life]`, and a bad decay value is a load error (§9). So an
     owner's edit can leave the live `persona.toml` unreadable while the
     chat's pinned snapshot still parses with `remember_articles = true`. An
-    unreadable live file then reads as **every behaviour setting off**: no
-    recall under `remember_articles`, `intensity` at `"capped"`, and decay at
-    the shipped defaults. It never falls back to the pinned value or the last
+    unreadable live file then fails toward the safe side for each setting:
+    no recall under `remember_articles`, `intensity` at `"capped"`, and **no
+    pruning that night**. The decay knobs have no "off", and shipped defaults
+    could be looser than what the owner wrote, which is the substitution §9
+    refuses. So nothing is deleted on a read that failed. It never falls back to the pinned value or the last
     value read, and the persona's notes say the file could not be read. That
     is `memory_tools::live`'s pattern, where a `None` refuses rather than
     guessing, and it keeps the revoke-in-a-hurry promise true even when the
@@ -707,10 +709,37 @@ one more reason §14's gate part 1 exists.
     "mention" things can silence at most what was in front of her, a handful
     of events per chat. This channel is outside the reach of §14's steering
     arm, which drives a feed, not a chat, and §14 says so.
+  - **The same nightly read makes two other writes to existing rows, and a
+    tainted stretch makes neither.**
+    - **The retelling boost** raises a row's strength each time it comes up.
+      That is the unsafe direction: an injection that made her "mention"
+      chosen events or people would keep them above the prune threshold and
+      at the top of the today-block indefinitely. So **a tainted stretch never
+      boosts**; the safe direction for strength is down.
+    - **`known_to_owner`** flips when she first mentions a person. Set from a
+      tainted stretch, it would make her stop introducing someone she never
+      actually named to the owner. So a tainted stretch never sets it either.
+  - **On the main path, only one of §9's branches fires.** PL23 makes
+    "unreviewed" the ordinary state of an article chat's candidates, so a
+    tainted-only `told` normally just suppresses until its row prunes. The
+    approve and reject branches are reachable from the Memories tab and
+    matter less, so a builder implements the unreviewed branch first.
 - **Stated plans flow back.** When she says in a chat that something will
   happen ("there's a game on Saturday"), the writer records it as a **stated
   plan**, and Saturday's simulated day contains it. Without this, chat and
   world disagree within a week.
+  - **So do plans the owner states.** If the owner says "we've got the game
+    on Saturday", that is the better-sourced plan, and leaving it out would
+    bring the disagreement back from the other side. From a clean stretch it
+    enters the world as an **owner-stated plan**:
+    - it outranks the simulation;
+    - it expires once its date passes, like any plan;
+    - it goes with `forget` on its chat, being chat-sourced. Only owner
+      *edits* on the week view are exempt from that.
+
+    After a taint rise it follows PL10, so it is a candidate, like the
+    owner's other words there. The week view is still there for plans
+    nobody said aloud.
   - **These are not commitments in `guilt.rs`'s sense, deliberately.** That
     module's rule is "an expectation is a recorded commitment, never a claimed
     one": a model *saying* something creates no obligation, and its stores
@@ -1039,6 +1068,15 @@ These are third parties who never agreed to be in a database.
   routing around a string filter by misspelling (`PERSONA-DESIGN.md` §12.7, on
   DRY). A nickname, an initial, a transliteration or a name split across two
   queries all pass.
+  - **`my_people` with `news` is where D11's cost is largest.** D11 accepted
+    that a blind query can carry what a persona remembers to the search
+    backends. Once `my_people` is on, what she remembers includes a roster of
+    the owner's real relatives and friends, folded into every turn, and once
+    `news` is on, an article can steer her queries in the same chat. The
+    filter above catches only exact spellings. So the persona page **warns
+    when both are on**, and the `TRIFECTA.md` row for `remember_articles`
+    names this combination. It is not refused, since the queries still
+    reach no destination the model chooses.
   - **What actually holds** is structural, and already ruled: a persona's
     `web_search` always takes the blind path at quick depth, so no destination
     is the model's choice. §3.3 of the persona design already states the
@@ -1198,7 +1236,11 @@ Shelf B meets §2.7's three conditions in code:
       string across the boundary, which is what §14's gate part 1 exists to
       catch (§16 PL9).
 
-  - **Which items fill the slots is code's choice, not the feed's.** Any
+  - **Which items fill the slots is code's choice, not the feed's, on every
+    shelf.** This rule applies to shelves A, B and C alike. Shelf A ships
+    first and rests on provider trust, so it needs it most. A structured
+    provider returning more than three in-range items a day otherwise
+    chooses which survive. Any
     selection based on extracted fields (salience, an entity match) would
     hand the feed the choice of which of its N arrivals survive. That is
     another log₂C(N,3) bits a day, about 14 at N = 50, and §14's bit test
@@ -1735,7 +1777,7 @@ dropped the farewell check (D25), so it would need its own evidence first.
 | Routine, sampler, storylets | code | yes | only once told | yes |
 | Narrator over clean inputs | model, clean | yes | only once told | yes |
 | Her mentions in a clean chat | model, clean | as people and stated plans | yes | yes |
-| Owner's words in a clean chat | `Stated` facts, origin clean | no; the owner's people live in `memory.db` (§7.1, PL13's recommendation) | yes, as facts about the owner and the owner's people | yes |
+| Owner's words in a clean chat | `Stated` facts, origin clean | as owner-stated plans only (§4.5); the owner's people live in `memory.db` (§7.1, PL13's recommendation) | yes, as facts about the owner and the owner's people | yes |
 | Her mentions after a taint rise | model, untrusted | as candidates | as candidates; with `remember_articles`, recalled (marked, badged) | only after approval; with `remember_articles`, yes |
 | Owner's words, after a taint rise | model, untrusted (whatever the record's `Stated`/`Inferred` kind) | no; the owner's people live in `memory.db` (§7.1, PL13's recommendation) | by default as candidates (PL10, ruled); with `remember_articles`, recalled, owner's people included (PL27: no carve-out), marked and badged | by default only after approval; with `remember_articles`, yes |
 | The `told` flag, from a tainted stretch | the stretch's taint | set only, never cleared, source recorded | — | it shapes what reaches the today-block |
@@ -1902,10 +1944,12 @@ ruled for repetition.
   by capacity leaves over.
 - **Cost:** narrator tokens and wall clock per night, against the scheduled
   jobs' windows.
-- **Out of the gate's reach:** two in-chat writes from a tainted stretch,
+- **Out of the gate's reach:** the in-chat writes from a tainted stretch,
   each bounded by construction instead:
   - the `told` flag, bounded to events the chat was shown (§4.5);
-  - the typed episode's `owner_reaction`, 2 bits per episode (§8.4).
+  - the typed episode's `owner_reaction`, 2 bits per episode (§8.4);
+  - the retelling boost and `known_to_owner`, which a tainted stretch never
+    writes at all (§4.5).
 
   The steering arm drives a feed and never writes from a chat. Part 1's
   conformance test does cover the typed episode, since a canary must never
@@ -2038,7 +2082,10 @@ Feed tab (step 7).
    per-turn cards, the gap ledger and its pacing, the search guard, the
    sensor.
 5. **The world outside.** Shelf A parsers, shelf C with `news_read` (its
-   eligibility declaration, `untrusted_input` declared, `external` set unconditionally, withheld by `answers = "files"`), stances,
+   eligibility declaration, `untrusted_input` declared, `external` set
+   unconditionally, and withheld by `answers = "files"` through the admission
+   check on the per-persona path (§13). Until that check exists, the D16/D24
+   claim is a requirement, not a property), stances,
    filters, the reading list; the typed episode (PL23) and the
    `remember_articles` switch with its `TRIFECTA.md` row (PL27); the
    three-part gate; then shelf B if the owner accepts the readings.
