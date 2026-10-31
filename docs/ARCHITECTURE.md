@@ -3467,6 +3467,48 @@ The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
 - **Nothing in the trait enforces `preflight` before `start`.** The caller
   that registers code mode must run it once, at start, and refuse the
   feature when it fails.
+- **One program per worker process** (`monty::PROGRAMS_PER_WORKER`). The
+  pool serves every conversation in the process, so a reused worker could
+  run a second conversation's program inside the process that held the
+  first one's; a fresh worker costs about 4 ms (M1).
+
+**The `code` tool** (`tool/code.rs`, slice 3b; built and tested, registered
+nowhere until slice 3d):
+
+- **Admission is the run's, checked at every program's start.**
+  `Admission::over` takes a registry's plain reads (effect `Read` or
+  `ReadThatRecords`, egress `None`, not `destructive`, `read_only()`, not
+  outbox-routed), and `CodeTool::over` is built over the registry of the run
+  it serves, after its last registration. The dispatch serving a program
+  recomputes the set over its own registry and refuses a `code` whose set
+  differs, which is what a parent's `code` cloned into a child, or one built
+  too early, looks like. The function list is then narrowed by the skill
+  restriction, the run's withheld list and `forbid` rules; the gate still
+  checks each call.
+- **A host call takes `Agent::gate` with `Asking::Refuse`.** `dispatch`
+  stamps `ToolCtx::host_calls` on a tool that `hosts_programs()` and on no
+  other, and serves the channel (`Agent::serve_host_calls`) while the batch
+  executes, against the live taint, with the run's `RunPictures`. Where a
+  turn's call would ask a person (a `needs_a_person` escalation, a `prompt`
+  rule, the approver), `check` answers `Blocked` by policy instead and the
+  program gets `ToolError:`. Taint arms before the reply resumes the
+  program; each host call's trace entry is `in_program`, so `tool_calls`,
+  `tool_errors` and `tool_denied` keep counting.
+- **Results are handles; host messages carry no bytes.** A program holds a
+  stub string (`<handle 3: 48,213 chars from mail_get_thread>`), only its
+  exact stub resolves, and text enters only through `peek`, capped and
+  counted. Patterns are Rust `regex`. A tool's error body is a handle the
+  `ToolError:` names. Every per-program limit (`code::defaults`, owed to R4)
+  raises a `LimitError:` naming itself; host bytes are also drawn from one
+  process-wide `BytePool`.
+- **Rendered once.** The program's printed output and ending are the `code`
+  call's own `tool_result`, capped, spilled and wrapped by `dispatch` like
+  any result, and `external` when any host call's result was. A result past
+  the call's share of the budget opens with how it ended, so the cut never
+  takes the model's only feedback.
+- **`code` declares the union of its admitted reads** with egress `None`,
+  which is what `dispatch`'s precomputed turn taint reads: a `Chosen` sender
+  beside a `code` call that reads mail is refused before either runs.
 
 ## The front door
 
@@ -5367,9 +5409,11 @@ behind `CAP_MARKER`, and the `mark_untrusted_output` wrapper. A late job
 result takes the same two through `jobs::settle`. `Agent::gate` is the
 single-call composition of the first half: every check, the call, the taint
 armed, and the output handed back raw. It exists for a program's host call,
-which must keep raw bytes behind a handle; its doc comment says what that
-caller owes (refuse where a turn's call would prompt, arm before the program
-resumes, render once on the way back into the context). The seam is pinned by
+which must keep raw bytes behind a handle (`Agent::serve_host_calls`, §Code
+mode's interpreter). Its `Asking` argument is the one difference from a
+turn's call: at `Asking::Refuse` every branch of `check` that would put the
+call in front of a person is `Blocked` by policy instead, after `forbid` and
+in the same order. The seam is pinned by
 `the_gate_hands_back_the_raw_result_and_rendering_it_is_todays_block` and
 `the_gate_refuses_as_dispatch_does`.
 

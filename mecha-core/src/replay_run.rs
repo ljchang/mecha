@@ -1628,6 +1628,9 @@ mod tests {
                 Some("recall"),
                 PURE,
             ),
+            // Its program reaches admitted plain reads only, each through
+            // the gate, which refuses where a turn's call would ask.
+            ("mecha-core/src/tool/code.rs", "CodeTool", None, PURE),
             (
                 "mecha-core/src/tool/skill.rs",
                 "SkillTool",
@@ -1652,9 +1655,16 @@ mod tests {
         fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
             for entry in std::fs::read_dir(dir).unwrap().flatten() {
                 let path = entry.path();
+                // A sibling test file (`#[cfg(test)] #[path = "x_tests.rs"]
+                // mod tests;`) is test code, as an inline test module is, and
+                // its doubles are not tools in the tree.
+                let sibling_tests = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|s| s.ends_with("_tests"));
                 if path.is_dir() {
                     walk(&path, out);
-                } else if path.extension().is_some_and(|e| e == "rs") {
+                } else if path.extension().is_some_and(|e| e == "rs") && !sibling_tests {
                     out.push(path);
                 }
             }
@@ -3370,6 +3380,7 @@ mod decision_turn_tests {
             blocked: false,
             unknown: false,
             staged: false,
+            in_program: false,
         }
     }
 
