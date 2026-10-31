@@ -1500,6 +1500,14 @@ pub struct ToolCallTrace {
     /// Not an error and not a denial: the draft succeeded; the send waits.
     #[serde(default)]
     pub staged: bool,
+    /// A program's host call (`CODE-MODE-DESIGN.md` §7, "host calls enter
+    /// the trace"): made from inside a running `code` call, through the same
+    /// gate, and counted in `tool_calls`, `tool_errors` and `tool_denied` like
+    /// any other, so a run that used a program does not silently stop
+    /// counting its tool use. Tagged so a reader can split by it. A record
+    /// written before the field reads `false`, which is what it was.
+    #[serde(default)]
+    pub in_program: bool,
 }
 
 impl ToolCallTrace {
@@ -1514,6 +1522,7 @@ impl ToolCallTrace {
             blocked: out.refusal,
             unknown: false,
             staged: false,
+            in_program: false,
         }
     }
 }
@@ -5264,6 +5273,7 @@ impl Agent {
                     taint,
                     blocked_sends,
                     run_pictures,
+                    Asking::Person,
                 )
                 .await
             {
@@ -5299,7 +5309,24 @@ impl Agent {
             .with_denied(denied_this_turn)
             .in_run(cx.tools.work.map(|w| w.run).unwrap_or_default());
 
-        let executed =
+        // A program's host calls (`CODE-MODE-DESIGN.md` §7) come back here,
+        // through a channel stamped on the context of each call whose tool
+        // hosts programs, and are served below while the batch executes: one
+        // gate, not a copy of one, and against the live taint, so each host
+        // call arms the conversation before its program resumes. No channel
+        // exists when no call in the batch hosts a program. Each such call's
+        // result is rendered at its share of the turn's budget, the same
+        // `result_cap` computed below for every result, so the program can
+        // lay its ending out to survive the cut.
+        let hosts = approved.iter().any(|(_, tool, ..)| tool.hosts_programs());
+        let host_cap = (output_budget / approved.len().max(1)).max(crate::tool::SPILL_FLOOR_BYTES);
+        let (host_tx, mut host_rx) = if hosts {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
+        let executing =
             futures::future::join_all(approved.into_iter().map(|(i, tool, id, name, input)| {
                 // Stamp the call's own id onto the context it runs under, so
                 // a tool that contains a run — a subagent — can tag the
@@ -5314,13 +5341,47 @@ impl Agent {
                 // per-turn value can live. The `else` arm is gone: `context`
                 // is `Some` on any run with a compaction threshold, which is
                 // every run against a provider that declares its window.
-                let tool_ctx = Self::call_ctx(cx, &id, turn_taint, recorded_taint, context, work);
+                let host_calls = host_tx
+                    .as_ref()
+                    .filter(|_| tool.hosts_programs())
+                    .map(|tx| crate::tool::code::HostCalls::new(tx.clone(), &id, host_cap));
+                let tool_ctx = Self::call_ctx(
+                    cx,
+                    &id,
+                    turn_taint,
+                    recorded_taint,
+                    context,
+                    work,
+                    host_calls,
+                );
                 async move {
                     let out = Self::execute(&tool, &name, input, &tool_ctx).await;
                     (i, id, name, out)
                 }
-            }))
-            .await;
+            }));
+        // Only the calls' contexts hold a sender now, so the serving loop ends
+        // when the last of them is done.
+        drop(host_tx);
+        let executed = match host_rx.as_mut() {
+            None => executing.await,
+            Some(rx) => {
+                let serving = self.serve_host_calls(
+                    cx,
+                    rx,
+                    trace,
+                    taint,
+                    blocked_sends,
+                    run_pictures,
+                    context,
+                );
+                futures::pin_mut!(executing);
+                futures::pin_mut!(serving);
+                match futures::future::select(executing, serving).await {
+                    futures::future::Either::Left((executed, _)) => executed,
+                    futures::future::Either::Right(((), executing)) => executing.await,
+                }
+            }
+        };
 
         // The turn's results share one byte budget, divided equally across
         // the batch — the calls land together, so an unbounded one starves
@@ -5604,28 +5665,34 @@ impl Agent {
     /// wants `&mut Conversation`, mints a `harness_` id and re-arms from the
     /// messages) and must not take the rendering, because a handle over
     /// rendered bytes would be a view of truncated text plus wrapper tags.
-    /// That caller owes three things this function does not do:
+    /// [`Agent::serve_host_calls`] is that caller, and what it needs is
+    /// settled as follows (review of #764):
     /// - **Never prompt.** Host calls run inside the concurrent phase, behind
     ///   tools already executing, so §7 has them *refuse* where a turn's call
-    ///   would ask: a call that `needs_a_person`, or one a `prompt` rule
-    ///   matches, raises in the program. This function still reaches
-    ///   `cx.approver` exactly as a turn's call does — it is the same gate —
-    ///   so the host-call path must refuse those before calling it.
-    /// - **Arm before resume.** `taint` must be the conversation's live
-    ///   taint, the one the next host call is gated against, and the program
-    ///   must not resume until this returns: the next call's interlock has
-    ///   to see what this one read.
+    ///   would ask: with `asking` at [`Asking::Refuse`], a call that
+    ///   `needs_a_person` would escalate, one a `prompt` rule matches, and
+    ///   one the approver would be asked about are each `Blocked` by policy
+    ///   in [`Agent::check`], in the order a turn's call meets them, and no
+    ///   approver door is opened. Grants that already exist still resolve.
+    ///   [`Asking::Person`] is the turn's gate exactly.
+    /// - **Arm before resume.** `taint` is the conversation's live taint, the
+    ///   one the next host call is gated against, and the program does not
+    ///   resume until this returns: the next call's interlock sees what this
+    ///   one read ([`Agent::serve_host_calls`]).
     /// - **Render once, on the way back into the context.** The raw output
     ///   stays in the program; what re-enters the context (printed output,
-    ///   `peek`, the `code` call's own result) goes through
-    ///   [`jobs::render`](crate::jobs::render) with the returned terms, once.
+    ///   `peek`, the `code` call's own result) is rendered with the `code`
+    ///   call's own result, once, by `dispatch`.
     ///
-    /// A deferred half runs inline, as it does on a run with no host queue:
-    /// a host call has no transcript slot for a late result. An image is
-    /// left on the output and arms `private` here, whether or not a model
-    /// ever sees it. Post-tool hooks and the result event belong to what
-    /// re-enters the context, so they are the caller's too.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// `run_pictures` is the run's own, so a call of a tool this run already
+    /// started a job of meets the same one-picture refusal it would in a
+    /// turn. (No admitted read defers today — `image_generate` is `Render`
+    /// — so in practice it never applies to a host call.) A deferred half
+    /// runs inline, as it does on a run with no host queue: a host call has
+    /// no transcript slot for a late result. An image is left on the output
+    /// and arms `private` here, whether or not a model ever sees it.
+    /// Post-tool hooks and the result event belong to what re-enters the
+    /// context, so they are the caller's too.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn gate(
         &self,
@@ -5635,7 +5702,9 @@ impl Agent {
         trace: &mut Vec<ToolCallTrace>,
         taint: &mut Taint,
         blocked_sends: &mut u32,
+        run_pictures: &mut RunPictures,
         context: Option<crate::pressure::Forecast>,
+        asking: Asking,
     ) -> Gated {
         let (id, name, input) = call;
         let grants_before = cx.tools.grants.live();
@@ -5650,7 +5719,8 @@ impl Agent {
                 turn_taint,
                 taint,
                 blocked_sends,
-                &mut RunPictures::default(),
+                run_pictures,
+                asking,
             )
             .await;
         let tool = match checked {
@@ -5660,7 +5730,7 @@ impl Agent {
         };
         let work =
             crate::step::Work::of(trace).in_run(cx.tools.work.map(|w| w.run).unwrap_or_default());
-        let tool_ctx = Self::call_ctx(cx, id, turn_taint, recorded_taint, context, work);
+        let tool_ctx = Self::call_ctx(cx, id, turn_taint, recorded_taint, context, work, None);
         let mut output = Self::execute(&tool, name, input.clone(), &tool_ctx).await;
         let terms = self.terms(
             cx,
@@ -5684,9 +5754,118 @@ impl Agent {
         Gated::Ran { output, terms }
     }
 
+    /// Serve the host calls of the programs running in this batch, until the
+    /// last call holding a channel is done (`CODE-MODE-DESIGN.md` §7).
+    ///
+    /// One request at a time, in the order they arrive: each host call takes
+    /// [`Agent::gate`] in [`Asking::Refuse`], against the conversation's live
+    /// `taint`, which it arms from the raw result before the reply lets the
+    /// program resume. Two programs in one batch therefore see each other's
+    /// reads in their interlock, as two turns would. A host call emits no
+    /// events of its own (its card is the `code` call's), and every trace
+    /// entry it pushes is tagged `in_program`, so `tool_calls`,
+    /// `tool_errors` and `tool_denied` keep counting through a program.
+    #[allow(clippy::too_many_arguments)]
+    async fn serve_host_calls(
+        &self,
+        cx: &RunContext,
+        requests: &mut tokio::sync::mpsc::UnboundedReceiver<crate::tool::code::HostRequest>,
+        trace: &mut Vec<ToolCallTrace>,
+        taint: &mut Taint,
+        blocked_sends: &mut u32,
+        run_pictures: &mut RunPictures,
+        context: Option<crate::pressure::Forecast>,
+    ) {
+        use crate::tool::code::{HostAnswer, HostRequest};
+        let mut made = 0u32;
+        while let Some(request) = requests.recv().await {
+            match request {
+                HostRequest::Reach { admission, reply } => {
+                    let _ = reply.send(self.program_reach(cx, &admission));
+                }
+                HostRequest::Call {
+                    call_id,
+                    name,
+                    input,
+                    reply,
+                } => {
+                    made += 1;
+                    let call = (format!("{call_id}.host-{made}"), name, input);
+                    let before = trace.len();
+                    let gated = self
+                        .gate(
+                            cx,
+                            &call,
+                            &None,
+                            trace,
+                            taint,
+                            blocked_sends,
+                            run_pictures,
+                            context,
+                            Asking::Refuse,
+                        )
+                        .await;
+                    for t in &mut trace[before..] {
+                        t.in_program = true;
+                    }
+                    let _ = reply.send(match gated {
+                        Gated::Refused(why) => HostAnswer::Refused(why),
+                        Gated::Staged(notice) => HostAnswer::Staged(notice),
+                        Gated::Ran { output, .. } => HostAnswer::Ran(output),
+                    });
+                }
+            }
+        }
+    }
+
+    /// The names a starting program may call (§2): `admission`, as the
+    /// `code` tool was built with it, narrowed by what this run withholds:
+    /// an active skill restriction, the run's withheld list, and a `forbid`
+    /// rule on the tool. A narrowed tool is not in the program's function
+    /// list at all, and the gate still checks each call.
+    ///
+    /// Refused when this agent's own registry admits a different set: that is
+    /// a `code` built over another run's registry (a parent's, cloned into a
+    /// child) or before the last registration, whose declared capabilities
+    /// would not be this run's.
+    fn program_reach(
+        &self,
+        cx: &RunContext,
+        admission: &crate::tool::code::Admission,
+    ) -> std::result::Result<Vec<String>, String> {
+        let here = crate::tool::code::Admission::over(&self.registry, |n| {
+            cx.outbox.as_ref().is_some_and(|o| o.routes(n))
+        });
+        if here != *admission {
+            return Err(format!(
+                "Blocked by policy: this `code` tool was built over a different set of tools \
+                 than this run's ({} admitted there, {} here), so nothing ran. It must be built \
+                 over the registry of the run it serves, after the last registration; a \
+                 subagent builds its own, never a clone of its parent's.",
+                admission.len(),
+                here.len()
+            ));
+        }
+        let no_input = Value::Object(Default::default());
+        Ok(admission
+            .names()
+            .filter(|n| self.registry.available(n).is_some() && !cx.is_withheld(n))
+            .filter(|n| {
+                cx.policy.decide(n, &no_input).map(|r| r.decision)
+                    != Some(crate::policy::RuleDecision::Forbid)
+            })
+            .map(str::to_string)
+            .collect())
+    }
+
     /// The context one call runs under: the run's, stamped with the call's
     /// id, the taint forecast it was gated against, what was recorded
     /// before its batch, the context forecast and the run's work so far.
+    ///
+    /// `host_calls` is the program channel, for a tool that
+    /// [`hosts_programs`](crate::tool::Tool::hosts_programs) and for no
+    /// other: every context is built with it set here, so none inherits one
+    /// from the run's own (`CODE-MODE-DESIGN.md` §7).
     fn call_ctx(
         cx: &RunContext,
         id: &str,
@@ -5694,6 +5873,7 @@ impl Agent {
         recorded_taint: Taint,
         context: Option<crate::pressure::Forecast>,
         work: crate::step::Work,
+        host_calls: Option<crate::tool::code::HostCalls>,
     ) -> Arc<ToolCtx> {
         Arc::new(ToolCtx {
             call_id: Some(id.to_string()),
@@ -5701,6 +5881,7 @@ impl Agent {
             recorded_taint: Some(recorded_taint),
             context,
             work: Some(work),
+            host_calls,
             ..(*cx.tools).clone()
         })
     }
@@ -5762,6 +5943,10 @@ impl Agent {
     /// A call settled here has its refusal events emitted and its trace
     /// entry pushed; the caller only places the result. `taint` is what
     /// staging records on a draft: the conversation's, before this batch.
+    ///
+    /// `asking` says whether a call that would put a question to a person may
+    /// do so: a turn's call may ([`Asking::Person`]); a program's host call
+    /// may not ([`Asking::Refuse`]), and is refused there instead.
     #[allow(clippy::too_many_arguments)]
     async fn check(
         &self,
@@ -5773,6 +5958,7 @@ impl Agent {
         taint: &Taint,
         blocked_sends: &mut u32,
         run_pictures: &mut RunPictures,
+        asking: Asking,
     ) -> Checked {
         let (id, name, input) = call;
         // What a person watching should see: `Tool::review_input`, not
@@ -5822,6 +6008,7 @@ impl Agent {
                 blocked: true,
                 unknown: false,
                 staged: false,
+                in_program: false,
             });
             return Checked::Refused(content);
         }
@@ -5843,6 +6030,7 @@ impl Agent {
                     blocked: true,
                     unknown: false,
                     staged: false,
+                    in_program: false,
                 });
                 emit(
                     events,
@@ -5919,6 +6107,7 @@ impl Agent {
                 blocked: withheld,
                 unknown: !withheld,
                 staged: false,
+                in_program: false,
             });
             return Checked::Refused(content);
         };
@@ -5947,6 +6136,7 @@ impl Agent {
                 blocked: false,
                 unknown: false,
                 staged: false,
+                in_program: false,
             });
             return Checked::Refused(content);
         }
@@ -6142,6 +6332,7 @@ impl Agent {
                         blocked: true,
                         unknown: false,
                         staged: false,
+                        in_program: false,
                     });
                     return Checked::Refused(reason);
                 }
@@ -6256,6 +6447,7 @@ impl Agent {
                     blocked: true,
                     unknown: false,
                     staged: false,
+                    in_program: false,
                 });
                 return Checked::Refused(format!("Blocked by a hook: {reason}"));
             }
@@ -6387,6 +6579,7 @@ impl Agent {
                         blocked: false,
                         unknown: false,
                         staged: true,
+                        in_program: false,
                     });
                     Checked::Staged(content)
                 }
@@ -6415,6 +6608,7 @@ impl Agent {
                         blocked: false,
                         unknown: false,
                         staged: false,
+                        in_program: false,
                     });
                     Checked::Refused(content)
                 }
@@ -6498,11 +6692,31 @@ impl Agent {
             (None, filled) => filled,
         };
         let rule = ruling.as_ref().map(|r| r.decision);
+        // A program's host call never opens a door (`CODE-MODE-DESIGN.md`
+        // §7): every branch below that would put the call in front of a
+        // person — an escalation, a `prompt` rule, the approver for a tool
+        // that is not read-only — is machine policy's no instead, after
+        // `forbid` and in the same order, so a host call is refused exactly
+        // where a turn's call would ask.
+        let refuse = asking == Asking::Refuse;
+        let would_ask = |why: &str| {
+            Some(Decision::Blocked(format!(
+                "a program's call never asks a person, and this one would have: {why}"
+            )))
+        };
         let decision = match (&escalation, rule) {
             (_, Some(RuleDecision::Forbid)) => {
                 let reason = ruling.map(|r| r.reason).unwrap_or_default();
                 tracing::info!(tool = %name, "forbidden by an approval rule");
                 Some(Decision::Blocked(reason))
+            }
+            (Some(why), _) if refuse => would_ask(why),
+            (None, Some(RuleDecision::Prompt)) if refuse => would_ask(&format!(
+                "an approval rule asks before `{name}` runs ({})",
+                ruling.map(|r| r.reason).unwrap_or_default()
+            )),
+            (None, Some(RuleDecision::Allow) | None) if refuse && !tool.read_only() => {
+                would_ask(&format!("`{name}` is not read-only, so it needs approval"))
             }
             (Some(why), _) if send_escalation => {
                 Some(cx.approver.escalate(tool.as_ref(), shown, why).await)
@@ -6569,6 +6783,7 @@ impl Agent {
                     blocked: matches!(decision, Decision::Blocked(_)),
                     unknown: false,
                     staged: false,
+                    in_program: false,
                 });
                 return Checked::Refused(content);
             }
@@ -6618,6 +6833,18 @@ pub struct Dispatched {
     pub trace: Vec<ToolCallTrace>,
 }
 
+/// Whether a call that would put a question to a person may ask one
+/// ([`Agent::check`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Asking {
+    /// A turn's call, or a harness call: the escalation, a `prompt` rule and
+    /// the approver each ask as they always have.
+    Person,
+    /// A program's host call (`CODE-MODE-DESIGN.md` §7): each of those is
+    /// `Blocked` by policy instead, and nobody is asked.
+    Refuse,
+}
+
 /// What [`Agent::check`] made of one call.
 enum Checked {
     /// Settled without running — a refusal, an unknown or withheld tool,
@@ -6631,7 +6858,6 @@ enum Checked {
 }
 
 /// What [`Agent::gate`] did with one call.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) enum Gated {
     /// Settled at the gate without running, in the gate's own words.
     Refused(String),
@@ -6643,6 +6869,9 @@ pub(crate) enum Gated {
     /// re-enters the context.
     Ran {
         output: ToolOutput,
+        /// Read by the test that pins the seam; a host call keeps the raw
+        /// bytes and is rendered with its `code` call instead.
+        #[cfg_attr(not(test), allow(dead_code))]
         terms: crate::jobs::Terms,
     },
 }
@@ -10770,7 +10999,9 @@ mod tests {
                 &mut trace,
                 &mut taint,
                 &mut blocked_sends,
+                &mut RunPictures::default(),
                 None,
+                Asking::Person,
             )
             .await;
         let Gated::Ran { output, terms } = gated else {
@@ -10819,7 +11050,9 @@ mod tests {
                     &mut trace,
                     taint,
                     &mut blocked_sends,
+                    &mut RunPictures::default(),
                     None,
+                    Asking::Person,
                 )
                 .await;
             assert_eq!(trace.len(), 1, "one trace entry per call");
