@@ -723,7 +723,7 @@ async fn the_memory_backstop_fires_uncatchably_and_is_named() {
 /// Each program tries to take far more than the limit, gradually or in one
 /// operation, while a sampler reads the worker's lifetime peak (`VmHWM`, or
 /// macOS's `ri_lifetime_max_phys_footprint`, which counts compressed and
-/// swapped pages too). Every one must end without completing, and none may
+/// swapped pages too). Every one must end at `Backstop::Memory`, and none may
 /// have held more than the limit plus the worker's own baseline and slack.
 /// The table prints, so CI's log is the measurement.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -822,7 +822,13 @@ async fn the_memory_backstop_bounds_what_the_worker_holds() {
         // A peak below the parked worker's own is no reading at all: the
         // sampler missed the worker (review of #769).
         let floor = baseline.expect("reading the parked worker's footprint");
-        if matches!(f.end, End::Complete { .. }) || peak < floor || peak > LIMIT as u64 + SLACK {
+        // The end §5 records for every one of these, not merely "did not
+        // complete": a monty that stopped bounding and stalled into the wall
+        // clock, or raised, would otherwise pass (review of #769).
+        if !matches!(f.end, End::Backstop(Backstop::Memory(_)))
+            || peak < floor
+            || peak > LIMIT as u64 + SLACK
+        {
             over.push(name);
         }
     }
@@ -834,7 +840,7 @@ async fn the_memory_backstop_bounds_what_the_worker_holds() {
     );
     assert!(
         over.is_empty(),
-        "these programs completed, went unsampled, or held more than {} MiB + {} MiB: {over:?}\n{}",
+        "these programs did not end at the memory backstop, went unsampled, or held more than {} MiB + {} MiB: {over:?}\n{}",
         LIMIT / (1024 * 1024),
         SLACK / (1024 * 1024),
         rows.join("\n")
