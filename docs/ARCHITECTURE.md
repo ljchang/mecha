@@ -1925,9 +1925,14 @@ module.
   is no model-supplied path to resolve, so nothing to escape the three
   `files/` folders with. `list` follows no symlink, lists no hidden entry,
   and proves every file inside its folder after canonicalising.
-  - `file_read` is inserted *after* `registry_as`, in `setup::persona_agent`,
-    over the chat store's own path. Inside `registry_as`, `answers = "files"`
-    would withhold it: it declares `untrusted_input`, like `document_read`.
+  - `file_read` is built in `setup::persona_agent`, over the chat store's
+    own path, and admitted through `persona::agent::admit_own` (#776): the
+    persona declaration, a read-only form with `Egress::None`, and for
+    `answers = "files"` `Tool::reaches_beyond_persona_files`, which defaults
+    to yes. It declares no, so a files-only persona keeps it though it
+    declares `untrusted_input`. **The keeping is by declaration, never by
+    position**: a tool inserted past the checks is a bug that
+    `persona_agent_admits_every_tool_through_the_persona_checks` refuses.
     It is never in the assistant's registry.
   - The whole collection rides before the chat's first reply, when it fits
     about a quarter of the window (D15); otherwise the list of files does.
@@ -2179,8 +2184,10 @@ module.
       unreadable counts as untrusted). The chat comes from the stored
       episode, never from the model, and a chat id that is not a session id
       is refused before it can become a path.
-    - `answers = "files"` does not withhold them: they are inserted past
-      `registry_as`, and the `[memory]` switches are memory's control. A
+    - `answers = "files"` does not withhold them: each declares
+      `reaches_beyond_persona_files` false and passes `admit_own` (#776),
+      the `[memory]` switches being memory's control, and what may enter
+      memory the provenance gate's. A
       files-only `memory_read` returns the owner's words and the
       persona's; each tool result reads as left out where it stood, and its
       call and the harness's folded blocks are dropped (`words_only`, owner
