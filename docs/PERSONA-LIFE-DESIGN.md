@@ -418,7 +418,9 @@ It runs nightly beside `persona memory write`. The narrator is not per chat,
 but `writer::pick_model` already has the shape it needs: called with the
 persona's pinned model (`PERSONA-DESIGN.md` §12.6) against the router's
 resident one, it answers `Use` when they match or the router is empty and
-`Wait` when another model is resident. The narrator calls it as-is. Otherwise it waits for a later night, never
+`Wait` when another model is resident. The narrator calls it as-is. For a
+persona with no pinned model that means the resident model narrates, so the
+narrator's model is not always one the persona chats on. Otherwise it waits for a later night, never
 swapping a model (the 2026-09-27 ruling). Its inputs are owner files, code, typed records from shelves A and B
 (§8), and **only those world rows whose origin is clean**. Chat-sourced rows
 from a clean stretch qualify. A row written under taint does not, *even after
@@ -961,7 +963,7 @@ Shelf B meets §2.7's three conditions in code:
   - **Which items fill the slots is code's choice, not the feed's.** Any
     selection based on extracted fields (salience, an entity match) would
     hand the feed the choice of which of its N arrivals survive. That is
-    another log₂C(N,3) bits a day, about 15 at N = 50, and §14's bit test
+    another log₂C(N,3) bits a day, about 14 at N = 50, and §14's bit test
     could not see it, because a selection channel has no vocabulary. So the
     three daily slots are allocated **round-robin across registered feeds**,
     which fixes how many slots each feed gets, before extraction is even
@@ -974,8 +976,9 @@ Shelf B meets §2.7's three conditions in code:
     derivable from the feed.
     - For a wholly attacker-authored feed, selection adds nothing over 9.6
       bits: the attacker writes the surviving item anyway.
-    - For one planted item in an honest feed of N, the draw gives it a 1-in-N
-      chance at a slot, rather than the certainty first position would. That
+    - For one planted item in an honest feed of N, the draw gives it a
+      slots-in-N chance (1 in N on a day the feed gets one slot) rather than
+      the certainty first position would. That
       is §2.7's PoisonedRAG case.
 
     The only attacker-chosen bits are then the surviving items' own fields.
@@ -1341,7 +1344,7 @@ dropped the farewell check (D25), so it would need its own evidence first.
 | Narrator over clean inputs | model, clean | yes | only once told | yes |
 | Her mentions in a clean chat | model, clean | as people and stated plans | yes | yes |
 | Her mentions after a taint rise | model, untrusted | as candidates | as candidates | only after approval |
-| Owner's words, after a taint rise | stated | no; the owner's people live in `memory.db` (§7.1) | as the owner's people and facts, under PL10 as ruled | yes |
+| Owner's words, after a taint rise | model, untrusted (whatever the record's `Stated`/`Inferred` kind) | no; the owner's people live in `memory.db` (§7.1) | as candidates (today's rule, PL10's recommendation); PL27 does not reach the owner's network | only after approval |
 | The `told` flag, from a tainted stretch | the stretch's taint | set only, never cleared, source recorded | — | it shapes what reaches the today-block |
 | Shelf A | code, closed types only | yes | yes | its closed fields; shape-matched ids never |
 | Shelf B | quarantined, typed | minor events | as pointers | yes |
@@ -1415,9 +1418,17 @@ ruled for repetition.
   - **The claim the comparison tests** is that world-on raises initiative
     *without* lowering the uptake rate of persona-introduced topics. Rising
     initiative with falling uptake is the ComPeer failure, measured.
-- **The comparison:** world on vs off, per persona, through the experiment
-  instrument; the replay judge for consistency (does she contradict her own
-  world, or the owner's people?).
+- **The comparison:** world on vs off, read **offline from the owner's own
+  transcripts**, like echo, and **not through the experiment instrument**.
+  `Personas` is operator-only (`FEATURES-DESIGN.md` §5.1): it is not
+  switchable from an environment, so no trial home can run a persona
+  however the world is registered. The lever is the per-persona `world`
+  switch (§17). The comparison is across personas with it on and off, and
+  across periods for one persona, on the readings above (echo, and
+  initiative beside uptake). The replay judge checks consistency: does she
+  contradict her own world, or the owner's people? Making personas reachable
+  in a trial home would be a change to the operator-only boundary, not part
+  of this design.
 - **The shelf B gate**, in three parts. A canary test alone would pass
   vacuously: a payload string has no field to land in on a closed-vocabulary
   schema, so it is green before the feature exists, and that is the vacuous
@@ -1520,7 +1531,7 @@ owner's.
 | PL23 | Episodes after a `news_read` | **Owner's direction (2026-10-31):** the default. A typed episode (`item_id`, interest, date, a closed-set reaction) is admitted clean; free text is left as candidates that go unrecalled, with no approval queue (§8.4) |
 | PL24 | `forget` over the owner's network | Re-fold from the events that remain, which is D27's rebuild applied in memory for this graph; an `Inferred` edge left on too little support reverts to a candidate. Alternative: today's fallback, so the person goes with any of their chats (§7.1) |
 | PL25 | A `told` set only by a tainted stretch | Suppresses but does not license pruning; becomes ordinary on approval; cleared by the harness on rejection; unchanged while unreviewed, since silence is not a rejection (§9). Alternative: lapse after five days unreviewed, at the cost of repeating what the owner heard |
-| PL26 | The feature registry | A top-level `Feature` with its own switch that `requires` Personas (as `Dictate` requires `Web`), because a part has no switch and §14's world-on/off comparison needs one; plus a per-persona `world = false` in `persona.toml`; settled before step 1 (§17) |
+| PL26 | The feature registry | `part_of = Personas`, with a per-persona `world = false` in `persona.toml` as the lever. A top-level switch would buy nothing, since personas are operator-only and no trial home can run one; §14's comparison is read offline. Settled before step 1 (§17) |
 | PL27 | Remembering article chats in full | **Owner's direction (2026-10-31):** a per-persona `remember_articles` switch, off by default, owner-written in `persona.toml`. With it on, episodes and facts from a stretch after a `news_read` are recalled without approval, origin still untrusted and re-armed on recall. The cost (possible persistent steering, no way to send) is shown beside the switch and in a `TRIFECTA.md` row. *Recommended within it:* the owner's network stays outside its reach (§8.4) |
 
 ---
@@ -1533,23 +1544,22 @@ Each step is usable alone and measured before the next.
 it starts at `ARCHITECTURE.md` §Features → *Adding a feature*. That touches a
 dozen places across core, the CLI, the server and the web app, and #654
 missed one. The world is a new `Feature::ALL` variant either way. The
-question is whether it gets **its own `[features]` switch**, and §14 decides
-it: a part has none. `has_switch()` is `part_of().is_none()`, `set_switch` on
-a part is a silent no-op, `switches_on` (which a trial's condition hash
-reads) omits parts, and a trial environment's `[features] <part>` is a hard
-error. Under `part_of = Personas`, then, "world on vs off through the
-experiment instrument" would have no lever. So the world is **a top-level
-`Feature` with its own switch that `requires` Personas**, the way `Dictate`
-requires `Web`. That decides the `own_state` arm, the starter config line,
-the web app's entries and the server routes' owner, so it is settled before
-step 1 (§16 PL26).
-- **Per-persona comparison** is a persona-level `world = false` in
-  `persona.toml`, owner-written. The experiment instrument sets the global
-  switch per arm. A per-persona arm would need trial homes to carry persona
-  folders, which `trial_env` does not build today, and §14's build names
-  that as work.
-- `VIEW_FEATURE` already has `personas`, and the world's surfaces stay under
-  that view. The entry that must
+question is whether it gets its own `[features]` switch.
+- **A switch would buy nothing §14 needs.** `Personas` is operator-only, so
+  no trial home can run a persona whatever the world's registration (§14).
+  A top-level `World` that `requires` Personas would also be the first
+  switched feature with a `requires` edge, exercising `plan_enable`'s
+  dormant chain branch for the first time. That is a new pattern, not an
+  established one: `Dictate`'s `requires` is on a part.
+- **So the world is `part_of = Personas`**, on whenever personas are, with
+  **a per-persona `world = false` in `persona.toml`**, owner-written, as the
+  lever. That lever is what §14's offline comparison reads, and what lets
+  the owner turn the world off for one persona.
+
+That decides the `own_state` arm, the starter config line, the web app's
+entries and the server routes' owner, so it is settled before step 1 (§16
+PL26). `VIEW_FEATURE` already has `personas`, and the world's surfaces stay
+under that view. The entry that must
 gain rows is **`PANE_FEATURE`**, which keys on `view/sub`:
 `personas/week`, `personas/people`, `personas/camera` and the Feed. It is
 the one #654 missed, and a miss there fails **open**: a missing row reads as
