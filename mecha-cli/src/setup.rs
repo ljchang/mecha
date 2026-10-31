@@ -3088,10 +3088,15 @@ mod tests {
         let body = &src[start..];
         let body = &body[..body.find("\n}\n").expect("persona_agent ends")];
         assert!(
-            !body.contains(".insert("),
+            !body.contains("registry.insert("),
             "persona_agent inserts a tool directly; use persona::admit_own"
         );
-        assert_eq!(body.matches("persona::admit_own(").count(), 4);
+        assert_eq!(
+            body.matches("persona::admit_own(").count(),
+            4,
+            "a tool was added to or removed from the persona's own store; \
+             check it goes through `admit_own` and bump the count"
+        );
     }
 
     /// A routed name under a server that did not start is that server
