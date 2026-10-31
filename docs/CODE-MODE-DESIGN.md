@@ -694,9 +694,24 @@ attacker selects from their own text can be an address; that is a
     drop is the only thing that ends a worker, and a `SIGKILL`ed mecha
     never runs it. A worker computing at that moment never reads its
     stdin's EOF, and the wall clock lived in the host that died.
-    - So the launcher starts a loop before it `exec`s (`monty::WATCHDOG`).
-      Once a second it checks the worker with the `kill -0` builtin, and it
-      ends when the worker does.
+    - An idle worker is no risk: it sits reading its stdin and exits on
+      the EOF. So a program arms a watchdog (`interpreter::watchdog`) when it
+      checks a worker out, before the worker runs a line. A watchdog that
+      cannot arm refuses the program, so preflight refuses code mode rather
+      than running it unguarded.
+    - **The watchdog is mecha's child, in a process group of its own**
+      (`process_group(0)`). tokio reaps it when it ends, and a dropped one
+      is never killed, because it has to outlive mecha.
+    - *Incident:* the first shape was a loop the launcher double-forked. It
+      was reparented to launchd at every worker start while it stayed in
+      mecha's process group. On CI that group is also the runner's, and
+      with the tests that `SIGSTOP` a worker it lost the runner itself in 5
+      of 18 macOS runs ("the hosted runner lost communication"), against 0
+      of 16 with those tests skipped. Now nothing in mecha's group is ever
+      reparented while mecha lives, and the loop's group holds only the loop
+      and its `sleep`, which nothing ever stops.
+    - Once a second the loop checks the worker with the `kill -0` builtin,
+      and it ends when the worker does.
     - Both pids are recorded with their start times (`ps -o lstart`), and
       `exec` keeps a process's start time. Mecha is alive while `kill -0`
       reaches its pid and `ps` reads mecha's start time there, so a reused
@@ -709,21 +724,21 @@ attacker selects from their own text can be an address; that is a
       pressure, as a missing process. Concluding from one would kill a
       healthy worker, or retire the watchdog and leave the worker
       unguarded. So an empty read counts as mecha alive, or the worker's
-      start time unknown, and the loop asks again a second later. At
-      launch, an unreadable start time fails the launch instead, so
-      preflight refuses rather than running unguarded.
+      start time unknown, and the loop asks again a second later. Before it
+      says `ok`, an unreadable start time refuses the program instead.
       `the_watchdog_takes_no_answer_from_a_ps_that_fails` and
-      `a_launch_whose_start_times_are_unreadable_never_starts_the_worker`
-      measure both, with a `ps` stand-in.
-    - The loop forks twice to leave the worker's process tree, and holds
-      none of its pipes. It runs outside the profile, as fixed text that
-      takes no input from a program.
-    - While mecha lives, each poll forks `sleep` and one `ps`. The worker's
-      start forks one
-      `ps` per pid ahead of its `exec`, and §10's cold start predates that.
-    - The worker outlives mecha by at most about a second:
-      `the_watchdog_ends_a_worker_whose_mecha_was_killed` measured about
-      0.6 s, and that test fails without the watchdog.
+      `a_watchdog_that_cannot_read_start_times_is_refused` measure both,
+      with a `ps` stand-in.
+    - The launcher is the bare `exec` on both platforms again. The loop runs
+      outside the profile, as mecha does, as fixed text that takes no input
+      from a program.
+    - While mecha lives, each poll forks `sleep` and one `ps`. Arming forks
+      two `ps` ahead of the program, and §10's cold start predates that.
+    - The worker outlives mecha by at most about a second, and
+      `the_watchdog_ends_a_worker_whose_mecha_was_killed` fails without the
+      watchdog. `a_seatbelt_program_is_watched_and_a_bwrap_one_is_not`
+      measures the wiring, through a stand-in `sandbox-exec`, so it runs off
+      a Mac too.
   - Littrs (0.6.2, Apache-2.0) is a fallback for this slice only. It has
     no pause API but needs none here, and its limits are weaker (no memory
     or time limit outside its WASM mode). wasmtime with a Python guest
