@@ -149,6 +149,43 @@ assert.deepEqual(s.entries.map((e) => e.delivery), ['delivered', 'discarded']);
   );
 }
 
+// A message no run read waits for a turn of its own: a re-read keeps its
+// bubble, last, from the server's list when it has one — a reloaded page
+// has nothing of its own — and its turn starting takes the bubble back out
+// (owner, 2026-10-21: a second picture asked for mid-reply was lost).
+{
+  let r = emptyRun([{ kind: 'user', text: 'Draw a fox' }]);
+  r = applyEvent(r, { type: 'queued', text: 'and a heron', request_id: 'r-1' });
+  r = applyEvent(r, { type: 'notice', text: 'switching models' });
+  const server = [{ kind: 'user', text: 'Draw a fox' }, { kind: 'assistant', text: 'On its way.' }];
+  assert.deepEqual(
+    settle(server, r).map((e) => [e.kind, e.text, e.queued ?? false]),
+    [['user', 'Draw a fox', false], ['assistant', 'On its way.', false], ['notice', 'switching models', false], ['user', 'and a heron', true]],
+  );
+  assert.deepEqual(
+    settle(server, emptyRun(), [{ text: 'and a heron', request_id: 'r-1' }]).map((e) => [e.text, e.request_id ?? null]),
+    [['Draw a fox', null], ['On its way.', null], ['and a heron', 'r-1']],
+    'a reloaded page draws the server list',
+  );
+  assert.equal(
+    settle(server, r, []).filter((e) => e.queued).length,
+    0,
+    'the server list wins: one it no longer holds is not drawn',
+  );
+  assert.equal(
+    applyEvent(r, { type: 'queued', text: 'and a heron', request_id: 'r-1' }).entries.filter((e) => e.queued).length,
+    1,
+    'one bubble per receipt, however often it is announced',
+  );
+  r = { ...r, entries: settle(server, r) };
+  r = applyEvent(r, { type: 'user', text: 'and a heron', request_id: 'r-1' });
+  assert.deepEqual(
+    r.entries.filter((e) => e.kind === 'user').map((e) => [e.text, e.queued ?? false]),
+    [['Draw a fox', false], ['and a heron', false]],
+    'its turn replaces the waiting bubble, never a second copy',
+  );
+}
+
 // A crisis pause is drawn as its own card and survives a re-read; the run
 // ends, and what it touched is kept for the chip.
 {
@@ -241,6 +278,9 @@ assert.equal(keptCharacter('priya', undefined), '');
   r = applyEvent(r, { type: 'tool_result', id: 't2', name: 'image_generate', is_error: false });
   assert.equal(toolStatus(r.entries, 2), 'done');
   assert.equal(waitingLine(r, 'Maya', 99_000), 'Maya is typing');
+  // The built-in video tool says what it is starting.
+  const clip = applyEvent(r, { type: 'tool', id: 'v1', name: 'video_generate' });
+  assert.ok(waitingLine(clip, 'Maya', Date.now()).startsWith('making a clip…'));
   // A refused call is closed, not waited on for the rest of the run.
   r = applyEvent(r, { type: 'tool', id: 't3', name: 'web_search' });
   r = applyEvent(r, { type: 'denied', name: 'web_search', reason: 'blocked' });
@@ -547,6 +587,15 @@ console.log('persona: ok');
   assert.equal(DEFAULT_FRAME.zoom, 1);
   assert.deepEqual(frameOf({ x: 0.5, y: 'top', zoom: 1 }), DEFAULT_FRAME, 'not a frame: the default');
   assert.deepEqual(frameOf({ x: 2, y: -1, zoom: 9 }), { x: 1, y: 0, zoom: 4 });
+  // An avatar loads the small JPEG until its frame zooms past what it holds.
+  const { avatarSrc } = await import('../src/lib/persona.js');
+  const url = '/api/library/portrait/sha256-ab.png';
+  assert.equal(avatarSrc(url, null, 48), `${url}?size=thumb-v1`);
+  assert.equal(avatarSrc(url, { x: 0.5, y: 0.2, zoom: 1 }, 72), `${url}?size=thumb-v1`);
+  assert.equal(avatarSrc(url, { x: 0.5, y: 0.2, zoom: 1 }, 112), url, 'the largest avatar: the whole picture');
+  assert.equal(avatarSrc(url, { x: 0.5, y: 0.2, zoom: 2 }, 64), url, 'a 2:3 thumbnail holds 341, not 384');
+  assert.equal(avatarSrc(url, { x: 0.5, y: 0.2, zoom: 4 }, 112), url, 'zoomed in: the whole picture');
+  assert.equal(avatarSrc(url, { x: 0.5, y: 0.2, zoom: 3 }, 32), `${url}?size=thumb-v1`);
   // Unplaced leans to the top, where a portrait's face is.
   assert.equal(frameStyle(null), 'object-position:50% 20%;transform-origin:50% 20%;transform:scale(1)');
   assert.equal(frameStyle({ x: 0.25, y: 0.1, zoom: 1.5 }), 'object-position:25% 10%;transform-origin:25% 10%;transform:scale(1.5)');

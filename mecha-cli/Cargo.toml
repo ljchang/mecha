@@ -60,6 +60,11 @@ reqwest.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+# Only to list the first-party servers' real tool definitions in
+# `tests/effect_class.rs`, so a tool `mecha-mail` or `mecha-docs` adds and
+# mecha's effect table does not name fails there rather than shipping
+# undeclared. mecha-core still has no dependency on it.
+mecha-mail = { path = "../mecha-mail" }
 # `oneshot` on the serve router — auth is tested without binding a port.
 tower = { version = "0.5", features = ["util"] }
 # Only to write a real PNG for the drag-and-drop tests. Decoding belongs to

@@ -149,8 +149,9 @@ pub enum Args {
 
     /// Compare policies at the informative decision points of recorded
     /// sessions — a steer, a denial, a failed check, a draft the owner
-    /// rewrote or rejected, a surprise — and let the owner's recorded
-    /// verdict decide.
+    /// rewrote or rejected, a surprise, a failed call the run repeated —
+    /// and let the owner's recorded verdict decide (for a repeat, the
+    /// recording's own results).
     ///
     /// **A paid pass, on the local model only.** Each drawn point replays
     /// its recorded prefix under up to three policies (the prompt the run

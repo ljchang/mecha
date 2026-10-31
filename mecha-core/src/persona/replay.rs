@@ -94,37 +94,6 @@ fn calendar_after(lines: &[&str], index: usize) -> Option<String> {
     None
 }
 
-/// The start of `at`'s day in `tz` (or the local zone): a bound a run on
-/// that day began after. `None` on a day whose midnight does not exist.
-pub fn start_of_day(
-    at: chrono::DateTime<chrono::Utc>,
-    tz: Option<chrono_tz::Tz>,
-) -> Option<chrono::DateTime<chrono::Utc>> {
-    use chrono::TimeZone;
-    match tz {
-        Some(tz) => {
-            let day = at.with_timezone(&tz).date_naive().and_hms_opt(0, 0, 0)?;
-            Some(
-                tz.from_local_datetime(&day)
-                    .earliest()?
-                    .with_timezone(&chrono::Utc),
-            )
-        }
-        None => {
-            let day = at
-                .with_timezone(&chrono::Local)
-                .date_naive()
-                .and_hms_opt(0, 0, 0)?;
-            Some(
-                chrono::Local
-                    .from_local_datetime(&day)
-                    .earliest()?
-                    .with_timezone(&chrono::Utc),
-            )
-        }
-    }
-}
-
 /// A clock for the replay whose calendar reference reads as the recorded
 /// one: noon, in the run's zone, on the first day from `from` (up to 400
 /// days on) that renders `calendar` exactly. `None` when no day does — a
@@ -1015,6 +984,9 @@ impl Provider for Capture {
     fn structured_output(&self) -> bool {
         self.inner.structured_output()
     }
+    fn local(&self) -> bool {
+        self.inner.local()
+    }
     fn supports_effort(&self) -> bool {
         self.inner.supports_effort()
     }
@@ -1325,14 +1297,6 @@ mod tests {
         let at = clock_for(&note, from, Some(tz)).expect("a day renders it");
         assert_eq!(crate::date_context::render(at, Some(tz)), note);
         assert_eq!(clock_for("not a calendar", from, Some(tz)), None);
-        // The stage's bound is that day's start, never later than a morning
-        // run on it.
-        let start = start_of_day(at, Some(tz)).unwrap();
-        assert!(start <= at);
-        assert_eq!(
-            start.with_timezone(&tz).format("%F %T").to_string(),
-            format!("{} 00:00:00", at.with_timezone(&tz).date_naive())
-        );
     }
 
     /// A run with two calls, then the next owner turn.
@@ -1579,6 +1543,7 @@ mod tests {
             cache_prompt: false,
             think: None,
             think_budget: None,
+            local_only: false,
             trailing_notes: 1,
             tool_choice: ToolChoice::Auto,
         }
@@ -1771,6 +1736,9 @@ mod tests {
     struct Fixed;
     #[async_trait::async_trait]
     impl Provider for Fixed {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "fixed"
         }

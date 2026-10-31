@@ -205,6 +205,93 @@ struct WebSession {
     /// Pictures that finished after the turn that asked for them, and what
     /// the next run is owed about them (`late`).
     late: super::late::LateState,
+    /// Owner messages a run never read, each waiting for a turn of its own,
+    /// oldest first ([`next_turn`]). A steer that came after the run's last
+    /// tool round — or during its closing turn, which takes none — used to
+    /// come back "arrived too late — send again", so a second picture or
+    /// clip asked for mid-reply never queued (owner, 2026-10-21).
+    waiting: VecDeque<NextTurn>,
+    /// The waiting messages whose turns [`next_turn`] has taken out of the
+    /// line and is starting — a model switch away from a run — receipt to
+    /// words. Still the line's: whatever clears the line clears them
+    /// ([`discard_waiting`]), and a turn that finds its own gone does not
+    /// begin (review of #731, passes 3–5).
+    starting: HashMap<String, String>,
+}
+
+/// The refusal a waiting message's turn meets when its mark in
+/// [`WebSession::starting`] was cleared on its way: already answered for by
+/// whoever cleared it, so [`next_turn`] says nothing more.
+const STOPPED_ON_ITS_WAY: &str = "stopped before its turn began";
+
+/// An owner message waiting for its own turn ([`WebSession::waiting`]).
+struct NextTurn {
+    text: String,
+    request_id: String,
+}
+
+/// A waiting message whose turn found a run live — one that started in the
+/// moment between — back at the front of the line, the oldest message, for
+/// the turn after that run. Its bubble is already drawn, still queued.
+fn back_to_the_front(ws: &mut WebSession, text: String, request_id: String) -> serde_json::Value {
+    ws.waiting.push_front(NextTurn { text, request_id });
+    serde_json::json!({ "steered": false, "waiting": true })
+}
+
+impl WebSession {
+    /// Whether any owner message is in the line: waiting, or its turn on
+    /// its way out (`starting`) — which is older than anything typed now, so
+    /// a new message goes behind it (review of #731, pass 6).
+    fn has_line(&self) -> bool {
+        !self.waiting.is_empty() || !self.starting.is_empty()
+    }
+}
+
+/// The owner's messages no run has read yet, oldest first: the live run's
+/// unread steers, then those waiting for a turn of their own. The steers
+/// still in `queue` are the last `queue.len()` receipts.
+fn waiting_json(ws: &WebSession) -> Vec<serde_json::Value> {
+    // A turn on its way out of the line is still waiting, as far as a page
+    // can tell: until its own `user` event, its bubble stays.
+    let mut out: Vec<serde_json::Value> = ws
+        .starting
+        .iter()
+        .map(|(id, text)| serde_json::json!({ "text": text, "request_id": id }))
+        .collect();
+    if let Some(live) = &ws.live {
+        if let (Ok(queue), Ok(ids)) = (live.queue.lock(), live.queued_ids.lock()) {
+            let offset = ids.len().saturating_sub(queue.len());
+            for (text, id) in queue.iter().zip(ids.iter().skip(offset)) {
+                out.push(serde_json::json!({ "text": text, "request_id": id }));
+            }
+        }
+    }
+    for next in &ws.waiting {
+        out.push(serde_json::json!({ "text": next.text, "request_id": next.request_id }));
+    }
+    out
+}
+
+/// Tell the page these waiting messages will not be sent, and why: each
+/// bubble then offers Send again. Empties `waiting`, and `starting` — a turn
+/// on its way out of the line is still the line's, and finds its mark gone.
+fn discard_waiting(ws: &mut WebSession, why: &str) {
+    if ws.waiting.is_empty() && ws.starting.is_empty() {
+        return;
+    }
+    let ids: Vec<String> = ws
+        .starting
+        .drain()
+        .map(|(id, _)| id)
+        .chain(ws.waiting.drain(..).map(|n| n.request_id))
+        .collect();
+    tracing::info!(count = ids.len(), why, "waiting chat messages not sent");
+    let _ = ws.events.send(WireEvent::Notice {
+        text: format!("{} waiting message(s) not sent: {why}", ids.len()),
+    });
+    let _ = ws
+        .events
+        .send(WireEvent::QueuedDiscarded { request_ids: ids });
 }
 
 struct Live {
@@ -445,6 +532,8 @@ impl ChatState {
             key.clone(),
             WebSession {
                 late: Default::default(),
+                waiting: VecDeque::new(),
+                starting: Default::default(),
                 listen: None,
                 conversation: Some(Conversation::new()),
                 workspace: room.workspace.clone(),
@@ -668,8 +757,9 @@ fn producer_root() -> Result<PathBuf> {
 }
 
 impl ChatState {
-    /// One producer, per-session subdirectories — so `work clean`'s
-    /// retention retires whole old sessions (the Slack thread pattern).
+    /// One producer, per-session subdirectories — so `work clean` ages a
+    /// session's pictures and files as a unit (`[work]
+    /// retain_conversations`), and `forget` finds the one directory to remove.
     pub(super) fn session_workspace(&self, key: &str) -> Result<PathBuf> {
         let dir = self.work_dir.join(key);
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -1771,6 +1861,8 @@ fn ensure_session_as<'a>(
             key.to_string(),
             WebSession {
                 late,
+                waiting: VecDeque::new(),
+                starting: Default::default(),
                 listen: None,
                 conversation: Some(conversation),
                 session: Recording::Kept(Arc::new(session)),
@@ -2016,6 +2108,9 @@ pub async fn transcript(
         "task": ws.task,
         "questions": ws.questions.cards(),
         "held_by_run": ws.conversation.is_none(),
+        // The owner's messages not yet read by any run, in the order they
+        // will be: a page reloaded while they wait still shows them.
+        "waiting": waiting_json(ws),
         // The plan, live. Keyed by this session's jail (D14), so one shared
         // agent hands back the right list — and readable *while a run holds
         // the conversation*, which is exactly when it is worth looking at.
@@ -2088,36 +2183,110 @@ fn plan(bound: &crate::follow::Bound, key: &str) -> Vec<mecha_core::tool::todo::
         .unwrap_or_default()
 }
 
-/// POST /api/chat/{key}/send — start a run, or steer the one in flight.
+/// What a send came to, before it is a response: the page's answer, or a
+/// status and the words of a refusal.
+type Sent = Result<serde_json::Value, (StatusCode, String)>;
+
 /// Fold `text` into the run in flight — steering, which the loop puts in the
 /// tool-results turn (never a bare user message: two in a row are invalid).
-fn steer(ws: &WebSession, text: String, request_id: String) -> axum::response::Response {
-    let Some(live) = &ws.live else {
-        return (StatusCode::CONFLICT, "no run to steer\n").into_response();
-    };
-    if let Ok(mut queue) = live.queue.lock() {
-        let Ok(mut ids) = live.queued_ids.lock() else {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "steering receipts unavailable\n",
-            )
-                .into_response();
-        };
-        ids.push_back(request_id.clone());
-        queue.push_back(text.clone());
+/// With no run, or with messages already waiting, it waits behind them for a
+/// turn of its own — a run the line is draining through must not read a
+/// newer message ahead of older ones (review of #731, pass 4). A steer the
+/// run never reads waits the same way once it ends.
+fn steer(ws: &mut WebSession, text: String, request_id: String) -> Sent {
+    let in_line = ws.has_line();
+    let Some(live) = ws.live.as_ref().filter(|_| !in_line) else {
+        ws.waiting.push_back(NextTurn {
+            text: text.clone(),
+            request_id: request_id.clone(),
+        });
         let _ = ws.events.send(WireEvent::Queued {
             text,
             request_id: Some(request_id),
         });
-        return Json(serde_json::json!({ "steered": true })).into_response();
-    }
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "steering queue poisoned\n",
-    )
-        .into_response()
+        return Ok(serde_json::json!({ "steered": false, "waiting": true }));
+    };
+    let Ok(mut queue) = live.queue.lock() else {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "steering queue poisoned\n".into(),
+        ));
+    };
+    let Ok(mut ids) = live.queued_ids.lock() else {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "steering receipts unavailable\n".into(),
+        ));
+    };
+    ids.push_back(request_id.clone());
+    queue.push_back(text.clone());
+    let _ = ws.events.send(WireEvent::Queued {
+        text,
+        request_id: Some(request_id),
+    });
+    Ok(serde_json::json!({ "steered": true }))
 }
 
+/// Start the oldest message waiting for a turn of its own
+/// ([`WebSession::waiting`]) once no run holds the conversation. Each run's
+/// end spawns it, so the line drains one turn at a time — one picture per
+/// run, so each message asking for one queues its own. Boxed: the run
+/// [`begin_turn`] spawned starts it, and it starts a turn.
+fn next_turn(chat: Arc<ChatState>, key: String) -> futures::future::BoxFuture<'static, ()> {
+    Box::pin(async move {
+        let next = {
+            let mut sessions = chat.sessions.lock().await;
+            let Some(ws) = sessions.get_mut(&key) else {
+                return;
+            };
+            // A run holds it already — a message sent in the moment between,
+            // or a call — and that run's end starts the next.
+            if ws.live.is_some() {
+                return;
+            }
+            if chat.stopping.is_cancelled() {
+                discard_waiting(ws, "the server is shutting down");
+                return;
+            }
+            let next = ws.waiting.pop_front();
+            if let Some(n) = &next {
+                ws.starting.insert(n.request_id.clone(), n.text.clone());
+            }
+            next
+        };
+        let Some(next) = next else {
+            return;
+        };
+        let sent = send_text(
+            &chat,
+            &key,
+            next.text.clone(),
+            next.request_id.clone(),
+            Vec::new(),
+            None,
+            true,
+        )
+        .await;
+        // Refused — a switch that failed, a recording that would not write:
+        // neither it nor those behind it will be sent, and the page says so,
+        // each bubble offering Send again.
+        if let Err((_, why)) = sent {
+            // Its mark was cleared — a Stop — and whoever cleared it already
+            // said what became of it.
+            if why.trim() == STOPPED_ON_ITS_WAY {
+                return;
+            }
+            let mut sessions = chat.sessions.lock().await;
+            if let Some(ws) = sessions.get_mut(&key) {
+                ws.starting.remove(&next.request_id);
+                ws.waiting.push_front(next);
+                discard_waiting(ws, why.trim());
+            }
+        }
+    })
+}
+
+/// POST /api/chat/{key}/send — start a run, or steer the one in flight.
 pub async fn send(
     State(state): Chat,
     axum::extract::Path(key): axum::extract::Path<String>,
@@ -2180,12 +2349,29 @@ pub async fn send(
     let draw = regenerate
         .map(HarnessDraw::Redraw)
         .or(regions.map(HarnessDraw::Regions));
+    match send_text(&chat, &key, text, request_id, body.attachments, draw, false).await {
+        Ok(answer) => Json(answer).into_response(),
+        Err((status, why)) => (status, why).into_response(),
+    }
+}
+
+/// A send, past the route's checks: steered into the run in flight, waiting
+/// behind the messages already waiting, or started as a turn. `carried`:
+/// this is a waiting message's own turn ([`next_turn`]).
+async fn send_text(
+    chat: &Arc<ChatState>,
+    key: &str,
+    text: String,
+    request_id: String,
+    attachments: Vec<String>,
+    draw: Option<HarnessDraw>,
+    carried: bool,
+) -> Sent {
     let busy = || {
-        (
+        Err((
             StatusCode::CONFLICT,
-            "a reply is running; a picture change waits for it to finish\n",
-        )
-            .into_response()
+            "a reply is running or a message is waiting its turn; a picture change waits for them\n".into(),
+        ))
     };
 
     // First look: a run in flight is steered — no hold, and no waiting on a
@@ -2194,14 +2380,31 @@ pub async fn send(
     // (review of D13).
     // Read-only: a session is created only once the turn has followed, so it
     // is headed with the model that answers it (review of #347).
+    // Behind the messages already waiting, too: one typed in the moment
+    // between a run's end and the next one's start keeps its place in the
+    // owner's order. A waiting message's own turn is never behind itself.
+    let waits = |ws: &WebSession| ws.live.is_some() || (!carried && ws.has_line());
     let notices = {
-        let sessions = chat.sessions.lock().await;
+        let mut sessions = chat.sessions.lock().await;
         if chat.stopping.is_cancelled() {
-            return (StatusCode::SERVICE_UNAVAILABLE, "server is shutting down\n").into_response();
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                "server is shutting down\n".into(),
+            ));
         }
-        match sessions.get(&key) {
-            Some(ws) if ws.live.is_some() && draw.is_some() => return busy(),
-            Some(ws) if ws.live.is_some() => return steer(ws, text, request_id),
+        match sessions.get_mut(key) {
+            // Stopped while its turn was on its way: it does not begin.
+            Some(ws) if carried && !ws.starting.contains_key(&request_id) => {
+                return Err((StatusCode::CONFLICT, format!("{STOPPED_ON_ITS_WAY}\n")))
+            }
+            Some(ws) if waits(ws) && draw.is_some() => return busy(),
+            // A waiting message whose turn found a run live: back to the
+            // front of the line, the oldest message, for the turn after.
+            Some(ws) if carried && waits(ws) => {
+                ws.starting.remove(&request_id);
+                return Ok(back_to_the_front(ws, text, request_id));
+            }
+            Some(ws) if waits(ws) => return steer(ws, text, request_id),
             Some(ws) => Some((ws.events.clone(), ws.workspace.clone())),
             None => None,
         }
@@ -2213,10 +2416,10 @@ pub async fn send(
     // creating anything, so a send that fails leaves no directory; never for
     // an incognito key, which is not re-created (found on review of #366).
     let workspace = workspace.or_else(|| {
-        if super::incognito::is_incognito_key(&key) || body.attachments.is_empty() {
+        if super::incognito::is_incognito_key(key) || attachments.is_empty() {
             return None;
         }
-        Some(chat.work_dir.join(&key)).filter(|dir| dir.is_dir())
+        Some(chat.work_dir.join(key)).filter(|dir| dir.is_dir())
     });
 
     // The model this turn will run on, followed before the lock: a rebuild
@@ -2241,20 +2444,19 @@ pub async fn send(
         .await
     {
         Ok(entered) => entered,
-        Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}\n")).into_response(),
+        Err(e) => return Err((StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}\n"))),
     };
     // Read before the sessions lock, which every conversation waits on, and
     // only for a model that can see: to a blind one the pixels would render
     // as a placeholder every turn, and the path is already in the text.
-    let named = body
-        .attachments
+    let named = attachments
         .iter()
         .filter(|p| mecha_core::message::image_media_type(std::path::Path::new(p)).is_some())
         .count();
     let sees = bound.agent.vision();
     let images = match workspace {
         Some(workspace) if sees && named > 0 => {
-            let paths = body.attachments;
+            let paths = attachments;
             tokio::task::spawn_blocking(move || attached_images(&workspace, &paths))
                 .await
                 .unwrap_or_else(|e| {
@@ -2267,26 +2469,35 @@ pub async fn send(
     let shown = images.len();
     let mut sessions = chat.sessions.lock().await;
     if chat.stopping.is_cancelled() {
-        return (StatusCode::SERVICE_UNAVAILABLE, "server is shutting down\n").into_response();
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "server is shutting down\n".into(),
+        ));
     }
-    let ws = match ensure_session(&chat, &bound, &mut sessions, &key) {
+    let ws = match ensure_session(chat, &bound, &mut sessions, key) {
         Ok(ws) => ws,
-        Err(e) => return (super::incognito::status_of(&e), format!("{e:#}\n")).into_response(),
+        Err(e) => return Err((super::incognito::status_of(&e), format!("{e:#}\n"))),
     };
+    if carried && ws.starting.remove(&request_id).is_none() {
+        return Err((StatusCode::CONFLICT, format!("{STOPPED_ON_ITS_WAY}\n")));
+    }
     // A run that started while this one waited: steer it after all.
-    if ws.live.is_some() {
+    if waits(ws) {
         if draw.is_some() {
             return busy();
+        }
+        if carried {
+            return Ok(back_to_the_front(ws, text, request_id));
         }
         return steer(ws, text, request_id);
     }
 
     match begin_turn(
-        &chat,
+        chat,
         &bound,
         &mut held,
         &mut sessions,
-        &key,
+        key,
         &text,
         TurnOpts {
             spoken: false,
@@ -2302,20 +2513,16 @@ pub async fn send(
         // blind model, the cap, a file that would not read — for the page to
         // say, since it cleared the chips on send and `tracing` is not a
         // surface anyone holding a phone reads (found on review of #366).
-        Ok(_started) => Json(serde_json::json!({
+        Ok(_started) => Ok(serde_json::json!({
             "started": true,
             "pictures_not_shown": named.saturating_sub(shown),
             "model_sees": sees,
-        }))
-        .into_response(),
-        Err(TurnError::Held) => (
+        })),
+        Err(TurnError::Held) => Err((
             StatusCode::CONFLICT,
-            "conversation is held by a finished run still landing\n",
-        )
-            .into_response(),
-        Err(TurnError::Failed(e)) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}\n")).into_response()
-        }
+            "conversation is held by a finished run still landing\n".into(),
+        )),
+        Err(TurnError::Failed(e)) => Err((StatusCode::INTERNAL_SERVER_ERROR, format!("{e}\n"))),
     }
 }
 
@@ -3082,6 +3289,8 @@ fn begin_turn(
     // run's own registry.
     let run_defers = Arc::new(super::late::deferring(bound.agent.registry()));
     let state_for_task = Arc::clone(chat);
+    // The steers this run never reads, waiting for turns of their own.
+    let unread = Arc::clone(&queue);
     let (tap_tx, tap_rx) = tokio::sync::mpsc::unbounded_channel();
     let (done_tx, done_rx) = tokio::sync::oneshot::channel();
 
@@ -3440,24 +3649,54 @@ fn begin_turn(
                 }
             }
         }
+        let mut next_waits = false;
         if let Some(ws) = sessions.get_mut(&key_for_task) {
             // The forwarder has finished, and the admission lock prevents
             // a final send from arriving between this check and live=None.
-            let discarded: Vec<String> = queued_ids
+            // A steer the run never read waits for a turn of its own, behind
+            // any already waiting, when the run ended as it should; otherwise
+            // the page is told it was not sent.
+            let ids: Vec<String> = queued_ids
                 .lock()
                 .map(|mut ids| ids.drain(..).collect())
                 .unwrap_or_default();
-            if !discarded.is_empty() {
-                let _ = bcast.send(WireEvent::Notice {
-                    text: format!(
-                        "{} queued message(s) arrived too late for this run — send again",
-                        discarded.len()
-                    ),
-                });
-                let _ = bcast.send(WireEvent::QueuedDiscarded {
-                    request_ids: discarded,
+            let texts: Vec<String> = unread
+                .lock()
+                .map(|mut queue| queue.drain(..).collect())
+                .unwrap_or_default();
+            // The texts still queued are the last receipts; any before them
+            // the run read, and the forwarder has receipted.
+            let offset = ids.len().saturating_sub(texts.len());
+            for (text, request_id) in texts.into_iter().zip(ids.iter().skip(offset)) {
+                ws.waiting.push_back(NextTurn {
+                    text,
+                    request_id: request_id.clone(),
                 });
             }
+            let not_carried = match &outcome {
+                _ if state_for_task.stopping.is_cancelled() => Some("the server is shutting down"),
+                Ok(o) => matches!(
+                    o.stop_cause,
+                    mecha_core::agent::StopCause::Stopped
+                        | mecha_core::agent::StopCause::Interrupted
+                        | mecha_core::agent::StopCause::Shutdown
+                )
+                .then_some("the run was stopped"),
+                Err(_) => Some("the run failed"),
+            };
+            if let Some(why) = not_carried {
+                discard_waiting(ws, why);
+            }
+            // Read by the run, receipt not yet sent: delivered, never "not
+            // sent" — a Send again under words the model already took would
+            // send them twice. (The forwarder is joined first, so none
+            // should be left; the label must be right if one is.)
+            for request_id in &ids[..offset] {
+                let _ = bcast.send(WireEvent::QueuedDelivered {
+                    request_id: request_id.clone(),
+                });
+            }
+            next_waits = !ws.waiting.is_empty();
             ws.conversation = Some(conversation);
             ws.live = None;
             // Two orderings, as in the persona host: the outcome is numbered
@@ -3534,6 +3773,15 @@ fn begin_turn(
             }),
             Err(e) => Err(format!("{e:#}")),
         });
+        // The next message waiting for a turn of its own, on a task of its
+        // own: this one keeps its hold on the router through the naming
+        // below, and the next turn takes its own — awaited here, a switch
+        // waiting on this hold would wait on itself.
+        if next_waits {
+            state_for_task
+                .runs
+                .spawn(next_turn(Arc::clone(&state_for_task), key_for_task.clone()));
+        }
 
         // **Last of all, because nothing waits on it.** Naming the
         // conversation costs a small generation on the same server the run
@@ -3765,7 +4013,7 @@ pub async fn cancel(
         Ok(c) => c,
         Err(resp) => return resp,
     };
-    let sessions = chat.sessions.lock().await;
+    let mut sessions = chat.sessions.lock().await;
     let body = body.map(|Json(b)| b).unwrap_or_default();
     // One picture, from its own row: that one alone, running or waiting; the
     // rest of the line stays (review of #606).
@@ -3780,6 +4028,15 @@ pub async fn cancel(
     if body.picture {
         return Json(serde_json::json!({ "cancelled": picture })).into_response();
     }
+    // And the messages waiting for turns of their own: a Stop that let the
+    // next one start at once would not have stopped anything.
+    // A turn on its way out of the line is stopped too: it finds its mark
+    // gone and does not begin.
+    let had_waiting = sessions.get_mut(&key).is_some_and(|ws| {
+        let had = !ws.waiting.is_empty() || !ws.starting.is_empty();
+        discard_waiting(ws, "stopped");
+        had
+    });
     match sessions.get(&key) {
         Some(ws) if ws.live.is_some() => {
             // Order matters: a run parked in `approve()` or `ask_user` never
@@ -3791,7 +4048,7 @@ pub async fn cancel(
             }
             Json(serde_json::json!({ "cancelled": true })).into_response()
         }
-        _ => Json(serde_json::json!({ "cancelled": picture })).into_response(),
+        _ => Json(serde_json::json!({ "cancelled": picture || had_waiting })).into_response(),
     }
 }
 
@@ -4569,6 +4826,8 @@ pub async fn resume(State(state): Chat, Json(body): Json<ResumeBody>) -> axum::r
         key.clone(),
         WebSession {
             late,
+            waiting: VecDeque::new(),
+            starting: Default::default(),
             listen: None,
             conversation: Some(conversation),
             // Resumed from its transcript, so recorded by definition.
@@ -5791,6 +6050,9 @@ pub(super) fn test_chat() -> Arc<ChatState> {
     struct NoRequests;
     #[async_trait::async_trait]
     impl mecha_core::provider::Provider for NoRequests {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "test"
         }
@@ -5841,6 +6103,9 @@ struct Answers(&'static str);
 #[cfg(test)]
 #[async_trait::async_trait]
 impl mecha_core::provider::Provider for Answers {
+    fn local(&self) -> bool {
+        true
+    }
     fn id(&self) -> &str {
         "local"
     }
@@ -5887,6 +6152,9 @@ pub(super) fn test_chat_seeing(
     );
     #[async_trait::async_trait]
     impl mecha_core::provider::Provider for Sees {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "local"
         }
@@ -6076,6 +6344,9 @@ pub(super) fn test_chat_drawing(
     }
     #[async_trait::async_trait]
     impl mecha_core::provider::Provider for Draws {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "local"
         }
@@ -6145,9 +6416,25 @@ pub(super) fn test_chat_drawing(
 /// still in flight for as long as a test needs it to be.
 #[cfg(test)]
 pub(super) fn test_chat_waiting(go: Arc<tokio::sync::Notify>) -> Arc<ChatState> {
-    struct Waits(Arc<tokio::sync::Notify>);
+    test_chat_waiting_counted(go).0
+}
+
+/// [`test_chat_waiting`], with how many requests the model has been sent —
+/// counted on arrival, before each waits — so a test can steer a request
+/// already in flight rather than one the run has yet to make.
+#[cfg(test)]
+pub(super) fn test_chat_waiting_counted(
+    go: Arc<tokio::sync::Notify>,
+) -> (Arc<ChatState>, Arc<std::sync::atomic::AtomicUsize>) {
+    struct Waits(
+        Arc<tokio::sync::Notify>,
+        Arc<std::sync::atomic::AtomicUsize>,
+    );
     #[async_trait::async_trait]
     impl mecha_core::provider::Provider for Waits {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "local"
         }
@@ -6159,6 +6446,7 @@ pub(super) fn test_chat_waiting(go: Arc<tokio::sync::Notify>) -> Arc<ChatState> 
             _: &mecha_core::message::CompletionRequest,
             _: Option<&mecha_core::provider::StreamSink>,
         ) -> Result<mecha_core::message::CompletionResponse> {
+            self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.0.notified().await;
             Ok(mecha_core::message::CompletionResponse {
                 message: Message::assistant(vec![mecha_core::message::Block::Text {
@@ -6180,11 +6468,13 @@ pub(super) fn test_chat_waiting(go: Arc<tokio::sync::Notify>) -> Arc<ChatState> 
             ..Default::default()
         },
     );
-    test_chat_from(
-        Box::new(Waits(go)),
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let chat = test_chat_from(
+        Box::new(Waits(go, Arc::clone(&asked))),
         mecha_core::tool::Registry::new(),
         config,
-    )
+    );
+    (chat, asked)
 }
 
 /// Put an image into `key`'s idle conversation the way an attached picture
@@ -6323,6 +6613,8 @@ mod held_tests {
             "k".to_string(),
             WebSession {
                 late: Default::default(),
+                waiting: VecDeque::new(),
+                starting: Default::default(),
                 listen: None,
                 // Still held by a finished run landing: the `Held` return.
                 conversation: None,
@@ -6399,6 +6691,8 @@ mod held_tests {
             "k".to_string(),
             WebSession {
                 late: Default::default(),
+                waiting: VecDeque::new(),
+                starting: Default::default(),
                 listen: None,
                 conversation: Some(mecha_core::agent::Conversation::new()),
                 session: Recording::Kept(Arc::clone(&session)),
@@ -6502,6 +6796,9 @@ mod held_tests {
         struct Sees(Arc<StdMutex<Vec<mecha_core::message::CompletionRequest>>>);
         #[async_trait::async_trait]
         impl mecha_core::provider::Provider for Sees {
+            fn local(&self) -> bool {
+                true
+            }
             fn id(&self) -> &str {
                 "local"
             }
@@ -6549,6 +6846,8 @@ mod held_tests {
             "k".to_string(),
             WebSession {
                 late: Default::default(),
+                waiting: VecDeque::new(),
+                starting: Default::default(),
                 listen: None,
                 conversation: Some(mecha_core::agent::Conversation::new()),
                 session: Recording::Kept(Arc::clone(&session)),
@@ -6773,6 +7072,8 @@ mod held_tests {
             key.clone(),
             WebSession {
                 late: Default::default(),
+                waiting: VecDeque::new(),
+                starting: Default::default(),
                 listen: None,
                 conversation: None,
                 session: Recording::Incognito(Arc::new(room)),
@@ -6899,6 +7200,8 @@ mod workflow_recording_tests {
                 case.into(),
                 WebSession {
                     late: Default::default(),
+                    waiting: VecDeque::new(),
+                    starting: Default::default(),
                     listen: None,
                     conversation: Some(conversation),
                     session: Recording::Kept(Arc::new(session)),

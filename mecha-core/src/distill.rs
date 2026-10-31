@@ -1877,6 +1877,9 @@ mod tests {
     struct Scripted(String, crate::message::StopReason);
     #[async_trait::async_trait]
     impl crate::provider::Provider for Scripted {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "scripted"
         }
@@ -2295,12 +2298,13 @@ mod tests {
             ),
             &board(),
         );
-        let keys: Vec<&str> = meta
+        let mut keys: Vec<&str> = meta
             .as_object()
             .unwrap()
             .keys()
             .map(String::as_str)
             .collect();
+        keys.sort_unstable();
         assert_eq!(
             keys,
             vec![
@@ -2704,6 +2708,9 @@ mod tests {
 
     #[async_trait::async_trait]
     impl crate::provider::Provider for Recording {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "recording"
         }

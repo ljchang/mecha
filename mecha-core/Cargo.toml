@@ -34,6 +34,24 @@ sha2 = "0.11"
 # hashed with a vetted KDF rather than a hand-rolled one.
 argon2 = "0.6"
 toml_edit = "0.25"
+# Code mode's handle patterns (`tool/code.rs`, CODE-MODE-DESIGN.md §3): linear
+# time on adversarial text, unlike monty's backtracking `re`. Already in the
+# lockfile, under termwiz's fancy-regex.
+regex = "1"
+# Code mode's interpreter (`interpreter/monty.rs`, CODE-MODE-DESIGN.md §7):
+# programs run in `monty-pool`'s subprocess workers, never in-process. Pinned
+# exactly, because the worker binary (`interpreter/worker.rs`) is pinned to
+# the same release and the two speak one wire protocol. Optional and off by
+# default: monty-pool needs Rust 1.96 (the workspace promises 1.89), and its
+# WebSocket transport, which mecha never uses, brings rustls with aws-lc.
+monty-pool = { version = "=1.4.0", optional = true }
+monty-types = { version = "=1.4.0", optional = true }
+# Unpacking the worker from its wheel (a zip); already in the tree.
+flate2 = "1"
+
+[features]
+# The monty backend for code mode, and the worker pool it drives.
+monty = ["dep:monty-pool", "dep:monty-types"]
 
 # Landlock is a Linux LSM; the crate does not build elsewhere. Everything
 # that uses it in sandbox.rs is behind cfg(target_os = "linux").

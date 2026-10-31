@@ -1676,8 +1676,11 @@ async fn prepare_tools_carrying(
                             // callers that name none (eval, batch, a persona
                             // replay): an arm measures what it names (the
                             // owner, 2026-10-11).
+                            // The owner's picture LoRAs ride the same layers,
+                            // resolved against the registry in this home.
                             if opts.surface.is_some() {
                                 tool.with_chat_settings(mecha_core::sampling::chat_path(&home))
+                                    .with_loras(home.clone())
                             } else {
                                 tool
                             }
@@ -1728,6 +1731,73 @@ async fn prepare_tools_carrying(
                 }
             }
             Err(e) => eprintln!("mecha: image library tools not registered — {e:#}"),
+        }
+    }
+    // Video generation, on image generation's rule: only with a server
+    // configured and the switch on. `[video] url` off this machine fails the
+    // load (`Config::validate`), so a tool built here declares no egress
+    // truthfully. Its guide rides with it: without a video server there is
+    // nothing to write a prompt for.
+    if cfg.video.is_some() && !feature_on(Feature::Video) {
+        switched_off(Feature::Video, mecha_core::videogen::tool::NAME);
+        switched_off(Feature::Video, mecha_core::videogen::tool::GUIDE_NAME);
+    }
+    if let Some(video) = cfg.video.clone().filter(|_| feature_on(Feature::Video)) {
+        let asked = |name: &str| {
+            (opts.tools.is_empty() || opts.tools.iter().any(|t| t == name))
+                && cfg.tools.registers(name)
+        };
+        if asked(mecha_core::videogen::tool::NAME) {
+            match mecha_core::videogen::VideoGenerate::new(video.clone()) {
+                Ok(tool) => {
+                    // A LoRA entry left out is said at start, once: a clip
+                    // the owner expects to carry it would otherwise just
+                    // look worse.
+                    for problem in tool.lora_problems() {
+                        eprintln!("mecha: clip LoRAs: {problem}");
+                    }
+                    // The voice library is cloning's, part of `voice`:
+                    // with `voice` off no voice is read, and H3 voices the
+                    // lines itself, said in the result (review of #733).
+                    let tool = tool.with_floor(cfg.system.clone()).with_voices_dir(
+                        cfg.voice
+                            .voices_dir
+                            .clone()
+                            .filter(|_| feature_on(Feature::Voice)),
+                    );
+                    // So are the image library and the persona store: with
+                    // either feature off its tools are unregistered, and a
+                    // clip reads no portrait, description or persona voice
+                    // from it (review of #733, pass 4).
+                    let tool = tool
+                        .with_library_dir(
+                            mecha_core::imagelib::Library::default_dir()
+                                .ok()
+                                .filter(|_| feature_on(Feature::Library)),
+                        )
+                        .with_personas_dir(
+                            mecha_core::persona::Store::default_dir()
+                                .ok()
+                                .filter(|_| feature_on(Feature::Personas)),
+                        );
+                    // A chat's clips keep its last settings, under every
+                    // surface that names itself; never under the callers that
+                    // name none (eval, batch, a persona replay), where an arm
+                    // measures what it names — `image_generate`'s rule.
+                    let tool = if opts.surface.is_some() {
+                        tool.with_chat_settings()
+                    } else {
+                        tool
+                    };
+                    registry.insert(Arc::new(tool));
+                }
+                Err(e) => eprintln!("mecha: video_generate not registered — {e:#}"),
+            }
+        }
+        if asked(mecha_core::videogen::tool::GUIDE_NAME) {
+            registry.insert(Arc::new(mecha_core::videogen::VideoPromptGuide::new(
+                &video,
+            )));
         }
     }
     // `persona_propose` rides with the Personas switch: it stages a candidate

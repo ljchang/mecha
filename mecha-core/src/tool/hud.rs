@@ -139,6 +139,10 @@ impl Tool for HudSources {
         Capabilities::default().private().untrusted()
     }
 
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        Some(crate::tool::effect::Effect::Read)
+    }
+
     async fn call(&self, input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
         let source = input
             .get("source")
@@ -559,6 +563,12 @@ impl Tool for HudPreview {
         Capabilities::default().private().untrusted()
     }
 
+    /// Nothing is saved: loaders run once against the owner's registered
+    /// sources, and `look` draws the draft to check it, not to keep.
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        Some(crate::tool::effect::Effect::Read)
+    }
+
     async fn call(&self, input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
         let store = self.store.clone();
         let wants_look = input.get("look").and_then(Value::as_bool) == Some(true);
@@ -818,6 +828,11 @@ impl Tool for HudPropose {
     /// the turn's taint (review of #659, pass 3).
     fn capabilities(&self) -> Capabilities {
         Capabilities::default()
+    }
+
+    /// `read_only()`, and a write to the dashboard proposal queue.
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        Some(crate::tool::effect::Effect::StoreWrite)
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {

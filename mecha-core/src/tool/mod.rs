@@ -6,7 +6,9 @@
 
 pub mod ask;
 pub mod builtin;
+pub mod code;
 pub mod document;
+pub mod effect;
 pub mod goal_context;
 pub mod hud;
 pub mod image_library;
@@ -318,6 +320,20 @@ pub trait Tool: Send + Sync {
         Capabilities::default()
     }
 
+    /// What this tool does to the world, as its author declares it in code
+    /// ([`effect::Effect`]), or `None` — the default — for a tool nobody has
+    /// classified. `None` resolves [`effect::EffectClass::Undeclared`]:
+    /// unknown is never safe, so forgetting this is never a read.
+    ///
+    /// The declaration only. [`effect::class_of`] applies the operator's
+    /// outbox routing and this tool's [`capabilities`](Tool::capabilities)
+    /// in `docs/ROLLOUT-DESIGN.md` §3.2's order to get the class. Metadata
+    /// today: nothing reads it to loosen the interlock, the jail, approval or
+    /// taint. A wrapper must forward it, as it forwards `capabilities`.
+    fn effect(&self) -> Option<effect::Effect> {
+        None
+    }
+
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput>;
 
     /// State this tool holds that a compaction must not lose.
@@ -539,6 +555,23 @@ pub trait Tool: Send + Sync {
     /// writes. A new tool that starts a child run must therefore override
     /// this, or a live replay will treat it as a read.
     fn runs_a_fresh_conversation(&self) -> bool {
+        false
+    }
+
+    /// Does this tool run a program whose calls come back to the dispatch
+    /// running it, as host calls (`CODE-MODE-DESIGN.md` §7)?
+    ///
+    /// The `code` tool answers `true`, and it is the only tool whose context
+    /// [`Agent::dispatch`](crate::agent::Agent) stamps with
+    /// [`ToolCtx::host_calls`]. Every other tool's context carries `None`, so
+    /// no tool can reach the gate from inside its own call by accident. **A
+    /// wrapper must forward it**, as it forwards `capabilities` and `effect`:
+    /// one that does not leaves the tool it wraps without a channel (so
+    /// `code` refuses to run a program), and makes it read as a plain read.
+    /// Admission also excludes `code` by name for that reason, but the
+    /// channel needs the method. A tool that answers `true` is never
+    /// admitted into a program itself.
+    fn hosts_programs(&self) -> bool {
         false
     }
 
@@ -906,6 +939,24 @@ pub struct ToolCtx {
     /// owner's settings, stamped by the host each turn like `layers`, and the
     /// reference setting everywhere else. Never the model's.
     pub image_tuning: crate::sampling::Tuning,
+    /// This persona's picture LoRA list (`loras::Layer`), stamped like
+    /// `image_tuning`; inherit everywhere else, which is the chat's list
+    /// where a chat layer is configured and none where it is not. Never the
+    /// model's.
+    pub image_loras: crate::loras::Layer,
+    /// Which earlier picture this turn's pictures may build on, stamped by a
+    /// front end with a Continue button on its pictures (the owner,
+    /// 2026-10-27): typed, nothing, and a picture the owner pressed
+    /// Continue, Edit or Regenerate on, that one. `None` where no front end
+    /// offers the button, which leaves it to the call. Never the model's.
+    pub build_on: Option<crate::imagegen::BuildOn>,
+    /// The channel a running `code` call's program makes its host calls
+    /// through, back to the dispatch running it ([`code::HostCalls`],
+    /// `CODE-MODE-DESIGN.md` §7). Stamped per call by `Agent::dispatch`, and
+    /// only on a tool that [`hosts_programs`](Tool::hosts_programs): every
+    /// other call's context is built with `None`, so a child run never
+    /// inherits a parent's channel. Never the model's.
+    pub host_calls: Option<code::HostCalls>,
 }
 
 /// The last confirmed goal, and how the plan has moved against it.
@@ -1102,6 +1153,9 @@ impl Default for ToolCtx {
             layers: false,
             layers_posed: false,
             image_tuning: crate::sampling::Tuning::default(),
+            image_loras: crate::loras::Layer::Inherit,
+            build_on: None,
+            host_calls: None,
         }
     }
 }

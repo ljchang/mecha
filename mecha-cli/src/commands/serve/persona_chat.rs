@@ -220,12 +220,42 @@ struct PersonaSession {
     /// Pictures that finished after the turn that asked for them, and what
     /// the next run is owed about them (`late`).
     late: super::late::LateState,
+    /// Owner messages a run never read, each waiting for a turn of its own,
+    /// oldest first ([`PersonaChats::next_turn`]). A persona's run is one
+    /// request and a closing one that takes no steer, so a message typed
+    /// while it answered used to come back "not delivered" — a second
+    /// picture asked for mid-reply never queued (owner, 2026-10-21). Each
+    /// was metered and judged where it arrived (`steer_or_pause`).
+    waiting: VecDeque<NextTurn>,
+    /// The waiting messages whose turns [`PersonaChats::next_turn`] has
+    /// taken out of the line and is starting — a model switch or a memory
+    /// read away from a run — receipt to words. Still the line's: a Stop, a
+    /// crisis pause or a judge's concern clears them with it
+    /// ([`discard_waiting`]), the judge holds a flagged one back, and a turn
+    /// that finds its own gone does not begin (review of #731, passes 3–5).
+    starting: HashMap<String, String>,
+}
+
+/// The refusal a waiting message's turn meets when its mark in
+/// [`PersonaSession::starting`] was cleared on its way: already answered for
+/// by whoever cleared it, so [`PersonaChats::next_turn`] says nothing more.
+const STOPPED_ON_ITS_WAY: &str = "stopped before its turn began";
+
+/// An owner message waiting for its own turn ([`PersonaSession::waiting`]),
+/// with the unlock it was sent under, which its turn is checked against.
+struct NextTurn {
+    text: String,
+    request_id: String,
+    token: Option<String>,
 }
 
 struct Live {
     cancel: mecha_core::agent::CancelHandle,
     queue: Arc<StdMutex<VecDeque<String>>>,
     queued_ids: Arc<StdMutex<VecDeque<String>>>,
+    /// The unlock each steer was sent under, by its receipt: a steer this
+    /// run never reads waits for its own turn, which is checked against it.
+    tokens: HashMap<String, Option<String>>,
     history: Arc<[Message]>,
     /// The taint of `history`, beside it: a transcript read mid-run without
     /// its chip reads as clean, and with the leak guard lifted (D11) the chip
@@ -237,6 +267,113 @@ struct Live {
     /// picture… 1:24" rather than "typing" (review of #431). Set and cleared
     /// by the run's event forwarder ([`track_working`]).
     working: Arc<StdMutex<Vec<serde_json::Value>>>,
+}
+
+/// A waiting message whose turn found a run live — one that started in the
+/// moment between — back at the front of the line, the oldest message, for
+/// the turn after that run. Its bubble is already drawn, still queued.
+fn back_to_the_front(
+    ps: &mut PersonaSession,
+    text: String,
+    request_id: String,
+    token: Option<&str>,
+) -> serde_json::Value {
+    ps.waiting.push_front(NextTurn {
+        text,
+        request_id,
+        token: token.map(str::to_string),
+    });
+    serde_json::json!({ "steered": false, "waiting": true })
+}
+
+impl PersonaSession {
+    /// Whether any owner message is in the line: waiting, or its turn on
+    /// its way out (`starting`) — which is older than anything typed now, so
+    /// a new message goes behind it (review of #731, pass 6).
+    fn has_line(&self) -> bool {
+        !self.waiting.is_empty() || !self.starting.is_empty()
+    }
+}
+
+/// The owner's messages no run has read yet, oldest first: the live run's
+/// unread steers, then those waiting for a turn of their own. The steers
+/// still in `queue` are the last `queue.len()` receipts (`take_undrained`).
+fn waiting_json(ps: &PersonaSession) -> Vec<serde_json::Value> {
+    // A turn on its way out of the line is still waiting, as far as a page
+    // can tell: until its own `user` event, its bubble stays.
+    let mut out: Vec<serde_json::Value> = ps
+        .starting
+        .iter()
+        .map(|(id, text)| serde_json::json!({ "text": text, "request_id": id }))
+        .collect();
+    if let Some(live) = &ps.live {
+        if let (Ok(queue), Ok(ids)) = (live.queue.lock(), live.queued_ids.lock()) {
+            let offset = ids.len().saturating_sub(queue.len());
+            for (text, id) in queue.iter().zip(ids.iter().skip(offset)) {
+                out.push(serde_json::json!({ "text": text, "request_id": id }));
+            }
+        }
+    }
+    for next in &ps.waiting {
+        out.push(serde_json::json!({ "text": next.text, "request_id": next.request_id }));
+    }
+    out
+}
+
+/// Tell the page these waiting messages will not be sent, and why: each
+/// bubble then offers Send again. Empties `waiting`, and `starting` — a turn
+/// on its way out of the line is still the line's, and finds its mark gone.
+fn discard_waiting(ps: &mut PersonaSession, why: &str) {
+    if ps.waiting.is_empty() && ps.starting.is_empty() {
+        return;
+    }
+    let ids: Vec<String> = ps
+        .starting
+        .drain()
+        .map(|(id, _)| id)
+        .chain(ps.waiting.drain(..).map(|n| n.request_id))
+        .collect();
+    tracing::info!(
+        count = ids.len(),
+        why,
+        "waiting persona chat messages not sent"
+    );
+    let _ = ps.events.send(WireEvent::Notice {
+        text: format!("{} waiting message(s) not sent: {why}", ids.len()),
+    });
+    let _ = ps
+        .events
+        .send(WireEvent::QueuedDiscarded { request_ids: ids });
+}
+
+/// An owner message the crisis sensor held back (`pending_crisis`), into the
+/// conversation and its record, so the words are kept although the persona
+/// never answers them. Left for the next hand-back while a run holds the
+/// conversation.
+fn record_pending_crisis(ps: &mut PersonaSession) {
+    let Some(convo) = ps.conversation.as_mut() else {
+        return;
+    };
+    let Some(said) = ps.pending_crisis.take() else {
+        return;
+    };
+    let tail_is_owner = convo
+        .messages
+        .last()
+        .is_some_and(|m| m.role == mecha_core::message::Role::User);
+    let recorded = if tail_is_owner {
+        mecha_core::agent::append_user_text(&mut convo.messages, said);
+        ps.session.append(&Record::Rewrite {
+            messages: convo.messages.clone(),
+        })
+    } else {
+        let user = Message::user(&said);
+        convo.push(user.clone());
+        ps.session.append(&Record::Message(user))
+    };
+    if let Err(e) = recorded {
+        tracing::warn!("a paused crisis message was not recorded: {e:#}");
+    }
 }
 
 /// Keep `slot` naming the tool a run is waiting on: every call that has
@@ -520,6 +657,13 @@ const MAX_GOAL: usize = 2000;
 
 /// Why a typed Regenerate into a running turn is refused.
 const REGENERATE_WAITS: &str = "a reply is running; Regenerate waits for it to finish";
+
+/// A Continue or an Edit pressed while a reply runs. Folded into the reply
+/// it would reach the persona as bare words, and the picture it was pressed
+/// on is what decides which picture is built on (`BuildOn`, the owner,
+/// 2026-10-27), so it waits rather than drawing something else.
+const PICTURE_CHANGE_WAITS: &str =
+    "a reply is running; a change to a picture waits for it to finish";
 
 /// How long a Regenerate pressed in a call waits for its line: past the
 /// worker's longest wait for an answer under way (`TYPED_ANSWER_END_SECS`,
@@ -1704,6 +1848,8 @@ impl PersonaChats {
                 judge_answered: None,
                 listen: None,
                 late: Default::default(),
+                waiting: VecDeque::new(),
+                starting: Default::default(),
             },
         );
         Ok(serde_json::json!({
@@ -2086,6 +2232,8 @@ impl PersonaChats {
                 judge_answered: None,
                 listen: None,
                 late,
+                waiting: VecDeque::new(),
+                starting: Default::default(),
             },
         );
         Ok(serde_json::json!({ "key": key, "refused": refused_json(&refused) }))
@@ -2777,6 +2925,9 @@ impl PersonaChats {
                 "id": id,
                 "elapsed_ms": ran.as_millis() as u64,
             })),
+            // The owner's messages not yet read by any run, in the order they
+            // will be: a page reloaded while they wait still shows them.
+            "waiting": waiting_json(ps),
             "display": ps.pinned.settings.display,
             // The switches as they stand, not as pinned: they are read live.
             "safety": safety_json(
@@ -2834,7 +2985,7 @@ impl PersonaChats {
         if let Some(call) = call {
             return Ok(self.jobs.queue.cancel_one(key, call));
         }
-        let sessions = self.sessions.lock().await;
+        let mut sessions = self.sessions.lock().await;
         // The owner's Stop ends the chat's picture too, where talking over
         // a reply ends only the reply (`docs/BACKGROUND-JOBS-DESIGN.md` §2.4):
         // two calls here, so no new `CancelReason`. The call screen's picture
@@ -2844,12 +2995,21 @@ impl PersonaChats {
         if picture_only {
             return Ok(job);
         }
+        // And the messages waiting for turns of their own: a Stop that let
+        // the next one start at once would not have stopped anything.
+        // A turn on its way out of the line is stopped too: it finds its
+        // mark gone and does not begin.
+        let had_waiting = sessions.get_mut(key).is_some_and(|ps| {
+            let had = !ps.waiting.is_empty() || !ps.starting.is_empty();
+            discard_waiting(ps, "stopped");
+            had
+        });
         Ok(match sessions.get(key).and_then(|ps| ps.live.as_ref()) {
             Some(live) => {
                 live.cancel.cancel(mecha_core::agent::CancelReason::Stopped);
                 true
             }
-            None => job,
+            None => job || had_waiting,
         })
     }
 
@@ -3233,7 +3393,7 @@ impl PersonaChats {
     pub async fn speak(
         self: &Arc<Self>,
         chat: &Arc<ChatState>,
-        library: &LibraryState,
+        library: &Arc<LibraryState>,
         key: &str,
         utterance: &str,
         tts_streams: bool,
@@ -3304,6 +3464,7 @@ impl PersonaChats {
                     Vec::new(),
                     regenerate.clone(),
                     Some(spoken),
+                    false,
                 )
                 .await
             {
@@ -3345,7 +3506,7 @@ impl PersonaChats {
     pub async fn send(
         self: &Arc<Self>,
         chat: &Arc<ChatState>,
-        library: &LibraryState,
+        library: &Arc<LibraryState>,
         key: &str,
         text: &str,
         request_id: Option<String>,
@@ -3377,7 +3538,7 @@ impl PersonaChats {
     pub async fn send_with(
         self: &Arc<Self>,
         chat: &Arc<ChatState>,
-        library: &LibraryState,
+        library: &Arc<LibraryState>,
         key: &str,
         text: &str,
         request_id: Option<String>,
@@ -3395,6 +3556,7 @@ impl PersonaChats {
             attachments,
             edit,
             None,
+            false,
         )
         .await
     }
@@ -3406,7 +3568,7 @@ impl PersonaChats {
     async fn start(
         self: &Arc<Self>,
         chat: &Arc<ChatState>,
-        library: &LibraryState,
+        library: &Arc<LibraryState>,
         key: &str,
         text: &str,
         request_id: Option<String>,
@@ -3414,6 +3576,7 @@ impl PersonaChats {
         attachments: Vec<String>,
         edit: Option<PanelEdit>,
         spoken: Option<Spoken>,
+        carried: bool,
     ) -> Result<serde_json::Value, Refusal> {
         let text = text.trim().to_string();
         if text.is_empty() {
@@ -3443,19 +3606,44 @@ impl PersonaChats {
         let (pinned, notices, early_pause, wants_files, remembered, already) = {
             let mut sessions = self.sessions.lock().await;
             let ps = sessions.get_mut(key).ok_or(Refusal::NotFound)?;
-            if ps.live.is_some() {
+            // Behind the messages already waiting, too: one typed in the
+            // moment between a run's end and the next one's start keeps its
+            // place in the owner's order. Not a spoken turn: a call is owed
+            // an answer of its own to speak, and a line it joined would
+            // answer it `Busy` (as a live run does) — it goes ahead, and the
+            // waiting turn that loses the race steers into it instead.
+            let behind = !carried && spoken.is_none() && ps.has_line();
+            // Stopped while its turn was on its way: it does not begin.
+            if carried && !ps.starting.contains_key(&request_id) {
+                return Err(Refusal::Conflict(STOPPED_ON_ITS_WAY.into()));
+            }
+            if ps.live.is_some() || behind {
                 if spoken.is_some() {
                     return Err(Refusal::Busy);
                 }
                 // A steer carries text only: a Regenerate folded in would
                 // reach the persona as the bare words (review of #634).
-                if edit.as_ref().is_some_and(|e| e.redraw) {
-                    return Err(Refusal::Conflict(REGENERATE_WAITS.into()));
+                if let Some(e) = &edit {
+                    return Err(Refusal::Conflict(
+                        if e.redraw {
+                            REGENERATE_WAITS
+                        } else {
+                            PICTURE_CHANGE_WAITS
+                        }
+                        .into(),
+                    ));
+                }
+                // Metered and judged where it first arrived; back to the
+                // front of the line, the oldest message, for the turn after.
+                if carried {
+                    ps.starting.remove(&request_id);
+                    return Ok(back_to_the_front(ps, text, request_id, token));
                 }
                 let switches = live_switches.unwrap_or(ps.pinned.settings.safety);
                 let bound = chat.follower.current();
-                return self
-                    .steer_or_pause(chat, key, ps, &name, switches, &bound, text, request_id);
+                return self.steer_or_pause(
+                    chat, key, ps, &name, switches, &bound, text, request_id, token,
+                );
             }
             // A pause needs no model: decided here, from the owner's words,
             // it skips the router hold and the agent below, so 988 is not
@@ -3475,11 +3663,11 @@ impl PersonaChats {
             // What it remembers at chat start (§9.7): material, stored once
             // in the chat's first turn (§5.1), so a chat that carries it needs
             // no read at all.
-            let carried = ps
+            let carries_memory = ps
                 .conversation
                 .as_ref()
                 .is_some_and(|c| mecha_core::persona::recall::carries_chat_start(&c.messages));
-            let remembered = if carried {
+            let remembered = if carries_memory {
                 Some(None)
             } else {
                 ps.memory.clone()
@@ -3605,16 +3793,32 @@ impl PersonaChats {
             return Err(Refusal::Failed("server is shutting down".into()));
         }
         let ps = sessions.get_mut(key).ok_or(Refusal::NotFound)?;
-        if ps.live.is_some() {
+        let behind = !carried && spoken.is_none() && ps.has_line();
+        if carried && ps.starting.remove(&request_id).is_none() {
+            return Err(Refusal::Conflict(STOPPED_ON_ITS_WAY.into()));
+        }
+        if ps.live.is_some() || behind {
             if spoken.is_some() {
                 return Err(Refusal::Busy);
             }
-            if edit.as_ref().is_some_and(|e| e.redraw) {
-                return Err(Refusal::Conflict(REGENERATE_WAITS.into()));
+            if let Some(e) = &edit {
+                return Err(Refusal::Conflict(
+                    if e.redraw {
+                        REGENERATE_WAITS
+                    } else {
+                        PICTURE_CHANGE_WAITS
+                    }
+                    .into(),
+                ));
+            }
+            if carried {
+                return Ok(back_to_the_front(ps, text, request_id, token));
             }
             let switches = live_switches.unwrap_or(ps.pinned.settings.safety);
             let bound = chat.follower.current();
-            return self.steer_or_pause(chat, key, ps, &name, switches, &bound, text, request_id);
+            return self.steer_or_pause(
+                chat, key, ps, &name, switches, &bound, text, request_id, token,
+            );
         }
         // A turn on a binding the transcript has not named says so in its
         // own record, ahead of the turn it governs: `serve/chat.rs`'s rule for
@@ -3698,6 +3902,14 @@ impl PersonaChats {
         // under the call note, and the one edit a call carries is the redraw
         // its screen registered (`call_regenerate`; owner, 2026-10-10).
         let panel = edit.filter(|e| spoken.is_none() || e.redraw);
+        // Which picture this turn's pictures may build on (the owner,
+        // 2026-10-27): a typed turn, none, and a Continue, Edit or Regenerate,
+        // the picture it was pressed on. A spoken turn has no button to
+        // press, so the call decides, as before.
+        let build_on = spoken.is_none().then(|| match &panel {
+            Some(e) => mecha_core::imagegen::BuildOn::Picture(e.picture.clone()),
+            None => mecha_core::imagegen::BuildOn::Nothing,
+        });
         // Asked again with the conversation in hand: `wants_files` was read
         // under the first lock, two awaits ago, and a turn that finished in
         // between may have carried the files already (review of #459).
@@ -3772,7 +3984,13 @@ impl PersonaChats {
         let scene_note = mecha_core::scene::persona_slot(&self.store, &name, &ps.session.meta.id)
             .current()
             .and_then(|scene| {
-                mecha_core::scene::note(&scene, ps.pinned.settings.character.as_deref())
+                // Typed turns have the Continue button; a spoken one names
+                // the picture itself (R10, R11).
+                mecha_core::scene::note(
+                    &scene,
+                    ps.pinned.settings.character.as_deref(),
+                    build_on.is_some(),
+                )
             });
         let notes: Vec<String> = [
             memory_note,
@@ -3872,15 +4090,17 @@ impl PersonaChats {
             spoken: spoken.is_some(),
             request_id: Some(request_id),
         });
-        // The meters: one record per owner turn, never the words (§12.3).
-        if switches.dose {
+        // The meters: one record per owner turn, never the words (§12.3) —
+        // a carried one was metered when it arrived.
+        if switches.dose && !carried {
             if let Err(e) =
                 safety::record_dose(&self.store, &name, &ps.session.meta.id, crisis_state)
             {
                 tracing::warn!("a persona dose record was not written: {e:#}");
             }
         }
-        if hit {
+        // A carried hit was counted when it arrived; a pause now is new.
+        if hit && (pause || !carried) {
             if let Err(e) = safety::record_crisis(&self.store, "web", safety::Tier::Keyword, pause)
             {
                 tracing::warn!("a crisis record was not written: {e:#}");
@@ -3888,6 +4108,9 @@ impl PersonaChats {
         }
         if pause {
             ps.crisis_paused_at = Some(std::time::Instant::now());
+            // The persona does not answer this, nor carry on in character
+            // through the messages waiting behind it: each offers Send again.
+            discard_waiting(ps, "the persona paused");
             // No run starts to arm it, so armed here: a picture the paused
             // turn carried is private now, not at the next run — and
             // checkpointed, or a resume would read the chat clean (review
@@ -3935,11 +4158,13 @@ impl PersonaChats {
         // (§12.2): a concern while the persona is still answering stops the
         // run and pauses it, as a keyword hit does. Not inside the cooldown,
         // which a pause would not break anyway.
-        let judge_job: Option<JudgeJob> = (switches.crisis && !hit && !cooling).then(|| {
-            (self.provider)(&bound, PersonaUse::Judge)
-                .map(|p| (p, bound.model.clone(), said_for_judge.clone()))
-                .map_err(|e| format!("the judge could not be reached: {e:#}"))
-        });
+        // A carried message was judged when it arrived (`steer_or_pause`).
+        let judge_job: Option<JudgeJob> =
+            (switches.crisis && !hit && !cooling && !carried).then(|| {
+                (self.provider)(&bound, PersonaUse::Judge)
+                    .map(|p| (p, bound.model.clone(), said_for_judge.clone()))
+                    .map_err(|e| format!("the judge could not be reached: {e:#}"))
+            });
         // The panel's one-shot reads the owner's words on the persona's own
         // model, untouched as the judge's is (§5.3 step 1).
         let extractor = panel.as_ref().map(|_| {
@@ -3988,6 +4213,7 @@ impl PersonaChats {
             cancel: cancel.clone(),
             queue: Arc::clone(&queue),
             queued_ids: Arc::clone(&queued_ids),
+            tokens: HashMap::new(),
             history: Arc::clone(&before),
             taint: history_taint,
             working: Arc::clone(&working),
@@ -4026,6 +4252,8 @@ impl PersonaChats {
                 layers_posed: false,
                 // The owner's picture settings, read fresh this turn.
                 image_tuning: mecha_core::persona::tuning(&self.store, &name),
+                image_loras: mecha_core::persona::loras(&self.store, &name),
+                build_on,
                 owner: &text,
                 history: &before,
                 panel: panel.is_some(),
@@ -4040,6 +4268,7 @@ impl PersonaChats {
         );
         let judge_cancel = cancel.clone();
         cx = cx.with_cancel_handle(cancel);
+        let unread = Arc::clone(&queue);
         cx.queued_input = Some(queue);
         // A picture outlives the turn that asked for it (§5.4): the run hands
         // it to this chat's slot in the queue and answers at once.
@@ -4055,12 +4284,15 @@ impl PersonaChats {
         let chats = Arc::clone(self);
         let key = key.to_string();
         let stopping = chat.stopping.clone();
+        // What the next waiting message's turn is started with.
+        let chat_handle = Arc::clone(chat);
+        let library_handle = Arc::clone(library);
         // Spawned under the sessions lock, as the assistant's `begin_turn`
         // spawns under its map: `stop` takes this lock before it closes
         // `runs`, so the run is on the tracker before `drain` can report
         // quiescence (found on review of #409).
         chat.runs.spawn(async move {
-            let _held = held;
+            let mut _held = held;
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
             let forwarder = {
                 let run_defers = super::late::deferring(agent.registry());
@@ -4224,23 +4456,59 @@ impl PersonaChats {
             let mut sessions = chats.sessions.lock().await;
             if let Some(ps) = sessions.get_mut(&key) {
                 // A steer that arrived after the run's last read of its queue
-                // was neither delivered nor discarded: say so, as the
-                // assistant's chats do, or the page's bubble never resolves
-                // (found on review of #409). Under the lock `send` steers
-                // under, so none can arrive between this and `live = None`.
-                let discarded: Vec<String> = unconsumed
+                // was neither delivered nor discarded. It waits for a turn of
+                // its own, behind any already waiting, when the run ended as
+                // it should; otherwise the page is told it was not sent, or
+                // its bubble never resolves (found on review of #409). Under
+                // the lock `send` steers under, so none can arrive between
+                // this and `live = None`.
+                let ids: Vec<String> = unconsumed
                     .lock()
                     .map(|mut ids| ids.drain(..).collect())
                     .unwrap_or_default();
-                if !discarded.is_empty() {
-                    let _ = bcast.send(WireEvent::Notice {
-                        text: format!(
-                            "{} queued message(s) arrived too late for this turn — send again",
-                            discarded.len()
-                        ),
+                let texts: Vec<String> = unread
+                    .lock()
+                    .map(|mut queue| queue.drain(..).collect())
+                    .unwrap_or_default();
+                let mut tokens = ps
+                    .live
+                    .as_mut()
+                    .map(|live| std::mem::take(&mut live.tokens))
+                    .unwrap_or_default();
+                // The texts still queued are the last receipts
+                // (`take_undrained`); any before them the run read.
+                let offset = ids.len().saturating_sub(texts.len());
+                for (text, request_id) in texts.into_iter().zip(ids.iter().skip(offset)) {
+                    ps.waiting.push_back(NextTurn {
+                        text,
+                        token: tokens.remove(request_id).flatten(),
+                        request_id: request_id.clone(),
                     });
-                    let _ = bcast.send(WireEvent::QueuedDiscarded {
-                        request_ids: discarded,
+                }
+                let not_carried = match &outcome {
+                    _ if stopping.is_cancelled() => Some("the server is shutting down"),
+                    _ if stopped_by_judge || ps.pending_crisis.is_some() => {
+                        Some("the persona paused")
+                    }
+                    Ok(o) => matches!(
+                        o.stop_cause,
+                        mecha_core::agent::StopCause::Stopped
+                            | mecha_core::agent::StopCause::Interrupted
+                            | mecha_core::agent::StopCause::Shutdown
+                    )
+                    .then_some("the turn was stopped"),
+                    Err(_) => Some("the turn failed"),
+                };
+                if let Some(why) = not_carried {
+                    discard_waiting(ps, why);
+                }
+                // Read by the run, receipt not yet sent: delivered, never "not
+                // sent" — a Send again under words the persona already took
+                // would send them twice. (The forwarder is joined first, so
+                // none should be left; the label must be right if one is.)
+                for request_id in &ids[..offset] {
+                    let _ = bcast.send(WireEvent::QueuedDelivered {
+                        request_id: request_id.clone(),
                     });
                 }
                 // A first turn that failed was rolled back to nothing; the
@@ -4274,27 +4542,7 @@ impl PersonaChats {
                 }
                 // A crisis message typed while this run was live: recorded
                 // now, beside the run it stopped, so the words are kept.
-                if let Some(said) = ps.pending_crisis.take() {
-                    if let Some(convo) = ps.conversation.as_mut() {
-                        let tail_is_owner = convo
-                            .messages
-                            .last()
-                            .is_some_and(|m| m.role == mecha_core::message::Role::User);
-                        let recorded = if tail_is_owner {
-                            mecha_core::agent::append_user_text(&mut convo.messages, said);
-                            session.append(&Record::Rewrite {
-                                messages: convo.messages.clone(),
-                            })
-                        } else {
-                            let user = Message::user(&said);
-                            convo.push(user.clone());
-                            session.append(&Record::Message(user))
-                        };
-                        if let Err(e) = recorded {
-                            tracing::warn!("a paused crisis message was not recorded: {e:#}");
-                        }
-                    }
-                }
+                record_pending_crisis(ps);
             }
             drop(sessions);
             let _ = bcast.send(done);
@@ -4342,7 +4590,7 @@ impl PersonaChats {
             if let Some(handle) = judge_handle {
                 // The reply is handed back: the router need not stay held for
                 // the wait, and a shutdown need not wait out the judge.
-                drop(_held);
+                drop(_held.take());
                 verdict = Some(tokio::select! {
                     joined = tokio::time::timeout(JUDGE_WAIT, handle) => match joined {
                         Ok(Ok(v)) => v,
@@ -4355,6 +4603,13 @@ impl PersonaChats {
             if let Some(v) = verdict {
                 chats.apply_verdict(&key, v, stopped_by_judge, None).await;
             }
+            // The next message waiting for a turn of its own, once this
+            // reply is handed back and its verdict is in — a concern clears
+            // the line. Not under this run's hold on the router: the next
+            // turn takes its own, and a switch waiting on this one would
+            // wait on itself.
+            drop(_held.take());
+            chats.next_turn(chat_handle, library_handle, key).await;
         });
         drop(sessions);
         // How many pictures the text names and the persona was not shown, for
@@ -4368,6 +4623,74 @@ impl PersonaChats {
 }
 
 impl PersonaChats {
+    /// Start the oldest message waiting for a turn of its own
+    /// ([`PersonaSession::waiting`]) once no run holds the chat. Each run's
+    /// end calls it, so the line drains one turn at a time — one picture per
+    /// run, so each message asking for one queues its own. Boxed: the end of
+    /// the run `start` spawned calls it, and it calls `start`.
+    fn next_turn(
+        self: Arc<Self>,
+        chat: Arc<ChatState>,
+        library: Arc<LibraryState>,
+        key: String,
+    ) -> futures::future::BoxFuture<'static, ()> {
+        Box::pin(async move {
+            let next = {
+                let mut sessions = self.sessions.lock().await;
+                let Some(ps) = sessions.get_mut(&key) else {
+                    return;
+                };
+                // A run holds it already — a message sent in the moment
+                // between — and that run's end starts the next.
+                if ps.live.is_some() {
+                    return;
+                }
+                if chat.stopping.is_cancelled() {
+                    discard_waiting(ps, "the server is shutting down");
+                    return;
+                }
+                let next = ps.waiting.pop_front();
+                if let Some(n) = &next {
+                    ps.starting.insert(n.request_id.clone(), n.text.clone());
+                }
+                next
+            };
+            let Some(next) = next else {
+                return;
+            };
+            let started = self
+                .start(
+                    &chat,
+                    &library,
+                    &key,
+                    &next.text,
+                    Some(next.request_id.clone()),
+                    next.token.as_deref(),
+                    Vec::new(),
+                    None,
+                    None,
+                    true,
+                )
+                .await;
+            // Refused — relocked, unapproved, a recording that would not
+            // write: neither it nor those behind it will be sent, and the
+            // page says so, each bubble offering Send again.
+            if let Err(refused) = started {
+                // Its mark was cleared — a Stop, a pause, a concern — and
+                // whoever cleared it already said what became of it.
+                if matches!(&refused, Refusal::Conflict(m) if m == STOPPED_ON_ITS_WAY) {
+                    return;
+                }
+                let mut sessions = self.sessions.lock().await;
+                if let Some(ps) = sessions.get_mut(&key) {
+                    ps.starting.remove(&next.request_id);
+                    ps.waiting.push_front(next);
+                    discard_waiting(ps, &refused.said());
+                }
+            }
+        })
+    }
+
     /// Act on the crisis judge's verdict for a chat (§12.2). A concern is
     /// counted (tier `judge`), arms the cooldown and sends the warning; with
     /// `cancel_live` it also stops the run in flight (a steer's). A verdict
@@ -4403,15 +4726,35 @@ impl PersonaChats {
                 // — are held for the hand-back to record, as a keyword pause
                 // holds them, rather than coming back "not delivered"
                 // (review of #426).
-                if let (Some((text, request_id)), Some(live)) = (steer, &ps.live) {
-                    let held = match (live.queue.lock(), live.queued_ids.lock()) {
-                        (Ok(mut queue), Ok(mut ids)) => {
-                            take_undrained(&mut queue, &mut ids, &request_id)
+                if let Some((text, request_id)) = steer {
+                    let mut held = false;
+                    if let Some(live) = &ps.live {
+                        held = match (live.queue.lock(), live.queued_ids.lock()) {
+                            (Ok(mut queue), Ok(mut ids)) => {
+                                take_undrained(&mut queue, &mut ids, &request_id)
+                            }
+                            _ => false,
+                        };
+                        live.cancel.cancel(mecha_core::agent::CancelReason::Stopped);
+                        paused = true;
+                    }
+                    // Or on its way out of the line, its turn not yet begun:
+                    // taken back, so the turn finds its mark gone — the
+                    // persona never answers words the judge flagged.
+                    if !held && ps.starting.remove(&request_id).is_some() {
+                        held = true;
+                        paused = true;
+                    }
+                    // Or already waiting for a turn of its own: taken out of
+                    // the line before the persona ever answers it.
+                    if !held {
+                        if let Some(at) = ps.waiting.iter().position(|n| n.request_id == request_id)
+                        {
+                            ps.waiting.remove(at);
+                            held = true;
+                            paused = true;
                         }
-                        _ => false,
-                    };
-                    live.cancel.cancel(mecha_core::agent::CancelReason::Stopped);
-                    paused = true;
+                    }
                     if held {
                         ps.pending_crisis = Some(match ps.pending_crisis.take() {
                             Some(before) => format!("{before}\n\n{text}"),
@@ -4422,6 +4765,13 @@ impl PersonaChats {
                         // "queued" forever (review of #426).
                         let _ = ps.events.send(WireEvent::QueuedDelivered { request_id });
                     }
+                }
+                // A concern clears the line: the persona does not carry on in
+                // character through what waits behind it.
+                discard_waiting(ps, "the persona paused");
+                // With no run to hand back, the held words are kept now.
+                if ps.live.is_none() {
+                    record_pending_crisis(ps);
                 }
                 if let Err(e) =
                     safety::record_crisis(&self.store, "web", safety::Tier::Judge, paused)
@@ -4486,6 +4836,7 @@ impl PersonaChats {
         bound: &crate::follow::Bound,
         text: String,
         request_id: String,
+        token: Option<&str>,
     ) -> Result<serde_json::Value, Refusal> {
         if switches.dose {
             if let Err(e) = safety::record_dose(
@@ -4509,6 +4860,7 @@ impl PersonaChats {
             if !cooling {
                 ps.crisis_paused_at = Some(std::time::Instant::now());
                 ps.pending_crisis = Some(text.clone());
+                discard_waiting(ps, "the persona paused");
                 if let Some(live) = &ps.live {
                     live.cancel.cancel(mecha_core::agent::CancelReason::Stopped);
                 }
@@ -4521,6 +4873,24 @@ impl PersonaChats {
                 let _ = ps.events.send(WireEvent::Crisis {
                     text: safety::SAFE_MESSAGE.to_string(),
                 });
+                // No run to hand the words back: reached behind the waiting
+                // line, between turns. Kept now, and the page told the
+                // paused turn is over — or the words were never recorded,
+                // and the next run's hand-back took the stale hold for a
+                // pause of its own (review of #731, pass 3).
+                if ps.live.is_none() {
+                    record_pending_crisis(ps);
+                    if let Some(convo) = ps.conversation.as_ref() {
+                        let taint = convo.taint;
+                        let _ = ps.events.send(WireEvent::Done {
+                            ok: true,
+                            stop: Some("CrisisPause".into()),
+                            taint_private: taint.private,
+                            taint_untrusted: taint.untrusted,
+                            error: None,
+                        });
+                    }
+                }
                 return Ok(serde_json::json!({ "steered": false, "paused": true }));
             }
         }
@@ -4565,25 +4935,43 @@ impl PersonaChats {
                 }
             }
         }
-        steer(ps, text, request_id)
+        steer(ps, text, request_id, token)
     }
 }
 
-/// Fold text into the run in flight, as the assistant's chats steer.
+/// Fold text into the run in flight, as the assistant's chats steer; with no
+/// run, or with messages already waiting, it waits behind them for a turn of
+/// its own — a run the line is draining through must not read a newer
+/// message ahead of older ones (review of #731, pass 4). A steer the run
+/// never reads waits the same way once it ends.
 fn steer(
-    ps: &PersonaSession,
+    ps: &mut PersonaSession,
     text: String,
     request_id: String,
+    token: Option<&str>,
 ) -> Result<serde_json::Value, Refusal> {
-    let live = ps
-        .live
-        .as_ref()
-        .ok_or_else(|| Refusal::Conflict("no run to steer".into()))?;
-    let (Ok(mut queue), Ok(mut ids)) = (live.queue.lock(), live.queued_ids.lock()) else {
-        return Err(Refusal::Failed("steering queue poisoned".into()));
+    let waiting = ps.has_line();
+    let Some(live) = ps.live.as_mut().filter(|_| !waiting) else {
+        ps.waiting.push_back(NextTurn {
+            text: text.clone(),
+            request_id: request_id.clone(),
+            token: token.map(str::to_string),
+        });
+        let _ = ps.events.send(WireEvent::Queued {
+            text,
+            request_id: Some(request_id),
+        });
+        return Ok(serde_json::json!({ "steered": false, "waiting": true }));
     };
-    ids.push_back(request_id.clone());
-    queue.push_back(text.clone());
+    {
+        let (Ok(mut queue), Ok(mut ids)) = (live.queue.lock(), live.queued_ids.lock()) else {
+            return Err(Refusal::Failed("steering queue poisoned".into()));
+        };
+        ids.push_back(request_id.clone());
+        queue.push_back(text.clone());
+    }
+    live.tokens
+        .insert(request_id.clone(), token.map(str::to_string));
     let _ = ps.events.send(WireEvent::Queued {
         text,
         request_id: Some(request_id),
@@ -5963,6 +6351,9 @@ mod tests {
 
     #[async_trait::async_trait]
     impl mecha_core::provider::Provider for Capture {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "local"
         }
@@ -6101,7 +6492,7 @@ mod tests {
     struct World {
         root: PathBuf,
         chat: Arc<ChatState>,
-        library: LibraryState,
+        library: Arc<LibraryState>,
         seen: Arc<StdMutex<Vec<CompletionRequest>>>,
         /// What the assistant's agent was asked: the chat's follower, which
         /// a Listen tap's director runs on.
@@ -6113,6 +6504,8 @@ mod tests {
         drawn: Arc<StdMutex<Vec<serde_json::Value>>>,
         /// Whether each of those calls ran with the conversation untrusted.
         drawn_untrusted: Arc<StdMutex<Vec<bool>>>,
+        /// What each of those calls was stamped to build on (`BuildOn`).
+        drawn_build_on: Arc<StdMutex<Vec<Option<mecha_core::imagegen::BuildOn>>>>,
         /// How many panel extractions were asked (`Capture`'s `.5`).
         extracted: Arc<StdMutex<usize>>,
         /// With a length, the stand-in renders as the real tool does: a
@@ -6159,6 +6552,7 @@ mod tests {
         Arc<StdMutex<Vec<serde_json::Value>>>,
         Arc<StdMutex<Vec<bool>>>,
         Arc<StdMutex<Option<std::time::Duration>>>,
+        Arc<StdMutex<Vec<Option<mecha_core::imagegen::BuildOn>>>>,
     );
 
     #[async_trait::async_trait]
@@ -6189,6 +6583,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(ctx.taint.is_some_and(|t| t.untrusted));
+            self.3.lock().unwrap().push(ctx.build_on.clone());
             const DRAWN: &str =
                 "image: images/stub.png\nA new picture. It is on the owner's screen; you have not seen it.";
             let Some(takes) = *self.2.lock().unwrap() else {
@@ -6335,6 +6730,7 @@ mod tests {
         pool.insert(Arc::new(mecha_core::tool::image_view::ImageView));
         let drawn = Arc::new(StdMutex::new(Vec::new()));
         let drawn_untrusted = Arc::new(StdMutex::new(Vec::new()));
+        let drawn_build_on = Arc::new(StdMutex::new(Vec::new()));
         let draw_takes = Arc::new(StdMutex::new(None));
         if clips {
             pool.insert(Arc::new(ClipStub));
@@ -6344,6 +6740,7 @@ mod tests {
                 Arc::clone(&drawn),
                 Arc::clone(&drawn_untrusted),
                 Arc::clone(&draw_takes),
+                Arc::clone(&drawn_build_on),
             )));
         }
         let mut config = mecha_core::config::Config::default();
@@ -6365,7 +6762,7 @@ mod tests {
             personas,
         );
         World {
-            library: LibraryState::new(root.join("imagelib")),
+            library: Arc::new(LibraryState::new(root.join("imagelib"))),
             root,
             chat,
             seen,
@@ -6375,6 +6772,7 @@ mod tests {
             judged,
             drawn,
             drawn_untrusted,
+            drawn_build_on,
             extracted,
             draw_takes,
         }
@@ -7128,6 +7526,80 @@ mod tests {
         assert!(w.drawn.lock().unwrap().is_empty());
     }
 
+    /// What a turn's pictures build on is the owner's press, stamped on the
+    /// run (the owner, 2026-10-27): a typed turn, nothing; a Continue (the
+    /// panel's words), the picture it was pressed on. Fails where nothing
+    /// was stamped and the call was left to decide.
+    #[tokio::test]
+    async fn a_typed_turn_builds_on_nothing_and_a_continue_on_its_picture() {
+        use mecha_core::imagegen::BuildOn;
+        let w = world_built(Mode::Call("image_generate".into()), |_| {}, true);
+        let key = open_chat(&w).await;
+        turn(&w, &key, "draw the harbour").await;
+        assert_eq!(
+            w.drawn_build_on.lock().unwrap().clone(),
+            vec![Some(BuildOn::Nothing)],
+            "a typed turn builds on nothing"
+        );
+        let edit = PanelEdit {
+            picture: "images/a.png".into(),
+            mask: None,
+            words: "now at dusk".into(),
+            redraw: false,
+            regions: Vec::new(),
+        };
+        turn_as(&w, &key, "Continue images/a.png: now at dusk", Some(edit)).await;
+        let built = w.drawn_build_on.lock().unwrap().clone();
+        assert!(built.len() >= 2, "{built:?}");
+        assert!(
+            built[1..]
+                .iter()
+                .all(|b| b == &Some(BuildOn::Picture("images/a.png".into()))),
+            "a Continue builds on its picture: {built:?}"
+        );
+    }
+
+    /// A Continue or an Edit into a running turn is refused, as a Regenerate
+    /// is: folded into the reply it would reach the persona as bare words,
+    /// and the picture it was pressed on would be lost (the owner,
+    /// 2026-10-27). Fails where only a Regenerate waited.
+    #[tokio::test]
+    async fn a_continue_into_a_running_turn_waits() {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let w = world_built(Mode::Gate(Arc::clone(&gate)), |_| {}, true);
+        let key = open_chat(&w).await;
+        w.personas()
+            .send(&w.chat, &w.library, &key, "Hello", None, None)
+            .await
+            .unwrap();
+        let edit = PanelEdit {
+            picture: "images/a.png".into(),
+            mask: None,
+            words: "now at dusk".into(),
+            redraw: false,
+            regions: Vec::new(),
+        };
+        let refused = w
+            .personas()
+            .send_with(
+                &w.chat,
+                &w.library,
+                &key,
+                "Continue images/a.png: now at dusk",
+                None,
+                None,
+                Vec::new(),
+                Some(edit),
+            )
+            .await;
+        assert!(
+            matches!(&refused, Err(Refusal::Conflict(why)) if why == PICTURE_CHANGE_WAITS),
+            "{refused:?}"
+        );
+        gate.notify_waiters();
+        assert!(w.drawn.lock().unwrap().is_empty());
+    }
+
     /// The extraction reads the picture's record, so an untrusted record
     /// arms the conversation before the harness draws: the fields the call
     /// sets are stamped untrusted, never laundered by a re-wording
@@ -7787,7 +8259,31 @@ mod tests {
                 .map(|m| m.text().matches("blue raincoat").count())
                 .sum();
             assert_eq!(copies, 1, "a note, never stored in a message");
+            // A typed turn has the Continue button (R11).
+            assert!(
+                newest.contains("Only the owner's Continue on a picture builds on it"),
+                "{newest}"
+            );
         }
+        // A spoken turn has none, so the call still names the picture
+        // itself (R10; review of #754, pass 3).
+        w.personas()
+            .bind_call(&w.library, &key, None)
+            .await
+            .unwrap();
+        spoken(&w, &key, "And after that?").await;
+        let newest = w
+            .seen
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .messages
+            .last()
+            .unwrap()
+            .text();
+        assert!(newest.contains("pass it as `picture`"), "{newest}");
+        assert!(!newest.contains("Continue on a picture"), "{newest}");
     }
 
     /// §9.7, on every turn: past the first reply, an owner message that
@@ -9296,18 +9792,16 @@ mod tests {
         }
     }
 
-    /// Every steer resolves: delivered into the run, or said to have come
-    /// too late — never left pending on the page (review of #409).
+    /// Every steer resolves: delivered into the run, or, when the run never
+    /// read it, started as a turn of its own — never left pending on the
+    /// page (review of #409), and never "not delivered" for a run that ended
+    /// as it should (owner, 2026-10-21: a second picture asked for mid-reply
+    /// never queued).
     #[tokio::test]
-    async fn a_steer_is_always_delivered_or_discarded() {
+    async fn a_steer_is_always_delivered_or_given_its_own_turn() {
         let gate = Arc::new(tokio::sync::Notify::new());
         let w = world_with(Mode::Gate(Arc::clone(&gate)));
-        let opened = w
-            .personas()
-            .open(&w.chat, &w.library, "mara", None, None)
-            .await
-            .unwrap();
-        let key = opened["key"].as_str().unwrap().to_string();
+        let key = open_chat(&w).await;
         let (mut rx, _) = w
             .personas()
             .subscribe(&w.library, &key, None)
@@ -9318,14 +9812,97 @@ mod tests {
             .await
             .unwrap();
         // The request is in flight; steer it, then let the model answer.
-        for _ in 0..200 {
-            if !w.seen.lock().unwrap().is_empty() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        asked(&w, 1).await;
+        for (text, id) in [("Also this", "r-1"), ("And this", "r-2")] {
+            let steered = w
+                .personas()
+                .send(&w.chat, &w.library, &key, text, Some(id.into()), None)
+                .await
+                .unwrap();
+            assert_eq!(steered["steered"], true);
         }
-        let steered = w
+        // A reloaded page still sees them, in order.
+        let t = w
             .personas()
+            .transcript(&w.chat, &w.library, &key, None)
+            .await
+            .unwrap();
+        let waiting: Vec<&str> = t["waiting"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w["request_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(waiting, ["r-1", "r-2"], "{t}");
+        // One answer per request the gate lets through: the first run is a
+        // single request, so neither steer is read in it.
+        let mut turns = Vec::new();
+        let mut dones = 0;
+        gate.notify_one();
+        while dones < 3 {
+            match next(&mut rx, |ev| match ev {
+                WireEvent::User { request_id, .. } => Some(Ok(request_id.clone())),
+                WireEvent::QueuedDelivered { request_id } => {
+                    Some(Err(format!("delivered {request_id}")))
+                }
+                WireEvent::QueuedDiscarded { request_ids } => {
+                    Some(Err(format!("discarded {request_ids:?}")))
+                }
+                WireEvent::Done { .. } => Some(Ok(None)),
+                _ => None,
+            })
+            .await
+            {
+                Ok(Some(id)) => {
+                    turns.push(id);
+                    gate.notify_one();
+                }
+                Ok(None) => dones += 1,
+                Err(e) => panic!("a single-request run cannot read a steer: {e}"),
+            }
+        }
+        // The first is "Hello"'s own turn, which the subscription also saw.
+        assert_eq!(
+            turns[1..],
+            ["r-1", "r-2"],
+            "each waits for a turn of its own, in order"
+        );
+        let seen = w.seen.lock().unwrap();
+        assert_eq!(seen.len(), 3);
+        let last_owner = |req: &CompletionRequest| {
+            req.messages
+                .iter()
+                .rev()
+                .find(|m| m.role == mecha_core::message::Role::User)
+                .map(|m| m.text())
+                .unwrap_or_default()
+        };
+        assert!(last_owner(&seen[1]).contains("Also this"));
+        assert!(
+            !last_owner(&seen[1]).contains("And this"),
+            "one message per turn"
+        );
+        assert!(last_owner(&seen[2]).contains("And this"));
+    }
+
+    /// The owner's Stop ends the messages waiting behind the run too, each
+    /// told it was not sent — a Stop that let the next one start at once
+    /// would not have stopped anything.
+    #[tokio::test]
+    async fn a_stop_does_not_send_the_waiting_messages() {
+        let w = world_with(Mode::Hang);
+        let key = open_chat(&w).await;
+        let (mut rx, _) = w
+            .personas()
+            .subscribe(&w.library, &key, None)
+            .await
+            .unwrap();
+        w.personas()
+            .send(&w.chat, &w.library, &key, "Hello", None, None)
+            .await
+            .unwrap();
+        asked(&w, 1).await;
+        w.personas()
             .send(
                 &w.chat,
                 &w.library,
@@ -9336,28 +9913,280 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(steered["steered"], true);
-        gate.notify_waiters();
-        gate.notify_one();
-        let resolved = next(&mut rx, |ev| match ev {
-            WireEvent::QueuedDelivered { request_id } if request_id == "r-1" => Some("delivered"),
-            WireEvent::QueuedDiscarded { request_ids }
-                if request_ids.iter().any(|r| r == "r-1") =>
-            {
-                Some("discarded")
-            }
+        assert!(w
+            .personas()
+            .cancel(&w.library, &key, None, false, None)
+            .await
+            .unwrap());
+        let discarded = next(&mut rx, |ev| match ev {
+            WireEvent::QueuedDiscarded { request_ids } => Some(request_ids.clone()),
+            WireEvent::User {
+                request_id: Some(id),
+                ..
+            } if id == "r-1" => panic!("a stopped run's steer was sent"),
             _ => None,
         })
         .await;
-        assert!(["delivered", "discarded"].contains(&resolved));
-        // Keep the gate open for any turn the steer started, and let it end.
-        for _ in 0..3 {
-            gate.notify_one();
-        }
+        assert_eq!(discarded, ["r-1"]);
         next(&mut rx, |ev| {
             matches!(ev, WireEvent::Done { .. }).then_some(())
         })
         .await;
+        // Nothing else starts: the chat is idle and holds its conversation.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(w.seen.lock().unwrap().len(), 1);
+        let t = w
+            .personas()
+            .transcript(&w.chat, &w.library, &key, None)
+            .await
+            .unwrap();
+        assert_eq!(t["running"], false, "{t}");
+        assert_eq!(t["waiting"], serde_json::json!([]), "{t}");
+    }
+
+    /// A crisis message sent behind the waiting line, with no run live —
+    /// the moment between a run's end and the next waiting turn's start —
+    /// is kept and its pause ended on the page, as one that stops a run is
+    /// at that run's hand-back. It used to wait for a hand-back that never
+    /// came: its words were never recorded, and the next run took the stale
+    /// hold for a pause of its own (review of #731, pass 3).
+    #[tokio::test]
+    async fn a_crisis_message_behind_the_line_is_kept_with_no_run_live() {
+        let w = world();
+        let key = open_chat(&w).await;
+        let chats = w.personas();
+        let (mut rx, _) = w
+            .personas()
+            .subscribe(&w.library, &key, None)
+            .await
+            .unwrap();
+        {
+            let mut sessions = chats.sessions.lock().await;
+            let ps = sessions.get_mut(&key).unwrap();
+            assert!(ps.live.is_none());
+            ps.waiting.push_back(NextTurn {
+                text: "and a heron".into(),
+                request_id: "r-1".into(),
+                token: None,
+            });
+        }
+        let paused = w
+            .personas()
+            .send(
+                &w.chat,
+                &w.library,
+                &key,
+                "honestly I want to die",
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(paused["paused"], true, "{paused}");
+        let stop = next(&mut rx, |ev| match ev {
+            WireEvent::Done { stop, .. } => Some(stop.clone()),
+            _ => None,
+        })
+        .await;
+        assert_eq!(
+            stop.as_deref(),
+            Some("CrisisPause"),
+            "the page's turn never ended"
+        );
+        let sessions = chats.sessions.lock().await;
+        let ps = sessions.get(&key).unwrap();
+        assert!(
+            ps.pending_crisis.is_none(),
+            "the words wait for a hand-back that never comes"
+        );
+        assert!(
+            ps.waiting.is_empty(),
+            "the persona would carry on in character"
+        );
+        let said = ps
+            .conversation
+            .as_ref()
+            .unwrap()
+            .messages
+            .iter()
+            .any(|m| m.text().contains("honestly I want to die"));
+        assert!(said, "the paused words were not kept");
+        drop(sessions);
+        assert!(
+            w.seen.lock().unwrap().is_empty(),
+            "the persona answered a crisis turn"
+        );
+    }
+
+    /// A Stop pressed while a waiting message's turn is on its way out of
+    /// the line — a model switch away from a run — stops that turn too: it
+    /// finds its mark gone and does not begin (review of #731, pass 3).
+    #[tokio::test]
+    async fn a_stop_ends_a_waiting_turn_already_on_its_way() {
+        let w = world();
+        let key = open_chat(&w).await;
+        let chats = w.personas();
+        chats
+            .sessions
+            .lock()
+            .await
+            .get_mut(&key)
+            .unwrap()
+            .starting
+            .insert("r-1".into(), "and a heron".into());
+        assert!(
+            w.personas()
+                .cancel(&w.library, &key, None, false, None)
+                .await
+                .unwrap(),
+            "a Stop with a turn on its way stopped nothing"
+        );
+        let refused = w
+            .personas()
+            .start(
+                &w.chat,
+                &w.library,
+                &key,
+                "and a heron",
+                Some("r-1".into()),
+                None,
+                Vec::new(),
+                None,
+                None,
+                true,
+            )
+            .await;
+        assert!(matches!(refused, Err(Refusal::Conflict(_))), "{refused:?}");
+        assert!(
+            w.seen.lock().unwrap().is_empty(),
+            "a stopped turn reached the model"
+        );
+    }
+
+    /// A judge's concern for a message whose turn is already on its way out
+    /// of the line holds it back: the words are kept, the persona pauses,
+    /// and the turn finds its mark gone — the persona never answers words the
+    /// judge flagged, unjudged, as its turn skips the judge (review of #731,
+    /// pass 5). And the pause clears every other turn on its way too.
+    #[tokio::test]
+    async fn a_concern_holds_back_a_turn_already_on_its_way() {
+        let w = world();
+        let key = open_chat(&w).await;
+        let chats = w.personas();
+        {
+            let mut sessions = chats.sessions.lock().await;
+            let ps = sessions.get_mut(&key).unwrap();
+            ps.starting.insert("r-1".into(), "and a heron".into());
+            ps.starting.insert("r-2".into(), "and a crane".into());
+        }
+        chats
+            .apply_verdict(
+                &key,
+                judge::Verdict::Concern,
+                false,
+                Some(("and a heron".into(), "r-1".into())),
+            )
+            .await;
+        {
+            let sessions = chats.sessions.lock().await;
+            let ps = sessions.get(&key).unwrap();
+            assert!(
+                ps.starting.is_empty(),
+                "a turn on its way survived the pause"
+            );
+            assert!(ps.crisis_paused_at.is_some(), "the concern paused nothing");
+            let kept = ps
+                .conversation
+                .as_ref()
+                .unwrap()
+                .messages
+                .iter()
+                .any(|m| m.text().contains("and a heron"));
+            assert!(kept, "the flagged words were not kept");
+        }
+        for id in ["r-1", "r-2"] {
+            let refused = chats
+                .start(
+                    &w.chat,
+                    &w.library,
+                    &key,
+                    "and a heron",
+                    Some(id.into()),
+                    None,
+                    Vec::new(),
+                    None,
+                    None,
+                    true,
+                )
+                .await;
+            assert!(
+                matches!(&refused, Err(Refusal::Conflict(m)) if m == STOPPED_ON_ITS_WAY),
+                "{id}: {refused:?}"
+            );
+        }
+        assert!(
+            w.seen.lock().unwrap().is_empty(),
+            "a held turn reached the model"
+        );
+    }
+
+    /// A message typed while an older one's turn is on its way out of the
+    /// line goes behind it, not ahead: the turn on its way is the older
+    /// message (review of #731, pass 6).
+    #[tokio::test]
+    async fn a_message_typed_while_a_turn_is_on_its_way_goes_behind_it() {
+        let w = world();
+        let key = open_chat(&w).await;
+        let chats = w.personas();
+        chats
+            .sessions
+            .lock()
+            .await
+            .get_mut(&key)
+            .unwrap()
+            .starting
+            .insert("r-1".into(), "and a heron".into());
+        let typed = chats
+            .send(
+                &w.chat,
+                &w.library,
+                &key,
+                "and a crane",
+                Some("r-2".into()),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            typed["waiting"], true,
+            "it took the turn ahead of an older message: {typed}"
+        );
+        let t = chats
+            .transcript(&w.chat, &w.library, &key, None)
+            .await
+            .unwrap();
+        let waiting: Vec<&str> = t["waiting"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w["request_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(waiting, ["r-1", "r-2"], "{t}");
+        assert!(
+            w.seen.lock().unwrap().is_empty(),
+            "a turn started ahead of the line"
+        );
+    }
+
+    /// Wait until the model has been asked `n` times.
+    async fn asked(w: &World, n: usize) {
+        for _ in 0..500 {
+            if w.seen.lock().unwrap().len() >= n {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("the model was never asked {n} time(s)");
     }
 
     /// A first turn that fails is rolled back to nothing, and its goal comes

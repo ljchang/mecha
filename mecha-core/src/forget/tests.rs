@@ -168,6 +168,14 @@ fn seeded(home: &Path) -> Roots {
         &l.join("validations.jsonl"),
         "{\"reflexion_id\":\"refl-gone\"}\n{\"reflexion_id\":\"refl-kept\"}\n",
     );
+    write(
+        &l.join("reflector_replies.jsonl"),
+        &format!(
+            "{{\"session_id\":\"{GONE}\",\"outcome\":\"skip\"}}\n\
+         {{\"session_id\":\"{KEPT}\",\"outcome\":\"lesson\",\"reflexion_id\":\"refl-kept\"}}\n\
+         {{\"item_id\":\"item-x\",\"outcome\":\"lesson\",\"reflexion_id\":\"refl-gone\"}}\n"
+        ),
+    );
     write(&l.join("validation-attempts.jsonl"), &format!(
         "{{\"reflexion_id\":\"refl-gone\",\"arms\":[{{\"text\":\"{CANARY}\"}}]}}\n{{\"reflexion_id\":\"refl-kept\",\"arms\":[]}}\n"
     ));
@@ -357,6 +365,7 @@ fn forgetting_leaves_no_trace_in_any_store_and_touches_nothing_else() {
         ("learning/mined_outbox.jsonl", "item-kept"),
         ("learning/validations.jsonl", "refl-kept"),
         ("learning/validation-attempts.jsonl", "refl-kept"),
+        ("learning/reflector_replies.jsonl", "refl-kept"),
         ("learning/artifact-probes/a-kept.json", "refl-kept"),
         (
             "learning/commit.unfinished.20260928T070000.000Z.json",
@@ -949,9 +958,9 @@ fn an_assistant_chats_scene_records_go_with_it() {
     .unwrap();
 
     assert!(report.complete, "{:?}", report.errors);
-    // Its copy, its index entry and the latest it wrote.
+    // Its copy and its index entry: no latest is written (2026-10-27).
     assert!(
-        report.removed.contains(&("scene".to_string(), 3)),
+        report.removed.contains(&("scene".to_string(), 2)),
         "{:?}",
         report.removed
     );

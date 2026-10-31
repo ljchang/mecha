@@ -134,7 +134,9 @@ shell can run, every network route including the system's own services.
 That has not been done, and a shell confinement weaker than the capabilities
 it lets `shell` declare is the worst outcome this design has; poppler's reach
 (one input, one directory, one program) is what the measurements below
-cover.
+cover. Code mode's interpreter is the one other Seatbelt user, under a
+narrower profile of its own (`seatbelt::worker_profile`, `ARCHITECTURE.md`
+§Code mode's interpreter) that `[sandbox]` never names either.
 
 **Measured, in `mecha-core/tests/seatbelt_backend.rs`** (macOS CI with
 `MECHA_TEST_REQUIRE_BACKENDS=1`, and the owner's Mac): a file beside the

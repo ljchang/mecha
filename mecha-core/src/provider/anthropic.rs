@@ -228,6 +228,12 @@ impl Provider for Anthropic {
     fn structured_output(&self) -> bool {
         self.structured_output
     }
+
+    /// Never: the API is somebody else's machine (R8).
+    fn local(&self) -> bool {
+        false
+    }
+
     fn id(&self) -> &str {
         "anthropic"
     }
@@ -249,6 +255,7 @@ impl Provider for Anthropic {
         req: &CompletionRequest,
         sink: Option<&StreamSink>,
     ) -> Result<CompletionResponse> {
+        crate::provider::refuse_unless_local(self, req)?;
         match sink {
             Some(sink) => self.complete_streaming(req, sink).await,
             None => self.complete_once(req).await,
@@ -887,6 +894,7 @@ mod tests {
             cache_prompt: false,
             think: None,
             think_budget: None,
+            local_only: false,
             trailing_notes: 0,
             tool_choice: crate::message::ToolChoice::Auto,
         }
@@ -1346,6 +1354,7 @@ mod retry_tests {
             cache_prompt: false,
             think: None,
             think_budget: None,
+            local_only: false,
             trailing_notes: 0,
             tool_choice: crate::message::ToolChoice::Auto,
         }
@@ -2479,6 +2488,9 @@ text = "Leave work better than you found it."
 
     #[async_trait]
     impl Provider for Recorder {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "recorder"
         }
@@ -2934,6 +2946,7 @@ text = "Leave work better than you found it."
                 cache_prompt: false,
                 think: None,
                 think_budget: None,
+                local_only: false,
                 trailing_notes: 0,
                 tool_choice: crate::message::ToolChoice::Auto,
             }

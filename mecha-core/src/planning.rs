@@ -1410,6 +1410,9 @@ mod success_example_tests {
     struct Heard(std::sync::Arc<std::sync::Mutex<Option<crate::message::CompletionRequest>>>);
     #[async_trait::async_trait]
     impl crate::provider::Provider for Heard {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "heard"
         }

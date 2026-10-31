@@ -47,6 +47,10 @@ impl Tool for GoalContext {
     fn capabilities(&self) -> Capabilities {
         Capabilities::default().private()
     }
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        Some(crate::tool::effect::Effect::Read)
+    }
+
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let anchor = ctx.goal_track.as_ref().and_then(|g| g.anchor());
         let goal = match input.get("serves") {
@@ -303,7 +307,7 @@ mod tests {
         let v = ask(&ctx, "task:t-budget").await;
         assert_eq!(
             v["examples"].to_string(),
-            r#"[{"evidence":"declared check passed at that time","expected":"summary.md exists","session":"s-plan","step":"draft the Lakeside Institute summary"}]"#,
+            r#"[{"session":"s-plan","step":"draft the Lakeside Institute summary","expected":"summary.md exists","evidence":"declared check passed at that time"}]"#,
             "a declared-check example is the bytes it always was"
         );
 

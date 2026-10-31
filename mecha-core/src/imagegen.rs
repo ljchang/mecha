@@ -52,6 +52,7 @@
 //! like ComfyUI's graphs, because that shape is model-agnostic and a second
 //! backend should be an adapter, not a new tool.
 
+use crate::comfy::{clip, Failure, SERVER_WAIT};
 use crate::tool::{Capabilities, Tool, ToolCtx, ToolOutput};
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
@@ -121,6 +122,13 @@ pub struct ImageConfig {
     /// server restarts, and an incognito chat withholds the tool: a promise
     /// that cannot be kept is not made (`INCOGNITO-DESIGN.md` §6.3).
     pub server_temp_dir: Option<std::path::PathBuf>,
+    /// The folders the server loads LoRAs from (ComfyUI's `models/loras`,
+    /// and any `extra_model_paths.yaml` adds), looked in for each picture
+    /// entry of the owner's LoRA registry, whose file is checked against
+    /// them (`loras`). Unset, a ComfyUI that mecha installed means its own
+    /// `models/loras`; any other server's picture LoRAs are left out until
+    /// it is set.
+    pub loras_dir: Option<Vec<std::path::PathBuf>>,
 }
 
 impl ImageConfig {
@@ -161,46 +169,18 @@ impl Default for ImageConfig {
             // (`behind_mecha_s_proxy`).
             unload_after_secs: 900,
             server_temp_dir: None,
+            loras_dir: None,
         }
     }
 }
 
-/// Whether a URL's host is this machine: a loopback IP, or `localhost`.
-/// The one statement of that rule — [`loopback_url`] and the point-wise
-/// pass's R29 check (`pointwise::on_this_machine`) both ask it.
-pub fn is_loopback(url: &reqwest::Url) -> bool {
-    // `host_str` brackets an IPv6 literal; an IP parses, anything else is a
-    // name, and the only name that is this machine by definition is localhost.
-    match url
-        .host_str()
-        .map(|h| h.trim_start_matches('[').trim_end_matches(']'))
-    {
-        Some(host) => match host.parse::<std::net::IpAddr>() {
-            Ok(ip) => ip.is_loopback(),
-            Err(_) => host.eq_ignore_ascii_case("localhost"),
-        },
-        None => false,
-    }
-}
+pub use crate::comfy::is_loopback;
 
-/// The image server's URL, if it is on this machine.
-///
-/// The tool declares no egress, and this is what makes that true: a host that
-/// is not loopback is refused, so the declaration cannot be configured into a
-/// lie. A tunnel listening on loopback (`ssh -L`) still passes — the operator
-/// built that on purpose, and no URL can reveal it.
+/// The image server's URL, if it is on this machine
+/// ([`crate::comfy::loopback_url`]): the tool declares no egress, and this is
+/// what makes that true.
 pub fn loopback_url(raw: &str) -> Result<reqwest::Url> {
-    let url = reqwest::Url::parse(raw).with_context(|| format!("[image] url `{raw}`"))?;
-    if !matches!(url.scheme(), "http" | "https") {
-        bail!("[image] url `{raw}` must be http or https");
-    }
-    if !is_loopback(&url) {
-        bail!(
-            "[image] url `{raw}` is not on this machine — the image tool sends model-written \
-             prompts to it, so it must be loopback (127.0.0.1, ::1 or localhost)"
-        );
-    }
-    Ok(url)
+    crate::comfy::loopback_url("[image] url", "the image tool", raw)
 }
 
 /// The sizes the tool offers. Closed, because every size is a memory and time
@@ -278,11 +258,32 @@ pub struct Request {
     /// — the owner painted it, and it arrives here already sized to the
     /// canvas and softened (`prepare_mask`). `None` redraws the whole frame.
     pub mask: Option<Reference>,
+    /// The owner's picture LoRAs from settings (`loras::for_picture`),
+    /// chained between the model's loader and the sampler in this order.
+    /// Never the model's: the tool's schema has no such field.
+    pub loras: Vec<crate::loras::PictureLora>,
 }
 
 /// The reference size for a masked edit: the canvas at full detail, since
 /// the result is laid back over the original pixel for pixel.
 pub const EDIT_REFERENCE_SIZE: u32 = 1024;
+
+/// What [`ImageGenerate::upscale`] draws at, in pixels: the encoder's canvas
+/// at [`EDIT_REFERENCE_SIZE`]. A picture with this many already gains
+/// nothing. A video reference is scaled down to the clip's area, about the
+/// same, and never up, so a smaller portrait reaches a clip as fewer
+/// tokens: a 401 px portrait redrawn here matched its character at 0.53 in
+/// a clip, against 0.45 as it was (2026-10-24).
+pub const UPSCALE_PIXELS: u32 = EDIT_REFERENCE_SIZE * EDIT_REFERENCE_SIZE;
+
+/// The redraw's words: the same photograph, larger, and nothing else.
+/// Glasses and jewellery are "any", so a face without them is not asked
+/// for them.
+const UPSCALE_PROMPT: &str = "Recreate this exact photograph at high resolution. The same person \
+    with the identical face, facial structure, eyes, nose, mouth, hair, expression, any glasses or \
+    jewellery, skin tone, clothing, background, lighting and framing as <image1>. Sharp focus, fine \
+    natural skin texture with visible pores, crisp detail in the eyes and hair. Change nothing \
+    else.";
 
 /// The reference size for every other edit-shaped render (placed, restaged
 /// on a photo, edited with a head crop for everyone in the picture; an edit
@@ -379,10 +380,6 @@ pub(crate) const PROMPT_CAP: usize = 4_000;
 
 /// Consecutive failed status polls before a job is abandoned.
 const POLL_FAILURES: u32 = 3;
-
-/// How many polls to wait for an interrupted job to reach the server's
-/// history before deleting it from there.
-const FORGET_WAIT_POLLS: u32 = 10;
 
 /// One line of an image trail (`ToolCtx::image_trail`): a job the tool is
 /// about to submit, or a file the server is about to hold or has said it
@@ -557,6 +554,7 @@ pub async fn forget_trail(cfg: &ImageConfig, entries: &[TrailEntry]) -> Result<(
     // Every step below is best effort, so ask first whether anyone is there:
     // otherwise a server that is down reads as a trail that was cleared.
     server
+        .wire
         .get_json("queue")
         .await
         .context("the image server did not answer")?;
@@ -712,8 +710,8 @@ pub fn comfy_graph(
     mask: Option<&str>,
 ) -> Value {
     let mut encode = json!({
-        "clip": ["clip", 0], "prompt": req.prompt, "negative_prompt": req.sampling.negative,
-        "resolution": req.reference_size});
+        "clip": ["clip", 0], "prompt": with_triggers(&req.prompt, &req.loras),
+        "negative_prompt": req.sampling.negative, "resolution": req.reference_size});
     let model = cfg.model_file(req.sampling.model);
     let (loader, mut unet) = unet_loader(model);
     unet["unet_name"] = json!(model);
@@ -754,8 +752,17 @@ pub fn comfy_graph(
         _ => json!(["encode", 2]),
     };
     graph["encode"] = json!({"class_type": "TextEncodeQwenImage21", "inputs": encode});
+    // One loader per LoRA, each patching the model the last one gave
+    // (`docs/LORA-DESIGN.md` §5), as the clip graph chains them.
+    let mut model = json!(["unet", 0]);
+    for (i, l) in req.loras.iter().enumerate() {
+        let node = format!("lora{}", i + 1);
+        graph[&node] = json!({"class_type": "LoraLoaderModelOnly", "inputs": {
+            "model": model, "lora_name": l.file, "strength_model": l.strength}});
+        model = json!([node, 0]);
+    }
     graph["sample"] = json!({"class_type": "KSampler", "inputs": {
-        "model": ["unet", 0], "positive": ["encode", 0], "negative": ["encode", 1],
+        "model": model, "positive": ["encode", 0], "negative": ["encode", 1],
         "latent_image": canvas, "seed": req.seed, "steps": req.sampling.steps,
         // Guidance off (cfg 1) is the reference setting; above 1 doubles
         // every step. Each value is from a closed range or list
@@ -763,6 +770,111 @@ pub fn comfy_graph(
         "cfg": req.sampling.cfg, "sampler_name": req.sampling.sampler,
         "scheduler": req.sampling.scheduler, "denoise": 1.0}});
     graph
+}
+
+/// Whether the owner's picture LoRAs apply to a picture that loads
+/// `diffusion_model`, and why not when they do not (`docs/LORA-DESIGN.md`
+/// §5). Checked per picture on the file it actually loads, which is the
+/// turbo file for a turbo picture, never on one config key. M1 and M2
+/// (2026-10-27) measured both int8 files, standard and turbo: every key
+/// patched, the trained likeness drawn on both, about a second more a
+/// picture. A `.gguf` file patches through its own loader, which was not
+/// measured, so nothing applies to it.
+pub fn model_lora(diffusion_model: &str) -> std::result::Result<(), &'static str> {
+    if unet_loader(diffusion_model).0 == "UnetLoaderGGUF" {
+        return Err("LoRAs are not applied to a .gguf model file");
+    }
+    Ok(())
+}
+
+/// What a picture's result says of the owner's LoRAs: counts and reasons,
+/// never a name, since the model has no say in them (`docs/LORA-DESIGN.md`
+/// §4). Empty when the settings list none.
+pub fn loras_said(p: &crate::loras::Picked, off: Option<&str>, triggers: bool) -> String {
+    let n = |k: usize| {
+        if k == 1 {
+            "1 LoRA".to_string()
+        } else {
+            format!("{k} LoRAs")
+        }
+    };
+    let mut out = String::new();
+    if !p.applied.is_empty() {
+        out.push_str(&format!(
+            " Picture settings applied {}.",
+            n(p.applied.len())
+        ));
+        if triggers {
+            out.push_str(" Settings added trigger words to the prompt.");
+        }
+    }
+    if let Some(why) = off {
+        out.push_str(&format!(
+            " The picture settings' LoRAs were left out: {why}."
+        ));
+    }
+    if p.refused > 0 {
+        out.push_str(&format!(
+            " {} in picture settings {} left out because {} file did not check.",
+            n(p.refused),
+            if p.refused == 1 { "was" } else { "were" },
+            if p.refused == 1 { "its" } else { "their" },
+        ));
+    }
+    if p.gone > 0 {
+        out.push_str(&format!(
+            " {} in picture settings {} no longer in the registry.",
+            n(p.gone),
+            if p.gone == 1 { "is" } else { "are" },
+        ));
+    }
+    if p.damaged {
+        out.push_str(" The LoRA list in picture settings could not be read, so none applied.");
+    }
+    if p.unreadable {
+        out.push_str(
+            " The LoRA registry could not be read, so no LoRA in picture settings applied.",
+        );
+    }
+    out
+}
+
+/// The manifest's `loras`: the same counts, or null when settings list none.
+fn loras_counted(p: &crate::loras::Picked, off: Option<&str>) -> Value {
+    if p.applied.is_empty()
+        && off.is_none()
+        && p.refused == 0
+        && p.gone == 0
+        && !p.damaged
+        && !p.unreadable
+    {
+        return Value::Null;
+    }
+    json!({
+        "applied": p.applied.len(),
+        "left_out": off,
+        "refused": p.refused,
+        "gone": p.gone,
+        "damaged": p.damaged,
+        "registry_unreadable": p.unreadable,
+    })
+}
+
+/// The prompt with each LoRA's trigger words where it does not already say
+/// them (any case), ahead of it: a picture prompt has no field to insert
+/// into, so this is `videogen::loras::with_triggers`'s prefix branch.
+pub fn with_triggers(prompt: &str, loras: &[crate::loras::PictureLora]) -> String {
+    let lower = prompt.to_lowercase();
+    let mut missing: Vec<&str> = Vec::new();
+    for t in loras.iter().filter_map(|l| l.trigger.as_deref()) {
+        if !lower.contains(&t.to_lowercase()) && !missing.contains(&t) {
+            missing.push(t);
+        }
+    }
+    if missing.is_empty() {
+        return prompt.to_string();
+    }
+    format!("{}. {prompt}", missing.join(", "))
 }
 
 /// How much free memory a job needs before it starts, in MB, given what the
@@ -928,17 +1040,10 @@ fn fresh_seed() -> u64 {
     h.finish() & 0xFFFF_FFFF
 }
 
-/// The ComfyUI adapter.
+/// The ComfyUI adapter: the shared transport ([`crate::comfy::Client`])
+/// and what this tool keeps about the server beyond it.
 struct ComfyUi {
-    base: reqwest::Url,
-    http: reqwest::Client,
-    poll: Duration,
-    /// Whether the server has answered this process at least once. One that
-    /// has, and now does not, is restarting and is waited for in full
-    /// ([`SERVER_WAIT`]); one never seen may simply not be running, and gets
-    /// only [`UNSEEN_WAIT`] - enough for a restart already under way, not a
-    /// minute and a half of every picture against a stopped service.
-    answered: std::sync::atomic::AtomicBool,
+    wire: crate::comfy::Client,
     /// Where the model each server holds is written for every process that
     /// draws (`ImageGenerate::with_model_record`): a serve restarted after a
     /// turbo picture, or a replay beside serve, otherwise read an unused
@@ -948,57 +1053,6 @@ struct ComfyUi {
     /// The server has been seen able to segment ([`ComfyUi::segments`]).
     /// Only a yes is kept: an install that adds SAM is seen on the next ask.
     segments: std::sync::atomic::AtomicBool,
-}
-
-/// Why a generation did not produce an image.
-enum Failure {
-    Cancelled,
-    Other(anyhow::Error),
-}
-
-/// How long a job waits for an image server that is not answering yet
-/// (`ComfyUi::await_server`), and how often it asks meanwhile. Tests wait
-/// two seconds, so the ones aimed at a closed port stay fast.
-///
-/// **A Mac waits as long as its proxy gives ComfyUI to start** (180 s, with
-/// margin): this is the ceiling `UNSEEN_WAIT` is clamped under, so the two
-/// move together — 90 s here made a 200 s unseen wait unreachable (review of
-/// #689, pass 4).
-#[cfg(not(test))]
-const SERVER_WAIT: Duration = Duration::from_secs(if cfg!(target_os = "macos") { 200 } else { 90 });
-#[cfg(test)]
-const SERVER_WAIT: Duration = Duration::from_secs(2);
-const SERVER_WAIT_STEP: Duration = Duration::from_millis(500);
-/// The wait for a server this process has never had an answer from. The
-/// processes that meet a restart are the unseen ones - a one-shot `mecha
-/// run`, the first picture after a `serve` restart - so it covers the slowest
-/// start measured (40 s once; 4-10 s usually), while a stopped service is
-/// still reported in half of [`SERVER_WAIT`] (review of #515).
-///
-/// **A Mac waits as long as its proxy does.** Its ComfyUI starts on demand
-/// (`comfyui_unit::for_mac`) and nothing is forwarded until it is ready, so
-/// an unseen server there is one being started, which the proxy gives 180 s
-/// — 45 s gave up on a cold start that would have answered (review of #689).
-#[cfg(not(test))]
-const UNSEEN_WAIT: Duration = Duration::from_secs(if cfg!(target_os = "macos") { 200 } else { 45 });
-#[cfg(test)]
-const UNSEEN_WAIT: Duration = Duration::from_secs(1);
-
-impl From<anyhow::Error> for Failure {
-    fn from(e: anyhow::Error) -> Self {
-        Failure::Other(e)
-    }
-}
-
-/// The first stretch of a server's error body — enough to name the problem,
-/// never a page of it in the model's context.
-fn clip(s: &str) -> String {
-    const CAP: usize = 600;
-    if s.chars().count() <= CAP {
-        s.to_string()
-    } else {
-        format!("{}…", s.chars().take(CAP).collect::<String>())
-    }
 }
 
 /// What the server holds of one job, as far as this call knows: the files it
@@ -1104,7 +1158,7 @@ impl ComfyUi {
             // write that failed), what this process sent last, never the
             // standard model by default (review of #648, pass 5).
             Some(path) => read_held(path)
-                .remove(self.base.as_str())
+                .remove(self.wire.base().as_str())
                 .or_else(|| self.held_here()),
             None => self.held_here(),
         }
@@ -1115,7 +1169,7 @@ impl ComfyUi {
         LAST_MODEL
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .get(self.base.as_str())
+            .get(self.wire.base().as_str())
             .cloned()
     }
 
@@ -1125,10 +1179,10 @@ impl ComfyUi {
         LAST_MODEL
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(self.base.to_string(), file.to_string());
+            .insert(self.wire.base().to_string(), file.to_string());
         if let Some(path) = self.model_record.get() {
             let mut held = read_held(path);
-            held.insert(self.base.to_string(), file.to_string());
+            held.insert(self.wire.base().to_string(), file.to_string());
             if let Err(e) = write_held(path, &held) {
                 tracing::warn!("image_generate: the held-model record: {e:#}");
             }
@@ -1149,106 +1203,11 @@ impl ComfyUi {
                 );
             }
         }
-        let mut base = loopback_url(&cfg.url)?;
-        // `join` replaces the last path segment unless the base ends in `/`.
-        if !base.path().ends_with('/') {
-            base.set_path(&format!("{}/", base.path()));
-        }
-        // The vetted address is the only one this client may reach. A
-        // redirect would walk it elsewhere — a 307/308 on `/prompt` re-sends
-        // the body, prompt and all — while the tool goes on declaring no
-        // egress; an inherited proxy setting would route the loopback call
-        // through someone else. `fetch_vetted` treats a redirect as fatal for
-        // the same reason (found on review of #303).
-        let http = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .no_proxy()
-            .build()
-            .context("building the image server's HTTP client")?;
         Ok(ComfyUi {
-            base,
-            http,
-            poll: Duration::from_secs(1),
-            answered: std::sync::atomic::AtomicBool::new(false),
+            wire: crate::comfy::Client::new(loopback_url(&cfg.url)?, "the image server")?,
             model_record: std::sync::OnceLock::new(),
             segments: std::sync::atomic::AtomicBool::new(false),
         })
-    }
-
-    fn endpoint(&self, path: &str) -> Result<reqwest::Url> {
-        Ok(self.base.join(path)?)
-    }
-
-    async fn get_json(&self, path: &str) -> Result<Value> {
-        let res = self
-            .http
-            .get(self.endpoint(path)?)
-            .timeout(Duration::from_secs(30))
-            .send()
-            .await?;
-        let status = res.status();
-        let body = res.text().await?;
-        if !status.is_success() {
-            bail!("{path} answered {status}: {}", clip(&body));
-        }
-        Ok(serde_json::from_str(&body)?)
-    }
-
-    async fn post_json(&self, path: &str, body: &Value) -> Result<(reqwest::StatusCode, String)> {
-        let res = self
-            .http
-            .post(self.endpoint(path)?)
-            .timeout(Duration::from_secs(30))
-            .json(body)
-            .send()
-            .await?;
-        let status = res.status();
-        Ok((status, res.text().await?))
-    }
-
-    /// Wait out a server that is restarting: the first request after one
-    /// meets a closed port or a slow answer, and that is a few seconds of
-    /// start, not a server that is gone. ComfyUI is restarted on purpose when
-    /// it sits idle holding a model (`scripts/comfyui/comfyui-idle-reset`,
-    /// measured 4-10 s, once 40 s), and by every deploy; failing the picture
-    /// at the first refused connect told the model the server was down.
-    /// Only a connect or timeout failure is waited on - a server that
-    /// answers, even with an error, is answered - and a cancel ends the wait.
-    async fn await_server(
-        &self,
-        cancel: Option<&CancellationToken>,
-        wait: Duration,
-    ) -> std::result::Result<(), Failure> {
-        let wait = if self.answered.load(Ordering::Relaxed) {
-            wait
-        } else {
-            wait.min(UNSEEN_WAIT)
-        };
-        let deadline = Instant::now() + wait;
-        loop {
-            let attempt = self
-                .http
-                .get(self.endpoint("queue")?)
-                .timeout(Duration::from_secs(5))
-                .send();
-            let err = match attempt.await {
-                Ok(_) => {
-                    self.answered.store(true, Ordering::Relaxed);
-                    return Ok(());
-                }
-                Err(e) if (e.is_connect() || e.is_timeout()) && Instant::now() < deadline => e,
-                Err(e) => return Err(Failure::Other(e.into())),
-            };
-            tracing::debug!("image server not answering yet, waiting: {err}");
-            let pause = tokio::time::sleep(SERVER_WAIT_STEP);
-            match cancel {
-                Some(token) => tokio::select! {
-                    _ = token.cancelled() => return Err(Failure::Cancelled),
-                    _ = pause => {}
-                },
-                None => pause.await,
-            }
-        }
     }
 
     /// Every file the graph names is one the server can load, checked before
@@ -1280,7 +1239,7 @@ impl ComfyUi {
             let info = match fetched.get(node) {
                 Some(info) => info.clone(),
                 None => {
-                    let info = self.get_json(&format!("object_info/{node}")).await?;
+                    let info = self.wire.get_json(&format!("object_info/{node}")).await?;
                     fetched.insert(node, info.clone());
                     info
                 }
@@ -1331,61 +1290,26 @@ impl ComfyUi {
                 );
             }
         }
-        let info = self.get_json("object_info/TextEncodeQwenImage21").await?;
+        let info = self
+            .wire
+            .get_json("object_info/TextEncodeQwenImage21")
+            .await?;
         if info.get("TextEncodeQwenImage21").is_none() {
             bail!("the image server's ComfyUI predates Qwen-Image 2.1 support; update it");
         }
         Ok(())
     }
 
-    /// Stop a job wherever it is: out of the queue if it has not started,
-    /// interrupted if it has. Best effort — the caller is already failing.
-    ///
-    /// `/interrupt` is sent only when *this* job is the one running. Current
-    /// ComfyUI honours the `prompt_id` in the body, but older servers ignore
-    /// it and stop whatever is executing — which would let cancelling a
-    /// queued image kill another call's running one. Asking the queue first
-    /// makes it right on either (found on review of #303).
+    /// Stop a job wherever it is ([`crate::comfy::Client::take_off`]), and
+    /// say what it wrote: a job that finished as it was stopped also wrote
+    /// its preview, which only its record names — so it is read before the
+    /// record is forgotten.
     async fn abandon(&self, id: &str, trail: Option<&std::path::Path>) -> Wrote {
-        let _ = self.post_json("queue", &json!({"delete": [id]})).await;
-        let running = self
-            .get_json("queue")
-            .await
-            .ok()
-            .and_then(|q| q.get("queue_running")?.as_array().cloned())
-            .unwrap_or_default();
-        // Each entry is `[number, prompt_id, prompt, extra, outputs]`.
-        if running
-            .iter()
-            .any(|job| job.get(1).and_then(Value::as_str) == Some(id))
-        {
-            let _ = self.post_json("interrupt", &json!({"prompt_id": id})).await;
-            // `/interrupt` answers when the flag is set, not when the job has
-            // stopped; the server writes the interrupted job into its history
-            // as it unwinds, after that. A delete sent now arrives before the
-            // record exists and deletes nothing, leaving the prompt behind
-            // (found on review of #306). So wait, briefly, for the record.
-            for _ in 0..FORGET_WAIT_POLLS {
-                let recorded = self
-                    .get_json(&format!("history/{id}"))
-                    .await
-                    .ok()
-                    .is_some_and(|h| h.get(id).is_some());
-                if recorded {
-                    break;
-                }
-                tokio::time::sleep(self.poll).await;
-            }
-        }
-        // A cancelled or interrupted job is still recorded, prompt and all. A
-        // job taken off the queue before it ran never reaches the history.
-        // One that finished as it was stopped also wrote its preview, which
-        // only the record names — so read it before forgetting it.
         let wrote = self
-            .get_json(&format!("history/{id}"))
+            .wire
+            .take_off(id)
             .await
-            .ok()
-            .and_then(|h| h.get(id).map(outputs))
+            .map(|entry| outputs(&entry))
             .unwrap_or_default();
         // Onto the trail before the record naming them is forgotten, as the
         // polling path does: a death between here and the caller's delete
@@ -1395,83 +1319,17 @@ impl ComfyUi {
                 tracing::debug!("a preview's name did not reach the image trail: {e:#}");
             }
         }
-        self.forget(id).await;
+        self.wire.forget(id).await;
         wrote
     }
 
     /// Put one reference in the server's temp directory as `filename` (a
     /// random name the caller has already written to the trail), and return
-    /// the name the server filed it under. Multipart by hand: one file and one
-    /// field do not justify a crate feature.
+    /// the name the server filed it under.
     async fn upload(&self, reference: &Reference, filename: &str) -> Result<String> {
-        let boundary = format!("mecha-{:08x}{:08x}", fresh_seed(), fresh_seed());
-        let mut body = Vec::with_capacity(reference.bytes.len() + 512);
-        body.extend_from_slice(
-            format!(
-                "--{boundary}\r\nContent-Disposition: form-data; name=\"image\"; \
-                 filename=\"{filename}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
-            )
-            .as_bytes(),
-        );
-        body.extend_from_slice(&reference.bytes);
-        body.extend_from_slice(
-            format!(
-                "\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"type\"\r\n\r\n\
-                 temp\r\n--{boundary}--\r\n"
-            )
-            .as_bytes(),
-        );
-        let res = self
-            .http
-            .post(self.endpoint("upload/image")?)
-            .timeout(Duration::from_secs(60))
-            .header(
-                reqwest::header::CONTENT_TYPE,
-                format!("multipart/form-data; boundary={boundary}"),
-            )
-            .body(body)
-            .send()
-            .await?;
-        let status = res.status();
-        let text = res.text().await?;
-        if !status.is_success() {
-            bail!(
-                "uploading {} failed ({status}): {}",
-                reference.path,
-                clip(&text)
-            );
-        }
-        let answer: Value = serde_json::from_str(&text)?;
-        // The server says which directory it used. Only temp is emptied when
-        // it starts; anywhere else, a private photo would outlive this call
-        // with nothing to clear it (found on review of #306).
-        let kind = answer.get("type").and_then(Value::as_str).unwrap_or("");
-        if kind != "temp" {
-            bail!(
-                "the image server filed {} as `{kind}` rather than temp, where nothing clears it",
-                reference.path
-            );
-        }
-        if answer
-            .get("subfolder")
-            .and_then(Value::as_str)
-            .is_some_and(|s| !s.is_empty())
-        {
-            bail!(
-                "the image server filed {} under a subfolder",
-                reference.path
-            );
-        }
-        answer
-            .get("name")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .ok_or_else(|| {
-                anyhow!(
-                    "the image server did not name the upload of {}",
-                    reference.path
-                )
-            })
+        self.wire
+            .upload_temp(&reference.bytes, filename, &reference.path)
+            .await
     }
 
     /// One job, and then its temp files deleted however it ended.
@@ -1528,7 +1386,7 @@ impl ComfyUi {
         &self,
         cancel: Option<&CancellationToken>,
     ) -> std::result::Result<(), Option<String>> {
-        match self.await_server(cancel, SERVER_WAIT).await {
+        match self.wire.await_server(cancel, SERVER_WAIT).await {
             Err(Failure::Cancelled) => Err(None),
             Err(Failure::Other(_)) => Err(Some("the image server is not answering".into())),
             Ok(()) => self.can_segment().await.map_err(Some),
@@ -1540,6 +1398,7 @@ impl ComfyUi {
     /// which the result says (`docs/SEGMENTATION-DESIGN.md` §5).
     async fn can_segment(&self) -> std::result::Result<(), String> {
         let sam = self
+            .wire
             .get_json("object_info/SAM3_Detect")
             .await
             .map_err(|_| SEGMENT_UNASKED.to_string())?;
@@ -1547,6 +1406,7 @@ impl ComfyUi {
             return Err("the image server's ComfyUI has no SAM 3 node".into());
         }
         let ckpt = self
+            .wire
             .get_json("object_info/CheckpointLoaderSimple")
             .await
             .map_err(|_| SEGMENT_UNASKED.to_string())?;
@@ -1590,7 +1450,7 @@ impl ComfyUi {
         }
         let mut held = Held::default();
         let got = async {
-            self.await_server(cancel, SERVER_WAIT).await?;
+            self.wire.await_server(cancel, SERVER_WAIT).await?;
             let asked = format!(
                 "mecha-{:08x}{:08x}.{}",
                 fresh_seed(),
@@ -1655,7 +1515,7 @@ impl ComfyUi {
                 Failure::Other(e.context("the image job could not be recorded for cleanup"))
             })
         };
-        self.await_server(cancel, SERVER_WAIT).await?;
+        self.wire.await_server(cancel, SERVER_WAIT).await?;
         let model = cfg.model_file(req.sampling.model);
         self.preflight(cfg, &req.sampling).await?;
         // The other model out first, so the two are never resident at once.
@@ -1744,6 +1604,7 @@ impl ComfyUi {
         let asked = uuid::Uuid::new_v4().to_string();
         record(TrailEntry::Job(asked.clone()))?;
         let submitted = self
+            .wire
             .post_json(
                 "prompt",
                 &json!({"prompt": graph, "client_id": "mecha", "prompt_id": asked}),
@@ -1784,7 +1645,7 @@ impl ComfyUi {
         let started = Instant::now();
         let mut failed_polls = 0u32;
         let image = loop {
-            let tick = tokio::time::sleep(self.poll);
+            let tick = tokio::time::sleep(self.wire.poll);
             match cancel {
                 Some(token) => tokio::select! {
                     _ = token.cancelled() => {
@@ -1809,7 +1670,7 @@ impl ComfyUi {
             // before giving up — returning with it still queued would leave a
             // generation holding the GPU with no client to reap it (found on
             // review of #303).
-            let history = match self.get_json(&format!("history/{id}")).await {
+            let history = match self.wire.get_json(&format!("history/{id}")).await {
                 Ok(history) => {
                     failed_polls = 0;
                     history
@@ -1845,7 +1706,7 @@ impl ComfyUi {
             }
             held.take(wrote);
             if entry.pointer("/status/status_str").and_then(Value::as_str) == Some("error") {
-                self.forget(&id).await;
+                self.wire.forget(&id).await;
                 let why = entry
                     .pointer("/status/messages")
                     .map(|m| clip(&m.to_string()))
@@ -1865,7 +1726,7 @@ impl ComfyUi {
                 None if entry.pointer("/status/completed").and_then(Value::as_bool)
                     == Some(true) =>
                 {
-                    self.forget(&id).await;
+                    self.wire.forget(&id).await;
                     return Err(
                         anyhow!("the image server finished the job without an image").into(),
                     );
@@ -1878,74 +1739,29 @@ impl ComfyUi {
         // job's prompt and file names in memory until it restarts, and the
         // copy that matters is the one in the workspace (or none at all).
         let fetched = self.fetch(&image).await;
-        self.forget(&id).await;
+        self.wire.forget(&id).await;
         Ok(fetched?)
     }
 
     /// The finished image's bytes, checked to be a PNG.
     async fn fetch(&self, image: &Value) -> Result<Vec<u8>> {
-        let field = |k: &str| {
-            image
-                .get(k)
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string()
-        };
-        let mut url = self.endpoint("view")?;
-        url.query_pairs_mut()
-            .append_pair("filename", &field("filename"))
-            .append_pair("subfolder", &field("subfolder"))
-            .append_pair("type", &field("type"));
-        let res = self
-            .http
-            .get(url)
-            .timeout(Duration::from_secs(60))
-            .send()
-            .await?;
-        if !res.status().is_success() {
-            bail!("fetching the finished image failed ({})", res.status());
-        }
-        let bytes = res.bytes().await?.to_vec();
+        let bytes = self.wire.view(image, "the finished image").await?;
         if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
             bail!("the image server returned something that is not a PNG");
         }
         Ok(bytes)
     }
 
-    /// Drop a job from the server's history. Best effort.
-    async fn forget(&self, id: &str) {
-        let _ = self.post_json("history", &json!({"delete": [id]})).await;
-    }
-
     /// Whether the server has loaded a model since it started
     /// ([`loaded_from_stats`]); `None` if it cannot say - including a server
     /// that is restarting, which is then asked for the cold cost.
     async fn loaded(&self) -> Option<bool> {
-        let res = self
-            .http
-            .get(self.endpoint("system_stats").ok()?)
-            .timeout(Duration::from_secs(5))
-            .send()
-            .await
-            .ok()?;
-        // Any answer, even an error, is a server that is up.
-        self.answered.store(true, Ordering::Relaxed);
-        if !res.status().is_success() {
-            return None;
-        }
-        let stats: Value = res.json().await.ok()?;
-        loaded_from_stats(&stats)
+        loaded_from_stats(&self.wire.stats().await?)
     }
 
     /// Ask the server to drop its models and free the memory they held.
-    /// Whether the server took it: an answer that is not a success is no
-    /// unload, and must not be recorded as one (review of #648, pass 5).
     async fn release(&self) -> bool {
-        matches!(
-            self.post_json("free", &json!({"unload_models": true, "free_memory": true}))
-                .await,
-            Ok((status, _)) if status.is_success()
-        )
+        self.wire.release().await
     }
 
     /// An idle release: the server is marked empty only when it took the
@@ -2641,6 +2457,14 @@ pub struct ImageGenerate {
     /// tests — there is no chat layer, so an arm measures only what it
     /// names.
     chat_settings: Option<std::path::PathBuf>,
+    /// The mecha home whose LoRA registry a picture's list is resolved
+    /// against (`loras::Loaded::read`), read on every call that has a list.
+    /// Unset — replays, evals, tests — no list applies.
+    loras_home: Option<std::path::PathBuf>,
+    /// The registry as last read whole: a re-read that fails keeps it, so
+    /// one transient read error never draws a picture without its LoRAs
+    /// (`docs/LORA-DESIGN.md` §3).
+    loras_last: Arc<std::sync::Mutex<Option<crate::loras::Loaded>>>,
 }
 
 /// The description a form is built with: [`DESCRIPTION`], then the styles
@@ -2746,7 +2570,91 @@ impl ImageGenerate {
             reference_pixels: MAX_REFERENCE_PIXELS,
             faces: Arc::new(crate::face::CachedRetinaFace),
             chat_settings: None,
+            loras_home: None,
+            loras_last: Arc::new(std::sync::Mutex::new(None)),
         })
+    }
+
+    /// Resolve the owner's picture LoRA lists against the registry in
+    /// `mecha_home` on every call.
+    pub fn with_loras(mut self, mecha_home: std::path::PathBuf) -> Self {
+        self.loras_home = Some(mecha_home);
+        self
+    }
+
+    /// What this picture's LoRA list comes to: the turn's layer over the
+    /// chat's, each name resolved against the registry as it is now, and
+    /// none at all on a model file LoRAs are not measured on (`model_lora`).
+    fn picture_loras(
+        &self,
+        ctx: &ToolCtx,
+        model: crate::sampling::Model,
+    ) -> (crate::loras::Picked, Option<&'static str>) {
+        let chat = self
+            .chat_settings
+            .as_deref()
+            .map(crate::sampling::chat_loras)
+            .unwrap_or_default();
+        let (names, damaged) = ctx.image_loras.over(&chat);
+        if names.is_empty() {
+            return (
+                crate::loras::Picked {
+                    damaged,
+                    ..Default::default()
+                },
+                None,
+            );
+        }
+        let Some(home) = &self.loras_home else {
+            return (
+                crate::loras::Picked {
+                    gone: names.len(),
+                    damaged,
+                    ..Default::default()
+                },
+                None,
+            );
+        };
+        let folders = crate::loras::Folders::of(home, Some(&self.cfg), None);
+        let fresh = crate::loras::Loaded::read(home, None, &folders);
+        let loaded = {
+            let mut last = self.loras_last.lock().unwrap_or_else(|e| e.into_inner());
+            match (&fresh.unreadable, last.as_ref()) {
+                (Some(why), Some(kept)) => {
+                    tracing::warn!("the LoRA registry {why}; pictures keep the last one read");
+                    kept.clone()
+                }
+                // Nothing read before: every name would look deleted, so
+                // the result says the registry did not read instead (review
+                // of #751).
+                (Some(_), None) => {
+                    return (
+                        crate::loras::Picked {
+                            damaged,
+                            unreadable: true,
+                            ..Default::default()
+                        },
+                        None,
+                    )
+                }
+                (None, _) => {
+                    *last = Some(fresh.clone());
+                    fresh
+                }
+            }
+        };
+        let picked = crate::loras::for_picture(&names, damaged, &loaded);
+        match model_lora(self.cfg.model_file(model)) {
+            Ok(()) => (picked, None),
+            Err(why) if !picked.applied.is_empty() => (
+                crate::loras::Picked {
+                    applied: Vec::new(),
+                    ..picked
+                },
+                Some(why),
+            ),
+            Err(_) => (picked, None),
+        }
     }
 
     /// Lay the turn's settings over the chat's, read from `path` on every
@@ -2814,6 +2722,8 @@ impl ImageGenerate {
             // 2026-10-11): a persona form without it would draw an unset
             // field at the model's default, not the chat's.
             chat_settings: self.chat_settings.clone(),
+            loras_home: self.loras_home.clone(),
+            loras_last: Arc::clone(&self.loras_last),
         }
     }
 
@@ -2821,6 +2731,7 @@ impl ImageGenerate {
     fn polling_every(mut self, poll: Duration) -> Self {
         Arc::get_mut(&mut self.backend)
             .expect("unshared in tests")
+            .wire
             .poll = poll;
         self
     }
@@ -2898,7 +2809,8 @@ impl ImageGenerate {
                     "route": "layered",
                     "step": step,
                     "seed": req.seed,
-                    "prompt": req.prompt,
+                    // As sent: the settings' trigger words included.
+                    "prompt": with_triggers(&req.prompt, &req.loras),
                     "words": lp.words,
                 });
                 if let Err(e) = append_prompt(log, &line) {
@@ -2926,6 +2838,7 @@ impl ImageGenerate {
                 references: Vec::new(),
                 reference_size: base.reference_size,
                 mask: None,
+                loras: base.loras.clone(),
             },
         )
         .await;
@@ -2966,6 +2879,7 @@ impl ImageGenerate {
                         references: Vec::new(),
                         reference_size: base.reference_size,
                         mask: None,
+                        loras: base.loras.clone(),
                     },
                 )
                 .await;
@@ -3032,6 +2946,7 @@ impl ImageGenerate {
                     }],
                     reference_size: EDIT_REFERENCE_SIZE,
                     mask: None,
+                    loras: base.loras.clone(),
                 },
             )
             .await;
@@ -3078,6 +2993,7 @@ impl ImageGenerate {
                 references,
                 reference_size: EDIT_REFERENCE_SIZE,
                 mask: None,
+                loras: base.loras.clone(),
             },
         )
         .await;
@@ -3101,6 +3017,7 @@ impl ImageGenerate {
                 }],
                 reference_size: EDIT_REFERENCE_SIZE,
                 mask: None,
+                loras: base.loras.clone(),
             },
         )
         .await;
@@ -3118,6 +3035,56 @@ impl ImageGenerate {
             steps,
             left: joined(left),
         })
+    }
+
+    /// `picture` drawn again as itself at about a megapixel
+    /// ([`UPSCALE_PIXELS`]): `mecha imagelib upscale`. A one-reference edit
+    /// on the standard model, the canvas the encoder's own at
+    /// [`EDIT_REFERENCE_SIZE`], so the picture keeps its shape. Admitted
+    /// against memory as any picture is; the caller judges the face.
+    pub async fn upscale(&self, picture: &[u8], seed: u64) -> std::result::Result<Vec<u8>, String> {
+        let ext = sniff_image(picture).ok_or("not a PNG, JPEG or WebP image")?;
+        let img =
+            crate::image::decode_upright(picture, "the picture").map_err(|e| format!("{e:#}"))?;
+        let (w, h) = (img.width(), img.height());
+        // Nine tenths, so a 1024² picture the encoder rounded is not redrawn.
+        if u64::from(w) * u64::from(h) >= u64::from(UPSCALE_PIXELS) * 9 / 10 {
+            return Err(format!(
+                "it is already {w}×{h}; a redraw at about a megapixel adds nothing"
+            ));
+        }
+        self.memory_guard(crate::sampling::Model::Standard, false)
+            .await?;
+        let req = Request {
+            prompt: UPSCALE_PROMPT.to_string(),
+            size: None,
+            sampling: crate::sampling::Sampling::reference(self.cfg.steps),
+            seed,
+            references: vec![Reference {
+                path: "portrait".into(),
+                bytes: picture.to_vec(),
+                ext,
+            }],
+            reference_size: EDIT_REFERENCE_SIZE,
+            mask: None,
+            // A redraw for a clip's reference: the owner's picture LoRAs
+            // are for the pictures a chat draws, not for this.
+            loras: Vec::new(),
+        };
+        let timeout = Duration::from_secs(self.cfg.timeout_secs);
+        let out = self
+            .backend
+            .generate(&self.cfg, &req, None, timeout, None)
+            .await;
+        self.arm_unload();
+        if let Some(left) = out.left {
+            tracing::warn!("image server temp copies not removed: {left}");
+        }
+        match out.image {
+            Ok(bytes) => Ok(bytes),
+            Err(Failure::Cancelled) => Err("cancelled".into()),
+            Err(Failure::Other(e)) => Err(format!("{e:#}")),
+        }
     }
 
     fn arm_unload(&self) {
@@ -3154,10 +3121,14 @@ pub const DESCRIPTION: &str = "Draw a picture with the local image model, or cha
      of a picture without people), `light` (light, mood, time of day), `camera` (shot size, \
      angle, framing), `style` (a library style's name, only when the user asks for a look), \
      `people`, `together` (what people do \
-     with each other) and `text` (words to render exactly). Each person has `who` (a library \
+     with each other) and `text` (words to render exactly), all from the user's request: a \
+     new picture keeps nothing from earlier ones, so never bring back an earlier picture's \
+     place, clothes or people the request does not ask for. Each person has `who` (a library \
      character's name, \"self\" for you, or a description of someone not in the library), \
-     `where` (left, centre, right or background), `wearing`, `doing` and `expression`. To \
-     change a picture, name it in `picture` and send only what changes in `scene`: a new pose \
+     `where` (left, centre, right or background), `wearing`, `doing` and `expression`. Only \
+     when the user asks to continue, build on, edit or change a picture (in a chat, by its \
+     Continue button, which names it for you), name it in `picture` and send only what \
+     changes in `scene`: a new pose \
      or camera redraws the scene, new clothes, an expression or someone added edit the \
      picture, and restating what is already true changes nothing (a call that changes \
      nothing draws the scene again). Take someone out with `remove`. One small change to the \
@@ -3199,7 +3170,30 @@ pub const RETOUCH_DESC: &str = "One small change to the picture itself, in words
      or a person: those are `scene.people`.";
 /// `picture`'s description.
 pub const PICTURE_DESC: &str = "The picture being changed: one the user attached (inbox/...) or \
-     an earlier result (images/...). Leave it out for a new picture.";
+     an earlier result (images/...), only when the user asks to continue, build on, edit or \
+     change it. In a chat with a Continue button on its pictures, only that button builds on \
+     one, and it names the picture for you: never name an earlier result on a turn the user \
+     typed. Leave it out for a new picture, which keeps nothing from earlier ones.";
+
+/// Which earlier picture a turn's pictures may build on, decided by the
+/// owner's button and never by the model (the owner, 2026-10-27: "a new
+/// image is just typing a new description", and waiting for a picture only to
+/// find the model misread which was meant is the cost this removes).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BuildOn {
+    /// A typed turn: every picture is new, and a call naming an earlier
+    /// result is refused. A photo the owner uploaded (`inbox/`) may still be
+    /// named: attaching it was the owner's act.
+    Nothing,
+    /// The owner pressed Continue, Edit or Regenerate on this picture: every
+    /// picture call this turn builds on it, whatever the call named.
+    Picture(String),
+}
+
+/// `p` as a workspace path is compared: trimmed, without a leading `./`.
+fn plain_path(p: &str) -> &str {
+    p.trim().trim_start_matches("./")
+}
 
 impl ImageGenerate {
     /// The persona's names, which `who` resolves to its approved character.
@@ -3817,6 +3811,11 @@ impl Tool for ImageGenerate {
         Capabilities::default()
     }
 
+    /// `read_only()`, and a picture drawn on the GPU.
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        Some(crate::tool::effect::Effect::Render)
+    }
+
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let lib = self
             .library_dir
@@ -3832,6 +3831,68 @@ impl Tool for ImageGenerate {
             Ok(c) => c,
             Err(why) => return Ok(refused(why)),
         };
+        // The picture this turn may build on, where the front end has a
+        // Continue button (`BuildOn`): the owner's press decides, never the
+        // call. A model that named an earlier picture on a typed turn is
+        // refused rather than redrawn from nothing, so it describes the new
+        // picture whole instead of a change to one the owner did not choose.
+        // A photo the owner uploaded, by where the path resolves, so
+        // `inbox/../images/a.png` is the result it names; unknown (the jail
+        // refuses it, or there is no inbox) is not one (review of #754).
+        let uploaded = |p: &str| match (ctx.resolve(p), ctx.resolve("inbox")) {
+            (Ok(path), Ok(inbox)) => path.starts_with(inbox),
+            _ => false,
+        };
+        // A room photo no file answers to is the read's to refuse, saying so,
+        // in either arm (review of #754, passes 4 and 5).
+        let there = |p: &str| ctx.resolve(p).is_ok_and(|path| path.exists());
+        match &ctx.build_on {
+            None => {}
+            Some(BuildOn::Picture(p)) => {
+                if call.picture.as_deref().map(plain_path) != Some(plain_path(p)) {
+                    // Regions mark places in the picture they were painted on,
+                    // and their legend is already the retouch: onto another
+                    // picture they would describe outlines that are not there,
+                    // so refused, as #623 refuses them on a missing picture
+                    // (review of #754, pass 4).
+                    if !call.regions.is_empty() {
+                        return Ok(refused(format!(
+                            "The owner pressed Continue on {p}, and the painted regions mark \
+                             places in another picture: leave them out and say the change in \
+                             `scene`."
+                        )));
+                    }
+                    if let Some(other) = call.picture.replace(p.clone()) {
+                        // A mask marks places in the picture it was painted on.
+                        call.mask = None;
+                        call.notes.push(format!(
+                            "The owner pressed Continue on {p}, so this builds on it, not \
+                             on {other}."
+                        ));
+                    } else {
+                        call.notes.push(format!(
+                            "The owner pressed Continue on {p}, so this builds on it."
+                        ));
+                    }
+                }
+                // The room it is drawn onto is the owner's too: an upload, or
+                // the picture pressed on, never another earlier result the
+                // call chose (review of #754, pass 2).
+                if let Some(room) = call
+                    .setting_photo
+                    .as_deref()
+                    .filter(|r| there(r) && !uploaded(r) && plain_path(r) != plain_path(p))
+                {
+                    return Ok(refused(format!(
+                        "The owner pressed Continue on {p}, so this builds on it, and {room} \
+                         is another earlier picture, not a photo they uploaded: describe the \
+                         place in words in `scene.setting`, or leave it as {p} has it."
+                    )));
+                }
+            }
+            // After the made-up-path recovery below.
+            Some(BuildOn::Nothing) => {}
+        }
         // A `picture` no file in this chat answers to: a name the model made
         // up. Beside a scene it is left out and said, and the scene is drawn
         // without it; on its own it is refused saying where pictures
@@ -3886,6 +3947,33 @@ impl Tool for ImageGenerate {
                          scene was drawn as a new picture."
                     )
                 });
+            }
+        }
+        // A typed turn builds on nothing (R11). After the recovery above, so
+        // a name no file answers to is still left out and drawn in one turn,
+        // as it was, and only an earlier picture that is really there is
+        // refused (review of #754, pass 4).
+        if ctx.build_on == Some(BuildOn::Nothing) {
+            if let Some(p) = call.picture.as_deref().filter(|p| !uploaded(p)) {
+                return Ok(refused(format!(
+                    "The owner typed this turn rather than pressing Continue on {p}, so it is \
+                     a new picture: leave `picture` out and describe the whole picture in \
+                     `scene` from the owner's words, its setting and its people. Only the \
+                     owner's Continue on a picture builds on it."
+                )));
+            }
+            // A room photo is drawn onto, so an earlier result there is the
+            // same building-on by another field.
+            if let Some(p) = call
+                .setting_photo
+                .as_deref()
+                .filter(|p| there(p) && !uploaded(p))
+            {
+                return Ok(refused(format!(
+                    "The owner typed this turn, so it is a new picture, and {p} is an earlier \
+                     picture, not a photo they uploaded: describe the place in words in \
+                     `scene.setting`. Only the owner's Continue on a picture builds on it."
+                )));
             }
         }
         // A `style` the library does not hold: the field takes a library
@@ -3990,6 +4078,8 @@ impl Tool for ImageGenerate {
         // guards.
         // Read once, so the guard and the request agree on the model.
         let tuning = self.tuning(ctx);
+        // The owner's LoRAs for it, from the same read of the settings.
+        let (picked, lora_off) = self.picture_loras(ctx, tuning.model.unwrap_or_default());
         let may_segment = call.may_segment();
         if let Err(why) = self
             .memory_guard(tuning.model.unwrap_or_default(), may_segment)
@@ -4009,6 +4099,27 @@ impl Tool for ImageGenerate {
         let base = match (&ctx.scene, &picture) {
             (Some(slot), Some(r)) => slot.lookup(&r.bytes),
             _ => None,
+        };
+        // What the call may carry from before: the record of the picture it
+        // builds on, and for a new picture nothing (the owner, 2026-10-27). A
+        // picture builds on another only when its call names it, which the
+        // owner asks for; a new one is drawn from its own words, never the
+        // chat's last clothes, place or people. The chat's copy stands in only
+        // for the picture it records, when that one's index entry went
+        // missing: never for another, so an upload named in `picture` (never
+        // rendered, so never indexed) borrows nothing (review of #753, pass 2).
+        // Belt and braces: `land` writes the index entry before the copy, so
+        // a copy naming a picture implies its entry, and `base` is already
+        // that record; this arm covers an entry lost from the index by hand.
+        let carried = match &picture {
+            Some(r) => base.clone().or_else(|| {
+                let named = crate::scene::hash(&r.bytes);
+                ctx.scene
+                    .as_ref()
+                    .and_then(|s| s.current())
+                    .filter(|s| s.picture.as_deref() == Some(named.as_str()))
+            }),
+            None => None,
         };
         // The record's words reach the prompt too, so they are read for a
         // character whose entry has since broken, as the call's were above
@@ -4070,9 +4181,7 @@ impl Tool for ImageGenerate {
             .collect();
         let reader_said = match (&ctx.scene_reader, call.change.people.is_empty()) {
             (Some(reader), false) => {
-                let record = base
-                    .clone()
-                    .or_else(|| ctx.scene.as_ref().and_then(|s| s.current()));
+                let record = carried.clone();
                 let read = tokio::time::timeout(SCENE_READ_TIMEOUT, reader.read(record.as_ref()))
                     .await
                     .unwrap_or_else(|_| Err("the reader took too long".into()));
@@ -4125,10 +4234,17 @@ impl Tool for ImageGenerate {
         };
         let named = |t: &str| crate::imagelib::named_in(&lib, t);
         // What the chat last drew each person in: clothes a newcomer's call
-        // left out come from it (mecha-a3's G1b).
-        let current = ctx.scene.as_ref().and_then(|slot| slot.current());
+        // left out come from it (mecha-a3's G1b), on a picture that builds
+        // on another only. The chat's copy, not `carried`: a newcomer is by
+        // definition not in the picture built on, so only the chat's last
+        // picture can have drawn them (review of #753, pass 3). A new
+        // picture asks nothing of it.
+        let chat_last = picture
+            .is_some()
+            .then(|| ctx.scene.as_ref().and_then(|s| s.current()))
+            .flatten();
         let worn = |key: &str| {
-            current.as_ref().and_then(|s| {
+            chat_last.as_ref().and_then(|s| {
                 s.people
                     .iter()
                     .find(|p| p.who.key() == key)
@@ -4159,6 +4275,7 @@ impl Tool for ImageGenerate {
             references: Vec::new(),
             reference_size: EDIT_REFERENCE_SIZE,
             mask: None,
+            loras: picked.applied.clone(),
         };
         // A redraw is drawn at a seed the picture was not (§5.1).
         if plan.route == "redrawn" {
@@ -4321,8 +4438,23 @@ impl Tool for ImageGenerate {
                     let mut in_act = Vec::new();
                     let everyone: Vec<&crate::scene::Person> = people.iter().collect();
                     let shared = words.together.as_ref().map(|f| f.value.as_str());
+                    // A camera behind the people turns everyone's face away
+                    // (`imagelib::CastMember::face_away`).
+                    let face_away = words
+                        .camera
+                        .as_ref()
+                        .is_some_and(|f| crate::picture::faces_away(&f.value));
                     for p in people {
-                        let doing = doing_words(p, together);
+                        // A cast member's act without the expression, which
+                        // goes beside it for the compiler to leave out when
+                        // it draws them from behind from their figure.
+                        let act = doing_words(
+                            &crate::scene::Person {
+                                expression: String::new(),
+                                ..p.clone()
+                            },
+                            together,
+                        );
                         let kept = clothes_in_act(
                             p,
                             &p.doing,
@@ -4341,11 +4473,14 @@ impl Tool for ImageGenerate {
                                 cast.push(crate::imagelib::CastMember {
                                     name: n.clone(),
                                     wearing: p.wearing.clone(),
-                                    doing,
+                                    doing: act,
                                     clothes_in_act: kept,
+                                    expression: p.expression.clone(),
+                                    face_away,
                                 })
                             }
                             crate::scene::Who::Described(d) => {
+                                let doing = doing_words(p, together);
                                 let mut e = d.trim().trim_end_matches('.').to_string();
                                 if !p.wearing.trim().is_empty() && !kept {
                                     e.push_str(&format!(", wearing {}", p.wearing.trim()));
@@ -4495,9 +4630,9 @@ impl Tool for ImageGenerate {
                                 .as_deref()
                                 .and_then(crate::layers::framing);
                             // Each person's clothes, the fuller of the
-                            // call's and the chat's record (mecha-a3: the
-                            // shorter lost half an outfit).
-                            let recorded = ctx.scene.as_ref().and_then(|s| s.current());
+                            // call's and the record it builds on (mecha-a3:
+                            // the shorter lost half an outfit).
+                            let recorded = carried.clone();
                             let fuller = |p: &crate::scene::Person| {
                                 // The call's own clothes, when it names any:
                                 // a fuller record's outfit replaced the one
@@ -4916,6 +5051,7 @@ impl Tool for ImageGenerate {
                             version: e.version,
                             portrait: e.portrait.clone(),
                             full_body: None,
+                            details: Vec::new(),
                         });
                     }
                 }
@@ -4961,6 +5097,7 @@ impl Tool for ImageGenerate {
                                 version: entry.version,
                                 portrait: None,
                                 full_body: None,
+                                details: Vec::new(),
                             });
                         }
                         None => {
@@ -5173,6 +5310,7 @@ impl Tool for ImageGenerate {
                                                 version: entry_version,
                                                 portrait: entry_portrait.clone(),
                                                 full_body: None,
+                                                details: Vec::new(),
                                             });
                                             Some((crop, "png", true, format!("{shown}'s face")))
                                         }
@@ -5831,6 +5969,10 @@ impl Tool for ImageGenerate {
                         if let Some(blob) = &u.full_body {
                             row["full_body"] = json!(blob);
                         }
+                        // The close-ups that went, by hash, never by label.
+                        if !u.details.is_empty() {
+                            row["details"] = json!(u.details);
+                        }
                         row
                     })
                     .collect::<Vec<_>>(),
@@ -5861,6 +6003,9 @@ impl Tool for ImageGenerate {
                     "scheduler": req.sampling.scheduler,
                     "negative": !req.sampling.negative.is_empty(),
                 },
+                // The owner's LoRAs, by count: the model had no say in them,
+                // and the manifest names none (`docs/LORA-DESIGN.md` §4).
+                "loras": loras_counted(&picked, lora_off),
             });
             // The prompt, for the owner only, outside the jail (the manifest
             // never carries it): a line that cannot be written costs the
@@ -5873,9 +6018,10 @@ impl Tool for ImageGenerate {
                     "route": plan.route,
                     "seed": req.seed,
                     "sampling": manifest["sampling"],
+                    "loras": manifest["loras"],
                     "roles": manifest["roles"],
                     "reader": manifest["reader"],
-                    "prompt": req.prompt,
+                    "prompt": with_triggers(&req.prompt, &req.loras),
                     // The chat-derived words in it, apart from the compiler's
                     // own sentences: what `check-private` reads, so a prompt
                     // studied here is never pasted into the repository.
@@ -5904,13 +6050,7 @@ impl Tool for ImageGenerate {
             let of = picture_path.as_deref().unwrap_or("the picture");
             let with = used
                 .iter()
-                .map(|u| {
-                    let kind = match u.kind {
-                        crate::imagelib::Kind::Character => "character",
-                        crate::imagelib::Kind::Style => "style",
-                    };
-                    format!("{kind} {} (v{})", u.name, u.version)
-                })
+                .map(|u| format!("{} {} (v{})", u.kind.label(), u.name, u.version))
                 .collect::<Vec<_>>();
             let with = if with.is_empty() {
                 String::new()
@@ -5993,6 +6133,11 @@ impl Tool for ImageGenerate {
                      together and finished.",
                 );
             }
+            text.push_str(&loras_said(
+                &picked,
+                lora_off,
+                with_triggers(&req.prompt, &req.loras) != req.prompt,
+            ));
             if let Some(note) = &layers_note {
                 text.push(' ');
                 text.push_str(note);
@@ -6346,37 +6491,6 @@ mod tests {
         .unwrap()
     }
 
-    /// A server restarting under a job (the idle reset, a deploy) is waited
-    /// for: the job asks again until the port answers, rather than telling
-    /// the model the image server is not running. Never seen before, it is
-    /// met within the short wait an idle reset fits in.
-    #[tokio::test]
-    async fn a_restarting_server_is_waited_for_not_reported_down() {
-        let addr = closed_port();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(300)).await;
-            let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-            while let Ok((mut sock, _)) = listener.accept().await {
-                tokio::spawn(async move {
-                    let mut buf = [0u8; 2048];
-                    let _ = sock.read(&mut buf).await;
-                    let _ = sock
-                        .write_all(
-                            b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}",
-                        )
-                        .await;
-                });
-            }
-        });
-        let started = Instant::now();
-        let waited = server_at(addr).await_server(None, SERVER_WAIT).await;
-        assert!(waited.is_ok(), "a server that came up was reported down");
-        assert!(
-            started.elapsed() >= Duration::from_millis(250),
-            "answered before the server existed"
-        );
-    }
-
     /// Segmenting inside a job waits out a restart as a render does: a
     /// word mask asked during the idle reset keeps its mask rather than
     /// drawing the whole picture (review of #710, pass 3).
@@ -6444,71 +6558,6 @@ mod tests {
     #[tokio::test]
     async fn a_server_that_cannot_be_asked_is_charged_for_segmentation() {
         assert!(server_at(closed_port()).segments().await);
-    }
-
-    /// The wait is bounded: a server that never comes is reported, with the
-    /// connection error the tool turns into "Is the image server running?".
-    #[tokio::test]
-    async fn a_server_that_never_comes_is_reported_after_the_wait() {
-        let started = Instant::now();
-        let waited = server_at(closed_port())
-            .await_server(None, Duration::from_millis(800))
-            .await;
-        match waited {
-            Err(Failure::Other(e)) => assert!(
-                e.chain().any(|c| c.is::<reqwest::Error>()),
-                "not a connection error: {e:#}"
-            ),
-            Err(Failure::Cancelled) => panic!("reported as cancelled"),
-            Ok(()) => panic!("a closed port answered"),
-        }
-        assert!(started.elapsed() >= Duration::from_millis(700));
-    }
-
-    /// A server never seen by this process gets the short wait, not the full
-    /// one: a stopped service is reported in seconds. One that has answered
-    /// before is waited for in full, since it is restarting.
-    #[tokio::test]
-    async fn only_a_server_seen_before_is_waited_for_in_full() {
-        let unseen = server_at(closed_port());
-        let started = Instant::now();
-        assert!(unseen
-            .await_server(None, Duration::from_secs(60))
-            .await
-            .is_err());
-        assert!(
-            started.elapsed() < UNSEEN_WAIT + Duration::from_secs(2),
-            "a never-seen server was waited on for {:?}",
-            started.elapsed()
-        );
-
-        let seen = server_at(closed_port());
-        seen.answered.store(true, Ordering::Relaxed);
-        let started = Instant::now();
-        assert!(seen.await_server(None, UNSEEN_WAIT * 3).await.is_err());
-        assert!(
-            started.elapsed() >= UNSEEN_WAIT * 2,
-            "a server seen before was given up on after {:?}",
-            started.elapsed()
-        );
-    }
-
-    /// A cancel ends the wait at once: a stopped picture does not sit out
-    /// the rest of a 90 s window.
-    #[tokio::test]
-    async fn a_cancel_ends_the_wait() {
-        let token = CancellationToken::new();
-        let stop = token.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(300)).await;
-            stop.cancel();
-        });
-        let started = Instant::now();
-        let waited = server_at(closed_port())
-            .await_server(Some(&token), Duration::from_secs(60))
-            .await;
-        assert!(matches!(waited, Err(Failure::Cancelled)));
-        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     fn ctx(dir: &std::path::Path) -> ToolCtx {
@@ -6820,6 +6869,23 @@ mod tests {
         assert!(ImageGenerate::new(remote).is_err());
     }
 
+    /// The schema reaches the model server in the order it is written.
+    /// llama-server builds a grammar from it that fixes the order of
+    /// optional properties, so sorted keys (`doing … wearing, where`) closed
+    /// a person at `where`: 144 of 204 persona calls carried only `who` and
+    /// `where`, and a picture lost the pose its call meant to send.
+    #[test]
+    fn a_person_reaches_the_server_in_written_order() {
+        let t = tool("http://127.0.0.1:1");
+        let wire = serde_json::to_string(&t.input_schema()).unwrap();
+        let person = &wire[wire.find("\"people\"").unwrap()..];
+        let at = |k: &str| person.find(&format!("\"{k}\":")).unwrap();
+        assert!(at("who") < at("where"), "{person}");
+        assert!(at("where") < at("wearing"), "{person}");
+        assert!(at("wearing") < at("doing"), "{person}");
+        assert!(at("doing") < at("expression"), "{person}");
+    }
+
     #[test]
     fn declares_nothing_that_arms_the_interlock() {
         let t = tool("http://127.0.0.1:1");
@@ -6873,6 +6939,29 @@ mod tests {
     }
 
     #[test]
+    fn a_trigger_is_added_once_and_only_where_the_prompt_lacks_it() {
+        let l = |t: Option<&str>| crate::loras::PictureLora {
+            file: "x.safetensors".into(),
+            strength: 1.0,
+            trigger: t.map(String::from),
+        };
+        assert_eq!(with_triggers("a lighthouse", &[]), "a lighthouse");
+        assert_eq!(
+            with_triggers(
+                "a lighthouse",
+                &[l(Some("oil paint")), l(None), l(Some("oil paint"))]
+            ),
+            "oil paint. a lighthouse"
+        );
+        assert_eq!(
+            with_triggers("An Oil Paint lighthouse", &[l(Some("oil paint"))]),
+            "An Oil Paint lighthouse"
+        );
+        assert!(model_lora("Qwen-Image-2.1-Q4.GGUF").is_err());
+        assert!(model_lora(crate::sampling::turbo_model()).is_ok());
+    }
+
+    #[test]
     fn the_graph_is_fixed_and_the_prompt_is_only_ever_a_value() {
         let cfg = ImageConfig::default();
         // A prompt that is itself a graph fragment must stay a string.
@@ -6885,6 +6974,7 @@ mod tests {
             references: Vec::new(),
             reference_size: EDIT_REFERENCE_SIZE,
             mask: None,
+            loras: Vec::new(),
         };
         let g = comfy_graph(&cfg, &req, &[], None);
         let mut classes: Vec<_> = g
@@ -6938,6 +7028,7 @@ mod tests {
             references: Vec::new(),
             reference_size: EDIT_REFERENCE_SIZE,
             mask: None,
+            loras: Vec::new(),
         };
         let g = comfy_graph(&cfg, &req(guided.resolve(cfg.steps)), &[], None);
         let k = &g["sample"]["inputs"];
@@ -6992,6 +7083,7 @@ mod tests {
                 references: Vec::new(),
                 reference_size: EDIT_REFERENCE_SIZE,
                 mask: None,
+                loras: Vec::new(),
             };
             let g = comfy_graph(&cfg, &req, &[], None);
             assert_eq!(g["unet"]["class_type"], node, "{file}");
@@ -7003,6 +7095,60 @@ mod tests {
             );
             assert_eq!(unet_loader(file).0, node, "{file}");
         }
+    }
+
+    /// An upscale is the picture as the one reference of a standard-model
+    /// edit at the edit canvas's size, with nothing else asked; the server's
+    /// picture comes back as it is.
+    #[tokio::test]
+    async fn an_upscale_redraws_the_picture_as_its_only_reference() {
+        let red = image::RgbImage::from_pixel(64, 64, image::Rgb([200, 20, 20]));
+        let mut result = std::io::Cursor::new(Vec::new());
+        red.write_to(&mut result, image::ImageFormat::Png).unwrap();
+        let result = result.into_inner();
+        let (url, log) = fake_with(Fake {
+            history: vec![done()],
+            views: vec![result.clone()],
+            ..Fake::default()
+        })
+        .await;
+        let out = tool(&url)
+            .upscale(&picture(8, [240, 220, 40]), 7)
+            .await
+            .unwrap();
+        assert_eq!(out, result);
+        let seen = log.lock().unwrap().clone();
+        let uploads = seen
+            .iter()
+            .filter(|l| l.starts_with("POST /upload/image"))
+            .count();
+        assert_eq!(uploads, 1, "the picture alone");
+        let submitted = seen.iter().find(|l| l.starts_with("POST /prompt")).unwrap();
+        assert!(
+            submitted.contains("Recreate this exact photograph"),
+            "{submitted}"
+        );
+        assert!(submitted.contains("\"resolution\":1024"), "{submitted}");
+        assert!(!submitted.contains("images.image_2"), "{submitted}");
+        assert!(
+            !submitted.contains("EmptyLatentImage"),
+            "the encoder's canvas: {submitted}"
+        );
+        let before = seen.len();
+        assert!(
+            tool(&url).upscale(b"not a picture", 7).await.is_err(),
+            "refused before the server"
+        );
+        let big = image::RgbImage::from_pixel(1024, 1024, image::Rgb([9, 9, 9]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        big.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let why = tool(&url).upscale(&png.into_inner(), 7).await.unwrap_err();
+        assert!(why.contains("already 1024×1024"), "{why}");
+        assert_eq!(
+            log.lock().unwrap().len(),
+            before,
+            "neither reached the server"
+        );
     }
 
     /// The operator's `[system]` floor reaches the persona form, which is
@@ -7103,6 +7249,7 @@ mod tests {
             references: Vec::new(),
             reference_size: EDIT_REFERENCE_SIZE,
             mask: None,
+            loras: Vec::new(),
         };
         let g = comfy_graph(&cfg, &req, &["a.png".into(), "b.jpg".into()], None);
         assert_eq!(g["ref1"]["class_type"], "LoadImage");
@@ -8571,6 +8718,85 @@ mod tests {
         .unwrap();
     }
 
+    /// §9.4, through the tool: a camera behind one person with a full figure
+    /// sends that figure in both slots and no portrait, leaves the
+    /// expression out, and the manifest says no portrait went; the same call
+    /// facing the camera is drawn as before, and a person with no figure
+    /// keeps the portrait and the expression (review of #757).
+    #[tokio::test]
+    async fn a_camera_behind_draws_from_the_figure_through_the_tool() {
+        let (url, seen) = fake(vec![done(); 3], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya", "john"]);
+        attach_body(&lib, "john", [71, 2, 2]);
+        let t = tool(&url).with_library_dir(lib.clone());
+        let call = |who: &str, camera: &str| {
+            json!({"scene": {"setting": "a studio", "camera": camera, "people": [
+                {"who": who, "wearing": "a flannel shirt", "doing": "kneading clay",
+                 "expression": "grinning"}]}, "seed": 5})
+        };
+        let last = || {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .rfind(|l| l.starts_with("POST /prompt"))
+                .unwrap()
+                .clone()
+        };
+        let manifest_of = |content: &str| -> Value {
+            let png = content
+                .lines()
+                .next()
+                .unwrap()
+                .strip_prefix("image: ")
+                .unwrap();
+            serde_json::from_slice(&std::fs::read(dir.join(png.replace(".png", ".json"))).unwrap())
+                .unwrap()
+        };
+
+        let out = t
+            .call(
+                call("john", "seen from behind him at the bench"),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let sent = last();
+        assert!(sent.contains("are both John's full figure"), "{sent}");
+        assert!(sent.contains("John is seen from behind"), "{sent}");
+        assert!(!sent.contains("portrait"), "{sent}");
+        assert!(!sent.contains("grinning"), "{sent}");
+        assert!(manifest_of(&out.content)["cast"][0]["portrait"].is_null());
+
+        let out = t
+            .call(call("john", "eye level, facing him"), &ctx(&dir))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let sent = last();
+        assert!(sent.contains("is John's portrait"), "{sent}");
+        assert!(sent.contains("kneading clay, grinning"), "{sent}");
+        assert!(manifest_of(&out.content)["cast"][0]["portrait"].is_string());
+
+        let out = t
+            .call(
+                call("maya", "seen from behind her at the bench"),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let sent = last();
+        assert!(
+            sent.contains("kneading clay, grinning, Maya's face turned away"),
+            "{sent}"
+        );
+        assert!(manifest_of(&out.content)["cast"][0]["portrait"].is_string());
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
     /// IMAGE-COMPILER-DESIGN.md §9.4: a cast of one with a full body sends
     /// two images, bound to that person, and the manifest says which figure
     /// went; a cast of two with a body each sends portraits only (E14).
@@ -8643,6 +8869,71 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with("sha256-"));
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(lib).ok();
+    }
+
+    /// §9.4, 2026-10-26: a close-up goes after the faces, bound to its person
+    /// in the prompt, and the manifest keeps its hash. Its label is prompt
+    /// words only and never reaches the result.
+    #[tokio::test]
+    async fn a_close_up_goes_after_the_faces_and_into_the_manifest() {
+        let (url, seen) = fake(vec![done()], "200 OK").await;
+        let dir = tempdir();
+        let lib = library_with(&["maya", "john"]);
+        let img = image::RgbImage::from_pixel(2, 2, image::Rgb([71, 1, 1]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        crate::imagelib::add_reference(
+            &lib,
+            "maya",
+            crate::imagelib::RefKind::Detail,
+            &png.into_inner(),
+            Some("left-forearm tattoo".into()),
+        )
+        .unwrap();
+        let t = tool(&url).with_library_dir(lib.clone());
+        let out = t
+            .call(
+                json!({"scene": {"setting": "a studio", "people": two_people()}, "seed": 5}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(!out.content.contains("tattoo"), "{}", out.content);
+        let seen = seen.lock().unwrap().clone();
+        let uploads = seen
+            .iter()
+            .filter(|l| l.starts_with("POST /upload/image"))
+            .count();
+        assert_eq!(uploads, 3, "two portraits and a close-up");
+        let submitted = seen
+            .iter()
+            .rfind(|l| l.starts_with("POST /prompt"))
+            .unwrap();
+        for words in [
+            "Maya's left-forearm tattoo is shown close up in <image3>",
+            "<image1> and <image2> serve as identity sources only.",
+        ] {
+            assert!(submitted.contains(words), "{words}\n{submitted}");
+        }
+        let png = out
+            .content
+            .lines()
+            .next()
+            .unwrap()
+            .strip_prefix("image: ")
+            .unwrap();
+        let manifest: Value =
+            serde_json::from_slice(&std::fs::read(dir.join(png.replace(".png", ".json"))).unwrap())
+                .unwrap();
+        assert!(manifest["cast"][0]["details"][0]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256-"));
+        assert!(manifest["cast"][1].get("details").is_none());
+        assert!(!manifest.to_string().contains("tattoo"));
         std::fs::remove_dir_all(dir).ok();
         std::fs::remove_dir_all(lib).ok();
     }
@@ -9087,6 +9378,7 @@ mod tests {
             references: Vec::new(),
             reference_size: EDIT_REFERENCE_SIZE,
             mask: None,
+            loras: Vec::new(),
         };
         let g = comfy_graph(&cfg, &req, &["pic.png".into()], Some("m.png"));
         assert_eq!(g["maskimg"]["inputs"]["image"], "m.png [temp]");
@@ -10579,7 +10871,6 @@ mod tests {
                 chat_copy: store.join("sessions").join(format!("{chat}.scene.json")),
                 store: store.join("scene"),
                 chat: chat.into(),
-                from_latest: true,
             }),
             ..Default::default()
         }
@@ -10671,6 +10962,128 @@ mod tests {
         assert_eq!(
             manifest_of(&dir, &out.content)["clothes_in_act"],
             json!(["Maya"])
+        );
+    }
+
+    /// Someone added to a picture the owner builds on wears what this chat
+    /// last drew them in (mecha-a3's G1b), from the chat's copy, since the
+    /// picture built on does not hold them; a new picture asks nothing of
+    /// it. Fails where `worn` read only the record built on (review of
+    /// #753, pass 3: it could never fire).
+    #[tokio::test]
+    async fn a_newcomer_to_a_picture_built_on_wears_what_the_chat_last_drew() {
+        let (url, seen) = distinct(6).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let cx = clean(scene_ctx(&dir, &store, "chat-a"));
+        let draw = |v: Value| {
+            let (t, cx) = (&t, &cx);
+            async move {
+                let out = t.call(v, cx).await.unwrap();
+                assert!(!out.is_error, "{}", out.content);
+                out
+            }
+        };
+        let first = draw(json!({"scene": {"setting": "a quiet reading room",
+            "people": [{"who": "maya", "wearing": "a green coat", "doing": "reading a book"}]}}))
+        .await;
+        let p1 = picture_of(&first.content);
+        draw(json!({"scene": {"setting": "a bakery at dawn",
+            "people": [{"who": "john", "wearing": "a striped baker's apron", "doing": "kneading dough"}]}}))
+        .await;
+        // A new picture of John alone takes nothing from the bakery.
+        draw(json!({"scene": {"setting": "a harbour wall",
+            "people": [{"who": "john", "doing": "watching the boats"}]}}))
+        .await;
+        assert!(
+            !last_prompt(&seen).contains("striped baker's apron"),
+            "{}",
+            last_prompt(&seen)
+        );
+        // Built on the first picture, John is a newcomer, and wears what the
+        // chat last drew him in: the harbour picture, which gave no clothes,
+        // so the default. Draw him once more in the apron, then add him.
+        draw(json!({"scene": {"setting": "a bakery at dawn",
+            "people": [{"who": "john", "wearing": "a striped baker's apron", "doing": "kneading dough"}]}}))
+        .await;
+        let added = draw(json!({"picture": p1, "scene": {"people": [
+            {"who": "john", "where": "right", "doing": "handing Maya a cup of tea"}]}}))
+        .await;
+        assert!(
+            added
+                .content
+                .contains("John is wearing what this chat last drew them in."),
+            "{}",
+            added.content
+        );
+        assert!(
+            last_prompt(&seen).contains("striped baker's apron"),
+            "{}",
+            last_prompt(&seen)
+        );
+    }
+
+    /// A layered new picture takes no outfit from the chat's last picture:
+    /// the cutouts' clothes are the call's, or the record a call builds on,
+    /// and a new picture builds on none (the owner, 2026-10-27). Fails where
+    /// the layered build read the chat's copy (`recorded`).
+    #[tokio::test]
+    async fn a_layered_new_picture_takes_no_outfit_from_the_chats_last() {
+        let (url, seen) = fake_with(Fake {
+            history: vec![done(); 7],
+            views: vec![
+                picture(6, [30, 30, 30]),
+                picture(8, [90, 90, 90]),
+                cutout_png(true),
+                cutout_png(true),
+                picture(20, [200, 40, 40]),
+                picture(22, [210, 50, 50]),
+                picture(24, [60, 160, 60]),
+            ],
+            ..Fake::default()
+        })
+        .await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya", "john"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        let first = t
+            .call(
+                json!({"scene": {"setting": "a quiet reading room",
+                       "people": [{"who": "maya", "wearing": "a long green wool coat with brass buttons",
+                                   "doing": "reading a book"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!first.is_error, "{}", first.content);
+        let coat = |seen: &Arc<Mutex<Vec<String>>>| {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|l| l.contains("green wool coat"))
+                .count()
+        };
+        let before = coat(&seen);
+        assert!(before > 0, "the first picture's prompt names the coat");
+
+        cx.layers = true;
+        let mut call = touching_call();
+        call["scene"]["people"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("wearing");
+        let out = t.call(call, &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(
+            manifest_of(&dir, &out.content)["route"],
+            "layered",
+            "{}",
+            out.content
+        );
+        assert_eq!(
+            coat(&seen),
+            before,
+            "a layered pass wore the last picture's coat"
         );
     }
 
@@ -12190,6 +12603,126 @@ mod tests {
         assert_eq!(sampled(&seen).0, 1.0, "no chat layer");
     }
 
+    /// The owner's picture LoRAs (LORA-DESIGN.md §5): the chat's list rides
+    /// the graph between the loader and the sampler, in list order, with its
+    /// triggers ahead of the prompt, and the result counts them without a
+    /// name. A persona's empty list draws none; a name the registry lost is
+    /// counted; a `.gguf` model leaves them out and says so.
+    #[tokio::test]
+    async fn the_owners_loras_ride_the_graph_and_the_result_counts_them() {
+        let (url, seen) = distinct(6).await;
+        let (dir, store, home) = (tempdir(), tempdir(), tempdir());
+        for f in ["paint", "grain"] {
+            crate::loras::write_test_lora(
+                &home.join("pics").join(format!("{f}.safetensors")),
+                crate::loras::QWEN_KEYS,
+            );
+        }
+        std::fs::write(
+            home.join(crate::loras::FILE),
+            "[[lora]]\nname = \"paint\"\nabout = \"a made-up paint look\"\nmodel = \"qwen-image\"\n\
+             file = \"paint.safetensors\"\nstrength = 0.8\ntrigger = \"oil paint\"\n\n\
+             [[lora]]\nname = \"grain\"\nabout = \"a made-up film grain\"\nmodel = \"qwen-image\"\n\
+             file = \"grain.safetensors\"\n",
+        )
+        .unwrap();
+        let chat = crate::sampling::chat_path(&home);
+        crate::sampling::set_chat_loras(
+            &chat,
+            &crate::loras::Layer::Set(vec!["paint".into(), "grain".into()]),
+        )
+        .unwrap();
+        let cfg = |model: &str| ImageConfig {
+            url: url.clone(),
+            min_available_mb: 0,
+            unload_after_secs: 0,
+            loras_dir: Some(vec![home.join("pics")]),
+            diffusion_model: model.into(),
+            ..Default::default()
+        };
+        let t = ImageGenerate::new(cfg(&ImageConfig::default().diffusion_model))
+            .unwrap()
+            .with_chat_settings(chat.clone())
+            .with_loras(home.clone());
+        let graph = |seen: &Arc<Mutex<Vec<String>>>| {
+            let line = last_prompt(seen);
+            let body: Value = serde_json::from_str(&line[line.find('{').unwrap()..]).unwrap();
+            body["prompt"].clone()
+        };
+        let call = json!({"scene": {"setting": "a lighthouse at dusk"}});
+        let mut cx = scene_ctx(&dir, &store, "chat-a");
+        let out = t.call(call.clone(), &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        let g = graph(&seen);
+        assert_eq!(g["lora1"]["inputs"]["lora_name"], "paint.safetensors");
+        assert_eq!(g["lora1"]["inputs"]["strength_model"], 0.8);
+        assert_eq!(g["lora1"]["inputs"]["model"], json!(["unet", 0]));
+        assert_eq!(g["lora2"]["inputs"]["lora_name"], "grain.safetensors");
+        assert_eq!(g["lora2"]["inputs"]["model"], json!(["lora1", 0]));
+        assert_eq!(g["sample"]["inputs"]["model"], json!(["lora2", 0]));
+        let prompt = g["encode"]["inputs"]["prompt"].as_str().unwrap();
+        assert!(prompt.starts_with("oil paint. "), "{prompt}");
+        assert!(out.content.contains("applied 2 LoRAs"), "{}", out.content);
+        assert!(out.content.contains("trigger words"), "{}", out.content);
+        for name in ["paint", "grain"] {
+            assert!(!out.content.contains(name), "named: {}", out.content);
+        }
+        assert_eq!(manifest_of(&dir, &out.content)["loras"]["applied"], 2);
+        // Through the persona form, a persona set to none draws none.
+        let persona = t.persona_form(None);
+        cx.image_loras = crate::loras::Layer::Set(vec![]);
+        let out = persona.call(call.clone(), &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(graph(&seen).get("lora1").is_none());
+        assert!(!out.content.contains("LoRA"), "{}", out.content);
+        assert!(manifest_of(&dir, &out.content)["loras"].is_null());
+        // A name the registry no longer has is counted, never named.
+        cx.image_loras = crate::loras::Layer::Set(vec!["grain".into(), "gone".into()]);
+        let out = persona.call(call.clone(), &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(
+            graph(&seen)["lora1"]["inputs"]["lora_name"],
+            "grain.safetensors"
+        );
+        assert!(
+            out.content
+                .contains("1 LoRA in picture settings is no longer in the registry"),
+            "{}",
+            out.content
+        );
+        // A registry that does not read, with none read before: said as
+        // that, never as names deleted (review of #751).
+        let cold = ImageGenerate::new(cfg(&ImageConfig::default().diffusion_model))
+            .unwrap()
+            .with_chat_settings(chat.clone())
+            .with_loras(home.clone());
+        let registry = std::fs::read_to_string(home.join(crate::loras::FILE)).unwrap();
+        std::fs::write(home.join(crate::loras::FILE), "[[lora]\n").unwrap();
+        cx.image_loras = crate::loras::Layer::Inherit;
+        let out = cold.call(call.clone(), &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("registry could not be read"),
+            "{}",
+            out.content
+        );
+        assert!(!out.content.contains("no longer"), "{}", out.content);
+        // The tool that read it whole before keeps that read.
+        let out = t.call(call.clone(), &cx).await.unwrap();
+        assert!(out.content.contains("applied 2 LoRAs"), "{}", out.content);
+        std::fs::write(home.join(crate::loras::FILE), registry).unwrap();
+        // A .gguf model file: left out, and said.
+        cx.image_loras = crate::loras::Layer::Inherit;
+        let gguf = ImageGenerate::new(cfg("Qwen-Image-2.1-Q4.gguf"))
+            .unwrap()
+            .with_chat_settings(chat)
+            .with_loras(home);
+        let out = gguf.call(call, &cx).await.unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(graph(&seen).get("lora1").is_none());
+        assert!(out.content.contains(".gguf"), "{}", out.content);
+    }
+
     /// The pinned turbo model missing from the server is refused naming the
     /// command that fetches it — turbo is fetched on demand (the owner,
     /// 2026-10-11) — before anything is sent. A configured `turbo_model`
@@ -12371,7 +12904,7 @@ mod tests {
         assert!(server.switching(standard, standard), "still turbo");
         assert_eq!(
             read_held(&record)
-                .get(server.base.as_str())
+                .get(server.wire.base().as_str())
                 .map(String::as_str),
             Some(turbo)
         );
@@ -12432,6 +12965,344 @@ mod tests {
                 left_out: None,
             })
         }
+    }
+
+    /// A reader that notes whether it was handed a record, and finds nothing.
+    #[derive(Debug)]
+    struct RecordSeen(Arc<std::sync::Mutex<Vec<bool>>>);
+
+    #[async_trait]
+    impl crate::persona::edit::SceneReader for RecordSeen {
+        async fn read(
+            &self,
+            record: Option<&crate::scene::Scene>,
+        ) -> std::result::Result<crate::persona::edit::Extracted, String> {
+            self.0.lock().unwrap().push(record.is_some());
+            Ok(crate::persona::edit::Extracted {
+                scene: Default::default(),
+                retouch: None,
+                left_out: None,
+            })
+        }
+    }
+
+    /// A new picture starts from nothing (the owner, 2026-10-27): the chat's
+    /// last picture lends it no clothes or place, and the reader is handed
+    /// no record. One that names the picture it builds on carries both.
+    /// Fails where a new picture's clothes and reader record came from the
+    /// chat's copy.
+    #[tokio::test]
+    async fn a_new_picture_carries_nothing_from_the_chats_last() {
+        let (url, seen) = distinct(4).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = clean(scene_ctx(&dir, &store, "chat-a"));
+        let first = t
+            .call(
+                json!({"scene": {"setting": "a quiet reading room",
+                       "people": [{"who": "maya", "wearing": "a green coat", "doing": "reading a book"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!first.is_error, "{}", first.content);
+        let p1 = picture_of(&first.content);
+        let records = Arc::new(std::sync::Mutex::new(Vec::new()));
+        cx.scene_reader = Some(Arc::new(RecordSeen(Arc::clone(&records))));
+
+        let second = t
+            .call(
+                json!({"scene": {"setting": "a beach at dawn",
+                       "people": [{"who": "maya", "doing": "flying a kite"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!second.is_error, "{}", second.content);
+        let prompt = last_prompt(&seen);
+        assert!(prompt.contains("a beach at dawn"), "{prompt}");
+        assert!(
+            !prompt.contains("green coat"),
+            "the last clothes rode along: {prompt}"
+        );
+        // No code path has carried a setting into a new picture (`plan` takes
+        // `base`, and the reader merges only acts and clothes): a place came
+        // back only when the model restated it from the note, which the note
+        // test and the description checks below guard. Kept against a new
+        // channel.
+        assert!(
+            !prompt.contains("reading room"),
+            "the last place rode along: {prompt}"
+        );
+        assert_eq!(
+            *records.lock().unwrap(),
+            vec![false],
+            "the reader read the chat's record"
+        );
+
+        let third = t
+            .call(
+                json!({"picture": p1, "scene": {"people": [{"who": "maya", "doing": "standing by the window"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!third.is_error, "{}", third.content);
+        let prompt = last_prompt(&seen);
+        assert!(
+            prompt.contains("a green coat"),
+            "building on it lost the clothes: {prompt}"
+        );
+        assert_eq!(records.lock().unwrap().last(), Some(&true));
+
+        // An upload named in `picture` has no record of its own, and borrows
+        // none from the chat's last picture (review of #753, pass 2).
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::write(dir.join("inbox/beach.png"), picture(30, [10, 120, 200])).unwrap();
+        let upload = t
+            .call(
+                json!({"picture": "inbox/beach.png", "scene": {"people": [{"who": "maya", "doing": "standing on the sand"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!upload.is_error, "{}", upload.content);
+        let prompt = last_prompt(&seen);
+        assert!(
+            !prompt.contains("green coat"),
+            "an upload wore the last picture's clothes: {prompt}"
+        );
+        assert_eq!(
+            records.lock().unwrap().last(),
+            Some(&false),
+            "the reader was handed another picture's record"
+        );
+        // What the model is told, where it decides: a new picture keeps
+        // nothing, and `picture` is for when the owner asks to build on one.
+        assert!(DESCRIPTION.contains("a new picture keeps nothing from earlier ones"));
+        assert!(DESCRIPTION
+            .contains("Only when the user asks to continue, build on, edit or change a picture (in a chat, by its Continue button"));
+        assert!(PICTURE_DESC
+            .contains("only when the user asks to continue, build on, edit or change it"));
+    }
+
+    /// The owner's button decides what a picture builds on, never the call
+    /// (`BuildOn`, the owner, 2026-10-27). Typed: a call naming an earlier
+    /// result is refused before anything renders, and a photo the owner
+    /// uploaded may still be named. Continue on a picture: a call naming
+    /// none, or another, builds on that one. Fails where the call's
+    /// `picture` was taken as it came.
+    #[tokio::test]
+    async fn only_the_owners_continue_builds_on_a_picture() {
+        let (url, seen) = distinct(7).await;
+        let (dir, store, lib) = (tempdir(), tempdir(), library_with(&["maya"]));
+        let t = tool(&url).with_library_dir(lib.clone());
+        let mut cx = clean(scene_ctx(&dir, &store, "chat-a"));
+        let first = t
+            .call(
+                json!({"scene": {"setting": "a quiet reading room",
+                       "people": [{"who": "maya", "wearing": "a green coat", "doing": "reading a book"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!first.is_error, "{}", first.content);
+        let p1 = picture_of(&first.content);
+        let drawn = || {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|l| l.starts_with("POST /prompt"))
+                .count()
+        };
+
+        // Typed: naming the earlier result is refused, and nothing renders.
+        cx.build_on = Some(BuildOn::Nothing);
+        let before = drawn();
+        let typed = t
+            .call(
+                json!({"picture": p1, "scene": {"people": [{"who": "maya", "doing": "standing by the window"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(typed.is_error, "{}", typed.content);
+        assert!(
+            typed.content.contains("rather than pressing Continue"),
+            "{}",
+            typed.content
+        );
+        assert_eq!(drawn(), before, "a refused call rendered");
+        // Not by another spelling of the path, nor as the room it is drawn
+        // onto (review of #754, pass 1).
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        for sneaked in [
+            json!({"picture": format!("inbox/../{p1}"), "retouch": "Give her a red umbrella."}),
+            json!({"scene": {"setting": {"photo": p1},
+                   "people": [{"who": "maya", "wearing": "a coat", "doing": "standing by the window"}]}}),
+        ] {
+            let out = t.call(sneaked.clone(), &cx).await.unwrap();
+            assert!(out.is_error, "{sneaked}: {}", out.content);
+            assert_eq!(drawn(), before, "{sneaked} rendered");
+        }
+        // A name no file answers to is not an earlier picture: left out
+        // and drawn, as before, rather than refused (review of #754, pass 4).
+        let invented = t
+            .call(
+                json!({"picture": "images/never-drawn.png", "scene": {"setting": "a rooftop garden",
+                       "people": [{"who": "maya", "wearing": "a coat", "doing": "watering plants"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!invented.is_error, "{}", invented.content);
+        assert!(
+            invented
+                .content
+                .contains("There is no picture `images/never-drawn.png`"),
+            "{}",
+            invented.content
+        );
+        // A photo the owner uploaded is still theirs to name.
+        std::fs::create_dir_all(dir.join("inbox")).unwrap();
+        std::fs::copy(dir.join(&p1), dir.join("inbox/photo.png")).unwrap();
+        let upload = t
+            .call(
+                json!({"picture": "inbox/photo.png", "retouch": "Give her a red umbrella."}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!upload.is_error, "{}", upload.content);
+        let room = t
+            .call(
+                json!({"scene": {"setting": {"photo": "inbox/photo.png"},
+                       "people": [{"who": "maya", "wearing": "a coat", "doing": "standing by the window"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            !room.is_error,
+            "an uploaded room was refused: {}",
+            room.content
+        );
+
+        // Continue on the first: a call naming no picture builds on it.
+        cx.build_on = Some(BuildOn::Picture(p1.clone()));
+        let next = t
+            .call(
+                json!({"scene": {"people": [{"who": "maya", "doing": "standing by the window"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!next.is_error, "{}", next.content);
+        assert!(
+            next.content
+                .contains(&format!("The owner pressed Continue on {p1}")),
+            "{}",
+            next.content
+        );
+        assert!(
+            last_prompt(&seen).contains("a green coat"),
+            "{}",
+            last_prompt(&seen)
+        );
+        assert_ne!(manifest_of(&dir, &next.content)["route"], "new");
+        // One naming another picture builds on the one pressed.
+        let other = picture_of(&upload.content);
+        let named = t
+            .call(
+                json!({"picture": other, "scene": {"people": [{"who": "maya", "doing": "sitting down"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!named.is_error, "{}", named.content);
+        assert!(
+            named.content.contains(&format!("not on {other}")),
+            "{}",
+            named.content
+        );
+        // Not onto another earlier picture as the room, under a Continue
+        // either (review of #754, pass 2).
+        let room = t
+            .call(
+                json!({"scene": {"setting": {"photo": other},
+                       "people": [{"who": "maya", "doing": "sitting down"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(room.is_error, "{}", room.content);
+        assert!(
+            room.content.contains("another earlier picture"),
+            "{}",
+            room.content
+        );
+        // What the field itself tells the model, where it chooses.
+        assert!(PICTURE_DESC.contains("never name an earlier result on a turn the user typed"));
+        assert!(
+            last_prompt(&seen).contains("a green coat"),
+            "{}",
+            last_prompt(&seen)
+        );
+        // A mask painted on another picture is dropped, and the call drawn
+        // onto the one pressed; regions painted there are refused, since
+        // their legend would describe outlines not in it (review of #754,
+        // passes 4 and 5).
+        let masked = t
+            .call(
+                json!({"picture": other, "mask": "inbox/painted-elsewhere.png",
+                       "retouch": "Give her a red umbrella."}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(!masked.is_error, "the mask was read: {}", masked.content);
+        assert!(
+            masked.content.contains(&format!("not on {other}")),
+            "{}",
+            masked.content
+        );
+        assert!(
+            !masked.content.contains("painted-elsewhere"),
+            "the other picture's mask was used: {}",
+            masked.content
+        );
+        assert!(manifest_of(&dir, &masked.content)["mask"].is_null());
+        let before = drawn();
+        let regions = t
+            .call(
+                json!({"picture": other, "mask": "inbox/painted-elsewhere.png",
+                       "regions": [{"colour": "magenta", "words": "make it red"}]}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(regions.is_error, "{}", regions.content);
+        assert!(
+            regions.content.contains("places in another picture"),
+            "{}",
+            regions.content
+        );
+        assert_eq!(drawn(), before, "regions from another picture rendered");
+        // A room no file answers to is the read's to refuse, not called an
+        // earlier picture.
+        let invented_room = t
+            .call(
+                json!({"scene": {"setting": {"photo": "images/a-garden.png"},
+                       "people": [{"who": "maya", "doing": "sitting down"}]}}),
+                &cx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            !invented_room.content.contains("another earlier picture"),
+            "{}",
+            invented_room.content
+        );
     }
 
     /// A persona's bare call is drawn with what the reader found it left

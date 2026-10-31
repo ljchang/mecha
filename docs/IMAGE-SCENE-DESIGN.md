@@ -226,7 +226,7 @@ that silence is §1's `face_anchor: null` again.
 `INCOGNITO-DESIGN.md` R3 (no writes outside the chat's own folder) and R6 (images deleted when
 the session closes).
 
-- It reads the persona's latest scene when it starts. That is a read, which R3 allows.
+- It starts with no scene, as every chat does since 2026-10-27 (R10).
 - It keeps its copy in its own folder, where it is deleted on close.
 - It never writes back, and its pictures are not indexed by content hash outside the chat.
 
@@ -335,9 +335,13 @@ the depth also reaches the result line ("the third retouch of …"). Whether a c
 
 ### 5.5 The scene is the story's present
 
-The **chat's own copy** of the scene (R7), never the persona's latest, goes into the run's notes
+The **chat's own copy** of the scene, never another chat's, goes into the run's notes
 (`PERSONA-CONTEXT-DESIGN.md` §5.1): what A is
 wearing and where. A recalled day's outfit or blocking then cannot stand in for the present one.
+Since R10 (2026-10-27) the note calls it this chat's last picture, which a new picture does not
+keep: the model names it in `picture` only when the owner asks to continue, build on, edit or
+change it. The note used to say clothes and places come from it, and a fresh chat drew a place
+and a person the owner had not asked for.
 
 ### 5.6 Scenes and background jobs
 
@@ -353,10 +357,10 @@ checked against #583's branch on 2026-10-07; check them again against the tree o
   on a rolled-back run and would leave a picture that really landed one scene behind (review of
   #584, final pass).
 - **Two chats with one persona can render at once.** Jobs are one in flight per chat, and the
-  scene is kept per persona (§5.1). Each chat works on its own copy of the scene, taken
-  from the persona's latest when the chat starts. A landing writes back to the persona's latest,
-  and the last render to land wins. That is ruling R7, and an incognito chat never writes back
-  (R9).
+  scene is kept per chat. Each chat works on its own copy of the scene and starts with none
+  (R10, which replaced R7's persona latest on 2026-10-27); the content-hash index is the only
+  thing chats share, so a picture carried into another chat still brings its scene. An incognito
+  chat never writes outside its room (R9).
 - **The scene note goes in the run notes' tail** (`cx.notes`, #577), beside #583's note about a
   picture that arrived late. It never goes in the cached head: the scene changes from turn to
   turn, and the head is the cached prefix.
@@ -487,13 +491,33 @@ build follows them without asking again.
   description (§5.2).
 - **R2.** Pose, camera and people changes restage from the place, and nothing chains (§5.3).
 - **R3.** The current scene lives with the persona across chats, and pictures resolve by content
-  hash (§5.1).
+  hash (§5.1). *The first half is reversed by R10; pictures still resolve by content hash.*
 - **R4.** §5.5 is amended as in §7.
 - **R5.** #569's lineage path is retired rather than kept beside this.
 - **R6.** The owner's eye on face-sized sheets is the gate for every step. ArcFace is a backstop.
 - **R7.** With two chats rendering for one persona (incognito chats never write back, R9 and
   `INCOGNITO-DESIGN.md` R3), each chat works on its own copy of the scene,
-  and the last render to land updates the persona's latest (§5.6).
+  and the last render to land updates the persona's latest (§5.6). *Reversed by R10: there is no
+  persona latest.*
+- **R10 (the owner, 2026-10-27, reversing R3's first half and R7).** A new chat never continues
+  from the last picture: it starts with no scene. Within a chat, a picture builds on an earlier
+  one only when the owner asks ("continue", "build on the last image", "edit/modify/change some
+  detail"); otherwise each new picture is independent. Built as: no persona `latest.json` is
+  written or read; a call without `picture` takes nothing from the chat's record (no reader
+  record, no clothes, no layered outfit); the note and the tool description tell the model to
+  name `picture` only on such a request. A fresh chat had drawn a place and a second person
+  carried from an earlier chat's picture, and left out what was asked.
+- **R11 (the owner, 2026-10-27, the same day: strict).** Whether a request builds on a picture
+  is the owner's press, never the model's reading of the words: "the button could be for any
+  image in the chat, and a new image is just typing a new description", since waiting for a
+  picture only to find the model misread which was meant is the cost. Built as a **Continue**
+  button on every picture in a persona chat, beside Edit and Regenerate. A typed turn is stamped
+  `BuildOn::Nothing`, and `image_generate` refuses a call there that names an earlier result
+  (an upload, `inbox/…`, may still be named); a Continue, Edit or Regenerate is stamped
+  `BuildOn::Picture` with the picture pressed on, and every call that turn builds on it. A
+  Continue sends the owner's words through the edit panel's path (`PanelEdit`), so the harness
+  draws the change and the persona replies; into a running reply it waits, as Regenerate does.
+  Spoken call turns have no button and stay the call's to decide (R10).
 - **R8.** Regenerate beside Edit on every picture card: the same scene with a new seed, no model
   turn (§5.7). This replaces drawing two variants of every picture. Versions stay on one card, and the version showing
   is the one that is built on.

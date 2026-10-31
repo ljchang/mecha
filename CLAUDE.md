@@ -142,6 +142,10 @@ message.rs   provider-agnostic Message/Block/Usage/StopReason types
 image.rs     a file on disk to a bounded image block, capped at the door
 imagegen.rs  image_generate: typed values to a loopback image server, PNG into the
              run's workspace; the graph is fixed in code, never the model's
+videogen.rs  clips with sound from a loopback video server: the graph, a LoRA chain
+             between loader and sampler, and the prompt compiled from a typed scene
+comfy.rs     the wire image and video generation speak to ComfyUI: loopback only, temp
+             uploads, a job taken back off; never starts a server
 imagelib.rs  the character and style library, and the compiler a scene runs
              through: names in, portraits and verbatim descriptions out
 scene.rs     what a persona's picture shows now: the record a render lands, per chat and

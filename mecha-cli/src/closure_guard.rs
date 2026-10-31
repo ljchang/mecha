@@ -195,6 +195,9 @@ impl Tool for ClosedStatusGuard {
     fn capabilities(&self) -> Capabilities {
         self.inner.capabilities()
     }
+    fn effect(&self) -> Option<mecha_core::tool::effect::Effect> {
+        self.inner.effect()
+    }
     fn carried_state(&self, ctx: &ToolCtx) -> Option<CarriedState> {
         self.inner.carried_state(ctx)
     }
@@ -215,6 +218,9 @@ impl Tool for ClosedStatusGuard {
     }
     fn runs_a_fresh_conversation(&self) -> bool {
         self.inner.runs_a_fresh_conversation()
+    }
+    fn hosts_programs(&self) -> bool {
+        self.inner.hosts_programs()
     }
     fn forget_conversation_state(&self) {
         self.inner.forget_conversation_state()

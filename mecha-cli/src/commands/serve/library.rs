@@ -187,6 +187,17 @@ pub struct UnlockQuery {
     unlock: Option<String>,
 }
 
+/// The picture route's query: the unlock token, and `size=thumb-v1`
+/// ([`imagelib::THUMB_QUERY`]) for the small JPEG a grid or an avatar shows
+/// ([`Library::thumbnail_named`]).
+#[derive(Deserialize, Default)]
+pub struct PictureQuery {
+    #[serde(default)]
+    unlock: Option<String>,
+    #[serde(default)]
+    size: Option<String>,
+}
+
 pub(super) fn no_store(mut response: Response) -> Response {
     response.headers_mut().insert(
         header::CACHE_CONTROL,
@@ -428,7 +439,8 @@ fn valid_blob(name: &str) -> bool {
 }
 
 /// GET /api/library/portrait/{blob} — a portrait or a typed reference, only
-/// as some entry the owner may see now names it. Everything else, including a
+/// as some entry the owner may see now names it; `?size=thumb-v1` answers it as
+/// a small JPEG, under the same lookup and cache rule. Everything else, including a
 /// blob only a superseded version names, is the same 404. Both halves of
 /// #385's answer cover every picture an entry names, not only its portrait
 /// (`IMAGE-COMPILER-DESIGN.md` §9.5): the lookup that answers 404, and the
@@ -437,11 +449,22 @@ fn valid_blob(name: &str) -> bool {
 pub async fn portrait(
     State(state): St,
     UrlPath(blob): UrlPath<String>,
-    Query(q): Query<UnlockQuery>,
+    Query(q): Query<PictureQuery>,
 ) -> Response {
     if !valid_blob(&blob) {
         return (StatusCode::NOT_FOUND, "no such portrait\n").into_response();
     }
+    let thumb = match q.size.as_deref() {
+        None => false,
+        Some(s) if s == imagelib::THUMB_QUERY => true,
+        Some(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("size is {} or absent\n", imagelib::THUMB_QUERY),
+            )
+                .into_response()
+        }
+    };
     let unlocked = state.library.unlocked(q.unlock.as_deref());
     let dir = state.library.dir.clone();
     let read = tokio::task::spawn_blocking(move || {
@@ -456,6 +479,20 @@ pub async fn portrait(
             .collect();
         let open = naming.iter().any(|e| !e.locked);
         let entry = naming.into_iter().find(|e| !e.locked || unlocked)?;
+        // After the lock's lookup, as the full picture is: a thumbnail is
+        // the same face.
+        if thumb {
+            // One that cannot be made shows the picture itself rather than
+            // a broken tile (review of #735).
+            // That stand-in is never cached: it would sit under the
+            // thumbnail's URL for a year, whole (review of #735).
+            match lib.thumbnail_named(entry, &blob) {
+                Ok(jpeg) => return Some((jpeg, "jpg", open)),
+                Err(e) => tracing::warn!("thumbnail of {blob}: {e:#}"),
+            }
+            let (bytes, ext) = lib.read_named(entry, &blob).ok()?;
+            return Some((bytes, ext, false));
+        }
         let (bytes, ext) = lib.read_named(entry, &blob).ok()?;
         Some((bytes, ext, open))
     })
@@ -622,12 +659,17 @@ pub async fn set_lock_settings(State(state): St, Json(body): Json<LockSettingsBo
     super::review::verb(&state, &["imagelib", "set-autolock", &minutes]).await
 }
 
-fn parse_kind(kind: &str) -> Option<&'static str> {
-    match kind {
-        "character" => Some("character"),
-        "style" => Some("style"),
-        _ => None,
-    }
+/// The entry kind a route names, parsed once into [`Kind`]: a string matched
+/// in one place and re-matched with a fallback in another let a new kind
+/// resolve against a same-named character (`IMAGE-COMPILER-DESIGN.md` §9.5).
+fn parse_kind(kind: &str) -> Option<Kind> {
+    Kind::ALL.into_iter().find(|k| k.label() == kind)
+}
+
+/// Said from `Kind::ALL`, as `parse_kind` reads it (review of #741).
+fn kind_refusal() -> String {
+    let labels: Vec<&str> = Kind::ALL.iter().map(|k| k.label()).collect();
+    format!("kind is one of {}\n", labels.join(", "))
 }
 
 #[derive(Deserialize, Default)]
@@ -648,7 +690,7 @@ pub async fn act(
     body: Option<Json<ActBody>>,
 ) -> Response {
     let Some(kind) = parse_kind(&kind) else {
-        return (StatusCode::BAD_REQUEST, "kind is character or style\n").into_response();
+        return (StatusCode::BAD_REQUEST, kind_refusal()).into_response();
     };
     if imagelib::validate_name(&name).is_err() {
         return (StatusCode::BAD_REQUEST, "not an entry name\n").into_response();
@@ -663,6 +705,7 @@ pub async fn act(
     let Some(entry) = visible(&state, kind, &name, body.unlock.as_deref()).await else {
         return (StatusCode::NOT_FOUND, "no such entry\n").into_response();
     };
+    let kind = kind.label();
     let args: Vec<&str> = match action.as_str() {
         "approve" => {
             let Some(shown) = body.shown else {
@@ -684,18 +727,13 @@ pub async fn act(
 /// exactly as missing does.
 async fn visible(
     state: &super::WebState,
-    kind: &'static str,
+    kind: Kind,
     name: &str,
     unlock: Option<&str>,
 ) -> Option<Entry> {
     let unlocked = state.library.unlocked(unlock);
     let dir = state.library.dir.clone();
     let n = name.to_string();
-    let kind = if kind == "style" {
-        Kind::Style
-    } else {
-        Kind::Character
-    };
     tokio::task::spawn_blocking(move || Library::load(&dir).0.get(kind, &n).cloned())
         .await
         .ok()
@@ -768,11 +806,12 @@ pub struct AddBody {
 }
 
 /// POST /api/library/add — a new character from an uploaded portrait, or a
-/// new style from its text: `mecha imagelib add-character` / `add-style`.
-/// The owner's own act, so approved on creation.
+/// new style or location from its text: `mecha imagelib add-character` /
+/// `add-style` / `add-location`. The owner's own act, so approved on
+/// creation.
 pub async fn add(State(state): St, Json(body): Json<AddBody>) -> Response {
     let Some(kind) = parse_kind(&body.kind) else {
-        return (StatusCode::BAD_REQUEST, "kind is character or style\n").into_response();
+        return (StatusCode::BAD_REQUEST, kind_refusal()).into_response();
     };
     if imagelib::validate_name(&body.name).is_err() {
         return (
@@ -784,28 +823,34 @@ pub async fn add(State(state): St, Json(body): Json<AddBody>) -> Response {
     // `--flag=…` throughout: a text that opens with a dash is text, not a
     // flag (review of #385).
     let text = match kind {
-        "character" => format!("--description={}", body.text),
-        _ => format!("--text={}", body.text),
+        Kind::Character => format!("--description={}", body.text),
+        Kind::Style | Kind::Location | Kind::Outfit => format!("--text={}", body.text),
     };
-    let staged = match (kind, body.portrait.as_deref()) {
-        ("character", Some(b64)) => match stage_portrait(b64, "portrait").await {
+    let staged = match (kind.has_portrait(), body.portrait.as_deref()) {
+        (true, Some(b64)) => match stage_portrait(b64, "portrait").await {
             Ok(dir) => Some(dir),
             Err(refusal) => return *refusal,
         },
-        ("character", None) => {
+        (true, None) => {
             return (StatusCode::BAD_REQUEST, "a character needs a portrait\n").into_response()
         }
-        (_, Some(_)) => {
-            return (StatusCode::BAD_REQUEST, "a style has no portrait\n").into_response()
+        (false, Some(_)) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("{} has no portrait\n", kind.with_article()),
+            )
+                .into_response()
         }
-        (_, None) => None,
+        (false, None) => None,
     };
     let portrait = staged
         .as_ref()
         .map(|d| d.file().to_string_lossy().into_owned());
-    let mut args = match &portrait {
-        Some(path) => vec!["imagelib", "add-character", &body.name, "--portrait", path],
-        None => vec!["imagelib", "add-style", &body.name],
+    let mut args = match (&portrait, kind) {
+        (Some(path), _) => vec!["imagelib", "add-character", &body.name, "--portrait", path],
+        (None, Kind::Location) => vec!["imagelib", "add-location", &body.name],
+        (None, Kind::Outfit) => vec!["imagelib", "add-outfit", &body.name],
+        (None, Kind::Character | Kind::Style) => vec!["imagelib", "add-style", &body.name],
     };
     args.push(&text);
     if body.locked {
@@ -837,7 +882,7 @@ pub struct EditBody {
 /// the entry's recorded seed goes with the old portrait.
 pub async fn edit(State(state): St, Json(body): Json<EditBody>) -> Response {
     let Some(kind) = parse_kind(&body.kind) else {
-        return (StatusCode::BAD_REQUEST, "kind is character or style\n").into_response();
+        return (StatusCode::BAD_REQUEST, kind_refusal()).into_response();
     };
     if imagelib::validate_name(&body.name).is_err() {
         return (StatusCode::BAD_REQUEST, "not an entry name\n").into_response();
@@ -845,8 +890,12 @@ pub async fn edit(State(state): St, Json(body): Json<EditBody>) -> Response {
     if body.text.is_none() && body.portrait.is_none() {
         return (StatusCode::BAD_REQUEST, "nothing to change\n").into_response();
     }
-    if kind == "style" && body.portrait.is_some() {
-        return (StatusCode::BAD_REQUEST, "a style has no portrait\n").into_response();
+    if !kind.has_portrait() && body.portrait.is_some() {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("{} has no portrait\n", kind.with_article()),
+        )
+            .into_response();
     }
     let Some(entry) = visible(&state, kind, &body.name, body.unlock.as_deref()).await else {
         return (StatusCode::NOT_FOUND, "no such entry\n").into_response();
@@ -872,7 +921,7 @@ pub async fn edit(State(state): St, Json(body): Json<EditBody>) -> Response {
         .as_ref()
         .map(|d| d.file().to_string_lossy().into_owned());
     let text = body.text.as_ref().map(|t| format!("--text={t}"));
-    let mut args = vec!["imagelib", "update", &body.name, "--kind", kind];
+    let mut args = vec!["imagelib", "update", &body.name, "--kind", kind.label()];
     if let Some(text) = &text {
         args.push(text);
     }
@@ -887,7 +936,12 @@ pub async fn edit(State(state): St, Json(body): Json<EditBody>) -> Response {
 #[derive(Deserialize)]
 pub struct ReferenceBody {
     name: String,
-    /// `face`, `full_body` or `detail`.
+    /// The entry it goes on: `character` when absent, or a `location` or
+    /// `outfit` for a `view`.
+    #[serde(default)]
+    kind: Option<String>,
+    /// `face`, `full_body` or `detail` on a character; `view` on a location
+    /// or an outfit.
     #[serde(rename = "as")]
     as_kind: String,
     /// The picture, base64; for adding only.
@@ -908,31 +962,61 @@ fn parse_ref_kind(kind: &str) -> Option<&'static str> {
         "face" => Some("face"),
         "full_body" => Some("full_body"),
         "detail" => Some("detail"),
+        "view" => Some("view"),
         _ => None,
     }
 }
 
-/// What both reference writes check before a child runs: the kind, the
-/// name, and the character as this request may see it, approved.
+/// What both reference writes check before a child runs: the reference kind
+/// and the entry kind it may go on, the name, and the entry as this request
+/// may see it, approved. A location's or outfit's `view` goes through here as
+/// a character's picture does, under the same lock.
 async fn reference_target(
     state: &super::WebState,
     body: &ReferenceBody,
-) -> Result<&'static str, Box<Response>> {
+) -> Result<(&'static str, Kind), Box<Response>> {
     let Some(kind) = parse_ref_kind(&body.as_kind) else {
         return Err(Box::new(
             (
                 StatusCode::BAD_REQUEST,
-                "a reference is a face, full_body or detail\n",
+                "a reference is a face, full_body, detail or view\n",
             )
                 .into_response(),
         ));
     };
+    let entry_kind = match body.kind.as_deref() {
+        None => Kind::Character,
+        Some(k) => match parse_kind(k) {
+            Some(k) => k,
+            None => {
+                return Err(Box::new(
+                    (StatusCode::BAD_REQUEST, kind_refusal()).into_response(),
+                ))
+            }
+        },
+    };
+    // Which pictures an entry takes is the store's rule, asked before a
+    // child runs: a view on a character or a face on a location is refused
+    // here, before the store would refuse it.
+    let allowed = imagelib::RefKind::ALL
+        .into_iter()
+        .find(|r| r.label() == kind)
+        .is_some_and(|r| r.allowed_on(entry_kind));
+    if !allowed {
+        return Err(Box::new(
+            (
+                StatusCode::BAD_REQUEST,
+                format!("{} takes no {kind} picture\n", entry_kind.with_article()),
+            )
+                .into_response(),
+        ));
+    }
     if imagelib::validate_name(&body.name).is_err() {
         return Err(Box::new(
             (StatusCode::BAD_REQUEST, "not an entry name\n").into_response(),
         ));
     }
-    let Some(entry) = visible(state, "character", &body.name, body.unlock.as_deref()).await else {
+    let Some(entry) = visible(state, entry_kind, &body.name, body.unlock.as_deref()).await else {
         return Err(Box::new(
             (StatusCode::NOT_FOUND, "no such entry\n").into_response(),
         ));
@@ -949,15 +1033,15 @@ async fn reference_target(
                 .into_response(),
         ));
     }
-    Ok(kind)
+    Ok((kind, entry_kind))
 }
 
 /// POST /api/library/reference — attach a typed picture to an approved
 /// character: `mecha imagelib add-reference`. The owner's write, as the edit
 /// page's is; the child keeps the store's limits and label rules.
 pub async fn add_reference(State(state): St, Json(body): Json<ReferenceBody>) -> Response {
-    let kind = match reference_target(&state, &body).await {
-        Ok(kind) => kind,
+    let (kind, entry_kind) = match reference_target(&state, &body).await {
+        Ok(kinds) => kinds,
         Err(refusal) => return *refusal,
     };
     let Some(b64) = body.picture.as_deref() else {
@@ -970,7 +1054,16 @@ pub async fn add_reference(State(state): St, Json(body): Json<ReferenceBody>) ->
     let path = staged.file().to_string_lossy().into_owned();
     // `--label=…`: a label that opens with a dash is a label (review of #385).
     let label = body.label.as_ref().map(|l| format!("--label={l}"));
-    let mut args = vec!["imagelib", "add-reference", &body.name, "--as", kind, &path];
+    let mut args = vec![
+        "imagelib",
+        "add-reference",
+        &body.name,
+        "--as",
+        kind,
+        "--kind",
+        entry_kind.label(),
+        &path,
+    ];
     if let Some(label) = &label {
         args.push(label);
     }
@@ -982,12 +1075,20 @@ pub async fn add_reference(State(state): St, Json(body): Json<ReferenceBody>) ->
 /// POST /api/library/reference/remove — take one off: `mecha imagelib
 /// remove-reference`, a new version that keeps the picture for the history.
 pub async fn remove_reference(State(state): St, Json(body): Json<ReferenceBody>) -> Response {
-    let kind = match reference_target(&state, &body).await {
-        Ok(kind) => kind,
+    let (kind, entry_kind) = match reference_target(&state, &body).await {
+        Ok(kinds) => kinds,
         Err(refusal) => return *refusal,
     };
     let label = body.label.as_ref().map(|l| format!("--label={l}"));
-    let mut args = vec!["imagelib", "remove-reference", &body.name, "--as", kind];
+    let mut args = vec![
+        "imagelib",
+        "remove-reference",
+        &body.name,
+        "--as",
+        kind,
+        "--kind",
+        entry_kind.label(),
+    ];
     if let Some(label) = &label {
         args.push(label);
     }
@@ -1300,6 +1401,17 @@ pub(super) fn state_for_tests(dir: PathBuf) -> std::sync::Arc<LibraryState> {
 
 #[cfg(test)]
 mod tests {
+    /// A route's kind parses once, into `Kind`, for every kind there is: a
+    /// location never resolves as a same-named character (§9.5).
+    #[test]
+    fn every_kind_parses_and_nothing_else_does() {
+        for kind in Kind::ALL {
+            assert_eq!(super::parse_kind(kind.label()), Some(kind));
+        }
+        assert_eq!(super::parse_kind("Character"), None);
+        assert_eq!(super::parse_kind("costume"), None);
+    }
+
     use super::*;
 
     #[test]
@@ -2135,6 +2247,120 @@ mod route_tests {
         assert_eq!(r.headers()[header::CACHE_CONTROL], "no-store");
     }
 
+    /// A thumbnail rides the picture route under the same lock and cache
+    /// rules as the picture: a JPEG cached for good when its entry is open,
+    /// the same 404 for a locked one until unlocked, and never cached then.
+    #[tokio::test]
+    async fn a_thumbnail_follows_its_picture_through_the_lock_and_the_cache() {
+        let f = fixture();
+        let list = json(f.app.clone().oneshot(get("/api/library")).await.unwrap()).await;
+        let maya = list["entries"].as_array().unwrap()[0]["portrait"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let r = f
+            .app
+            .clone()
+            .oneshot(get(&format!("{maya}?size={}", imagelib::THUMB_QUERY)))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(r.headers()[header::CONTENT_TYPE], "image/jpeg");
+        assert!(r.headers()[header::CACHE_CONTROL]
+            .to_str()
+            .unwrap()
+            .contains("immutable"));
+        let r = f
+            .app
+            .clone()
+            .oneshot(get(&format!("{maya}?size=huge")))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+
+        let theo = Library::load(&f.dir)
+            .0
+            .get(Kind::Character, "theo")
+            .unwrap()
+            .clone();
+        let blob = theo.portrait.as_deref().unwrap();
+        let bare = format!(
+            "/api/library/portrait/{blob}?size={}",
+            imagelib::THUMB_QUERY
+        );
+        let r = f.app.clone().oneshot(get(&bare)).await.unwrap();
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
+        let r = f
+            .app
+            .clone()
+            .oneshot(post(
+                "/api/library/unlock",
+                serde_json::json!({"password": "correct horse"}),
+            ))
+            .await
+            .unwrap();
+        let token = json(r).await["token"].as_str().unwrap().to_string();
+        let r = f
+            .app
+            .clone()
+            .oneshot(get(&format!("{bare}&unlock={token}")))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(r.headers()[header::CACHE_CONTROL], "no-store");
+        // The page asks for the generation the server makes.
+        assert!(
+            include_str!("../../../../web/src/lib/library.js")
+                .contains(&format!("THUMB_SIZE = '{}'", imagelib::THUMB_QUERY)),
+            "web/src/lib/library.js's THUMB_SIZE is not imagelib::THUMB_QUERY"
+        );
+        // An old generation's URL is not this one's.
+        let r = f
+            .app
+            .clone()
+            .oneshot(get(&format!("{maya}?size=thumb")))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+
+        // A picture whose header reads but whose pixels do not: the
+        // thumbnail cannot be made, so the picture itself stands in, and is
+        // never cached under the thumbnail's URL.
+        let mut torn = png(90);
+        // A byte of the pixel data's checksum flipped: the header still
+        // reads, the pixels do not.
+        let at = torn.len() - 16;
+        torn[at] ^= 0xff;
+        imagelib::create(
+            &f.dir,
+            mecha_core::imagelib::NewEntry {
+                kind: Kind::Character,
+                name: "torn".into(),
+                text: "torn, a memorable face".into(),
+                portrait: Some(torn),
+                source_seed: None,
+                origin: mecha_core::imagelib::Origin::Owner,
+                locked: false,
+            },
+        )
+        .unwrap();
+        let blob = Library::load(&f.dir)
+            .0
+            .get(Kind::Character, "torn")
+            .unwrap()
+            .portrait
+            .clone()
+            .unwrap();
+        let url = format!(
+            "/api/library/portrait/{blob}?size={}",
+            imagelib::THUMB_QUERY
+        );
+        let r = f.app.clone().oneshot(get(&url)).await.unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(r.headers()[header::CONTENT_TYPE], "image/png");
+        assert_eq!(r.headers()[header::CACHE_CONTROL], "no-store");
+    }
+
     /// The reference writes refuse before any child runs: a kind outside the
     /// three, a bad name, a hidden or waiting character, no picture.
     #[tokio::test]
@@ -2190,6 +2416,29 @@ mod route_tests {
                 serde_json::json!({"name": "maya", "as": "portrait"}),
                 StatusCode::BAD_REQUEST,
             ),
+            // A location or outfit takes a view and nothing else; an entry
+            // kind the store does not have is refused; a location nobody
+            // made answers as missing.
+            (
+                add,
+                serde_json::json!({"kind": "location", "name": "maya", "as": "face", "picture": b64}),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                add,
+                serde_json::json!({"kind": "costume", "name": "maya", "as": "view", "picture": b64}),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                add,
+                serde_json::json!({"kind": "location", "name": "nowhere", "as": "view", "picture": b64}),
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                remove,
+                serde_json::json!({"kind": "outfit", "name": "nowhere", "as": "view"}),
+                StatusCode::NOT_FOUND,
+            ),
         ] {
             assert_eq!(status(uri, body.clone()).await, want, "{uri} {body}");
         }
@@ -2221,12 +2470,57 @@ mod route_tests {
         use imagelib::RefKind;
         let js = include_str!("../../../../web/src/lib/library.js");
         let limits = format!(
-            "export const REF_LIMIT = {{ face: {}, full_body: {}, detail: {} }};",
+            "export const REF_LIMIT = {{ face: {}, full_body: {}, detail: {}, view: {} }};",
             RefKind::Face.limit(),
             RefKind::FullBody.limit(),
-            RefKind::Detail.limit()
+            RefKind::Detail.limit(),
+            RefKind::View.limit()
         );
         assert!(js.contains(&limits), "library.js lacks `{limits}`");
+        // Which pictures each entry kind takes is the store's
+        // `RefKind::allowed_on`, copied into the page; held to it here
+        // (review of #743).
+        let order = ["full_body", "face", "detail"];
+        assert!(
+            js.contains("export const REF_KINDS = ['full_body', 'face', 'detail'];"),
+            "library.js's REF_KINDS moved"
+        );
+        for kind in Kind::ALL {
+            let takes: Vec<&str> = RefKind::ALL
+                .into_iter()
+                .filter(|r| r.allowed_on(kind))
+                .map(|r| r.label())
+                .collect();
+            let said = match kind {
+                Kind::Character => {
+                    assert_eq!(
+                        {
+                            let mut t = takes.clone();
+                            t.sort();
+                            t
+                        },
+                        {
+                            let mut o = order.to_vec();
+                            o.sort();
+                            o
+                        }
+                    );
+                    "character: REF_KINDS".to_string()
+                }
+                Kind::Style => {
+                    assert!(takes.is_empty());
+                    continue;
+                }
+                Kind::Location | Kind::Outfit => {
+                    let quoted: Vec<String> = takes.iter().map(|t| format!("'{t}'")).collect();
+                    format!("{}: [{}]", kind.label(), quoted.join(", "))
+                }
+            };
+            assert!(
+                js.contains(&said),
+                "library.js's PICTURE_KINDS lacks `{said}`"
+            );
+        }
         let label = format!("export const LABEL_MAX = {};", imagelib::MAX_LABEL);
         assert!(js.contains(&label), "library.js lacks `{label}`");
     }

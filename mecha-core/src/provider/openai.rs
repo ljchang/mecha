@@ -47,6 +47,13 @@ pub struct OpenAiCompatible {
     /// fields, which a strict endpoint such as OpenAI's own refuses with a
     /// 400 — including one behind a proxy on this machine, which is why the
     /// address is not the test (review of #541).
+    llama_server: bool,
+    /// [`Provider::local`]: `kind = "local"` *and* a loopback base URL, so a
+    /// request stays on this machine. Narrower than `llama_server` above, which is
+    /// about the wire dialect and admits a llama-server on a tailnet host;
+    /// this one is about where the bytes go (R8), and a URL that does not
+    /// parse, or no URL at all (which falls back to api.openai.com), is not
+    /// local.
     local: bool,
 }
 
@@ -85,7 +92,12 @@ impl OpenAiCompatible {
             vision: cfg.vision_enabled(),
             structured_output: cfg.structured_output,
             retry: crate::provider::retry::RetryPolicy::from_config(cfg),
-            local: cfg.kind == "local" && cfg.base_url.is_some(),
+            llama_server: cfg.kind == "local" && cfg.base_url.is_some(),
+            local: cfg.kind == "local"
+                && cfg
+                    .base_url
+                    .as_deref()
+                    .is_some_and(crate::provider::router::is_loopback),
         })
     }
 
@@ -138,13 +150,13 @@ impl OpenAiCompatible {
         // with thinking tags (`server-common.cpp`); measured honoured on
         // 2026-10-03 (a 128-token cap cut a looping persona's reasoning to
         // ~490 characters). Only when asked, so every other request's bytes
-        // are unchanged, and only to a llama-server (`self.local`): unlike
+        // are unchanged, and only to a llama-server (`self.llama_server`): unlike
         // `enable_thinking` above, whose one caller (the director) degrades to
         // an undirected sentence, this rides a persona's spoken reply, and a
         // 400 from a strict endpoint is `Invalid`, never retried or failed
         // over, so the caller would hear nothing (review of #541). Elsewhere
         // the server keeps its own budget.
-        if let (Some(budget), true) = (req.think_budget, self.local) {
+        if let (Some(budget), true) = (req.think_budget, self.llama_server) {
             obj.insert("reasoning_budget_tokens".into(), json!(budget));
         }
         if stream {
@@ -192,6 +204,9 @@ impl Provider for OpenAiCompatible {
     fn structured_output(&self) -> bool {
         self.structured_output != crate::config::StructuredOutput::Disabled
     }
+    fn local(&self) -> bool {
+        self.local
+    }
     fn id(&self) -> &str {
         &self.id
     }
@@ -214,6 +229,7 @@ impl Provider for OpenAiCompatible {
         sink: Option<&StreamSink>,
     ) -> Result<CompletionResponse> {
         anyhow::ensure!(req.response_schema.is_none() || self.structured_output(), "provider does not support structured output; configure structured_output after verifying endpoint support");
+        crate::provider::refuse_unless_local(self, req)?;
         let body = self.body(req, sink.is_some());
         // Retries cover the send and the status line — nothing has streamed
         // yet. Mid-stream failures below propagate without a `ProviderError`,
@@ -882,6 +898,7 @@ mod tests {
             cache_prompt: false,
             think: None,
             think_budget: None,
+            local_only: false,
             trailing_notes: 0,
             tool_choice: crate::message::ToolChoice::Auto,
         }
@@ -981,6 +998,47 @@ mod tests {
         );
     }
 
+    /// R8's predicate, decided where the config is in hand: `kind = "local"`
+    /// on a loopback base URL. A proxy on this machine speaking OpenAI's
+    /// dialect, a llama-server over the tailnet, an entry with no URL (which
+    /// falls back to api.openai.com) and a URL that does not parse are all
+    /// not local.
+    #[tokio::test]
+    async fn only_a_local_provider_on_a_loopback_address_is_local() {
+        let cfg = |kind: &str, url: Option<&str>| ProviderConfig {
+            kind: kind.into(),
+            base_url: url.map(str::to_string),
+            ..Default::default()
+        };
+        for (c, local) in [
+            (cfg("local", Some("http://127.0.0.1:8080")), true),
+            (cfg("local", Some("http://localhost:8080/")), true),
+            (cfg("local", Some("http://[::1]:8080")), true),
+            (cfg("openai", Some("http://127.0.0.1:4000")), false),
+            (cfg("local", Some("http://spark.tailnet:8080")), false),
+            (cfg("local", None), false),
+            (cfg("local", Some("not a url")), false),
+        ] {
+            let p = OpenAiCompatible::from_config(&c).unwrap();
+            assert_eq!(p.local(), local, "{:?} {:?}", c.kind, c.base_url);
+        }
+        // A provider that is not local refuses a local-only request by name,
+        // before it sends anything (port 1 would refuse the connection).
+        let remote =
+            OpenAiCompatible::from_config(&cfg("openai", Some("http://127.0.0.1:1"))).unwrap();
+        let req = CompletionRequest {
+            local_only: true,
+            ..plain_req()
+        };
+        let err = remote.complete(&req, None).await.unwrap_err();
+        assert!(
+            err.downcast_ref::<crate::provider::LocalOnlyRefused>()
+                .is_some(),
+            "{err:#}"
+        );
+        assert!(err.to_string().contains("local-only"), "{err}");
+    }
+
     #[test]
     fn enable_thinking_is_sent_only_when_a_request_declines_it() {
         let p = provider(None, None);
@@ -989,7 +1047,7 @@ mod tests {
         assert!(plain.get("chat_template_kwargs").is_none());
         assert_eq!(
             serde_json::to_string(&plain).unwrap(),
-            r#"{"max_tokens":64,"messages":[{"content":"hi","role":"user"}],"model":"m"}"#
+            r#"{"model":"m","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}"#
         );
         let declined = p.body(
             &CompletionRequest {

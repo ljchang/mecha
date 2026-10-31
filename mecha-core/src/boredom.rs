@@ -46,8 +46,33 @@
 //! loop learns that *some* tool has a property, never which tool has it. So
 //! the rung waits for a property worth adding rather than being approximated
 //! by a string.
+//!
+//! **A second way to reach rung 1: the same failure on changing arguments.**
+//! The key above cannot see a model *guessing* — `fs_list` on one path
+//! outside the workspace, then another, then a third; a `shell` command a
+//! policy forbids, reworded each turn; `image_view` on three invented file
+//! names. Every call has a new target, so every outcome is new, and the
+//! one thing that is not changing — the error — is the thing the run should
+//! be learning from. A corpus pass on 2026-10-30 found these were most of the
+//! model-side failures: path-jail errors, policy blocks and invented paths,
+//! each concentrated in a handful of sessions that repeated one refusal
+//! across many arguments. So failures are also counted by their **shape**
+//! ([`error_shape`]: the error with every quoted span, path and number
+//! masked) per tool, and the count is of turns that brought the shape back
+//! on a target the streak had *not* seen. The two keys partition the
+//! repeats: an unchanged call is the first key's (and the loop guard's), and
+//! an unchanged call whose error moves is a poll, which this second key
+//! cannot count because its target is not new. A call the *machine* refused
+//! (`ToolCallTrace::blocked`: a policy, a hook, the interlock) is told so in
+//! different words — a refusal is about what the call does, and rewording it
+//! is the one response guaranteed to be refused again. **A person's
+//! `Decision::Deny` never reaches this key**: it is a correction, every
+//! interactive approver words it alike, and "stop asking" is exactly the
+//! wrong thing to say about one (review of #762). The notice is added beside
+//! the results; the refusal itself is never touched, so `"Blocked by
+//! policy:"` stays `Blocked` for every reader downstream.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Identical outcomes before an approach counts as going nowhere.
 ///
@@ -107,6 +132,112 @@ pub enum Rung {
     /// Rung 3: a fresh `Conversation` — the strongest available escape from a
     /// context that has talked itself into a corner.
     Delegate,
+    /// Rung 1 again, reached by the shape key: one tool failing the same way
+    /// across `STUCK` turns that each brought a new target. `arguments` is
+    /// how many distinct targets the streak holds — the number the notice
+    /// states, which is not the turn count: a parallel batch brings several,
+    /// and a target retried is still one.
+    Guessing { arguments: usize },
+    /// Rung 1 for a call the machine refused (policy, hook, interlock, an
+    /// approver's `Blocked`) on `STUCK` different targets — never a person's
+    /// `Deny`, which the loop keeps out of the shape key. Its own words because the
+    /// response differs: a refusal is not a puzzle to reword. `arguments` as
+    /// for `Guessing`.
+    Rewording { arguments: usize },
+}
+
+impl Rung {
+    /// Which notice wins when one turn crosses several: the higher rung, and
+    /// within rung 1 the exact repeat, which names the more specific thing.
+    fn weight(self) -> u8 {
+        match self {
+            Rung::Delegate => 3,
+            Rung::Change => 2,
+            Rung::Rewording { .. } | Rung::Guessing { .. } => 1,
+        }
+    }
+}
+
+/// One executed call, as this counts it.
+#[derive(Debug, Clone, Copy)]
+pub struct Outcome<'a> {
+    pub tool: &'a str,
+    /// [`Boredom::key`]: the target and the result.
+    pub key: u64,
+    /// Set when the call errored or was refused ([`Boredom::failure`]).
+    pub failure: Option<Failure>,
+}
+
+/// What an errored call failed *as*, and what it was aimed at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Failure {
+    /// The tool and the error's [`error_shape`].
+    class: u64,
+    /// `compact::target_of`, so a reworded argument order is not a new guess.
+    target: u64,
+    /// The machine refused the call (`ToolCallTrace::blocked`) rather than
+    /// the call failing.
+    refused: bool,
+}
+
+/// An error with what varies between attempts masked out: every span in
+/// double quotes or backticks, and every word holding a digit or a path
+/// separator. Two jail errors for two different paths, or two policy blocks
+/// for two different commands, come out identical; "no such file" and
+/// "resolves outside the workspace" do not.
+///
+/// The whole text rather than its first line, so a failure carrying a long
+/// and varying explanation (a compiler's stderr) does not collapse into its
+/// wrapper — the cost of matching too little is a missed notice, and of
+/// matching too much a false accusation.
+pub fn error_shape(error: &str) -> String {
+    fn flush(word: &mut String, out: &mut String) {
+        if word
+            .chars()
+            .any(|c| c.is_ascii_digit() || c == '/' || c == '\\')
+        {
+            out.push('_');
+        } else {
+            out.push_str(word);
+        }
+        word.clear();
+    }
+    let mut out = String::with_capacity(error.len());
+    let mut word = String::new();
+    let mut chars = error.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' | '`' => {
+                flush(&mut word, &mut out);
+                out.push(c);
+                out.push('_');
+                // An unclosed quote masks to the end: fewer matches, never
+                // more.
+                if chars.by_ref().any(|d| d == c) {
+                    out.push(c);
+                }
+            }
+            c if c.is_whitespace() => {
+                flush(&mut word, &mut out);
+                out.push(' ');
+            }
+            _ => word.push(c),
+        }
+    }
+    flush(&mut word, &mut out);
+    out
+}
+
+/// Per shape: the targets this streak has failed on, how many turns brought
+/// a new one, the turn it was last seen, the tool, and whether it was a
+/// refusal.
+#[derive(Debug)]
+struct Shape {
+    targets: HashSet<u64>,
+    turns: u32,
+    last: u32,
+    tool: String,
+    refused: bool,
 }
 
 /// What a bored run can actually reach, read off the registry by the loop.
@@ -134,6 +265,8 @@ pub struct Boredom {
     /// at, and a rendered argument list can be most of a turn and can hold
     /// the user's data.
     seen: HashMap<u64, (u32, String, u32)>,
+    /// The shape key's streaks, by [`Failure::class`].
+    shapes: HashMap<u64, Shape>,
     /// Turns observed so far. Monotonic within one `Boredom`, meaningless
     /// outside it — the same shape as `step::next_run`.
     turn: u32,
@@ -174,6 +307,26 @@ impl Boredom {
         hasher.finish()
     }
 
+    /// An errored call, for the shape key: the tool and [`error_shape`] of
+    /// its error as the class, `compact::target_of` as what it was aimed at.
+    /// `refused` is the trace's `blocked` — read off the loop's own record,
+    /// never off the result's wording. A person's `Deny` is not passed here
+    /// at all.
+    pub fn failure(name: &str, input: &serde_json::Value, error: &str, refused: bool) -> Failure {
+        use std::hash::{Hash, Hasher};
+        let mut class = std::collections::hash_map::DefaultHasher::new();
+        name.hash(&mut class);
+        error_shape(error).hash(&mut class);
+        refused.hash(&mut class);
+        let mut target = std::collections::hash_map::DefaultHasher::new();
+        crate::compact::target_of(name, input).hash(&mut target);
+        Failure {
+            class: class.finish(),
+            target: target.finish(),
+            refused,
+        }
+    }
+
     /// Record one *turn's* executed calls, and say whether it just crossed a
     /// rung.
     ///
@@ -183,20 +336,27 @@ impl Boredom {
     /// one notice per turn, because two at once is one thing to say.
     pub fn observe_turn<'a>(
         &mut self,
-        turn: impl IntoIterator<Item = (&'a str, u64)>,
+        turn: impl IntoIterator<Item = Outcome<'a>>,
     ) -> Option<(Rung, String)> {
         if !self.enabled || self.notices >= MAX_NOTICES {
             return None;
         }
         self.turn += 1;
         let now = self.turn;
+        // Deduplicated by outcome, in the order the calls were made.
+        let mut once = HashSet::new();
+        let outcomes: Vec<Outcome<'a>> = turn.into_iter().filter(|o| once.insert(o.key)).collect();
         let mut crossed: Option<(Rung, String)> = None;
-        let mut this_turn = std::collections::HashSet::new();
-        for (name, key) in turn {
-            if !this_turn.insert(key) {
-                continue;
+        let mut cross = |rung: Rung, tool: &str| {
+            if crossed
+                .as_ref()
+                .is_none_or(|(r, _)| rung.weight() > r.weight())
+            {
+                crossed = Some((rung, tool.to_string()));
             }
-            let entry = self.seen.entry(key).or_insert((0, name.to_string(), now));
+        };
+        for &Outcome { tool, key, .. } in &outcomes {
+            let entry = self.seen.entry(key).or_insert((0, tool.to_string(), now));
             // A gap past the window is a fresh streak, not a continuation —
             // the same target read again after enough ordinary work in
             // between is not the same finding as three in a row.
@@ -209,14 +369,48 @@ impl Boredom {
             // repeating past the last rung is left to the loop guard and the
             // turn ceiling, which is the honest end of this ladder — rungs 4
             // and 5 belong to mechanisms that already exist.
-            let rung = match entry.0 {
-                STUCK => Rung::Change,
-                STILL_STUCK => Rung::Delegate,
-                _ => continue,
+            match entry.0 {
+                STUCK => cross(Rung::Change, &entry.1),
+                STILL_STUCK => cross(Rung::Delegate, &entry.1),
+                _ => {}
+            }
+        }
+        // The shape key. Per shape, whether this turn brought it back on a
+        // target the streak had not seen; a parallel batch of three guesses
+        // is one turn of guessing, on the per-turn rule above.
+        let mut fresh: Vec<u64> = Vec::new();
+        for &Outcome { tool, failure, .. } in &outcomes {
+            let Some(f) = failure else { continue };
+            let shape = self.shapes.entry(f.class).or_insert_with(|| Shape {
+                targets: HashSet::new(),
+                turns: 0,
+                last: now,
+                tool: tool.to_string(),
+                refused: f.refused,
+            });
+            if now.saturating_sub(shape.last) > RECENCY_WINDOW {
+                shape.targets.clear();
+                shape.turns = 0;
+            }
+            shape.last = now;
+            if shape.targets.insert(f.target) && !fresh.contains(&f.class) {
+                fresh.push(f.class);
+            }
+        }
+        for class in fresh {
+            let Some(shape) = self.shapes.get_mut(&class) else {
+                continue;
             };
-            // The higher rung wins if a turn somehow crosses both.
-            if crossed.as_ref().is_none_or(|(r, _)| *r == Rung::Change) {
-                crossed = Some((rung, entry.1.clone()));
+            shape.turns += 1;
+            // `==` again: crossed once per streak.
+            if shape.turns == STUCK {
+                let arguments = shape.targets.len();
+                let rung = if shape.refused {
+                    Rung::Rewording { arguments }
+                } else {
+                    Rung::Guessing { arguments }
+                };
+                cross(rung, &shape.tool);
             }
         }
         if crossed.is_some() {
@@ -262,6 +456,25 @@ impl Rung {
                 }
                 s
             }
+            // No delegate offered for either: a fresh conversation inherits
+            // the same jail and the same policy, so handing a refusal to a
+            // child is the reword in a third costume.
+            Rung::Guessing { arguments } => format!(
+                "{NOTICE_STEM} `{tool}` has now failed the same way on {arguments} \
+                 different arguments. The arguments are changing and the error is \
+                 not, so another variant will fail the same way too. Do not start \
+                 the task over — read the error for what it asks for instead (a \
+                 location it names, an argument it wants, a way to ask for access), \
+                 look at what actually exists before naming something again, or say \
+                 what is blocking this piece."
+            ),
+            Rung::Rewording { arguments } => format!(
+                "{NOTICE_STEM} `{tool}` has now been refused for {arguments} different \
+                 calls. A refusal is about what the call does, not how it is \
+                 written, so another variant will be refused the same way. Do not \
+                 try to route around it — finish what does not need it, and tell \
+                 the user what was refused and why."
+            ),
         }
     }
 }
@@ -271,7 +484,25 @@ mod tests {
     use super::*;
 
     fn turn(b: &mut Boredom, key: u64) -> Option<(Rung, String)> {
-        b.observe_turn([("build", key)])
+        b.observe_turn([Outcome {
+            tool: "build",
+            key,
+            failure: None,
+        }])
+    }
+
+    /// One errored call, as the loop hands it over.
+    fn failed<'a>(tool: &'a str, path: &str, error: &str, refused: bool) -> Outcome<'a> {
+        let input = serde_json::json!({ "path": path });
+        Outcome {
+            tool,
+            key: Boredom::key(tool, &input, error),
+            failure: Some(Boredom::failure(tool, &input, error, refused)),
+        }
+    }
+
+    fn jail(path: &str) -> String {
+        format!("tool `fs_list` failed: path {path:?} resolves outside the workspace (/srv/work).")
     }
 
     #[test]
@@ -358,9 +589,187 @@ mod tests {
     fn the_same_call_twice_in_one_batch_is_waste_and_not_a_loop() {
         let mut b = Boredom::new(true);
         // Three turns' worth of repetition, all inside one turn.
+        let call = Outcome {
+            tool: "build",
+            key: 1,
+            failure: None,
+        };
+        assert!(b.observe_turn([call, call, call]).is_none());
+    }
+
+    // --- the shape key ---
+
+    #[test]
+    fn a_shape_masks_what_varies_and_keeps_what_does_not() {
+        assert_eq!(
+            error_shape(&jail("/etc")),
+            error_shape(&jail("/home/x/2026"))
+        );
+        assert_eq!(
+            error_shape("No such file or directory (os error 2)"),
+            error_shape("No such file or directory (os error 13)"),
+        );
+        assert_eq!(
+            error_shape("Blocked by policy: `shell` call forbidden: `rm -rf a`"),
+            error_shape("Blocked by policy: `shell` call forbidden: `rm -rf b/c`"),
+        );
+        assert_ne!(
+            error_shape(&jail("/etc")),
+            error_shape("No such file or directory (os error 2)"),
+            "two different failures are two different facts"
+        );
+        // An unclosed quote masks to the end rather than leaking the rest.
+        assert_eq!(
+            error_shape("bad `x and more"),
+            error_shape("bad `y and other")
+        );
+    }
+
+    /// The corpus's commonest model-side failure: one tool, one refusal,
+    /// a new path every turn. The first key saw three new outcomes and said
+    /// nothing; this is the test that failed before the shape key existed.
+    #[test]
+    fn the_same_failure_on_three_new_targets_crosses_rung_one_once() {
+        let mut b = Boredom::new(true);
+        let mut go = |p: &str| b.observe_turn([failed("fs_list", p, &jail(p), false)]);
+        assert!(go("/etc").is_none());
+        assert!(go("/usr").is_none(), "two guesses is a retry");
+        assert_eq!(
+            go("/var").unwrap(),
+            (Rung::Guessing { arguments: 3 }, "fs_list".to_string())
+        );
+        assert!(go("/opt").is_none(), "crossed once per streak");
+    }
+
+    #[test]
+    fn a_refusal_reworded_is_named_as_a_refusal() {
+        let mut b = Boredom::new(true);
+        let blocked = "Blocked by policy: `fs_write` modifies state and this run is read-only";
+        let mut go = |p: &str| b.observe_turn([failed("fs_write", p, blocked, true)]);
+        go("a.md");
+        go("b.md");
+        assert_eq!(go("c.md").unwrap().0, Rung::Rewording { arguments: 3 });
+    }
+
+    #[test]
+    fn different_failures_on_different_targets_are_ordinary_work() {
+        let mut b = Boredom::new(true);
         assert!(b
-            .observe_turn([("build", 1), ("build", 1), ("build", 1)])
+            .observe_turn([failed("fs_read", "a", "No such file or directory", false)])
             .is_none());
+        assert!(b
+            .observe_turn([failed("fs_read", "b", "permission denied", false)])
+            .is_none());
+        assert!(b
+            .observe_turn([failed("fs_read", "c", "is a directory", false)])
+            .is_none());
+    }
+
+    /// Three guesses in one parallel batch are one turn of guessing — the
+    /// per-turn rule the first key already keeps.
+    #[test]
+    fn three_guesses_in_one_batch_count_as_one_turn() {
+        let mut b = Boredom::new(true);
+        let batch = |b: &mut Boredom, ps: [&str; 3]| {
+            b.observe_turn(ps.map(|p| failed("fs_list", p, &jail(p), false)))
+        };
+        assert!(batch(&mut b, ["/a", "/b", "/c"]).is_none());
+        assert!(batch(&mut b, ["/d", "/e", "/f"]).is_none());
+        assert_eq!(
+            batch(&mut b, ["/g", "/h", "/i"]).unwrap().0,
+            Rung::Guessing { arguments: 9 },
+            "three turns, nine different arguments: the notice states the nine"
+        );
+    }
+
+    /// An unchanged call is the first key's, never this one's — or a call
+    /// polled with a moving error would grade as guessing.
+    #[test]
+    fn the_same_target_again_is_not_a_new_guess() {
+        let mut b = Boredom::new(true);
+        for n in 0..5 {
+            let err = format!("not ready: `{n}` of 9");
+            assert!(
+                b.observe_turn([failed("status", "job", &err, false)])
+                    .is_none(),
+                "a poll with a moving error is not guessing"
+            );
+        }
+    }
+
+    #[test]
+    fn a_guess_far_apart_starts_a_new_streak() {
+        let mut b = Boredom::new(true);
+        b.observe_turn([failed("fs_list", "/a", &jail("/a"), false)]);
+        b.observe_turn([failed("fs_list", "/b", &jail("/b"), false)]);
+        for k in 100..100 + RECENCY_WINDOW as u64 + 1 {
+            turn(&mut b, k);
+        }
+        assert!(b
+            .observe_turn([failed("fs_list", "/c", &jail("/c"), false)])
+            .is_none());
+    }
+
+    #[test]
+    fn the_exact_repeat_outranks_the_shape_in_one_turn() {
+        let mut b = Boredom::new(true);
+        let same = failed("fs_list", "/same", &jail("/same"), false);
+        for p in ["/x", "/y"] {
+            b.observe_turn([same, failed("fs_list", p, &jail(p), false)]);
+        }
+        // Third turn: `/same` crosses the first key, and the shape key
+        // crosses too (three turns that each brought a new target).
+        let crossed = b
+            .observe_turn([same, failed("fs_list", "/z", &jail("/z"), false)])
+            .unwrap();
+        assert_eq!(crossed.0, Rung::Change);
+        assert_eq!(b.notices(), 1, "one notice per turn");
+    }
+
+    /// The count the notice states is distinct targets: a target retried
+    /// beside the new guesses is one argument, not one per call (review of
+    /// #762 — the notice used to state the turn threshold as an argument
+    /// count).
+    #[test]
+    fn a_retried_target_is_one_argument_in_the_count() {
+        let mut b = Boredom::new(true);
+        let f = |p: &str| failed("fs_list", p, &jail(p), false);
+        assert!(b.observe_turn([f("/a")]).is_none());
+        assert!(b.observe_turn([f("/a"), f("/b")]).is_none());
+        assert_eq!(
+            b.observe_turn([f("/c")]).unwrap().0,
+            Rung::Guessing { arguments: 3 },
+            "four calls, three arguments"
+        );
+    }
+
+    #[test]
+    fn the_new_notices_say_what_is_true() {
+        let guess = Rung::Guessing { arguments: 9 }.notice("image_view", &Escapes::default());
+        assert!(
+            guess.starts_with(NOTICE_STEM),
+            "recognisable as the harness"
+        );
+        assert!(
+            guess.contains("`image_view`") && guess.contains("on 9 different arguments"),
+            "{guess}"
+        );
+        assert!(guess.contains("Do not start the task over"));
+        let reword = Rung::Rewording { arguments: 4 }.notice(
+            "shell",
+            &Escapes {
+                delegate: Some("researcher".into()),
+            },
+        );
+        assert!(reword.starts_with(NOTICE_STEM));
+        assert!(
+            reword.contains("refused for 4 different calls") && reword.contains("tell the user"),
+            "{reword}"
+        );
+        assert!(
+            !reword.contains("researcher"),
+            "a child inherits the policy: delegating a refusal is rewording it"
+        );
     }
 
     #[test]

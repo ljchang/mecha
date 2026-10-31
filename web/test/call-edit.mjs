@@ -38,13 +38,14 @@ const fns = ['  function editImage(path) {', '  function editInCall(path) {', ' 
   .map(readOut)
   .join('\n');
 
-function rig({ live = true } = {}) {
+function rig({ live = true, refuse = null } = {}) {
   return new Function(
     'live',
+    'refuse',
     'uploadRegionReferences',
     `'use strict';
      const log = [];
-     let key = 'k1', token = null, input = 'typed in the chat box', imageEdit = null;
+     let key = 'k1', token = null, input = 'typed in the chat box', imageEdit = null, error = null;
      const caller = {
        holdMic: (on) => log.push(on ? 'hold' : 'release'),
        say: (text) => (log.push('say:' + text), live),
@@ -55,10 +56,17 @@ function rig({ live = true } = {}) {
      const composeEditMessage = (p, mask, text) => (text ? 'edit ' + p + ': ' + text : null);
      const composeRegionsMessage = (p, idx, rs) => 'regions ' + p + ': ' + rs.map((r) => r.colour).join(',');
      const fetch = async (url) => (log.push('upload'), { ok: true, json: async () => ({ path: 'inbox/mask.png' }) });
-     const send = async (opts) => log.push('chat-send:' + input + (opts?.edit ? ' [edit ' + JSON.stringify(opts.edit) + ']' : ''));
+     const send = async (opts) => {
+       log.push('chat-send:' + input + (opts?.edit ? ' [edit ' + JSON.stringify(opts.edit) + ']' : ''));
+       if (refuse) {
+         error = refuse;
+         return false;
+       }
+       return true;
+     };
      ${fns}
-     return { editImage, editInCall, closeEdit, sendEdit, log, state: () => ({ imageEdit, input }) };`,
-  )(live, uploadRegionReferences);
+     return { editImage, editInCall, closeEdit, sendEdit, log, state: () => ({ imageEdit, input, error }) };`,
+  )(live, refuse, uploadRegionReferences);
 }
 
 {
@@ -114,6 +122,20 @@ function rig({ live = true } = {}) {
 }
 
 {
+  // Refused (a reply still running): the panel stays with its picture and
+  // says why, and the owner's draft comes back, never the composed line
+  // alone, which would go as a typed turn (review of #754).
+  const r = rig({ refuse: 'a reply is running; a change to a picture waits for it to finish' });
+  r.editImage('images/a.png');
+  await r.sendEdit({ text: 'add a hat', mask: null });
+  const e = r.state().imageEdit;
+  is(e?.path, 'images/a.png', 'the panel stays open on its picture');
+  is([e?.busy, /^Not sent: a reply is running; .* waits for it to finish\.$/.test(e?.error ?? '')], [false, true], 'and says why');
+  is(r.state().input, 'typed in the chat box', "the owner's draft comes back");
+  is(r.state().error, null, 'said in the panel, not above the chat');
+}
+
+{
   const r = rig({ live: false });
   r.editInCall('images/a.png');
   await r.sendEdit({ text: 'make it night', mask: null });
@@ -139,26 +161,51 @@ function rig({ live = true } = {}) {
 // the harness draws the change there and nowhere else (`persona::edit`).
 {
   const sendSrc = readOut('  async function send({ edit = null, text: fixed = null } = {}) {');
-  const run = new Function(
-    `'use strict';
-     const bodies = [];
-     let input = '', attachments = [], key = 'k1', token = null, error = null;
-     const chosen = { display: 'Mara' };
-     const withAttachments = (typed) => typed;
-     const chatUrl = (k, p) => '/api/persona-chat/' + k + p;
-     const notice = () => {};
-     const fetch = async (url, opts) => {
-       bodies.push(JSON.parse(opts.body));
-       return { ok: true, json: async () => ({ started: true }) };
-     };
-     ${sendSrc}
-     return async (typed, opts) => { input = typed; await send(opts); return { body: bodies.at(-1) }; };`,
-  )();
+  const make = (from) =>
+    new Function(
+      'from',
+      `'use strict';
+       const bodies = [];
+       let input = '', attachments = [], key = 'k1', token = null, error = null;
+       let continuing = from ? { key: 'k1', path: from } : null;
+       const continuingHere = from;
+       const chosen = { display: 'Mara' };
+       const withAttachments = (typed) => typed;
+       const chatUrl = (k, p) => '/api/persona-chat/' + k + p;
+       const notice = () => {};
+       const composeContinueMessage = (p, w) => (w.trim() ? 'Continue ' + p + ': ' + w.trim() : null);
+       const fetch = async (url, opts) => {
+         bodies.push(JSON.parse(opts.body));
+         return { ok: true, json: async () => ({ started: true }) };
+       };
+       ${sendSrc}
+       return async (typed, opts, files = []) => {
+         input = typed;
+         attachments = files;
+         await send(opts);
+         return { body: bodies.at(-1), sent: bodies.length, continuing, error };
+       };`,
+    )(from);
+  const run = make(null);
   const edit = { picture: 'images/a.png', words: 'add a hat' };
   const panel = await run('Edit images/a.png: add a hat', { edit });
   is(panel.body.edit, edit, "the panel's turn carries its fields");
   const typed = await run('hello');
   is('edit' in typed.body, false, 'a typed turn sends no edit field');
+  // Continue (the owner, 2026-10-27): typed under a Continue, the words go
+  // as the change to that picture, and the press is spent once taken.
+  const cont = await make('images/a.png')('  now she walks to the window ');
+  is(cont.body.edit, { picture: 'images/a.png', words: 'now she walks to the window' }, 'a Continue sends its picture and the words as fields');
+  is(cont.body.text, 'Continue images/a.png: now she walks to the window', 'with the line the owner sees');
+  is(cont.continuing, null, 'and the Continue is spent');
+  const empty = await make('images/a.png')('   ');
+  is(empty.sent, 0, 'a Continue with no words sends nothing');
+  const filesOnly = await make('images/a.png')('', undefined, ['inbox/a.png']);
+  is(filesOnly.sent, 0, 'nor with files alone');
+  is(/Say what changes in the picture/.test(filesOnly.error ?? ''), true, 'and says why, rather than nothing');
+  const own = await make('images/a.png')('Edit images/b.png: add a hat', { edit: { picture: 'images/b.png', words: 'add a hat' } });
+  is(own.body.edit.picture, 'images/b.png', "the Edit panel's own picture wins over a Continue");
+  is(own.continuing, { key: 'k1', path: 'images/a.png' }, 'and the Continue stays for the next message');
 }
 
 // Regenerate (IMAGE-DESIGN.md §5.4): the picture showing goes out with
@@ -175,6 +222,8 @@ function rig({ live = true } = {}) {
        const bodies = [];
        let input = 'half a thought', attachments = ['inbox/notes.pdf'], key = 'k1', token = null, error = null;
        let chosenVersion = new Map([['images/a.png', 'images/a.png']]);
+       let continuing = null;
+       const continuingHere = null;
        const run = { running };
        const chosen = { display: 'Mara' };
        const withAttachments = (typed, files) => [typed, ...files].join(' ');

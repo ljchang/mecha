@@ -1992,3 +1992,44 @@ export const hudData = {
     external: false,
   },
 };
+
+// Settings → LoRAs. Made-up entries and files: mecha ships and names no LoRA.
+const loraBase = {
+  locked: false,
+  source: 'shared',
+  path: '/home/demo/.mecha/loras.toml',
+  new_path: '/home/demo/.mecha/loras.toml',
+  ignored: null,
+  unreadable: null,
+  skipped: [],
+  unused_error: null,
+};
+export const lorasImage = {
+  ...loraBase,
+  family: 'qwen-image',
+  dir_key: '[image] loras_dir',
+  folders: ['/home/demo/ComfyUI/models/loras'],
+  entries: [
+    { name: 'watercolor', about: 'loose watercolor washes', file: 'styles/watercolor_qi.safetensors', frames: null, references: null, strength: 0.7, trigger: 'watercolor painting', always: false, status: 'checked', reason: null },
+    { name: 'inkline', about: 'fine ink outlines', file: 'inkline.safetensors', frames: null, references: null, strength: 1, trigger: null, always: false, status: 'mismatch', reason: 'left out: it says `model = "qwen-image"`, and "inkline.safetensors" is made for h3' },
+  ],
+  unused: [{ file: 'styles/pastel_qi.safetensors', family: 'qwen-image', note: null }],
+};
+// A picture layer's list, as `/api/loras/image/layer/*` answers it.
+const loraChoices = lorasImage.entries.map((e) => ({ name: e.name, about: e.about, status: e.status, reason: e.reason }));
+export const loraLayerChat = { locked: false, layer: 'set', names: ['watercolor'], chat: ['watercolor'], chat_damaged: false, max: 3, choices: loraChoices };
+export const loraLayerPersona = { ...loraLayerChat, layer: 'inherit', names: [] };
+export const lorasVideo = {
+  ...loraBase,
+  family: 'h3',
+  dir_key: '[video] loras_dir',
+  folders: ['/home/demo/ComfyUI-video/models/loras'],
+  entries: [
+    { name: 'wave', about: 'a friendly wave', file: null, frames: 'wave_fl.safetensors', references: 'wave_ref.safetensors', strength: 0.8, trigger: 'waving hello', always: false, status: 'checked', reason: null },
+    { name: 'grain', about: 'film grain', file: null, frames: 'grain.safetensors', references: 'grain.safetensors', strength: 0.5, trigger: null, always: true, status: 'checked', reason: null },
+  ],
+  unused: [
+    { file: 'spin_ref.safetensors', family: 'h3', note: null },
+    { file: 'styles/watercolor_qi.safetensors', family: 'qwen-image', note: null },
+  ],
+};
