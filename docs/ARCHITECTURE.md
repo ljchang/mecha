@@ -3535,6 +3535,18 @@ The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
   CODE-MODE-DESIGN.md §5). Above it nothing caps the worker: no limit the
   kernel enforces is set, so a monty allocator bug would be uncapped there.
   A second wall is proposed in CODE-MODE-DESIGN.md §12.
+- **A Mac worker does not outlive a killed mecha.** bwrap's
+  `--die-with-parent` has no Seatbelt counterpart, and the pool's kill on
+  drop never runs after a `SIGKILL`. So a program arms
+  `interpreter::watchdog` when it checks a worker out, before the worker
+  runs a line. The watchdog is a `kill -0` loop, mecha's child, **in a
+  process group of its own**. The first shape, double-forked from the
+  launcher into mecha's group, lost CI's macOS runner, which shares that
+  group, in 5 of 18 runs. Both pids are recorded with their start times, so
+  a reused pid cannot pass for a live mecha, and the loop never kills a pid
+  the kernel has since reused. An unreadable `ps` is never an answer: while
+  the program runs, the loop asks again, and before its handshake it
+  refuses the program (CODE-MODE-DESIGN.md §7, R10).
 - **The worker is identified by its sha256** (`worker.rs`), checked every
   time a pool starts; a path or a version string never stands in for it.
 - **Backstops and the program's own exceptions are different types.**

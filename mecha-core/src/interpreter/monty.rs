@@ -61,6 +61,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use super::watchdog::{self, Watchdog};
 use super::worker::VerifiedWorker;
 use super::{
     registrable, Backstop, Backstops, Builtin, End, ExternalCall, Finished, HostRaise, Interpreter,
@@ -88,6 +89,13 @@ pub enum Confinement {
 }
 
 impl Confinement {
+    /// Whether a program arms a [`Watchdog`] over its worker: Seatbelt has
+    /// no `--die-with-parent`, so nothing else ends a worker whose mecha was
+    /// `SIGKILL`ed (`CODE-MODE-DESIGN.md` §7).
+    fn watchdog(&self) -> bool {
+        matches!(self, Confinement::Seatbelt { .. })
+    }
+
     /// The confinement this platform gives a worker, or a refusal naming why
     /// it gives none. On Linux that is the configured sandbox, and `none`
     /// refuses too: the sandbox is the second wall (§7), because round 1 of
@@ -179,8 +187,8 @@ impl Confinement {
             // `env -i` execs `sandbox-exec`, which applies the profile and
             // execs the worker: one process from the launcher's shell to the
             // program, so the pid the pool holds is the confined worker.
-            // There is no `--die-with-parent` here: a worker outlives a
-            // `SIGKILL`ed mecha (`CODE-MODE-DESIGN.md` §12).
+            // There is no `--die-with-parent` here; the program's
+            // [`Watchdog`] stands in for it.
             Confinement::Seatbelt { sandbox_exec } => {
                 return Ok(vec![
                     ENV.into(),
@@ -330,13 +338,14 @@ impl Launcher {
             .with_context(|| format!("creating {}", dir.display()))?;
         let script = dir.join("worker");
         let log = dir.join("worker.log");
+        let quoted_log = sh_quote(&log.display().to_string());
         let mut body = String::from("#!/bin/sh\nexec");
         for a in argv {
             body.push(' ');
             body.push_str(&sh_quote(a));
         }
         body.push_str(" \"$@\" 2>>");
-        body.push_str(&sh_quote(&log.display().to_string()));
+        body.push_str(&quoted_log);
         body.push('\n');
         std::fs::write(&script, body)?;
         #[cfg(unix)]
@@ -517,12 +526,22 @@ impl Interpreter for Monty {
             _ = tokio::time::sleep_until(deadline) => bail!("no monty worker within the program's wall clock"),
         };
         let cancelled_waiting = checkout.is_none();
+        // Before the worker runs a line: a refusal drops the checkout, which
+        // kills the worker, and the program never starts.
+        let watchdog = match &checkout {
+            Some(co) if self.confinement.watchdog() => {
+                let pid = co.pid().context("a monty worker with no pid")?;
+                Some(Watchdog::arm(pid, std::process::id(), watchdog::PS).await?)
+            }
+            _ => None,
+        };
         let externals: BTreeSet<String> = externals.iter().cloned().collect();
         let inputs: Vec<(String, MontyObject)> = externals
             .iter()
             .map(|n| (n.clone(), MontyObject::function(n.clone(), None)))
             .collect();
         let mut program = MontyProgram::new(checkout, externals, self.backstops, started, cancel);
+        program.watchdog = watchdog;
         let step = if cancelled_waiting {
             program.end(End::Cancelled, false).await
         } else {
@@ -570,6 +589,9 @@ struct MontyProgram {
     suspensions: u64,
     /// A call is waiting on the host.
     pending: bool,
+    /// What ends the worker if mecha dies first, under Seatbelt. Dropped
+    /// with the program, it runs until the worker has gone.
+    watchdog: Option<Watchdog>,
 }
 
 impl MontyProgram {
@@ -590,6 +612,7 @@ impl MontyProgram {
             cancel,
             suspensions: 0,
             pending: false,
+            watchdog: None,
         }
     }
 
@@ -968,8 +991,7 @@ fn from_json(v: &Value, depth: usize) -> Result<MontyObject> {
 /// The integration tests' process helpers (`/proc`, libproc), shared so the
 /// unit tests below ask the kernel the same way.
 #[cfg(test)]
-#[path = "../../tests/support/process.rs"]
-mod test_process;
+use super::test_process;
 
 #[cfg(test)]
 mod tests {
@@ -1211,6 +1233,114 @@ mod tests {
             !dir.exists(),
             "the private directory outlived the interpreter"
         );
+    }
+
+    /// The gate that decides whether the guard exists at all (review of
+    /// #772): a Seatbelt program arms a watchdog and a bwrap one does not,
+    /// and either launcher is the bare `exec` it always was.
+    #[test]
+    fn only_seatbelt_arms_a_watchdog() {
+        let seatbelt = Confinement::seatbelt_at(SANDBOX_EXEC);
+        let bwrap = Confinement::bwrap_at("/usr/bin/bwrap");
+        assert!(seatbelt.watchdog());
+        assert!(!bwrap.watchdog());
+        let worker = Path::new("/x/monty");
+        for c in [&seatbelt, &bwrap] {
+            let l = Launcher::write(&c.argv(worker).unwrap()).unwrap();
+            let body = std::fs::read_to_string(&l.script).unwrap();
+            assert!(body.starts_with("#!/bin/sh\nexec "), "{body}");
+            assert!(!body.contains("lstart") && !body.contains("kill"), "{body}");
+        }
+    }
+
+    /// The processes now running whose arguments name `needle`: pid, parent
+    /// and process group. `ps ax` is spelled the BSD way, which both
+    /// platforms' `ps` read.
+    fn processes_naming(needle: &str) -> Vec<(u32, u32, i32)> {
+        let out = std::process::Command::new(super::watchdog::PS)
+            .args(["ax", "-o", "pid=,ppid=,pgid=,args="])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| l.contains(needle))
+            .filter_map(|l| {
+                let mut f = l.split_whitespace();
+                Some((
+                    f.next()?.parse().ok()?,
+                    f.next()?.parse().ok()?,
+                    f.next()?.parse().ok()?,
+                ))
+            })
+            .collect()
+    }
+
+    /// A program under Seatbelt arms its watchdog before it runs, as this
+    /// process's child in a group of its own, and the watchdog is gone once
+    /// the program's worker is; a bwrap program arms none. Seatbelt is
+    /// stood in for by a `sandbox-exec` that only `exec`s the worker, so this
+    /// runs off a Mac too, with the worker unconfined (a test, never a run).
+    #[tokio::test]
+    async fn a_seatbelt_program_is_watched_and_a_bwrap_one_is_not() {
+        let Some(w) = worker_for_tests().await else {
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("mecha-fake-sbx-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let fake = dir.join("sandbox-exec");
+        std::fs::write(&fake, "#!/bin/sh\nshift 2\nexec \"$@\"\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let me = std::process::id();
+        for (conf, watched) in [
+            (Confinement::seatbelt_at(&fake), true),
+            (
+                Confinement::for_sandbox(&sandbox(Backend::Bwrap)).unwrap(),
+                false,
+            ),
+        ] {
+            if !watched && cfg!(target_os = "macos") {
+                // A Mac has no bwrap; its half of the gate is the test above.
+                continue;
+            }
+            let interp = Monty::new(&w, &conf, Backstops::default(), 1)
+                .await
+                .unwrap();
+            let (program, step) = interp
+                .start("hold()\n1", &["hold".into()], CancellationToken::new())
+                .await
+                .unwrap();
+            assert!(matches!(step, Step::Call(_)), "{step:?}");
+            let worker = program.worker_pid().unwrap();
+            let dogs = processes_naming(&format!("mecha-watchdog {worker} {me}"));
+            if !watched {
+                assert!(
+                    dogs.is_empty(),
+                    "a bwrap program armed a watchdog: {dogs:?}"
+                );
+                continue;
+            }
+            let [(dog, parent, group)] = dogs[..] else {
+                panic!("not one watchdog over worker {worker}: {dogs:?}")
+            };
+            assert_eq!(parent, me, "the watchdog is this process's child");
+            assert_eq!(group, dog as i32, "the watchdog leads its own group");
+            // SAFETY: a plain query of this process.
+            assert_ne!(group, unsafe { libc::getpgrp() });
+            // Dropping the program kills the worker, and the loop follows it.
+            drop(program);
+            let t = std::time::Instant::now();
+            while !test_process::is_gone(dog) && t.elapsed() < Duration::from_secs(5) {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            assert!(
+                test_process::is_gone(dog),
+                "the watchdog outlived its worker"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
