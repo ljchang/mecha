@@ -234,7 +234,7 @@ impl Confinement {
 
 /// The preflight's reading of a Seatbelt worker: under a profile, and one
 /// that denies `/etc`, the home, a write to `/dev/null`, a shell and the
-/// network. Each is a question to the kernel, and an answer
+/// network, and grants its one read — the control. Each is a question to the kernel, and an answer
 /// it will not give fails the start like a wrong one.
 #[cfg(target_os = "macos")]
 fn seatbelt_holds(pid: u32) -> Result<()> {
@@ -246,8 +246,9 @@ fn seatbelt_holds(pid: u32) -> Result<()> {
     let canon = |p: PathBuf| p.canonicalize().unwrap_or(p);
     // Each operation is one the kernel answers both ways, measured against
     // an unsandboxed process on macOS 26: `process-exec` has to be asked
-    // as `process-exec*` (the bare name is an error), and `file-write-create`
-    // reads as denied even unsandboxed, so a write is asked of `/dev/null`.
+    // as `process-exec*` (the bare name is an error), and a path that does
+    // not exist reads as denied even unsandboxed, so every path asked about
+    // exists — a write is asked of `/dev/null`.
     let mut probes: Vec<(&str, PathBuf)> = vec![
         ("file-read-data", canon(PathBuf::from("/etc/passwd"))),
         ("file-write-data", PathBuf::from("/dev/null")),
@@ -266,6 +267,12 @@ fn seatbelt_holds(pid: u32) -> Result<()> {
     }
     if live::denies(pid, "network-outbound") != Some(true) {
         bail!("the worker's profile does not deny the network");
+    }
+    // The control: the one read the profile grants must read as allowed on
+    // the same process, or a check that answered "denied" to everything
+    // would have passed every probe above (review of #769).
+    if live::denies_path(pid, "file-read-data", Path::new("/")) != Some(false) {
+        bail!("the kernel does not read the worker's own profile back: its one granted read is not allowed");
     }
     Ok(())
 }
