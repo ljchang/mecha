@@ -257,7 +257,7 @@ The only large-scale evidence from real users.
   Mail triage's record crosses to a privileged reader only through
   `mail_triage::Record::for_privileged_run`. That carries closed vocabularies
   only: `bucket` (3 values), `urgency` (4), `proposed` (7), any subset of
-  the ten `TAGS`, and a `request_type`. Together that is about 19 bits a
+  the nine `TAGS`, and a `request_type`. Together that is about 19 bits a
   thread, before a grounded deadline and the sender's address, and it runs
   over every thread that arrives. The verdict's prose stays behind, and a test
   serialises the record and asserts the prose is absent. The diagnostician's
@@ -460,6 +460,18 @@ one more reason §14's gate part 1 exists.
   mentioned. An untold event is fresh material. A told one fades as Rimé
   describes and is never re-introduced, only followed up ("the ankle's better,
   by the way"). ComPeer's repeats came from exactly this check missing (§2.3).
+  - **The `told` flag carries the taint of the stretch it was read from.** It
+    is a write to an *existing* world row, so the row's own origin says
+    nothing about it. After a `news_read`, an ungated flag would be the one
+    world write that decides what she has left to talk about, and both
+    failure directions look like the feature not working: marking
+    unmentioned events told takes away her material, and leaving mentioned
+    ones untold makes her repeat herself.
+  - So the rule is asymmetric, in the safe direction. A `told` set from a
+    tainted stretch **is applied**, because suppressing is the safe
+    direction. A tainted stretch **never clears** a flag. Each flag records
+    its source chat and taint, so the week view can show which events went
+    quiet from a tainted chat (§13).
 - **Stated plans flow back.** When she says in a chat that something will
   happen ("there's a game on Saturday"), the writer records it as a **stated
   plan**, and Saturday's simulated day contains it. Without this, chat and
@@ -643,10 +655,16 @@ centred on the owner. Same event model and the same two dates as §6.1.
 
 **It lives in `memory.db`, not `world.db`.** It is memory of the owner, so it
 follows memory's rules rather than the world's: it is soft-pruned out of recall
-and never hard-deleted (PL7), and `forget` cascades as memory's does, re-folded
-from the events that remain (§5's approach, applied here). A graph of the
-owner's real relatives silently hard-pruned by a world threshold would be the
-wrong half of that split.
+and never hard-deleted (PL7). A graph of the owner's real relatives silently
+hard-pruned by a world threshold would be the wrong half of that split.
+
+**`forget` here is a decision of its own** (§16 PL24). D27's rule *today* is
+the blunt fallback: a fact goes with any of its chats. Re-folding this graph
+from the events that remain, as §5 does for the world, is the rebuild D27
+describes, arriving in memory. For a graph of real relatives the two rules
+give materially different results. Forgetting the chat where the owner first
+named a sibling would delete the sibling under the fallback, and keep them
+under the re-fold, with only that chat's events removed.
 
 | | Her network (§6) | Her model of the owner's |
 |---|---|---|
@@ -784,17 +802,42 @@ Shelf B meets §2.7's three conditions in code:
     supplies with that feed*: at most 31 public names the owner registered for
     that feed's interest (a team's roster, a field's labs), plus none, for
     5 bits. The pass sees only that feed's list, never the owner's registry as
-    a whole, and never anyone from either network. Two other shapes fail
-    §2.7:
+    a whole, and never anyone from either network.
+
+    **This list is still owner-chosen data in the extractor's context**, so
+    "narrower" is not what makes it pass §2.7. Two other facts do:
+    - **The list is public vocabulary, not facts about the owner.** It holds
+      names anyone following that interest knows: a roster, a field's labs.
+    - **The index cannot be read back out.** With no `Chosen` sender
+      (`PERSONA-DESIGN.md` §3.3), attacker × list can only steer what she
+      raises, never reach the attacker.
+
+    **Its residual:** `web_search` stays on after a `news_read` (D11), and a
+    blind query still reaches the `[[search]]` chain. So an entity choice
+    worth about 5 attacker bits can reach the search backends, which is the
+    cost §3.3 already names.
+
+    Two other shapes fail §2.7 outright:
     - letting the pass resolve names against the full registry puts owner
       data in its context, so the endorsed value becomes attacker × secret;
     - letting it emit a name for code to resolve sends an attacker-authored
       string across the boundary, which is what §14's gate part 1 exists to
       catch (§16 PL9).
 
+  - **Which items fill the slots is code's choice, not the feed's.** Any
+    selection based on extracted fields (salience, an entity match) would
+    hand the feed the choice of which of its N arrivals survive. That is
+    another log₂C(N,3) bits a day, about 15 at N = 50, and §14's bit test
+    could not see it, because a selection channel has no vocabulary. So the
+    three daily slots are allocated **round-robin across registered feeds,
+    and in arrival order within a feed**, before extraction is even
+    consulted. The only attacker-chosen bits are then the surviving items'
+    own fields.
+
   That puts the ceiling at **about 9.6 bits per item**. With **at most three
-  shelf B items a day** per persona, the ceiling is **under 30 bits a day**,
-  and with expiry at five days, **under 150 bits live at once**.
+  shelf B items a day** per persona, the ceiling is **under 30 bits a day**.
+  Shelf B items **expire at five days**, a figure fixed for this shelf, so
+  the ceiling is **under 150 bits live at once**.
 
 **Measured against what already ships, that is conservative.** Mail triage's
 privileged record carries about 19 bits per thread from closed vocabularies
@@ -881,12 +924,27 @@ the headline never rides in the today-block.
   owner's turns and pointers — if it reads her replies, it reads whatever the
   injection made her say. Its cost is lost context ("yes, exactly" without
   the question it answered).
+  - **That closes laundering and leaves elicitation open.** After a
+    `news_read`, an injection can shape *her questions*, and the owner's
+    answers are still the owner's own words. A fact about the owner's family
+    given in reply to a question only the injection prompted would land
+    `Stated` and clean, with no approval tap. The harm is bounded: the fact
+    stays in this persona's `memory.db`, private unless shared (D17), with no
+    `Chosen` sender to carry it out. But the current rule, everything after a
+    rise is a candidate, exists so an injection cannot enlarge durable state
+    unseen.
+  - **So PL10 is narrowed.** A fact from an owner turn stays clean, *except*
+    where that turn answers a question the persona asked inside the tainted
+    stretch. Those facts are candidates. The writer can tell from the turn
+    structure (a persona turn ending in a question, followed by the owner's
+    turn) without reading her words.
 
 ### 8.5 Selection, stances and filtering
 
 - One nightly job per persona; at most about five items a day across its
-  feeds, of which at most three are shelf B (§8.2's ceiling); items expire
-  in three to seven days.
+  feeds, of which at most three are shelf B, chosen round-robin by code
+  (§8.2). Shelf A items expire in three to seven days; shelf B items at five,
+  the figure §8.2's ceiling is computed from.
 - An unprompted mention only on an entity match or high salience, and at most
   one a chat (Chirpy, Pulse, Meta's one-follow-up rule).
 - Past tense, always dated.
@@ -980,7 +1038,8 @@ dropped the farewell check (D25), so it would need its own evidence first.
 | Narrator over clean inputs | model, clean | yes | only once told | yes |
 | Her mentions in a clean chat | model, clean | as people and stated plans | yes | yes |
 | Her mentions after a taint rise | model, untrusted | as candidates | as candidates | only after approval |
-| Owner's words, after a taint rise | stated | the owner's people (§7) | yes, under PL10 | yes |
+| Owner's words, after a taint rise | stated | the owner's people (§7) | yes, under PL10 as narrowed | yes |
+| The `told` flag, from a tainted stretch | the stretch's taint | set only, never cleared, source recorded | — | it shapes what reaches the today-block |
 | Shelf A | code | yes | yes | yes |
 | Shelf B | quarantined, typed | minor events | as pointers | yes |
 | Shelf C | untrusted | never | never as text | only through `news_read`, which marks its result `external` unconditionally |
@@ -1086,10 +1145,10 @@ owner's.
 | PL7 | Pruning | World hard-prunes; memory soft-prunes (out of recall, kept in the store); hard deletion of memories only by amending D26 after D28's readout |
 | PL8 | Importance to the owner | Inferred from engagement and pins; no rating prompts |
 | PL9 | News shelves | Build A and C first. B ships behind the three-part gate (§14): schema conformance, a bit ceiling (about 9.6 bits per item and under 30 a day, as §8.2 computes it) enforced by a test, and the steering arm, all three read by the owner. Alternative: all three shelves at once |
-| PL10 | The writer after a taint rise | Facts about the owner from the owner's own turns stay clean (`Stated`), extracted from those turns and pointers only; her side stays candidates |
+| PL10 | The writer after a taint rise | Facts about the owner from the owner's own turns stay clean (`Stated`), extracted from those turns and pointers only, except turns answering a question she asked inside the tainted stretch; her side stays candidates (§8.4) |
 | PL11 | Feed sources | Registered per persona and per group |
 | PL12 | Topics withheld by default | Politics, deaths, disasters and crime, unless a feed is opted in |
-| PL13 | The owner's network | A structured layer over facts about the owner, in `memory.db` under memory's pruning and `forget` rules, with existing people-facts migrated into it |
+| PL13 | The owner's network | A structured layer over facts about the owner, in `memory.db` under memory's pruning rules, with existing people-facts migrated into it |
 | PL14 | Search on the owner's people | A filter that refuses an exactly spelled name. It narrows a cost and catches the accidental case; the blind path is what holds (§7.5). Alternative: no filter, and rely on the blind path alone |
 | PL15 | The "supports, never competes" sensor | In the safety layer (§12 of the persona design): on by default, switchable per persona, recorded |
 | PL16 | Faces for the owner's people | Only by the owner's explicit link |
@@ -1100,6 +1159,7 @@ owner's.
 | PL21 | Stated plans after a taint rise | Candidates by default, shown on the week view as waiting plans. Alternative: admit them as typed records checked against their turn (§4.5) |
 | PL22 | `forget` over the world | Delete what is sourced to the chat and re-fold, which is D27's rebuild done where it is cheap; owner events never go with a chat (§5) |
 | PL23 | Episodes after a `news_read` | Admit a typed episode (`item_id`, interest, date, a closed-set reaction) as clean, with free text left as candidates. Alternative: accept one approval per news conversation (§8.4) |
+| PL24 | `forget` over the owner's network | Re-fold from the events that remain, which is D27's rebuild applied in memory for this graph. Alternative: today's fallback, so the person goes with any of their chats (§7.1) |
 
 ---
 
