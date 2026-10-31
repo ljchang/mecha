@@ -1558,12 +1558,6 @@ impl ToolCallTrace {
     }
 }
 
-/// The sub-call passes' usage of every program in `trace`
-/// (`ToolCallTrace::program`): what the loop adds to the run's own after a
-/// batch, so a pass's tokens count toward the run's total and its
-/// [`Budget`] like any other model call's. A program in flight is not cut
-/// short by the run's budget; its own per-program caps (§5) bound it, and
-/// the run's ceiling is checked again once the batch is done.
 /// One batch's results, as [`Agent::dispatch`] returns them: the result
 /// blocks, each call's provenance by id, and what the batch's programs read
 /// (`CODE-MODE-DESIGN.md` §7), for the caller to put on the conversation.
@@ -1573,6 +1567,12 @@ type Batch = (
     Vec<crate::tool::code::record::ProgramCall>,
 );
 
+/// The sub-call passes' usage of every program in `trace`
+/// (`ToolCallTrace::program`): what the loop adds to the run's own after a
+/// batch, so a pass's tokens count toward the run's total and its
+/// [`Budget`] like any other model call's. A program in flight is not cut
+/// short by the run's budget; its own per-program caps (§5) bound it, and
+/// the run's ceiling is checked again once the batch is done.
 fn program_usage(trace: &[ToolCallTrace]) -> Usage {
     let mut total = Usage::default();
     for p in trace.iter().filter_map(|t| t.program.as_ref()) {

@@ -3718,10 +3718,14 @@ The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
   `~/.mecha/programs/<session-id>/` (`record::Store`), mode 0600 in 0700.
   Nothing that rebuilds a conversation reads it, and a build from before it
   skips the line. A missing or altered blob loads as `Bytes::Missing` or
-  `Bytes::Mismatched`, never as an empty result.
+  `Bytes::Mismatched`, never as an empty result. A blob that cannot be stored
+  fails no recording: its call is written with no address (missing, by
+  name) and warned, because `record_run` failing took its callers' later
+  `Record::Taint` with it.
 - **No jail reaches the store.** It is not the spill directory, which the
   jail admits; `work::ensure_outside_mecha_home` refuses a workspace at or
-  under it (lexically when the path does not exist yet), and no grant names
+  under it (one not made yet as it would resolve, through its deepest existing
+  ancestor, so neither a `..` nor a symlink above it walks it under), and no grant names
   the mecha home. `forget` removes the session's directory whole.
 - **The grounding walk's second source.** `grounding::calls(messages,
   programs)` yields each program call right after the `tool_use` it ran
