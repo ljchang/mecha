@@ -197,10 +197,12 @@ impl Admission {
     /// `read_only()`. The `destructive` term is what keeps `request_access`
     /// out; the class is what keeps `ask_user`, `message_send` and
     /// `image_generate` out, all three of which are `read_only()`. Two terms
-    /// are mechanical: a tool that itself runs programs is never one, and a
-    /// name a program cannot hold as a global (`interpreter::registrable`)
-    /// or that a host function already takes is left out rather than
-    /// renamed.
+    /// are mechanical: a tool that itself runs programs is never one — asked
+    /// by `hosts_programs()` *and* by name, so a wrapper that forgot to
+    /// forward the method still cannot admit `code` into its own program
+    /// (review of #768) — and a name a program cannot hold as a global
+    /// (`interpreter::registrable`) or that a host function already takes
+    /// is left out rather than renamed.
     pub fn admits(tool: &dyn Tool, class: EffectClass) -> bool {
         let caps = tool.capabilities();
         matches!(class, EffectClass::Read | EffectClass::ReadThatRecords)
@@ -208,6 +210,7 @@ impl Admission {
             && !caps.destructive
             && tool.read_only()
             && !tool.hosts_programs()
+            && tool.name() != NAME
             && registrable(tool.name())
             && !HOST_FUNCTIONS.contains(&tool.name())
     }

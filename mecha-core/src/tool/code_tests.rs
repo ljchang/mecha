@@ -508,6 +508,50 @@ fn only_the_runs_plain_reads_are_admitted() {
     let _ = std::fs::remove_dir_all(mailbox);
 }
 
+/// A wrapper that forwards everything but `hosts_programs` (review of #768:
+/// `ReplayTool` once did) still cannot make `code` a function of its own
+/// program: admission excludes it by name too.
+#[test]
+fn a_wrapper_that_hides_hosts_programs_does_not_admit_code() {
+    struct Forgetful(CodeTool);
+    #[async_trait]
+    impl Tool for Forgetful {
+        fn name(&self) -> &str {
+            self.0.name()
+        }
+        fn description(&self) -> &str {
+            self.0.description()
+        }
+        fn input_schema(&self) -> Value {
+            self.0.input_schema()
+        }
+        fn read_only(&self) -> bool {
+            self.0.read_only()
+        }
+        fn capabilities(&self) -> Capabilities {
+            self.0.capabilities()
+        }
+        fn effect(&self) -> Option<Effect> {
+            self.0.effect()
+        }
+        async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
+            self.0.call(input, ctx).await
+        }
+    }
+    let mut registry = registry_of(vec![Arc::new(Fake::read("doc", "a"))]);
+    let code = CodeTool::over(&registry, |_| false, Arc::new(NoInterpreter));
+    registry.insert(Arc::new(Forgetful(code)));
+    let wrapped = registry.get(NAME).unwrap();
+    assert!(!wrapped.hosts_programs());
+    assert_eq!(
+        effect::class_of(wrapped.as_ref(), false),
+        EffectClass::Read,
+        "every other admission term passes"
+    );
+    let admitted = Admission::over(&registry, |_| false);
+    assert_eq!(admitted.names().collect::<Vec<_>>(), vec!["doc"]);
+}
+
 /// §6, where the declaration is load-bearing: `dispatch` forecasts a turn's
 /// taint from declared capabilities before anything runs, so a `code` call
 /// that will read mail and a `Chosen` sender in the same message have the
