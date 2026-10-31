@@ -840,6 +840,7 @@ mod tests {
             blocked: false,
             unknown,
             staged: false,
+            in_program: false,
         }
     }
 
@@ -1063,6 +1064,7 @@ mod tests {
             blocked: false,
             unknown: false,
             staged: false,
+            in_program: false,
         }
     }
 
@@ -1416,6 +1418,7 @@ mod tests {
             blocked: false,
             unknown: false,
             staged: false,
+            in_program: false,
         }
     }
 
@@ -1485,6 +1488,7 @@ mod tests {
             blocked: false,
             unknown: false,
             staged: false,
+            in_program: false,
         };
         let work = Work::of(&[mcp_tool_called_check]);
         assert_eq!((work.calls, work.checks_declared), (1, 0));

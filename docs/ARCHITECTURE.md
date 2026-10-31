@@ -332,6 +332,43 @@ The model is **hybrid attention** — 11 of 41 layers hold a KV cache, the other
 here (63 tok/s at 108k against 92 at 1k) and why the KV cost is 22 KiB/token
 rather than the 82 the naive per-layer arithmetic predicts.
 
+## The chat model catalog
+
+`mecha_core::catalog`, `mecha model catalog | add | remove`, and the chip's
+**Available to download** (design: `MODEL-CATALOG-DESIGN.md`). The invariants:
+
+- **Compiled in, never fetched.** Every entry is a reviewed pin per file
+  (repository, revision, path, sha256, size) and its preset lines are flags
+  handed to llama-server, so a new model is a pull request. No tool reaches
+  it: installing is the owner's, from the CLI or the owner-only
+  `POST /api/model/add`, which runs `model add --yes --use` as a child.
+- **The record, not the presets file, is the truth.** Installed ids live in
+  `~/.mecha/sidecars/router/catalog` (written through `write_owned`); the
+  presets are always rendered as the base section then one section per
+  recorded id (`router_unit::presets_with_catalog`), so `setup chat` and
+  `features enable --reinstall` keep them. A recorded id whose files are not
+  in place, that this build does not know, that the tier is not offered, or
+  that is the base section's own name, is left out and said — never a
+  section naming a file that is not there. Only `presets_text` is hashed by
+  the router's revision; the catalog's sections are not (`assert_rev`).
+- **Downloads before the switch, and the wait the plan promises.** `add`
+  fetches first, then waits for the router's live holds on every spelling of
+  its address (`router_unit::hold_bases`), then records the id and restarts
+  through `router_unit::install`, which still declines rather than waits for
+  a run that starts in between. The record is edited only after the wait and
+  restored if the restart fails, so a stopped `add` or `remove` can be run
+  again. SIGINT is not captured by the wait: a handler outliving it would
+  leave the restart unstoppable (#350).
+- **Provider entries come from the pin, never `/props`**, since asking an
+  unloaded alias's `/props` loads it. `add` writes `[providers.<entry>]` and,
+  on the default that names this router, `follow_loaded = true` — through
+  `apply_or_add`, so the built-in `local` entry keeps its kind and address in
+  the table that overrides it. `remove` refuses while the default, a
+  fallback, a subagent or a trigger still names the table.
+- **One fit rule.** No entry asks more of a tier than the production chat
+  model does there, to a tenth (`every_offered_tier_has_a_geometry_that_fits`),
+  since the router holds one chat model at a time.
+
 ## Images
 
 `Block::Image` is a fifth variant on `message.rs`'s block type, and it is
@@ -1729,10 +1766,19 @@ module.
   `state.toml` beside `persona.toml`, because the `toml` crate cannot edit a
   file in place and `lock` would otherwise erase the owner's comments.
 - **Unknown keys fail the load; unknown values narrow.** `persona.toml` denies
-  unknown fields. An unknown value in a closed set loads as the narrowest variant
-  (`answers` → `files`, `user_facts` → `off`) and is reported in
-  `Persona::notes`. A persona folder without `state.toml` loads unapproved and
-  of untrusted origin, and `--yes` cannot approve it unread.
+  unknown fields. An unknown value in a closed set loads as the narrowest
+  variant (`answers` → `files`, `user_facts` → `off`, `intensity` → `capped`)
+  and is reported in `Persona::notes`. A persona folder without `state.toml`
+  loads unapproved and of untrusted origin, and `--yes` cannot approve it
+  unread.
+- **`[life]` decides what exists, and an unmet need is a load error**
+  (`PERSONA-LIFE-DESIGN.md` §3.1, `persona::Life::check`). Every part of a
+  persona's world is off by default; `camera` without `world` fails the load
+  naming both, and is never quietly satisfied. A `[life.decay]` number out of
+  range fails by name too, never clamped: unlike an enum it has no narrowest
+  value, and a clamped threshold could loosen pruning as easily as tighten it.
+  The world is `Feature::World`, `part_of = Personas` with no switch of its
+  own (PL26); `enable world` names the `[life]` table instead.
 - **Group membership lives once**, in each persona's `groups`. `groups.toml`
   only declares groups; a persona naming an undeclared group is a broken link.
 - **Links are by name, resolved on load, broken ones named**
@@ -1906,9 +1952,14 @@ module.
   is no model-supplied path to resolve, so nothing to escape the three
   `files/` folders with. `list` follows no symlink, lists no hidden entry,
   and proves every file inside its folder after canonicalising.
-  - `file_read` is inserted *after* `registry_as`, in `setup::persona_agent`,
-    over the chat store's own path. Inside `registry_as`, `answers = "files"`
-    would withhold it: it declares `untrusted_input`, like `document_read`.
+  - `file_read` is built in `setup::persona_agent`, over the chat store's
+    own path, and admitted through `persona::agent::admit_own` (#776): the
+    persona declaration, a read-only form with `Egress::None`, and for
+    `answers = "files"` `Tool::reaches_beyond_persona_files`, which defaults
+    to yes. It declares no, so a files-only persona keeps it though it
+    declares `untrusted_input`. **The keeping is by declaration, never by
+    position**: a tool inserted past the checks is a bug that
+    `persona_agent_admits_every_tool_through_the_persona_checks` refuses.
     It is never in the assistant's registry.
   - The whole collection rides before the chat's first reply, when it fits
     about a quarter of the window (D15); otherwise the list of files does.
@@ -2160,8 +2211,10 @@ module.
       unreadable counts as untrusted). The chat comes from the stored
       episode, never from the model, and a chat id that is not a session id
       is refused before it can become a path.
-    - `answers = "files"` does not withhold them: they are inserted past
-      `registry_as`, and the `[memory]` switches are memory's control. A
+    - `answers = "files"` does not withhold them: each declares
+      `reaches_beyond_persona_files` false and passes `admit_own` (#776),
+      the `[memory]` switches being memory's control, and what may enter
+      memory the provenance gate's. A
       files-only `memory_read` returns the owner's words and the
       persona's; each tool result reads as left out where it stood, and its
       call and the harness's folded blocks are dropped (`words_only`, owner
@@ -3449,6 +3502,159 @@ On Ubuntu 23.10+, `bwrap` fails even when installed and
 no privilege at all — but read the paragraph above for what it does not close),
 or `docker`, or install an AppArmor profile. `mecha tools` prints the active
 sandbox, and `mecha tools --json` prints each tool's capabilities.
+
+## Code mode's interpreter
+
+`mecha-core/src/interpreter/` runs a model's program for code mode
+(`CODE-MODE-DESIGN.md`; slice 3a, the backend only, with no `code` tool yet).
+The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
+(cargo feature `monty`, off by default) is the one backend. The invariants:
+
+- **A program reaches the host only through the names it was started
+  with.** They are globals; every `NameLookup` is answered `Undefined`,
+  every `OsCall` (files, environment, sleeps, imports) `NotHandled`, and a
+  `FunctionCall` under any other name is refused in the program. Monty 1.4
+  has `eval` and `exec`, so a registered name is reachable from a built
+  string: reach is the registered set, never the source's free names.
+- **The worker pool is a third process class, confined like an MCP
+  server.** `monty-pool` clears the environment, and the launcher clears it
+  again. On Linux it runs the pinned worker under bwrap with every
+  namespace unshared, `--clearenv`, and nothing bound but the static
+  binary. On a Mac it runs it as `env -i sandbox-exec -p <profile>` under
+  `seatbelt::worker_profile`, the worker's own profile and not the
+  documents one: deny by default, exec of the worker by its canonical
+  path, `file-read-data` of `/` alone (the worker aborts before `main`
+  without it), `sysctl-read` of `hw.pagesize_compat` alone (Rust's runtime
+  panics without it), no mach-lookup, no write, no network. That list is
+  the measured minimum: macOS CI traced the worker under `(allow default
+  (with report))` and removed each grant in turn. The worker reaches for
+  more (dyld's and libSystem's sysctls, opendirectoryd and the
+  notification center), and every interpreter test passes with those
+  denied. macOS's unified log records those denials on each start; mecha
+  logs nothing. The minimum was measured on macOS 26.6. An OS update that
+  adds a startup read stops code mode on that Mac, failing closed:
+  preflight fails with the worker's stderr. Re-measure the profile then,
+  rather than debugging monty. On Linux `none`, docker (the pool kills the
+  client's pid, not the container), landlock (no network closure) and
+  Seatbelt refuse by name. `preflight` runs a program through the
+  real launcher, so a sandbox that cannot start the worker stops the start
+  rather than degrading. Under Seatbelt it also asks the kernel
+  (`sandbox_check`, `seatbelt::live`) whether the live worker is under a
+  profile that denies `/etc`, the home, a write to `/dev/null`, `/bin/sh`
+  and the network. As a control, it also asks whether the one read the
+  profile grants (`/`) reads as allowed. So a launcher that ran the worker bare fails there,
+  though every program would have succeeded. Ask `sandbox_check` only
+  what was measured to answer both ways. The bare `process-exec` is an
+  error to it (ask `process-exec*`), and a path that does not exist reads
+  as denied even for an unsandboxed process, so only existing paths are
+  asked about.
+- **On a Mac the confinement is the platform's, never a setting.**
+  `Confinement::for_sandbox` returns Seatbelt whatever `[sandbox]` names.
+  `[sandbox]` is `shell`'s table, `kind = "seatbelt"` stays a load error
+  there (`SEATBELT_IS_DOCUMENTS_ONLY`), and the interpreter's profile is
+  fixed in code. So no config field can put a shell under it, loosen it, or
+  run the worker bare. A Mac with `[sandbox] kind = "none"` still gets a
+  confined worker; Linux with it gets no code mode.
+- **A Mac has no memory wall outside the worker.** There are no cgroups,
+  so `[sandbox] memory_mb` never reaches a Seatbelt worker. The bound is
+  monty's own allocator ceiling, which macOS CI measured holding
+  (`the_memory_backstop_bounds_what_the_worker_holds`,
+  CODE-MODE-DESIGN.md §5). Above it nothing caps the worker: no limit the
+  kernel enforces is set, so a monty allocator bug would be uncapped there.
+  A second wall is proposed in CODE-MODE-DESIGN.md §12.
+- **The worker is identified by its sha256** (`worker.rs`), checked every
+  time a pool starts; a path or a version string never stands in for it.
+- **Backstops and the program's own exceptions are different types.**
+  `End::Backstop` names the wall clock, the heap, the suspension count, or
+  a worker killed under the program (a `[sandbox] memory_mb` cgroup kill
+  lands there, not as an `Err`, because the program brought it about);
+  a program that raises a backstop's message itself is `End::Raised`. The
+  suspension budget is the host's own count, which kills the worker at the
+  first suspension past it (the pool's budget sits one higher, behind it);
+  a time limit is believed only once the clock agrees, and the allocator's
+  kill only with the worker dead. The interpreter's heap message is the
+  one read as written, so raising it verbatim misreports the backstop
+  without escaping one. Recursion is monty's *catchable*
+  `RecursionError`, and `request_timeout` bounds one turn, so the program's
+  wall clock (host time included) is the backend's own deadline.
+- **Stop kills.** A cancelled program gets `cancel_grace` to reach a turn
+  boundary, then its checkout is dropped, which kills the worker; it ends
+  `End::Cancelled` with what it printed. A Stop while it waits for a free
+  worker ends it there, and handing a worker back is bounded by the same
+  grace, so no turn awaits a worker bare.
+- **Nothing in the trait enforces `preflight` before `start`.** The caller
+  that registers code mode must run it once, at start, and refuse the
+  feature when it fails.
+- **One program per worker process** (`monty::PROGRAMS_PER_WORKER`). The
+  pool serves every conversation in the process, so a reused worker could
+  run a second conversation's program inside the process that held the
+  first one's; a fresh worker costs about 4 ms (M1).
+
+**The `code` tool** (`tool/code.rs`, slices 3b and 3c; built and tested,
+registered nowhere until slice 3d):
+
+- **Admission is the run's, checked at every program's start.**
+  `Admission::over` takes a registry's plain reads (effect `Read` or
+  `ReadThatRecords`, egress `None`, not `destructive`, `read_only()`, not
+  outbox-routed), and `CodeTool::over` is built over the registry of the run
+  it serves, after its last registration. The dispatch serving a program
+  recomputes the set over its own registry and refuses a `code` whose set
+  differs, which is what a parent's `code` cloned into a child, or one built
+  too early, looks like. The function list is then narrowed by the skill
+  restriction, the run's withheld list and `forbid` rules; the gate still
+  checks each call.
+- **A host call takes `Agent::gate` with `Asking::Refuse`.** `dispatch`
+  stamps `ToolCtx::host_calls` on a tool that `hosts_programs()` and on no
+  other, and serves the channel (`Agent::serve_host_calls`) while the batch
+  executes, against the live taint, with the run's `RunPictures`. Where a
+  turn's call would ask a person (a `needs_a_person` escalation, a `prompt`
+  rule, the approver), `check` answers `Blocked` by policy instead and the
+  program gets `ToolError:`. Taint arms before the reply resumes the
+  program; each host call's trace entry is `in_program`, so `tool_calls`,
+  `tool_errors` and `tool_denied` keep counting.
+- **Results are handles; host messages carry no bytes.** A program holds a
+  stub string (`<handle 3: 48,213 chars from mail_get_thread>`), only its
+  exact stub resolves, and text enters only through `peek`, capped and
+  counted. Patterns are Rust `regex`. A tool's error body is a handle the
+  `ToolError:` names. Every per-program limit (`code::defaults`, as R4 ruled)
+  raises a `LimitError:` naming itself; host bytes are also drawn from one
+  process-wide `BytePool`.
+- **Rendered once.** The program's printed output and ending are the `code`
+  call's own `tool_result`, capped, spilled and wrapped by `dispatch` like
+  any result, and `external` when any host call's result was. A result past
+  the call's share of the budget opens with how it ended, so the cut never
+  takes the model's only feedback.
+- **`code` declares the union of its admitted reads** with egress `None`,
+  which is what `dispatch`'s precomputed turn taint reads: a `Chosen` sender
+  beside a `code` call that reads mail is refused before either runs.
+- **A sub-call is a `QuarantinedPass`** (`llm_query`, `llm_map`; slice 3c).
+  The program's host builds it (`code::Pass`: the fixed `PASS_FRAME`, the
+  instruction, each source between marker lines whose tag no source
+  contains, the schema), and the dispatch serving the program sends it
+  (`Agent::serve_pass`) to the run's own model, one at a time (R7), awaited
+  in the serving loop so a Stop drops it. No tools and one message, so
+  depth is 1 by type. Refused unsent, as `QueryError:`, when the provider's
+  `structured_output` is off or it is not `local()`; every pass is also
+  `local_only` (below). The answer is `{"answer": …}` against a
+  `code::shape::Shape` compiled to JSON Schema and checked again in Rust as
+  a whole; failing it twice raises `QueryError:`, which names what failed
+  and never the text. The envelope comes first: a refusal, an empty
+  `content` at HTTP 200 and a cut-off answer are named. Every pass is
+  `max_tokens` 8,192 whatever thinking is set to, thinking off unless the
+  program asks, and the thinking cap counts passes whose response carried
+  reasoning, never what they asked. `str[n]` text draws on `peek`'s cap,
+  and is never a `trusted_output` shape. A provider error is named by its
+  class (`code::pass_failure`), because a server's body can echo the
+  prompt.
+- **Locality is the request's, not the loop's** (R8).
+  `CompletionRequest::local_only` marks a request whose bytes must not
+  leave the machine. `Provider::local()` has no default body: it is
+  computed at construction (`kind = "local"` and `router::is_loopback` on
+  the base URL; no URL, or one that does not parse, is not local), `Halting`
+  and every wrapper forward it, and in-process test doubles answer `true`. A
+  provider that is not local refuses a `local_only` request with
+  `provider::LocalOnlyRefused` (`refuse_unless_local`, called before
+  sending), and `Failover` skips a fallback that is not local for it.
 
 ## The front door
 
@@ -5338,6 +5544,24 @@ carry:
   the final response lands in `messages` — and the Anthropic decoder has had
   this shape since it was written. Parity, not a regression, and the shape a
   Slack thread will show once.
+
+**A call's gate and its rendering are separate steps** (`CODE-MODE-DESIGN.md`
+§7). `Agent::dispatch`, which `run_tools` and `dispatch_one` wrap, runs each
+call's checks in `Agent::check` (phase gate, restriction, interlock, hooks,
+staging, rules, approver), runs a cleared call in `Agent::execute`, arms the
+taint from the raw output with `jobs::arm`, and only then renders it for the
+context with `jobs::render`: the cap at `output_budget_bytes`, the spill
+behind `CAP_MARKER`, and the `mark_untrusted_output` wrapper. A late job
+result takes the same two through `jobs::settle`. `Agent::gate` is the
+single-call composition of the first half: every check, the call, the taint
+armed, and the output handed back raw. It exists for a program's host call,
+which must keep raw bytes behind a handle (`Agent::serve_host_calls`, §Code
+mode's interpreter). Its `Asking` argument is the one difference from a
+turn's call: at `Asking::Refuse` every branch of `check` that would put the
+call in front of a person is `Blocked` by policy instead, after `forbid` and
+in the same order. The seam is pinned by
+`the_gate_hands_back_the_raw_result_and_rendering_it_is_todays_block` and
+`the_gate_refuses_as_dispatch_does`.
 
 **The MCP client's wire behaviour** (`mcp.rs`). Each of these was a
 silent failure before it was a rule:

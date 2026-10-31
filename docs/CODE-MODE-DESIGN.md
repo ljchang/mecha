@@ -1,6 +1,6 @@
 # Code mode, reshaped by RLM — design
 
-**Status: 2026-10-30, designed, nothing built. Ruled 2026-10-30 except R4, which waits on M1 (§11). M0 measured (§10).**
+**Status: 2026-10-31, designed; the interpreter backend (slice 3a, `mecha-core/src/interpreter/`) built, the `code` tool's host calls and handles (slice 3b, `mecha-core/src/tool/code.rs`) and `llm_query`/`llm_map` (slice 3c, the same file and `tool/code_shape.rs`) built and tested but registered nowhere. Ruled 2026-10-30, and R4 on 2026-10-31 (§11). M0 and M1 measured (§10).**
 
 This supersedes the *shape* of `AUDIT-RESEARCH.md` §3.12 ("programmatic
 tool calling, on monty"). That section's contract, its first hazard (taint
@@ -231,8 +231,18 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
   | number | `int`, `float`, `int[0,100]` | ranges where given |
   | one of | `["urgent", "fyi", "none"]` | ≤ 32 labels, each ≤ 64 chars |
   | list | `[shape]` | ≤ 64 items |
-  | record | `{"due": "str[32]", "urgent": bool}` | ≤ 8 fields, no nesting past one level |
+  | record | `{"due": "str[32]", "urgent": "bool"}` | ≤ 8 fields, no nesting past one level |
   | short text | `str[n]` | n ≤ 2,000; with lists and records, the result must also fit §5's 16 KB prose cap, so `[{"x": "str[2000]"}]` raises on the cap and the program narrows `n`. The table bounds shapes; it is not a menu of shapes that fit |
+
+  Every spelling is a JSON value: a bare Python type such as `bool`
+  has no JSON form and never crosses into the host, so the program
+  writes `"bool"`. A list of one element that is itself a shape
+  (`["bool"]`, `[{"x": "int"}]`) is a list; any other list of
+  strings is a one-of. A list's item is a leaf or a record, and a
+  record's fields are leaves. As built, `float[a,b]` takes a range too.
+  The cap is checked twice: up front against the most text the shape
+  could return (`n` per text field, 64 per list, times the items of
+  an `llm_map`), and on the answer's actual bytes.
 
 - **A `str[n]` result is prose entering the program**, so it is counted
   with `peek` against one cap (§5); otherwise it would be a second,
@@ -384,26 +394,79 @@ Per program. **Two kinds of limit, and only the first is catchable:**
   program can catch (§4). These are sub-calls, sub-call input tokens,
   thinking-on passes, tool reads, handle operations, host bytes (per
   program and per process), live handles, and `peek` plus `str[n]` bytes.
-- **Backstops** are the wall clock (`monty-pool`'s `request_timeout`), and
-  monty's own memory, allocation and recursion limits with
-  `max_suspensions`. They end the program from outside, uncatchably,
+- **Backstops** are the wall clock (the interpreter's own deadline, with
+  `monty-pool`'s per-turn `request_timeout` and `max_feed_duration` behind
+  it), monty's memory limit, and `max_suspensions`. Monty 1.4 has no
+  allocation-count limit, and its recursion limit raises a *catchable*
+  `RecursionError`, so recursion is bounded but is not a backstop (§10,
+  M1). They end the program from outside, uncatchably,
   because a backstop the program could catch would not be one. The `code`
   call still returns a `tool_result`: whatever the program printed, then
   a harness line naming the backstop that fired.
 
-| Limit | Default (ruling R4) | Enforced by |
+| Limit | Default (R4, ruled 2026-10-31) | Enforced by |
 |---|---|---|
 | sub-calls | 32 | the host, **per pass**: `llm_map` over N handles is N, and a schema retry is another. An `llm_map` longer than the remaining budget raises before its first pass, and so does a thinking-on `llm_map` longer than the remaining thinking passes |
-| thinking passes | 8 (proposed) | the host, counting passes that **did** think, not passes that asked to: a pass whose response carries reasoning (`reasoning_content`, recorded as `Block::Thinking`) counts, whatever it requested. A thinking-off request can be silently ignored (§4), so counting requests would read 0 while every pass thinks and the clock binds first. The pass after the cap raises. This is the row that keeps the clock from binding first (below) |
+| thinking passes | 8 | the host, counting passes that **did** think, not passes that asked to: a pass whose response carries reasoning (`reasoning_content`, recorded as `Block::Thinking`) counts, whatever it requested. A thinking-off request can be silently ignored (§4), so counting requests would read 0 while every pass thinks and the clock binds first. The pass after the cap raises. This is the row that keeps the clock from binding first (below) |
 | sub-call input tokens | 120k | the host, from `Usage`. Sized so that it binds before the clock even under contention (below) |
 | tool reads | 256 | the host, counted at the gate |
-| handle operations (§3) | 2,048 | the host. `budget()` counts as one, so a loop of it ends in a `LimitError:`, not a backstop. Monty's `max_suspensions` is set to the sum of the counted limits as a backstop |
-| wall clock | 600 s | `monty-pool` `request_timeout`, which is **unset by default** and must be set |
+| handle operations (§3) | 2,048 | the host. `budget()` counts as one, and so does each `llm_query` and `llm_map` call beside its passes, so a loop of either ends in a `LimitError:`, not a backstop. Monty's `max_suspensions` is set to the sum of the counted limits as a backstop |
+| wall clock | 600 s | the interpreter, from the program's start and across the host's answers. `monty-pool`'s `request_timeout` is **unset by default** and is set to the same value, but it bounds one protocol turn, not the program |
 | host bytes held by handles | 64 MB | the host, summed over every tool read's raw result; the read that would cross it raises |
 | live handles | 4,096 | the host. `split`, `lines` and `chunks` refuse a result that would cross it, and `chunks` refuses `n` below 256, so one counted operation cannot mint a handle per byte |
 | host bytes, all programs in the process | 256 MB | one process-wide pool every program draws from. `dispatch` runs a turn's calls under `join_all`, so two `code` calls in one message, a parent's program beside an `analyst` child's, and `mecha batch` are all concurrent, and per-program limits alone would not bound N × 64 MB. A read that would cross either limit raises |
-| memory, allocations, recursion | monty's limits | the pool worker, which bounds the interpreter's heap. It does not own the handles' bytes, which is why the two rows above exist |
+| memory, recursion | monty's limits | the pool worker, which bounds the interpreter's heap. It does not own the handles' bytes, which is why the two rows above exist. Monty 1.4 has no allocation-count limit, and recursion raises a catchable `RecursionError`. On a Mac monty's ceiling is the only memory bound (below) |
 | `peek` bytes plus `str[n]` result bytes | 16 KB together | the host, one count (`peeked_bytes`) |
+
+**Memory on a Mac: monty's ceiling holds, and nothing stands behind it.**
+On Linux, `[sandbox] memory_mb` puts the worker in a cgroup, a wall
+outside the worker. A Mac has no cgroups, so the only bound there is
+monty's own: its global allocator (`monty-alloc`) arms a hard ceiling of
+`max_memory` plus 4 MiB of headroom over the worker's baseline and exits
+the worker (code 65) past it. A soft check raises the uncatchable
+`MemoryError` at the interpreter's checkpoints, and operations that would
+build a large result check its size first.
+
+**Measured 2026-10-31**: `the_memory_backstop_bounds_what_the_worker_holds`
+(`code_interpreter.rs`), at a 64 MiB limit. Each program tries for far more,
+gradually or in one operation, while a sampler reads the worker's lifetime
+peak: `ri_lifetime_max_phys_footprint` on macOS, which counts compressed
+and swapped pages too, and `VmHWM` on Linux. On macOS that was CI, macOS
+26.6 arm64, the pinned worker under its Seatbelt profile. On Linux it was
+the workstation, under bwrap with no cgroup. Every program ended
+`Backstop::Memory`:
+
+| Program | Peak, macOS | Peak, Linux |
+|---|---|---|
+| a list grown 100 kB at a time | 70.6 MiB | 69.1 MiB |
+| a string doubled | 66.3 MiB | 53.2 MiB |
+| a dict grown | 55.2 MiB | 47.8 MiB |
+| a join of a list of 2 M strings | 68.7 MiB | 73.0 MiB |
+| `list(range(300_000_000))` | 35.2 MiB | 38.0 MiB |
+| one 2 GiB `str`, `list` or `tuple`, a 1 GiB `int`, a 2 GiB `ljust`, a multiplying `replace` | 2.1–4.2 MiB (refused before allocating) | 5.6–5.9 MiB |
+
+So **the backstop holds on macOS**, to within the headroom and the
+worker's ~2 MiB baseline. A later CI run started the worker at
+18.7 MiB and the list peaked at 86.9 MiB, 68 MiB above its start
+as before (Linux on the workstation, 2026-10-31: 81.7 MiB from
+14.6 MiB). So the test asserts the bound from each program's own
+start (that start, plus the limit, plus 16 MiB) on both platforms,
+and a monty release that loosens it fails CI.
+
+**The gap that remains is the second wall.** Above monty's own ceiling
+nothing caps a Mac worker. A bug in monty's allocator accounting, or an
+allocation outside the Rust allocator, would take memory until the wall
+clock ended the program. Measured on the same runner:
+- **`RLIMIT_DATA` and `RLIMIT_RSS` at 1 GiB were refused.** `ulimit -d`
+  failed with `EINVAL`, `ulimit -m` failed too, and a 3 GiB string then
+  reached 3 GiB resident.
+- **`RLIMIT_AS` is refused below the process's map size and enforced
+  above it.** The map size is about 415 GiB at start on arm64, the shared
+  region's reservation. With the limit at the shell's map size plus
+  512 MiB or 1 GiB, a 3 GiB allocation failed. At plus 4 GiB it succeeded.
+
+So a kernel-enforced ceiling exists, relative to a baseline that has to be
+read rather than configured. §12 proposes it, and it is not built.
 
 **The limit a well-behaved program should hit first is the sub-call
 cap, then the token cap, and the clock never.** The sub-call cap is the
@@ -414,16 +477,15 @@ halves: about 120 s for a 170k-token prefill alone, and a ~2.85× slowdown
 under contention on this hardware. So the whole 120k-token budget is
 about 85 s of prefill alone and about 240 s contended. That is why the
 clock is 600 s, the number `STALL_TIMEOUT` reached by the same arithmetic,
-and not 300. R4 chooses between raising the clock and lowering the token
-cap, after M0 and M1 measure a pass on this box under contention as well
-as alone.
+and not 300. R4 kept both as proposed (ruled 2026-10-31, after M0 and
+M1): the clock at 600 s and the token cap at 120k.
 
 **That ordering holds only with thinking off, the R6 default.** M0
 measured a thinking-on pass at a median of ~14 s, before prefill. 32
 thinking-on sub-calls are ~450 s of decode alone, and ×2.85 under
 contention is past the 600 s clock. So a pass that asks for thinking
 draws on the budget at a higher rate. R4 sets a separate, smaller cap on
-thinking-on passes (8 is a proposal), so the clock still never binds
+passes that thought (8, ruled 2026-10-31), so the clock still never binds
 first.
 
 A long document chunked into handles can reach 256 host calls before 32
@@ -619,6 +681,13 @@ attacker selects from their own text can be an address; that is a
     `NameLookup`, with no mounts, is the first wall. The sandbox is the
     second, because round 1 of Hack Monty was an escape. `preflight`
     fails the run if a worker will not start inside it.
+  - **On a Mac the second wall is Seatbelt** (slice 3a-mac): the worker's
+    own profile (`seatbelt::worker_profile`), chosen by the platform and
+    never by `[sandbox]`, which stays `shell`'s and still refuses
+    `seatbelt`. Its allow-list and how it was measured are in
+    `ARCHITECTURE.md` §Code mode's interpreter. There, `preflight` also asks
+    the kernel what the live worker's profile denies, because a launcher
+    that dropped the profile would otherwise pass it.
   - Littrs (0.6.2, Apache-2.0) is a fallback for this slice only. It has
     no pause API but needs none here, and its limits are weaker (no memory
     or time limit outside its WASM mode). wasmtime with a Python guest
@@ -913,6 +982,71 @@ the record.
 **M1.** `monty-pool` worker start and per-host-call overhead on this box,
 owed since `CODE-MODE-RESEARCH.md`.
 
+**M1, measured 2026-10-30** on the workstation (aarch64, 20 cores), through
+the path that ships: the pinned worker (monty 1.4.0, the musllinux wheel's
+static binary) under bwrap 0.13 with only its binary bound, driven by
+`monty-pool` 1.4.0 through the `Interpreter` trait. Release build. Each run
+was gated on `voice.live = no`. "Contended" is the same run with one
+llama-server request in flight on the router's resident preset
+(`qwen3.6-35b-a3b-uncensored`, named so nothing swapped; 3,000 tokens
+decoding at 78 tok/s, one of four slots busy before and after the runs).
+Three runs each; the range is across runs, each a median.
+
+| | Alone | Contended |
+|---|---|---|
+| process start, bare `monty -c 1` (context) | 0.8–0.9 ms | 1.1–1.3 ms |
+| process start, `monty -c 1` under bwrap (context) | 3.2–3.8 ms | 4.4–5.6 ms |
+| **cold program**: spawn, bwrap, `Configure`, feed `1`, n=20 | 3.5–4.0 ms (p90 ≤ 4.7) | 4.2–5.8 ms (p90 ≤ 6.4) |
+| **warm program**: a reused worker, n=200 (before #768; see below) | 0.05–0.09 ms | 0.08–0.09 ms |
+| **host call round trip**, a loop of 5,000 calls answered at once | 10.8–16.9 µs | 15.8–18.3 µs |
+| **tight-loop throughput**, same loop | 59k–92k calls/s | 55k–63k calls/s |
+| the same loop calling a function defined in the program | 0.10–0.18 µs/iteration | 0.12–0.20 µs/iteration |
+
+```bash
+# the test binary: the M1 test is #[ignore]d, everything else in it runs in CI
+cargo test --release -p mecha-core --features monty --test code_interpreter -- --ignored --nocapture m1_measure
+# alone: the built binary three times, M1_LABEL naming the arm
+MECHA_MONTY_WORKER=<pinned binary> M1_LABEL=alone target/release/deps/code_interpreter-<hash> --ignored --nocapture m1_measure
+# contended: the same, three times, while this was decoding
+curl -s http://127.0.0.1:8080/v1/chat/completions -H 'content-type: application/json' \
+  -d '{"model":"qwen3.6-35b-a3b-uncensored","max_tokens":3000,"chat_template_kwargs":{"enable_thinking":false},"messages":[{"role":"user","content":"Write a very long story about a lighthouse on a fictional island."}]}'
+```
+
+- **The interpreter is not where a program's time goes.** A host call costs
+  10–18 µs, against M0's 0.3–0.5 s for a thinking-off pass: the §5
+  suspension backstop's 2,336 calls would spend about 40 ms in transport.
+  Worker start is about 4 ms cold, most of it bwrap (bare start is under
+  1 ms), and a warm worker is reused in under 0.1 ms.
+- **Contention cost the interpreter a third at most.** One decode in flight
+  raised cold start by about 1 ms and the round trip by a few µs. The decode
+  is on the GPU; this measures the CPU and scheduler cost beside it, not a
+  CPU-saturated box.
+- **The warm row no longer describes the shipped path.** It was measured
+  while a worker served many programs. Since #768 a worker runs one
+  (`PROGRAMS_PER_WORKER`), and the pool keeps none spawned ahead, so
+  every program pays the cold row's spawn. The test's second loop now
+  prints that as "pooled program (a fresh worker each)".
+- This was R4's input; R4 was ruled on 2026-10-31 (§11).
+
+**What the build found that the documents had otherwise** (slice 3a):
+- **Monty 1.4 has `eval` and `exec`.** `CODE-MODE-RESEARCH.md` says they do
+  not exist. So a program reaches a *registered* name from a string it
+  builds (`eval('allo' + 'wed()')`), and its free names are not its reach
+  set: admission must be the registered set, as §2 has it, never a scan of
+  the source. `globals`, `vars`, `compile` and `__import__` are absent; `open`
+  exists and becomes an `OsCall`. A test holds each.
+- **No allocation-count limit, and recursion is catchable** (§5, corrected
+  there). `ResourceLimits` at 1.4.0 is `max_feed_duration`,
+  `max_turn_duration`, `max_memory`, `gc_interval`, `max_recursion_depth`,
+  `max_suspensions` and `max_total_sleep`.
+- **`request_timeout` bounds one protocol turn, not a program.** The
+  program's wall clock is the backend's own deadline, which also counts the
+  host's time answering calls.
+- **`monty-pool` needs Rust 1.96**, above the workspace's 1.89 MSRV, and
+  always builds its WebSocket transport (rustls with aws-lc, a C build;
+  about 50 crates in all). So the backend is behind the cargo feature
+  `monty`, off by default, and CI tests it in the `sandbox backends` job.
+
 **The experiment** (`mecha exp`, fixtures on the fictional cast only):
 
 | Arm | Tools |
@@ -948,7 +1082,8 @@ The predictions to falsify:
 ## 11. Rulings
 
 Ruled by the owner on 2026-10-30, taking the recommendation on each ("go
-with your recs"), except R4, which waits on M1.
+with your recs"), except R4, which waited on M1 and was ruled on
+2026-10-31.
 
 - **R1. Yes.** The first slice is read-only (§2), and the effect-class
   table is built first and shared with rollouts.
@@ -956,11 +1091,13 @@ with your recs"), except R4, which waits on M1.
   bool, number, or one-of with at most 16 labels (§6). An armed parent's
   shape narrows nothing.
 - **R3. Yes.** Composite shapes come back `external` (§6).
-- **R4. Owed.** The budget defaults (§5) are set after M0 (done) and M1
-  measure a pass and a worker on this box.
+- **R4. Ruled as proposed (2026-10-31).** Sub-calls 32, thinking passes
+  8, sub-call input tokens 120k, wall clock 600 s, and the rest of §5's
+  table unchanged, ruled by the owner after M0 and M1 measured a pass and
+  a worker on this box. The numbers live in `tool/code.rs`'s `defaults`.
 - **R5. Yes.** `peek` exists, capped together with `str[n]` results, and
-  counted (§3). The cap's number belongs to R4's budget table (§5), with
-  16 KB as its proposed default.
+  counted (§3). The cap's number belongs to R4's budget table (§5): 16 KB,
+  ruled with it.
 - **R6. Thinking off by default**, on per call (§4, from M0). **Every
   pass gets `max_tokens` of 8,192, thinking or not**, because the
   thinking-off request can be silently ignored (§4). The floor alone
@@ -1023,6 +1160,45 @@ than an architecture section kept beside the code.
 - **Depth above 1.**
 - **Training** the model on its programs. `POST-TRAINING-RESEARCH.md` §7
   names it as a later target.
+- **A memory wall outside the worker on a Mac** (§5, *Memory on a Mac*).
+  Monty's allocator ceiling holds there, but nothing behind it does, and
+  Linux's cgroup has no macOS equivalent that `sandbox-exec` can apply.
+  The proposal is the owner's call (2026-10-31), not built:
+  - **`RLIMIT_AS` above the worker's own map size**, set by the launcher
+    (`ulimit -v`) before it execs `sandbox-exec`. XNU enforces it, by
+    measurement, but only relative to the whole address space, which on
+    macOS 26 arm64 starts at about 415 GiB (the shared region), and it
+    refuses any limit below that. So the ceiling would be the worker's map
+    size, read from the live worker at preflight (libproc's
+    `pti_virtual_size`), plus `max_memory` and headroom. That size depends
+    on the OS release and the hardware, so it must be read and never
+    written down. A launcher that cannot set it refuses the start.
+  - **A host-side watchdog** as the fallback: poll the worker's
+    `phys_footprint` (`proc_pid_rusage`) and kill it past a ceiling, which
+    ends the program as `Backstop::WorkerKilled`. Its overshoot is one
+    polling interval of allocation, so it is weaker than a kernel limit and
+    needs no knowledge of the map size.
+- **A worker that outlives a killed mecha on a Mac.** On Linux bwrap's
+  `--die-with-parent` makes an orphan impossible: when mecha dies, bwrap gets
+  the parent-death signal and takes the worker with it. On a Mac the launch
+  chain is all `exec`s (`env -i` → `sandbox-exec` → worker), so the only
+  thing that ends a worker is the pool's own kill when it drops, and a
+  `SIGKILL`ed mecha never runs that. A worker computing at that moment does
+  not read its stdin, so it never sees the EOF. The wall clock lived in the
+  host that died, so the orphan spins a core until someone kills it, holding
+  up to `max_memory`. Seatbelt bounds what the worker can reach, not how
+  long it lives. A clean exit, or a panic that unwinds, drops the pool and is
+  not affected. The fix is the owner's call (review of #769), not built:
+  - **A watchdog in the launcher**: a shell that starts a loop waiting on
+    mecha's pid, then `exec`s the chain, so the worker keeps the shell's
+    pid. When mecha dies, the loop kills that pid. The loop has to stop on
+    its own when the worker exits, or it will kill a reused pid. It must not
+    hold the worker's pipes, and it runs outside the profile. A polling loop
+    in `sh` can do this. A `kqueue` `NOTE_EXIT` wait is exact but needs a
+    helper binary.
+  - **The pool noticing**: nothing in the host survives a `SIGKILL`, so
+    this only covers the next start. It would reap leftover workers by
+    their recorded pids at preflight.
 
 ---
 

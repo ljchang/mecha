@@ -629,6 +629,9 @@ mod tests {
 
     #[async_trait::async_trait]
     impl mecha_core::provider::Provider for Directs {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "local"
         }
@@ -811,6 +814,9 @@ mod tests {
         struct Never;
         #[async_trait::async_trait]
         impl mecha_core::provider::Provider for Never {
+            fn local(&self) -> bool {
+                true
+            }
             fn id(&self) -> &str {
                 "local"
             }

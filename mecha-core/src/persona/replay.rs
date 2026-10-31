@@ -984,6 +984,9 @@ impl Provider for Capture {
     fn structured_output(&self) -> bool {
         self.inner.structured_output()
     }
+    fn local(&self) -> bool {
+        self.inner.local()
+    }
     fn supports_effort(&self) -> bool {
         self.inner.supports_effort()
     }
@@ -1540,6 +1543,7 @@ mod tests {
             cache_prompt: false,
             think: None,
             think_budget: None,
+            local_only: false,
             trailing_notes: 1,
             tool_choice: ToolChoice::Auto,
         }
@@ -1732,6 +1736,9 @@ mod tests {
     struct Fixed;
     #[async_trait::async_trait]
     impl Provider for Fixed {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "fixed"
         }

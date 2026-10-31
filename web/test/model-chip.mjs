@@ -5,7 +5,7 @@
 // would then stand, and evict the owner's pick), a model offered that runs
 // would not follow, a switch's wait shown as a load, and an outcome from some
 // earlier switch reported as this tap's.
-import { reader, canHurry, routerOf, unavailable, rows, phase, busy, pollEvery, chipLabel, waitingLine, outcomeNote } from '../src/lib/model-chip.js';
+import { reader, canHurry, routerOf, unavailable, rows, phase, busy, pollEvery, chipLabel, waitingLine, outcomeNote, gib, available, planLine, installing, installLine, pollWhileInstalling, catalogTrouble } from '../src/lib/model-chip.js';
 
 let pass = 0;
 let fail = 0;
@@ -154,6 +154,44 @@ t('a success with a warning says it', outcomeNote({ last_switch: { to: 'x', ok: 
   pending.shift()();
   await tap;
   t('fresh answers with a read that began after it', baseline === 'after');
+}
+
+// ---- the catalog ----
+{
+  const offer = (id, extra = {}) => ({
+    id,
+    provider: id,
+    label: `${id} label`,
+    note: `${id} note`,
+    installed: false,
+    unfit: null,
+    download_bytes: 2 * 1073741824,
+    memory_mb: 20 * 1024,
+    ...extra,
+  });
+  const served = router([m('qwen-a', 'loaded'), m('gemma-b', 'unloaded')]);
+  const cat = { offers: [offer('gemma-b'), offer('big-c', { unfit: 'needs the 64 GB memory tier or larger' }), offer('new-d')], refusal: null, installing: null };
+  const data = { routers: [served], catalog: cat };
+  const av = available(data, routerOf(data));
+  t('a model the router serves is not offered again', !av.some((r) => r.id === 'gemma-b'));
+  t('a model not offered here stays listed, refused with why', av.find((r) => r.id === 'big-c')?.disabled && av.find((r) => r.id === 'big-c').why.includes('64 GB'));
+  t('one that fits is offered', av.find((r) => r.id === 'new-d') && !av.find((r) => r.id === 'new-d').disabled);
+  t('a router mecha cannot install onto refuses every row', available({ routers: [served], catalog: { ...cat, refusal: 'mecha did not install the chat router here' } }, served).every((r) => r.disabled));
+  t('no catalog in the answer offers nothing', available({ routers: [served] }, served).length === 0);
+  t('a router not read yet offers nothing — what is served is unknown', available({ routers: [{ base_url: 'x', reachable: false }], catalog: cat }, null).length === 0);
+  t('no followed router at all (a fresh install) still offers the catalog', available({ routers: [], catalog: cat }, null).length === 3);
+  const plan = planLine(av.find((r) => r.id === 'new-d'));
+  t('the plan says the download, the memory and the table it writes', plan.includes('2.0 GiB to download') && plan.includes('~20.0 GiB in memory') && plan.includes('[providers.new-d]'));
+  t('gib is one decimal', gib(1610612736) === '1.5 GiB');
+  t('no install is none', installing(data) === null && installLine(null) === null && pollWhileInstalling(null, true) === null);
+  const p = { id: 'new-d', phase: 'fetching', done_bytes: 1073741824, total_bytes: 2 * 1073741824, pid: 1, started_at: 'x' };
+  t('an install under way is read from the catalog', installing({ catalog: { ...cat, installing: p } })?.id === 'new-d');
+  t('a download says how far it is', installLine(p) === 'downloading new-d — 1.0 GiB of 2.0 GiB');
+  t('a restart is said as such', installLine({ ...p, phase: 'restarting' }).includes('restarting the router'));
+  t('an unreadable catalog is said, not hidden', catalogTrouble({ catalog: { offers: [], refusal: 'mecha\'s catalog could not be read: x', installing: null } })?.includes('could not be read'));
+  t('a router-wide refusal is said beside the offers too', catalogTrouble({ catalog: { ...cat, refusal: 'mecha did not install the chat router here' } })?.includes('did not install'));
+  t('a catalog that can be installed from has no trouble line', catalogTrouble({ catalog: cat }) === null);
+  t('an install reads fast with the menu open, slowly with it closed', pollWhileInstalling(p, true) === 2000 && pollWhileInstalling(p, false) === 15000);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
