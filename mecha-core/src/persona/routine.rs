@@ -102,7 +102,9 @@ struct AnchorForm {
 /// Parse and check a routine's text. A refusal names the anchor by number
 /// and label, and the value it refuses; nothing out of range is clamped.
 pub fn parse(text: &str) -> Result<Routine> {
-    let form: FileForm = toml::from_str(text).map_err(|e| anyhow::anyhow!("{e}"))?;
+    // The store's own parser: a TOML escape cannot smuggle a control
+    // character into a label that a refusal or `show` then prints.
+    let form: FileForm = super::parse_toml(text)?;
     if form.anchor.len() > MAX_ANCHORS {
         bail!(
             "{} anchors; a routine holds at most {MAX_ANCHORS}",
@@ -268,6 +270,14 @@ pub fn load(pdir: &Path) -> Result<Option<Routine>> {
     parse(&text)
         .map(Some)
         .with_context(|| format!("{FILE} does not load"))
+}
+
+/// `routine.toml`'s path, written from [`TEMPLATE`] first if the persona
+/// has none, owner-only like the rest of the store.
+pub fn ensure(dir: &Path, name: &str) -> Result<PathBuf> {
+    let path = persona_dir(dir, name)?.join(FILE);
+    super::write_new(&path, TEMPLATE)?;
+    Ok(path)
 }
 
 /// The routine's text and a waiting draft's, as they stand.
@@ -443,6 +453,16 @@ chance = 0.7
             let got = refusal(&GYM.replace(from, to));
             assert!(got.contains(want), "{to}: {got}");
         }
+    }
+
+    #[test]
+    fn an_escaped_control_character_never_reaches_a_label() {
+        let got = refusal(&GYM.replace("what = \"gym\"", "what = \"gym\\u001b[2J\""));
+        assert!(got.contains("control character (U+001B)"), "{got}");
+        assert!(
+            !got.contains('\u{1b}'),
+            "the refusal carries the escape itself"
+        );
     }
 
     #[test]

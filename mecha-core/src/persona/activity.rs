@@ -169,6 +169,42 @@ mod tests {
     }
 
     #[test]
+    fn all_lists_every_variant() {
+        // Exhaustive, so a new variant does not compile until it is named
+        // here; name it in `ALL` too, and count it below.
+        const VARIANTS: usize = 26;
+        let _named = |a: Activity| match a {
+            Activity::Sleep
+            | Activity::PersonalCare
+            | Activity::Eating
+            | Activity::Cooking
+            | Activity::Housework
+            | Activity::Shopping
+            | Activity::Errands
+            | Activity::Caring
+            | Activity::Work
+            | Activity::Class
+            | Activity::Studying
+            | Activity::Commute
+            | Activity::Travel
+            | Activity::Socializing
+            | Activity::Tv
+            | Activity::Music
+            | Activity::Games
+            | Activity::Computer
+            | Activity::Hobbies
+            | Activity::Reading
+            | Activity::Relaxing
+            | Activity::Outing
+            | Activity::Exercise
+            | Activity::SportsEvent
+            | Activity::Religion
+            | Activity::Volunteering => (),
+        };
+        assert_eq!(Activity::ALL.len(), VARIANTS, "ALL is missing a variant");
+    }
+
+    #[test]
     fn no_prefix_is_owned_twice_so_a_code_has_one_activity() {
         let mut seen = BTreeSet::new();
         for a in Activity::ALL {

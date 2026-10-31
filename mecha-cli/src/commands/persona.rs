@@ -1122,23 +1122,23 @@ fn routine_cmd(dir: &Path, cmd: RoutineCmd, edit_file: &dyn Fn(&Path) -> Result<
         }
         RoutineCmd::Edit { name, draft } => {
             let name = named(&name)?;
-            let pdir = dir.join(&name);
-            routine::read(dir, &name)?;
             let file = if draft {
-                if !pdir.join(routine::DRAFT).exists() {
+                if routine::read(dir, &name)?.draft.is_none() {
                     bail!("`{name}` has no routine draft waiting");
                 }
-                pdir.join(routine::DRAFT)
+                dir.join(&name).join(routine::DRAFT)
             } else {
-                let path = pdir.join(routine::FILE);
-                if !path.exists() {
-                    std::fs::write(&path, routine::TEMPLATE)?;
-                }
-                path
+                routine::ensure(dir, &name)?
             };
             edit_file(&file)?;
-            let text = std::fs::read_to_string(&file)?;
-            match routine::parse(&text) {
+            // Read back through the store's door, so a save is checked as
+            // strictly as the sampler will load it.
+            let texts = routine::read(dir, &name);
+            let saved = texts.and_then(|t| {
+                let text = if draft { t.draft } else { t.routine };
+                routine::parse(&text.unwrap_or_default())
+            });
+            match saved {
                 Ok(r) => println!(
                     "Saved: {} anchor(s){}.",
                     r.anchors.len(),
