@@ -370,13 +370,15 @@ threshold per persona once the access log says where it should sit. The
   behind the same gate, so a persona whose owner turned off memory of them
   never stores the owner's relatives by another route.
 - **Two rules, by what a setting does.**
-  - **Switches that decide which tools and blocks exist** (`world`,
-    `people`, `my_people`, `news`, `camera`, `feed`) are fixed per persona
+  - **Switches that decide which tools, blocks and runs exist** (`world`,
+    `people`, `my_people`, `news`, `camera`, `feed`, `proactive`) are fixed
+    per persona
     version. A chat pins the version it started with (`PERSONA-DESIGN.md`
     §8.1), because the tool list is the front of the cached prefix, so
-    turning one on applies to new chats.
+    turning one on applies to new chats. `proactive` is read by the
+    scheduler, not a chat, so it takes effect at the next scheduled check.
   - **Behaviour settings** (`remember_articles`, `intensity`, the decay
-    knobs) are read live, at each use, as the memory switches already are
+    knobs, `name_search_filter`) are read live, at each use, as the memory switches already are
     (`setup::persona_agent`: "turning memory off reaches the chat at its
     next call"). `remember_articles` in particular is the one an owner may
     want to revoke in a hurry, and turning it off stops the next recall.
@@ -399,8 +401,9 @@ threshold per persona once the access log says where it should sit. The
     owner's edit can leave the live `persona.toml` unreadable while the
     chat's pinned snapshot still parses with `remember_articles = true`. An
     unreadable live file then fails toward the safe side for each setting:
-    no recall under `remember_articles`, `intensity` at `"capped"`, and **no
-    pruning that night**. The decay knobs have no "off", and shipped defaults
+    no recall under `remember_articles`, `intensity` at `"capped"`,
+    `name_search_filter` **on** (the one setting whose safe direction is on),
+    and **no pruning that night**. The decay knobs have no "off", and shipped defaults
     could be looser than what the owner wrote, which is the substitution §9
     refuses. So nothing is deleted on a read that failed. It never falls back to the pinned value or the last
     value read, and the persona's notes say the file could not be read. That
@@ -1098,7 +1101,10 @@ staged to the graph's review queue.
    stays, so a short "ok" still embeds nothing (the reason for it, from the
    review of #481). The gap note comes from a roster match, a string lookup
    with no search, and its presence alone makes `per_turn` emit the stemmed
-   block. Its arming is a no-op, since the recall
+   block. That also changes `per_turn`'s divisor: today it shares
+   `PER_TURN_CHARS / found.len()`, which divides by zero on the gap-only turn.
+   The note and cards get their own slot first, and memory hits share the
+   rest. Its arming is a no-op, since the recall
    block already armed `private` and the name is the owner's own word. But a
    separate harness voice would owe the other two predicates, and both
    matter here. Unregistered in `is_harness_voice`, "you haven't mentioned
@@ -2045,7 +2051,10 @@ persona, which fails open. So:
   `setup::persona_agent`'s comments) keeps them for a files-only persona. A
   `teacher` persona must keep its file reader. So the class is a per-tool
   declaration ("reaches beyond the persona's files"), made beside
-  eligibility;
+  eligibility. **Its default is yes**: a per-persona tool that forgets the
+  declaration is treated as reaching beyond the files and withheld from a
+  files-only persona, which is the fail-closed direction. The four existing
+  tools declare "no" explicitly;
 - **the per-persona tools join the `ELIGIBLE` test's pool** over a scratch
   persona store, as above. A second test builds a persona through
   `setup::persona_agent` with `answers = "files"` and asserts **both
@@ -2184,7 +2193,7 @@ this document's; the ruling is the owner's.
 | PL4 | Shared worlds across personas | **Ruled (2026-10-31):** a three-level hierarchy (everyone, group, persona), each its own `world.db`. A shared event exists once and each persona experiences it her own way; visibility decides who knows; only the owner, the simulation and level-registered feeds write above the persona level (§3.2) |
 | PL5 | Where the network lives | **Ruled (2026-10-31): built like memories.** SQLite in `world.db` with per-event origin and owner precedence, edited on the People tab and the CLI, with a rendered `network.md` for reading; a stated deviation from §4.3 (§6.6) |
 | PL6 | People already in `identity.md` | **Ruled (2026-10-31): people live in one place.** They are proposed once as owner nodes; after approval the network is their only home and `identity.md` keeps personality (§6.6) |
-| PL7 | Pruning | **Ruled (2026-10-31):** the world hard-prunes, except owner-origin rows; memory soft-prunes (out of recall, kept in the store); hard deletion of memories only by amending D26 after D28's readout. **The decay parameters are exposed per persona** in `[life.decay]`: half-lives, retelling boost, both thresholds, read live (§9, §3.1) |
+| PL7 | Pruning | **Ruled (2026-10-31):** the world hard-prunes, except owner-origin rows; memory soft-prunes (out of recall, kept in the store); hard deletion of memories only by amending D26 after D28's readout. **The decay parameters are exposed per persona**, read live: the world's half-lives, retelling boost and threshold in `[life.decay]`, and memory's recall threshold in `[memory] recall_below`, off by default (§9, §3.1) |
 | PL8 | Importance to the owner | **Ruled (2026-10-31):** inferred from engagement and pins, with no rating prompts or UI control; and she may ask in conversation when it is natural and the inference is unsure, within §7.3's one-question-a-chat budget, the answer counting as a `Stated` signal (§9) |
 | PL9 | News shelves | **Ruled (2026-10-31):** Build A and C first, with shelf A's per-field render bounds and stated figures (at most 16 bits an item, three a day, five-day expiry; §8.2), and shelves A and C through all three gate parts, steering included, before either reaches a prompt. In that first build, shelf C's count-and-timing channel (about 3 bits a day) is the entire residual, and only the steering arm sees it. B ships behind the three-part gate (§14): schema conformance, a bit ceiling (about 9.6 bits per item and under 30 a day, as §8.2 computes it) enforced by a test, and the steering arm, all three read by the owner |
 | PL10 | The writer after a taint rise | **Ruled (2026-10-31):** Keep today's rule (everything after the rise is a candidate). PL23's typed episode keeps the gist and PL27's switch gives full memory where the owner wants it, which is what PL10 was reaching for (§8.4) |
