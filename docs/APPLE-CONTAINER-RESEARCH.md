@@ -205,10 +205,15 @@ the container keeps running. `container run` has the same shape [I]:
 ### Option A: one VM per worker
 
 The launcher script is
-`exec container run --rm -i --network none --no-dns --read-only --cap-drop ALL --user 65534:65534 --memory <m> --cpus 1 --cidfile <launcher-dir>/$$.cid <pinned image> "$@"`.
+`exec <absolute path to the pinned container CLI> run --rm -i --network none --no-dns --read-only --cap-drop ALL --user 65534:65534 --memory <m> --cpus 1 --cidfile <launcher-dir>/$$.cid <pinned image> "$@"`.
+The path is absolute because the launcher runs under `env_clear()`, so
+`sh`'s fallback `PATH` holds neither `/usr/local/bin` nor
+`/opt/homebrew/bin`. `Confinement::for_sandbox` resolves `bwrap` and
+`systemd-run` absolutely for the same reason, and the absolute path is
+what §1's hash pin covers.
 The image's `ENTRYPOINT` is `["/monty"]`, as in §8's setup, so the
 arguments the pool appends (`subprocess`) reach the worker as its own.
-Naming `/monty` here as well would hand the worker `/monty subprocess`.
+Naming `/monty` here as well would make the worker's argv `/monty /monty subprocess`.
 The `$$` in the cidfile path is a problem of its own (the Kill bullet
 below).
 
@@ -572,7 +577,7 @@ printf 'FROM scratch\nCOPY monty /monty\nENTRYPOINT ["/monty"]\n' > Containerfil
 # latter needs the BuildKit builder VM (`container builder start`), which
 # reserves its own memory and would perturb M-C13. Either works for the
 # measurements, but only the load path is the one that would ship.
-container build -t mecha-monty:1.4.0 .   # if used: run `container builder stop` before M-C13
+container build -f Containerfile -t mecha-monty:1.4.0 .   # -f: Apple's default name is Dockerfile; if used: run `container builder stop` before M-C13
 container image inspect mecha-monty:1.4.0 > image.json
 F='--rm --network none --no-dns --cap-drop ALL --user 65534:65534'
 ```
@@ -587,6 +592,12 @@ unzip -p mac.whl pydantic_monty_runtime-1.4.0.data/scripts/monty > monty-mac && 
 echo "6c1d5b14023d213b4a862131739c5431ac980b5f89a3267c75fb6be2c2d39fdd  monty-mac" | shasum -a 256 -c
 hyperfine -w 2 -r 50 "sandbox-exec -p '(version 1)(allow default)(deny network*)' ./monty-mac -c 1"
 ```
+
+This Seatbelt baseline is the permissive `(allow default)(deny network*)`
+profile, which is the only one that runs the worker today: the peer probe's
+deny-default profiles aborted it with exit 134. Read the number as the start
+cost under a near-unconfined profile, not the shipping profile's cost. The
+3a-mac slice measures that.
 
 **M-C2: concurrent boots**, which tests the serialization claim.
 
@@ -708,18 +719,19 @@ back.**
 
 ```bash
 # Size the VM well above the allocation, so the guest's own limit is not
-# what gets measured. Allocate through the pinned worker itself: an anonymous
-# allocation the guest kernel charges and then releases, which is the path
-# code mode takes. (A /dev/shm write is tmpfs-limited and cgroup-charged, so
-# it fails or OOM-kills instead of freeing, and the before/after readings
-# would wrongly agree.)
-container run -d --name ac-mem --network none --memory 1G --entrypoint /bin/sh mecha-monty:1.4.0 -c 'sleep infinity' 2>/dev/null \
-  || container run -d --name ac-mem --network none --memory 1G alpine:3.22 sleep infinity
+# what gets measured. Allocate through the pinned worker itself, an
+# anonymous allocation the guest kernel charges and then releases, which is
+# the path code mode takes. A /dev/shm write is tmpfs-limited and
+# cgroup-charged, so it fails or OOM-kills instead of freeing, and the
+# readings would wrongly agree. The static musl worker runs from the
+# read-only mount in an alpine guest, as in M-C3.
+container run -d --name ac-mem --network none --memory 1G -v ~/mecha-ac:/w:ro alpine:3.22 sleep infinity
 sleep 5
-ps -axo pid,rss,command | grep -E 'Virtualization.VirtualMachine|container-runtime-linux' | grep -v grep   # idle
-container cp ./monty ac-mem:/w/monty 2>/dev/null || true
-container exec ac-mem /w/monty -c 'x = "a" * (300 * 1024 ** 2); print(len(x))'
-ps -axo pid,rss,command | grep -E 'Virtualization.VirtualMachine' | grep -v grep   # after the allocation was freed
+ps -axo pid,rss,command | grep -E 'Virtualization.VirtualMachine' | grep -v grep   # idle
+# The allocation must visibly run; a failure here voids the measurement.
+container exec ac-mem /w/monty -c 'x = "a" * (300 * 1024 ** 2); print(len(x))' | grep -qx 314572800 \
+  || { echo "M-C13 VOID: the allocation did not run"; exit 1; }
+ps -axo pid,rss,command | grep -E 'Virtualization.VirtualMachine' | grep -v grep   # after it was freed
 sleep 30
 ps -axo pid,rss,command | grep -E 'Virtualization.VirtualMachine' | grep -v grep   # and 30 s later
 ```
@@ -737,7 +749,7 @@ container system version --format json > version.json; container list --all --fo
 **Cleanup:**
 
 ```bash
-container kill ac-host ac-sleep ac-mem 2>/dev/null; container delete ac-host ac-sleep ac-mem 2>/dev/null; container image delete mecha-monty:1.4.0
+container kill ac-host ac-sleep ac-mem ac-busy ac-idle 2>/dev/null; container delete ac-host ac-sleep ac-mem ac-busy ac-idle 2>/dev/null; container image delete mecha-monty:1.4.0
 ```
 
 **What decides it:**
