@@ -729,6 +729,20 @@ attacker selects from their own text can be an address; that is a
       `the_watchdog_takes_no_answer_from_a_ps_that_fails` and
       `a_watchdog_that_cannot_read_start_times_is_refused` measure both,
       with a `ps` stand-in.
+    - **Arming races the Stop and the wall clock**, as the checkout does
+      (review of #772). A Stop during the handshake ends the program
+      `Cancelled`. A wall clock that runs out during it refuses the program.
+      Either way the checkout drops, which kills the worker.
+    - **A loop not yet armed takes its whole group with it**, however arming
+      ends: refused, timed out, or abandoned when the race above is lost
+      (review of #780). Otherwise a hung `ps` would outlive it, and the loop,
+      blocked on that `ps`, would never reach the write that ends it. An
+      armed loop is never killed, and a dropped `Watchdog` keeps guarding.
+      `a_failed_handshake_takes_its_hung_ps_with_it`,
+      `a_stop_during_the_watchdogs_handshake_ends_the_program`,
+      `a_handshake_past_the_wall_clock_refuses_the_program` and
+      `a_dropped_watchdog_keeps_guarding` measure those, with a `ps` that
+      hangs.
     - The launcher is the bare `exec` on both platforms again. The loop runs
       outside the profile, as mecha does, as fixed text that takes no input
       from a program.

@@ -122,7 +122,10 @@ impl Watchdog {
         // or the wall clock won the race in `Monty::start`. A `ps` hung long
         // enough to cause any of those would otherwise outlive the loop that
         // forked it, and the loop, blocked on it, would never reach the write
-        // that ends it (review of #780).
+        // that ends it (review of #780). Declared after `child`, so it drops
+        // first on every path: the group is signalled while its leader is
+        // still this process's unreaped child, and so cannot be anyone
+        // else's group by then.
         let mut pending = Unarmed(child.id());
         let stdout = child
             .stdout
@@ -141,7 +144,7 @@ impl Watchdog {
         drop(pending);
         let _ = child.wait().await;
         let why = match said {
-            Err(_) => format!("no answer within {} ms", within.as_millis()),
+            Err(_) => format!("no answer within {within:.1?}"),
             Ok(Err(e)) => e.to_string(),
             Ok(Ok(_)) if line.trim().is_empty() => "it ended without a word".into(),
             Ok(Ok(_)) => line.trim().to_string(),
