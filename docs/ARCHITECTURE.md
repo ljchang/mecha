@@ -3487,8 +3487,9 @@ The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
   drop never runs after a `SIGKILL`. So the launcher starts
   `monty::WATCHDOG` before it `exec`s the chain. It is a double-forked
   `kill -0` loop, outside the worker's tree and holding none of its pipes.
-  It kills the worker once mecha is gone, and only if that pid still has
-  the worker's start time, so it never kills a reused pid. An unreadable
+  Both pids are recorded with their start times, so a reused pid cannot
+  pass for a live mecha, and the loop never kills a pid the kernel has
+  since reused. An unreadable
   start time fails the launch (CODE-MODE-DESIGN.md §7, R10).
 - **The worker is identified by its sha256** (`worker.rs`), checked every
   time a pool starts; a path or a version string never stands in for it.

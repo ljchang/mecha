@@ -684,14 +684,19 @@ attacker selects from their own text can be an address; that is a
     - So the launcher starts a loop before it `exec`s (`monty::WATCHDOG`).
       Once a second the loop checks, with the `kill -0` builtin, that the
       worker and mecha are still alive, and it ends when the worker does.
-    - When mecha is gone first, it kills the worker, but only if that pid
-      still has the worker's start time. `exec` keeps a process's start
-      time, so a pid the kernel has since reused is never killed.
+    - Both pids are recorded with their start times, and `exec` keeps a
+      process's start time. Mecha counts as gone when its pid no longer has
+      mecha's start time, so a reused pid cannot pass for a live mecha. The
+      loop then kills the worker, but only if that pid still has the
+      worker's start time, so it never kills a pid the kernel has since
+      reused.
     - An unreadable start time fails the launch, so preflight refuses
       rather than running unguarded.
-    - The loop forks twice to leave the worker's process tree. It holds
+    - The loop forks twice to leave the worker's process tree, and holds
       none of its pipes. It runs outside the profile, as fixed text that
       takes no input from a program.
+    - Each poll forks `sleep` and one `ps`. The worker's start forks one
+      `ps` per pid ahead of its `exec`, and §10's cold start predates that.
     - The worker outlives mecha by at most about a second:
       `the_watchdog_ends_a_worker_whose_mecha_was_killed` measured about
       0.6 s, and that test fails without the watchdog.
