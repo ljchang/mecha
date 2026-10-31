@@ -785,6 +785,7 @@ impl Tool for Shell {
         }
         Ok(ToolOutput {
             deferred: None,
+            program: None,
             content: body,
             is_error: code != 0,
             external: false,
@@ -979,6 +980,7 @@ pub(crate) async fn fetch_vetted(url: &str, ctx: &ToolCtx) -> Result<Fetched> {
     // just as well in an error page.
     Ok(Fetched::Done(ToolOutput {
         deferred: None,
+        program: None,
         content: truncate(format!("HTTP {status}\n\n{body}"), "body"),
         is_error: !status.is_success(),
         external: true,

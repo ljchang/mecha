@@ -386,6 +386,10 @@ jobs:
           cargo test -p mecha-core --locked --features monty --test code_interpreter -- --nocapture
           cargo test -p mecha-core --locked --features monty --lib interpreter
           cargo test -p mecha-core --locked --features monty --lib tool::code
+          # Registration in a build that has the interpreter: the feature's
+          # row, its worker's sidecar, and a start that refuses without it.
+          cargo test -p mecha-core --locked --features monty --lib -- feature::tests::code_mode sidecar::tests::code_modes
+          cargo test -p mecha-cli --locked --features monty --bin mecha -- setup::tests::code_mode setup::tests::a_profile_naming_code
 
   # macOS's Seatbelt confinement of the PDF parser, measured on a real Mac:
   # the profile denies a read beside the scratch, a write outside it and the
@@ -453,6 +457,10 @@ jobs:
           cargo test -p mecha-core --locked --features monty --test code_interpreter -- --nocapture
           cargo test -p mecha-core --locked --features monty --lib interpreter
           cargo test -p mecha-core --locked --features monty --lib tool::code
+          # Registration in a build that has the interpreter: the feature's
+          # row, its worker's sidecar, and a start that refuses without it.
+          cargo test -p mecha-core --locked --features monty --lib -- feature::tests::code_mode sidecar::tests::code_modes
+          cargo test -p mecha-cli --locked --features monty --bin mecha -- setup::tests::code_mode setup::tests::a_profile_naming_code
           cargo test -p mecha-core --locked --features monty --lib sandbox::seatbelt
 
   # `mecha tools` runs with no provider configured, which makes it the cheapest

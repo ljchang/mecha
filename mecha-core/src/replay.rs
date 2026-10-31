@@ -512,6 +512,7 @@ mod tests {
             unknown: false,
             staged: false,
             in_program: false,
+            program: None,
         }
     }
 

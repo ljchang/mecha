@@ -46,6 +46,101 @@ mod watchdog;
 mod test_process;
 pub mod worker;
 
+/// Whether this binary has an interpreter at all: the cargo feature `monty`,
+/// off by default while `monty-pool` needs a newer Rust than the workspace
+/// promises. A build without it still knows code mode, and says by name
+/// that it cannot run it (`feature::unbuilt`).
+pub const BUILT: bool = cfg!(feature = "monty");
+
+/// Workers one run's interpreter may hold at once: two `code` calls in one
+/// message, and a long-lived surface's concurrent chats, each hold one per
+/// program (one program per worker); a fifth program waits for a free one,
+/// as a Stop can end that wait.
+pub const RUN_WORKERS: usize = 4;
+
+/// The interpreter a run's `code` serves its programs with: the pinned
+/// worker installed under `mecha_home`, confined by the platform
+/// ([`monty::Confinement::for_sandbox`] over `sandbox`), and proven by
+/// [`Interpreter::preflight`] before it is handed out. **An `Err` is for the
+/// caller to stop the start with**: code mode switched on with a worker or a
+/// sandbox that cannot start must never become a run without `code`.
+///
+/// One per built agent, shared by every run it serves (`Agent::enable_code`):
+/// a worker is never reused across programs, so a pool per process would
+/// share nothing but its launcher, and an agent rebuilt for a config change
+/// takes the new `[sandbox]` with it. The host bytes every program holds are
+/// still one process-wide pool (`code::BytePool::process`, §5).
+///
+/// On a Mac, `[sandbox] memory_mb` and `cpus` never reach the worker: a
+/// Seatbelt profile has no cgroup to carry them, and monty's own allocator
+/// ceiling is the only memory bound there (`ARCHITECTURE.md` §Code mode's
+/// interpreter). That is warned once per process, here, rather than
+/// refused: `[sandbox]` is `shell`'s table, where the limits do hold, and
+/// refusing code mode for a setting it never claimed would be the wrong
+/// table's answer (review of #769).
+pub async fn for_runs(
+    sandbox: &crate::sandbox::SandboxConfig,
+    mecha_home: &std::path::Path,
+) -> Result<std::sync::Arc<dyn Interpreter>> {
+    if let Some(gap) = limits_not_applied(sandbox, cfg!(target_os = "macos")) {
+        static SAID: std::sync::Once = std::sync::Once::new();
+        SAID.call_once(|| tracing::warn!("{gap}"));
+    }
+    start(sandbox, mecha_home).await
+}
+
+/// The Mac gap [`for_runs`] warns about, as a sentence, or `None` where
+/// there is none: `[sandbox] memory_mb` or `cpus` set on a platform whose
+/// worker confinement cannot apply them.
+pub fn limits_not_applied(sandbox: &crate::sandbox::SandboxConfig, macos: bool) -> Option<String> {
+    let mut set = Vec::new();
+    if let Some(mb) = sandbox.memory_mb {
+        set.push(format!("memory_mb = {mb}"));
+    }
+    if let Some(cpus) = sandbox.cpus {
+        set.push(format!("cpus = {cpus}"));
+    }
+    (macos && !set.is_empty()).then(|| {
+        format!(
+            "code mode: [sandbox] {} does not reach the interpreter's worker on a Mac: \
+             Seatbelt has no cgroup to apply it, so monty's own memory ceiling is the only \
+             bound on a program there, and no CPU quota applies (`shell` still gets the \
+             limits under its own sandbox)",
+            set.join(", ")
+        )
+    })
+}
+
+#[cfg(feature = "monty")]
+async fn start(
+    sandbox: &crate::sandbox::SandboxConfig,
+    mecha_home: &std::path::Path,
+) -> Result<std::sync::Arc<dyn Interpreter>> {
+    use anyhow::Context as _;
+    let confinement =
+        monty::Confinement::for_sandbox(&crate::sandbox::Sandbox::new(sandbox.clone()))
+            .context("code mode's interpreter has no sandbox to run in")?;
+    let worker = worker::installed(mecha_home)
+        .context("code mode's worker — `mecha features enable code` installs it")?;
+    let interpreter =
+        monty::Monty::new(&worker, &confinement, Backstops::default(), RUN_WORKERS).await?;
+    interpreter
+        .preflight()
+        .await
+        .context("code mode's interpreter failed its preflight")?;
+    Ok(std::sync::Arc::new(interpreter))
+}
+
+#[cfg(not(feature = "monty"))]
+async fn start(
+    _sandbox: &crate::sandbox::SandboxConfig,
+    _mecha_home: &std::path::Path,
+) -> Result<std::sync::Arc<dyn Interpreter>> {
+    anyhow::bail!(
+        "this mecha was built without code mode's interpreter (the cargo feature `monty`)"
+    )
+}
+
 /// A value crossing between the program and the host. JSON's shapes,
 /// because tool arguments and results already are; a program value with no
 /// JSON form (a set, a bytes, a class instance) does not cross as an

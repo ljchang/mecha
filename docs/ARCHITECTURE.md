@@ -3479,7 +3479,7 @@ sandbox, and `mecha tools --json` prints each tool's capabilities.
 ## Code mode's interpreter
 
 `mecha-core/src/interpreter/` runs a model's program for code mode
-(`CODE-MODE-DESIGN.md`; slice 3a, the backend only, with no `code` tool yet).
+(`CODE-MODE-DESIGN.md`; slice 3a, the backend; the `code` tool below).
 The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
 (cargo feature `monty`, off by default) is the one backend. The invariants:
 
@@ -3575,8 +3575,8 @@ The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
   run a second conversation's program inside the process that held the
   first one's; a fresh worker costs about 4 ms (M1).
 
-**The `code` tool** (`tool/code.rs`, slices 3b and 3c; built and tested,
-registered nowhere until slice 3d):
+**The `code` tool** (`tool/code.rs`, slices 3b and 3c; registered by slice
+3d, below):
 
 - **Admission is the run's, checked at every program's start.**
   `Admission::over` takes a registry's plain reads (effect `Read` or
@@ -3640,6 +3640,75 @@ registered nowhere until slice 3d):
   provider that is not local refuses a `local_only` request with
   `provider::LocalOnlyRefused` (`refuse_unless_local`, called before
   sending), and `Failover` skips a fallback that is not local for it.
+
+**Registration** (slice 3d):
+
+- **A feature, a lever, and a build.** `Feature::Code` (`[features] code`)
+  is off by default and `gated`. Its row asks what registration asks:
+  `[tools]`, a worker pinned for the platform, bwrap configured on Linux
+  (`[sandbox] kind = "bwrap"`; a Mac's Seatbelt is the platform's), and the
+  worker installed (`Facts::code_worker_installed`, its pinned size; the
+  hash is the pool's to check). `Lever::CodeTool` (`--no-code-tool`, or the
+  switch off) is in `Lever::bare`, so `mecha eval` throws it, and it cannot
+  be forced on in an experiment: a trial's home has no worker, and the
+  switch is not an environment's (`switchable_from_environment`). The
+  worker is the `monty` sidecar (`sidecar::ONLY_MECHAS`: never provided,
+  since only the pinned bytes may run), installed by `features enable code`
+  through `worker::ensure`.
+- **A build without the cargo feature `monty` knows code mode and says it
+  cannot run it** (`feature::unbuilt`, `interpreter::BUILT`): the row reads
+  off (unready with the switch on) naming the cargo feature, `enable code`
+  refuses naming it, `mecha setup` asks nothing about it, and no `code` is
+  registered. **That build does not refuse to start** with the switch on:
+  one `config.toml` is read by every build on the machine, and a switch a
+  newer build wrote must not take an older one down, the reason
+  `[features]` ignores unknown keys. A run that named `--tool code` says so.
+- **In a build that has it, a worker or sandbox that cannot start stops the
+  start** (`setup::code_interpreter`). With the switch on and nothing
+  withholding `code`, `interpreter::for_runs` builds the interpreter over
+  `[sandbox]` and the installed worker and runs its `preflight`, and an
+  `Err` fails the start, never a run without `code`. With the switch off
+  nothing is probed. Only the agent-building paths ask: `prepare_tools`
+  alone, which `mecha mail` and `mecha tasks` build from, starts no worker.
+  `mecha tools` asks too, so it doubles as the worker's smoke test.
+- **One interpreter per built agent.** Every run that agent serves shares
+  it (`interpreter::RUN_WORKERS` workers at once), a worker is never reused
+  across programs, and an agent rebuilt for a config change takes the new
+  `[sandbox]` with it. The host bytes all programs hold stay one
+  process-wide pool (`code::BytePool::process`).
+- **`code` is built last, by the agent, whoever registers after it.**
+  `setup::build` inserts it after `prepare_tools` and the subagents, so the
+  learned rules, the capability block, a `--tool-profile` and the run
+  record see it, and `Agent::enable_code` keeps it. `Agent::registry_mut`
+  returns a guard that builds `code` again over the registry when it drops,
+  and `set_outbox` does too, so `recall`, `ask_user` and the TUI's tools,
+  inserted after `prepare` from half a dozen front ends, are admitted and
+  declared without any of them remembering to. A front end that took `code`
+  off (`withhold_tool`) keeps it off. A `--tool-profile` judges `code` alone
+  (`ToolProfile::keeps`, never a second narrowing of the whole registry,
+  which would judge the subagents for the first time), and judges it again
+  after every rebuild (`Agent::narrow_code_by`), so a later read cannot widen
+  it past what the profile kept.
+- **A subagent profile naming `code` fails at launch**, naming the feature
+  when it is off or not in the build (`setup::subagent_code_refusal`),
+  never with the typo message, since `code` is no tool of the pool a child
+  is built from. With the feature on it fails too, until a child's own
+  `code` is built over the child's registry (§6, the next slice).
+- **A program's numbers ride its output** (`code::ProgramStats` on
+  `ToolOutput::program`, copied to `ToolCallTrace::program`): counts and
+  flags only, never a byte. `RunStats` counts §7's six from the trace
+  (`programs`, `program_errors`, `subcalls`, `subcall_tokens`,
+  `peeked_bytes`, `budget_stops`), each an `Option` so a row from before
+  them reads unknown. A budget stop is a backstop, or a host `LimitError:`
+  nothing caught; a program that raises the tag's text itself failed on its
+  own. **The passes' `Usage` joins the run's** after each batch
+  (`agent::program_usage`), so their tokens are in `RunStats::usage` and draw
+  on the run's `Budget` at the next ceiling check. A program in flight is
+  bounded by its own §5 caps, not cut short by the run's.
+- **On a Mac `[sandbox] memory_mb` and `cpus` are warned about, once per
+  process, when the interpreter is built** (`interpreter::limits_not_applied`),
+  not refused: they are `shell`'s limits, which hold there, and code mode
+  never claimed them.
 
 ## The front door
 
@@ -11266,6 +11335,9 @@ exhaustive `match`, so the build asks; the ones that are not say so.
    unit, a binary on `PATH`, a directory, a Docker image — checks that open
    no socket, so an idle-stopped server reads provided, never missing), the
    step whose installer brings it, and whether its models live in the hub.
+   A sidecar only mecha can supply (a pinned binary identified by its
+   hash, as code mode's worker is) has no evidence and is named in
+   `sidecar::ONLY_MECHAS`, which the registry's test holds it to.
    `mecha features plan <id>` is the read-only answer to what enabling it
    would install. Its installer, when it has one, goes in `install.rs`: the
    manifest entry before the first byte (`Manifest::begin`), every path

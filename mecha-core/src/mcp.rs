@@ -635,6 +635,7 @@ impl McpClient {
             .unwrap_or(false);
         ToolOutput {
             deferred: None,
+            program: None,
             content: if text.is_empty() {
                 "(no content)".into()
             } else {

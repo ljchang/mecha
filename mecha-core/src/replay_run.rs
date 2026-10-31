@@ -506,6 +506,7 @@ impl Tool for ReplayTool {
         match self.decide(&input) {
             Action::Recorded(content, is_error, external) => Ok(ToolOutput {
                 deferred: None,
+                program: None,
                 content,
                 is_error,
                 external: external.unwrap_or(true),
@@ -3429,6 +3430,7 @@ mod decision_turn_tests {
             unknown: false,
             staged: false,
             in_program: false,
+            program: None,
         }
     }
 

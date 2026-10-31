@@ -339,7 +339,9 @@ async fn answer_and_resume(
     // Kept, not discarded: the same handle that takes the tool off the
     // model's surface is what the harness moves the board with (D5/D6).
     let update = match q.task_id.as_deref() {
-        Some(_) => withhold_tool(prepared.agent.registry_mut(), "kg_task_update").map(|(_, t)| t),
+        Some(_) => {
+            withhold_tool(&mut prepared.agent.registry_mut(), "kg_task_update").map(|(_, t)| t)
+        }
         None => None,
     };
     let questions = std::sync::Arc::new(store);
