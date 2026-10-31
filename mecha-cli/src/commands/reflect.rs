@@ -363,10 +363,14 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     // nothing it reads reaches a model or a rule.
                     if mecha_core::attribution::in_scope(&r.domain, &r.trigger) {
                         let ever = ever_before(&text, &convo.messages, intervention.at);
+                        // What its programs read, from the whole file: the
+                        // walk yields only those under a call before the
+                        // correction.
+                        let programs = mecha_core::tool::code::record::ever(&text, &meta.id);
                         r.attribution = Some(mecha_core::attribution::decide(
                             &answer,
                             &intervention.text,
-                            &given_in(ever.as_deref()),
+                            &given_in(ever.as_deref(), &programs),
                         ));
                     }
                     r.goals = goals_for(&t, intervention);
@@ -504,12 +508,11 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                         item.rejection_reason(),
                         mecha_core::attribution::in_scope(&r.domain, &r.trigger),
                     ) {
-                        let messages =
-                            mecha_core::outbox_source::messages_for_item(item, &sessions_dir);
+                        let drafting = mecha_core::outbox_source::drafting(item, &sessions_dir);
                         r.attribution = Some(mecha_core::attribution::decide(
                             &answer,
                             reason,
-                            &given_at_staging(item, &messages),
+                            &given_at_staging(item, &drafting.messages, &drafting.programs),
                         ));
                     }
                     // The drafting session, when the front-end knew it — the
@@ -1024,9 +1027,12 @@ fn ever_before(
         .and_then(|m| Session::messages_ever_before(text, m))
 }
 
-fn given_in(ever: Option<&[mecha_core::message::Message]>) -> mecha_core::attribution::Given<'_> {
+fn given_in<'a>(
+    ever: Option<&'a [mecha_core::message::Message]>,
+    programs: &'a [mecha_core::tool::code::record::ProgramCall],
+) -> mecha_core::attribution::Given<'a> {
     match ever {
-        Some(ever) => mecha_core::attribution::Given::before(ever, ever.len()),
+        Some(ever) => mecha_core::attribution::Given::before(ever, programs, ever.len()),
         None => mecha_core::attribution::Given::unreadable(),
     }
 }
@@ -1039,10 +1045,11 @@ fn given_in(ever: Option<&[mecha_core::message::Message]>) -> mecha_core::attrib
 fn given_at_staging<'a>(
     item: &mecha_core::outbox::OutboxItem,
     messages: &'a [mecha_core::message::Message],
+    programs: &'a [mecha_core::tool::code::record::ProgramCall],
 ) -> mecha_core::attribution::Given<'a> {
     match mecha_core::outbox_source::staged_in(item, messages) {
         Some(at) => {
-            let mut given = mecha_core::attribution::Given::before(messages, at);
+            let mut given = mecha_core::attribution::Given::before(messages, programs, at);
             given.said.push(item.args_before.to_string());
             given
         }
@@ -1331,19 +1338,23 @@ mod tests {
         });
 
         let read_wrong = transcript("Dana Whitfield — employer: Northwind Labs.");
-        let a = decide(&answer, &reason, &given_at_staging(&item, &read_wrong));
+        let a = decide(&answer, &reason, &given_at_staging(&item, &read_wrong, &[]));
         assert_eq!((a.class, a.basis), (Class::Data, Basis::WrongGiven));
         assert_eq!(a.source.unwrap().call, "t1");
 
         let read_nothing = transcript("Dana Whitfield — no employer on record.");
-        let a = decide(&answer, &reason, &given_at_staging(&item, &read_nothing));
+        let a = decide(
+            &answer,
+            &reason,
+            &given_at_staging(&item, &read_nothing, &[]),
+        );
         assert_eq!(
             (a.class, a.basis),
             (Class::Gap, Basis::NeitherGiven),
             "the wrong value is grounded in the draft; the staging result is not given"
         );
 
-        let a = decide(&answer, &reason, &given_at_staging(&item, &[]));
+        let a = decide(&answer, &reason, &given_at_staging(&item, &[], &[]));
         assert_eq!((a.class, a.basis), (Class::Unknown, Basis::NoRecord));
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -2213,7 +2224,7 @@ mod tests {
         let a = decide(
             &answer,
             correction,
-            &given_in(ever_before(&text, &t.convo.messages, at).as_deref()),
+            &given_in(ever_before(&text, &t.convo.messages, at).as_deref(), &[]),
         );
         assert_eq!((a.class, a.basis), (Class::Data, Basis::WrongGiven));
         assert_eq!(a.source.unwrap().call, "t1");
@@ -2230,7 +2241,7 @@ mod tests {
         let a = decide(
             &answer,
             correction,
-            &given_in(ever_before(&text, &t.convo.messages, at).as_deref()),
+            &given_in(ever_before(&text, &t.convo.messages, at).as_deref(), &[]),
         );
         assert_eq!((a.class, a.basis), (Class::Data, Basis::WrongGiven));
 
@@ -2247,7 +2258,7 @@ mod tests {
         let a = decide(
             &answer,
             correction,
-            &given_in(ever_before(&text, &t.convo.messages, at).as_deref()),
+            &given_in(ever_before(&text, &t.convo.messages, at).as_deref(), &[]),
         );
         assert_eq!((a.class, a.basis), (Class::Unknown, Basis::NoRecord));
         let _ = std::fs::remove_dir_all(&root);

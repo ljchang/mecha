@@ -3689,11 +3689,60 @@ The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
   which would judge the subagents for the first time), and judges it again
   after every rebuild (`Agent::narrow_code_by`), so a later read cannot widen
   it past what the profile kept.
-- **A subagent profile naming `code` fails at launch**, naming the feature
-  when it is off or not in the build (`setup::subagent_code_refusal`),
-  never with the typo message, since `code` is no tool of the pool a child
-  is built from. With the feature on it fails too, until a child's own
-  `code` is built over the child's registry (§6, the next slice).
+- **A subagent profile naming `code` gets a `code` of its own** (slice 3e,
+  §6): `setup::build_subagent` leaves `code` out of the allowlist loop and
+  the child agent builds it last (`Agent::enable_code`), over the child's
+  registry and outbox route, never the parent's `Arc` cloned in. So the
+  `analyst` profile reaches only its own reads, and `Subagent::new` derives
+  the parent-facing legs from them. With the feature off or not in the
+  build the profile fails at launch naming the feature
+  (`setup::subagent_code_refusal`), never with the typo message. With it on
+  and the run withholding `code` (`--no-code-tool`, which `mecha eval`
+  throws, a `--tool` list, `[tools]`) the subagent is skipped loudly, as one
+  `--tool` excludes; a `--tool-profile` judges the child's `code` alone, as
+  it judges the parent's.
+- **A subagent is never a program function.** It declares no effect class,
+  so it resolves `Undeclared` and is not admitted: depth above one is not in
+  this slice (§12), and an `analyst` child is a call the model makes.
+- **What a program read is recorded** (slice 3e, §7; `tool/code_record.rs`).
+  Each host call that ran becomes a `record::ProgramCall` (tool, input,
+  `external`, `is_error`, and the bytes in hand) on `ToolOutput::reads`; the
+  dispatch moves them onto `Conversation::program_calls`, beside the
+  messages as taint is, so a compaction carries them, and `Session::record_run`
+  writes the run's (`program_calls_from` on) as one `Record::Program`, after
+  the messages. That record holds each blob's sha256 and length and never a
+  byte: the bytes go once, content-addressed, to
+  `~/.mecha/programs/<session-id>/` (`record::Store`), mode 0600 in 0700.
+  Nothing that rebuilds a conversation reads it, and a build from before it
+  skips the line. A missing or altered blob loads as `Bytes::Missing` or
+  `Bytes::Mismatched`, never as an empty result.
+- **No jail reaches the store.** It is not the spill directory, which the
+  jail admits; `work::ensure_outside_mecha_home` refuses a workspace at or
+  under it (lexically when the path does not exist yet), and no grant names
+  the mecha home. `forget` removes the session's directory whole.
+- **The grounding walk's second source.** `grounding::calls(messages,
+  programs)` yields each program call right after the `tool_use` it ran
+  under (`Call::within`), and only under one the list holds, so a live list
+  after compaction grounds nothing of a cut program, as it grounds no cut
+  result. Its readers pass the programs: gossip's evidence, the outbox's
+  join, the attribution pack, appraisal's packet, persona citations (each
+  from `Conversation::program_calls`, or `record::ever` for a session file);
+  the diagnostician's carry-over check takes their bytes as sources too.
+- **The walk stops at a `trusted_output` child's shape.** A child writes no
+  session, so `Subagent::call` carries its child's calls up, each under the
+  subagent call (`record::Under`, stamped by the parent's dispatch) and
+  marked `trusted` for a `trusted_output` profile (unknown reads trusted).
+  `grounding::calls` yields those to no reader; for them the subagent's
+  result is the shaped answer. `grounding::calls_for_the_owner` opens them,
+  for the outbox's owner-facing join alone (R9), and
+  `outbox_source::tests::no_model_pass_reads_the_owners_join` lists its
+  readers — `outbox show` and `edit`, the TUI pane, the web review pane — and
+  fails when a new one appears.
+- **Owed:** the store's retention (reaped with its run's work directory and
+  under an owner-set size ceiling) and `doctor`'s report of its size and
+  orphans, and `replay_run` answering a replayed program's host calls from
+  the record (§7). Until then a store only grows, and a replay of a session
+  that ran a program diverges at its first host call.
 - **A program's numbers ride its output** (`code::ProgramStats` on
   `ToolOutput::program`, copied to `ToolCallTrace::program`): counts and
   flags only, never a byte. `RunStats` counts §7's six from the trace
@@ -3701,7 +3750,9 @@ The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
   `peeked_bytes`, `budget_stops`), each an `Option` so a row from before
   them reads unknown. A budget stop is a backstop, or a host `LimitError:`
   nothing caught; a program that raises the tag's text itself failed on its
-  own. **The passes' `Usage` joins the run's** after each batch
+  own, and one refused at its start counts as a failed program.
+  `subcall_tokens` and `peeked_bytes` saturate at `u32::MAX` in the row,
+  where `ProgramStats` counts in `u64`. **The passes' `Usage` joins the run's** after each batch
   (`agent::program_usage`), so their tokens are in `RunStats::usage` and draw
   on the run's `Budget` at the next ceiling check. A program in flight is
   bounded by its own §5 caps, not cut short by the run's.
@@ -7647,6 +7698,13 @@ deciding a class.
 
 The decisions that carry it, each a bug if undone:
 
+- **A program's reads are a second source** (`CODE-MODE-DESIGN.md` §7):
+  `calls` takes `Conversation::program_calls` (or `tool::code::record::ever`
+  for a file) beside the messages, and yields each host call under the
+  `tool_use` that ran it, only where the list holds that call. A
+  `trusted_output` child's calls are yielded to no reader; only
+  `calls_for_the_owner`, the outbox's owner-facing join, opens them (R9).
+  §Code mode's interpreter has the rest.
 - **First seen wins, and a stale marker never occupies the slot.**
   `evict_superseded_results` rewrites a result in place under its own
   `tool_use_id`, so one id names two contents. `messages_ever` carries both

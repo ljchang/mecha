@@ -505,6 +505,7 @@ impl Tool for ReplayTool {
         // std mutex must not be held across an await point.
         match self.decide(&input) {
             Action::Recorded(content, is_error, external) => Ok(ToolOutput {
+                reads: Vec::new(),
                 deferred: None,
                 program: None,
                 content,

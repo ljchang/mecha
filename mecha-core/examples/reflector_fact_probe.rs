@@ -170,7 +170,7 @@ async fn main() -> Result<()> {
                 if answer == Answer::NoFact {
                     no_fact += 1;
                 }
-                let a = decide(&answer, c.owner, &Given::before(&messages, 4));
+                let a = decide(&answer, c.owner, &Given::before(&messages, &[], 4));
                 if a.class == c.expect {
                     placed += 1;
                 }

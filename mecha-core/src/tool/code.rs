@@ -62,8 +62,11 @@
 //! into the run's trace, where `RunStats` counts them and the run's usage —
 //! and so its budget — takes its passes' tokens.
 //!
-//! Not in this slice: the `program` record, its blobs and the grounding
-//! walk's second source.
+//! **What a program read is recorded** (slice 3e, §7): each host call that
+//! ran rides the `code` call's output as a [`record::ProgramCall`]
+//! ([`ToolOutput::reads`]), which the loop carries on the conversation and
+//! the session stores, its bytes content-addressed outside every jail, so
+//! the grounding walk's readers find what a program read.
 
 use super::effect::{self, Effect, EffectClass};
 use super::{Capabilities, Egress, Registry, Tool, ToolCtx, ToolOutput};
@@ -82,6 +85,9 @@ use tokio::sync::{mpsc, oneshot};
 
 #[path = "code_shape.rs"]
 pub mod shape;
+
+#[path = "code_record.rs"]
+pub mod record;
 
 /// The tool's registered name.
 pub const NAME: &str = "code";
@@ -477,8 +483,9 @@ pub(crate) enum HostAnswer {
     /// refusal in the program too.
     Staged(String),
     /// Ran: the raw output, uncapped and unwrapped, with the conversation's
-    /// taint already armed from it.
-    Ran(ToolOutput),
+    /// taint already armed from it, and the id the dispatch gave the call,
+    /// which the program record names it by.
+    Ran { id: String, output: ToolOutput },
 }
 
 impl HostCalls {
@@ -602,7 +609,14 @@ impl CodeTool {
     async fn run(&self, program: &str, host: &HostCalls, ctx: &ToolCtx) -> ToolOutput {
         let reach = match host.reach(&self.admission).await {
             Ok(r) => r,
-            Err(why) => return ToolOutput::refusal(why),
+            // A program refused at its start is still a program, and a
+            // failed one: without its numbers it counted in neither
+            // `programs` nor `program_errors` (review of #774).
+            Err(why) => {
+                let mut out = ToolOutput::refusal(why);
+                out.program = Some(Box::new(ProgramStats::default()));
+                return out;
+            }
         };
         let mut externals: Vec<String> = HOST_FUNCTIONS.iter().map(|s| s.to_string()).collect();
         externals.extend(reach.iter().cloned());
@@ -647,6 +661,7 @@ impl CodeTool {
                         ToolOutput::err(format!("the interpreter failed mid-program: {e:#}"));
                     out.external = state.external;
                     out.program = Some(Box::new(state.stats(None)));
+                    out.reads = std::mem::take(&mut state.recorded);
                     return out;
                 }
             };
@@ -658,6 +673,7 @@ impl CodeTool {
             is_error,
             external: state.external,
             program: Some(Box::new(stats)),
+            reads: std::mem::take(&mut state.recorded),
             ..ToolOutput::ok("")
         }
     }
@@ -772,7 +788,9 @@ fn raise(tag: Tag, message: impl AsRef<str>) -> HostRaise {
 /// One buffer of bytes a handle points into: a tool's raw result, or a
 /// string a `json_get` decoded.
 struct Buffer {
-    text: Box<str>,
+    /// Shared with the program record (§7), which keeps a read's bytes past
+    /// the program's end without a copy.
+    text: Arc<str>,
     ascii: bool,
     tool: String,
     /// The read it came from returned external content: the label a
@@ -903,6 +921,8 @@ struct Run {
     /// alone refusing an unregistered name (review of #768). `ask_user` and
     /// `message_send` would clear the gate if one reached it.
     reach: std::collections::BTreeSet<String>,
+    /// Every host call that ran, in issue order: the program record (§7).
+    recorded: Vec<record::ProgramCall>,
 }
 
 impl Drop for Run {
@@ -987,6 +1007,7 @@ impl Run {
             limit_raised: false,
             external: false,
             reach: Default::default(),
+            recorded: Vec::new(),
         }
     }
 
@@ -1076,6 +1097,12 @@ impl Run {
     }
 
     fn buffer(&mut self, text: String, tool: &str, external: bool) -> Result<Handle, HostRaise> {
+        self.shared(Arc::from(text), tool, external)
+    }
+
+    /// [`Run::buffer`] over bytes another holder keeps too: the program
+    /// record, for a read's result.
+    fn shared(&mut self, text: Arc<str>, tool: &str, external: bool) -> Result<Handle, HostRaise> {
         self.charge(text.len())?;
         let ascii = text.is_ascii();
         let chars = if ascii {
@@ -1086,7 +1113,7 @@ impl Run {
         let end = text.len();
         Ok(Handle {
             buf: Arc::new(Buffer {
-                text: text.into_boxed_str(),
+                text,
                 ascii,
                 tool: tool.to_string(),
                 external,
@@ -1160,7 +1187,7 @@ impl Run {
         // wait ends, the raise lands, and the interpreter, seeing the token,
         // ends the program `Cancelled` at that suspension.
         let answer = tokio::select! {
-            a = host.call(name, input) => a,
+            a = host.call(name, input.clone()) => a,
             () = cancel.cancelled() => HostAnswer::Refused(
                 "stopped: the run was cancelled while this call ran".into(),
             ),
@@ -1178,11 +1205,24 @@ impl Run {
                      running it, and a program cannot stage. The gate said: {notice}"
                 ),
             )),
-            HostAnswer::Ran(out) => {
+            HostAnswer::Ran { id, output: out } => {
                 self.external |= out.external;
-                self.room_for(1, name)?;
                 let failed = out.is_error;
-                let h = self.buffer(out.content, name, out.external)?;
+                let bytes: Arc<str> = Arc::from(out.content);
+                // Recorded before any limit below can refuse the handle: the
+                // call ran and its result armed the run, so it is part of
+                // what the run received whether or not the program holds it.
+                self.recorded.push(record::ProgramCall::ran(
+                    id,
+                    host.call_id.clone(),
+                    name,
+                    input,
+                    out.external,
+                    failed,
+                    Arc::clone(&bytes),
+                ));
+                self.room_for(1, name)?;
+                let h = self.shared(bytes, name, out.external)?;
                 let s = self.mint(h);
                 if failed {
                     Err(raise(

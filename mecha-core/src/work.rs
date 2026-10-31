@@ -279,14 +279,34 @@ pub fn ensure(producer: &str) -> Result<PathBuf> {
 /// Note the direction. A workspace *inside* the mecha home is fine and is in
 /// fact the new default — `~/.mecha/work/morning/` holds nothing sensitive.
 /// What is refused is a workspace the mecha home sits *under*.
+///
+/// **And one at or under the program store** (`~/.mecha/programs/`,
+/// `CODE-MODE-DESIGN.md` §7): every byte a program read, stored whole and
+/// uncapped, would be inside that jail, for `fs_read` to hand back past
+/// `peek`'s cap and the sub-call budget. With this refusal every accepted
+/// workspace has the store outside it — a sibling of `work/` — and no grant
+/// may name a path under the mecha home (`grant.rs`), so none reopens it.
 pub fn ensure_outside_mecha_home(workspace: &Path) -> Result<()> {
     let home = mecha_home()?;
     // The home may not exist yet on a first run, and a path that cannot be
     // canonicalized is compared as written — over-refusing a workspace is
-    // recoverable, under-refusing one is the bug.
+    // recoverable, under-refusing one is the bug. Written, it is still taken
+    // lexically, so a `..` cannot walk it under the store unseen.
     let home = home.canonicalize().unwrap_or(home);
     let workspace_c = workspace.canonicalize();
-    let ws = workspace_c.as_deref().unwrap_or(workspace);
+    let lexical = lexically_normal(workspace);
+    let ws = workspace_c.as_deref().unwrap_or(&lexical);
+    let programs = crate::tool::code::record::root_under(&home);
+    if ws.starts_with(&programs) {
+        anyhow::bail!(
+            "workspace {} is inside the program store ({}), which holds every byte a \
+             program read, so the path jail would hand them to `fs_read` uncapped.\n\
+             Run from a project directory instead, or name one explicitly with \
+             `--workspace <dir>`.",
+            ws.display(),
+            programs.display()
+        );
+    }
     if home.starts_with(ws) {
         anyhow::bail!(
             "workspace {} contains the mecha home ({}), so the path jail would \
@@ -299,6 +319,23 @@ pub fn ensure_outside_mecha_home(workspace: &Path) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// `path` with its `.` and `..` components resolved as written, for a path
+/// that cannot be canonicalized because it does not exist yet.
+fn lexically_normal(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 /// One producer's directory, as [`list`] reports it.
@@ -867,6 +904,42 @@ pub(crate) mod tests {
         let _home = HomeGuard::new();
         let work = ensure("morning").unwrap();
         ensure_outside_mecha_home(&work).unwrap();
+    }
+
+    /// §8: "A workspace at `~/.mecha/programs/x` is refused at setup. A run in
+    /// the default `~/.mecha/work/<producer>/` cannot `fs_read` a blob by a
+    /// `../` path. Without the refusal, the first assertion fails, so the test
+    /// is not vacuous." And neither can the model or a program list one: the
+    /// store is no spill directory, so `fs_list` of the spill root after a
+    /// program stored a read shows nothing of it.
+    #[test]
+    fn no_jail_reaches_the_program_store() {
+        let home = HomeGuard::new();
+        let store = crate::tool::code::record::Store::default_root().unwrap();
+        let session = "20260101T000000-abcd1234";
+        let blob = store.put(session, "every byte a program read").unwrap();
+
+        let inside = home.dir.join("programs").join("x");
+        std::fs::create_dir_all(&inside).unwrap();
+        let err = ensure_outside_mecha_home(&inside).unwrap_err().to_string();
+        assert!(err.contains("program store"), "{err}");
+        // Not yet made, and walked there by `..`: refused as written.
+        let walked = home.dir.join("work").join("..").join("programs").join("y");
+        assert!(ensure_outside_mecha_home(&walked).is_err());
+
+        let work = ensure("morning").unwrap();
+        ensure_outside_mecha_home(&work).unwrap();
+        let ctx = crate::tool::ToolCtx {
+            workspace: work,
+            ..Default::default()
+        };
+        let path = format!("../../programs/{session}/{}", blob.sha256);
+        assert!(ctx.resolve(&path).is_err(), "the jail reached a blob");
+        let spill = crate::tool::session_spill_dir_under(&home.dir, &ctx.workspace);
+        assert!(
+            !spill.starts_with(store.root()) && !store.root().starts_with(&spill),
+            "the store shares the spill directory's reach"
+        );
     }
 
     #[test]

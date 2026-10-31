@@ -623,6 +623,10 @@ pub async fn run_diagnostician(global: &GlobalOpts, evidence: &Evidence) -> Resu
     // the conversation — the source it opened, the pages it fetched, the
     // searches it ran — and, through `lifted`, the appraisals its brief
     // carried (row 2f): one check over one list of sources.
+    // And what any program it ran read (`CODE-MODE-DESIGN.md` §7): a handle's
+    // bytes never enter a result, but a program can `peek` them into one, or
+    // lift them a pass at a time. A child's too, `trusted_output` or not:
+    // this check refuses, so more sources only ever catch more.
     let sources: Vec<String> = convo
         .messages
         .iter()
@@ -631,6 +635,12 @@ pub async fn run_diagnostician(global: &GlobalOpts, evidence: &Evidence) -> Resu
             Block::ToolResult { content, .. } => Some(content.clone()),
             _ => None,
         })
+        .chain(
+            convo
+                .program_calls
+                .iter()
+                .filter_map(|p| p.text().map(str::to_string)),
+        )
         .collect();
     let refs: Vec<&str> = sources.iter().map(String::as_str).collect();
     let quoted = lifted(&proposal, &refs, evidence);
