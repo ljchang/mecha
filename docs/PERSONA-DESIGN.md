@@ -1817,7 +1817,7 @@ not care, and says so.
 
 Every row is ruled; the ruling is the owner's, in §1 where it was said in words.
 
-`PERSONA-LIFE-DESIGN.md` (2026-10-31, rulings in progress) reaches these rulings
+`PERSONA-LIFE-DESIGN.md` (2026-10-31, all decisions ruled) reaches these rulings
 in a few places. Ruled there: its network store deviates from §4.3, built like
 memories with a rendered `network.md` (PL5); memory only leaves recall, as D26
 says, with the threshold off by default until D28's readout (PL7); D27's
@@ -1831,8 +1831,9 @@ for approval. PL10 was ruled *against* narrowing it: other owner
 turns after a taint rise stay candidates. Its `news_read` must follow D16 and D24 (withheld by `answers =
 "files"`), which needs an admission check on the per-persona tool path,
 since that path bypasses `registry_as`. The owner's network lives inside
-`memory.db` (PL13, ruled); still open there is D27's rebuild applied to it (PL24). Until those
-are ruled, these rows stand as written.
+`memory.db` (PL13), and D27's rebuild applies to it, with provenance stored
+on every record so `forget` reaches everything a chat contributed (PL24). Where it does not
+name a row, these rows stand as written.
 
 | # | Decision | Recommendation |
 |---|---|---|

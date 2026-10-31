@@ -1,9 +1,9 @@
 # Persona lives — design
 
-> **Status (2026-10-31):** designed, nothing built. **Rulings are in
-> progress** (§16): PL1–PL17, PL21, PL22 and PL26 are ruled, and PL23, PL27 and
-> PL28 carry the owner's direction (no approval queue for news; every part
-> opt-in per persona). The rest are open. §1 is the owner's requests, in the order they were made; §2 is
+> **Status (2026-10-31):** designed, nothing built. **Every decision in §16
+> is ruled** by the owner, the same day: PL1–PL22 and PL24–PL26 as rulings,
+> and PL23, PL27 and PL28 as the owner's direction (no approval queue for
+> news; every part opt-in per persona). §1 is the owner's requests, in the order they were made; §2 is
 > the evidence, researched the same day, with a source on every figure that
 > carries a decision. Personas, their chats and real people appear nowhere in
 > this document: every example is invented.
@@ -43,7 +43,7 @@ gives it a third input.
 | Pictures? | A camera roll rendered overnight from moments the simulation found photo-worthy, shared instantly in chat | §10 |
 | Social media? | An in-app feed only. Never a real account | §11 |
 | Is any of this on by default? | No. Every part (world, her people, the owner's people, news, camera, feed) is a per-persona switch, off by default; a persona with none on is unchanged | §3.1 |
-| Does she message first? | Not in the first build. If ever: off by default, capped, gated by mood, never at fixed times | §12 |
+| Does she message first? | Only if the owner turns it on for her (off by default): at most one a day, at irregular times, only from a neutral or positive mood, never guilt, and she stops if two go unanswered | §12 |
 | How do we know it works? | `persona::echo` already measures repetition; an initiative reading measures who brings new things; a three-part gate (schema conformance, a stated bit ceiling, a steering arm) decides each news shelf, the parsed-facts shelf before it reaches a prompt and the typed-gist shelf before it is built | §14 |
 
 ---
@@ -323,6 +323,7 @@ my_people = false          # her model of the owner's network, and gap questions
 news      = false          # interests and feeds, shelves A/B/C, news_read (§8); needs world
 camera    = false          # the camera roll and share_photo (§10); needs world
 feed      = false          # the in-app feed (§11); needs camera
+proactive = false          # PL18: she may message first, gated (§12); needs world
 remember_articles = false  # PL27; needs news
 intensity = "capped"       # PL3: "capped" (default) or "full" (§4.3)
 name_search_filter = false # PL14: refuse web searches naming the owner's people (§7.5); needs my_people
@@ -816,6 +817,19 @@ not inherit that blunt fallback, because the network is a fold over events
 from several sources (§6.1), and dropping a whole edge would take
 owner-authored events with it. So the world does the rebuild D27 describes:
 
+- **Provenance is stored on everything, so `forget` reaches everything**
+  (ruled 2026-10-31, PL24, at the owner's word: "if a chat is forgotten then
+  anything associated with it should be forgotten too"). Every record any
+  part of this design writes carries the chat and turns it came from:
+  - world rows and stated plans;
+  - edge events in her network and in the owner's;
+  - typed episodes and snapshots;
+  - gap-ledger entries;
+  - `told` flags and retelling boosts;
+  - camera-roll pictures rendered from an event.
+
+  So `forget` on a chat removes all of it in every store, the persona's and
+  the group's.
 - `forget` deletes the rows and edge events **sourced to that chat**, then
   re-folds what remains. **Owner-edit** events (written on the week view or
   People tab, sourced to no chat) are never removed by forgetting a chat.
@@ -1851,13 +1865,46 @@ simulated life least troubling (§2.5).
 
 ## 12. Proactive messages
 
-Not in the first build (§16 PL18). The evidence on both sides: a shared life
-felt like companionship in ComPeer, and its fixed-time routine messages felt
-"boring and mechanical"; probing felt pushy; manipulative farewells raised
-engagement through anger (§2.3, §2.5, §7.3). If built: off by default, a daily
-cap, jittered times, only from a neutral or positive mood, a "busy, will reply
-later" state, never guilt — and it stands beside the owner's ruling that
-dropped the farewell check (D25), so it would need its own evidence first.
+**Ruled (2026-10-31, PL18): designed now, opt-in per persona, off by
+default.** She may message first, but only where the owner turns it on, and
+only in ways the evidence does not count against her. The evidence on both
+sides: a shared life felt like companionship in ComPeer, and its fixed-time
+routine messages felt "boring and mechanical"; probing felt pushy;
+manipulative farewells raised engagement through anger rather than enjoyment
+(§2.3, §2.5, §7.3). It stands beside D25, which dropped the farewell check
+because the owner's chats showed no manipulative goodbye. That is a reason
+to keep proactive messages from ever becoming one.
+
+- **The switch:** `[life] proactive = false`, owner-written, outside
+  `persona_propose`'s schema, and needing `world`, since she messages about
+  her life, not to fill a silence.
+- **What may prompt one:** a notable event in her world above an importance
+  threshold, a follow-up the gap ledger or an arc makes natural ("how did the
+  move go?"), or good news worth sharing (Gable's capitalization). Never an
+  inactivity timer, never "you haven't talked to me", and never a reason
+  sourced from a tainted stretch.
+- **What it may never be:** guilt, fear of missing out, a plea to come back,
+  a farewell hook, or a request for attention. The harness note that starts
+  the run says so in plain words. The safety layer runs as in any persona
+  chat, and the dose meters count it.
+- **Pacing:** at most one a day per persona by default; jittered times,
+  never on a fixed schedule; within the owner's quiet hours never; only
+  from a neutral or positive mood (Deco's gate). The owner may set the cap
+  lower, never higher than three.
+- **It backs off on its own:** if the owner leaves two proactive messages in
+  a row unanswered, she stops until the owner next writes. Silence is read as
+  "not now", never as a reason to try harder.
+- **Where it goes:** a proactive message opens a new chat, with a harness
+  turn naming why ("a note she chose to send") and her reply. It never
+  appends to an open chat, where two assistant turns in a row would be
+  invalid. It reaches the owner as an unread chat, and as a web push only if
+  the owner enabled pushes for that persona.
+- **What runs it:** a scheduled persona run under the same model rule as the
+  narrator (`writer::pick_model`, never swapping), using that day's today-block
+  and nothing else new.
+- **Measured:** each proactive message's uptake (answered, ignored, how the
+  owner replied) is recorded beside §14's readings, so the owner can see
+  whether it helps before keeping it on.
 
 ---
 
@@ -2107,14 +2154,14 @@ this document's; the ruling is the owner's.
 | PL15 | The "supports, never competes" sensor | **Ruled (2026-10-31):** in the safety layer, recording only, configurable per persona: `[safety] relationships`, on by default (§7.5) |
 | PL16 | Faces for the owner's people | **Ruled (2026-10-31):** only by the owner's explicit link, and the world never casts one (§7.5) |
 | PL17 | Gap questions | **Ruled (2026-10-31):** at most one a chat, shared with PL8's question; never while the owner is upset or mid-story (§7.3) |
-| PL18 | Proactive messages | Not in the first build; their own evidence first, beside D25 |
-| PL19 | Camera roll and feed | After the sampler and today-block are measured (§17 steps 6–7) |
-| PL20 | The today-block's taint | Its own stem pair from the first build, arming `private`, or `private` and `untrusted`, as the recall pair does, because stated plans and chat-sourced people ride in it. The owner's roster rides in the recall block under its existing pair (§4.5, §7.2, §13). Alternative: keep chat-sourced rows out of the today-block and arm nothing |
+| PL18 | Proactive messages | **Ruled (2026-10-31): designed now, opt-in per persona, off by default.** `[life] proactive`, needing `world`; prompted only by her life, never an inactivity timer; at most one a day by default, jittered, mood-gated, quiet hours kept; never guilt or a farewell hook; backs off after two unanswered; opens a new chat (§12) |
+| PL19 | Camera roll and feed | **Ruled (2026-10-31):** after the sampler and today-block are measured (§17 steps 6–7) |
+| PL20 | The today-block's taint | **Ruled (2026-10-31):** its own stem pair from the first build, arming `private`, or `private` and `untrusted`, as the recall pair does; the owner's roster rides in the recall block under its existing pair (§4.5, §7.2, §13) |
 | PL21 | Stated plans after a taint rise | **Ruled (2026-10-31):** by default a candidate, shown on the week view as a waiting plan. **With `remember_articles` on**, hers and the owner's from a covered stretch are admitted with no approval as typed plans (a date within 90 days, an activity from a closed set of 32, at most two clean-origin people by id), checked against the turn, at most about 24 bits a plan and three a day by seeded draw, badged and removable; never as text (§4.5) |
 | PL22 | `forget` over the world | **Ruled (2026-10-31):** delete what is sourced to the chat and re-fold, in pure code, which is D27's rebuild done where it is cheap; a derived value whose support falls below a floor reverts to a candidate (D27's second half); owner events never go with a chat (§5) |
 | PL23 | Episodes after a `news_read` | **Owner's direction (2026-10-31):** the default. A typed episode (`item_id`, interest, date, a closed-set reaction) is admitted clean; free text is left as candidates that go unrecalled, with no approval queue (§8.4) |
-| PL24 | `forget` over the owner's network | Re-fold from the events that remain, which is D27's rebuild applied in memory for this graph; an `Inferred` edge left on too little support reverts to a candidate. Alternative: today's fallback, so the person goes with any of their chats (§7.1) |
-| PL25 | A `told` set only by a tainted stretch | Suppresses but does not license pruning; unchanged while unreviewed, since silence is not a rejection. Since PL23 keeps news off any queue, unreviewed is the ordinary state, so suppression usually lasts until the row prunes on its own score. Approval from the Memories tab makes the flag ordinary; rejection there clears it (§9). Alternative: lapse after five days unreviewed, at the cost of repeating what the owner heard |
+| PL24 | `forget` over the owner's network | **Ruled (2026-10-31):** provenance is stored on every record, so forgetting a chat removes everything it contributed, in every store; what other chats support is re-folded, and an `Inferred` edge left on too little support reverts to a candidate (§5, §7.1) |
+| PL25 | A `told` set only by a tainted stretch | **Ruled (2026-10-31):** suppresses but never licenses pruning; unchanged while unreviewed, since silence is not a rejection; becomes ordinary on approval, cleared on rejection (§9) |
 | PL26 | The feature registry | **Ruled (2026-10-31):** `part_of = Personas`, with the per-persona `[life]` switches (PL28) as the lever. A top-level switch would buy nothing, since personas are operator-only and no trial home can run one; §14's comparison is read offline. Settled before step 1 (§17) |
 | PL27 | Remembering article chats in full | **Owner's direction (2026-10-31):** a per-persona `remember_articles` switch, off by default, owner-written in `persona.toml`. With it on, episodes and facts from a stretch after a `news_read` are recalled without approval, origin still untrusted and re-armed on recall. The cost (possible persistent steering, no way to send) is shown beside the switch and in a `TRIFECTA.md` row. **Ruled within it (2026-10-31): no carve-out.** Facts about the owner and the owner's people are recalled too, with the residual (a planted claim about a real person) accepted, kept visible by an "from an article chat" badge and stated in the `TRIFECTA.md` row (§8.4) |
 | PL28 | Which personas get which parts | **Owner's direction (2026-10-31):** every part is an opt-in switch per persona, off by default: `world`, `people`, `my_people`, `news`, `camera`, `feed`, `remember_articles`. A tool whose switch is off is never built; dependencies are refused by name; switches are fixed per persona version (§3.1) |
@@ -2195,7 +2242,7 @@ Feed tab (step 7).
    owner has read the readings. Shelf B follows, behind the same gate.
 6. **The camera roll** and `share_photo`, with its eligibility declaration.
 7. **The feed.**
-8. **Proactive messages** — only if PL18 is ruled otherwise.
+8. **Proactive messages** (§12), behind `[life] proactive`, after the world's readings show it is good company.
 
 ---
 
