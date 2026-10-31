@@ -361,7 +361,9 @@ Owner-approved structured text beside `persona.toml`: anchors by weekday and
 time, with a probability where real life is soft ("gym, Tue/Thu 7am, 0.7").
 A model may **draft** a routine from `identity.md`, staged as a candidate and
 approved on the Personas page as `persona_propose` candidates are
-(`persona::approve_as_shown`); nothing reaches a sampler until the owner
+(`persona::approve_as_shown` in `mecha-core/src/persona.rs`, the persona
+side's twin of `imagelib::approve_as_shown`, and the function
+`PERSONA-DESIGN.md` §4.4 names); nothing reaches a sampler until the owner
 approves (§16 PL1). A term calendar, holidays and seasons ride in the same
 file or a group's.
 
@@ -487,10 +489,21 @@ one more reason §14's gate part 1 exists.
   open direction. As its own note it works: `Taint::arm_for_notes` gives each
   note its own block before matching, and `Record::Notes` re-arms each one on
   load, as it already does for the recall block. A new stem is taught to the
-  two predicates the recall and scene stems are in: `arm_for_content` (which
-  the `Record::Notes` re-arm reaches through `arm_for_notes`) and
-  `message::is_recorded_note`. The second keeps a per-run note that somehow
-  got stored off the wire, which the scene fold already relies on.
+  three predicates every persona fold is registered in:
+  - `arm_for_content`, which the `Record::Notes` re-arm reaches through
+    `arm_for_notes`;
+  - `message::is_recorded_note`, which keeps a per-run note that somehow got
+    stored off the wire, as the scene fold already relies on;
+  - **`agent::is_harness_voice`**, which carries the longest-lived failure.
+    The intervention miner cannot otherwise tell harness text in a user turn
+    from the owner's own words, so an unregistered voice would be mined as
+    the owner's correction into a learned rule riding in every future cached
+    prefix.
+
+  Nothing mines persona transcripts today, so the third is latent. But every
+  existing persona fold is registered there, and that function's own rule is
+  that "the party that knows a new voice exists is the one that adds it."
+  §17 step 1 registers all three.
 - **The told-ledger** is the anti-repetition mechanism. The nightly writer
   already reads each chat; it marks which world events and people she
   mentioned. An untold event is fresh material. A told one fades as Rimé
@@ -889,7 +902,10 @@ so its rules must hold before any of §14's gate exists:**
   - an integer has a plausible range stated per field: a score is 0–200
     (about 7.65 bits), a temperature is a whole degree Celsius from −40 to
     50 (91 values, about 6.5 bits);
-  - a date falls within **±7 days of today** (15 values, about 3.9 bits);
+  - a date has **a window per field**: a game or weather date within ±7 days
+    of today (15 values, about 3.9 bits); an airdate or release date within
+    the next 90 days (91 values, about 6.5 bits). A forward-looking date is
+    the point of those items, so one window for the shelf would refuse them;
   - an enum comes from its taxonomy, sized by its entries;
   - an id from the owner's registry follows shelf B's rule (at most 31 plus
     none, 5 bits).
@@ -908,7 +924,9 @@ so its rules must hold before any of §14's gate exists:**
   - **at most three shelf A items a day**;
   - **expiry fixed at five days**.
 
-  That gives **under 48 bits a day and under 240 live at once**. Gate part 2
+  That gives **at most 48 bits a day and at most 240 live at once**, since a
+  conforming type may sit exactly at 16 bits. (An airdate item, a show's
+  registry id and a date in the 90-day window, is about 11.5 bits.) Gate part 2
   computes every shelf A item type's ceiling from its ranges and fails the
   build if a type exceeds 16 bits, the same way shelf B's vocabularies are
   checked, so an integer field cannot slip past the bit test for want of a
@@ -1243,8 +1261,11 @@ none for state.
   simulation, and deleting it costs nothing anyone saw. A *told* event was
   seen. It may be pruned because its episode carries **a snapshot** (§5):
   kind, date, people ids and the narration, everything recall needs. That
-  holds for a candidate episode too, which is every episode from a stretch
-  after a `news_read` (§8.4). Until the owner approves it, nothing about the
+  holds for a candidate episode too: a told world event in a stretch after a
+  `news_read` gets a free-text episode, which is a candidate (§8.4). (The
+  clean typed episode PL23 admits for the article itself carries no snapshot.
+  It is four fields about an item, not about a world event, so it never
+  licenses a world row's prune.) Until the owner approves it, nothing about the
   event is recallable, and the world row would not change that: being told,
   the event is not re-introduced from the world while the flag stands. When the owner
   approves, recall reads the snapshot, so the pruned world row costs nothing.
@@ -1300,9 +1321,13 @@ none for state.
   feel alive is what she chooses to share, not the render. It travels the
   path pictures already take: `ToolOutput`'s image field, folded into the
   user turn that carries the results as a `Block::Image`, never inside the
-  `tool_result`. Since `arm_for_content` arms `private` for any image block,
-  every chat that uses `share_photo` is armed `private`. That is the safe
-  direction, and costs nothing after a recall.
+  `tool_result`. **On a model that can see**, that block arms `private`, as
+  `arm_for_content` does for any image: the safe direction, and costless
+  after a recall. On a model without vision, which is common for a local
+  chat model, `run_tools` drops the image, appends a line saying it wasn't
+  shown, and arms nothing, because nothing entered the context. The caption
+  that rides beside a picture (`TOOL_IMAGE_STEM`) is itself a registered
+  harness voice, which is the same list §4.5 names.
 - **An id is a lookup key, never part of a path.** `share_photo`'s
   `event_id` and `news_read`'s `item_id` are model-supplied.
   - Each is **looked up** in the camera index or in `items`, and refused as
@@ -1378,7 +1403,7 @@ The folds, which arrive in no tool result and so arm at the fold
 
 | Fold | Arms | Stem |
 |---|---|---|
-| Today-block (§4.5) | `private`; both when any row's origin is not clean | a new pair shaped like the recall pair, riding as **its own run note** so its prefix matches |
+| Today-block (§4.5) | `private`; both when any row's origin is not clean | a new pair shaped like the recall pair, riding as **its own run note** so its prefix matches, registered in `arm_for_content`, `is_recorded_note` and `is_harness_voice` |
 | Owner's roster and per-turn people cards (§7.2) | `private`; both when any fact's origin is not clean | `persona::recall::stem_of`'s existing pair, inside the recall block |
 | `news_read` result (§8.3) | `untrusted`, always: `untrusted_input` declared and `external` on every result, the loop's conjunction | none; a tool result is re-armed from `Record::Taint`, like every external tool |
 
@@ -1578,7 +1603,7 @@ owner's.
 | PL22 | `forget` over the world | Delete what is sourced to the chat and re-fold, in pure code, which is D27's rebuild done where it is cheap; a derived value whose support falls below a floor reverts to a candidate (D27's second half); owner events never go with a chat (§5) |
 | PL23 | Episodes after a `news_read` | **Owner's direction (2026-10-31):** the default. A typed episode (`item_id`, interest, date, a closed-set reaction) is admitted clean; free text is left as candidates that go unrecalled, with no approval queue (§8.4) |
 | PL24 | `forget` over the owner's network | Re-fold from the events that remain, which is D27's rebuild applied in memory for this graph; an `Inferred` edge left on too little support reverts to a candidate. Alternative: today's fallback, so the person goes with any of their chats (§7.1) |
-| PL25 | A `told` set only by a tainted stretch | Suppresses but does not license pruning; becomes ordinary on approval; cleared by the harness on rejection; unchanged while unreviewed, since silence is not a rejection (§9). Alternative: lapse after five days unreviewed, at the cost of repeating what the owner heard |
+| PL25 | A `told` set only by a tainted stretch | Suppresses but does not license pruning; unchanged while unreviewed, since silence is not a rejection. Since PL23 keeps news off any queue, unreviewed is the ordinary state, so suppression usually lasts until the row prunes on its own score. Approval from the Memories tab makes the flag ordinary; rejection there clears it (§9). Alternative: lapse after five days unreviewed, at the cost of repeating what the owner heard |
 | PL26 | The feature registry | `part_of = Personas`, with a per-persona `world = false` in `persona.toml` as the lever. A top-level switch would buy nothing, since personas are operator-only and no trial home can run one; §14's comparison is read offline. Settled before step 1 (§17) |
 | PL27 | Remembering article chats in full | **Owner's direction (2026-10-31):** a per-persona `remember_articles` switch, off by default, owner-written in `persona.toml`. With it on, episodes and facts from a stretch after a `news_read` are recalled without approval, origin still untrusted and re-armed on recall. The cost (possible persistent steering, no way to send) is shown beside the switch and in a `TRIFECTA.md` row. *Recommended within it:* the owner's network stays outside its reach (§8.4) |
 
@@ -1621,7 +1646,8 @@ Feed tab (step 7).
 
 1. **A day.** The routine (owner-approved), the ATUS table, the sampler,
    `world.db` with `days` and `state`, and a today-block holding only what she
-   is doing now. No model. Read echo and initiative.
+   is doing now, as its own run note with its stem pair registered in all
+   three predicates (§4.5). No model. Read echo and initiative.
 2. **Her people.** `people` and `edge_events`; owner nodes and the
    `identity.md` migration; the People tab's rings and card; library links.
 3. **Things happen.** Storylets, the director, the sifter and narrator, arcs,
