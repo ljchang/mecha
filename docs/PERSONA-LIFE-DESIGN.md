@@ -1,7 +1,7 @@
 # Persona lives — design
 
 > **Status (2026-10-31):** designed, nothing built. **Rulings are in
-> progress** (§16): PL1–PL12, PL21, PL22 and PL26 are ruled, and PL23, PL27 and
+> progress** (§16): PL1–PL17, PL21, PL22 and PL26 are ruled, and PL23, PL27 and
 > PL28 carry the owner's direction (no approval queue for news; every part
 > opt-in per persona). The rest are open. §1 is the owner's requests, in the order they were made; §2 is
 > the evidence, researched the same day, with a source on every figure that
@@ -325,6 +325,10 @@ camera    = false          # the camera roll and share_photo (§10); needs world
 feed      = false          # the in-app feed (§11); needs camera
 remember_articles = false  # PL27; needs news
 intensity = "capped"       # PL3: "capped" (default) or "full" (§4.3)
+name_search_filter = false # PL14: refuse web searches naming the owner's people (§7.5); needs my_people
+
+[safety]                   # PERSONA-DESIGN §12's table: on by default, each switchable
+relationships = true       # PL15: the "supports, never competes" sensor (§7.5)
 
 [life.decay]               # PL7: the decay and pruning knobs (§9); defaults shown
 event_half_life_days     = 4     # a momentary world event
@@ -981,7 +985,7 @@ A structured layer over the facts about the owner that already exist
 the owner shares them, D17/D18) — the people-shaped part, as a second graph
 centred on the owner. Same event model and the same two dates as §6.1.
 
-**Recommended (PL13, open): it lives in `memory.db`, not `world.db`.** It is memory of the owner, so it
+**Ruled (PL13): it lives in `memory.db`, not `world.db`.** It is memory of the owner, so it
 follows memory's rules rather than the world's: it is soft-pruned out of recall
 and never hard-deleted (PL7). A graph of the owner's real relatives silently
 hard-pruned by a world threshold would be the wrong half of that split.
@@ -1089,8 +1093,11 @@ correct or delete — and the owner's correction becomes a `Stated` event.
 These are third parties who never agreed to be in a database.
 
 - **A filter on searching for the owner's people, which is a cost narrowed,
-  not a boundary held.** A `web_search` query containing an exactly spelled
-  name from this graph is refused (§16 PL14). That catches the accidental
+  not a boundary held.** With `name_search_filter` on (ruled 2026-10-31:
+  a per-persona setting, **off by default**, §16 PL14), a `web_search` query
+  containing an exactly spelled name from this graph is refused. Off is safe
+  by default only because the blind path below is what actually holds. The
+  owner turns the filter on for a persona where the accidental case matters. That catches the accidental
   case and nothing more. The adversary that matters is the persona's own model
   composing the query under injection, and this repo has measured a model
   routing around a string filter by misspelling (`PERSONA-DESIGN.md` §12.7, on
@@ -1121,10 +1128,13 @@ These are third parties who never agreed to be in a database.
   `PERSONA-DESIGN.md` §18's consent argument against real people as personas.
 - **She supports the owner's relationships and never competes with them.** A romantic
   persona with a map of the owner's relationships is exactly what could
-  position itself against them (§2.5). The recommended form is a safety-layer
-  sensor (`PERSONA-DESIGN.md` §12), on by default and switchable like the
-  rest: disparaging or isolating remarks about people in the owner's network,
-  recorded beside the dose meters (§16 PL15).
+  position itself against them (§2.5). So the safety layer gains a sensor
+  (`PERSONA-DESIGN.md` §12; ruled 2026-10-31, §16 PL15). It records
+  disparaging or isolating remarks about people in the owner's network,
+  beside the dose meters. It records and shows; it never blocks or rewrites a
+  reply. It is **configurable per persona**, as R21 requires of every safety
+  feature: `[safety] relationships = true` by default, and the owner can
+  switch it off.
 - **Locked and plaintext.** It lives in her folder under the library lock and
   is plaintext on disk; the page says so (§8.3 of the persona design).
 
@@ -1859,9 +1869,9 @@ dropped the farewell check (D25), so it would need its own evidence first.
 | Routine, sampler, storylets | code | yes | only once told | yes |
 | Narrator over clean inputs | model, clean | yes | only once told | yes |
 | Her mentions in a clean chat | model, clean | as people and stated plans | yes | yes |
-| Owner's words in a clean chat | `Stated` facts, origin clean | as owner-stated plans only (§4.5); the owner's people live in `memory.db` (§7.1, PL13's recommendation) | yes, as facts about the owner and the owner's people | yes |
+| Owner's words in a clean chat | `Stated` facts, origin clean | as owner-stated plans only (§4.5); the owner's people live in `memory.db` (§7.1, PL13) | yes, as facts about the owner and the owner's people | yes |
 | Her mentions after a taint rise | model, untrusted | as candidates (plans as waiting plans); with `remember_articles`, plans as typed plans (PL21) | as candidates; with `remember_articles`, recalled (marked, badged) | only after approval; with `remember_articles`, yes |
-| Owner's words, after a taint rise | model, untrusted (whatever the record's `Stated`/`Inferred` kind) | owner-stated plans as waiting plans, or typed plans with `remember_articles` (PL21); the owner's people live in `memory.db` (§7.1, PL13's recommendation) | by default as candidates (PL10, ruled); with `remember_articles`, recalled, owner's people included (PL27: no carve-out), marked and badged | by default only after approval; with `remember_articles`, yes |
+| Owner's words, after a taint rise | model, untrusted (whatever the record's `Stated`/`Inferred` kind) | owner-stated plans as waiting plans, or typed plans with `remember_articles` (PL21); the owner's people live in `memory.db` (§7.1, PL13) | by default as candidates (PL10, ruled); with `remember_articles`, recalled, owner's people included (PL27: no carve-out), marked and badged | by default only after approval; with `remember_articles`, yes |
 | The `told` flag, from a tainted stretch | the stretch's taint | set only, never cleared, source recorded | — | it shapes what reaches the today-block |
 | Shelf A | code, closed types only | yes | yes | its closed fields; shape-matched ids never |
 | Shelf B | quarantined, typed | minor events | as pointers | yes |
@@ -2092,11 +2102,11 @@ this document's; the ruling is the owner's.
 | PL10 | The writer after a taint rise | **Ruled (2026-10-31):** Keep today's rule (everything after the rise is a candidate). PL23's typed episode keeps the gist and PL27's switch gives full memory where the owner wants it, which is what PL10 was reaching for (§8.4) |
 | PL11 | Feed sources | **Ruled (2026-10-31):** Registered per persona, per group and for everyone (PL4), in their folders under `~/.mecha/personas/`, never in layered config; any future global table global-layer-only and stripped from project layers loudly (§8.1) |
 | PL12 | Topics withheld by default | **Ruled (2026-10-31):** Politics, deaths, disasters and crime, unless a feed is opted in |
-| PL13 | The owner's network | A structured layer over facts about the owner, in `memory.db` under memory's pruning rules, with existing people-facts migrated into it |
-| PL14 | Search on the owner's people | A filter that refuses an exactly spelled name. It narrows a cost and catches the accidental case; the blind path is what holds (§7.5). Alternative: no filter, and rely on the blind path alone |
-| PL15 | The "supports, never competes" sensor | In the safety layer (§12 of the persona design): on by default, switchable per persona, recorded |
-| PL16 | Faces for the owner's people | Only by the owner's explicit link |
-| PL17 | Gap questions | At most one a chat; never while the owner is upset or mid-story |
+| PL13 | The owner's network | **Ruled (2026-10-31):** a structured layer over facts about the owner, in `memory.db` under memory's pruning rules, with existing people-facts migrated into it |
+| PL14 | Search on the owner's people | **Ruled (2026-10-31): a per-persona setting, off by default.** `name_search_filter` refuses an exactly spelled name when on; it narrows a cost, and the blind path is what holds (§7.5) |
+| PL15 | The "supports, never competes" sensor | **Ruled (2026-10-31):** in the safety layer, recording only, configurable per persona: `[safety] relationships`, on by default (§7.5) |
+| PL16 | Faces for the owner's people | **Ruled (2026-10-31):** only by the owner's explicit link, and the world never casts one (§7.5) |
+| PL17 | Gap questions | **Ruled (2026-10-31):** at most one a chat, shared with PL8's question; never while the owner is upset or mid-story (§7.3) |
 | PL18 | Proactive messages | Not in the first build; their own evidence first, beside D25 |
 | PL19 | Camera roll and feed | After the sampler and today-block are measured (§17 steps 6–7) |
 | PL20 | The today-block's taint | Its own stem pair from the first build, arming `private`, or `private` and `untrusted`, as the recall pair does, because stated plans and chat-sourced people ride in it. The owner's roster rides in the recall block under its existing pair (§4.5, §7.2, §13). Alternative: keep chat-sourced rows out of the today-block and arm nothing |

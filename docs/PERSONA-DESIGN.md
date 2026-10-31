@@ -1830,8 +1830,8 @@ typed record, never as text, with no approval; without the switch it waits
 for approval. PL10 was ruled *against* narrowing it: other owner
 turns after a taint rise stay candidates. Its `news_read` must follow D16 and D24 (withheld by `answers =
 "files"`), which needs an admission check on the per-persona tool path,
-since that path bypasses `registry_as`. Still open there: the owner's network
-inside `memory.db` (PL13) and D27's rebuild applied to it (PL24). Until those
+since that path bypasses `registry_as`. The owner's network lives inside
+`memory.db` (PL13, ruled); still open there is D27's rebuild applied to it (PL24). Until those
 are ruled, these rows stand as written.
 
 | # | Decision | Recommendation |
