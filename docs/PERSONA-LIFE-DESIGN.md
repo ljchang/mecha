@@ -477,12 +477,14 @@ Each level is its own `world.db`: `~/.mecha/personas/world.db` for everyone,
   personas the sampler placed there know: a staff meeting). Two personas can
   share a world without learning anything about each other, and personas
   still never know that another persona exists (`PERSONA-DESIGN.md` §8.1).
-- **Only clean sources write above the persona level.** The everyone and
+- **Nothing from a chat writes above the persona level.** The everyone and
   group worlds are written only by the owner, the simulation and feeds
-  registered at that level. Nothing from a chat moves up a level on its own,
-  as with `shared.db`. So a tainted chat with one persona cannot plant an
-  event that reaches every member, and `forget` on a chat never has to reach
-  across personas.
+  registered at that level. Those writers are not all clean: a feed's items
+  keep their shelf's origin (§8.2), and shelf C's are untrusted wherever
+  they are stored. What the levels rule out is a chat. Nothing from a chat
+  moves up a level on its own, as with `shared.db`. So a tainted chat with
+  one persona cannot plant an event that reaches every member, and `forget`
+  on a chat never has to reach across personas.
 - **Several groups at once.** A persona can belong to a workplace and a town.
   Both groups' shared events flow into her life, and place names are unique
   within a group, so the two never collide.
@@ -492,6 +494,17 @@ Each level is its own `world.db`: `~/.mecha/personas/world.db` for everyone,
   work runs only when at least one member persona has `world` on**, so §3.1's
   "no nightly job for a persona with `world` off" holds at every level. A persona's derived events decay
   under her own `[life.decay]`.
+  - **A shared row decays under the shipped defaults.** A level has no
+    `persona.toml`, so nothing the owner wrote is being replaced. A level's
+    own knobs, if wanted, arrive with the group world in step 3, in the
+    owner's files and never in layered config.
+  - **No pruner runs while no member has `world` on, and none is needed.**
+    Strength is a function of age, computed when the pruner reads a row, so
+    skipped nights lose nothing. The first night a member has `world` on
+    again, that level's prune pass runs **before** any block folds a row
+    from it, and removes everything that decayed meanwhile. Until then the
+    level's `world.db` is frozen at the size it had, since nothing writes to
+    it either.
 - **Feeds attach at any level.** A team's feed or local news is registered
   once at the group or everyone level (§8.1), and every member persona sees
   it.
@@ -1970,7 +1983,7 @@ to keep proactive messages from ever becoming one.
 | The `told` flag, from a tainted stretch | the stretch's taint | set only, never cleared, source recorded | — | it shapes what reaches the today-block |
 | Shelf A | code, closed types only | yes | yes | its closed fields; shape-matched ids never |
 | Shelf B | quarantined, typed | minor events | as pointers | yes |
-| Shelf C | untrusted | never | never as text; a typed episode by default, or full records recalled under PL27 | only through `news_read`, which declares `untrusted_input` and marks every result `external` |
+| Shelf C | untrusted | never | never as text; a typed episode by default, or full records recalled under PL27 | its prose only through `news_read`, which declares `untrusted_input` and marks every result `external`; the today-block carries one line per item, its interest and an opaque id, both code's, whose presence, count and timing are the publisher's (§8.3) |
 
 The folds, which arrive in no tool result and so arm at the fold
 (`PERSONA-DESIGN.md` §9.7):
@@ -2220,7 +2233,7 @@ this document's; the ruling is the owner's.
 | PL25 | A `told` set only by a tainted stretch | **Ruled (2026-10-31):** suppresses but never licenses pruning; unchanged while unreviewed, since silence is not a rejection; becomes ordinary on approval, cleared on rejection (§9) |
 | PL26 | The feature registry | **Ruled (2026-10-31):** `part_of = Personas`, with the per-persona `[life]` switches (PL28) as the lever. A top-level switch would buy nothing, since personas are operator-only and no trial home can run one; §14's comparison is read offline. Settled before step 1 (§17) |
 | PL27 | Remembering article chats in full | **Owner's direction (2026-10-31):** a per-persona `remember_articles` switch, off by default, owner-written in `persona.toml`. With it on, episodes and facts from a stretch after a `news_read` are recalled without approval, origin still untrusted and re-armed on recall. The cost (possible persistent steering, no way to send) is shown beside the switch and in a `TRIFECTA.md` row. **Ruled within it (2026-10-31): no carve-out.** Facts about the owner and the owner's people are recalled too, with the residual (a planted claim about a real person) accepted, kept visible by an "from an article chat" badge and stated in the `TRIFECTA.md` row (§8.4) |
-| PL28 | Which personas get which parts | **Owner's direction (2026-10-31):** every part is an opt-in switch per persona, off by default: `world`, `people`, `my_people`, `news`, `camera`, `feed`, `remember_articles`. A tool whose switch is off is never built; dependencies are refused by name; switches are fixed per persona version (§3.1) |
+| PL28 | Which personas get which parts | **Owner's direction (2026-10-31):** every part is an opt-in switch per persona, off by default: `world`, `people`, `my_people`, `news`, `camera`, `feed`, `proactive`, `remember_articles`. A tool whose switch is off is never built; dependencies are refused by name; the switches that decide which tools, blocks and runs exist are fixed per persona version (`proactive` at the scheduler's next check), and `remember_articles` is read live, never reaching backwards (§3.1) |
 
 ---
 
