@@ -1277,7 +1277,8 @@ pub struct Conversation {
     pub cache_lens: crate::cache_lens::CacheLens,
     /// What this conversation's programs read (`CODE-MODE-DESIGN.md` §7):
     /// every host call that ran, in issue order, each under the `code` call
-    /// (or the subagent call) that made it, with its bytes in hand. The
+    /// (or the subagent call) that made it — this run's with their bytes in hand,
+    /// an earlier run's without (the store has a recorded run's). The
     /// grounding walk's second source ([`crate::grounding::calls`]), so a
     /// draft staged after a program read a thread joins to that thread.
     ///
@@ -3187,7 +3188,14 @@ impl Agent {
         // every compacted state it ever passed through.
         convo.rewritten.clear();
         // Likewise what the programs read: the previous run's were the
-        // previous recording's to write, and the walk keeps them all.
+        // previous recording's to write. Their bytes go now — the store holds
+        // a recorded run's (`record::ever`), and a run's live readers read only
+        // its own — so a conversation holds one run's raw reads at most,
+        // never every program it ever ran (review of #784). The calls stay,
+        // for the walk to place.
+        for call in &mut convo.program_calls {
+            call.bytes = crate::tool::code::record::Bytes::Unloaded;
+        }
         convo.program_calls_from = convo.program_calls.len();
         // What this run sends beside the history, for the recording.
         convo.harness_notes = harness_notes;
@@ -5363,8 +5371,8 @@ impl Agent {
             .await;
         // The conversation keeps what a harness call's program read, as it
         // keeps the taint the call armed. No message carries the call, so no
-        // walk yields them and no run records them; they are held for the
-        // same reason the taint is.
+        // walk yields them; one made between a run and its recording is
+        // written with that run's, under an anchor nothing resolves.
         convo.program_calls.extend(reads);
         let (content, is_error) = blocks
             .iter()
