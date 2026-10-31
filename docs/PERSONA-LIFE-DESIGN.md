@@ -1403,9 +1403,14 @@ the headline never rides in the today-block.
     - **And a per-day cap, because reads are not bounded by arrivals.**
       `news_read` can open anything still on the shelf, about fifteen items
       over the five-day expiry, and nothing caps chats per day. So the clean
-      typed episode is **capped at three per persona per day**: the first
-      three distinct items read that day, across all chats, in the order the
-      recorded `news_read` calls happened. A fourth read still works and is
+      typed episode is **capped at three per persona per day**: a **seeded
+      draw** over the distinct items read that day, across all chats, with
+      the seed per persona per day. Which articles she opens is her choice,
+      made under the article's influence. If the first three reads always
+      won, she could be steered into choosing which ids persist, about
+      log₂C(15,3) ≈ 9 bits a day over a fifteen-item shelf, in the one
+      crossing with no expiry. A code-chosen draw bounds that, the way §8.2
+      bounds the feed's choice. A fourth read still works and is
       still discussed. Its free text is stored as candidates like any other,
       and it simply gets no clean typed episode, with nothing asked of the
       owner. That makes the ceiling **at most 6 bits a day**, the constant
@@ -1457,10 +1462,26 @@ the headline never rides in the today-block.
     - Their origin stays untrusted, because the switch changes what is
       recalled, never what is clean.
     - **Recall still re-arms the taint** they were written under (§9.6). So
-      a later chat that recalls one opens untrusted, and its own records are
-      recalled under the same switch. For that persona, the provenance gate
-      on memory is in effect off. That is what the switch means, and the
-      persona page says so beside it.
+      a later chat that recalls one opens untrusted, with no `news_read` in
+      it.
+    - **The switch covers article chats and their descendants, and nothing
+      else.** A stretch is covered when **every** source of its untrusted
+      taint is either a `news_read` result or a recalled record that the
+      switch itself admitted. The writer reads those sources from the
+      session's recorded taint, by tool and by stem. Three consequences:
+      - the second chat that recalls an article memory is covered, so the
+        approval queue never comes back one chat later;
+      - a stretch also tainted by anything else, such as a dropped PDF
+        (`document_read`), the persona-files fold, an untrusted scene, or an
+        untrusted memory the switch did not admit, is **not** covered and
+        follows §9.6 as today. The owner's direction named article chats,
+        and the cost argument here (registered feeds, article prose) covers
+        only them;
+      - an unknown source counts as not covered, so a torn taint record
+        never widens the switch.
+
+      Within that lineage the provenance gate on memory is in effect off,
+      and the persona page says so beside the switch.
     - **It gets a `TRIFECTA.md` row**, the home CLAUDE.md gives every opt-in
       switch with its cost. The row's *Owned by:* line names the **two**
       places the promise lives in code:
@@ -1823,8 +1844,13 @@ declaration/`ELIGIBLE` agreement check live for them.
 cards ride in the recall block (§7.2), which has a fixed budget
 (`recall::BUDGET_CHARS`). They take a share of their own, like about-me's
 third, so the owner's social graph never crowds out episodes and facts or is
-crowded out by them. The split is set when §17 step 4 is built and is
-measured under D28.
+crowded out by them. That is **two splits, not one**:
+- the chat-start roster under `BUDGET_CHARS` (6000);
+- the per-turn cards and the gap note under the separate `PER_TURN_CHARS`
+  (1500). That budget is today divided evenly across matched records with
+  no slot for either, and it is the tighter of the two.
+
+Both are set when §17 step 4 is built and measured under D28.
 
 **`news_read` is withheld by `answers = "files"`.** D16 leaves the tools
 that reach further out of the registry of a persona set to `answers =
