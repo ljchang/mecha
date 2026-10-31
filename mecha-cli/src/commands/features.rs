@@ -1303,6 +1303,7 @@ fn set(ids: &[String], on: bool) -> Result<()> {
                  offered wherever the web app is on and the chat model runs on this machine; \
                  `mecha features disable web` turns it off with the web app"
             );
+            anyhow::ensure!(f != Feature::World, feature::WORLD_IS_PER_PERSONA);
             anyhow::ensure!(
                 f.has_switch(),
                 "`{id}` is part of `{}` and has no switch of its own",
