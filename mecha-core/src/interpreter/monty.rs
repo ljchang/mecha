@@ -233,8 +233,8 @@ impl Confinement {
 }
 
 /// The preflight's reading of a Seatbelt worker: under a profile, and one
-/// that denies `/etc`, the home, a file created in the temp directory, a
-/// shell and the network. Each is a question to the kernel, and an answer
+/// that denies `/etc`, the home, a write to `/dev/null`, a shell and the
+/// network. Each is a question to the kernel, and an answer
 /// it will not give fails the start like a wrong one.
 #[cfg(target_os = "macos")]
 fn seatbelt_holds(pid: u32) -> Result<()> {
@@ -244,13 +244,14 @@ fn seatbelt_holds(pid: u32) -> Result<()> {
     }
     // The kernel matches resolved paths: `/etc` is `/private/etc`.
     let canon = |p: PathBuf| p.canonicalize().unwrap_or(p);
+    // Each operation is one the kernel answers both ways, measured against
+    // an unsandboxed process on macOS 26: `process-exec` has to be asked
+    // as `process-exec*` (the bare name is an error), and `file-write-create`
+    // reads as denied even unsandboxed, so a write is asked of `/dev/null`.
     let mut probes: Vec<(&str, PathBuf)> = vec![
-        ("file-read-data", canon(PathBuf::from("/etc/hosts"))),
-        (
-            "file-write-create",
-            canon(std::env::temp_dir()).join("mecha-preflight-probe"),
-        ),
-        ("process-exec", PathBuf::from("/bin/sh")),
+        ("file-read-data", canon(PathBuf::from("/etc/passwd"))),
+        ("file-write-data", PathBuf::from("/dev/null")),
+        ("process-exec*", PathBuf::from("/bin/sh")),
     ];
     if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
         probes.push(("file-read-data", canon(PathBuf::from(home))));

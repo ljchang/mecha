@@ -215,10 +215,11 @@ pub fn profile(p: &Policy) -> Result<String> {
 ///
 /// And nothing else:
 ///
-/// - **No mach-lookup.** The trace showed the worker looks up no service,
-///   CoreFoundation's linkage notwithstanding, so the measured set is empty;
-///   a service a later path wants is denied, which fails the program rather
-///   than opening a route.
+/// - **No mach-lookup.** Serving programs, the worker reaches for two
+///   services — opendirectoryd's `libinfo` (a user lookup) and the
+///   notification center — and every interpreter test passes with both
+///   denied, so the measured set is empty. A service a later path wants is
+///   denied too, which fails the program rather than opening a route.
 /// - **No network** (`deny network*`, spelled out though `deny default`
 ///   already covers it) and **no file write** anywhere — not `/dev/null`:
 ///   the worker's stdio are pipes and a log the launcher opened before the
