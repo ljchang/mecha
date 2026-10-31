@@ -378,10 +378,17 @@ threshold per persona once the access log says where it should sit. The
   - **But `remember_articles` never reaches backwards.** Read live, it would
     also work in the other direction: switching it on after weeks of `news`
     would admit every candidate already stored from past article chats, a
-    backlog nobody reviewed. So the writer **marks each record written while
-    the switch is on**, and recall admits a record only when it carries that
-    mark *and* the switch is on now. Turning the switch off stops recall at
-    once. Turning it on admits only what is written from then on.
+    backlog nobody reviewed. So the mark is keyed to **when the chat
+    happened, not when the writer runs**. The writer can wait nights for its
+    model (§4.4), so a live read at write time would still sweep up a
+    pending backlog. Instead, the switch's state is recorded in the session
+    at the end of each stretch, and the writer marks a record only if the
+    switch was on when that stretch was chatted. Recall admits a record only
+    when it carries the mark *and* the switch is on now. So:
+    - switching it **on** admits only what is *said* from then on;
+    - switching it **off** stops recall at once;
+    - a stretch chatted under the switch and written after it was revoked
+      keeps its mark, but is not recalled while the switch is off.
   - **A live read that fails falls toward off.** `[life.decay]` is a
     subtable of `[life]`, and a bad decay value is a load error (§9). So an
     owner's edit can leave the live `persona.toml` unreadable while the
@@ -987,7 +994,11 @@ staged to the graph's review queue.
    **The note rides inside the per-turn people-cards fold**, under
    `persona::recall::stem_of`'s pair, as one more line of that block, never
    as a separate block concatenated after it, where only the first stem
-   would sit at the start (§4.5). Its arming is a no-op, since the recall
+   would sit at the start (§4.5). **The block is emitted whenever a card
+   *or* a gap note exists.** The ordinary gap turn carries one unfamiliar
+   name and nothing else, so it has no card, and today `recall::per_turn`
+   returns no block when nothing matched. §17 step 4 changes that, so the
+   note is never left without the stemmed block around it. Its arming is a no-op, since the recall
    block already armed `private` and the name is the owner's own word. But a
    separate harness voice would owe the other two predicates, and both
    matter here. Unregistered in `is_harness_voice`, "you haven't mentioned
@@ -1433,6 +1444,18 @@ the headline never rides in the today-block.
       world rows (§4.4); world writes from a tainted stretch (stated plans,
       people) still follow PL21; nothing reaches `shared.db` except by the
       owner's share (D17), and a share of an untrusted-origin record says so.
+    - **Stated plans under the switch (awaiting the owner).** PL21 holds a
+      plan stated after an article out of the world until approved. Under
+      this switch, nothing asks the owner anything, so she would remember
+      "there's a game on Saturday" while her world never runs it. That is
+      exactly the disagreement §4.5's stated plans exist to prevent. The
+      recommendation: **under `remember_articles`, a stated plan from such a
+      stretch is admitted as a typed row**, made of a date, an activity from a
+      closed set, and people ids, checked against the turn it was said in. That
+      is the shape PL21 weighed for the default and declined. The default
+      without the switch is unchanged. The alternatives are to accept the
+      inconsistency, or to drop such plans rather than queue them (§16
+      PL21).
       Facts about the owner recalled under the switch may still be staged
       to the graph's review queue under D10's standing permission. That is
       human-gated, so no lane promotes itself, but a staged item carries its
@@ -1712,9 +1735,9 @@ dropped the farewell check (D25), so it would need its own evidence first.
 | Routine, sampler, storylets | code | yes | only once told | yes |
 | Narrator over clean inputs | model, clean | yes | only once told | yes |
 | Her mentions in a clean chat | model, clean | as people and stated plans | yes | yes |
-| Owner's words in a clean chat | `Stated` facts, origin clean | no; the owner's people live in `memory.db` (§7.1) | yes, as facts about the owner and the owner's people | yes |
+| Owner's words in a clean chat | `Stated` facts, origin clean | no; the owner's people live in `memory.db` (§7.1, PL13's recommendation) | yes, as facts about the owner and the owner's people | yes |
 | Her mentions after a taint rise | model, untrusted | as candidates | as candidates; with `remember_articles`, recalled (marked, badged) | only after approval; with `remember_articles`, yes |
-| Owner's words, after a taint rise | model, untrusted (whatever the record's `Stated`/`Inferred` kind) | no; the owner's people live in `memory.db` (§7.1) | by default as candidates (PL10, ruled); with `remember_articles`, recalled, owner's people included (PL27: no carve-out), marked and badged | by default only after approval; with `remember_articles`, yes |
+| Owner's words, after a taint rise | model, untrusted (whatever the record's `Stated`/`Inferred` kind) | no; the owner's people live in `memory.db` (§7.1, PL13's recommendation) | by default as candidates (PL10, ruled); with `remember_articles`, recalled, owner's people included (PL27: no carve-out), marked and badged | by default only after approval; with `remember_articles`, yes |
 | The `told` flag, from a tainted stretch | the stretch's taint | set only, never cleared, source recorded | — | it shapes what reaches the today-block |
 | Shelf A | code, closed types only | yes | yes | its closed fields; shape-matched ids never |
 | Shelf B | quarantined, typed | minor events | as pointers | yes |
@@ -1941,7 +1964,7 @@ this document's; the ruling is the owner's.
 | PL18 | Proactive messages | Not in the first build; their own evidence first, beside D25 |
 | PL19 | Camera roll and feed | After the sampler and today-block are measured (§17 steps 6–7) |
 | PL20 | The today-block's taint | Its own stem pair from the first build, arming `private`, or `private` and `untrusted`, as the recall pair does, because stated plans and chat-sourced people ride in it. The owner's roster rides in the recall block under its existing pair (§4.5, §7.2, §13). Alternative: keep chat-sourced rows out of the today-block and arm nothing |
-| PL21 | Stated plans after a taint rise | **Ruled (2026-10-31):** Candidates by default, shown on the week view as waiting plans |
+| PL21 | Stated plans after a taint rise | **Ruled (2026-10-31):** Candidates by default, shown on the week view as waiting plans. *Open sub-question:* under `remember_articles`, admit them as typed rows so memory and world agree (recommended), accept the inconsistency, or drop them (§8.4) |
 | PL22 | `forget` over the world | **Ruled (2026-10-31):** delete what is sourced to the chat and re-fold, in pure code, which is D27's rebuild done where it is cheap; a derived value whose support falls below a floor reverts to a candidate (D27's second half); owner events never go with a chat (§5) |
 | PL23 | Episodes after a `news_read` | **Owner's direction (2026-10-31):** the default. A typed episode (`item_id`, interest, date, a closed-set reaction) is admitted clean; free text is left as candidates that go unrecalled, with no approval queue (§8.4) |
 | PL24 | `forget` over the owner's network | Re-fold from the events that remain, which is D27's rebuild applied in memory for this graph; an `Inferred` edge left on too little support reverts to a candidate. Alternative: today's fallback, so the person goes with any of their chats (§7.1) |
