@@ -1204,7 +1204,8 @@ The first is a question of what a fact is; the research is
 *Building, 2026-10-01 (step 3a):* the three folders listed and read by name
 (`persona::files`), `file_read`, the whole collection — or its list — in a
 chat's first turn, and a Files list with upload and remove on the persona's
-page. `file_read` is every persona's, outside `[tools] allow` and `answers` —
+page. `file_read` is every persona's, outside `[tools] allow`, and kept
+under `answers = "files"` by its own declaration (`admit_own`, #776) —
 deliberately: reading its own files is what a persona with files is for, and
 the tool reaches nothing but them. The files block is a chat's, from its
 first turn: a file added while a chat is open reaches the next chat (this
@@ -1816,6 +1817,24 @@ not care, and says so.
 ## 16. Decisions
 
 Every row is ruled; the ruling is the owner's, in §1 where it was said in words.
+
+`PERSONA-LIFE-DESIGN.md` (2026-10-31, all decisions ruled) reaches these rulings
+in a few places. Ruled there: its network store deviates from §4.3, built like
+memories with a rendered `network.md` (PL5); memory only leaves recall, as D26
+says, with the threshold off by default until D28's readout (PL7); D27's
+rebuild is applied to the world (PL22). §9.6's provenance split is narrowed
+only for article chats: PL23 (a clean typed episode) and PL27 (a per-persona
+switch that recalls untrusted records without approval, owner's people
+included), both the owner's direction. PL21 narrows it for plans, and only
+under that switch: a plan stated after a taint rise enters her world as a
+typed record, never as text, with no approval; without the switch it waits
+for approval. PL10 was ruled *against* narrowing it: other owner
+turns after a taint rise stay candidates. Its `news_read` must follow D16 and D24 (withheld by `answers =
+"files"`), which the per-persona path's admission check gives it by
+default (`persona::agent::admit_own`, #778). The owner's network lives inside
+`memory.db` (PL13), and D27's rebuild applies to it, with provenance stored
+on every record so `forget` reaches everything a chat contributed (PL24). Where it does not
+name a row, these rows stand as written.
 
 | # | Decision | Recommendation |
 |---|---|---|

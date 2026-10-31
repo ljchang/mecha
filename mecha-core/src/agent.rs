@@ -1500,6 +1500,31 @@ pub struct ToolCallTrace {
     /// Not an error and not a denial: the draft succeeded; the send waits.
     #[serde(default)]
     pub staged: bool,
+    /// A program's host call (`CODE-MODE-DESIGN.md` §7, "host calls enter
+    /// the trace"): made from inside a running `code` call, through the same
+    /// gate, and counted in `tool_calls`, `tool_errors` and `tool_denied` like
+    /// any other, so a run that used a program does not silently stop
+    /// counting its tool use. Tagged so a reader can split by it. A record
+    /// written before the field reads `false`, which is what it was.
+    #[serde(default)]
+    pub in_program: bool,
+}
+
+impl ToolCallTrace {
+    /// A call that cleared the gate and ran. `out.refusal` is an in-process
+    /// guard's "no", so it lands on the denied (and machine-blocked) side.
+    fn ran(name: &str, input: &Value, out: &ToolOutput) -> Self {
+        ToolCallTrace {
+            name: name.to_string(),
+            input: input.clone(),
+            is_error: out.is_error,
+            denied: out.refusal,
+            blocked: out.refusal,
+            unknown: false,
+            staged: false,
+            in_program: false,
+        }
+    }
 }
 
 /// Why a run is being cancelled, said by the canceller so the outcome can
@@ -3455,6 +3480,7 @@ impl Agent {
                 } else {
                     cx.think_budget
                 },
+                local_only: false,
                 trailing_notes: notes.tail.len(),
                 // The closing request keeps the tools listed (the cached
                 // prefix holds) and asks for words (§5.5).
@@ -4618,6 +4644,7 @@ impl Agent {
             cache_prompt: self.cfg.cache_prompt,
             think: None,
             think_budget: cx.think_budget,
+            local_only: false,
             trailing_notes: notes.tail.len(),
             tool_choice: crate::message::ToolChoice::Auto,
         };
@@ -5231,899 +5258,42 @@ impl Agent {
         // it here. That is deliberately conservative: this value only ever
         // *blocks* a send, never marks the conversation — the real taint is
         // still recorded from what actually came back.
-        let mut turn_taint = *taint;
+        let turn_taint = self.turn_taint(cx, *taint, calls.iter().map(|(_, name, _)| name));
         // What was recorded before this batch: authorship, not reach
         // (`ToolCtx::recorded_taint`).
         let recorded_taint = *taint;
-        // And a job still out from an earlier turn (`JobSink::pending_tools`):
-        // its result has not arrived, so its declared reach gates this turn's
-        // sends as the result would — and arms nothing, since it may come back
-        // clean (`docs/BACKGROUND-JOBS-DESIGN.md` §4).
-        let pending = cx
-            .jobs
-            .as_ref()
-            .map(|j| j.pending_tools())
-            .unwrap_or_default();
-        for name in calls.iter().map(|(_, name, _)| name) {
-            if let Some(tool) = self.registry.get(name) {
-                let caps = tool.capabilities();
-                turn_taint.private |= caps.private_data;
-                turn_taint.untrusted |= caps.untrusted_input;
-            }
-        }
-        // A pending job's tool this registry no longer holds (a binding
-        // switch rebuilt it) is unknown reach, and unknown is the widest —
-        // as `jobs::settle` reads unset terms (review of #583).
-        for name in &pending {
-            let caps = self.registry.get(name).map(|t| t.capabilities()).unwrap_or(
-                crate::tool::Capabilities {
-                    private_data: true,
-                    untrusted_input: true,
-                    ..Default::default()
-                },
-            );
-            turn_taint.private |= caps.private_data;
-            turn_taint.untrusted |= caps.untrusted_input;
-        }
 
-        for (i, (id, name, input)) in calls.iter().enumerate() {
-            // What a person watching should see: `Tool::review_input`, not
-            // the raw input, which is still what executes. A read-only call
-            // like `web_open` reaches no approver, so the transcript is where
-            // it is seen — and a handle alone there names no host at all
-            // (found in review of #284). Events are display-only by contract,
-            // so nothing downstream acts on the enriched copy.
-            let shown = self
-                .registry
-                .get(name)
-                .map(|t| t.review_input(input))
-                .unwrap_or_else(|| input.clone());
-            emit(
-                events,
-                AgentEvent::ToolCall {
-                    id: id.clone(),
-                    name: name.clone(),
-                    input: shown,
-                },
-            );
-
-            // One picture per run (IMAGE-DESIGN.md §5.5): a deferred job of a
-            // tool already started in this run is never started again in it.
-            // The repeat is not run, and the run's next request closes it.
-            if run_pictures.started.contains(name) {
-                let content = format!(
-                    "Not run: `{name}` was already started in this run, and its result is on \
-                     its way. Answer the owner now."
-                );
-                run_pictures.repeated = true;
-                run_pictures.note_repeat(name);
-                emit(
+        for (i, call) in calls.iter().enumerate() {
+            let (id, name, input) = call;
+            let (content, is_error) = match self
+                .check(
+                    cx,
+                    call,
                     events,
-                    AgentEvent::ToolResult {
-                        id: id.clone(),
-                        name: name.clone(),
-                        is_error: true,
-                        content: content.clone(),
-                    },
-                );
-                results[i] = Some(Block::ToolResult {
-                    tool_use_id: id.clone(),
-                    content,
-                    is_error: true,
-                });
-                trace.push(ToolCallTrace {
-                    name: name.clone(),
-                    input: input.clone(),
-                    is_error: true,
-                    denied: true,
-                    blocked: true,
-                    unknown: false,
-                    staged: false,
-                });
-                denied_this_turn += 1;
-                continue;
-            }
-
-            // Filtering the advertised list is not enough on its own: the
-            // tool was in the prompt on an earlier turn, and the model may
-            // simply call it from memory.
-            if let Some(tool) = self.registry.get(name) {
-                if !cx.phase.allows(tool.read_only()) {
-                    let content = format!(
-                        "`{name}` is not available while planning. Work out what to do \
-                         and say so; leave the phase to carry it out."
-                    );
-                    trace.push(ToolCallTrace {
-                        name: name.clone(),
-                        input: input.clone(),
-                        is_error: true,
-                        denied: true,
-                        blocked: true,
-                        unknown: false,
-                        staged: false,
-                    });
-                    denied_this_turn += 1;
-                    emit(
-                        events,
-                        AgentEvent::ToolDenied {
-                            name: name.to_string(),
-                            reason: "planning phase".into(),
-                        },
-                    );
-                    emit(
-                        events,
-                        AgentEvent::ToolResult {
-                            id: id.clone(),
-                            name: name.clone(),
-                            is_error: true,
-                            content: content.clone(),
-                        },
-                    );
-                    results[i] = Some(Block::ToolResult {
-                        tool_use_id: id.clone(),
-                        content,
-                        is_error: true,
-                    });
+                    trace,
+                    turn_taint,
+                    taint,
+                    blocked_sends,
+                    run_pictures,
+                    Asking::Person,
+                )
+                .await
+            {
+                Checked::Cleared(tool) => {
+                    approved.push((i, tool, id.clone(), name.clone(), input.clone()));
                     continue;
                 }
-            }
-
-            // `available`, not `get`: a tool the active restriction excludes is
-            // genuinely out of reach rather than merely absent from the spec
-            // list, or narrowing would be advisory the moment a model named a
-            // tool it remembered from three turns ago.
-            // The run's own withholding, ahead of the registry's: a tool this
-            // run may not dispatch is out of reach exactly as one outside an
-            // active skill restriction is, and lands on the same refusal
-            // below rather than a second spelling of it.
-            let Some(tool) = self
-                .registry
-                .available(name)
-                .filter(|_| !cx.is_withheld(name))
-            else {
-                // Two different answers wearing one shape. A tool that is
-                // registered but outside the active restriction was *withheld
-                // by policy*; one that was never registered is a name the
-                // model invented. Recording both as `unknown` counts the
-                // harness working as an environment failure, and
-                // `RunStats::merge` reads `unknown || (is_error && !denied)`
-                // into the tool-error rate that `doctor` thresholds at 25% and
-                // the candidate gate scores against — the same mistake as
-                // `"Blocked by a hook:"` being mined as a user correction.
-                let withheld = self.registry.get(name).is_some();
-                debug_assert!(
-                    !withheld || cx.is_withheld(name) || self.registry.available(name).is_none()
-                );
-                let content = if withheld {
-                    format!(
-                        "Blocked by policy: `{name}` is withheld by an active restriction \
-                         for this run. Available: {}",
-                        self.registry.available_names().join(", ")
-                    )
-                } else {
-                    format!(
-                        "{NO_TOOL_NAMED}{name}`. Available: {}",
-                        self.registry.available_names().join(", ")
-                    )
-                };
-                emit(
-                    events,
-                    AgentEvent::ToolResult {
-                        id: id.clone(),
-                        name: name.clone(),
-                        is_error: true,
-                        content: content.clone(),
-                    },
-                );
-                results[i] = Some(Block::ToolResult {
-                    tool_use_id: id.clone(),
-                    content,
-                    is_error: true,
-                });
-                trace.push(ToolCallTrace {
-                    name: name.clone(),
-                    input: input.clone(),
-                    is_error: true,
-                    denied: withheld,
-                    blocked: withheld,
-                    unknown: !withheld,
-                    staged: false,
-                });
-                denied_this_turn += 1;
-                continue;
-            };
-
-            // Arguments that never parsed are not a call: running the tool on
-            // `__malformed_arguments` gets an answer about a field the model
-            // never sent ("Nothing to draw"), which says nothing of what went
-            // wrong — and a call cut off at the output limit was retried that
-            // way four times. Said here, by what happened (`unreadable_call`).
-            if input.get("__malformed_arguments").is_some() {
-                let content = unreadable_call(input);
-                emit(
-                    events,
-                    AgentEvent::ToolResult {
-                        id: id.clone(),
-                        name: name.clone(),
-                        is_error: true,
-                        content: content.clone(),
-                    },
-                );
-                results[i] = Some(Block::ToolResult {
-                    tool_use_id: id.clone(),
-                    content,
-                    is_error: true,
-                });
-                trace.push(ToolCallTrace {
-                    name: name.clone(),
-                    input: input.clone(),
-                    is_error: true,
-                    denied: false,
-                    blocked: false,
-                    unknown: false,
-                    staged: false,
-                });
-                denied_this_turn += 1;
-                continue;
-            }
-
-            let caps = tool.capabilities();
-
-            // An outbox-routed call is never executed here — it is staged as a
-            // draft the user reviews out of band (below, after the hook gate).
-            let routed = cx.outbox.as_ref().is_some_and(|o| o.routes(name));
-
-            // The trifecta interlock. Checked before the approver, because a
-            // human clicking "yes" is exactly what an injection is trying to
-            // engineer — and because the rule is structural, not a judgement.
-            //
-            // `Some(why)` sends the call to `Approver::escalate` instead of
-            // `approve`: a human must see it even where policy would have
-            // passed it. A bool that merely forced `approve` was the hole —
-            // `ModeApprover { Allow }` (eval, replay, `--yes`) answers yes
-            // with nobody consulted, so `trifecta = "ask"` silently equalled
-            // `"allow"` on every headless surface.
-            let mut escalation: Option<String> = None;
-
-            // Two different controls, guarding two different threats. The
-            // trifecta interlock stops an injection driving exfiltration; the
-            // leak guard stops private data leaving at all. The second is off
-            // by default because it breaks ordinary work.
-            // `turn_taint`, not `taint`: see its definition — a send batched
-            // alongside the read that arms it must not slip through.
-            //
-            // They key off *different egress classes*, and that is the whole
-            // of `docs/EGRESS-DESIGN.md`. An injection can only be *directed*
-            // at an attacker when the attacker picks the recipient, so the
-            // interlock fires on `Egress::Chosen` alone. A blind send — one
-            // whose destination is fixed by operator config and absent from
-            // the tool's input schema — still carries private data to a third
-            // party, which is the leak guard's threat, not the interlock's.
-            //
-            // The leak guard's *conversation* half, named once because two
-            // places need it and they must not drift: `leak_risk` here, and
-            // the refusal text below, which must not advertise a blind route
-            // this guard closes.
-            let leak_guard_armed =
-                cx.tools.security.block_sends_after_private && turn_taint.private;
-            let injection_risk = turn_taint.trifecta_armed() && caps.egress == Egress::Chosen;
-            let leak_risk = leak_guard_armed && caps.can_send();
-
-            // A routed call skips the interlock: staging sends nothing — the
-            // draft lands in a local file, and release requires the user to
-            // read exactly what would leave. The item records this
-            // conversation's taint so the review can say "possibly an
-            // attacker's words" out loud.
-            if !routed && (injection_risk || leak_risk) {
-                match cx.tools.security.trifecta {
-                    TrifectaPolicy::Block => {
-                        // **The binding control explains, and remedies.**
-                        // The two risks are not exclusive: with the leak guard
-                        // on, an armed conversation and a `Chosen` tool, both
-                        // fire. The leak guard is then the broader one — it
-                        // refuses regardless of class — so it is what will
-                        // still be refusing after the operator acts on
-                        // anything the interlock said. Leading with the
-                        // interlock there sends them to a fix that changes
-                        // nothing: "start a fresh session that touches only
-                        // one of the two" is refused too, and for `web_search`
-                        // "add a blind backend" lands on a second refusal
-                        // carrying no remedy at all. That is `DenialCause`'s
-                        // own incident, and the hint forty lines up already
-                        // guards against it; this is the half that did not.
-                        let reason = if !leak_risk {
-                            let mut reason = format!(
-                                "`{name}` can send data outside this machine, and this \
-                                 conversation already contains both private data and \
-                                 third-party content. Refusing: text in that content could be \
-                                 instructing you to exfiltrate. Summarise for the user \
-                                 instead, or start a fresh session that touches only one of \
-                                 the two. Delegating the read to a subagent does not help: a \
-                                 child inherits this conversation's taint and is refused the \
-                                 same way."
-                            );
-                            // The refusal used to name a "safe delegate" — a
-                            // registered tool that reads the outside world,
-                            // holds no private data and cannot send. No such
-                            // tool exists any more: every production reader of
-                            // the outside world is a sender (the query string
-                            // is the channel), and a subagent derives
-                            // `external_send` from its children for the same
-                            // reason. Delegation before the conversation arms
-                            // is the remedy, and it is TRIFECTA.md's to teach,
-                            // not this refusal's.
-                            //
-                            // What *is* named is the blind class: tools whose
-                            // destination the operator fixed and the model
-                            // cannot name. Those are untouched by this
-                            // interlock, so a refusal that did not mention
-                            // them would hide the one route still open and
-                            // teach the reader that reading the web is over.
-                            // Asked of the registry as a class, so the loop
-                            // still never learns which tools exist.
-                            // Three ways a named route can be closed, and
-                            // all three have to be checked here, because a
-                            // refusal that names a closed exit is worse than
-                            // one that names none: the model spends a call
-                            // discovering it, and the operator learns the
-                            // advice is noise.
-                            //
-                            // `leak_guard_armed` is belt-and-braces rather
-                            // than load-bearing, and saying so is the point:
-                            // inside this arm `injection_risk` holds, so the
-                            // tool is `Chosen`, so `can_send()` is true, so
-                            // `leak_risk == leak_guard_armed` — and the arm's
-                            // own `!leak_risk` already implies it false. Kept
-                            // because it states the intent locally and
-                            // survives a change to the arm condition; noted
-                            // because a reader should not mistake it for the
-                            // thing doing the work.
-                            //
-                            // `blind_senders` covers the surface restriction.
-                            // `is_withheld` is the other way a name is
-                            // registered and undispatchable — `escapes`
-                            // filters on both, and dispatch just above is
-                            // `available(name).filter(|_| !cx.is_withheld(name))`.
-                            // And `leak_guard_armed` is the third: that guard
-                            // refuses `Blind` as well, so when it is on there
-                            // is no blind route to name at all. Missing it put
-                            // `denial_remedy`'s own incident — a dead end
-                            // reached *by taking the exit* — back into the
-                            // refusal text one level up.
-                            let blind: Vec<&str> = if leak_guard_armed {
-                                Vec::new()
-                            } else {
-                                self.registry
-                                    .blind_senders()
-                                    .into_iter()
-                                    .filter(|n| !cx.is_withheld(n))
-                                    .collect()
-                            };
-                            if !blind.is_empty() {
-                                let names: Vec<String> =
-                                    blind.iter().map(|n| format!("`{n}`")).collect();
-                                reason.push_str(&format!(
-                                    " Still open, because you do not choose where they \
-                                     send: {}.",
-                                    names.join(", ")
-                                ));
-                            }
-                            reason
-                        } else {
-                            format!(
-                                "`{name}` sends data outside this machine, and this \
-                                 conversation contains private data. This session is \
-                                 configured to keep private data local \
-                                 (`[security] block_sends_after_private`), which refuses \
-                                 every send and not only the ones an injection could \
-                                 direct. Answer from what you already have, or ask the user \
-                                 to run the lookup separately."
-                            )
-                        };
-                        // The delegate route above covers fetching; the tool's
-                        // own remedy covers everything else. A refusal naming
-                        // neither teaches the operator to weaken `trifecta`
-                        // policy — the worst outcome of a control working
-                        // correctly. The measured dead end: shell denials
-                        // advised delegating to subagents, none of which had a
-                        // shell, while the actual fix (`[sandbox]`, one config
-                        // section) went unmentioned. The remedy is addressed
-                        // to the user — the model relays it and cannot act on
-                        // it, since config edits are not among its tools.
-                        // The cause, not just the fact: a remedy phrased
-                        // against the interlock is false when the leak guard
-                        // is what fired. See `DenialCause`.
-                        let cause = if leak_risk {
-                            DenialCause::Leak
-                        } else {
-                            DenialCause::Injection
-                        };
-                        let reason = match tool.denial_remedy(cause) {
-                            Some(remedy) => format!("{reason} {remedy}"),
-                            None => reason,
-                        };
-                        *blocked_sends += 1;
-                        tracing::warn!(tool = %name, "blocked outbound call: trifecta armed");
-                        emit(
-                            events,
-                            AgentEvent::ToolDenied {
-                                name: name.clone(),
-                                reason: reason.clone(),
-                            },
-                        );
-                        results[i] = Some(Block::ToolResult {
-                            tool_use_id: id.clone(),
-                            content: reason,
-                            is_error: true,
-                        });
-                        trace.push(ToolCallTrace {
-                            name: name.clone(),
-                            input: input.clone(),
-                            is_error: true,
-                            denied: true,
-                            blocked: true,
-                            unknown: false,
-                            staged: false,
-                        });
-                        denied_this_turn += 1;
-                        continue;
-                    }
-                    // Escalate to a human even for a tool that would normally
-                    // pass unapproved.
-                    // The text names the control that fired *and* its refusing
-                    // setting, because a headless approver's refusal repeats
-                    // it to the operator: telling someone whose `trifecta` is
-                    // already `allow` to set it to `block` tightens the wrong
-                    // knob and leaves the actual refusal in place.
-                    TrifectaPolicy::Ask => {
-                        // Same rule as the refusal above: name the control a
-                        // person actually has to decide about, which when
-                        // both fire is the broader one.
-                        escalation = Some(if !leak_risk {
-                            format!(
-                                "This conversation holds both private data and third-party \
-                                 content, and `{name}` can send data outside this machine \
-                                 (`[security] trifecta = \"ask\"`; `\"block\"` refuses instead)."
-                            )
-                        } else {
-                            format!(
-                                "This conversation holds private data, `{name}` can send data \
-                                 outside this machine, and this session keeps private data local \
-                                 (`[security] block_sends_after_private`)."
-                            )
-                        });
-                    }
-                    // `trifecta = "allow"` waives the injection interlock only.
-                    // The leak guard is a separate opt-in and still applies.
-                    TrifectaPolicy::Allow => {
-                        if leak_risk {
-                            escalation = Some(format!(
-                                "This conversation holds private data, `{name}` can send data \
-                                 outside this machine, and this session keeps private data local \
-                                 (`[security] block_sends_after_private`)."
-                            ));
-                        }
-                    }
-                }
-            }
-
-            // A tool whose call is itself a person's decision says so
-            // (`Tool::needs_a_person`), and takes a door of its own —
-            // `escalate_access`, which no permission mode answers either, and
-            // which a surface may answer where it refuses the interlock's
-            // `escalate` (a voice call: the grant goes to the page's card).
-            //
-            // Remembered apart from the interlock's: `blocked_sends` counts
-            // the sends the harness refused, and a jail request nobody was
-            // there to answer is not one.
-            let send_escalation = escalation.is_some();
-            // The grant a yes creates, when the question is a file tool's
-            // "may I reach this folder" (`ToolCtx::ask_for_path`): added below,
-            // on `Allow` only, before the call runs.
-            let mut on_yes: Option<crate::grant::Grant> = None;
-            if escalation.is_none() {
-                if let Some(ask) = tool.needs_a_person(input, &cx.tools) {
-                    escalation = Some(ask.why);
-                    on_yes = ask.grant;
-                }
-            }
-
-            // What a *staged* call will really execute, computed here rather
-            // than at the staging site thirty lines below, so the hook and the
-            // store are handed the same object.
-            //
-            // A release runs `args`, not the bytes the model sent, and
-            // `release` runs no hooks — so `pre_tool` is the last mechanical
-            // gate a routed call passes, and it was reading arguments that a
-            // pinned default had not reached yet. A hook written to deny sends
-            // from one mailbox never saw the `account` the draft would
-            // actually send from. It could not loosen anything (a hook only
-            // denies, so less information means fewer denials), which is why
-            // this was a consistency gap rather than a hole — but it is the
-            // gap this branch's own rule closes everywhere else: the machine
-            // judge and the human one read the same bytes.
-            //
-            // Only when routed. For a call that executes immediately the raw
-            // input *is* what runs, so raw is what a hook should judge, and
-            // filling there would put `with_schema_defaults` on the path of
-            // every tool in the registry to buy nothing.
-            let staged =
-                routed.then(|| crate::tool::with_schema_defaults(&tool.input_schema(), input));
-            // `judged_input`, not `judged`: further down, `judged` is a bool
-            // meaning *whether this call reaches a judge at all*. Two
-            // opposite senses of one word in one function is a thing a
-            // later reader resolves wrongly.
-            let judged_input = staged.as_ref().map_or(input, |(args, _)| args);
-
-            // Hooks decide before the human is asked: a mechanical denial is
-            // cheaper than an interruption, and a hook cannot be talked into
-            // clicking yes. The interlock above still ran first — a hook can
-            // narrow policy, never loosen security.
-            if cx.hooks.watches_tools() {
-                if let crate::hooks::HookVerdict::Deny(reason) = cx
-                    .hooks
-                    .pre_tool(name, judged_input, &cx.tools.workspace)
-                    .await
-                {
-                    emit(
-                        events,
-                        AgentEvent::ToolDenied {
-                            name: name.clone(),
-                            reason: reason.clone(),
-                        },
-                    );
-                    results[i] = Some(Block::ToolResult {
-                        tool_use_id: id.clone(),
-                        content: format!("Blocked by a hook: {reason}"),
-                        is_error: true,
-                    });
-                    trace.push(ToolCallTrace {
-                        name: name.clone(),
-                        input: input.clone(),
-                        is_error: true,
-                        denied: true,
-                        blocked: true,
-                        unknown: false,
-                        staged: false,
-                    });
+                Checked::Refused(content) => {
                     denied_this_turn += 1;
-                    continue;
+                    (content, true)
                 }
-            }
-
-            // Stage a routed call instead of executing it. After the hook gate
-            // (a hook narrows policy for drafts too, and fails closed) and
-            // instead of the approver — nothing executes, so there is nothing
-            // to approve; the user's review of the staged item is the
-            // approval, later and out of band.
-            if routed {
-                let route = cx.outbox.as_ref().expect("routed implies a route");
-                let (staged_args, filled_defaults) =
-                    staged.expect("routed implies the fill was computed above");
-                match route.store.stage(
-                    name,
-                    route.kind_of(name),
-                    // Pinned, not passed through. A draft is executed
-                    // verbatim whenever the user gets round to releasing it,
-                    // so an argument the *server* would resolve at that
-                    // moment is one the reviewer cannot see and the harness
-                    // cannot promise: `mail_send` with no `account` is a
-                    // letter with no return address until minutes after it
-                    // was approved. `with_schema_defaults` materialises what
-                    // the schema itself declares, so the draft says which
-                    // mailbox it leaves from and still says it if the default
-                    // moves in between.
-                    staged_args,
-                    *taint,
-                    crate::outbox::Provenance {
-                        anticipation: {
-                            let goal = cx.tools.goal_track.as_ref().and_then(|g| g.anchor());
-                            Some(
-                                cx.tools
-                                    .appraisal_evidence
-                                    .as_ref()
-                                    .and_then(|b| b.for_draft(goal.as_ref()))
-                                    .map(|e| (e, crate::anticipation::Source::Owner))
-                                    .unwrap_or_else(|| {
-                                        (
-                                            crate::anticipation::Evidence {
-                                                goal,
-                                                ..crate::anticipation::Evidence::default()
-                                            },
-                                            crate::anticipation::Source::Harness,
-                                        )
-                                    }),
-                            )
-                        },
-                        session_id: route.session_id(),
-                        // The jail this call was drafted under. A release
-                        // happens in another process from another directory,
-                        // and a staged path means nothing without the root it
-                        // was written against. A tool constructed over a fixed
-                        // directory (a server spawned once for many runs)
-                        // resolves its paths against that root, not the
-                        // per-run workspace — so the item records the root the
-                        // release will really execute under, or a relative
-                        // path drafted against the wide root resolves outside
-                        // the narrow one forever.
-                        workspace: Some(
-                            tool.fixed_workspace()
-                                .unwrap_or_else(|| cx.tools.workspace.clone()),
-                        ),
-                        // The anchor `outbox_source` walks the transcript to
-                        // find. Identity, not a guess from the arguments: the
-                        // fill above means the stored draft no longer equals
-                        // the `tool_use` input the session recorded, and a
-                        // content match would run past the staging call and
-                        // join the draft to itself.
-                        call_id: Some(id.clone()),
-                        // Which arguments were the harness's, so the source
-                        // join can tell them from the model's. A pinned
-                        // constant is not a fact about what this run read.
-                        filled_defaults,
-                    },
-                ) {
-                    Ok(item) => {
-                        // The review sentence is the surface's when it has
-                        // one: "review it with `mecha outbox`" is true at a
-                        // terminal and false on a call, and a model repeats
-                        // what it is told. For a *message* only: a publish's
-                        // reviewable object is the rendered page on every
-                        // surface (`OutboxKind::Publish`), so no surface can
-                        // promise to review one any other way — a spoken
-                        // hint on a publish told the model the listener
-                        // would be asked aloud, and they never are (review
-                        // of #228).
-                        let review = match item.kind {
-                            crate::outbox::OutboxKind::Message => cx.tools.review_hint.as_deref(),
-                            crate::outbox::OutboxKind::Publish => None,
-                        }
-                        .unwrap_or(
-                            "The user will review it with `mecha outbox` and \
-                             release or reject it.",
-                        );
-                        let mut content = format!(
-                            "Drafted, not sent: this call is staged in the outbox as \
-                             `{}`. {} Report it to the user as a draft \
-                             awaiting their release — never as done — and do not \
-                             retry the call.",
-                            item.id, review
-                        );
-                        if cx.tools.goal_guidance {
-                            if let Some(p) = item
-                                .predictions
-                                .last()
-                                .and_then(|p| p.known())
-                                .filter(|p| !p.assessment.kinds.is_empty())
-                            {
-                                content.push_str("\nAnticipatory guidance: ");
-                                content.push_str(p.assessment.response.guidance());
-                            }
-                        }
-                        emit(
-                            events,
-                            AgentEvent::ToolResult {
-                                id: id.clone(),
-                                name: name.clone(),
-                                is_error: false,
-                                content: content.clone(),
-                            },
-                        );
-                        results[i] = Some(Block::ToolResult {
-                            tool_use_id: id.clone(),
-                            content,
-                            is_error: false,
-                        });
-                        trace.push(ToolCallTrace {
-                            name: name.clone(),
-                            input: input.clone(),
-                            is_error: false,
-                            denied: false,
-                            blocked: false,
-                            unknown: false,
-                            staged: true,
-                        });
-                    }
-                    // Fail closed: a call that could not be staged must not
-                    // fall through to execution — that would make a full disk
-                    // the way around the review.
-                    Err(e) => {
-                        let content = format!(
-                            "`{name}` is routed through the outbox, and staging \
-                             failed: {e:#}. Nothing was sent. Tell the user."
-                        );
-                        emit(
-                            events,
-                            AgentEvent::ToolResult {
-                                id: id.clone(),
-                                name: name.clone(),
-                                is_error: true,
-                                content: content.clone(),
-                            },
-                        );
-                        results[i] = Some(Block::ToolResult {
-                            tool_use_id: id.clone(),
-                            content,
-                            is_error: true,
-                        });
-                        trace.push(ToolCallTrace {
-                            name: name.clone(),
-                            input: input.clone(),
-                            is_error: true,
-                            denied: false,
-                            blocked: false,
-                            unknown: false,
-                            staged: false,
-                        });
-                        denied_this_turn += 1;
-                    }
-                }
-                continue;
-            }
-
-            // Approval rules, after the interlock and the hook and before the
-            // approver. A rule narrows what the approver would have passed:
-            // `forbid` refuses with nobody asked (machine policy, `Blocked`),
-            // `prompt` asks even for a read-only tool, `allow` says no
-            // person needs asking — through `Approver::permit`, so the
-            // approver's own mode still applies. An escalation is never
-            // softened by a rule: the interlock chose to put a person in
-            // front of this call, and a config line is not that person.
-            //
-            // Consulted *always*, escalation or not. The first version skipped
-            // the rules under an escalation so that `allow` could not soften
-            // one — and discarded `forbid` with it, the one ruling stricter
-            // than asking a person. With `ask` and an armed conversation, a
-            // `forbid` on the sender was never read and a human yes ran it:
-            // the operator's standing word was weakest in exactly the state
-            // the interlock considers most dangerous. `Allow < Prompt < Forbid`
-            // has to hold at that boundary too, so `forbid` is checked first
-            // and only `allow`/`prompt` yield to the escalation.
-            // Whoever is asked sees the call *as it will execute*, defaults
-            // and all — a card that omits a schema-defaulted argument is
-            // asking for a decision about a call it is not showing. That is
-            // now **five** doors, not one: `escalate`, `escalate_access`,
-            // `consult`, `permit` and `approve` each put a call in front of
-            // somebody, and the first three most need it, since each exists
-            // precisely to make a person look.
-            //
-            // `decide` reads the filled call too, and that is deliberate:
-            // a rule is policy over the call **as it will execute**, so the
-            // machine judge and the human one read the same bytes. Leaving
-            // them split would have been a reasoning trap rather than a live
-            // hole — a `forbid` keyed on a defaulted argument would not have
-            // fired on the value the harness pins, while the pinned value sat
-            // plainly in the arguments a reader can see. (#143's author ruled
-            // on this; the practical exposure was near zero, since `shell`'s
-            // only judged argument is `command` and nothing declares a default
-            // for it today.)
-            //
-            // **The `pre_tool` hook above reads the same call, when routed.**
-            // It judges the pinned arguments for a staged call — computed
-            // once above the hook and handed to the store below it — and the
-            // raw ones otherwise, because for a call that executes
-            // immediately the raw input *is* what runs. That was a gap until
-            // this branch closed it: `release` runs no hooks, so the hook is
-            // the last mechanical gate a routed call passes, and a hook
-            // written to deny sends from one mailbox could not see the
-            // account the draft would send from.
-            //
-            // Still not on every call's path. A read-only tool with no rule
-            // over it and no escalation reaches no judge at all, and
-            // `rules_for` is the cheap way to ask whether one exists.
-            //
-            use crate::policy::RuleDecision;
-            let judged = escalation.is_some()
-                || !tool.read_only()
-                || cx.policy.rules_for(name).next().is_some();
-            let filled =
-                judged.then(|| crate::tool::with_schema_defaults(&tool.input_schema(), input).0);
-            let shown = filled.as_ref().unwrap_or(input);
-            // Judged on both, and **never below what the raw call earns**. A
-            // declared default may *raise* a ruling — a `forbid` keyed on a
-            // pinned argument has to fire — and must never lower one.
-            //
-            // The direction matters because the schema is the judged party's
-            // own declaration. `decide` reads only `command`; a patterned rule
-            // with none in the raw call returns `Prompt`, and a filled one can
-            // reach `Allow`, which routes to `permit`, which a headless
-            // approver answers yes to. A third-party MCP server could then
-            // relax the operator's standing word by declaring a default — and
-            // the call still executes the bytes the *model* sent, so the
-            // judged call and the executed one need not even agree. `Allow <
-            // Prompt < Forbid` has to hold at this boundary, which is the same
-            // rule that says a hook may narrow policy and never loosen it.
-            let ruling = match (cx.policy.decide(name, input), cx.policy.decide(name, shown)) {
-                (Some(raw), Some(filled)) if filled.decision > raw.decision => Some(filled),
-                (Some(raw), _) => Some(raw),
-                (None, filled) => filled,
+                Checked::Staged(content) => (content, false),
             };
-            let rule = ruling.as_ref().map(|r| r.decision);
-            let decision = match (&escalation, rule) {
-                (_, Some(RuleDecision::Forbid)) => {
-                    let reason = ruling.map(|r| r.reason).unwrap_or_default();
-                    tracing::info!(tool = %name, "forbidden by an approval rule");
-                    Some(Decision::Blocked(reason))
-                }
-                (Some(why), _) if send_escalation => {
-                    Some(cx.approver.escalate(tool.as_ref(), shown, why).await)
-                }
-                // The tool's own question — a grant — through its own door,
-                // which a surface may answer where it refuses sends.
-                (Some(why), _) => {
-                    Some(cx.approver.escalate_access(tool.as_ref(), shown, why).await)
-                }
-                (None, Some(RuleDecision::Prompt)) => {
-                    // `consult`, not `approve`: a standing yes on the tool is
-                    // exactly what a `prompt` rule must not be answered by.
-                    let why = ruling.map(|r| r.reason).unwrap_or_default();
-                    Some(cx.approver.consult(tool.as_ref(), shown, &why).await)
-                }
-                (None, Some(RuleDecision::Allow)) if !tool.read_only() => {
-                    Some(cx.approver.permit(tool.as_ref(), shown).await)
-                }
-                (None, Some(RuleDecision::Allow)) => None,
-                (None, None) if !tool.read_only() => {
-                    Some(cx.approver.approve(tool.as_ref(), shown).await)
-                }
-                (None, None) => None,
-            };
-            if let (Some(Decision::Allow), Some(grant)) = (&decision, on_yes.take()) {
-                // A grant the list cannot take is a call that will be refused
-                // by the jail it was meant to open — said there, not here.
-                if let Err(e) = cx.tools.grants.add(grant) {
-                    tracing::warn!(tool = %name, "an approved grant was not added: {e:#}");
-                }
-            }
-            if let Some(decision) = decision {
-                // The prefix is chosen by *who* refused, never by the approver:
-                // an approver that could pick its own label could label machine
-                // policy as a user correction and teach a rule from silence.
-                let refusal = match &decision {
-                    Decision::Allow => None,
-                    Decision::Deny(reason) => {
-                        Some((format!("Denied by the user: {reason}"), reason.clone()))
-                    }
-                    Decision::Blocked(reason) => {
-                        Some((format!("Blocked by policy: {reason}"), reason.clone()))
-                    }
-                };
-                if let Some((content, reason)) = refusal {
-                    // An escalation that ends `Blocked` is a send the harness
-                    // refused — on every headless surface `ask` ends exactly
-                    // so — and `RunStats`/`runlog` read `blocked_sends` as the
-                    // whole count of those. A person's `Deny` is not counted:
-                    // that is a correction, and the trace's `denied` has it.
-                    if send_escalation && matches!(decision, Decision::Blocked(_)) {
-                        *blocked_sends += 1;
-                    }
-                    emit(
-                        events,
-                        AgentEvent::ToolDenied {
-                            name: name.clone(),
-                            reason: reason.clone(),
-                        },
-                    );
-                    results[i] = Some(Block::ToolResult {
-                        tool_use_id: id.clone(),
-                        content,
-                        is_error: true,
-                    });
-                    trace.push(ToolCallTrace {
-                        name: name.clone(),
-                        input: input.clone(),
-                        is_error: true,
-                        denied: true,
-                        blocked: matches!(decision, Decision::Blocked(_)),
-                        unknown: false,
-                        staged: false,
-                    });
-                    denied_this_turn += 1;
-                    continue;
-                }
-            }
-
-            approved.push((i, Arc::clone(tool), id.clone(), name.clone(), input.clone()));
+            results[i] = Some(Block::ToolResult {
+                tool_use_id: id.clone(),
+                content,
+                is_error,
+            });
         }
 
         // What the run has done, as of now. Folded after the gate rather than
@@ -6141,7 +5311,24 @@ impl Agent {
             .with_denied(denied_this_turn)
             .in_run(cx.tools.work.map(|w| w.run).unwrap_or_default());
 
-        let executed =
+        // A program's host calls (`CODE-MODE-DESIGN.md` §7) come back here,
+        // through a channel stamped on the context of each call whose tool
+        // hosts programs, and are served below while the batch executes: one
+        // gate, not a copy of one, and against the live taint, so each host
+        // call arms the conversation before its program resumes. No channel
+        // exists when no call in the batch hosts a program. Each such call's
+        // result is rendered at its share of the turn's budget, the same
+        // `result_cap` computed below for every result, so the program can
+        // lay its ending out to survive the cut.
+        let hosts = approved.iter().any(|(_, tool, ..)| tool.hosts_programs());
+        let host_cap = (output_budget / approved.len().max(1)).max(crate::tool::SPILL_FLOOR_BYTES);
+        let (host_tx, mut host_rx) = if hosts {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
+        let executing =
             futures::future::join_all(approved.into_iter().map(|(i, tool, id, name, input)| {
                 // Stamp the call's own id onto the context it runs under, so
                 // a tool that contains a run — a subagent — can tag the
@@ -6156,54 +5343,47 @@ impl Agent {
                 // per-turn value can live. The `else` arm is gone: `context`
                 // is `Some` on any run with a compaction threshold, which is
                 // every run against a provider that declares its window.
-                let tool_ctx = Arc::new(ToolCtx {
-                    call_id: Some(id.clone()),
-                    taint: Some(turn_taint),
-                    recorded_taint: Some(recorded_taint),
+                let host_calls = host_tx
+                    .as_ref()
+                    .filter(|_| tool.hosts_programs())
+                    .map(|tx| crate::tool::code::HostCalls::new(tx.clone(), &id, host_cap));
+                let tool_ctx = Self::call_ctx(
+                    cx,
+                    &id,
+                    turn_taint,
+                    recorded_taint,
                     context,
-                    work: Some(work),
-                    ..(*cx.tools).clone()
-                });
+                    work,
+                    host_calls,
+                );
                 async move {
-                    use futures::FutureExt as _;
-                    // A panicking tool must cost the call, not the run. Without
-                    // the catch, `join_all` unwound out of `run_in` with the
-                    // assistant's `tool_use` already pushed and no result for
-                    // it — the TUI reported the conversation lost, and Slack's
-                    // spawned task simply never sent its completion, so the
-                    // thread's conversation vanished.
-                    let called = std::panic::AssertUnwindSafe(tool.call(input, &tool_ctx))
-                        .catch_unwind()
-                        .await;
-                    let out = match called {
-                        Ok(Ok(out)) => out,
-                        // A tool that returns Err failed in a way it didn't
-                        // anticipate; tell the model so it can try something
-                        // else.
-                        // Plain `err`, not marked external: an `Err` is the
-                        // tool failing before or beside the wire — a missing
-                        // argument, a refused path — and its text is the
-                        // harness's or the tool's own. Provenance is marked
-                        // where the wire was actually touched (`McpTool::call`,
-                        // `http_fetch`'s arms, `web_search`), which is the
-                        // `Capabilities::untrusted_input` vs
-                        // `ToolOutput::external` distinction CLAUDE.md draws;
-                        // marking here by declared reach armed the untrusted
-                        // leg on `http_fetch({})` with no packet sent.
-                        Ok(Err(e)) => ToolOutput::err(format!("tool `{name}` failed: {e:#}")),
-                        // A panic string is the harness's own words, never
-                        // third-party content — so plain `err`, not
-                        // `harness_error`, whatever the tool's declared reach.
-                        Err(payload) => {
-                            let message = panic_message(payload.as_ref());
-                            tracing::error!(tool = %name, %message, "tool panicked");
-                            ToolOutput::err(format!("tool `{name}` panicked: {message}"))
-                        }
-                    };
+                    let out = Self::execute(&tool, &name, input, &tool_ctx).await;
                     (i, id, name, out)
                 }
-            }))
-            .await;
+            }));
+        // Only the calls' contexts hold a sender now, so the serving loop ends
+        // when the last of them is done.
+        drop(host_tx);
+        let executed = match host_rx.as_mut() {
+            None => executing.await,
+            Some(rx) => {
+                let serving = self.serve_host_calls(
+                    cx,
+                    rx,
+                    trace,
+                    taint,
+                    blocked_sends,
+                    run_pictures,
+                    context,
+                );
+                futures::pin_mut!(executing);
+                futures::pin_mut!(serving);
+                match futures::future::select(executing, serving).await {
+                    futures::future::Either::Left((executed, _)) => executed,
+                    futures::future::Either::Right(((), executing)) => executing.await,
+                }
+            }
+        };
 
         // The turn's results share one byte budget, divided equally across
         // the batch — the calls land together, so an unbounded one starves
@@ -6227,12 +5407,7 @@ impl Agent {
             // failure); or, with no host, awaited here — linked to this run's
             // cancellation, so the call behaves as it did before it deferred
             // (`docs/BACKGROUND-JOBS-DESIGN.md` §2.1–2.2).
-            let terms = crate::jobs::Terms {
-                cap: result_cap,
-                caps: self.registry.get(&name).map(|t| t.capabilities()),
-                spill_dir: cx.tools.spill_dir.clone(),
-                mark_untrusted: cx.tools.security.mark_untrusted_output,
-            };
+            let terms = self.terms(cx, &name, result_cap);
             if let Some(job) = out.deferred.take() {
                 job.set_terms(terms.clone());
                 // **A sender is never deferred.** The interlock cleared this
@@ -6341,10 +5516,13 @@ impl Agent {
                 };
             }
             provenance.insert(id.clone(), out.external);
-            // Capped, taint armed from what actually ran, and an outside
-            // result marked as data: one function for this result and a
-            // late one (`jobs::settle`), so the two cannot drift.
-            out = crate::jobs::settle(&name, &id, out, &terms, taint);
+            // The gate's last step, then the rendering (`CODE-MODE-DESIGN.md`
+            // §7): taint armed from what actually ran, read off the raw
+            // result; then capped, and an outside result marked as data. The
+            // same two functions `jobs::settle` composes for a late result,
+            // so the two cannot drift.
+            crate::jobs::arm(&out, &terms, taint);
+            out = crate::jobs::render(&name, &id, out, &terms);
 
             // Only for a model that can see: to one that cannot, the image
             // would render as a placeholder line every turn for the life of
@@ -6393,15 +5571,7 @@ impl Agent {
             // (`denied_this_turn` is deliberately not incremented: it was
             // consumed earlier in the turn, before execution, and a dead
             // add here would claim an effect it cannot have.)
-            trace.push(ToolCallTrace {
-                name: name.clone(),
-                input: calls[i].2.clone(),
-                is_error: out.is_error,
-                denied: out.refusal,
-                blocked: out.refusal,
-                unknown: false,
-                staged: false,
-            });
+            trace.push(ToolCallTrace::ran(&name, &calls[i].2, &out));
             emit(
                 events,
                 AgentEvent::ToolResult {
@@ -6424,6 +5594,1257 @@ impl Agent {
         let mut blocks: Vec<Block> = results.into_iter().flatten().collect();
         blocks.append(&mut pictures);
         (blocks, provenance)
+    }
+
+    /// What a batch of calls will arm, forecast from declared reach before
+    /// any of it runs: `taint`, widened by each named tool's capabilities
+    /// and by any job still out. Only ever gated against, never recorded
+    /// (see its use in [`Agent::dispatch`]).
+    fn turn_taint<'a>(
+        &self,
+        cx: &RunContext,
+        taint: Taint,
+        names: impl IntoIterator<Item = &'a String>,
+    ) -> Taint {
+        let mut turn_taint = taint;
+        // And a job still out from an earlier turn (`JobSink::pending_tools`):
+        // its result has not arrived, so its declared reach gates this turn's
+        // sends as the result would — and arms nothing, since it may come back
+        // clean (`docs/BACKGROUND-JOBS-DESIGN.md` §4).
+        let pending = cx
+            .jobs
+            .as_ref()
+            .map(|j| j.pending_tools())
+            .unwrap_or_default();
+        for name in names {
+            if let Some(tool) = self.registry.get(name) {
+                let caps = tool.capabilities();
+                turn_taint.private |= caps.private_data;
+                turn_taint.untrusted |= caps.untrusted_input;
+            }
+        }
+        // A pending job's tool this registry no longer holds (a binding
+        // switch rebuilt it) is unknown reach, and unknown is the widest —
+        // as `jobs::settle` reads unset terms (review of #583).
+        for name in &pending {
+            let caps = self.registry.get(name).map(|t| t.capabilities()).unwrap_or(
+                crate::tool::Capabilities {
+                    private_data: true,
+                    untrusted_input: true,
+                    ..Default::default()
+                },
+            );
+            turn_taint.private |= caps.private_data;
+            turn_taint.untrusted |= caps.untrusted_input;
+        }
+        turn_taint
+    }
+
+    /// How a result of `name` is armed and rendered: `cap` bytes, the tool's
+    /// declared reach, the spill directory, and whether an outside result
+    /// is wrapped (`[security] mark_untrusted_output`).
+    fn terms(&self, cx: &RunContext, name: &str, cap: usize) -> crate::jobs::Terms {
+        crate::jobs::Terms {
+            cap,
+            caps: self.registry.get(name).map(|t| t.capabilities()),
+            spill_dir: cx.tools.spill_dir.clone(),
+            mark_untrusted: cx.tools.security.mark_untrusted_output,
+        }
+    }
+
+    /// The gate half of one call, with no rendering (`CODE-MODE-DESIGN.md`
+    /// §7): every check [`Agent::dispatch`] makes, in its order
+    /// ([`Agent::check`]), then the call run and `taint` armed from the raw
+    /// result. What comes back is the output **as the tool gave it**: never
+    /// capped at `output_budget_bytes`, never spilled behind `CAP_MARKER`,
+    /// never inside the untrusted-content wrapper. A refusal or a staging
+    /// notice comes back as the gate's own words, its events emitted and
+    /// its trace entry pushed exactly as in a turn.
+    ///
+    /// **Its caller is a program's host call** (`CODE-MODE-DESIGN.md` §7, "the
+    /// gate exists; what is missing is a caller from inside a tool"): a call
+    /// a running `code` tool makes, which cannot take `dispatch_one` (that
+    /// wants `&mut Conversation`, mints a `harness_` id and re-arms from the
+    /// messages) and must not take the rendering, because a handle over
+    /// rendered bytes would be a view of truncated text plus wrapper tags.
+    /// [`Agent::serve_host_calls`] is that caller, and what it needs is
+    /// settled as follows (review of #764):
+    /// - **Never prompt.** Host calls run inside the concurrent phase, behind
+    ///   tools already executing, so §7 has them *refuse* where a turn's call
+    ///   would ask: with `asking` at [`Asking::Refuse`], a call that
+    ///   `needs_a_person` would escalate, one a `prompt` rule matches, and
+    ///   one the approver would be asked about are each `Blocked` by policy
+    ///   in [`Agent::check`], in the order a turn's call meets them, and no
+    ///   approver door is opened. Grants that already exist still resolve.
+    ///   [`Asking::Person`] is the turn's gate exactly.
+    /// - **Arm before resume.** `taint` is the conversation's live taint, the
+    ///   one the next host call is gated against, and the program does not
+    ///   resume until this returns: the next call's interlock sees what this
+    ///   one read ([`Agent::serve_host_calls`]).
+    /// - **Render once, on the way back into the context.** The raw output
+    ///   stays in the program; what re-enters the context (printed output,
+    ///   `peek`, the `code` call's own result) is rendered with the `code`
+    ///   call's own result, once, by `dispatch`.
+    ///
+    /// `run_pictures` is the run's own, so a call of a tool this run already
+    /// started a job of meets the same one-picture refusal it would in a
+    /// turn. (No admitted read defers today — `image_generate` is `Render`
+    /// — so in practice it never applies to a host call.) A deferred half
+    /// runs inline, as it does on a run with no host queue: a host call has
+    /// no transcript slot for a late result. An image is left on the output
+    /// and arms `private` here, whether or not a model ever sees it.
+    /// Post-tool hooks and the result event belong to what re-enters the
+    /// context, so they are the caller's too.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn gate(
+        &self,
+        cx: &RunContext,
+        call: &(String, String, Value),
+        events: &Option<UnboundedSender<AgentEvent>>,
+        trace: &mut Vec<ToolCallTrace>,
+        taint: &mut Taint,
+        blocked_sends: &mut u32,
+        run_pictures: &mut RunPictures,
+        context: Option<crate::pressure::Forecast>,
+        asking: Asking,
+    ) -> Gated {
+        let (id, name, input) = call;
+        let grants_before = cx.tools.grants.live();
+        let turn_taint = self.turn_taint(cx, *taint, [name]);
+        let recorded_taint = *taint;
+        let checked = self
+            .check(
+                cx,
+                call,
+                events,
+                trace,
+                turn_taint,
+                taint,
+                blocked_sends,
+                run_pictures,
+                asking,
+            )
+            .await;
+        let tool = match checked {
+            Checked::Cleared(tool) => tool,
+            Checked::Refused(content) => return Gated::Refused(content),
+            Checked::Staged(content) => return Gated::Staged(content),
+        };
+        let work =
+            crate::step::Work::of(trace).in_run(cx.tools.work.map(|w| w.run).unwrap_or_default());
+        let tool_ctx = Self::call_ctx(cx, id, turn_taint, recorded_taint, context, work, None);
+        let mut output = Self::execute(&tool, name, input.clone(), &tool_ctx).await;
+        let terms = self.terms(
+            cx,
+            name,
+            cx.tools
+                .output_budget_bytes
+                .max(crate::tool::SPILL_FLOOR_BYTES),
+        );
+        if let Some(job) = output.deferred.take() {
+            job.set_terms(terms.clone());
+            output = crate::jobs::run_inline(&job, cx.cancel.as_ref()).await;
+        }
+        crate::jobs::arm(&output, &terms, taint);
+        if output.image.is_some() {
+            taint.private = true;
+        }
+        trace.push(ToolCallTrace::ran(name, input, &output));
+        if cx.tools.grants.live() != grants_before {
+            emit(events, AgentEvent::Grants(cx.tools.grants.all()));
+        }
+        Gated::Ran { output, terms }
+    }
+
+    /// Serve the host calls of the programs running in this batch, until the
+    /// last call holding a channel is done (`CODE-MODE-DESIGN.md` §7).
+    ///
+    /// One request at a time, in the order they arrive: each host call takes
+    /// [`Agent::gate`] in [`Asking::Refuse`], against the conversation's live
+    /// `taint`, which it arms from the raw result before the reply lets the
+    /// program resume. Two programs in one batch therefore see each other's
+    /// reads in their interlock, as two turns would. A host call emits no
+    /// events of its own (its card is the `code` call's), and every trace
+    /// entry it pushes is tagged `in_program`, so `tool_calls`,
+    /// `tool_errors` and `tool_denied` keep counting through a program.
+    #[allow(clippy::too_many_arguments)]
+    async fn serve_host_calls(
+        &self,
+        cx: &RunContext,
+        requests: &mut tokio::sync::mpsc::UnboundedReceiver<crate::tool::code::HostRequest>,
+        trace: &mut Vec<ToolCallTrace>,
+        taint: &mut Taint,
+        blocked_sends: &mut u32,
+        run_pictures: &mut RunPictures,
+        context: Option<crate::pressure::Forecast>,
+    ) {
+        use crate::tool::code::{HostAnswer, HostRequest};
+        let mut made = 0u32;
+        while let Some(request) = requests.recv().await {
+            match request {
+                HostRequest::Reach { admission, reply } => {
+                    let _ = reply.send(self.program_reach(cx, &admission));
+                }
+                HostRequest::Call {
+                    call_id,
+                    name,
+                    input,
+                    reply,
+                } => {
+                    made += 1;
+                    let call = (format!("{call_id}.host-{made}"), name, input);
+                    let before = trace.len();
+                    let gated = self
+                        .gate(
+                            cx,
+                            &call,
+                            &None,
+                            trace,
+                            taint,
+                            blocked_sends,
+                            run_pictures,
+                            context,
+                            Asking::Refuse,
+                        )
+                        .await;
+                    for t in &mut trace[before..] {
+                        t.in_program = true;
+                    }
+                    let _ = reply.send(match gated {
+                        Gated::Refused(why) => HostAnswer::Refused(why),
+                        Gated::Staged(notice) => HostAnswer::Staged(notice),
+                        Gated::Ran { output, .. } => HostAnswer::Ran(output),
+                    });
+                }
+                HostRequest::Pass { pass, reply } => {
+                    let _ = reply.send(self.serve_pass(cx, &pass).await);
+                }
+            }
+        }
+    }
+
+    /// One sub-call pass (`CODE-MODE-DESIGN.md` §4), served here because the
+    /// run's provider and model are here: **the model the run already
+    /// holds**, never another (on the router, naming another preset would
+    /// swap the resident model and evict every slot). Awaited in line, so a
+    /// batch's passes and host calls go one at a time (R7), and dropped with
+    /// this loop when the program ends, which is how a Stop reaches a pass
+    /// in flight; the run's token ends the wait too.
+    ///
+    /// Refused unsent, in the harness's words, on a provider with
+    /// structured output off (never parsed from prose by hope) or one that
+    /// is not local (R8). The request is `local_only` as well, so a provider
+    /// that is not local refuses it, and a `Failover` sends it to no
+    /// fallback that is not local: the check here is for the clear message,
+    /// the request is the enforcement. A failure is named by its class,
+    /// never by a body the server sent, which can echo the prompt.
+    async fn serve_pass(
+        &self,
+        cx: &RunContext,
+        pass: &crate::tool::code::Pass,
+    ) -> crate::tool::code::PassAnswer {
+        use crate::tool::code::PassAnswer;
+        if !self.provider.structured_output() {
+            return PassAnswer::Refused(
+                "this run's provider has structured output disabled, so no pass was sent: a \
+                 sub-call's answer is decoded against a schema, never parsed from prose \
+                 (`structured_output` on a provider whose endpoint was verified)"
+                    .into(),
+            );
+        }
+        if !self.provider.local() {
+            return PassAnswer::Refused(
+                "this run's provider is not local (a `local` provider on a loopback address), \
+                 and a sub-call sends a handle's bytes to the model, so no pass was sent"
+                    .into(),
+            );
+        }
+        let req = pass.request(&self.model);
+        let cancel = cx.cancel.clone().unwrap_or_default();
+        let result = tokio::select! {
+            r = self.provider.complete(&req, None) => r,
+            () = cancel.cancelled() => {
+                return PassAnswer::Failed("stopped: the run was cancelled".into());
+            }
+        };
+        match result {
+            Ok(resp) => PassAnswer::Answered(resp),
+            Err(e) => PassAnswer::Failed(crate::tool::code::pass_failure(&e)),
+        }
+    }
+
+    /// The names a starting program may call (§2): `admission`, as the
+    /// `code` tool was built with it, narrowed by what this run withholds:
+    /// an active skill restriction, the run's withheld list, and a `forbid`
+    /// rule on the tool. A narrowed tool is not in the program's function
+    /// list at all, and the gate still checks each call.
+    ///
+    /// Refused when this agent's own registry admits a different set: that is
+    /// a `code` built over another run's registry (a parent's, cloned into a
+    /// child) or before the last registration, whose declared capabilities
+    /// would not be this run's.
+    fn program_reach(
+        &self,
+        cx: &RunContext,
+        admission: &crate::tool::code::Admission,
+    ) -> std::result::Result<Vec<String>, String> {
+        let here = crate::tool::code::Admission::over(&self.registry, |n| {
+            cx.outbox.as_ref().is_some_and(|o| o.routes(n))
+        });
+        if here != *admission {
+            return Err(format!(
+                "Blocked by policy: this `code` tool was built over a different set of tools \
+                 than this run's ({} admitted there, {} here), so nothing ran. It must be built \
+                 over the registry of the run it serves, after the last registration; a \
+                 subagent builds its own, never a clone of its parent's.",
+                admission.len(),
+                here.len()
+            ));
+        }
+        let no_input = Value::Object(Default::default());
+        Ok(admission
+            .names()
+            .filter(|n| self.registry.available(n).is_some() && !cx.is_withheld(n))
+            .filter(|n| {
+                cx.policy.decide(n, &no_input).map(|r| r.decision)
+                    != Some(crate::policy::RuleDecision::Forbid)
+            })
+            .map(str::to_string)
+            .collect())
+    }
+
+    /// The context one call runs under: the run's, stamped with the call's
+    /// id, the taint forecast it was gated against, what was recorded
+    /// before its batch, the context forecast and the run's work so far.
+    ///
+    /// `host_calls` is the program channel, for a tool that
+    /// [`hosts_programs`](crate::tool::Tool::hosts_programs) and for no
+    /// other: every context is built with it set here, so none inherits one
+    /// from the run's own (`CODE-MODE-DESIGN.md` §7).
+    fn call_ctx(
+        cx: &RunContext,
+        id: &str,
+        turn_taint: Taint,
+        recorded_taint: Taint,
+        context: Option<crate::pressure::Forecast>,
+        work: crate::step::Work,
+        host_calls: Option<crate::tool::code::HostCalls>,
+    ) -> Arc<ToolCtx> {
+        Arc::new(ToolCtx {
+            call_id: Some(id.to_string()),
+            taint: Some(turn_taint),
+            recorded_taint: Some(recorded_taint),
+            context,
+            work: Some(work),
+            host_calls,
+            ..(*cx.tools).clone()
+        })
+    }
+
+    /// Run one cleared call, a panic or an `Err` turned into an error
+    /// result: the output exactly as the tool gave it, uncapped and
+    /// unwrapped.
+    async fn execute(
+        tool: &Arc<dyn crate::tool::Tool>,
+        name: &str,
+        input: Value,
+        tool_ctx: &ToolCtx,
+    ) -> ToolOutput {
+        use futures::FutureExt as _;
+        // A panicking tool must cost the call, not the run. Without
+        // the catch, `join_all` unwound out of `run_in` with the
+        // assistant's `tool_use` already pushed and no result for
+        // it — the TUI reported the conversation lost, and Slack's
+        // spawned task simply never sent its completion, so the
+        // thread's conversation vanished.
+        let called = std::panic::AssertUnwindSafe(tool.call(input, tool_ctx))
+            .catch_unwind()
+            .await;
+        match called {
+            Ok(Ok(out)) => out,
+            // A tool that returns Err failed in a way it didn't
+            // anticipate; tell the model so it can try something
+            // else.
+            // Plain `err`, not marked external: an `Err` is the
+            // tool failing before or beside the wire — a missing
+            // argument, a refused path — and its text is the
+            // harness's or the tool's own. Provenance is marked
+            // where the wire was actually touched (`McpTool::call`,
+            // `http_fetch`'s arms, `web_search`), which is the
+            // `Capabilities::untrusted_input` vs
+            // `ToolOutput::external` distinction CLAUDE.md draws;
+            // marking here by declared reach armed the untrusted
+            // leg on `http_fetch({})` with no packet sent.
+            Ok(Err(e)) => ToolOutput::err(format!("tool `{name}` failed: {e:#}")),
+            // A panic string is the harness's own words, never
+            // third-party content — so plain `err`, not
+            // `harness_error`, whatever the tool's declared reach.
+            Err(payload) => {
+                let message = panic_message(payload.as_ref());
+                tracing::error!(tool = %name, %message, "tool panicked");
+                ToolOutput::err(format!("tool `{name}` panicked: {message}"))
+            }
+        }
+    }
+
+    /// One call's checks, in the order every call meets them: a repeat of
+    /// this run's picture, the phase gate, the restriction, arguments that
+    /// never parsed, the trifecta interlock against `turn_taint` (the
+    /// conversation's taint, this batch's declared reach and any job still
+    /// out), the `pre_tool` hooks, outbox staging, the approval rules and
+    /// the approver. The checking half of [`Agent::dispatch`]'s per-call
+    /// body, and of [`Agent::gate`]; nothing here runs the tool.
+    ///
+    /// A call settled here has its refusal events emitted and its trace
+    /// entry pushed; the caller only places the result. `taint` is what
+    /// staging records on a draft: the conversation's, before this batch.
+    ///
+    /// `asking` says whether a call that would put a question to a person may
+    /// do so: a turn's call may ([`Asking::Person`]); a program's host call
+    /// may not ([`Asking::Refuse`]), and is refused there instead.
+    #[allow(clippy::too_many_arguments)]
+    async fn check(
+        &self,
+        cx: &RunContext,
+        call: &(String, String, Value),
+        events: &Option<UnboundedSender<AgentEvent>>,
+        trace: &mut Vec<ToolCallTrace>,
+        turn_taint: Taint,
+        taint: &Taint,
+        blocked_sends: &mut u32,
+        run_pictures: &mut RunPictures,
+        asking: Asking,
+    ) -> Checked {
+        let (id, name, input) = call;
+        // What a person watching should see: `Tool::review_input`, not
+        // the raw input, which is still what executes. A read-only call
+        // like `web_open` reaches no approver, so the transcript is where
+        // it is seen — and a handle alone there names no host at all
+        // (found in review of #284). Events are display-only by contract,
+        // so nothing downstream acts on the enriched copy.
+        let shown = self
+            .registry
+            .get(name)
+            .map(|t| t.review_input(input))
+            .unwrap_or_else(|| input.clone());
+        emit(
+            events,
+            AgentEvent::ToolCall {
+                id: id.clone(),
+                name: name.clone(),
+                input: shown,
+            },
+        );
+
+        // One picture per run (IMAGE-DESIGN.md §5.5): a deferred job of a
+        // tool already started in this run is never started again in it.
+        // The repeat is not run, and the run's next request closes it.
+        if run_pictures.started.contains(name) {
+            let content = format!(
+                "Not run: `{name}` was already started in this run, and its result is on \
+                 its way. Answer the owner now."
+            );
+            run_pictures.repeated = true;
+            run_pictures.note_repeat(name);
+            emit(
+                events,
+                AgentEvent::ToolResult {
+                    id: id.clone(),
+                    name: name.clone(),
+                    is_error: true,
+                    content: content.clone(),
+                },
+            );
+            trace.push(ToolCallTrace {
+                name: name.clone(),
+                input: input.clone(),
+                is_error: true,
+                denied: true,
+                blocked: true,
+                unknown: false,
+                staged: false,
+                in_program: false,
+            });
+            return Checked::Refused(content);
+        }
+
+        // Filtering the advertised list is not enough on its own: the
+        // tool was in the prompt on an earlier turn, and the model may
+        // simply call it from memory.
+        if let Some(tool) = self.registry.get(name) {
+            if !cx.phase.allows(tool.read_only()) {
+                let content = format!(
+                    "`{name}` is not available while planning. Work out what to do \
+                     and say so; leave the phase to carry it out."
+                );
+                trace.push(ToolCallTrace {
+                    name: name.clone(),
+                    input: input.clone(),
+                    is_error: true,
+                    denied: true,
+                    blocked: true,
+                    unknown: false,
+                    staged: false,
+                    in_program: false,
+                });
+                emit(
+                    events,
+                    AgentEvent::ToolDenied {
+                        name: name.to_string(),
+                        reason: "planning phase".into(),
+                    },
+                );
+                emit(
+                    events,
+                    AgentEvent::ToolResult {
+                        id: id.clone(),
+                        name: name.clone(),
+                        is_error: true,
+                        content: content.clone(),
+                    },
+                );
+                return Checked::Refused(content);
+            }
+        }
+
+        // `available`, not `get`: a tool the active restriction excludes is
+        // genuinely out of reach rather than merely absent from the spec
+        // list, or narrowing would be advisory the moment a model named a
+        // tool it remembered from three turns ago.
+        // The run's own withholding, ahead of the registry's: a tool this
+        // run may not dispatch is out of reach exactly as one outside an
+        // active skill restriction is, and lands on the same refusal
+        // below rather than a second spelling of it.
+        let Some(tool) = self
+            .registry
+            .available(name)
+            .filter(|_| !cx.is_withheld(name))
+        else {
+            // Two different answers wearing one shape. A tool that is
+            // registered but outside the active restriction was *withheld
+            // by policy*; one that was never registered is a name the
+            // model invented. Recording both as `unknown` counts the
+            // harness working as an environment failure, and
+            // `RunStats::merge` reads `unknown || (is_error && !denied)`
+            // into the tool-error rate that `doctor` thresholds at 25% and
+            // the candidate gate scores against — the same mistake as
+            // `"Blocked by a hook:"` being mined as a user correction.
+            let withheld = self.registry.get(name).is_some();
+            debug_assert!(
+                !withheld || cx.is_withheld(name) || self.registry.available(name).is_none()
+            );
+            let content = if withheld {
+                format!(
+                    "Blocked by policy: `{name}` is withheld by an active restriction \
+                     for this run. Available: {}",
+                    self.registry.available_names().join(", ")
+                )
+            } else {
+                format!(
+                    "{NO_TOOL_NAMED}{name}`. Available: {}",
+                    self.registry.available_names().join(", ")
+                )
+            };
+            emit(
+                events,
+                AgentEvent::ToolResult {
+                    id: id.clone(),
+                    name: name.clone(),
+                    is_error: true,
+                    content: content.clone(),
+                },
+            );
+            trace.push(ToolCallTrace {
+                name: name.clone(),
+                input: input.clone(),
+                is_error: true,
+                denied: withheld,
+                blocked: withheld,
+                unknown: !withheld,
+                staged: false,
+                in_program: false,
+            });
+            return Checked::Refused(content);
+        };
+
+        // Arguments that never parsed are not a call: running the tool on
+        // `__malformed_arguments` gets an answer about a field the model
+        // never sent ("Nothing to draw"), which says nothing of what went
+        // wrong — and a call cut off at the output limit was retried that
+        // way four times. Said here, by what happened (`unreadable_call`).
+        if input.get("__malformed_arguments").is_some() {
+            let content = unreadable_call(input);
+            emit(
+                events,
+                AgentEvent::ToolResult {
+                    id: id.clone(),
+                    name: name.clone(),
+                    is_error: true,
+                    content: content.clone(),
+                },
+            );
+            trace.push(ToolCallTrace {
+                name: name.clone(),
+                input: input.clone(),
+                is_error: true,
+                denied: false,
+                blocked: false,
+                unknown: false,
+                staged: false,
+                in_program: false,
+            });
+            return Checked::Refused(content);
+        }
+
+        let caps = tool.capabilities();
+
+        // An outbox-routed call is never executed here — it is staged as a
+        // draft the user reviews out of band (below, after the hook gate).
+        let routed = cx.outbox.as_ref().is_some_and(|o| o.routes(name));
+
+        // The trifecta interlock. Checked before the approver, because a
+        // human clicking "yes" is exactly what an injection is trying to
+        // engineer — and because the rule is structural, not a judgement.
+        //
+        // `Some(why)` sends the call to `Approver::escalate` instead of
+        // `approve`: a human must see it even where policy would have
+        // passed it. A bool that merely forced `approve` was the hole —
+        // `ModeApprover { Allow }` (eval, replay, `--yes`) answers yes
+        // with nobody consulted, so `trifecta = "ask"` silently equalled
+        // `"allow"` on every headless surface.
+        let mut escalation: Option<String> = None;
+
+        // Two different controls, guarding two different threats. The
+        // trifecta interlock stops an injection driving exfiltration; the
+        // leak guard stops private data leaving at all. The second is off
+        // by default because it breaks ordinary work.
+        // `turn_taint`, not `taint`: see its definition — a send batched
+        // alongside the read that arms it must not slip through.
+        //
+        // They key off *different egress classes*, and that is the whole
+        // of `docs/EGRESS-DESIGN.md`. An injection can only be *directed*
+        // at an attacker when the attacker picks the recipient, so the
+        // interlock fires on `Egress::Chosen` alone. A blind send — one
+        // whose destination is fixed by operator config and absent from
+        // the tool's input schema — still carries private data to a third
+        // party, which is the leak guard's threat, not the interlock's.
+        //
+        // The leak guard's *conversation* half, named once because two
+        // places need it and they must not drift: `leak_risk` here, and
+        // the refusal text below, which must not advertise a blind route
+        // this guard closes.
+        let leak_guard_armed = cx.tools.security.block_sends_after_private && turn_taint.private;
+        let injection_risk = turn_taint.trifecta_armed() && caps.egress == Egress::Chosen;
+        let leak_risk = leak_guard_armed && caps.can_send();
+
+        // A routed call skips the interlock: staging sends nothing — the
+        // draft lands in a local file, and release requires the user to
+        // read exactly what would leave. The item records this
+        // conversation's taint so the review can say "possibly an
+        // attacker's words" out loud.
+        if !routed && (injection_risk || leak_risk) {
+            match cx.tools.security.trifecta {
+                TrifectaPolicy::Block => {
+                    // **The binding control explains, and remedies.**
+                    // The two risks are not exclusive: with the leak guard
+                    // on, an armed conversation and a `Chosen` tool, both
+                    // fire. The leak guard is then the broader one — it
+                    // refuses regardless of class — so it is what will
+                    // still be refusing after the operator acts on
+                    // anything the interlock said. Leading with the
+                    // interlock there sends them to a fix that changes
+                    // nothing: "start a fresh session that touches only
+                    // one of the two" is refused too, and for `web_search`
+                    // "add a blind backend" lands on a second refusal
+                    // carrying no remedy at all. That is `DenialCause`'s
+                    // own incident, and the hint forty lines up already
+                    // guards against it; this is the half that did not.
+                    let reason = if !leak_risk {
+                        let mut reason = format!(
+                            "`{name}` can send data outside this machine, and this \
+                             conversation already contains both private data and \
+                             third-party content. Refusing: text in that content could be \
+                             instructing you to exfiltrate. Summarise for the user \
+                             instead, or start a fresh session that touches only one of \
+                             the two. Delegating the read to a subagent does not help: a \
+                             child inherits this conversation's taint and is refused the \
+                             same way."
+                        );
+                        // The refusal used to name a "safe delegate" — a
+                        // registered tool that reads the outside world,
+                        // holds no private data and cannot send. No such
+                        // tool exists any more: every production reader of
+                        // the outside world is a sender (the query string
+                        // is the channel), and a subagent derives
+                        // `external_send` from its children for the same
+                        // reason. Delegation before the conversation arms
+                        // is the remedy, and it is TRIFECTA.md's to teach,
+                        // not this refusal's.
+                        //
+                        // What *is* named is the blind class: tools whose
+                        // destination the operator fixed and the model
+                        // cannot name. Those are untouched by this
+                        // interlock, so a refusal that did not mention
+                        // them would hide the one route still open and
+                        // teach the reader that reading the web is over.
+                        // Asked of the registry as a class, so the loop
+                        // still never learns which tools exist.
+                        // Three ways a named route can be closed, and
+                        // all three have to be checked here, because a
+                        // refusal that names a closed exit is worse than
+                        // one that names none: the model spends a call
+                        // discovering it, and the operator learns the
+                        // advice is noise.
+                        //
+                        // `leak_guard_armed` is belt-and-braces rather
+                        // than load-bearing, and saying so is the point:
+                        // inside this arm `injection_risk` holds, so the
+                        // tool is `Chosen`, so `can_send()` is true, so
+                        // `leak_risk == leak_guard_armed` — and the arm's
+                        // own `!leak_risk` already implies it false. Kept
+                        // because it states the intent locally and
+                        // survives a change to the arm condition; noted
+                        // because a reader should not mistake it for the
+                        // thing doing the work.
+                        //
+                        // `blind_senders` covers the surface restriction.
+                        // `is_withheld` is the other way a name is
+                        // registered and undispatchable — `escapes`
+                        // filters on both, and dispatch just above is
+                        // `available(name).filter(|_| !cx.is_withheld(name))`.
+                        // And `leak_guard_armed` is the third: that guard
+                        // refuses `Blind` as well, so when it is on there
+                        // is no blind route to name at all. Missing it put
+                        // `denial_remedy`'s own incident — a dead end
+                        // reached *by taking the exit* — back into the
+                        // refusal text one level up.
+                        let blind: Vec<&str> = if leak_guard_armed {
+                            Vec::new()
+                        } else {
+                            self.registry
+                                .blind_senders()
+                                .into_iter()
+                                .filter(|n| !cx.is_withheld(n))
+                                .collect()
+                        };
+                        if !blind.is_empty() {
+                            let names: Vec<String> =
+                                blind.iter().map(|n| format!("`{n}`")).collect();
+                            reason.push_str(&format!(
+                                " Still open, because you do not choose where they \
+                                 send: {}.",
+                                names.join(", ")
+                            ));
+                        }
+                        reason
+                    } else {
+                        format!(
+                            "`{name}` sends data outside this machine, and this \
+                             conversation contains private data. This session is \
+                             configured to keep private data local \
+                             (`[security] block_sends_after_private`), which refuses \
+                             every send and not only the ones an injection could \
+                             direct. Answer from what you already have, or ask the user \
+                             to run the lookup separately."
+                        )
+                    };
+                    // The delegate route above covers fetching; the tool's
+                    // own remedy covers everything else. A refusal naming
+                    // neither teaches the operator to weaken `trifecta`
+                    // policy — the worst outcome of a control working
+                    // correctly. The measured dead end: shell denials
+                    // advised delegating to subagents, none of which had a
+                    // shell, while the actual fix (`[sandbox]`, one config
+                    // section) went unmentioned. The remedy is addressed
+                    // to the user — the model relays it and cannot act on
+                    // it, since config edits are not among its tools.
+                    // The cause, not just the fact: a remedy phrased
+                    // against the interlock is false when the leak guard
+                    // is what fired. See `DenialCause`.
+                    let cause = if leak_risk {
+                        DenialCause::Leak
+                    } else {
+                        DenialCause::Injection
+                    };
+                    let reason = match tool.denial_remedy(cause) {
+                        Some(remedy) => format!("{reason} {remedy}"),
+                        None => reason,
+                    };
+                    *blocked_sends += 1;
+                    tracing::warn!(tool = %name, "blocked outbound call: trifecta armed");
+                    emit(
+                        events,
+                        AgentEvent::ToolDenied {
+                            name: name.clone(),
+                            reason: reason.clone(),
+                        },
+                    );
+                    trace.push(ToolCallTrace {
+                        name: name.clone(),
+                        input: input.clone(),
+                        is_error: true,
+                        denied: true,
+                        blocked: true,
+                        unknown: false,
+                        staged: false,
+                        in_program: false,
+                    });
+                    return Checked::Refused(reason);
+                }
+                // Escalate to a human even for a tool that would normally
+                // pass unapproved.
+                // The text names the control that fired *and* its refusing
+                // setting, because a headless approver's refusal repeats
+                // it to the operator: telling someone whose `trifecta` is
+                // already `allow` to set it to `block` tightens the wrong
+                // knob and leaves the actual refusal in place.
+                TrifectaPolicy::Ask => {
+                    // Same rule as the refusal above: name the control a
+                    // person actually has to decide about, which when
+                    // both fire is the broader one.
+                    escalation = Some(if !leak_risk {
+                        format!(
+                            "This conversation holds both private data and third-party \
+                             content, and `{name}` can send data outside this machine \
+                             (`[security] trifecta = \"ask\"`; `\"block\"` refuses instead)."
+                        )
+                    } else {
+                        format!(
+                            "This conversation holds private data, `{name}` can send data \
+                             outside this machine, and this session keeps private data local \
+                             (`[security] block_sends_after_private`)."
+                        )
+                    });
+                }
+                // `trifecta = "allow"` waives the injection interlock only.
+                // The leak guard is a separate opt-in and still applies.
+                TrifectaPolicy::Allow => {
+                    if leak_risk {
+                        escalation = Some(format!(
+                            "This conversation holds private data, `{name}` can send data \
+                             outside this machine, and this session keeps private data local \
+                             (`[security] block_sends_after_private`)."
+                        ));
+                    }
+                }
+            }
+        }
+
+        // A tool whose call is itself a person's decision says so
+        // (`Tool::needs_a_person`), and takes a door of its own —
+        // `escalate_access`, which no permission mode answers either, and
+        // which a surface may answer where it refuses the interlock's
+        // `escalate` (a voice call: the grant goes to the page's card).
+        //
+        // Remembered apart from the interlock's: `blocked_sends` counts
+        // the sends the harness refused, and a jail request nobody was
+        // there to answer is not one.
+        let send_escalation = escalation.is_some();
+        // The grant a yes creates, when the question is a file tool's
+        // "may I reach this folder" (`ToolCtx::ask_for_path`): added below,
+        // on `Allow` only, before the call runs.
+        let mut on_yes: Option<crate::grant::Grant> = None;
+        if escalation.is_none() {
+            if let Some(ask) = tool.needs_a_person(input, &cx.tools) {
+                escalation = Some(ask.why);
+                on_yes = ask.grant;
+            }
+        }
+
+        // What a *staged* call will really execute, computed here rather
+        // than at the staging site thirty lines below, so the hook and the
+        // store are handed the same object.
+        //
+        // A release runs `args`, not the bytes the model sent, and
+        // `release` runs no hooks — so `pre_tool` is the last mechanical
+        // gate a routed call passes, and it was reading arguments that a
+        // pinned default had not reached yet. A hook written to deny sends
+        // from one mailbox never saw the `account` the draft would
+        // actually send from. It could not loosen anything (a hook only
+        // denies, so less information means fewer denials), which is why
+        // this was a consistency gap rather than a hole — but it is the
+        // gap this branch's own rule closes everywhere else: the machine
+        // judge and the human one read the same bytes.
+        //
+        // Only when routed. For a call that executes immediately the raw
+        // input *is* what runs, so raw is what a hook should judge, and
+        // filling there would put `with_schema_defaults` on the path of
+        // every tool in the registry to buy nothing.
+        let staged = routed.then(|| crate::tool::with_schema_defaults(&tool.input_schema(), input));
+        // `judged_input`, not `judged`: further down, `judged` is a bool
+        // meaning *whether this call reaches a judge at all*. Two
+        // opposite senses of one word in one function is a thing a
+        // later reader resolves wrongly.
+        let judged_input = staged.as_ref().map_or(input, |(args, _)| args);
+
+        // Hooks decide before the human is asked: a mechanical denial is
+        // cheaper than an interruption, and a hook cannot be talked into
+        // clicking yes. The interlock above still ran first — a hook can
+        // narrow policy, never loosen security.
+        if cx.hooks.watches_tools() {
+            if let crate::hooks::HookVerdict::Deny(reason) = cx
+                .hooks
+                .pre_tool(name, judged_input, &cx.tools.workspace)
+                .await
+            {
+                emit(
+                    events,
+                    AgentEvent::ToolDenied {
+                        name: name.clone(),
+                        reason: reason.clone(),
+                    },
+                );
+                trace.push(ToolCallTrace {
+                    name: name.clone(),
+                    input: input.clone(),
+                    is_error: true,
+                    denied: true,
+                    blocked: true,
+                    unknown: false,
+                    staged: false,
+                    in_program: false,
+                });
+                return Checked::Refused(format!("Blocked by a hook: {reason}"));
+            }
+        }
+
+        // Stage a routed call instead of executing it. After the hook gate
+        // (a hook narrows policy for drafts too, and fails closed) and
+        // instead of the approver — nothing executes, so there is nothing
+        // to approve; the user's review of the staged item is the
+        // approval, later and out of band.
+        if routed {
+            let route = cx.outbox.as_ref().expect("routed implies a route");
+            let (staged_args, filled_defaults) =
+                staged.expect("routed implies the fill was computed above");
+            return match route.store.stage(
+                name,
+                route.kind_of(name),
+                // Pinned, not passed through. A draft is executed
+                // verbatim whenever the user gets round to releasing it,
+                // so an argument the *server* would resolve at that
+                // moment is one the reviewer cannot see and the harness
+                // cannot promise: `mail_send` with no `account` is a
+                // letter with no return address until minutes after it
+                // was approved. `with_schema_defaults` materialises what
+                // the schema itself declares, so the draft says which
+                // mailbox it leaves from and still says it if the default
+                // moves in between.
+                staged_args,
+                *taint,
+                crate::outbox::Provenance {
+                    anticipation: {
+                        let goal = cx.tools.goal_track.as_ref().and_then(|g| g.anchor());
+                        Some(
+                            cx.tools
+                                .appraisal_evidence
+                                .as_ref()
+                                .and_then(|b| b.for_draft(goal.as_ref()))
+                                .map(|e| (e, crate::anticipation::Source::Owner))
+                                .unwrap_or_else(|| {
+                                    (
+                                        crate::anticipation::Evidence {
+                                            goal,
+                                            ..crate::anticipation::Evidence::default()
+                                        },
+                                        crate::anticipation::Source::Harness,
+                                    )
+                                }),
+                        )
+                    },
+                    session_id: route.session_id(),
+                    // The jail this call was drafted under. A release
+                    // happens in another process from another directory,
+                    // and a staged path means nothing without the root it
+                    // was written against. A tool constructed over a fixed
+                    // directory (a server spawned once for many runs)
+                    // resolves its paths against that root, not the
+                    // per-run workspace — so the item records the root the
+                    // release will really execute under, or a relative
+                    // path drafted against the wide root resolves outside
+                    // the narrow one forever.
+                    workspace: Some(
+                        tool.fixed_workspace()
+                            .unwrap_or_else(|| cx.tools.workspace.clone()),
+                    ),
+                    // The anchor `outbox_source` walks the transcript to
+                    // find. Identity, not a guess from the arguments: the
+                    // fill above means the stored draft no longer equals
+                    // the `tool_use` input the session recorded, and a
+                    // content match would run past the staging call and
+                    // join the draft to itself.
+                    call_id: Some(id.clone()),
+                    // Which arguments were the harness's, so the source
+                    // join can tell them from the model's. A pinned
+                    // constant is not a fact about what this run read.
+                    filled_defaults,
+                },
+            ) {
+                Ok(item) => {
+                    // The review sentence is the surface's when it has
+                    // one: "review it with `mecha outbox`" is true at a
+                    // terminal and false on a call, and a model repeats
+                    // what it is told. For a *message* only: a publish's
+                    // reviewable object is the rendered page on every
+                    // surface (`OutboxKind::Publish`), so no surface can
+                    // promise to review one any other way — a spoken
+                    // hint on a publish told the model the listener
+                    // would be asked aloud, and they never are (review
+                    // of #228).
+                    let review = match item.kind {
+                        crate::outbox::OutboxKind::Message => cx.tools.review_hint.as_deref(),
+                        crate::outbox::OutboxKind::Publish => None,
+                    }
+                    .unwrap_or(
+                        "The user will review it with `mecha outbox` and \
+                         release or reject it.",
+                    );
+                    let mut content = format!(
+                        "Drafted, not sent: this call is staged in the outbox as \
+                         `{}`. {} Report it to the user as a draft \
+                         awaiting their release — never as done — and do not \
+                         retry the call.",
+                        item.id, review
+                    );
+                    if cx.tools.goal_guidance {
+                        if let Some(p) = item
+                            .predictions
+                            .last()
+                            .and_then(|p| p.known())
+                            .filter(|p| !p.assessment.kinds.is_empty())
+                        {
+                            content.push_str("\nAnticipatory guidance: ");
+                            content.push_str(p.assessment.response.guidance());
+                        }
+                    }
+                    emit(
+                        events,
+                        AgentEvent::ToolResult {
+                            id: id.clone(),
+                            name: name.clone(),
+                            is_error: false,
+                            content: content.clone(),
+                        },
+                    );
+                    trace.push(ToolCallTrace {
+                        name: name.clone(),
+                        input: input.clone(),
+                        is_error: false,
+                        denied: false,
+                        blocked: false,
+                        unknown: false,
+                        staged: true,
+                        in_program: false,
+                    });
+                    Checked::Staged(content)
+                }
+                // Fail closed: a call that could not be staged must not
+                // fall through to execution — that would make a full disk
+                // the way around the review.
+                Err(e) => {
+                    let content = format!(
+                        "`{name}` is routed through the outbox, and staging \
+                         failed: {e:#}. Nothing was sent. Tell the user."
+                    );
+                    emit(
+                        events,
+                        AgentEvent::ToolResult {
+                            id: id.clone(),
+                            name: name.clone(),
+                            is_error: true,
+                            content: content.clone(),
+                        },
+                    );
+                    trace.push(ToolCallTrace {
+                        name: name.clone(),
+                        input: input.clone(),
+                        is_error: true,
+                        denied: false,
+                        blocked: false,
+                        unknown: false,
+                        staged: false,
+                        in_program: false,
+                    });
+                    Checked::Refused(content)
+                }
+            };
+        }
+
+        // Approval rules, after the interlock and the hook and before the
+        // approver. A rule narrows what the approver would have passed:
+        // `forbid` refuses with nobody asked (machine policy, `Blocked`),
+        // `prompt` asks even for a read-only tool, `allow` says no
+        // person needs asking — through `Approver::permit`, so the
+        // approver's own mode still applies. An escalation is never
+        // softened by a rule: the interlock chose to put a person in
+        // front of this call, and a config line is not that person.
+        //
+        // Consulted *always*, escalation or not. The first version skipped
+        // the rules under an escalation so that `allow` could not soften
+        // one — and discarded `forbid` with it, the one ruling stricter
+        // than asking a person. With `ask` and an armed conversation, a
+        // `forbid` on the sender was never read and a human yes ran it:
+        // the operator's standing word was weakest in exactly the state
+        // the interlock considers most dangerous. `Allow < Prompt < Forbid`
+        // has to hold at that boundary too, so `forbid` is checked first
+        // and only `allow`/`prompt` yield to the escalation.
+        // Whoever is asked sees the call *as it will execute*, defaults
+        // and all — a card that omits a schema-defaulted argument is
+        // asking for a decision about a call it is not showing. That is
+        // now **five** doors, not one: `escalate`, `escalate_access`,
+        // `consult`, `permit` and `approve` each put a call in front of
+        // somebody, and the first three most need it, since each exists
+        // precisely to make a person look.
+        //
+        // `decide` reads the filled call too, and that is deliberate:
+        // a rule is policy over the call **as it will execute**, so the
+        // machine judge and the human one read the same bytes. Leaving
+        // them split would have been a reasoning trap rather than a live
+        // hole — a `forbid` keyed on a defaulted argument would not have
+        // fired on the value the harness pins, while the pinned value sat
+        // plainly in the arguments a reader can see. (#143's author ruled
+        // on this; the practical exposure was near zero, since `shell`'s
+        // only judged argument is `command` and nothing declares a default
+        // for it today.)
+        //
+        // **The `pre_tool` hook above reads the same call, when routed.**
+        // It judges the pinned arguments for a staged call — computed
+        // once above the hook and handed to the store below it — and the
+        // raw ones otherwise, because for a call that executes
+        // immediately the raw input *is* what runs. That was a gap until
+        // this branch closed it: `release` runs no hooks, so the hook is
+        // the last mechanical gate a routed call passes, and a hook
+        // written to deny sends from one mailbox could not see the
+        // account the draft would send from.
+        //
+        // Still not on every call's path. A read-only tool with no rule
+        // over it and no escalation reaches no judge at all, and
+        // `rules_for` is the cheap way to ask whether one exists.
+        //
+        use crate::policy::RuleDecision;
+        let judged =
+            escalation.is_some() || !tool.read_only() || cx.policy.rules_for(name).next().is_some();
+        let filled =
+            judged.then(|| crate::tool::with_schema_defaults(&tool.input_schema(), input).0);
+        let shown = filled.as_ref().unwrap_or(input);
+        // Judged on both, and **never below what the raw call earns**. A
+        // declared default may *raise* a ruling — a `forbid` keyed on a
+        // pinned argument has to fire — and must never lower one.
+        //
+        // The direction matters because the schema is the judged party's
+        // own declaration. `decide` reads only `command`; a patterned rule
+        // with none in the raw call returns `Prompt`, and a filled one can
+        // reach `Allow`, which routes to `permit`, which a headless
+        // approver answers yes to. A third-party MCP server could then
+        // relax the operator's standing word by declaring a default — and
+        // the call still executes the bytes the *model* sent, so the
+        // judged call and the executed one need not even agree. `Allow <
+        // Prompt < Forbid` has to hold at this boundary, which is the same
+        // rule that says a hook may narrow policy and never loosen it.
+        let ruling = match (cx.policy.decide(name, input), cx.policy.decide(name, shown)) {
+            (Some(raw), Some(filled)) if filled.decision > raw.decision => Some(filled),
+            (Some(raw), _) => Some(raw),
+            (None, filled) => filled,
+        };
+        let rule = ruling.as_ref().map(|r| r.decision);
+        // A program's host call never opens a door (`CODE-MODE-DESIGN.md`
+        // §7): every branch below that would put the call in front of a
+        // person — an escalation, a `prompt` rule, the approver for a tool
+        // that is not read-only — is machine policy's no instead, after
+        // `forbid` and in the same order, so a host call is refused exactly
+        // where a turn's call would ask.
+        let refuse = asking == Asking::Refuse;
+        let would_ask = |why: &str| {
+            Some(Decision::Blocked(format!(
+                "a program's call never asks a person, and this one would have: {why}"
+            )))
+        };
+        let decision = match (&escalation, rule) {
+            (_, Some(RuleDecision::Forbid)) => {
+                let reason = ruling.map(|r| r.reason).unwrap_or_default();
+                tracing::info!(tool = %name, "forbidden by an approval rule");
+                Some(Decision::Blocked(reason))
+            }
+            (Some(why), _) if refuse => would_ask(why),
+            (None, Some(RuleDecision::Prompt)) if refuse => would_ask(&format!(
+                "an approval rule asks before `{name}` runs ({})",
+                ruling.map(|r| r.reason).unwrap_or_default()
+            )),
+            (None, Some(RuleDecision::Allow) | None) if refuse && !tool.read_only() => {
+                would_ask(&format!("`{name}` is not read-only, so it needs approval"))
+            }
+            (Some(why), _) if send_escalation => {
+                Some(cx.approver.escalate(tool.as_ref(), shown, why).await)
+            }
+            // The tool's own question — a grant — through its own door,
+            // which a surface may answer where it refuses sends.
+            (Some(why), _) => Some(cx.approver.escalate_access(tool.as_ref(), shown, why).await),
+            (None, Some(RuleDecision::Prompt)) => {
+                // `consult`, not `approve`: a standing yes on the tool is
+                // exactly what a `prompt` rule must not be answered by.
+                let why = ruling.map(|r| r.reason).unwrap_or_default();
+                Some(cx.approver.consult(tool.as_ref(), shown, &why).await)
+            }
+            (None, Some(RuleDecision::Allow)) if !tool.read_only() => {
+                Some(cx.approver.permit(tool.as_ref(), shown).await)
+            }
+            (None, Some(RuleDecision::Allow)) => None,
+            (None, None) if !tool.read_only() => {
+                Some(cx.approver.approve(tool.as_ref(), shown).await)
+            }
+            (None, None) => None,
+        };
+        if let (Some(Decision::Allow), Some(grant)) = (&decision, on_yes.take()) {
+            // A grant the list cannot take is a call that will be refused
+            // by the jail it was meant to open — said there, not here.
+            if let Err(e) = cx.tools.grants.add(grant) {
+                tracing::warn!(tool = %name, "an approved grant was not added: {e:#}");
+            }
+        }
+        if let Some(decision) = decision {
+            // The prefix is chosen by *who* refused, never by the approver:
+            // an approver that could pick its own label could label machine
+            // policy as a user correction and teach a rule from silence.
+            let refusal = match &decision {
+                Decision::Allow => None,
+                Decision::Deny(reason) => {
+                    Some((format!("Denied by the user: {reason}"), reason.clone()))
+                }
+                Decision::Blocked(reason) => {
+                    Some((format!("Blocked by policy: {reason}"), reason.clone()))
+                }
+            };
+            if let Some((content, reason)) = refusal {
+                // An escalation that ends `Blocked` is a send the harness
+                // refused — on every headless surface `ask` ends exactly
+                // so — and `RunStats`/`runlog` read `blocked_sends` as the
+                // whole count of those. A person's `Deny` is not counted:
+                // that is a correction, and the trace's `denied` has it.
+                if send_escalation && matches!(decision, Decision::Blocked(_)) {
+                    *blocked_sends += 1;
+                }
+                emit(
+                    events,
+                    AgentEvent::ToolDenied {
+                        name: name.clone(),
+                        reason: reason.clone(),
+                    },
+                );
+                trace.push(ToolCallTrace {
+                    name: name.clone(),
+                    input: input.clone(),
+                    is_error: true,
+                    denied: true,
+                    blocked: matches!(decision, Decision::Blocked(_)),
+                    unknown: false,
+                    staged: false,
+                    in_program: false,
+                });
+                return Checked::Refused(content);
+            }
+        }
+
+        Checked::Cleared(Arc::clone(tool))
     }
 }
 
@@ -6465,6 +6886,49 @@ pub struct Dispatched {
     pub blocked_sends: u32,
     /// The call as it happened, for the same records a turn's trace feeds.
     pub trace: Vec<ToolCallTrace>,
+}
+
+/// Whether a call that would put a question to a person may ask one
+/// ([`Agent::check`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Asking {
+    /// A turn's call, or a harness call: the escalation, a `prompt` rule and
+    /// the approver each ask as they always have.
+    Person,
+    /// A program's host call (`CODE-MODE-DESIGN.md` §7): each of those is
+    /// `Blocked` by policy instead, and nobody is asked.
+    Refuse,
+}
+
+/// What [`Agent::check`] made of one call.
+enum Checked {
+    /// Settled without running — a refusal, an unknown or withheld tool,
+    /// arguments that never parsed, a staging failure: an error result,
+    /// counted in the turn's `Work::denied`.
+    Refused(String),
+    /// Staged in the outbox: the notice is not an error, and nothing ran.
+    Staged(String),
+    /// Through every check: the tool to run.
+    Cleared(Arc<dyn crate::tool::Tool>),
+}
+
+/// What [`Agent::gate`] did with one call.
+pub(crate) enum Gated {
+    /// Settled at the gate without running, in the gate's own words.
+    Refused(String),
+    /// Staged in the outbox for review; nothing ran.
+    Staged(String),
+    /// Ran. `output` is raw — uncapped, unspilled, unwrapped — and the
+    /// conversation's taint is already armed from it; `terms` is what
+    /// [`jobs::render`](crate::jobs::render) applies to whatever of it
+    /// re-enters the context.
+    Ran {
+        output: ToolOutput,
+        /// Read by the test that pins the seam; a host call keeps the raw
+        /// bytes and is rendered with its `code` call instead.
+        #[cfg_attr(not(test), allow(dead_code))]
+        terms: crate::jobs::Terms,
+    },
 }
 
 /// The text of a panic payload, for the tool result and the log.
@@ -6593,6 +7057,9 @@ mod tests {
 
     #[async_trait]
     impl Provider for ScriptedProvider {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "scripted"
         }
@@ -6721,6 +7188,9 @@ mod tests {
         struct Shared(Arc<ScriptedProvider>);
         #[async_trait]
         impl Provider for Shared {
+            fn local(&self) -> bool {
+                true
+            }
             fn id(&self) -> &str {
                 self.0.id()
             }
@@ -7128,6 +7598,9 @@ mod tests {
         struct Eyes(Arc<ScriptedProvider>, bool);
         #[async_trait]
         impl Provider for Eyes {
+            fn local(&self) -> bool {
+                true
+            }
             fn id(&self) -> &str {
                 self.0.id()
             }
@@ -10036,6 +10509,9 @@ mod tests {
         struct Shared(Arc<OverflowScript>);
         #[async_trait]
         impl Provider for Shared {
+            fn local(&self) -> bool {
+                true
+            }
             fn id(&self) -> &str {
                 self.0.id()
             }
@@ -10530,6 +11006,190 @@ mod tests {
         assert_ne!(one.call_id, two.call_id);
         assert!(convo.taint.private, "armed as a turn would be");
         assert!(!one.staged);
+    }
+
+    /// An outside page longer than the result budget.
+    struct LongPage;
+    #[async_trait]
+    impl Tool for LongPage {
+        fn name(&self) -> &str {
+            "long_page"
+        }
+        fn description(&self) -> &str {
+            "Fetches a long web page."
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn read_only(&self) -> bool {
+            true
+        }
+        fn capabilities(&self) -> crate::tool::Capabilities {
+            crate::tool::Capabilities::default().untrusted()
+        }
+        async fn call(&self, _i: Value, _c: &ToolCtx) -> Result<ToolOutput> {
+            Ok(ToolOutput::ok(long_page_text()).from_outside())
+        }
+    }
+
+    fn long_page_text() -> String {
+        "a line of the page\n".repeat(1_000)
+    }
+
+    /// The seam `CODE-MODE-DESIGN.md` §7 asks for: the gate half hands back
+    /// a result past the budget whole, with no cap marker and no wrapper,
+    /// and with the taint already armed from it; rendering that same result
+    /// is exactly the block today's path (`dispatch_one`, through
+    /// `dispatch`) produces.
+    #[tokio::test]
+    async fn the_gate_hands_back_the_raw_result_and_rendering_it_is_todays_block() {
+        let (mut agent, _) =
+            agent_with_tools(Vec::new(), vec![Arc::new(LongPage)], PermissionMode::Allow);
+        agent.ctx_mut().output_budget_bytes = 5_000;
+        // No spill directory: a spill file's name carries a random tag, so
+        // two spills of one result never print the same marker.
+        agent.ctx_mut().spill_dir = None;
+        assert!(agent.context().tools.security.mark_untrusted_output);
+        let cx = Arc::clone(agent.context());
+        let raw = long_page_text();
+        assert!(raw.len() > cx.tools.output_budget_bytes);
+
+        let mut trace = Vec::new();
+        let mut taint = Taint::default();
+        let mut blocked_sends = 0;
+        let call = ("g1".to_string(), "long_page".to_string(), json!({}));
+        let gated = agent
+            .gate(
+                &cx,
+                &call,
+                &None,
+                &mut trace,
+                &mut taint,
+                &mut blocked_sends,
+                &mut RunPictures::default(),
+                None,
+                Asking::Person,
+            )
+            .await;
+        let Gated::Ran { output, terms } = gated else {
+            panic!("the call should have run");
+        };
+        assert_eq!(output.content, raw, "whole, as the tool gave it");
+        assert!(!output.content.contains(crate::tool::CAP_MARKER));
+        assert!(!output.content.contains("<untrusted-content"));
+        assert!(output.external);
+        assert!(taint.untrusted, "armed from the raw result");
+        assert_eq!(trace.len(), 1);
+        assert!(!trace[0].is_error && !trace[0].denied && !trace[0].blocked);
+
+        let mut convo = Conversation::user("x");
+        let today = agent
+            .dispatch_one(&cx, &mut convo, "long_page", json!({}), &None)
+            .await;
+        assert!(today.content.contains(crate::tool::CAP_MARKER));
+        assert!(today.content.starts_with("<untrusted-content"));
+        let rendered = crate::jobs::render("long_page", &today.call_id, output, &terms);
+        assert_eq!(rendered.content, today.content);
+        assert_eq!(rendered.is_error, today.is_error);
+        assert_eq!(convo.taint, taint, "both paths arm the same taint");
+    }
+
+    /// The gate half refuses as a turn's call is refused: the interlock, a
+    /// hook, a `forbid` rule (`Decision::Blocked`) and a person
+    /// (`Decision::Deny`), each in its own words and with its trace flags,
+    /// and none of them runs the tool.
+    #[tokio::test]
+    async fn the_gate_refuses_as_dispatch_does() {
+        async fn gate_once(
+            agent: &Agent,
+            name: &str,
+            taint: &mut Taint,
+        ) -> (Gated, ToolCallTrace, u32) {
+            let cx = Arc::clone(agent.context());
+            let mut trace = Vec::new();
+            let mut blocked_sends = 0;
+            let call = ("g1".to_string(), name.to_string(), json!({}));
+            let gated = agent
+                .gate(
+                    &cx,
+                    &call,
+                    &None,
+                    &mut trace,
+                    taint,
+                    &mut blocked_sends,
+                    &mut RunPictures::default(),
+                    None,
+                    Asking::Person,
+                )
+                .await;
+            assert_eq!(trace.len(), 1, "one trace entry per call");
+            (gated, trace.remove(0), blocked_sends)
+        }
+        fn refusal(gated: Gated) -> String {
+            match gated {
+                Gated::Refused(content) => content,
+                Gated::Staged(c) => panic!("staged: {c}"),
+                Gated::Ran { output, .. } => panic!("ran: {}", output.content),
+            }
+        }
+
+        // The interlock: `send` panics if it runs.
+        let agent = trifecta_agent(TrifectaPolicy::Block);
+        let armed = Taint {
+            private: true,
+            untrusted: true,
+        };
+        let mut taint = armed;
+        let (gated, t, blocked_sends) = gate_once(&agent, "send", &mut taint).await;
+        let content = refusal(gated);
+        assert!(
+            content.contains("can send data outside this machine"),
+            "{content}"
+        );
+        assert!(t.is_error && t.denied && t.blocked && !t.unknown && !t.staged);
+        assert_eq!(blocked_sends, 1);
+        assert_eq!(taint, armed, "a refusal arms nothing");
+
+        // A `pre_tool` hook.
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (mut agent, _) = agent_with(Vec::new(), PermissionMode::Allow);
+        agent
+            .registry
+            .insert(Arc::new(WatchedTool(Arc::clone(&ran))));
+        agent.set_hooks(hooked("echo not in this workspace; exit 2", Vec::new()));
+        let (gated, t, _) = gate_once(&agent, "watched", &mut Taint::default()).await;
+        assert_eq!(refusal(gated), "Blocked by a hook: not in this workspace");
+        assert!(t.is_error && t.denied && t.blocked);
+        assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
+
+        // A `forbid` rule: machine policy, `Decision::Blocked`.
+        let (mut agent, _) = agent_with(Vec::new(), PermissionMode::Allow);
+        agent.set_policy(rules(
+            r#"
+[[rule]]
+tool = "echo"
+decision = "forbid"
+justification = "echo is off on this box"
+"#,
+        ));
+        let (gated, t, _) = gate_once(&agent, "echo", &mut Taint::default()).await;
+        let content = refusal(gated);
+        assert!(content.starts_with("Blocked by policy:"), "{content}");
+        assert!(t.is_error && t.denied && t.blocked);
+
+        // A person's no: `Decision::Deny`, denied and never machine-blocked.
+        struct Says(Decision);
+        #[async_trait]
+        impl Approver for Says {
+            async fn approve(&self, _tool: &dyn Tool, _input: &Value) -> Decision {
+                self.0.clone()
+            }
+        }
+        let (mut agent, _) = agent_with(Vec::new(), PermissionMode::Allow);
+        agent.set_approver(Arc::new(Says(Decision::Deny("not that file".into()))));
+        let (gated, t, _) = gate_once(&agent, "fs_write", &mut Taint::default()).await;
+        assert_eq!(refusal(gated), "Denied by the user: not that file");
+        assert!(t.is_error && t.denied && !t.blocked);
     }
 
     #[tokio::test]
@@ -12641,6 +13301,9 @@ mod tests {
 
     #[async_trait]
     impl Provider for SizedProvider {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "sized"
         }
@@ -12695,6 +13358,9 @@ mod tests {
         struct Shared(Arc<SizedProvider>);
         #[async_trait]
         impl Provider for Shared {
+            fn local(&self) -> bool {
+                true
+            }
             fn id(&self) -> &str {
                 self.0.id()
             }
@@ -13326,6 +13992,9 @@ mod tests {
 
     #[async_trait]
     impl Provider for OverflowScript {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "overflow-script"
         }
@@ -13368,6 +14037,9 @@ mod tests {
         struct Shared(Arc<OverflowScript>);
         #[async_trait]
         impl Provider for Shared {
+            fn local(&self) -> bool {
+                true
+            }
             fn id(&self) -> &str {
                 self.0.id()
             }
@@ -13460,6 +14132,9 @@ mod tests {
         struct Shared(Arc<OverflowScript>);
         #[async_trait]
         impl Provider for Shared {
+            fn local(&self) -> bool {
+                true
+            }
             fn id(&self) -> &str {
                 self.0.id()
             }
@@ -13542,6 +14217,9 @@ mod tests {
         struct Shared(Arc<OverflowScript>);
         #[async_trait]
         impl Provider for Shared {
+            fn local(&self) -> bool {
+                true
+            }
             fn id(&self) -> &str {
                 self.0.id()
             }
@@ -17094,6 +17772,9 @@ mod tests {
         }
         #[async_trait]
         impl Provider for CancelsMidRun {
+            fn local(&self) -> bool {
+                true
+            }
             fn id(&self) -> &str {
                 "cancels"
             }
@@ -17134,6 +17815,9 @@ mod tests {
         struct Shared(Arc<CancelsMidRun>);
         #[async_trait]
         impl Provider for Shared {
+            fn local(&self) -> bool {
+                true
+            }
             fn id(&self) -> &str {
                 self.0.id()
             }
@@ -17228,6 +17912,9 @@ mod tests {
     struct StreamsThenHangs(CancellationToken);
     #[async_trait]
     impl Provider for StreamsThenHangs {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "hangs"
         }
@@ -18866,6 +19553,9 @@ mod tests {
 
     #[async_trait]
     impl Provider for StreamingScripted {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "scripted"
         }

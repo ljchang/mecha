@@ -8991,6 +8991,9 @@ mod contrast_prompt {
     struct Silent;
     #[async_trait::async_trait]
     impl crate::provider::Provider for Silent {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "silent"
         }
@@ -9108,6 +9111,9 @@ mod correction_attribution {
     struct Replies(String);
     #[async_trait::async_trait]
     impl crate::provider::Provider for Replies {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "replies"
         }

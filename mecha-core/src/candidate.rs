@@ -1940,6 +1940,7 @@ mod r36_tests {
             blocked: false,
             unknown: false,
             staged: true,
+            in_program: false,
         }]);
         let does_nothing = arm(Vec::new());
         assert_eq!(verdict(&redrafts, &point), ProbeVerdict::Fail);

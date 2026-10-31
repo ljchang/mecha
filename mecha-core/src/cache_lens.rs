@@ -414,6 +414,7 @@ mod tests {
             cache_prompt: true,
             think: None,
             think_budget: None,
+            local_only: false,
             trailing_notes: 0,
             tool_choice: crate::message::ToolChoice::Auto,
         }

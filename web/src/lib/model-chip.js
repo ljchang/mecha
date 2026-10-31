@@ -184,3 +184,94 @@ export function outcomeNote(data, asked) {
   if (last.message) return { tone: 'warn', text: last.message };
   return null;
 }
+
+// ---- the catalog (MODEL-CATALOG-DESIGN §1) ----
+//
+// `model list --json` carries `catalog`: every model mecha can install here,
+// whether this machine's router can take one at all (`refusal`), and an
+// install under way. The chip offers the ones the router does not serve yet,
+// each with what tapping it would cost — the download and the memory — so the
+// tap that installs is an approval of numbers it has seen.
+
+/// GiB, one decimal: what the CLI says too.
+export function gib(bytes) {
+  return `${(bytes / 1073741824).toFixed(1)} GiB`;
+}
+
+/// Why nothing in the catalog can be installed here — this router is not
+/// mecha's, or the catalog could not be read — as a line the menu shows.
+/// A title on each greyed row is hover-only, so unreachable on a phone, and
+/// an empty section with no word reads as a build with no catalog (review
+/// of #727).
+export function catalogTrouble(data) {
+  return data?.catalog?.refusal ?? null;
+}
+
+/// The catalog models not served by `router`, as rows. A model this machine
+/// is not offered stays listed, refused with why — "offered at the 64, 128 GB tiers" is
+/// an answer, a missing row is not. With no router read yet nothing is
+/// offered: what is served is unknown, and an install over a model already
+/// there is a restart for nothing.
+export function available(data, router) {
+  const cat = data?.catalog;
+  if (!cat || !Array.isArray(cat.offers)) return [];
+  const all = data?.routers ?? [];
+  // Served is known from a reachable router; no followed router at all (a
+  // fresh install) serves none of the catalog by construction.
+  if (all.length && !router) return [];
+  const served = new Set((router?.models ?? []).map((m) => m.id));
+  return cat.offers
+    .filter((o) => !served.has(o.id))
+    .map((o) => {
+      const why = o.unfit ?? cat.refusal ?? null;
+      return {
+        id: o.id,
+        label: o.label,
+        note: o.note,
+        download: o.download_bytes ?? 0,
+        memoryMb: o.memory_mb ?? null,
+        provider: o.provider ?? null,
+        unfit: !!o.unfit,
+        disabled: !!why,
+        why,
+      };
+    });
+}
+
+/// What installing `row` costs, in one line.
+export function planLine(row) {
+  const parts = [`${gib(row.download)} to download`];
+  if (row.memoryMb != null) parts.push(`~${gib(row.memoryMb * 1048576)} in memory, in place of the loaded model`);
+  // The card is the approval `model add` asks for, so it names the config it
+  // writes, as the CLI's plan does (review of #727).
+  if (row.provider) parts.push(`writes [providers.${row.provider}] to your config`);
+  return parts.join(' · ');
+}
+
+/// The install under way, or null — the child's own progress record, which
+/// `model list` reports only while its process is alive.
+export function installing(data) {
+  return data?.catalog?.installing ?? null;
+}
+
+/// The line the menu shows for an install under way.
+export function installLine(p) {
+  if (!p) return null;
+  switch (p.phase) {
+    case 'fetching':
+      return p.total_bytes > 0
+        ? `downloading ${p.id} — ${gib(p.done_bytes)} of ${gib(p.total_bytes)}`
+        : `checking ${p.id}'s files`;
+    case 'restarting':
+      return `restarting the router with ${p.id} — once no run is using it`;
+    default:
+      return `installing ${p.id}`;
+  }
+}
+
+/// How often to re-read while an install runs: a download moves slowly, so
+/// a closed chip reads every 15 s and an open menu every 2 s.
+export function pollWhileInstalling(p, open) {
+  if (!p) return null;
+  return open ? 2000 : 15000;
+}

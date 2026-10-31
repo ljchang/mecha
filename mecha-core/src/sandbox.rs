@@ -79,10 +79,13 @@ pub enum Backend {
     /// macOS's own sandbox: `sandbox-exec` with a Seatbelt profile built per
     /// call ([`seatbelt`]) — deny by default, the program and the libraries
     /// its load commands name, the call's scratch directory, no network.
-    /// **Documents only** (`[documents] confine`, the default on a Mac):
-    /// `[sandbox]` refuses it for `shell` and MCP servers, whose confinement
-    /// narrows the capabilities a tool declares, until a shell's reach has
-    /// been measured under it (`Config::validate`).
+    /// **Never through `[sandbox]`.** It confines document extraction
+    /// (`[documents] confine`, the default on a Mac) and, under a profile of
+    /// its own that no config names, code mode's interpreter on a Mac
+    /// (`seatbelt::worker_profile`). `[sandbox]` refuses it for `shell` and
+    /// MCP servers, whose confinement narrows the capabilities a tool
+    /// declares, until a shell's reach has been measured under it
+    /// (`Config::validate`).
     Seatbelt,
 }
 
@@ -148,7 +151,8 @@ impl Default for SandboxConfig {
 
 /// Why `[sandbox]` refuses Seatbelt (`Backend::Seatbelt`'s doc).
 pub const SEATBELT_IS_DOCUMENTS_ONLY: &str =
-    "[sandbox] kind = \"seatbelt\" confines document extraction only ([documents] confine); \
+    "[sandbox] kind = \"seatbelt\" confines document extraction only ([documents] confine; \
+     code mode's interpreter has a Seatbelt profile of its own, which [sandbox] never names); \
      it is not measured against a shell's or an MCP server's reach, and their confinement is \
      what narrows the capabilities they declare. On a Mac use kind = \"docker\" for shell";
 

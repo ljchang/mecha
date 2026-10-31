@@ -243,17 +243,86 @@ pub fn registry_for(pool: &Registry, settings: &Settings) -> PersonaTools {
     registry_as(pool, "", settings)
 }
 
+fn persona_self(name: &str, settings: &Settings) -> crate::tool::PersonaSelf {
+    crate::tool::PersonaSelf {
+        name: name.to_string(),
+        display: settings.display.trim().to_string(),
+        character: settings.character.clone().filter(|c| !c.trim().is_empty()),
+        voice: settings.voice.clone().filter(|v| !v.trim().is_empty()),
+    }
+}
+
+/// Why a persona form is refused whichever path built it, or `None`: a form
+/// that changes things, or one whose send class on this install is above
+/// `ceiling` — `Blind` for the install's pool, `None` for a tool over the
+/// persona's own store, which has nothing to send.
+fn form_refusal(form: &dyn crate::tool::Tool, ceiling: Egress) -> Option<&'static str> {
+    // A persona's run is read-only (`setup::persona_agent`'s approver), so a
+    // form that says it changes things would be offered and then blocked at
+    // every call. Said here, by name, instead (review of #668: an MCP tool
+    // without `readOnlyHint` was exactly that).
+    if !form.read_only() {
+        return Some(
+            "a persona's chat is read-only, and this tool says it changes things \
+             (an MCP server's tool must declare readOnlyHint)",
+        );
+    }
+    let egress = form.capabilities().egress;
+    // `>=`, not `==`: exact today, and still exact if a class is ever added
+    // above `Chosen`.
+    if egress >= Egress::Chosen {
+        return Some(
+            "here it could send to a destination the model names (for web_search: \
+             no backend with a fixed destination is configured)",
+        );
+    }
+    if egress > ceiling {
+        return Some("it reads the persona's own store, and such a tool may never send");
+    }
+    None
+}
+
+/// Admit a tool built over the persona's own store — its files, its memory,
+/// later its world — which no install pool can hold, so `setup::persona_agent`
+/// builds it with the persona's path (PERSONA-LIFE-DESIGN.md §13, #776).
+/// Past [`registry_as`], through the same checks: its persona declaration, a
+/// read-only form with nothing to send, and for `answers = "files"`
+/// [`crate::tool::Tool::reaches_beyond_persona_files`], whose default withholds.
+/// A refusal joins `tools.refused`, shown to the owner like any other.
+pub fn admit_own(
+    tools: &mut PersonaTools,
+    tool: Arc<dyn crate::tool::Tool>,
+    name: &str,
+    settings: &Settings,
+) {
+    let refuse = |why| Refused {
+        tool: tool.name().to_string(),
+        why,
+    };
+    let refusal = match Arc::clone(&tool).for_persona_as(&persona_self(name, settings)) {
+        None => Some(refuse("a persona may never have it")),
+        Some(form) => match form_refusal(form.as_ref(), Egress::None) {
+            Some(why) => Some(refuse(why)),
+            None if settings.files.answers == Answers::Files
+                && form.reaches_beyond_persona_files() =>
+            {
+                Some(refuse("this persona answers from its files only"))
+            }
+            None => {
+                tools.registry.insert(form);
+                None
+            }
+        },
+    };
+    tools.refused.extend(refusal);
+}
+
 /// [`registry_for`], for the persona named `name`: each tool is asked for
 /// its form for *this* persona ([`crate::tool::Tool::for_persona_as`]), so
 /// `image_generate` knows that "self" is the persona's linked character
 /// (§8.6). The one a live chat is built with.
 pub fn registry_as(pool: &Registry, name: &str, settings: &Settings) -> PersonaTools {
-    let who = crate::tool::PersonaSelf {
-        name: name.to_string(),
-        display: settings.display.trim().to_string(),
-        character: settings.character.clone().filter(|c| !c.trim().is_empty()),
-        voice: settings.voice.clone().filter(|v| !v.trim().is_empty()),
-    };
+    let who = persona_self(name, settings);
     let mut registry = Registry::new();
     let mut refused = Vec::new();
     for name in &settings.tools.allow {
@@ -269,27 +338,11 @@ pub fn registry_as(pool: &Registry, name: &str, settings: &Settings) -> PersonaT
             refused.push(refuse("a persona may never have it"));
             continue;
         };
-        // A persona's run is read-only (`setup::persona_agent`'s approver),
-        // so a form that says it changes things would be offered and then
-        // blocked at every call. Said here, by name, instead (review of
-        // #668: an MCP tool without `readOnlyHint` was exactly that).
-        if !form.read_only() {
-            refused.push(refuse(
-                "a persona's chat is read-only, and this tool says it changes things \
-                 (an MCP server's tool must declare readOnlyHint)",
-            ));
+        if let Some(why) = form_refusal(form.as_ref(), Egress::Blind) {
+            refused.push(refuse(why));
             continue;
         }
         let caps = form.capabilities();
-        // `>=`, not `==`: exact today, and still exact if a class is ever
-        // added above `Chosen`.
-        if caps.egress >= Egress::Chosen {
-            refused.push(refuse(
-                "here it could send to a destination the model names (for web_search: \
-                 no backend with a fixed destination is configured)",
-            ));
-            continue;
-        }
         if settings.files.answers == Answers::Files && caps.untrusted_input {
             refused.push(refuse("this persona answers from its files only"));
             continue;
@@ -582,6 +635,97 @@ mod tests {
         );
     }
 
+    /// The tools `setup::persona_agent` builds over one persona's store.
+    fn own_store_tools(store: &Path) -> Vec<Arc<dyn Tool>> {
+        use crate::persona::{files::FileRead, memory_tools, search::FileSearch};
+        let (store, mara) = (store.to_path_buf(), "mara".to_string());
+        vec![
+            Arc::new(FileRead::new(store.clone(), mara.clone(), None)),
+            Arc::new(FileSearch::new(store.clone(), mara.clone(), None, 0)),
+            Arc::new(memory_tools::MemorySearch::new(
+                store.clone(),
+                mara.clone(),
+                None,
+                None,
+            )),
+            Arc::new(memory_tools::MemoryRead::new(store, mara, None)),
+        ]
+    }
+
+    /// A files-only persona keeps its own reader, search and memory: each
+    /// declares it reaches nothing beyond the persona's store (the owner's
+    /// ruling of 2026-10-02), though each declares `untrusted_input`.
+    #[test]
+    fn a_files_only_persona_keeps_the_tools_over_its_own_store() {
+        let dir = scratch();
+        let mut tools = PersonaTools {
+            registry: Registry::new(),
+            refused: Vec::new(),
+        };
+        let files = settings(&[], Answers::Files);
+        for tool in own_store_tools(&dir) {
+            assert!(tool.capabilities().untrusted_input, "{}", tool.name());
+            admit_own(&mut tools, tool, "mara", &files);
+        }
+        assert!(tools.refused.is_empty(), "{:?}", tools.refused);
+        let mut every: Vec<String> = own_store_tools(&dir)
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect();
+        every.sort();
+        assert_eq!(names(&tools.registry), every);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A tool over the persona's own store is admitted past `registry_as`
+    /// through its checks all the same (#776, PERSONA-LIFE-DESIGN.md §13):
+    /// undeclared is refused, anything that can send is refused, and one
+    /// that never says whether it reaches beyond the persona's files is
+    /// withheld from a files-only persona — the default fails closed.
+    #[test]
+    fn a_tool_over_the_personas_own_store_passes_the_same_checks() {
+        let stub = |name, eligible, caps| -> Arc<dyn Tool> {
+            Arc::new(Stub {
+                name,
+                eligible,
+                caps,
+            })
+        };
+        let mut tools = PersonaTools {
+            registry: Registry::new(),
+            refused: Vec::new(),
+        };
+        let files = settings(&[], Answers::Files);
+        let untrusted = Capabilities::default().untrusted();
+        for tool in [
+            stub("undeclared", false, Capabilities::default()),
+            stub("blind", true, Capabilities::default().sends_blind()),
+            stub("aimed", true, Capabilities::default().sends()),
+            stub("forgetful", true, untrusted),
+        ] {
+            admit_own(&mut tools, tool, "mara", &files);
+        }
+        assert!(names(&tools.registry).is_empty());
+        let why: Vec<(&str, &str)> = tools
+            .refused
+            .iter()
+            .map(|r| (r.tool.as_str(), r.why))
+            .collect();
+        assert_eq!(why.len(), 4, "{why:?}");
+        assert!(why[0].0 == "undeclared" && why[0].1.contains("never have it"));
+        assert!(why[1].0 == "blind" && why[1].1.contains("may never send"));
+        assert!(why[2].0 == "aimed" && why[2].1.contains("destination"));
+        assert!(why[3].0 == "forgetful" && why[3].1.contains("files only"));
+        // The same tool is offered to a persona whose answers are open.
+        admit_own(
+            &mut tools,
+            stub("forgetful", true, untrusted),
+            "mara",
+            &settings(&[], Answers::Open),
+        );
+        assert_eq!(names(&tools.registry), ["forgetful"]);
+    }
+
     fn settings(allow: &[&str], answers: Answers) -> Settings {
         let mut s: Settings = toml::from_str("").unwrap();
         s.tools.allow = allow.iter().map(|s| s.to_string()).collect();
@@ -691,11 +835,15 @@ mod tests {
     /// `[[search]]` chain.
     #[test]
     fn every_real_tool_declares_as_the_design_lists() {
-        const ELIGIBLE: [&str; 7] = [
+        const ELIGIBLE: [&str; 11] = [
             "document_read",
+            "file_read",
+            "file_search",
             "image_generate",
             "image_library",
             "image_view",
+            "memory_read",
+            "memory_search",
             "video_generate",
             "video_prompt_guide",
             "web_search",
@@ -751,8 +899,14 @@ mod tests {
             )
             .unwrap(),
         )));
+        // The tools over a persona's own store, which no install's pool
+        // holds: `setup::persona_agent` builds them with the persona's path,
+        // and they are checked here over a scratch one (#776).
+        for tool in own_store_tools(&dir) {
+            pool.insert(tool);
+        }
         assert!(
-            pool.len() >= 17,
+            pool.len() >= 21,
             "the pool should hold every constructible tool"
         );
         for tool in pool.iter() {

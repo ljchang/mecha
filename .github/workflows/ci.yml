@@ -17,8 +17,64 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
+  # Whether this run takes the macOS jobs. macOS runners are the account's
+  # scarcest — five at a time, shared by every lane, and each run asks for
+  # three — and a pull request that touches only documentation cannot change
+  # what compiles or installs there. So such a PR skips them; Ubuntu still
+  # runs everything, including the tests that read docs. Fails closed:
+  # pushes to main, manual runs, an empty or unreadable diff, and any path
+  # outside `docs/`, `website/docs/` and top-level Markdown all take macOS
+  # (Markdown elsewhere is not counted: persona starters are compiled in).
+  scope:
+    name: scope
+    runs-on: ubuntu-latest
+    outputs:
+      macos: ${{ steps.diff.outputs.macos }}
+      os: ${{ steps.diff.outputs.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          macos=true
+          if [ "$EVENT" = pull_request ]; then
+            # An unreadable diff leaves `files` empty, which takes macOS:
+            # the step must not fail, or `needs: scope` would skip the
+            # Ubuntu legs too, and a skipped job reports as success.
+            # `--no-renames` lists a moved file under both paths, so code
+            # moved into docs/ still counts as code.
+            files=$(git diff --no-renames --name-only "$BASE...$HEAD") || files=
+            # The paths that are not docs; none (and some files) means
+            # docs-only. Not `grep -qv`, whose exit differs between greps.
+            rest=$(printf '%s\n' "$files" \
+              | grep -vE '^(docs/|website/docs/|[^/]+\.md$)' || true)
+            if [ -n "$files" ] && [ -z "$rest" ]; then
+              macos=false
+            fi
+          fi
+          echo "macos=$macos" >> "$GITHUB_OUTPUT"
+          # The `os` list a matrix job runs on: a job-level `if` cannot see
+          # `matrix`, so the macOS entry is left out here instead.
+          if [ "$macos" = true ]; then
+            echo 'os=["ubuntu-latest","macos-latest"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'os=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
+          fi
+          echo "macOS jobs: $macos"
+
   test:
     name: test (${{ matrix.os }}, ${{ matrix.rust }})
+    needs: scope
+    # Not skipped when `scope` itself fails (a lost runner, a checkout
+    # error): a skipped job reports as success, so a broken `scope` would
+    # otherwise pass every Rust leg with nothing run. With no output, the
+    # `os` list below falls back to both.
+    if: ${{ !cancelled() }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -37,13 +93,15 @@ jobs:
         # MSRV arm stays Linux-only: it exists to pin what the manifest
         # promises, and a second platform does not make that promise more or
         # less kept.
+        #
+        # `pinned` on every OS `scope` names (macOS is skipped for a
+        # docs-only pull request), and the MSRV arm added on its own: its
+        # `rust` would overwrite `pinned`, so it joins as a new combination.
+        os: ${{ fromJSON(needs.scope.outputs.os || '["ubuntu-latest","macos-latest"]') }}
+        rust: [pinned]
         include:
           - os: ubuntu-latest
-            rust: pinned
-          - os: ubuntu-latest
             rust: "1.89"
-          - os: macos-latest
-            rust: pinned
     steps:
       - uses: actions/checkout@v7
 
@@ -315,14 +373,32 @@ jobs:
           MECHA_TEST_REQUIRE_BACKENDS: "1"
         run: cargo test --workspace --locked --test sandbox_backends --test mcp_server --test run_lifecycle --test serve_lifecycle
 
+      # Code mode's interpreter: the pinned monty worker inside bwrap. The
+      # test fetches the worker's wheel itself (`worker::ensure`, sha256-
+      # pinned) into a scratch home, so the provisioning path is exercised
+      # too; `monty` is a cargo feature because monty-pool needs a newer Rust
+      # than the MSRV arm promises.
+      - name: Code-mode interpreter, with skips promoted to failures
+        env:
+          MECHA_TEST_REQUIRE_BACKENDS: "1"
+          MECHA_TEST_FETCH_MONTY: "1"
+        run: |
+          cargo test -p mecha-core --locked --features monty --test code_interpreter -- --nocapture
+          cargo test -p mecha-core --locked --features monty --lib interpreter
+          cargo test -p mecha-core --locked --features monty --lib tool::code
+
   # macOS's Seatbelt confinement of the PDF parser, measured on a real Mac:
   # the profile denies a read beside the scratch, a write outside it and the
   # network, and poppler still renders under it. `test (macos-latest, pinned)`
   # runs the same file, but without poppler its render test skips, so this
   # one installs it and makes every skip a failure, as `sandbox backends`
-  # does for bwrap.
+  # does for bwrap. Code mode's worker, under its own profile, is measured
+  # here too.
   seatbelt:
     name: seatbelt (macOS)
+    needs: scope
+    # Skipped only when `scope` said so; a failed `scope` runs it (see `test`).
+    if: ${{ !cancelled() && needs.scope.outputs.macos != 'false' }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -343,6 +419,23 @@ jobs:
         env:
           MECHA_TEST_REQUIRE_BACKENDS: "1"
         run: cargo test --locked -p mecha-core --test seatbelt_backend
+
+      # Code mode's interpreter on a Mac: the pinned macOS worker under its
+      # own Seatbelt profile, the same tests as `sandbox backends` runs under
+      # bwrap (the `code` tool over a real worker among them), plus the
+      # macOS-only ones (the live profile read with
+      # `sandbox_check`, a launcher that drops the profile). The worker's
+      # wheel is fetched sha256-pinned into a scratch home, as on Linux.
+      # `--nocapture` so the memory backstop's measured table is in the log.
+      - name: Code-mode interpreter under Seatbelt, with skips promoted to failures
+        env:
+          MECHA_TEST_REQUIRE_BACKENDS: "1"
+          MECHA_TEST_FETCH_MONTY: "1"
+        run: |
+          cargo test -p mecha-core --locked --features monty --test code_interpreter -- --nocapture
+          cargo test -p mecha-core --locked --features monty --lib interpreter
+          cargo test -p mecha-core --locked --features monty --lib tool::code
+          cargo test -p mecha-core --locked --features monty --lib sandbox::seatbelt
 
   # `mecha tools` runs with no provider configured, which makes it the cheapest
   # end-to-end check that the binary starts and the tool registry builds.
@@ -374,11 +467,13 @@ jobs:
   # box" is how they ship.
   first-run:
     name: first run (${{ matrix.os }})
+    needs: scope
+    if: ${{ !cancelled() }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: ${{ fromJSON(needs.scope.outputs.os || '["ubuntu-latest","macos-latest"]') }}
     steps:
       - uses: actions/checkout@v7
       # The toolchain `rust-toolchain.toml` pins, the one a local cargo uses.
