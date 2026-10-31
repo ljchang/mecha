@@ -427,11 +427,29 @@ jobs:
       # `sandbox_check`, a launcher that drops the profile). The worker's
       # wheel is fetched sha256-pinned into a scratch home, as on Linux.
       # `--nocapture` so the memory backstop's measured table is in the log.
+      #
+      # Built in a step of its own, so a runner lost while compiling (the
+      # monty feature brings a C build) is told apart from one lost in a
+      # test. The test step has a timeout and samples the processes it
+      # started every 30 s: a hung test is then cancelled by a runner that
+      # is still alive, and its log shows what was running. #772's runs lost
+      # the runner twice with no log at all.
+      - name: Build the code-mode tests
+        run: cargo test -p mecha-core --locked --features monty --no-run --lib --test code_interpreter
       - name: Code-mode interpreter under Seatbelt, with skips promoted to failures
+        timeout-minutes: 20
         env:
           MECHA_TEST_REQUIRE_BACKENDS: "1"
           MECHA_TEST_FETCH_MONTY: "1"
         run: |
+          ( while sleep 30; do
+              echo "--- processes at $(date -u +%T), load $(sysctl -n vm.loadavg)"
+              ps -axo pid,ppid,pgid,stat,etime,rss,command \
+                | grep -E 'monty|mecha_core-|code_interpreter-|/bin/sleep|/bin/sh|lstart' \
+                | grep -v -E 'grep|while sleep' || true
+            done ) &
+          sampler=$!
+          trap 'kill "$sampler" 2>/dev/null' EXIT
           cargo test -p mecha-core --locked --features monty --test code_interpreter -- --nocapture
           cargo test -p mecha-core --locked --features monty --lib interpreter
           cargo test -p mecha-core --locked --features monty --lib tool::code
