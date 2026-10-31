@@ -1,6 +1,6 @@
 # Code mode, reshaped by RLM — design
 
-**Status: 2026-10-30, designed; the interpreter backend (slice 3a, `mecha-core/src/interpreter/`) built, and the `code` tool's host calls and handles (slice 3b, `mecha-core/src/tool/code.rs`) built and tested but registered nowhere. Ruled 2026-10-30 except R4, which waits on M1 (§11). M0 and M1 measured (§10).**
+**Status: 2026-10-31, designed; the interpreter backend (slice 3a, `mecha-core/src/interpreter/`) built, the `code` tool's host calls and handles (slice 3b, `mecha-core/src/tool/code.rs`) and `llm_query`/`llm_map` (slice 3c, the same file and `tool/code_shape.rs`) built and tested but registered nowhere. Ruled 2026-10-30, and R4 on 2026-10-31 (§11). M0 and M1 measured (§10).**
 
 This supersedes the *shape* of `AUDIT-RESEARCH.md` §3.12 ("programmatic
 tool calling, on monty"). That section's contract, its first hazard (taint
@@ -231,8 +231,18 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
   | number | `int`, `float`, `int[0,100]` | ranges where given |
   | one of | `["urgent", "fyi", "none"]` | ≤ 32 labels, each ≤ 64 chars |
   | list | `[shape]` | ≤ 64 items |
-  | record | `{"due": "str[32]", "urgent": bool}` | ≤ 8 fields, no nesting past one level |
+  | record | `{"due": "str[32]", "urgent": "bool"}` | ≤ 8 fields, no nesting past one level |
   | short text | `str[n]` | n ≤ 2,000; with lists and records, the result must also fit §5's 16 KB prose cap, so `[{"x": "str[2000]"}]` raises on the cap and the program narrows `n`. The table bounds shapes; it is not a menu of shapes that fit |
+
+  Every spelling is a JSON value: a bare Python type such as `bool`
+  has no JSON form and never crosses into the host, so the program
+  writes `"bool"`. A list of one element that is itself a shape
+  (`["bool"]`, `[{"x": "int"}]`) is a list; any other list of
+  strings is a one-of. A list's item is a leaf or a record, and a
+  record's fields are leaves. As built, `float[a,b]` takes a range too.
+  The cap is checked twice: up front against the most text the shape
+  could return (`n` per text field, 64 per list, times the items of
+  an `llm_map`), and on the answer's actual bytes.
 
 - **A `str[n]` result is prose entering the program**, so it is counted
   with `peek` against one cap (§5); otherwise it would be a second,
@@ -394,13 +404,13 @@ Per program. **Two kinds of limit, and only the first is catchable:**
   call still returns a `tool_result`: whatever the program printed, then
   a harness line naming the backstop that fired.
 
-| Limit | Default (ruling R4) | Enforced by |
+| Limit | Default (R4, ruled 2026-10-31) | Enforced by |
 |---|---|---|
 | sub-calls | 32 | the host, **per pass**: `llm_map` over N handles is N, and a schema retry is another. An `llm_map` longer than the remaining budget raises before its first pass, and so does a thinking-on `llm_map` longer than the remaining thinking passes |
-| thinking passes | 8 (proposed) | the host, counting passes that **did** think, not passes that asked to: a pass whose response carries reasoning (`reasoning_content`, recorded as `Block::Thinking`) counts, whatever it requested. A thinking-off request can be silently ignored (§4), so counting requests would read 0 while every pass thinks and the clock binds first. The pass after the cap raises. This is the row that keeps the clock from binding first (below) |
+| thinking passes | 8 | the host, counting passes that **did** think, not passes that asked to: a pass whose response carries reasoning (`reasoning_content`, recorded as `Block::Thinking`) counts, whatever it requested. A thinking-off request can be silently ignored (§4), so counting requests would read 0 while every pass thinks and the clock binds first. The pass after the cap raises. This is the row that keeps the clock from binding first (below) |
 | sub-call input tokens | 120k | the host, from `Usage`. Sized so that it binds before the clock even under contention (below) |
 | tool reads | 256 | the host, counted at the gate |
-| handle operations (§3) | 2,048 | the host. `budget()` counts as one, so a loop of it ends in a `LimitError:`, not a backstop. Monty's `max_suspensions` is set to the sum of the counted limits as a backstop |
+| handle operations (§3) | 2,048 | the host. `budget()` counts as one, and so does each `llm_query` and `llm_map` call beside its passes, so a loop of either ends in a `LimitError:`, not a backstop. Monty's `max_suspensions` is set to the sum of the counted limits as a backstop |
 | wall clock | 600 s | the interpreter, from the program's start and across the host's answers. `monty-pool`'s `request_timeout` is **unset by default** and is set to the same value, but it bounds one protocol turn, not the program |
 | host bytes held by handles | 64 MB | the host, summed over every tool read's raw result; the read that would cross it raises |
 | live handles | 4,096 | the host. `split`, `lines` and `chunks` refuse a result that would cross it, and `chunks` refuses `n` below 256, so one counted operation cannot mint a handle per byte |
@@ -467,16 +477,15 @@ halves: about 120 s for a 170k-token prefill alone, and a ~2.85× slowdown
 under contention on this hardware. So the whole 120k-token budget is
 about 85 s of prefill alone and about 240 s contended. That is why the
 clock is 600 s, the number `STALL_TIMEOUT` reached by the same arithmetic,
-and not 300. R4 chooses between raising the clock and lowering the token
-cap, after M0 and M1 measure a pass on this box under contention as well
-as alone.
+and not 300. R4 kept both as proposed (ruled 2026-10-31, after M0 and
+M1): the clock at 600 s and the token cap at 120k.
 
 **That ordering holds only with thinking off, the R6 default.** M0
 measured a thinking-on pass at a median of ~14 s, before prefill. 32
 thinking-on sub-calls are ~450 s of decode alone, and ×2.85 under
 contention is past the 600 s clock. So a pass that asks for thinking
 draws on the budget at a higher rate. R4 sets a separate, smaller cap on
-thinking-on passes (8 is a proposal), so the clock still never binds
+passes that thought (8, ruled 2026-10-31), so the clock still never binds
 first.
 
 A long document chunked into handles can reach 256 host calls before 32
@@ -1017,7 +1026,7 @@ curl -s http://127.0.0.1:8080/v1/chat/completions -H 'content-type: application/
   (`PROGRAMS_PER_WORKER`), and the pool keeps none spawned ahead, so
   every program pays the cold row's spawn. The test's second loop now
   prints that as "pooled program (a fresh worker each)".
-- R4's numbers are not set here; this is its input.
+- This was R4's input; R4 was ruled on 2026-10-31 (§11).
 
 **What the build found that the documents had otherwise** (slice 3a):
 - **Monty 1.4 has `eval` and `exec`.** `CODE-MODE-RESEARCH.md` says they do
@@ -1073,7 +1082,8 @@ The predictions to falsify:
 ## 11. Rulings
 
 Ruled by the owner on 2026-10-30, taking the recommendation on each ("go
-with your recs"), except R4, which waits on M1.
+with your recs"), except R4, which waited on M1 and was ruled on
+2026-10-31.
 
 - **R1. Yes.** The first slice is read-only (§2), and the effect-class
   table is built first and shared with rollouts.
@@ -1081,11 +1091,13 @@ with your recs"), except R4, which waits on M1.
   bool, number, or one-of with at most 16 labels (§6). An armed parent's
   shape narrows nothing.
 - **R3. Yes.** Composite shapes come back `external` (§6).
-- **R4. Owed.** The budget defaults (§5) are set after M0 (done) and M1
-  measure a pass and a worker on this box.
+- **R4. Ruled as proposed (2026-10-31).** Sub-calls 32, thinking passes
+  8, sub-call input tokens 120k, wall clock 600 s, and the rest of §5's
+  table unchanged, ruled by the owner after M0 and M1 measured a pass and
+  a worker on this box. The numbers live in `tool/code.rs`'s `defaults`.
 - **R5. Yes.** `peek` exists, capped together with `str[n]` results, and
-  counted (§3). The cap's number belongs to R4's budget table (§5), with
-  16 KB as its proposed default.
+  counted (§3). The cap's number belongs to R4's budget table (§5): 16 KB,
+  ruled with it.
 - **R6. Thinking off by default**, on per call (§4, from M0). **Every
   pass gets `max_tokens` of 8,192, thinking or not**, because the
   thinking-off request can be silently ignored (§4). The floor alone

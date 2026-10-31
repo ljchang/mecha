@@ -164,9 +164,10 @@ pub struct Backstops {
     pub max_printed_bytes: usize,
 }
 
-/// §5's proposed host limits (R4 is owed, so these move with it): 32
-/// sub-calls, 256 tool reads and 2,048 handle operations. Thinking passes
-/// are a subset of sub-calls and add nothing.
+/// §5's counted host limits, as R4 ruled them: 32 sub-calls, 256 tool
+/// reads and 2,048 handle operations. Thinking passes are a subset of
+/// sub-calls and add nothing; an `llm_query` or `llm_map` call is one
+/// suspension and spends a handle operation, so the sum still bounds it.
 pub const COUNTED_HOST_LIMITS: u64 = 32 + 256 + 2048;
 
 impl Default for Backstops {

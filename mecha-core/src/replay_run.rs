@@ -2512,6 +2512,9 @@ decision = "prompt"
     struct Scripted(Mutex<Vec<CompletionResponse>>);
     #[async_trait]
     impl Provider for Scripted {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "scripted"
         }
