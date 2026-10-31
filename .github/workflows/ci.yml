@@ -70,6 +70,11 @@ jobs:
   test:
     name: test (${{ matrix.os }}, ${{ matrix.rust }})
     needs: scope
+    # Not skipped when `scope` itself fails (a lost runner, a checkout
+    # error): a skipped job reports as success, so a broken `scope` would
+    # otherwise pass every Rust leg with nothing run. With no output, the
+    # `os` list below falls back to both.
+    if: ${{ !cancelled() }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -92,7 +97,7 @@ jobs:
         # `pinned` on every OS `scope` names (macOS is skipped for a
         # docs-only pull request), and the MSRV arm added on its own: its
         # `rust` would overwrite `pinned`, so it joins as a new combination.
-        os: ${{ fromJSON(needs.scope.outputs.os) }}
+        os: ${{ fromJSON(needs.scope.outputs.os || '["ubuntu-latest","macos-latest"]') }}
         rust: [pinned]
         include:
           - os: ubuntu-latest
@@ -392,7 +397,8 @@ jobs:
   seatbelt:
     name: seatbelt (macOS)
     needs: scope
-    if: needs.scope.outputs.macos == 'true'
+    # Skipped only when `scope` said so; a failed `scope` runs it (see `test`).
+    if: ${{ !cancelled() && needs.scope.outputs.macos != 'false' }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -462,11 +468,12 @@ jobs:
   first-run:
     name: first run (${{ matrix.os }})
     needs: scope
+    if: ${{ !cancelled() }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(needs.scope.outputs.os) }}
+        os: ${{ fromJSON(needs.scope.outputs.os || '["ubuntu-latest","macos-latest"]') }}
     steps:
       - uses: actions/checkout@v7
       # The toolchain `rust-toolchain.toml` pins, the one a local cargo uses.
