@@ -52,11 +52,16 @@
 //!   summary of the model's reasoning, which exists for a human watching a
 //!   run. Nothing watches these. Every one of the eight sites set it false.
 //!
-//! One knob is offered on top: [`no_thinking`](QuarantinedPass::no_thinking)
+//! Two knobs are offered on top. [`no_thinking`](QuarantinedPass::no_thinking)
 //! asks a reasoning model not to reason at all (`think: Some(false)`), for a
 //! one-shot on a latency path — the voice director — where a thinking pass
-//! would cost seconds per sentence. Unset, nothing is sent and the server's
-//! default stands, exactly as before.
+//! would cost seconds per sentence; [`think`](QuarantinedPass::think) says
+//! either way, for a caller whose default is off but which may ask for it (a
+//! code-mode sub-call). Unset, nothing is sent and the server's default
+//! stands, exactly as before. And [`local_only`](QuarantinedPass::local_only)
+//! marks the request as one whose bytes must not leave the machine
+//! (`CompletionRequest::local_only`), which a provider that is not local
+//! refuses by name.
 //!
 //! [`ask`]: QuarantinedPass::ask
 //! [`follow_up`]: QuarantinedPass::follow_up
@@ -91,6 +96,7 @@ pub struct QuarantinedPass {
     cache_prompt: bool,
     response_schema: Option<serde_json::Value>,
     think: Option<bool>,
+    local_only: bool,
 }
 
 impl QuarantinedPass {
@@ -109,6 +115,7 @@ impl QuarantinedPass {
             cache_prompt: false,
             response_schema: None,
             think: None,
+            local_only: false,
         }
     }
 
@@ -144,6 +151,22 @@ impl QuarantinedPass {
         self
     }
 
+    /// Ask the model to reason first, or not to: `think: Some(on)`, sent
+    /// either way. A request cannot prove it was honoured (a template
+    /// without `--jinja` ignores it), so a caller that bounds thinking
+    /// counts what came back, never what it asked for.
+    pub fn think(mut self, on: bool) -> Self {
+        self.think = Some(on);
+        self
+    }
+
+    /// Refuse to send this pass anywhere but this machine
+    /// (`CompletionRequest::local_only`, R8).
+    pub fn local_only(mut self) -> Self {
+        self.local_only = true;
+        self
+    }
+
     pub fn model(&self) -> &str {
         &self.model
     }
@@ -166,6 +189,7 @@ impl QuarantinedPass {
             cache_prompt: self.cache_prompt,
             think: self.think,
             think_budget: None,
+            local_only: self.local_only,
             trailing_notes: 0,
             tool_choice: crate::message::ToolChoice::Auto,
         }
@@ -248,6 +272,24 @@ mod tests {
         assert_eq!(QuarantinedPass::new("m", 64).ask("q").think, None);
         assert_eq!(
             QuarantinedPass::new("m", 64).no_thinking().ask("q").think,
+            Some(false)
+        );
+    }
+
+    /// A pass may say either way about thinking, and may refuse to leave the
+    /// machine; neither is set unless asked for.
+    #[test]
+    fn thinking_either_way_and_local_only_are_asked_for_explicitly() {
+        let plain = QuarantinedPass::new("m", 64).ask("q");
+        assert!(!plain.local_only);
+        let on = QuarantinedPass::new("m", 64)
+            .think(true)
+            .local_only()
+            .ask("q");
+        assert_eq!(on.think, Some(true));
+        assert!(on.local_only);
+        assert_eq!(
+            QuarantinedPass::new("m", 64).think(false).ask("q").think,
             Some(false)
         );
     }

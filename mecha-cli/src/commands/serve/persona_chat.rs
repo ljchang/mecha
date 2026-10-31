@@ -6351,6 +6351,9 @@ mod tests {
 
     #[async_trait::async_trait]
     impl mecha_core::provider::Provider for Capture {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "local"
         }

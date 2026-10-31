@@ -3480,6 +3480,7 @@ impl Agent {
                 } else {
                     cx.think_budget
                 },
+                local_only: false,
                 trailing_notes: notes.tail.len(),
                 // The closing request keeps the tools listed (the cached
                 // prefix holds) and asks for words (§5.5).
@@ -4643,6 +4644,7 @@ impl Agent {
             cache_prompt: self.cfg.cache_prompt,
             think: None,
             think_budget: cx.think_budget,
+            local_only: false,
             trailing_notes: notes.tail.len(),
             tool_choice: crate::message::ToolChoice::Auto,
         };
@@ -5814,7 +5816,60 @@ impl Agent {
                         Gated::Ran { output, .. } => HostAnswer::Ran(output),
                     });
                 }
+                HostRequest::Pass { pass, reply } => {
+                    let _ = reply.send(self.serve_pass(cx, &pass).await);
+                }
             }
+        }
+    }
+
+    /// One sub-call pass (`CODE-MODE-DESIGN.md` §4), served here because the
+    /// run's provider and model are here: **the model the run already
+    /// holds**, never another (on the router, naming another preset would
+    /// swap the resident model and evict every slot). Awaited in line, so a
+    /// batch's passes and host calls go one at a time (R7), and dropped with
+    /// this loop when the program ends, which is how a Stop reaches a pass
+    /// in flight; the run's token ends the wait too.
+    ///
+    /// Refused unsent, in the harness's words, on a provider with
+    /// structured output off (never parsed from prose by hope) or one that
+    /// is not local (R8). The request is `local_only` as well, so a provider
+    /// that is not local refuses it, and a `Failover` sends it to no
+    /// fallback that is not local: the check here is for the clear message,
+    /// the request is the enforcement. A failure is named by its class,
+    /// never by a body the server sent, which can echo the prompt.
+    async fn serve_pass(
+        &self,
+        cx: &RunContext,
+        pass: &crate::tool::code::Pass,
+    ) -> crate::tool::code::PassAnswer {
+        use crate::tool::code::PassAnswer;
+        if !self.provider.structured_output() {
+            return PassAnswer::Refused(
+                "this run's provider has structured output disabled, so no pass was sent: a \
+                 sub-call's answer is decoded against a schema, never parsed from prose \
+                 (`structured_output` on a provider whose endpoint was verified)"
+                    .into(),
+            );
+        }
+        if !self.provider.local() {
+            return PassAnswer::Refused(
+                "this run's provider is not local (a `local` provider on a loopback address), \
+                 and a sub-call sends a handle's bytes to the model, so no pass was sent"
+                    .into(),
+            );
+        }
+        let req = pass.request(&self.model);
+        let cancel = cx.cancel.clone().unwrap_or_default();
+        let result = tokio::select! {
+            r = self.provider.complete(&req, None) => r,
+            () = cancel.cancelled() => {
+                return PassAnswer::Failed("stopped: the run was cancelled".into());
+            }
+        };
+        match result {
+            Ok(resp) => PassAnswer::Answered(resp),
+            Err(e) => PassAnswer::Failed(crate::tool::code::pass_failure(&e)),
         }
     }
 
@@ -7002,6 +7057,9 @@ mod tests {
 
     #[async_trait]
     impl Provider for ScriptedProvider {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "scripted"
         }
@@ -7130,6 +7188,9 @@ mod tests {
         struct Shared(Arc<ScriptedProvider>);
         #[async_trait]
         impl Provider for Shared {
+            fn local(&self) -> bool {
+                true
+            }
             fn id(&self) -> &str {
                 self.0.id()
             }
@@ -7537,6 +7598,9 @@ mod tests {
         struct Eyes(Arc<ScriptedProvider>, bool);
         #[async_trait]
         impl Provider for Eyes {
+            fn local(&self) -> bool {
+                true
+            }
             fn id(&self) -> &str {
                 self.0.id()
             }
@@ -10445,6 +10509,9 @@ mod tests {
         struct Shared(Arc<OverflowScript>);
         #[async_trait]
         impl Provider for Shared {
+            fn local(&self) -> bool {
+                true
+            }
             fn id(&self) -> &str {
                 self.0.id()
             }
@@ -13234,6 +13301,9 @@ justification = "echo is off on this box"
 
     #[async_trait]
     impl Provider for SizedProvider {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "sized"
         }
@@ -13288,6 +13358,9 @@ justification = "echo is off on this box"
         struct Shared(Arc<SizedProvider>);
         #[async_trait]
         impl Provider for Shared {
+            fn local(&self) -> bool {
+                true
+            }
             fn id(&self) -> &str {
                 self.0.id()
             }
@@ -13919,6 +13992,9 @@ justification = "echo is off on this box"
 
     #[async_trait]
     impl Provider for OverflowScript {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "overflow-script"
         }
@@ -13961,6 +14037,9 @@ justification = "echo is off on this box"
         struct Shared(Arc<OverflowScript>);
         #[async_trait]
         impl Provider for Shared {
+            fn local(&self) -> bool {
+                true
+            }
             fn id(&self) -> &str {
                 self.0.id()
             }
@@ -14053,6 +14132,9 @@ justification = "echo is off on this box"
         struct Shared(Arc<OverflowScript>);
         #[async_trait]
         impl Provider for Shared {
+            fn local(&self) -> bool {
+                true
+            }
             fn id(&self) -> &str {
                 self.0.id()
             }
@@ -14135,6 +14217,9 @@ justification = "echo is off on this box"
         struct Shared(Arc<OverflowScript>);
         #[async_trait]
         impl Provider for Shared {
+            fn local(&self) -> bool {
+                true
+            }
             fn id(&self) -> &str {
                 self.0.id()
             }
@@ -17687,6 +17772,9 @@ justification = "echo is off on this box"
         }
         #[async_trait]
         impl Provider for CancelsMidRun {
+            fn local(&self) -> bool {
+                true
+            }
             fn id(&self) -> &str {
                 "cancels"
             }
@@ -17727,6 +17815,9 @@ justification = "echo is off on this box"
         struct Shared(Arc<CancelsMidRun>);
         #[async_trait]
         impl Provider for Shared {
+            fn local(&self) -> bool {
+                true
+            }
             fn id(&self) -> &str {
                 self.0.id()
             }
@@ -17821,6 +17912,9 @@ justification = "echo is off on this box"
     struct StreamsThenHangs(CancellationToken);
     #[async_trait]
     impl Provider for StreamsThenHangs {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "hangs"
         }
@@ -19459,6 +19553,9 @@ justification = "echo is off on this box"
 
     #[async_trait]
     impl Provider for StreamingScripted {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "scripted"
         }

@@ -538,6 +538,9 @@ mod tests {
 
     #[async_trait]
     impl Provider for InertProvider {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "inert"
         }
@@ -719,6 +722,9 @@ mod tests {
 
     #[async_trait]
     impl Provider for FetchThenAnswer {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "scripted"
         }
@@ -924,6 +930,9 @@ mod tests {
 
     #[async_trait]
     impl Provider for FixedAnswer {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "fixed"
         }

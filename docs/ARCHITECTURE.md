@@ -3520,8 +3520,8 @@ The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
   run a second conversation's program inside the process that held the
   first one's; a fresh worker costs about 4 ms (M1).
 
-**The `code` tool** (`tool/code.rs`, slice 3b; built and tested, registered
-nowhere until slice 3d):
+**The `code` tool** (`tool/code.rs`, slices 3b and 3c; built and tested,
+registered nowhere until slice 3d):
 
 - **Admission is the run's, checked at every program's start.**
   `Admission::over` takes a registry's plain reads (effect `Read` or
@@ -3546,7 +3546,7 @@ nowhere until slice 3d):
   stub string (`<handle 3: 48,213 chars from mail_get_thread>`), only its
   exact stub resolves, and text enters only through `peek`, capped and
   counted. Patterns are Rust `regex`. A tool's error body is a handle the
-  `ToolError:` names. Every per-program limit (`code::defaults`, owed to R4)
+  `ToolError:` names. Every per-program limit (`code::defaults`, as R4 ruled)
   raises a `LimitError:` naming itself; host bytes are also drawn from one
   process-wide `BytePool`.
 - **Rendered once.** The program's printed output and ending are the `code`
@@ -3557,6 +3557,34 @@ nowhere until slice 3d):
 - **`code` declares the union of its admitted reads** with egress `None`,
   which is what `dispatch`'s precomputed turn taint reads: a `Chosen` sender
   beside a `code` call that reads mail is refused before either runs.
+- **A sub-call is a `QuarantinedPass`** (`llm_query`, `llm_map`; slice 3c).
+  The program's host builds it (`code::Pass`: the fixed `PASS_FRAME`, the
+  instruction, each source between marker lines whose tag no source
+  contains, the schema), and the dispatch serving the program sends it
+  (`Agent::serve_pass`) to the run's own model, one at a time (R7), awaited
+  in the serving loop so a Stop drops it. No tools and one message, so
+  depth is 1 by type. Refused unsent, as `QueryError:`, when the provider's
+  `structured_output` is off or it is not `local()`; every pass is also
+  `local_only` (below). The answer is `{"answer": …}` against a
+  `code::shape::Shape` compiled to JSON Schema and checked again in Rust as
+  a whole; failing it twice raises `QueryError:`, which names what failed
+  and never the text. The envelope comes first: a refusal, an empty
+  `content` at HTTP 200 and a cut-off answer are named. Every pass is
+  `max_tokens` 8,192 whatever thinking is set to, thinking off unless the
+  program asks, and the thinking cap counts passes whose response carried
+  reasoning, never what they asked. `str[n]` text draws on `peek`'s cap,
+  and is never a `trusted_output` shape. A provider error is named by its
+  class (`code::pass_failure`), because a server's body can echo the
+  prompt.
+- **Locality is the request's, not the loop's** (R8).
+  `CompletionRequest::local_only` marks a request whose bytes must not
+  leave the machine. `Provider::local()` has no default body: it is
+  computed at construction (`kind = "local"` and `router::is_loopback` on
+  the base URL; no URL, or one that does not parse, is not local), `Halting`
+  and every wrapper forward it, and in-process test doubles answer `true`. A
+  provider that is not local refuses a `local_only` request with
+  `provider::LocalOnlyRefused` (`refuse_unless_local`, called before
+  sending), and `Failover` skips a fallback that is not local for it.
 
 ## The front door
 

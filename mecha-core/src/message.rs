@@ -390,6 +390,13 @@ pub struct CompletionRequest {
     /// `--reasoning-budget`). `None` sends nothing. Anthropic's adaptive
     /// thinking takes no budget, so it is not sent there.
     pub think_budget: Option<u32>,
+    /// This request's bytes must not leave the machine: a provider that is
+    /// not [`local`](crate::provider::Provider::local) refuses it by name,
+    /// and a `Failover` skips a fallback that is not local for it. Set by a
+    /// code-mode sub-call (`CODE-MODE-DESIGN.md` §4, R8), which hands a
+    /// handle's raw bytes to whatever model answers; `false` everywhere
+    /// else, so every other request is sent exactly as before.
+    pub local_only: bool,
     /// How many blocks at the end of the last message are a run's notes
     /// (`RunContext::notes`, [`attach_notes`]). This request alone carries
     /// them, so a provider that marks a moving cache breakpoint puts it on
