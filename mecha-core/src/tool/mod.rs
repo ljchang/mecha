@@ -6,6 +6,7 @@
 
 pub mod ask;
 pub mod builtin;
+pub mod code;
 pub mod document;
 pub mod effect;
 pub mod goal_context;
@@ -557,6 +558,23 @@ pub trait Tool: Send + Sync {
         false
     }
 
+    /// Does this tool run a program whose calls come back to the dispatch
+    /// running it, as host calls (`CODE-MODE-DESIGN.md` §7)?
+    ///
+    /// The `code` tool answers `true`, and it is the only tool whose context
+    /// [`Agent::dispatch`](crate::agent::Agent) stamps with
+    /// [`ToolCtx::host_calls`]. Every other tool's context carries `None`, so
+    /// no tool can reach the gate from inside its own call by accident. **A
+    /// wrapper must forward it**, as it forwards `capabilities` and `effect`:
+    /// one that does not leaves the tool it wraps without a channel (so
+    /// `code` refuses to run a program), and makes it read as a plain read.
+    /// Admission also excludes `code` by name for that reason, but the
+    /// channel needs the method. A tool that answers `true` is never
+    /// admitted into a program itself.
+    fn hosts_programs(&self) -> bool {
+        false
+    }
+
     /// Drop state that belonged to the conversation that just ended.
     ///
     /// Most tools are stateless and the default no-op is honest for them. A
@@ -932,6 +950,13 @@ pub struct ToolCtx {
     /// Continue, Edit or Regenerate on, that one. `None` where no front end
     /// offers the button, which leaves it to the call. Never the model's.
     pub build_on: Option<crate::imagegen::BuildOn>,
+    /// The channel a running `code` call's program makes its host calls
+    /// through, back to the dispatch running it ([`code::HostCalls`],
+    /// `CODE-MODE-DESIGN.md` §7). Stamped per call by `Agent::dispatch`, and
+    /// only on a tool that [`hosts_programs`](Tool::hosts_programs): every
+    /// other call's context is built with `None`, so a child run never
+    /// inherits a parent's channel. Never the model's.
+    pub host_calls: Option<code::HostCalls>,
 }
 
 /// The last confirmed goal, and how the plan has moved against it.
@@ -1130,6 +1155,7 @@ impl Default for ToolCtx {
             image_tuning: crate::sampling::Tuning::default(),
             image_loras: crate::loras::Layer::Inherit,
             build_on: None,
+            host_calls: None,
         }
     }
 }

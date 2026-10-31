@@ -4461,6 +4461,7 @@ mod tests {
             blocked: false,
             unknown,
             staged,
+            in_program: false,
         };
         let outcome = RunOutcome {
             duration_secs: None,
@@ -4577,6 +4578,7 @@ mod tests {
                         blocked: false,
                         unknown: false,
                         staged: false,
+                        in_program: false,
                     })
                     .collect(),
                 malformed_tool_args: 1,
@@ -5189,6 +5191,7 @@ mod tests {
             blocked: false,
             unknown: false,
             staged: false,
+            in_program: false,
         };
         let o = crate::agent::RunOutcome {
             duration_secs: None,

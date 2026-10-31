@@ -1,6 +1,6 @@
 # Code mode, reshaped by RLM — design
 
-**Status: 2026-10-30, designed; the interpreter backend (slice 3a, `mecha-core/src/interpreter/`) built, nothing wired. Ruled 2026-10-30 except R4, which waits on M1 (§11). M0 and M1 measured (§10).**
+**Status: 2026-10-30, designed; the interpreter backend (slice 3a, `mecha-core/src/interpreter/`) built, and the `code` tool's host calls and handles (slice 3b, `mecha-core/src/tool/code.rs`) built and tested but registered nowhere. Ruled 2026-10-30 except R4, which waits on M1 (§11). M0 and M1 measured (§10).**
 
 This supersedes the *shape* of `AUDIT-RESEARCH.md` §3.12 ("programmatic
 tool calling, on monty"). That section's contract, its first hazard (taint
