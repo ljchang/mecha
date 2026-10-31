@@ -474,7 +474,11 @@ one more reason §14's gate part 1 exists.
   at the start, and the second would never arm on a resume, failing in the
   open direction. As its own note it works: `Taint::arm_for_notes` gives each
   note its own block before matching, and `Record::Notes` re-arms each one on
-  load, as it already does for the recall block.
+  load, as it already does for the recall block. A new stem is taught to all
+  three predicates the recall and scene stems are in: `arm_for_content`, the
+  `Record::Notes` re-arm, and `message::is_recorded_note`. The last keeps a
+  per-run note that somehow got stored off the wire, which the scene fold
+  already relies on.
 - **The told-ledger** is the anti-repetition mechanism. The nightly writer
   already reads each chat; it marks which world events and people she
   mentioned. An untold event is fresh material. A told one fades as Rimé
@@ -818,7 +822,13 @@ These are third parties who never agreed to be in a database.
   but stale: a persona without fresh sources is told plainly that it has no
   recent news, because a model's effective cutoff varies by topic (§2.6).
 - **Freshness** comes from feeds the owner registers, per persona or per
-  group (§16 PL11), fetched nightly **by the harness, never by a model** — the
+  group (§16 PL11), **in the persona's or group's folder under
+  `~/.mecha/personas/`, never in layered config**. A nightly, unattended fetch
+  target is the class CLAUDE.md keeps out of layered config, like a cron slot,
+  so a cloned repo can never add one. If a global table is ever wanted, it is
+  global-layer-only and stripped from a project layer loudly, as `[[mcp]]
+  personas = true` is (`PERSONA-DESIGN.md` §3.3). Feeds are fetched nightly
+  **by the harness, never by a model** — the
   HUD's rule for loaders: one read of one owner-registered source. The fetch
   is **capped at the door**, the way `image.rs` caps an image: a feed larger
   than its limit, or with more items than its limit, is refused by the fetcher
@@ -850,8 +860,7 @@ so its rules must hold before any of §14's gate exists:**
   `digests_in_brief` arms untrusted for.
 - **Shelf A's argument is provider trust, bounded by render ranges, not
   capacity alone.** A closed type is not a small one: a score is an unbounded
-  integer and a date is about 15 bits, and §8.5 allows about five shelf A
-  items a day. What shelf A really leans on is that its sources are
+  integer and a date is about 15 bits, unbounded. What shelf A really leans on is that its sources are
   structured APIs the owner registered, which serve data, not
   attacker-authored prose. That is a different claim from shelf B's, so it is
   stated as one. What makes it safe to lean on is a **per-field render
@@ -862,11 +871,23 @@ so its rules must hold before any of §14's gate exists:**
   - an enum comes from its taxonomy.
 
   An out-of-range value is dropped and named on the reading list, like any
-  unparseable one. Under those bounds, a compromised or erroneous provider
-  steers within a few plausible values per field. The gate's part 2 computes
-  shelf A's per-item ceiling from those ranges, beside shelf B's, so an
-  integer field cannot slip past the bit test for want of a vocabulary
-  (§16 PL9).
+  unparseable one.
+
+  **Shelf A has stated figures, as shelf B does, so its test has a constant
+  to fail against:**
+  - **at most 16 bits per item**, summed over the item type's rendered fields
+    at their bounds. For example, a game result: two scores of 0–200 (about
+    7.6 bits each) would already exceed it, so a result renders one score
+    pair as a win, loss or draw plus a margin band, or the type is narrowed
+    until it fits;
+  - **at most three shelf A items a day**;
+  - **expiry fixed at five days**.
+
+  That gives **under 48 bits a day and under 240 live at once**. Gate part 2
+  computes every shelf A item type's ceiling from its ranges and fails the
+  build if a type exceeds 16 bits, the same way shelf B's vocabularies are
+  checked, so an integer field cannot slip past the bit test for want of a
+  vocabulary (§16 PL9).
 - **Gate part 1 covers shelf A from its first build.** The conformance test
   (§14) runs over shelf A's parsers too: a canary in any feed field must
   never reach the world or a prompt.
@@ -917,10 +938,22 @@ Shelf B meets §2.7's three conditions in code:
     hand the feed the choice of which of its N arrivals survive. That is
     another log₂C(N,3) bits a day, about 15 at N = 50, and §14's bit test
     could not see it, because a selection channel has no vocabulary. So the
-    three daily slots are allocated **round-robin across registered feeds,
-    and in arrival order within a feed**, before extraction is even
-    consulted. The only attacker-chosen bits are then the surviving items'
-    own fields.
+    three daily slots are allocated **round-robin across registered feeds**,
+    which fixes how many slots each feed gets, before extraction is even
+    consulted.
+  - **Within a feed, the pick is a seeded draw, not the feed's order.** A
+    feed's item order belongs to whoever authors it, so "first in the
+    document" would hand an attacker the slot. Code instead draws uniformly
+    from the feed's admissible items: those whose published date parses and
+    falls within the fetch window. The seed is per persona per day, not
+    derivable from the feed.
+    - For a wholly attacker-authored feed, selection adds nothing over 9.6
+      bits: the attacker writes the surviving item anyway.
+    - For one planted item in an honest feed of N, the draw gives it a 1-in-N
+      chance at a slot, rather than the certainty first position would. That
+      is §2.7's PoisonedRAG case.
+
+    The only attacker-chosen bits are then the surviving items' own fields.
 
   That puts the ceiling at **about 9.6 bits per item**. With **at most three
   shelf B items a day** per persona, the ceiling is **under 30 bits a day**.
@@ -1063,10 +1096,10 @@ the headline never rides in the today-block.
 
 ### 8.5 Selection, stances and filtering
 
-- One nightly job per persona; at most about five items a day across its
-  feeds, of which at most three are shelf B, chosen round-robin by code
-  (§8.2). Shelf A items expire in three to seven days; shelf B items at five,
-  the figure §8.2's ceiling is computed from.
+- One nightly job per persona; at most six items a day across its
+  feeds: at most three of shelf A and at most three of shelf B, chosen by
+  code (§8.2). Both shelves expire at five days, the figure each ceiling is
+  computed from.
 - An unprompted mention only on an entity match or high salience, and at most
   one a chat (Chirpy, Pulse, Meta's one-follow-up rule).
 - Past tense, always dated.
@@ -1104,7 +1137,7 @@ none for state.
   holds for a candidate episode too, which is every episode from a stretch
   after a `news_read` (§8.4). Until the owner approves it, nothing about the
   event is recallable, and the world row would not change that: being told,
-  the event is never re-introduced from the world anyway. When the owner
+  the event is not re-introduced from the world while the flag stands. When the owner
   approves, recall reads the snapshot, so the pruned world row costs nothing.
   When the owner rejects, the snapshot goes with the episode, which is the
   owner's choice working as intended. So **no world row is held for a
@@ -1118,15 +1151,22 @@ none for state.
   would destroy the event in both stores, and the week view's record of
   which events went quiet would go with it. So a `told` whose only source is
   a tainted stretch does **not** count as told for pruning:
-  - the row prunes on its ordinary score, as if untold;
+  - **its suppression stands; its licence to prune does not.** The event is
+    not re-introduced, as with any told, but its row prunes on its ordinary
+    score, as if untold;
   - if the episode is **approved**, the flag becomes an ordinary told;
-  - if the episode is **rejected**, the harness clears the flag. The tainted
-    stretch never clears one itself; this is the owner's rejection, applied;
-  - if the episode sits **unreviewed** for the flag's lifetime (about the
-    shelf B expiry, five days), the flag lapses the same way.
+  - if the episode is **rejected**, the harness clears the flag and the event
+    may be re-introduced. The tainted stretch never clears one itself; this
+    is the owner's rejection, applied;
+  - if the episode sits **unreviewed**, nothing changes. Silence is not a
+    rejection. Unreviewed is the default after a `news_read` (§8.4), so
+    lapsing the flag on silence would re-introduce events the owner already
+    heard, which is ComPeer's duplicate failure on the feature's main path.
 
-  Suppression by an injection is therefore temporary, visible while it
-  lasts, and never reaches deletion (§16 PL25).
+  Suppression by an injection therefore stays bounded to what the chat was
+  shown (§4.5), visible on the week view, and never reaches deletion. The
+  cost of the rule is that a suppressed event stays quiet until the owner
+  rejects the episode or the row prunes on its own score (§16 PL25).
 - **Memory soft-prunes first:** below the threshold a record leaves recall and
   stays in the store, which is what D26 already says ("states expire from
   recall, never from the store"). D28's access log then shows whether the
@@ -1345,9 +1385,9 @@ owner's.
 | PL6 | People already in `identity.md` | Proposed once as owner nodes; after approval the network is their only home |
 | PL7 | Pruning | World hard-prunes; memory soft-prunes (out of recall, kept in the store); hard deletion of memories only by amending D26 after D28's readout |
 | PL8 | Importance to the owner | Inferred from engagement and pins; no rating prompts |
-| PL9 | News shelves | Build A and C first, with shelf A's per-field render bounds and its ceiling computed beside shelf B's (§8.2), and shelf A through all three gate parts, steering included, before it reaches a prompt. B ships behind the three-part gate (§14): schema conformance, a bit ceiling (about 9.6 bits per item and under 30 a day, as §8.2 computes it) enforced by a test, and the steering arm, all three read by the owner. Alternative: all three shelves at once |
+| PL9 | News shelves | Build A and C first, with shelf A's per-field render bounds and stated figures (at most 16 bits an item, three a day, five-day expiry; §8.2), and shelf A through all three gate parts, steering included, before it reaches a prompt. B ships behind the three-part gate (§14): schema conformance, a bit ceiling (about 9.6 bits per item and under 30 a day, as §8.2 computes it) enforced by a test, and the steering arm, all three read by the owner. Alternative: all three shelves at once |
 | PL10 | The writer after a taint rise | Facts about the owner from the owner's own turns stay clean (`Stated`), extracted from those turns and pointers only, except turns that answer a question she asked inside the tainted stretch or overlap the chat's `news_read` prose; her side stays candidates. The residual is paraphrase: a trade of convenience against a durable write reachable through the owner. Alternative: today's rule, where everything after the rise is a candidate (§8.4) |
-| PL11 | Feed sources | Registered per persona and per group |
+| PL11 | Feed sources | Registered per persona and per group, in their folders under `~/.mecha/personas/`, never in layered config; any future global table global-layer-only and stripped from project layers loudly (§8.1) |
 | PL12 | Topics withheld by default | Politics, deaths, disasters and crime, unless a feed is opted in |
 | PL13 | The owner's network | A structured layer over facts about the owner, in `memory.db` under memory's pruning rules, with existing people-facts migrated into it |
 | PL14 | Search on the owner's people | A filter that refuses an exactly spelled name. It narrows a cost and catches the accidental case; the blind path is what holds (§7.5). Alternative: no filter, and rely on the blind path alone |
@@ -1361,7 +1401,7 @@ owner's.
 | PL22 | `forget` over the world | Delete what is sourced to the chat and re-fold, in pure code, which is D27's rebuild done where it is cheap; a derived value whose support falls below a floor reverts to a candidate (D27's second half); owner events never go with a chat (§5) |
 | PL23 | Episodes after a `news_read` | Admit a typed episode (`item_id`, interest, date, a closed-set reaction) as clean, with free text left as candidates. Alternative: accept one approval per news conversation (§8.4) |
 | PL24 | `forget` over the owner's network | Re-fold from the events that remain, which is D27's rebuild applied in memory for this graph; an `Inferred` edge left on too little support reverts to a candidate. Alternative: today's fallback, so the person goes with any of their chats (§7.1) |
-| PL25 | A `told` set only by a tainted stretch | Does not license pruning; becomes ordinary on approval; cleared by the harness on rejection or after about five days unreviewed (§9) |
+| PL25 | A `told` set only by a tainted stretch | Suppresses but does not license pruning; becomes ordinary on approval; cleared by the harness on rejection; unchanged while unreviewed, since silence is not a rejection (§9). Alternative: lapse after five days unreviewed, at the cost of repeating what the owner heard |
 | PL26 | The feature registry | The world as `part_of = Personas`, a sub-feature switched with personas, rather than a new top-level `Feature`; settled before step 1 (§17) |
 
 ---
