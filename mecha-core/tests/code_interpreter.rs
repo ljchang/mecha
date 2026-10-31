@@ -1,8 +1,12 @@
 //! Code mode's interpreter, executed rather than described: a pinned monty
-//! worker inside bwrap, driven through the `Interpreter` trait.
+//! worker inside the platform's sandbox — bwrap on Linux, Seatbelt on a Mac —
+//! driven through the `Interpreter` trait. The same tests run on both; where
+//! the kernel has to be asked something (a process's state, its environment,
+//! its confinement), `support/process.rs` asks `/proc` or libproc.
 //!
 //! Needs the pinned worker (`mecha_core::interpreter::worker`) and a bwrap
-//! that can create namespaces. The worker is found at `MECHA_MONTY_WORKER`,
+//! that can create namespaces, or `sandbox-exec`. The worker is found at
+//! `MECHA_MONTY_WORKER`,
 //! else where `worker::ensure` installs it under `MECHA_HOME` (or
 //! `~/.mecha`); `MECHA_TEST_FETCH_MONTY=1` fetches the pinned wheel into a
 //! scratch home first, which is what CI does. Every path is verified
@@ -15,6 +19,8 @@
 
 #![cfg(feature = "monty")]
 
+#[path = "support/process.rs"]
+mod process;
 mod support;
 
 use mecha_core::interpreter::monty::{Confinement, Monty};
@@ -59,10 +65,16 @@ async fn pinned_worker() -> Option<VerifiedWorker> {
     worker::installed(&home).ok()
 }
 
-/// bwrap that can actually build the worker's namespaces here.
-fn bwrap_works() -> bool {
-    std::process::Command::new("bwrap")
-        .args([
+/// The platform's sandbox, able to run something here: bwrap that can
+/// build the worker's namespaces, or `sandbox-exec` that applies a profile.
+fn sandbox_works() -> bool {
+    let mut c = if cfg!(target_os = "macos") {
+        let mut c = std::process::Command::new("/usr/bin/sandbox-exec");
+        c.args(["-p", "(version 1)(allow default)", "/usr/bin/true"]);
+        c
+    } else {
+        let mut c = std::process::Command::new("bwrap");
+        c.args([
             "--unshare-all",
             "--unshare-user",
             "--disable-userns",
@@ -70,13 +82,23 @@ fn bwrap_works() -> bool {
             "/",
             "/",
             "true",
-        ])
-        .stdout(std::process::Stdio::null())
+        ]);
+        c
+    };
+    c.stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
         .is_ok_and(|s| s.success())
 }
 
+const SANDBOX: &str = if cfg!(target_os = "macos") {
+    "a working sandbox-exec"
+} else {
+    "a working bwrap"
+};
+
+/// `[sandbox] kind = "bwrap"`. On a Mac the worker's confinement ignores it
+/// and is Seatbelt, which is what [`confinement`] then returns.
 fn bwrap_sandbox() -> Sandbox {
     Sandbox::new(SandboxConfig {
         kind: Backend::Bwrap,
@@ -84,15 +106,19 @@ fn bwrap_sandbox() -> Sandbox {
     })
 }
 
+/// The platform's confinement for a worker, by the construction path.
+fn confinement() -> Confinement {
+    Confinement::for_sandbox(&bwrap_sandbox()).expect("the platform's worker confinement")
+}
+
 /// A confined interpreter with these backstops, or `None` (a skip).
 async fn interpreter(backstops: Backstops) -> Option<Monty> {
     let w = pinned_worker().await;
-    if unavailable("the pinned monty worker", w.is_some())
-        || unavailable("a working bwrap", bwrap_works())
+    if unavailable("the pinned monty worker", w.is_some()) || unavailable(SANDBOX, sandbox_works())
     {
         return None;
     }
-    let confinement = Confinement::for_sandbox(&bwrap_sandbox()).expect("bwrap confinement");
+    let confinement = confinement();
     Some(
         Monty::new(&w.unwrap(), &confinement, backstops, 4)
             .await
@@ -307,29 +333,10 @@ async fn a_program_cannot_open_a_file_read_the_environment_or_reach_the_network(
     assert!(!std::path::Path::new("/tmp/mecha-code-mode-probe").exists());
 }
 
-/// Every process under `pid`, itself included.
-fn process_tree(pid: u32) -> Vec<u32> {
-    let mut out = vec![pid];
-    let mut i = 0;
-    while i < out.len() {
-        let p = out[i];
-        if let Ok(tasks) = std::fs::read_dir(format!("/proc/{p}/task")) {
-            for t in tasks.flatten() {
-                let kids = std::fs::read_to_string(t.path().join("children")).unwrap_or_default();
-                out.extend(
-                    kids.split_whitespace()
-                        .filter_map(|k| k.parse::<u32>().ok()),
-                );
-            }
-        }
-        i += 1;
-    }
-    out
-}
-
 /// The second wall, measured on the live worker rather than read off an
 /// argv: the process running the program has no environment, no network
 /// namespace of ours, and a filesystem holding nothing but its binary.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn the_worker_process_has_no_environment_no_network_and_no_filesystem() {
     let Some(interp) = interpreter(Backstops::default()).await else {
@@ -341,7 +348,7 @@ async fn the_worker_process_has_no_environment_no_network_and_no_filesystem() {
         .unwrap();
     assert!(matches!(step, Step::Call(_)));
     let launcher = program.worker_pid().expect("a worker pid");
-    let tree = process_tree(launcher);
+    let tree = process::tree(launcher);
     let worker = *tree
         .iter()
         .find(|p| {
@@ -381,6 +388,198 @@ async fn the_worker_process_has_no_environment_no_network_and_no_filesystem() {
         vec!["monty".to_string()],
         "the worker sees more than its binary"
     );
+    let step = program.resume(Value::Null).await.unwrap();
+    assert!(matches!(
+        step,
+        Step::Done(Finished {
+            end: End::Complete { .. },
+            ..
+        })
+    ));
+}
+
+/// The second wall on a Mac, measured on the live worker rather than read
+/// off an argv — the honest twin of the `/proc` test above, which macOS has
+/// no `/proc` for. The pool's child *is* the worker (the launcher's shell,
+/// `env -i` and `sandbox-exec` each exec the next), so its pid is asked:
+/// what it runs (libproc), what environment the kernel holds for it
+/// (`KERN_PROCARGS2`), and what its profile denies (`sandbox_check`, the
+/// kernel's own evaluation of the profile on that process). Each denial is
+/// checked against an allowance on the same process and against this
+/// unsandboxed test, so a check that answered "denied" for everything, or
+/// for every process, fails here.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn the_live_worker_s_profile_denies_files_the_environment_services_and_the_network() {
+    use mecha_core::sandbox::seatbelt::live;
+    let Some(interp) = interpreter(Backstops::default()).await else {
+        return;
+    };
+    let w = pinned_worker().await.unwrap();
+    let (mut program, step) = interp
+        .start("hold()\n1", &["hold".into()], CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(matches!(step, Step::Call(_)));
+    let worker = program.worker_pid().expect("a worker pid");
+    assert_eq!(
+        process::exe(worker).as_deref(),
+        Some(w.path()),
+        "the pool's child is not the worker itself"
+    );
+    let names = process::environment_names(worker).expect("reading the worker's environment");
+    assert!(
+        names.is_empty(),
+        "the worker inherited an environment: {names:?}"
+    );
+    // The control: the same parse of this test's own `KERN_PROCARGS2` finds
+    // what is in this test's environment, so an empty answer above is the
+    // worker's, not a parser that lost its place (review of #769).
+    let mine = process::environment_names(std::process::id()).expect("reading this test's");
+    let expected: Vec<String> = std::env::vars_os()
+        .filter_map(|(k, _)| k.into_string().ok())
+        .collect();
+    assert!(
+        !mine.is_empty() && mine.iter().all(|n| expected.contains(n)),
+        "the parser misreads this test's own environment: {mine:?}"
+    );
+    assert!(
+        expected.iter().any(|n| n == "PATH") && mine.iter().any(|n| n == "PATH"),
+        "the parser did not find PATH in this test's environment: {mine:?}"
+    );
+
+    assert_eq!(
+        live::is_sandboxed(worker),
+        Some(true),
+        "not under a profile"
+    );
+    let me = std::process::id();
+    assert_eq!(live::is_sandboxed(me), Some(false), "the check is vacuous");
+
+    let canon = |p: &str| std::path::Path::new(p).canonicalize().unwrap();
+    let home = dirs::home_dir().expect("a home").canonicalize().unwrap();
+    let tmp = std::env::temp_dir().canonicalize().unwrap();
+    // An existing file to read, write and unlink, kept until every answer
+    // is in: `sandbox_check` reads a path that does not exist as denied even
+    // for this unsandboxed test (macOS 26), which would measure nothing.
+    // `process-exec` is asked as `process-exec*`; the bare name is an error
+    // to `sandbox_check`.
+    let existing = tmp.join(format!("mecha-code-mode-probe-{}", std::process::id()));
+    std::fs::write(&existing, b"x").unwrap();
+    let denied: Vec<(&str, std::path::PathBuf)> = vec![
+        ("file-read-data", canon("/etc/passwd")),
+        ("file-read-data", home.clone()),
+        ("file-read-data", home.join(".ssh")),
+        ("file-read-data", canon("/usr/lib")),
+        ("file-read-data", existing.clone()),
+        ("file-read-metadata", home.clone()),
+        ("file-write-data", existing.clone()),
+        ("file-write-data", canon("/dev/null")),
+        ("file-write-unlink", existing.clone()),
+        ("process-exec*", canon("/bin/sh")),
+        ("process-exec*", canon("/usr/bin/sandbox-exec")),
+    ];
+    let ops = [
+        "network-outbound",
+        "network-inbound",
+        "network-bind",
+        "process-fork",
+    ];
+    let services = [
+        "com.apple.cfprefsd.daemon",
+        "com.apple.SecurityServer",
+        "com.apple.system.opendirectoryd.libinfo",
+        "com.apple.system.notification_center",
+        "com.apple.logd",
+    ];
+    // The whole reading first, so one run shows every answer.
+    let mut table = Vec::new();
+    for (op, path) in &denied {
+        table.push(format!(
+            "  {op:<20} {:<60} worker {:?}  this test {:?}",
+            path.display(),
+            live::denies_path(worker, op, path),
+            live::denies_path(me, op, path)
+        ));
+    }
+    for op in ops {
+        table.push(format!(
+            "  {op:<20} {:<60} worker {:?}  this test {:?}",
+            "",
+            live::denies(worker, op),
+            live::denies(me, op)
+        ));
+    }
+    for s in services {
+        table.push(format!(
+            "  {:<20} {s:<60} worker {:?}  this test {:?}",
+            "mach-lookup",
+            live::denies_service(worker, s),
+            live::denies_service(me, s)
+        ));
+    }
+    for (op, path) in [
+        ("file-read-data", std::path::Path::new("/")),
+        ("process-exec*", w.path()),
+    ] {
+        table.push(format!(
+            "  {op:<20} {:<60} worker {:?}  (allowed by the profile)",
+            path.display(),
+            live::denies_path(worker, op, path)
+        ));
+    }
+    let table = table.join("\n");
+    println!("the live worker's profile, asked of the kernel:\n{table}");
+    for (op, path) in &denied {
+        assert_eq!(
+            live::denies_path(worker, op, path),
+            Some(true),
+            "the worker may {op} {}\n{table}",
+            path.display()
+        );
+        assert_eq!(
+            live::denies_path(me, op, path),
+            Some(false),
+            "{op} {} is denied to this test too, so the check measures nothing\n{table}",
+            path.display()
+        );
+    }
+    // What the profile does allow reads as allowed on the same process.
+    assert_eq!(
+        live::denies_path(worker, "file-read-data", std::path::Path::new("/")),
+        Some(false),
+        "{table}"
+    );
+    assert_eq!(
+        live::denies_path(worker, "process-exec*", w.path()),
+        Some(false),
+        "{table}"
+    );
+    std::fs::remove_file(&existing).ok();
+    for op in ops {
+        assert_eq!(
+            live::denies(worker, op),
+            Some(true),
+            "the worker may {op}\n{table}"
+        );
+        assert_eq!(
+            live::denies(me, op),
+            Some(false),
+            "{op} is denied to this test too, so the check measures nothing\n{table}"
+        );
+    }
+    for service in services {
+        assert_eq!(
+            live::denies_service(worker, service),
+            Some(true),
+            "the worker may look up {service}\n{table}"
+        );
+        assert_eq!(
+            live::denies_service(me, service),
+            Some(false),
+            "{service} is denied to this test too, so the check measures nothing\n{table}"
+        );
+    }
     let step = program.resume(Value::Null).await.unwrap();
     assert!(matches!(
         step,
@@ -463,7 +662,7 @@ async fn a_worker_that_stops_answering_is_killed_at_the_wall_clock() {
         .await
         .unwrap();
     assert!(matches!(step, Step::Call(_)));
-    let tree = process_tree(program.worker_pid().unwrap());
+    let tree = process::tree(program.worker_pid().unwrap());
     for p in &tree {
         // SAFETY: plain signal syscalls on processes this test's pool spawned.
         unsafe { libc::kill(*p as i32, libc::SIGSTOP) };
@@ -480,10 +679,10 @@ async fn a_worker_that_stops_answering_is_killed_at_the_wall_clock() {
     // The worker is gone, not left stopped.
     tokio::time::sleep(Duration::from_millis(300)).await;
     for p in tree {
-        let state = std::fs::read_to_string(format!("/proc/{p}/stat")).unwrap_or_default();
         assert!(
-            state.is_empty() || state.contains(") Z "),
-            "process {p} outlived its program: {state}"
+            process::is_gone(p),
+            "process {p} outlived its program: {:?}",
+            process::state(p)
         );
     }
 }
@@ -511,6 +710,141 @@ async fn the_memory_backstop_fires_uncatchably_and_is_named() {
         f.printed
     );
     assert!(!f.printed.contains("caught"));
+}
+
+/// The memory backstop measured against what the worker actually holds,
+/// not only against how the program ended (CODE-MODE-DESIGN.md §5). A Mac
+/// has no cgroup behind it — `[sandbox] memory_mb` never reaches a Seatbelt
+/// worker, and macOS refuses or ignores the rlimits that would stand in
+/// (§5) — so monty's own allocator ceiling is the only bound there, and a
+/// program that allocated past it before the check fired would hold the
+/// machine's memory for as long as the wall clock let it.
+///
+/// Each program tries to take far more than the limit, gradually or in one
+/// operation, while a sampler reads the worker's lifetime peak (`VmHWM`, or
+/// macOS's `ri_lifetime_max_phys_footprint`, which counts compressed and
+/// swapped pages too). Every one must end at `Backstop::Memory`, and none may
+/// have held more than the limit plus the worker's own baseline and slack.
+/// The table prints, so CI's log is the measurement.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_memory_backstop_bounds_what_the_worker_holds() {
+    const LIMIT: usize = 64 * 1024 * 1024;
+    // The worker's own resident baseline (measured: about 2 MiB on macOS,
+    // 6 MiB on Linux), monty's 4 MiB allocator headroom, and room for a
+    // sample's lag.
+    const SLACK: u64 = 64 * 1024 * 1024;
+    let backstops = Backstops {
+        max_memory: LIMIT,
+        ..short(30)
+    };
+    let Some(interp) = interpreter(backstops).await else {
+        return;
+    };
+    let programs = [
+        (
+            "a list grown 100 kB at a time",
+            "x = []\nwhile True:\n    x.append('a' * 100000)",
+        ),
+        ("a string doubled", "s = 'ab'\nwhile True:\n    s = s + s"),
+        (
+            "a dict grown",
+            "d = {}\ni = 0\nwhile True:\n    d[i] = i\n    i += 1",
+        ),
+        ("one 2 GiB string", "x = 'a' * (2 * 1024 ** 3)"),
+        ("one 2 GiB list", "x = [0] * (256 * 1024 ** 2)"),
+        ("one 2 GiB tuple", "x = (1,) * (256 * 1024 ** 2)"),
+        ("one 1 GiB integer", "x = 2 ** (8 * 1024 ** 3)"),
+        ("a range listed", "x = list(range(300000000))"),
+        (
+            "a replace that multiplies",
+            "x = ('a' * 1000).replace('a', 'b' * 1000000)",
+        ),
+        ("a 2 GiB ljust", "x = 'a'.ljust(2 * 1024 ** 3)"),
+        (
+            "a join of a generator",
+            "x = ''.join(['a' * 1000 for i in range(2000000)])",
+        ),
+    ];
+    let mut rows = Vec::new();
+    let mut over = Vec::new();
+    for (name, body) in programs {
+        let (mut program, step) = interp
+            .start(
+                &format!("hold()\n{body}"),
+                &["hold".into()],
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(step, Step::Call(_)), "{name}: {step:?}");
+        let tree = process::tree(program.worker_pid().unwrap());
+        let baseline = tree.iter().filter_map(|p| process::peak_bytes(*p)).max();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // The sampler says when its first reading is in, so it is already
+        // reading when the program resumes. The peak is a lifetime maximum,
+        // so what goes unseen is at most the last 2 ms before the worker
+        // dies.
+        let (ready, started) = tokio::sync::oneshot::channel::<()>();
+        let sampler = {
+            let stop = stop.clone();
+            let tree = tree.clone();
+            tokio::spawn(async move {
+                let mut peak = 0u64;
+                let mut ready = Some(ready);
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    for p in &tree {
+                        peak = peak.max(process::peak_bytes(*p).unwrap_or(0));
+                    }
+                    if let Some(r) = ready.take() {
+                        let _ = r.send(());
+                    }
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+                peak
+            })
+        };
+        started.await.unwrap();
+        let t = Instant::now();
+        let step = program.resume(Value::Null).await.unwrap();
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let peak = sampler.await.unwrap();
+        let Step::Done(f) = step else {
+            panic!("{name}: {step:?}")
+        };
+        let mib = |b: u64| b as f64 / (1024.0 * 1024.0);
+        rows.push(format!(
+            "  {name:<30} peak {:>7.1} MiB (start {:>5.1})  {:>6.0} ms  {:?}",
+            mib(peak),
+            mib(baseline.unwrap_or(0)),
+            t.elapsed().as_secs_f64() * 1e3,
+            f.end
+        ));
+        // A peak below the parked worker's own is no reading at all: the
+        // sampler missed the worker (review of #769).
+        let floor = baseline.expect("reading the parked worker's footprint");
+        // The end §5 records for every one of these, not merely "did not
+        // complete": a monty that stopped bounding and stalled into the wall
+        // clock, or raised, would otherwise pass (review of #769).
+        if !matches!(f.end, End::Backstop(Backstop::Memory(_)))
+            || peak < floor
+            || peak > LIMIT as u64 + SLACK
+        {
+            over.push(name);
+        }
+    }
+    println!(
+        "memory backstop at {} MiB, {}:\n{}",
+        LIMIT / (1024 * 1024),
+        std::env::consts::OS,
+        rows.join("\n")
+    );
+    assert!(
+        over.is_empty(),
+        "these programs did not end at the memory backstop, went unsampled, or held more than {} MiB + {} MiB: {over:?}\n{}",
+        LIMIT / (1024 * 1024),
+        SLACK / (1024 * 1024),
+        rows.join("\n")
+    );
 }
 
 #[tokio::test]
@@ -667,8 +1001,9 @@ async fn a_pool_start_hashes_the_worker_again() {
 }
 
 /// The silently-degrading guard: a sandbox that cannot start the worker
-/// fails preflight with a refusal, never a fallback to running it bare. A
-/// backend that spawned the worker directly would pass this preflight.
+/// fails preflight with a refusal, never a fallback to running it bare. On
+/// Linux a backend that spawned the worker directly would pass this
+/// preflight; on a Mac it is caught too, below.
 #[tokio::test]
 async fn preflight_refuses_when_the_sandbox_cannot_confine_the_worker() {
     let w = pinned_worker().await;
@@ -676,29 +1011,73 @@ async fn preflight_refuses_when_the_sandbox_cannot_confine_the_worker() {
         return;
     }
     let w = w.unwrap();
-    for broken in ["/bin/false", "/nonexistent/bwrap"] {
-        let interp = Monty::new(&w, &Confinement::bwrap_at(broken), Backstops::default(), 1)
-            .await
-            .unwrap();
+    let broken: Vec<Confinement> = if cfg!(target_os = "macos") {
+        ["/usr/bin/false", "/nonexistent/sandbox-exec"]
+            .map(Confinement::seatbelt_at)
+            .into()
+    } else {
+        ["/bin/false", "/nonexistent/bwrap"]
+            .map(Confinement::bwrap_at)
+            .into()
+    };
+    for c in broken {
+        let interp = Monty::new(&w, &c, Backstops::default(), 1).await.unwrap();
         let err = interp.preflight().await.unwrap_err().to_string();
         assert!(
             err.contains("does not run inside the sandbox"),
-            "{broken}: {err}"
+            "{c:?}: {err}"
         );
     }
-    if !unavailable("a working bwrap", bwrap_works()) {
-        let ok = Monty::new(
-            &w,
-            &Confinement::for_sandbox(&bwrap_sandbox()).unwrap(),
-            Backstops::default(),
-            1,
-        )
-        .await
-        .unwrap();
+    if !unavailable(SANDBOX, sandbox_works()) {
+        let ok = Monty::new(&w, &confinement(), Backstops::default(), 1)
+            .await
+            .unwrap();
         ok.preflight()
             .await
-            .expect("preflight under a working bwrap");
+            .expect("preflight under the platform's sandbox");
     }
+}
+
+/// A `sandbox-exec` that runs the worker but drops its profile — the
+/// worker answers, every program would succeed, and nothing confines it.
+/// Preflight asks the kernel about the live worker and refuses it; a
+/// preflight that only ran a program would pass it.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn preflight_refuses_a_worker_that_runs_unconfined() {
+    let w = pinned_worker().await;
+    if unavailable("the pinned monty worker", w.is_some()) {
+        return;
+    }
+    let dir = tmpdir("monty-bare");
+    let fake = dir.join("sandbox-exec");
+    // `-p <profile>` dropped, then the worker exec'd bare.
+    std::fs::write(&fake, "#!/bin/sh\nshift 2\nexec \"$@\"\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let interp = Monty::new(
+        &w.unwrap(),
+        &Confinement::seatbelt_at(&fake),
+        Backstops::default(),
+        1,
+    )
+    .await
+    .unwrap();
+    // It does run programs: only the live check tells it apart.
+    let (_p, step) = interp
+        .start("21 * 2", &[], CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(
+        matches!(&step, Step::Done(Finished { end: End::Complete { value: Some(v), .. }, .. }) if *v == 42),
+        "{step:?}"
+    );
+    let err = interp.preflight().await.unwrap_err().to_string();
+    assert!(err.contains("not under a Seatbelt profile"), "{err}");
+    assert!(err.contains("refusing to run programs unconfined"), "{err}");
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A worker killed under the program — what a cgroup memory limit does —
@@ -719,7 +1098,7 @@ async fn a_worker_killed_under_a_program_ends_it_as_a_backstop() {
         .unwrap();
     assert!(matches!(step, Step::Call(_)));
     // Killed while it spins, so the death lands mid-turn.
-    let tree = process_tree(program.worker_pid().unwrap());
+    let tree = process::tree(program.worker_pid().unwrap());
     let killer = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(300)).await;
         for p in tree {
@@ -745,12 +1124,11 @@ async fn a_worker_killed_under_a_program_ends_it_as_a_backstop() {
 #[tokio::test]
 async fn cancellation_reaches_a_program_waiting_for_a_worker() {
     let w = pinned_worker().await;
-    if unavailable("the pinned monty worker", w.is_some())
-        || unavailable("a working bwrap", bwrap_works())
+    if unavailable("the pinned monty worker", w.is_some()) || unavailable(SANDBOX, sandbox_works())
     {
         return;
     }
-    let conf = Confinement::for_sandbox(&bwrap_sandbox()).unwrap();
+    let conf = confinement();
     let interp = Monty::new(&w.unwrap(), &conf, Backstops::default(), 1)
         .await
         .unwrap();
@@ -781,12 +1159,11 @@ async fn cancellation_reaches_a_program_waiting_for_a_worker() {
 #[tokio::test]
 async fn a_reused_worker_starts_clean() {
     let w = pinned_worker().await;
-    if unavailable("the pinned monty worker", w.is_some())
-        || unavailable("a working bwrap", bwrap_works())
+    if unavailable("the pinned monty worker", w.is_some()) || unavailable(SANDBOX, sandbox_works())
     {
         return;
     }
-    let conf = Confinement::for_sandbox(&bwrap_sandbox()).unwrap();
+    let conf = confinement();
     // One worker at a time. `PROGRAMS_PER_WORKER` is 1, so each program
     // below gets a fresh one; this holds the property should that change.
     let interp = Monty::new(&w.unwrap(), &conf, Backstops::default(), 1)
@@ -819,7 +1196,8 @@ fn pct(v: &mut [f64], p: f64) -> f64 {
 }
 
 /// M1 (CODE-MODE-DESIGN.md §10): worker start, per-call overhead and a
-/// tight loop's throughput, through the shipped path (pinned worker, bwrap).
+/// tight loop's throughput, through the shipped path (pinned worker, the
+/// platform's sandbox).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn m1_measure() {
@@ -829,9 +1207,9 @@ async fn m1_measure() {
         ..Backstops::default()
     };
     let w = pinned_worker().await.expect("the pinned worker");
-    let conf = Confinement::for_sandbox(&bwrap_sandbox()).unwrap();
+    let conf = confinement();
 
-    // Raw process start, for context: the binary alone, then under bwrap.
+    // Raw process start, for context: the binary alone, then confined.
     let mut bare = Vec::new();
     let mut boxed = Vec::new();
     for _ in 0..20 {
@@ -843,23 +1221,35 @@ async fn m1_measure() {
         assert!(ok.status.success());
         bare.push(t.elapsed().as_secs_f64() * 1e3);
         let t = Instant::now();
-        let ok = std::process::Command::new("bwrap")
-            .args([
-                "--unshare-all",
-                "--unshare-user",
-                "--disable-userns",
-                "--clearenv",
-                "--ro-bind",
-            ])
-            .arg(w.path())
-            .args(["/monty", "--", "/monty", "-c", "1"])
-            .output()
-            .unwrap();
+        let ok = if cfg!(target_os = "macos") {
+            std::process::Command::new("/usr/bin/sandbox-exec")
+                .arg("-p")
+                .arg(mecha_core::sandbox::seatbelt::worker_profile(w.path()).unwrap())
+                .arg(w.path())
+                .args(["-c", "1"])
+                .env_clear()
+                .output()
+                .unwrap()
+        } else {
+            std::process::Command::new("bwrap")
+                .args([
+                    "--unshare-all",
+                    "--unshare-user",
+                    "--disable-userns",
+                    "--clearenv",
+                    "--ro-bind",
+                ])
+                .arg(w.path())
+                .args(["/monty", "--", "/monty", "-c", "1"])
+                .output()
+                .unwrap()
+        };
         assert!(ok.status.success());
         boxed.push(t.elapsed().as_secs_f64() * 1e3);
     }
 
-    // Cold: a fresh pool, so the program pays the spawn, bwrap and Configure.
+    // Cold: a fresh pool, so the program pays the spawn, the sandbox and
+    // Configure.
     let mut cold = Vec::new();
     for _ in 0..20 {
         let interp = Monty::new(&w, &conf, backstops, 1).await.unwrap();
@@ -912,7 +1302,7 @@ async fn m1_measure() {
         pct(&mut bare, 0.9)
     );
     println!(
-        "  process start, bwrap `monty -c 1`:       median {:.1} ms (p90 {:.1})",
+        "  process start, confined `monty -c 1`:    median {:.1} ms (p90 {:.1})",
         median(&mut boxed),
         pct(&mut boxed, 0.9)
     );

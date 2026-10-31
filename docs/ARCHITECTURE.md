@@ -3437,13 +3437,51 @@ The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
   has `eval` and `exec`, so a registered name is reachable from a built
   string: reach is the registered set, never the source's free names.
 - **The worker pool is a third process class, confined like an MCP
-  server.** `monty-pool` clears the environment; the launcher runs the
-  pinned worker under bwrap with every namespace unshared, `--clearenv`,
-  and nothing bound but the static binary. Only bwrap confines a worker:
-  `none`, docker (the pool kills the client's pid, not the container),
-  landlock (no network closure) and Seatbelt refuse by name, and
-  `preflight` runs a program through the real launcher, so a sandbox that
-  cannot start the worker stops the start rather than degrading.
+  server.** `monty-pool` clears the environment, and the launcher clears it
+  again. On Linux it runs the pinned worker under bwrap with every
+  namespace unshared, `--clearenv`, and nothing bound but the static
+  binary. On a Mac it runs it as `env -i sandbox-exec -p <profile>` under
+  `seatbelt::worker_profile`, the worker's own profile and not the
+  documents one: deny by default, exec of the worker by its canonical
+  path, `file-read-data` of `/` alone (the worker aborts before `main`
+  without it), `sysctl-read` of `hw.pagesize_compat` alone (Rust's runtime
+  panics without it), no mach-lookup, no write, no network. That list is
+  the measured minimum: macOS CI traced the worker under `(allow default
+  (with report))` and removed each grant in turn. The worker reaches for
+  more (dyld's and libSystem's sysctls, opendirectoryd and the
+  notification center), and every interpreter test passes with those
+  denied. macOS's unified log records those denials on each start; mecha
+  logs nothing. The minimum was measured on macOS 26.6. An OS update that
+  adds a startup read stops code mode on that Mac, failing closed:
+  preflight fails with the worker's stderr. Re-measure the profile then,
+  rather than debugging monty. On Linux `none`, docker (the pool kills the
+  client's pid, not the container), landlock (no network closure) and
+  Seatbelt refuse by name. `preflight` runs a program through the
+  real launcher, so a sandbox that cannot start the worker stops the start
+  rather than degrading. Under Seatbelt it also asks the kernel
+  (`sandbox_check`, `seatbelt::live`) whether the live worker is under a
+  profile that denies `/etc`, the home, a write to `/dev/null`, `/bin/sh`
+  and the network. As a control, it also asks whether the one read the
+  profile grants (`/`) reads as allowed. So a launcher that ran the worker bare fails there,
+  though every program would have succeeded. Ask `sandbox_check` only
+  what was measured to answer both ways. The bare `process-exec` is an
+  error to it (ask `process-exec*`), and a path that does not exist reads
+  as denied even for an unsandboxed process, so only existing paths are
+  asked about.
+- **On a Mac the confinement is the platform's, never a setting.**
+  `Confinement::for_sandbox` returns Seatbelt whatever `[sandbox]` names.
+  `[sandbox]` is `shell`'s table, `kind = "seatbelt"` stays a load error
+  there (`SEATBELT_IS_DOCUMENTS_ONLY`), and the interpreter's profile is
+  fixed in code. So no config field can put a shell under it, loosen it, or
+  run the worker bare. A Mac with `[sandbox] kind = "none"` still gets a
+  confined worker; Linux with it gets no code mode.
+- **A Mac has no memory wall outside the worker.** There are no cgroups,
+  so `[sandbox] memory_mb` never reaches a Seatbelt worker. The bound is
+  monty's own allocator ceiling, which macOS CI measured holding
+  (`the_memory_backstop_bounds_what_the_worker_holds`,
+  CODE-MODE-DESIGN.md §5). Above it nothing caps the worker: no limit the
+  kernel enforces is set, so a monty allocator bug would be uncapped there.
+  A second wall is proposed in CODE-MODE-DESIGN.md §12.
 - **The worker is identified by its sha256** (`worker.rs`), checked every
   time a pool starts; a path or a version string never stands in for it.
 - **Backstops and the program's own exceptions are different types.**
