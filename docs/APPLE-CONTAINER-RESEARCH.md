@@ -205,7 +205,10 @@ the container keeps running. `container run` has the same shape [I]:
 ### Option A: one VM per worker
 
 The launcher script is
-`exec <absolute path to the pinned container CLI> run --rm -i --network none --no-dns --read-only --cap-drop ALL --user 65534:65534 --memory <m> --cpus 1 --cidfile <launcher-dir>/$$.cid <pinned image> "$@"`.
+`exec <absolute path to the pinned container CLI> run --rm -i -k <pinned kernel> --init-image <pinned vminit> --network none --no-dns --read-only --cap-drop ALL --user 65534:65534 --memory <m> --cpus 1 --label mecha.code=<launcher-id> --cidfile <launcher-dir>/$$.cid <pinned image> "$@"`.
+The kernel and vminit are mecha's pinned ones (§1), never the default the
+owner was prompted to install. Without `-k` and `--init-image` the VM
+boots that default, which §4's escape row names as a weakness.
 The path is absolute because the launcher runs under `env_clear()`, so
 `sh`'s fallback `PATH` holds neither `/usr/local/bin` nor
 `/opt/homebrew/bin`. `Confinement::for_sandbox` resolves `bwrap` and
@@ -249,6 +252,11 @@ below).
     `container kill` and then `container delete`.
   - `container list --all --format json` with a `--label` finds whatever a
     crash left behind.
+  - **Both flags the reaper rests on are unverified [I]:** `run --cidfile`
+    (that it exists and writes the id before the VM is up) and `run
+    --label` (that labels are queryable in `list --format json`). M-C15
+    checks both. If either is missing or behaves differently, option A
+    needs another way to name its VMs, and its cost rises again.
   - That is new code with its own failure mode: a reaper that cannot run
     must stop the pool, not leak VMs.
 - **Memory returns per recycle** (§2).
@@ -744,6 +752,17 @@ pkgutil --pkgs | grep -i container   # then: pkgutil --files <that id> | head -5
 find /usr/local -path '*container*' -type f -perm -u+x -exec shasum -a 256 {} + 2>/dev/null
 codesign -dv --verbose=2 "$(command -v container)" 2>&1 | grep -E 'Identifier|TeamIdentifier|Authority'
 container system version --format json > version.json; container list --all --format json > list.json
+```
+
+**M-C15: the reaper's flags exist and behave.** Option A's reaper needs
+both.
+
+```bash
+container run --help | grep -E -- '--cidfile|--label'          # present at all?
+container run -d --name ac-lbl --network none --label mecha.code=probe --cidfile ~/mecha-ac/probe.cid alpine:3.22 sleep infinity
+cat ~/mecha-ac/probe.cid                                          # the id, written before or after boot?
+container list --all --format json | grep -c '"mecha.code"'      # the label is queryable
+container kill ac-lbl; container delete ac-lbl; rm -f ~/mecha-ac/probe.cid
 ```
 
 **Cleanup:**
