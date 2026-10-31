@@ -2487,14 +2487,10 @@ pub fn persona_agent(
         pinned.name.clone(),
         extractor,
     );
-    // It skips `registry_as`'s refusal of anything that can aim: so it
-    // must never be able to, and is left out — in a release build too —
-    // if it ever could (review of #459).
-    if mecha_core::tool::Tool::capabilities(&reader).egress == mecha_core::tool::Egress::None {
-        tools.registry.insert(Arc::new(reader));
-    } else {
-        eprintln!("mecha: file_read can send, so this persona chat goes without it");
-    }
+    // Past `registry_as`, through its checks all the same (#776): a form
+    // that could send is refused by name — in a release build too (review
+    // of #459).
+    persona::admit_own(&mut tools, Arc::new(reader), &pinned.name, &pinned.settings);
     // Its search beside it, on the same terms (§10.4).
     let search = mecha_core::persona::search::FileSearch::new(
         store.to_path_buf(),
@@ -2502,19 +2498,16 @@ pub fn persona_agent(
         file_embedder(&bound.config),
         max_doc_bytes,
     );
-    if mecha_core::tool::Tool::capabilities(&search).egress == mecha_core::tool::Egress::None {
-        tools.registry.insert(Arc::new(search));
-    } else {
-        eprintln!("mecha: file_search can send, so this persona chat goes without it");
-    }
+    persona::admit_own(&mut tools, Arc::new(search), &pinned.name, &pinned.settings);
     // Its own memory, on the same terms (§9.7, "on demand"): offered when
     // the pinned version's memory is on, so the tool list — the front of the
     // cached prefix — never changes mid-chat; each call reads the switches
     // live, so turning memory off reaches the chat at its next call.
-    // Inserted past `registry_as`, so `answers = "files"` does not withhold
-    // them: the `[memory]` switches are memory's control, and a files-only
-    // `memory_read` returns the owner's words and the persona's, never what
-    // a tool brought back (owner ruling 2026-10-02).
+    // `answers = "files"` keeps them — each declares it reaches nothing
+    // beyond the persona's own store: the `[memory]` switches are memory's
+    // control, and a files-only `memory_read` returns the owner's words and
+    // the persona's, never what a tool brought back (owner ruling
+    // 2026-10-02).
     use mecha_core::persona::memory_tools;
     if memory_tools::offers_search(&pinned.settings) {
         let search = memory_tools::MemorySearch::new(
@@ -2523,11 +2516,7 @@ pub fn persona_agent(
             file_embedder(&bound.config),
             bound.config.agent.timezone(),
         );
-        if mecha_core::tool::Tool::capabilities(&search).egress == mecha_core::tool::Egress::None {
-            tools.registry.insert(Arc::new(search));
-        } else {
-            eprintln!("mecha: memory_search can send, so this persona chat goes without it");
-        }
+        persona::admit_own(&mut tools, Arc::new(search), &pinned.name, &pinned.settings);
     }
     if memory_tools::offers_read(&pinned.settings) {
         let read = memory_tools::MemoryRead::new(
@@ -2535,11 +2524,7 @@ pub fn persona_agent(
             pinned.name.clone(),
             bound.config.agent.timezone(),
         );
-        if mecha_core::tool::Tool::capabilities(&read).egress == mecha_core::tool::Egress::None {
-            tools.registry.insert(Arc::new(read));
-        } else {
-            eprintln!("mecha: memory_read can send, so this persona chat goes without it");
-        }
+        persona::admit_own(&mut tools, Arc::new(read), &pinned.name, &pinned.settings);
     }
     let system = persona::system_prompt(pinned)?;
     let ctx = bound.agent.ctx();

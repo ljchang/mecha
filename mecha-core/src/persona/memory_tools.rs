@@ -179,6 +179,12 @@ impl Tool for MemorySearch {
         Some(self)
     }
 
+    /// The persona's own memory: the owner's words and its own, never what
+    /// a tool brought back (the owner's ruling of 2026-10-02).
+    fn reaches_beyond_persona_files(&self) -> bool {
+        false
+    }
+
     fn effect(&self) -> Option<crate::tool::effect::Effect> {
         Some(crate::tool::effect::Effect::Read)
     }
@@ -437,6 +443,12 @@ impl Tool for MemoryRead {
 
     fn for_persona(self: Arc<Self>) -> Option<Arc<dyn Tool>> {
         Some(self)
+    }
+
+    /// The persona's own memory: the owner's words and its own, never what
+    /// a tool brought back (the owner's ruling of 2026-10-02).
+    fn reaches_beyond_persona_files(&self) -> bool {
+        false
     }
 
     fn effect(&self) -> Option<crate::tool::effect::Effect> {

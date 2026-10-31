@@ -788,6 +788,12 @@ impl Tool for FileRead {
         Some(self)
     }
 
+    /// The persona's own folders, which the owner filled: kept for a
+    /// files-only persona, whose answers come from exactly these.
+    fn reaches_beyond_persona_files(&self) -> bool {
+        false
+    }
+
     fn effect(&self) -> Option<crate::tool::effect::Effect> {
         Some(crate::tool::effect::Effect::Read)
     }
