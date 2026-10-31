@@ -3,10 +3,9 @@
 > **Status (2026-10-31):** designed; §17's registry step and the `[life]`
 > switches of step 1 are built (`Feature::World`, `persona::Life`), and the
 > rest of step 1 is next. **Every decision in §16
-> but PL29 and PL30 is ruled** by the owner, the same day: PL1–PL22 and PL24–PL26 as rulings,
+> is ruled** by the owner, the same day: PL1–PL22, PL24–PL26, PL29 and PL30 as rulings,
 > and PL23, PL27 and PL28 as the owner's direction (no approval queue for
-> news; every part opt-in per persona). **Two are open:** PL29 and PL30,
-> added afterwards by #777. §1 is the owner's requests, in the order they were made; §2 is
+> news; every part opt-in per persona). §1 is the owner's requests, in the order they were made; §2 is
 > the evidence, researched the same day, with a source on every figure that
 > carries a decision. Personas, their chats and real people appear nowhere in
 > this document: every example is invented.
@@ -495,7 +494,7 @@ Each level is its own `world.db`: `~/.mecha/personas/world.db` for everyone,
   work runs only when at least one member persona has `world` on**, so §3.1's
   "no nightly job for a persona with `world` off" holds at every level. A persona's derived events decay
   under her own `[life.decay]`.
-  - **A shared row that decays does so under the shipped defaults** (open,
+  - **A shared row that decays does so under the shipped defaults** (ruled,
     §16 PL29); §9's owner-origin and `state` exemptions hold at every level,
     so the everyone level's seasons and calendar never decay.
     Members may disagree, and a shared row is one row, so no one member's
@@ -676,9 +675,10 @@ one more reason §14's gate part 1 exists.
   that remembered anything untrusted." The today-block is a seventh fold and
   takes the recall pair's shape:
   - **the clean stem arms `private`.** Most of the block is code, owner
-    files, clean narration and shelves A and B. Whether shelf C's lines (an
-    interest and an opaque id, §8.3) ride under this stem or the untrusted
-    one is open (§16 PL30). But stated plans and people she
+    files, clean narration and shelves A and B. Shelf C's lines ride here
+    too (§16 PL30): each is an interest and an opaque id, both code's
+    (§8.3), and the stem reads the origin of what folds, never of the row it
+    was selected from. But stated plans and people she
     mentioned in a chat ride in it too (§13): a plan the two of them made is
     memory of a conversation with the owner, the case §9.7 arms `private` for.
     Arming is close to free here, since D11 already lifts the leak guard in
@@ -687,7 +687,8 @@ one more reason §14's gate part 1 exists.
     of the block and sending them through the recall block, splits one day
     across two folds for no gain.
   - **the untrusted stem arms `private` and `untrusted`** the moment any
-    folded row's origin is not clean.
+    folded row's origin is not clean: the origin of the fields that fold, so
+    a shelf C line, whose fields are code's, never arms it (PL30).
 
   The untrusted variant exists from the first build, so a dirty result at the
   shelf B gate (§14), or a candidate row approved by mistake, needs no new fold
@@ -2003,7 +2004,7 @@ The folds, which arrive in no tool result and so arm at the fold
 
 | Fold | Arms | Stem |
 |---|---|---|
-| Today-block (§4.5) | `private`; both when any row's origin is not clean | a new pair shaped like the recall pair, riding as **its own run note** so its prefix matches, registered in `arm_for_content`, `is_recorded_note` and `is_harness_voice` |
+| Today-block (§4.5) | `private`; both when any folded field's origin is not clean (a shelf C line's are code's, so it never arms `untrusted`, PL30) | a new pair shaped like the recall pair, riding as **its own run note** so its prefix matches, registered in `arm_for_content`, `is_recorded_note` and `is_harness_voice` |
 | Owner's roster, per-turn people cards and the unknown-name note (§7.2) | `private`; both when any fact's origin is not clean | `persona::recall::stem_of`'s existing pair, inside the recall block; the note is a line of the cards fold, never its own block |
 | `news_read` result (§8.3) | `untrusted`, always: `untrusted_input` declared and `external` on every result, the loop's conjunction | none; a tool result is re-armed from `Record::Taint`, like every external tool |
 | Proactive framing turn (§12) | nothing of its own; the run's today-block carries the arming | its own stem, registered in `arm_for_content`, `is_recorded_note` and `is_harness_voice` |
@@ -2247,8 +2248,8 @@ this document's; the ruling is the owner's.
 | PL26 | The feature registry | **Ruled (2026-10-31):** `part_of = Personas`, with the per-persona `[life]` switches (PL28) as the lever. A top-level switch would buy nothing, since personas are operator-only and no trial home can run one; §14's comparison is read offline. Settled before step 1 (§17) |
 | PL27 | Remembering article chats in full | **Owner's direction (2026-10-31):** a per-persona `remember_articles` switch, off by default, owner-written in `persona.toml`. With it on, episodes and facts from a stretch after a `news_read` are recalled without approval, origin still untrusted and re-armed on recall. The cost (possible persistent steering, no way to send) is shown beside the switch and in a `TRIFECTA.md` row. **Ruled within it (2026-10-31): no carve-out.** Facts about the owner and the owner's people are recalled too, with the residual (a planted claim about a real person) accepted, kept visible by an "from an article chat" badge and stated in the `TRIFECTA.md` row (§8.4) |
 | PL28 | Which personas get which parts | **Owner's direction (2026-10-31):** every part is an opt-in switch per persona, off by default: `world`, `people`, `my_people`, `news`, `camera`, `feed`, `proactive`, `remember_articles`. A tool whose switch is off is never built; dependencies are refused by name; the switches that decide which tools, blocks and runs exist are fixed per persona version (`proactive` at the scheduler's next check), and `remember_articles` is read live, never reaching backwards (§3.1) |
-| PL29 | How a shared row decays | **Open.** Recommendation: a group's and everyone's rows that decay do so under the shipped `[life.decay]` defaults (§9's owner-origin and `state` exemptions hold at every level), since members may disagree and a shared row is one row; a level's own knobs, if wanted, come with the group world (§17 step 3), in the owner's files. This carves an exception out of PL7, whose knobs are per persona (§3.2) |
-| PL30 | Which stem the today-block takes on a day with a shelf C line | **Open.** Recommendation: the clean stem. The line's two fields are code's (an interest from the owner's feed mapping and a harness-minted id), so what folds carries no attacker text; the row it was selected from is untrusted, and its presence, count and timing (about 3 bits a day) are the residual §14's steering arm covers. §4.5's "any folded row's origin" rule then needs to say it reads the origin of the folded fields, not of the row they were selected from. The alternative, the untrusted stem, makes every chat on a news day a candidate under §9.6 from the first build, on the feature's main path, which PL23's typed episode was ruled to avoid (§4.5, §8.3, §13) |
+| PL29 | How a shared row decays | **Ruled (2026-10-31), as recommended:** a group's and everyone's rows that decay do so under the shipped `[life.decay]` defaults (§9's owner-origin and `state` exemptions hold at every level), since members may disagree and a shared row is one row; a level's own knobs, if wanted, come with the group world (§17 step 3), in the owner's files. This carves an exception out of PL7, whose knobs are per persona (§3.2) |
+| PL30 | Which stem the today-block takes on a day with a shelf C line | **Ruled (2026-10-31), as recommended:** the clean stem. The line's two fields are code's (an interest from the owner's feed mapping and a harness-minted id), so what folds carries no attacker text; the row it was selected from is untrusted, and its presence, count and timing (about 3 bits a day) are the residual §14's steering arm covers. §4.5's rule reads the origin of the folded fields, not of the row they were selected from. The alternative, the untrusted stem, rejected: it makes every chat on a news day a candidate under §9.6 from the first build, on the feature's main path, which PL23's typed episode was ruled to avoid (§4.5, §8.3, §13) |
 
 ---
 
