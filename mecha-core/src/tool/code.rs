@@ -1206,6 +1206,9 @@ impl Run {
                 ),
             )),
             HostAnswer::Ran { id, output: out } => {
+                // No admitted tool carries reads of its own (a subagent is never
+                // admitted, §12): one that did would lose them here, silently.
+                debug_assert!(out.reads.is_empty(), "a host call carried reads");
                 self.external |= out.external;
                 let failed = out.is_error;
                 let bytes: Arc<str> = Arc::from(out.content);

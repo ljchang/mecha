@@ -289,13 +289,14 @@ pub fn ensure(producer: &str) -> Result<PathBuf> {
 pub fn ensure_outside_mecha_home(workspace: &Path) -> Result<()> {
     let home = mecha_home()?;
     // The home may not exist yet on a first run, and a path that cannot be
-    // canonicalized is compared as written — over-refusing a workspace is
-    // recoverable, under-refusing one is the bug. Written, it is still taken
-    // lexically, so a `..` cannot walk it under the store unseen.
+    // canonicalized is compared as it would resolve — over-refusing a
+    // workspace is recoverable, under-refusing one is the bug. A workspace
+    // not made yet resolves through its deepest existing ancestor, so a
+    // symlink above it (macOS's `/var` → `/private/var`) and a `..` cannot
+    // walk it under the store unseen (macOS CI, #784).
     let home = home.canonicalize().unwrap_or(home);
-    let workspace_c = workspace.canonicalize();
-    let lexical = lexically_normal(workspace);
-    let ws = workspace_c.as_deref().unwrap_or(&lexical);
+    let resolved = as_it_would_resolve(workspace);
+    let ws = resolved.as_path();
     let programs = crate::tool::code::record::root_under(&home);
     if ws.starts_with(&programs) {
         anyhow::bail!(
@@ -321,12 +322,27 @@ pub fn ensure_outside_mecha_home(workspace: &Path) -> Result<()> {
     Ok(())
 }
 
-/// `path` with its `.` and `..` components resolved as written, for a path
-/// that cannot be canonicalized because it does not exist yet.
-fn lexically_normal(path: &Path) -> PathBuf {
+/// `path` as it would resolve once made: canonical where it exists, and
+/// otherwise its deepest existing ancestor canonicalized, with the rest
+/// appended and its `.` and `..` taken as written. Lexical alone when no
+/// ancestor exists.
+fn as_it_would_resolve(path: &Path) -> PathBuf {
     use std::path::Component;
-    let mut out = PathBuf::new();
-    for c in path.components() {
+    if let Ok(c) = path.canonicalize() {
+        return c;
+    }
+    let parts: Vec<Component<'_>> = path.components().collect();
+    let (mut out, rest) = (0..parts.len())
+        .rev()
+        .find_map(|i| {
+            let prefix: PathBuf = parts[..i].iter().collect();
+            (!prefix.as_os_str().is_empty())
+                .then(|| prefix.canonicalize().ok())
+                .flatten()
+                .map(|c| (c, &parts[i..]))
+        })
+        .unwrap_or((PathBuf::new(), &parts[..]));
+    for c in rest {
         match c {
             Component::CurDir => {}
             Component::ParentDir => {
@@ -926,6 +942,14 @@ pub(crate) mod tests {
         // Not yet made, and walked there by `..`: refused as written.
         let walked = home.dir.join("work").join("..").join("programs").join("y");
         assert!(ensure_outside_mecha_home(&walked).is_err());
+        // Not yet made, under a symlink to the home — macOS's `/var` is one
+        // to `/private/var`, where its temp dirs live: refused as it would
+        // resolve, never as written (macOS CI, #784).
+        let link = std::env::temp_dir().join(format!("mecha-link-{}", uuid::Uuid::new_v4()));
+        std::os::unix::fs::symlink(&home.dir, &link).unwrap();
+        let linked = ensure_outside_mecha_home(&link.join("programs").join("z"));
+        let _ = std::fs::remove_file(&link);
+        assert!(linked.is_err(), "a symlinked path walked under the store");
 
         let work = ensure("morning").unwrap();
         ensure_outside_mecha_home(&work).unwrap();
