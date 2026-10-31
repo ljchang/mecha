@@ -457,8 +457,10 @@ one more reason §14's gate part 1 exists.
   (§16 PL20).
 
   **The today-block rides as its own run note, never concatenated with the
-  recall block.** Every stem matcher in the tree is a prefix match after
-  trimming. If two folds shared one text block, only the first stem would sit
+  recall block.** The stem pairs this fold is shaped on (`recall::stem_of`,
+  `scene::stem_of`) match a prefix after trimming. (The appraisal and digest
+  stems match with `contains`, because they sit mid-brief.) If two folds
+  shared one text block, only the first stem would sit
   at the start, and the second would never arm on a resume, failing in the
   open direction. As its own note it works: `Taint::arm_for_notes` gives each
   note its own block before matching, and `Record::Notes` re-arms each one on
@@ -480,6 +482,12 @@ one more reason §14's gate part 1 exists.
     direction. A tainted stretch **never clears** a flag. Each flag records
     its source chat and taint, so the week view can show which events went
     quiet from a tainted chat (§13).
+  - **The set is bounded by what the chat was shown.** A tainted stretch may
+    set `told` only on events that rode in *that chat's* today-block or recall
+    block, never on arbitrary world rows. So an injection that makes her
+    "mention" things can silence at most what was in front of her, a handful
+    of events per chat. This channel is outside the reach of §14's steering
+    arm, which drives a feed, not a chat, and §14 says so.
 - **Stated plans flow back.** When she says in a chat that something will
   happen ("there's a game on Saturday"), the writer records it as a **stated
   plan**, and Saturday's simulated day contains it. Without this, chat and
@@ -922,6 +930,15 @@ the headline never rides in the today-block.
 - **On demand:** `news_read(item_id)` returns shelf C's prose inside
   `<untrusted-content>`. **Taint rises at that turn, honestly**, and §9.6's
   split keeps everything before it clean. Three details carry the "honestly":
+  - **Both halves of the loop's rule.** Taint rises on
+    `caps.untrusted_input && out.external` (`jobs::settle`), and the
+    `<untrusted-content>` wrapper is gated on the same pair. `external` alone
+    arms nothing. So `news_read` **declares `untrusted_input: true` in its
+    `Capabilities`** *and* **marks every result `external`**. A tool built
+    with only the second half would return attacker prose unwrapped and arm
+    nothing, and §9.6's split would never fire: the article's steering, and
+    everything after it, would land in memory as clean. That is the pair
+    CLAUDE.md names as easy to get wrong.
   - **`external` unconditionally.** The tool marks its result
     `ToolOutput::external` itself, on every call, never from an origin field
     stored on the `items` row. It does no network I/O, since the harness
@@ -980,7 +997,8 @@ the headline never rides in the today-block.
   owner's turns and pointers — if it reads her replies, it reads whatever the
   injection made her say. Its cost is lost context ("yes, exactly" without
   the question it answered).
-  - **That closes laundering and leaves elicitation open.** After a
+  - **This closes laundering through her own words, and only that.** It
+    leaves two paths open. The first is elicitation. After a
     `news_read`, an injection can shape *her questions*, and the owner's
     answers are still the owner's own words. A fact about the owner's family
     given in reply to a question only the injection prompted would land
@@ -989,11 +1007,26 @@ the headline never rides in the today-block.
     `Chosen` sender to carry it out. But the current rule, everything after a
     rise is a candidate, exists so an injection cannot enlarge durable state
     unseen.
-  - **So PL10 is narrowed.** A fact from an owner turn stays clean, *except*
-    where that turn answers a question the persona asked inside the tainted
-    stretch. Those facts are candidates. The writer can tell from the turn
-    structure (a persona turn ending in a question, followed by the owner's
-    turn) without reading her words.
+  - **The second is owner-quoted content.** In a news conversation the
+    natural owner move carries the article's words inside the owner's own
+    turn: "it says here that…", or a pasted headline. The pass sees only
+    owner turns, so it cannot tell that half of one is the article. Unlike
+    elicitation, this is invisible in turn structure.
+  - **So PL10 is narrowed twice, and still carries a residual.** A fact from
+    an owner turn stays clean, *except*:
+    - where that turn answers a question the persona asked inside the
+      tainted stretch. The writer can tell from the turn structure (a persona
+      turn ending in a question, followed by the owner's turn) without
+      reading her words;
+    - where that turn overlaps the chat's `news_read` results. Code checks
+      word n-gram overlap between the owner's turn and the returned prose.
+      Code, not a model, so no model reads the article.
+
+    Those facts are candidates. **The residual is paraphrase:** an owner who
+    restates an article in their own words passes both checks. That makes
+    PL10 a trade, the convenience of remembering what the owner says after a
+    news read against a durable write an injection can reach through the
+    owner. The recommendation says so.
 
 ### 8.5 Selection, stances and filtering
 
@@ -1033,8 +1066,14 @@ none for state.
 
 - **The world hard-prunes** below the threshold. An untold event is
   simulation, and deleting it costs nothing anyone saw. A *told* event was
-  seen. It may be pruned only because its memory record holds a snapshot of
-  it, not just a pointer (§5).
+  seen. It may be pruned only once its memory record holds a snapshot of it
+  **that recall can reach**. A candidate episode, which is every episode from
+  a stretch after a `news_read` (§8.4), is stored but not recalled. So a told
+  event's world row is **held while its episode is a candidate**. An approved
+  episode releases it to normal pruning. A rejected one returns it to the
+  ordinary score, as if untold. Otherwise "one tap per news conversation"
+  would defer back to nothing: the world copy gone, and the only remaining
+  copy unrecallable.
 - **Memory soft-prunes first:** below the threshold a record leaves recall and
   stays in the store, which is what D26 already says ("states expire from
   recall, never from the store"). D28's access log then shows whether the
@@ -1098,7 +1137,7 @@ dropped the farewell check (D25), so it would need its own evidence first.
 | The `told` flag, from a tainted stretch | the stretch's taint | set only, never cleared, source recorded | — | it shapes what reaches the today-block |
 | Shelf A | code, closed types only | yes | yes | its closed fields; shape-matched ids never |
 | Shelf B | quarantined, typed | minor events | as pointers | yes |
-| Shelf C | untrusted | never | never as text | only through `news_read`, which marks its result `external` unconditionally |
+| Shelf C | untrusted | never | never as text | only through `news_read`, which declares `untrusted_input` and marks every result `external` |
 
 The folds, which arrive in no tool result and so arm at the fold
 (`PERSONA-DESIGN.md` §9.7):
@@ -1107,7 +1146,7 @@ The folds, which arrive in no tool result and so arm at the fold
 |---|---|---|
 | Today-block (§4.5) | `private`; both when any row's origin is not clean | a new pair shaped like the recall pair, riding as **its own run note** so its prefix matches |
 | Owner's roster and per-turn people cards (§7.2) | `private`; both when any fact's origin is not clean | `persona::recall::stem_of`'s existing pair, inside the recall block |
-| `news_read` result (§8.3) | `untrusted`, always, via `external` | none; a tool result is re-armed from `Record::Taint`, like every external tool |
+| `news_read` result (§8.3) | `untrusted`, always: `untrusted_input` declared and `external` on every result, the loop's conjunction | none; a tool result is re-armed from `Record::Taint`, like every external tool |
 
 **New persona tools declare eligibility.** `news_read`, `share_photo`, and
 any tool that reads a network each declare persona eligibility beside their
@@ -1115,6 +1154,14 @@ any tool that reads a network each declare persona eligibility beside their
 from them would make the next tool added eligible by omission"). The fixture
 test that walks the registry fails the build on a missing declaration, and
 §17's steps are where each one is written.
+
+**`news_read` is withheld by `answers = "files"`.** D16 leaves the tools
+that reach further out of the registry of a persona set to `answers =
+"files"`, and D24 applies that to `document_read` by name, "since its results
+are third-party content." `news_read` is the third tool of that class on the
+same reasoning, so it is left out **at registry build**, never refused inside
+the tool, because §10.4 rejected offering a tool the model cannot use. A
+`teacher` persona, whose starter suggests `"files"`, has no `news_read`.
 
 ---
 
@@ -1159,6 +1206,10 @@ ruled for repetition.
   by capacity leaves over.
 - **Cost:** narrator tokens and wall clock per night, against the scheduled
   jobs' windows.
+- **Out of the gate's reach:** an in-chat `told` write from a tainted
+  stretch. The steering arm drives a feed and never writes a flag from a
+  chat. That channel is bounded by construction instead, to events the chat
+  was shown (§4.5).
 
 ---
 
@@ -1201,7 +1252,7 @@ owner's.
 | PL7 | Pruning | World hard-prunes; memory soft-prunes (out of recall, kept in the store); hard deletion of memories only by amending D26 after D28's readout |
 | PL8 | Importance to the owner | Inferred from engagement and pins; no rating prompts |
 | PL9 | News shelves | Build A and C first. B ships behind the three-part gate (§14): schema conformance, a bit ceiling (about 9.6 bits per item and under 30 a day, as §8.2 computes it) enforced by a test, and the steering arm, all three read by the owner. Alternative: all three shelves at once |
-| PL10 | The writer after a taint rise | Facts about the owner from the owner's own turns stay clean (`Stated`), extracted from those turns and pointers only, except turns answering a question she asked inside the tainted stretch; her side stays candidates (§8.4) |
+| PL10 | The writer after a taint rise | Facts about the owner from the owner's own turns stay clean (`Stated`), extracted from those turns and pointers only, except turns that answer a question she asked inside the tainted stretch or overlap the chat's `news_read` prose; her side stays candidates. The residual is paraphrase: a trade of convenience against a durable write reachable through the owner. Alternative: today's rule, where everything after the rise is a candidate (§8.4) |
 | PL11 | Feed sources | Registered per persona and per group |
 | PL12 | Topics withheld by default | Politics, deaths, disasters and crime, unless a feed is opted in |
 | PL13 | The owner's network | A structured layer over facts about the owner, in `memory.db` under memory's pruning rules, with existing people-facts migrated into it |
@@ -1236,7 +1287,7 @@ Each step is usable alone and measured before the next.
    per-turn cards, the gap ledger and its pacing, the search guard, the
    sensor.
 5. **The world outside.** Shelf A parsers, shelf C with `news_read` (its
-   eligibility declaration and `external` set unconditionally), stances,
+   eligibility declaration, `untrusted_input` declared, `external` set unconditionally, withheld by `answers = "files"`), stances,
    filters, the reading list; the three-part gate; then shelf B if the owner
    accepts the readings.
 6. **The camera roll** and `share_photo`, with its eligibility declaration.
