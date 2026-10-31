@@ -1157,6 +1157,27 @@ than an architecture section kept beside the code.
     ends the program as `Backstop::WorkerKilled`. Its overshoot is one
     polling interval of allocation, so it is weaker than a kernel limit and
     needs no knowledge of the map size.
+- **A worker that outlives a killed mecha on a Mac.** On Linux bwrap's
+  `--die-with-parent` makes an orphan impossible: when mecha dies, bwrap gets
+  the parent-death signal and takes the worker with it. On a Mac the launch
+  chain is all `exec`s (`env -i` → `sandbox-exec` → worker), so the only
+  thing that ends a worker is the pool's own kill when it drops, and a
+  `SIGKILL`ed mecha never runs that. A worker computing at that moment does
+  not read its stdin, so it never sees the EOF. The wall clock lived in the
+  host that died, so the orphan spins a core until someone kills it, holding
+  up to `max_memory`. Seatbelt bounds what the worker can reach, not how
+  long it lives. A clean exit, or a panic that unwinds, drops the pool and is
+  not affected. The fix is the owner's call (review of #769), not built:
+  - **A watchdog in the launcher**: a shell that starts a loop waiting on
+    mecha's pid, then `exec`s the chain, so the worker keeps the shell's
+    pid. When mecha dies, the loop kills that pid. The loop has to stop on
+    its own when the worker exits, or it will kill a reused pid. It must not
+    hold the worker's pipes, and it runs outside the profile. A polling loop
+    in `sh` can do this. A `kqueue` `NOTE_EXIT` wait is exact but needs a
+    helper binary.
+  - **The pool noticing**: nothing in the host survives a `SIGKILL`, so
+    this only covers the next start. It would reap leftover workers by
+    their recorded pids at preflight.
 
 ---
 
