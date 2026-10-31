@@ -21,6 +21,11 @@
 //! ends, because a dropped [`Watchdog`] is never killed: it has to outlive
 //! mecha, which is its whole job.
 //!
+//! A loop abandoned before its handshake (refused, timed out, or dropped
+//! when a Stop or the wall clock won the race in `Monty::start`) is killed
+//! with its whole group despite `kill_on_drop(false)`, which only ever
+//! applies to an armed one (review of #780).
+//!
 //! The loop is [`LOOP`], fixed text with no input from a program. It runs
 //! outside the profile, as mecha does. `PATH` is empty under `env_clear`,
 //! so every command it forks is named absolutely.
@@ -93,6 +98,11 @@ impl Watchdog {
     /// production), and returns once it has read both start times. A loop
     /// that cannot is refused, so nothing runs unguarded.
     pub(crate) async fn arm(worker: u32, mecha: u32, ps: &str) -> Result<Self> {
+        Self::arm_within(worker, mecha, ps, HANDSHAKE).await
+    }
+
+    /// [`Self::arm`], with the handshake bounded by `within`.
+    async fn arm_within(worker: u32, mecha: u32, ps: &str, within: Duration) -> Result<Self> {
         let mut child = tokio::process::Command::new("/bin/sh")
             .arg("-c")
             .arg(LOOP.replace("{ps}", &sh_quote(ps)))
@@ -107,28 +117,31 @@ impl Watchdog {
             .kill_on_drop(false)
             .spawn()
             .context("starting the monty worker's watchdog")?;
+        // Until the handshake succeeds, the loop's whole group goes with this
+        // call however it ends: refused, timed out, or dropped because a Stop
+        // or the wall clock won the race in `Monty::start`. A `ps` hung long
+        // enough to cause any of those would otherwise outlive the loop that
+        // forked it, and the loop, blocked on it, would never reach the write
+        // that ends it (review of #780).
+        let mut pending = Unarmed(child.id());
         let stdout = child
             .stdout
             .take()
             .context("the watchdog's stdout was not piped")?;
         let mut line = String::new();
         let said = tokio::time::timeout(
-            HANDSHAKE,
+            within,
             tokio::io::BufReader::new(stdout).read_line(&mut line),
         )
         .await;
         if matches!(said, Ok(Ok(_))) && line.trim() == "ok" {
+            pending.0 = None;
             return Ok(Watchdog { child });
         }
-        // The whole group: a `ps` hung long enough to time the handshake out
-        // would otherwise outlive the loop that forked it (review of #772).
-        if let Some(pid) = child.id() {
-            // SAFETY: a plain signal to the group this call created.
-            unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
-        }
+        drop(pending);
         let _ = child.wait().await;
         let why = match said {
-            Err(_) => format!("no answer within {} s", HANDSHAKE.as_secs()),
+            Err(_) => format!("no answer within {} ms", within.as_millis()),
             Ok(Err(e)) => e.to_string(),
             Ok(Ok(_)) if line.trim().is_empty() => "it ended without a word".into(),
             Ok(Ok(_)) => line.trim().to_string(),
@@ -140,6 +153,20 @@ impl Watchdog {
     #[cfg(test)]
     pub(crate) fn pid(&self) -> Option<u32> {
         self.child.id()
+    }
+}
+
+/// A loop not yet armed: its group is killed when this drops, unless the
+/// handshake took the pid out first.
+struct Unarmed(Option<u32>);
+
+impl Drop for Unarmed {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0 {
+            // SAFETY: a plain signal to the group `arm_within` created, whose
+            // leader is still this process's unreaped child.
+            unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
+        }
     }
 }
 
@@ -319,6 +346,53 @@ mod tests {
             gone_within(worker, Duration::from_secs(10)).await,
             "a dropped watchdog stopped guarding"
         );
+    }
+
+    /// A `ps` that hangs times the handshake out, and the refusal takes the
+    /// whole group with it: signalling only the shell, as `start_kill` does,
+    /// left the hung `ps` running (review of #780).
+    #[tokio::test]
+    async fn a_failed_handshake_takes_its_hung_ps_with_it() {
+        let dir = std::env::temp_dir().join(format!("mecha-ps-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let (pids, ps) = (dir.join("pids"), dir.join("ps"));
+        std::fs::write(
+            &ps,
+            format!(
+                "#!/bin/sh\necho $$ >>{}\nexec /bin/sleep 300\n",
+                sh_quote(&pids.display().to_string())
+            ),
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&ps, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let kids = Kids(vec![sleeper(), sleeper()]);
+        let (worker, mecha) = (kids.0[0].id(), kids.0[1].id());
+        let e = Watchdog::arm_within(
+            worker,
+            mecha,
+            &ps.display().to_string(),
+            Duration::from_secs(1),
+        )
+        .await
+        .err()
+        .expect("a hung ps armed a watchdog");
+        assert!(format!("{e:#}").contains("no answer"), "{e:#}");
+        let hung: Vec<u32> = std::fs::read_to_string(&pids)
+            .unwrap()
+            .lines()
+            .filter_map(|l| l.trim().parse().ok())
+            .collect();
+        assert_eq!(hung.len(), 1, "the handshake's first read hung: {hung:?}");
+        let gone = gone_within(hung[0], Duration::from_secs(3)).await;
+        if !gone {
+            // SAFETY: a plain signal to the stand-in this test started.
+            unsafe { libc::kill(hung[0] as libc::pid_t, libc::SIGKILL) };
+        }
+        assert!(gone, "the hung ps outlived the refused watchdog");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A loop that cannot read the start times is refused, and says why:
