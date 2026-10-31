@@ -270,7 +270,11 @@ pub fn logs_anywhere() -> &'static str {
 /// nothing else detects a change there either: a lock or commit bump alone
 /// reaches no installed machine until its install is run again by hand
 /// (`enable --reinstall`). A known gap (review of #691, pass 7), not a
-/// handled case.
+/// handled case. The same holds for the router's catalog sections
+/// (`router_unit::presets_with_catalog`): only the base `presets_text` is
+/// hashed, so a change to an installed catalog entry's pins or lines reaches
+/// a router at its next install (`mecha model add`, `setup chat`), and no
+/// revision reports it older before then (review of #727).
 #[cfg(test)]
 pub(crate) fn assert_rev(id: &str, pinned: (u32, &str), rendered: &[&str]) {
     use sha2::{Digest, Sha256};
