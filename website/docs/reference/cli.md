@@ -44,6 +44,7 @@ never build an agent (where they are simply ignored).
 | `--no-messages` | No inter-agent messaging: no `message_send` tool, and nothing from the mailbox is delivered into this run. |
 | `--no-fallback` | Never fall back to another provider. A transient failure that survives its retries fails the run. |
 | `--no-compact-tool` | Withhold the model's `compact` tool; automatic compaction remains available. |
+| `--no-code-tool` | Withhold `code`, code mode's program tool, even with `[features] code` on. `mecha eval` forces it. |
 | `--no-step-escalation` | Disable quarantined checks of ambiguous completed plan steps. |
 | `--no-step-checks` | Do not execute declared plan checks. |
 | `--no-goal-guidance` | Disable goal and charter planning guidance. |
@@ -1910,6 +1911,16 @@ switch only after every install has passed its check. What it can install:
   `mecha-voice-worker.service` on `:7860`, under
   `~/.mecha/sidecars/voice-worker/`, reachable only through `mecha serve`'s
   relay.
+- **Code mode's interpreter** (`code`) — the `monty` worker from PyPI's
+  pinned `pydantic-monty-runtime` wheel, checked by sha256 against the pin
+  for this platform, under `~/.mecha/sidecars/monty/<version>/`. Nothing on
+  `PATH` stands in for it. Only in a mecha built with the cargo feature
+  `monty`; a build without it reads `code` as not in this build, and
+  `enable code` refuses, naming the feature. With `code = true`, every run
+  that would register `code` first runs a program in the worker under the
+  sandbox (bwrap on Linux, so `[sandbox] kind = "bwrap"`; macOS's own
+  Seatbelt profile on a Mac), and **refuses to start** if that fails rather
+  than running without it.
 
 On macOS the servers install as launchd agents in `~/Library/LaunchAgents/`
 instead of systemd units — the chat router (`mecha setup chat`) and the

@@ -1639,6 +1639,8 @@ mod tests {
             ("the compact tool", opts.no_compact_tool),
             // This machine's readings: a scorecard must not carry them.
             ("system_read", opts.no_system_read),
+            // Programs over tool results: a scorecard says so when it has them.
+            ("the code tool", opts.no_code_tool),
             // Off by default, but a machine's own config.toml could still
             // turn it on — a scorecard must not depend on that either.
             ("step escalation", opts.no_step_escalation),
@@ -1993,10 +1995,12 @@ mod tests {
                 Lever::SituationBrief,
                 Lever::PastAppraisals,
                 Lever::SuccessExamples,
-                Lever::SystemRead
+                Lever::SystemRead,
+                Lever::CodeTool
             ],
             "messaging, step escalation, goal guidance, the brief's delivery, past \
-             appraisals, success examples and system_read (its feature switch) ship off"
+             appraisals, success examples, system_read and code (their feature switches) \
+             ship off"
         );
     }
 

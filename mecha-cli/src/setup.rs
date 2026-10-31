@@ -223,7 +223,66 @@ pub async fn prepare_carrying(
 ) -> Result<Prepared> {
     let tools = prepare_tools_carrying(opts, interactive, todo).await?;
     preflight_provider(&tools.config, opts).await;
-    build(tools, opts)
+    let code = code_interpreter(&tools, opts).await?;
+    build(tools, code, opts)
+}
+
+/// Code mode's interpreter for an agent built from `tools`, or `None` when
+/// the run serves no `code` (`CODE-MODE-DESIGN.md` §7): the switch, then
+/// `--no-code-tool` (`Lever::CodeTool`, which `mecha eval` throws), `--tool`
+/// and `[tools]`, the same order every registration in `prepare_tools`
+/// asks. Nothing is probed unless all of those say yes.
+///
+/// **A worker or sandbox that cannot start stops the start**: with the
+/// switch on, an `Err` from [`mecha_core::interpreter::for_runs`] is
+/// returned, never turned into a run without `code` — the preflight rule
+/// `shell`'s sandbox follows, because a tool list that moves with a broken
+/// install is how a guard degrades silently. The one exception is a binary
+/// built without the interpreter (the cargo feature `monty`): one
+/// `config.toml` is read by every build on the machine, and a switch a newer
+/// build wrote must not take an older one down — the reasoning behind
+/// `[features]` ignoring unknown keys. There `code` is not registered, the
+/// row reads unready with why, and a run that named `code` says so.
+///
+/// Only the agent-building paths ask this — `prepare_tools` alone, which
+/// `mecha mail` and `mecha tasks` build from, starts no worker.
+pub async fn code_interpreter(
+    tools: &PreparedTools,
+    opts: &GlobalOpts,
+) -> Result<Option<Arc<dyn mecha_core::interpreter::Interpreter>>> {
+    use mecha_core::feature::{self, Feature};
+    use mecha_core::tool::code::NAME;
+    let cfg = &tools.config;
+    let named = opts.tools.iter().any(|t| t == NAME);
+    if let Some(why) = feature::unbuilt(Feature::Code) {
+        if named {
+            eprintln!(
+                "mecha: {NAME} not registered — {why} ({})",
+                feature::BUILD_WITH_MONTY
+            );
+        }
+        return Ok(None);
+    }
+    if !feature::switched_on(cfg, Feature::Code) {
+        if named {
+            eprintln!(
+                "mecha: {NAME} not registered — `code` is not switched on in [features] (`{}`)",
+                feature::enable_command(cfg, Feature::Code)
+            );
+        }
+        return Ok(None);
+    }
+    if opts.no_code_tool || !(opts.tools.is_empty() || named) || !cfg.tools.registers(NAME) {
+        return Ok(None);
+    }
+    let home = mecha_core::work::mecha_home()?;
+    mecha_core::interpreter::for_runs(&cfg.sandbox, &home)
+        .await
+        .map(Some)
+        .context(
+            "`[features] code` is on and code mode's interpreter cannot start, so nothing \
+             starts without it (`mecha features disable code` runs without programs)",
+        )
 }
 
 /// Ask a local server whether it is serving what config says it is.
@@ -332,7 +391,8 @@ pub async fn prepare_with_approver(
         tools.approver = scripted_refusals(approver)?.0;
     }
     preflight_provider(&tools.config, opts).await;
-    build(tools, opts)
+    let code = code_interpreter(&tools, opts).await?;
+    build(tools, code, opts)
 }
 
 /// The clock every agent this process builds runs against.
@@ -380,7 +440,11 @@ fn routed_server_is_down(
         })
 }
 
-fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
+fn build(
+    tools: PreparedTools,
+    code: Option<Arc<dyn mecha_core::interpreter::Interpreter>>,
+    opts: &GlobalOpts,
+) -> Result<Prepared> {
     let denials = tools.denials.clone();
     let cfg = tools.config;
 
@@ -553,10 +617,12 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     crate::closure_guard::guard(&mut registry);
     for profile in &cfg.subagents {
         if opts.tool_profile.is_some() {
+            // `code` is not in the pool yet (it is built after every other
+            // tool, below), and `build_subagent` refuses it by name.
             let excluded: Vec<&str> = profile
                 .tools
                 .iter()
-                .filter(|t| registry.get(t).is_none())
+                .filter(|t| registry.get(t).is_none() && *t != mecha_core::tool::code::NAME)
                 .map(String::as_str)
                 .collect();
             if !excluded.is_empty() {
@@ -616,6 +682,23 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     // that loses it must fail every start rather than ship a surface where
     // the model can close tasks around `mecha tasks set`.
     crate::closure_guard::verify(&registry)?;
+
+    // `code`, built after every tool `prepare_tools` and the subagents put
+    // here (`CODE-MODE-DESIGN.md` §7), so the learned rules, the capability
+    // block and the run record all see it; the agent builds it again after
+    // each later registration (`Agent::enable_code`). A `--tool-profile`
+    // narrows it as it narrowed the rest, by what it declares.
+    if let Some(interpreter) = &code {
+        let route = outbox.clone();
+        registry.insert(Arc::new(mecha_core::tool::code::CodeTool::over(
+            &registry,
+            |n| route.as_ref().is_some_and(|o| o.routes(n)),
+            Arc::clone(interpreter),
+        )));
+        if let Some(profile) = opts.tool_profile {
+            profile.narrow(&mut registry, &cfg.outbox.tools);
+        }
+    }
 
     // A scripted refusal that can never fire is measured as an owner who
     // refused: said here, against the registry the subagent profiles have
@@ -925,6 +1008,14 @@ fn build(tools: PreparedTools, opts: &GlobalOpts) -> Result<Prepared> {
     if let Some(mb) = &tools.mailbox {
         agent.set_mailbox(Arc::clone(mb));
     }
+    // From here the agent keeps `code` built last, over whatever the front
+    // end inserts after `prepare` returns (`recall`, `ask_user`, the TUI's).
+    // A profile that narrowed it away keeps it away.
+    if let Some(interpreter) = code {
+        if agent.registry().get(mecha_core::tool::code::NAME).is_some() {
+            agent.enable_code(interpreter);
+        }
+    }
 
     let levers_off = levers_off(opts, &cfg);
     Ok(Prepared {
@@ -999,6 +1090,10 @@ pub fn levers_off(opts: &GlobalOpts, cfg: &Config) -> Vec<Lever> {
                     || !mecha_core::feature::switched_on(cfg, mecha_core::feature::Feature::System)
             }
             Lever::Grants => opts.no_grants,
+            Lever::CodeTool => {
+                opts.no_code_tool
+                    || !mecha_core::feature::switched_on(cfg, mecha_core::feature::Feature::Code)
+            }
         })
         .collect()
 }
@@ -1021,6 +1116,7 @@ pub fn switch_off(opts: &mut GlobalOpts, lever: Lever) {
         Lever::CompactTool => opts.no_compact_tool = true,
         Lever::SystemRead => opts.no_system_read = true,
         Lever::Grants => opts.no_grants = true,
+        Lever::CodeTool => opts.no_code_tool = true,
         Lever::StepEscalation => opts.no_step_escalation = true,
         Lever::StepChecks => opts.no_step_checks = true,
         Lever::GoalGuidance => opts.no_goal_guidance = true,
@@ -2193,6 +2289,35 @@ fn build_search_chain(configs: &[SearchBackendConfig]) -> (SearchChain, Vec<Stri
     (SearchChain::with_entries(backends), errors)
 }
 
+/// Why a subagent profile naming `code` does not start (`CODE-MODE-DESIGN.md`
+/// §8): the feature, by name, when code mode is off or not in this build —
+/// never the typo message, since `code` is no tool of the pool a child is
+/// built from — and otherwise that a child's own `code` is not built yet. It
+/// must be built afresh over the child's registry, never the parent's
+/// cloned in (§6), and that is the next slice's; refusing at launch beats a
+/// child whose every program is refused.
+fn subagent_code_refusal(name: &str, cfg: &Config) -> String {
+    use mecha_core::feature::{self, Feature};
+    if let Some(why) = feature::unbuilt(Feature::Code) {
+        return format!(
+            "subagent `{name}` asks for `code`, and code mode is not in this build: {why} — {}",
+            feature::BUILD_WITH_MONTY
+        );
+    }
+    if !feature::switched_on(cfg, Feature::Code) {
+        return format!(
+            "subagent `{name}` asks for `code`, and code mode is off: `[features] code` is not \
+             switched on — `{}`",
+            feature::enable_command(cfg, Feature::Code)
+        );
+    }
+    format!(
+        "subagent `{name}` asks for `code`, which no subagent has yet: a child's `code` is built \
+         over its own registry, never its parent's (CODE-MODE-DESIGN.md §6), and that build is \
+         still to come. Drop `code` from the profile."
+    )
+}
+
 /// Build one subagent: a child [`Agent`] with a restricted registry, wrapped as
 /// a tool the parent can call.
 #[allow(clippy::too_many_arguments)]
@@ -2224,6 +2349,9 @@ fn build_subagent(
                  based on the child's returned answer.",
                 profile.name
             );
+        }
+        if wanted == mecha_core::tool::code::NAME {
+            anyhow::bail!("{}", subagent_code_refusal(&profile.name, cfg));
         }
         match pool.get(wanted) {
             // The closure guard again, at the clone: `build` wraps the pool's
@@ -3604,6 +3732,132 @@ mod tests {
             "without the window the child's compaction threshold is None, and \
              `compact` becomes a tool that reports success and does nothing"
         );
+    }
+
+    /// §8: "With the feature off, a profile naming `code` fails at launch
+    /// with the message that names the feature, not the typo message." `code`
+    /// is never in the pool a child is built from (the agent builds it last),
+    /// so without the check a profile naming it read as a misspelt tool. With
+    /// the feature on it still fails at launch: a child's own `code` is not
+    /// built yet, and the parent's is never cloned in.
+    #[test]
+    fn a_profile_naming_code_names_the_feature_not_the_typo() {
+        let provider_cfg = mecha_core::config::ProviderConfig {
+            kind: "local".into(),
+            base_url: Some("http://127.0.0.1:1".into()),
+            ..Default::default()
+        };
+        let profile = mecha_core::subagent::SubagentProfile {
+            name: "analyst".into(),
+            description: "a child".into(),
+            tools: vec!["code".into()],
+            ..Default::default()
+        };
+        let launch = |cfg: &Config| match build_subagent(
+            &profile,
+            &mecha_core::tool::Registry::new(),
+            cfg,
+            &provider_cfg,
+            &mecha_core::tool::ToolCtx::default(),
+            None,
+            &std::sync::Arc::new(mecha_core::policy::ExecPolicy::empty()),
+            None,
+        ) {
+            Ok(_) => panic!("a child naming `code` launched"),
+            Err(e) => format!("{e:#}"),
+        };
+        let mut cfg = Config::default();
+        let off = launch(&cfg);
+        assert!(
+            !off.contains("which is not available"),
+            "the typo message: {off}"
+        );
+        if mecha_core::interpreter::BUILT {
+            assert!(
+                off.contains("code mode is off") && off.contains("mecha features enable code"),
+                "{off}"
+            );
+        } else {
+            assert!(off.contains("cargo feature `monty`"), "{off}");
+        }
+        mecha_core::feature::set_switch(&mut cfg, mecha_core::feature::Feature::Code, true);
+        let on = launch(&cfg);
+        assert!(
+            !on.contains("which is not available"),
+            "the typo message: {on}"
+        );
+        if mecha_core::interpreter::BUILT {
+            assert!(on.contains("no subagent has yet"), "{on}");
+        }
+    }
+
+    /// Code mode's interpreter is asked for only with the switch on and
+    /// nothing withholding `code`, so a run with it off probes nothing; and
+    /// with it on, a worker that cannot start stops the start rather than
+    /// becoming a run without `code`. A build without the interpreter is the
+    /// one exception, by design: it registers nothing and starts.
+    #[tokio::test]
+    async fn code_mode_starts_no_worker_off_and_a_broken_one_stops_the_start() {
+        use super::{code_interpreter, PreparedTools};
+        use mecha_core::config::PermissionMode;
+        use mecha_core::tool::{ModeApprover, Registry};
+        use std::sync::Arc;
+        let home = crate::testenv::HomeGuard::new("code-interpreter");
+        let tools = |code: bool| {
+            let mut config = Config::default();
+            if code {
+                mecha_core::feature::set_switch(
+                    &mut config,
+                    mecha_core::feature::Feature::Code,
+                    true,
+                );
+            }
+            PreparedTools {
+                registry: Registry::new(),
+                denials: Vec::new(),
+                sandbox: Arc::new(mecha_core::sandbox::Sandbox::new(Default::default())),
+                workspace: home.dir.clone(),
+                config,
+                approver: Arc::new(ModeApprover {
+                    mode: PermissionMode::Allow,
+                }),
+                todo: None,
+                skill: None,
+                mailbox: None,
+                compact_requested: None,
+                posture: mecha_core::closure::RunPosture::Unattended,
+                _mcp: Vec::new(),
+            }
+        };
+        let plain = GlobalOpts::default();
+        assert!(code_interpreter(&tools(false), &plain)
+            .await
+            .unwrap()
+            .is_none());
+        let thrown = GlobalOpts {
+            no_code_tool: true,
+            ..GlobalOpts::default()
+        };
+        assert!(code_interpreter(&tools(true), &thrown)
+            .await
+            .unwrap()
+            .is_none());
+        let narrowed = GlobalOpts {
+            tools: vec!["fs_read".into()],
+            ..GlobalOpts::default()
+        };
+        assert!(code_interpreter(&tools(true), &narrowed)
+            .await
+            .unwrap()
+            .is_none());
+        // No worker in this scratch home, and no `[sandbox]` on Linux.
+        let started = code_interpreter(&tools(true), &plain).await;
+        if mecha_core::interpreter::BUILT {
+            let e = format!("{:#}", started.err().expect("a run without `code` started"));
+            assert!(e.contains("cannot start"), "{e}");
+        } else {
+            assert!(started.unwrap().is_none());
+        }
     }
 
     /// The review's note on the closure guard: the security argument rested

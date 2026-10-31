@@ -83,6 +83,10 @@ pub struct ToolOutput {
     /// ends — late, on a chat host's queue, or inline where the run has none
     /// (`docs/BACKGROUND-JOBS-DESIGN.md`).
     pub deferred: Option<Arc<crate::jobs::DeferredJob>>,
+    /// What a program did, when this is a `code` call's result
+    /// (`code::ProgramStats`): counts only, read into the call's trace entry
+    /// and from there into `RunStats` and the run's usage. Never rendered.
+    pub program: Option<Box<code::ProgramStats>>,
 }
 
 impl ToolOutput {
@@ -95,6 +99,7 @@ impl ToolOutput {
             not_dispatched: false,
             image: None,
             deferred: None,
+            program: None,
         }
     }
 
@@ -107,6 +112,7 @@ impl ToolOutput {
             not_dispatched: false,
             image: None,
             deferred: None,
+            program: None,
         }
     }
 
@@ -121,6 +127,7 @@ impl ToolOutput {
             not_dispatched: false,
             image: None,
             deferred: None,
+            program: None,
         }
     }
 

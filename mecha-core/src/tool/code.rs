@@ -54,9 +54,16 @@
 //! `None` (§6), which is what `dispatch`'s precomputed turn taint reads
 //! before a program runs.
 //!
+//! **Registered by the agent, last** (slice 3d): [`crate::agent::Agent::enable_code`]
+//! builds `code` over the agent's registry and builds it again after every
+//! later change to it (`Agent::registry_mut`'s guard), so the front end's own
+//! tools (`recall`, `ask_user`) are admitted and declared however late they
+//! are inserted. Each program's numbers ride its output ([`ProgramStats`])
+//! into the run's trace, where `RunStats` counts them and the run's usage —
+//! and so its budget — takes its passes' tokens.
+//!
 //! Not in this slice: the `program` record, its blobs and the grounding
-//! walk's second source (3d), registration (3d), and the `RunStats`
-//! counters (`subcalls`, `subcall_tokens`, `peeked_bytes`, …).
+//! walk's second source.
 
 use super::effect::{self, Effect, EffectClass};
 use super::{Capabilities, Egress, Registry, Tool, ToolCtx, ToolOutput};
@@ -225,6 +232,51 @@ pub const HOST_FUNCTIONS: [&str; 12] = [
 
 /// The two of [`HOST_FUNCTIONS`] that make sub-calls.
 const SUBCALL_FUNCTIONS: [&str; 2] = ["llm_map", "llm_query"];
+
+/// What one program did, in numbers (`CODE-MODE-DESIGN.md` §7, "Counters"):
+/// carried on the `code` call's [`ToolOutput::program`] into its
+/// `ToolCallTrace`, where `RunStats` counts programs, their failures, their
+/// sub-calls and peeked bytes, and the loop adds `usage` to the run's own —
+/// so every pass's tokens reach the run's total and draw on its
+/// [`crate::agent::Budget`] (§5's last line).
+///
+/// Counts and flags only, never a byte of a program, a handle or a pass: a
+/// trace entry is a record a corpus reads, and this is the property that
+/// lets it be. Every field defaults on load, so a record a later build
+/// extends still reads here.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct ProgramStats {
+    /// Passes sent, schema retries included (§5's sub-call count).
+    #[serde(default)]
+    pub subcalls: u32,
+    /// Input tokens the passes read, as §5's cap counts them.
+    #[serde(default)]
+    pub subcall_tokens: u64,
+    /// Every pass's `Usage`, summed: what the run's own total takes.
+    #[serde(default)]
+    pub usage: crate::message::Usage,
+    /// `peek` and `str[n]` bytes handed to the program (§5, one count).
+    #[serde(default)]
+    pub peeked_bytes: u64,
+    /// The program ran to its end.
+    #[serde(default)]
+    pub completed: bool,
+    /// It ended at a budget: a backstop fired, or a host limit's
+    /// `LimitError:` went uncaught.
+    #[serde(default)]
+    pub budget_stop: bool,
+    /// The run's Stop ended it.
+    #[serde(default)]
+    pub cancelled: bool,
+}
+
+impl ProgramStats {
+    /// Did not run to its end, for a reason that was not a Stop: raised,
+    /// stopped by a backstop or a limit, or the interpreter failed.
+    pub fn failed(&self) -> bool {
+        !self.completed && !self.cancelled
+    }
+}
 
 /// Which tools a program may call, by name, with what each declares (§2):
 /// computed over one registry, so two runs' sets can be compared.
@@ -563,7 +615,10 @@ impl CodeTool {
         {
             Ok(started) => started,
             Err(e) => {
-                return ToolOutput::err(format!("the interpreter could not run the program: {e:#}"))
+                let mut out =
+                    ToolOutput::err(format!("the interpreter could not run the program: {e:#}"));
+                out.program = Some(Box::new(state.stats(None)));
+                return out;
             }
         };
         let finished = loop {
@@ -580,7 +635,10 @@ impl CodeTool {
             };
             let next = match answer {
                 Ok(v) => program.resume(v).await,
-                Err(raise) => program.raise(raise).await,
+                Err(raise) => {
+                    state.limit_raised |= raise.message.starts_with(Tag::LimitError.prefix());
+                    program.raise(raise).await
+                }
             };
             step = match next {
                 Ok(s) => s,
@@ -588,15 +646,18 @@ impl CodeTool {
                     let mut out =
                         ToolOutput::err(format!("the interpreter failed mid-program: {e:#}"));
                     out.external = state.external;
+                    out.program = Some(Box::new(state.stats(None)));
                     return out;
                 }
             };
         };
+        let stats = state.stats(Some(&finished.end));
         let (content, is_error) = render(finished, host.result_cap);
         ToolOutput {
             content,
             is_error,
             external: state.external,
+            program: Some(Box::new(stats)),
             ..ToolOutput::ok("")
         }
     }
@@ -831,6 +892,10 @@ struct Run {
     thought: u32,
     /// Input tokens the passes spent, from their `Usage`.
     subcall_tokens: u64,
+    /// Every answered pass's `Usage`, summed, for the run's own total.
+    usage: crate::message::Usage,
+    /// A host limit raised `LimitError:` into the program at least once.
+    limit_raised: bool,
     /// Any host call returned external content.
     external: bool,
     /// The tools this program may call, as its start resolved them: checked
@@ -918,8 +983,36 @@ impl Run {
             subcalls: 0,
             thought: 0,
             subcall_tokens: 0,
+            usage: Default::default(),
+            limit_raised: false,
             external: false,
             reach: Default::default(),
+        }
+    }
+
+    /// This program's numbers, as it ended: `end` is `None` when the
+    /// interpreter failed under it, which is a failure and no budget's.
+    fn stats(&self, end: Option<&End>) -> ProgramStats {
+        let budget_stop = match end {
+            Some(End::Backstop(_)) => true,
+            // Uncaught, and the host raised one: a program that raises the
+            // tag's text itself, with no limit crossed, is its own failure.
+            Some(End::Raised(r)) => {
+                self.limit_raised
+                    && r.message
+                        .as_deref()
+                        .is_some_and(|m| m.starts_with(Tag::LimitError.prefix()))
+            }
+            _ => false,
+        };
+        ProgramStats {
+            subcalls: self.subcalls,
+            subcall_tokens: self.subcall_tokens,
+            usage: self.usage.clone(),
+            peeked_bytes: self.peeked as u64,
+            completed: matches!(end, Some(End::Complete { .. })),
+            budget_stop,
+            cancelled: matches!(end, Some(End::Cancelled)),
         }
     }
 
@@ -1359,6 +1452,7 @@ impl Run {
                 PassAnswer::Answered(r) => r,
             };
             self.subcalls += 1;
+            self.usage.add(&resp.usage);
             // What the server says it read; the estimate where it says none.
             let read = match resp.usage.total_input() {
                 0 => estimate,
