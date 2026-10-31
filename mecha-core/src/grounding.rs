@@ -46,6 +46,7 @@
 
 use crate::compact::SUPERSEDED_MARKER;
 use crate::message::{Block, Message, Role};
+use crate::tool::code::record::ProgramCall;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -67,14 +68,94 @@ pub struct Call<'a> {
     /// who asked. Exposed so a caller grading model *choices* can drop it,
     /// as `replay::extract` does.
     pub harness: bool,
+    /// A program's host call (`CODE-MODE-DESIGN.md` §7): the `tool_use` id of
+    /// the call it ran under — the `code` call whose program made it, or the
+    /// subagent call a child's came up through. `None` for a call in the
+    /// messages. Its `result` is the bytes the read returned, which the
+    /// program held as a handle: what the run *received*, whether or not the
+    /// model ever saw them.
+    pub within: Option<&'a str>,
 }
 
 /// Every call the run issued, in issue order, once per `tool_use_id`, each
-/// with the non-error, non-stale result the model read if one survived.
+/// with the non-error, non-stale result the model read if one survived —
+/// and, right after each `code` call (or subagent call), the host calls its
+/// program made, from `programs` (`Conversation::program_calls`, or
+/// `tool::code::record::ever` for a session file).
+///
+/// **A program call is yielded only under a call the list holds.** A live
+/// list after compaction holds neither the `code` call nor its result, and
+/// a stale result grounds nothing there; the program's reads follow the
+/// same rule. The `messages_ever` union holds the call, so a reader of the
+/// file still finds them.
+///
+/// **A `trusted_output` child's calls are yielded to no reader here** (§7):
+/// for these readers the subagent call's result is the shaped answer and
+/// nothing under it. [`calls_for_the_owner`] is the one walk that opens
+/// them, under ruling R9.
 ///
 /// Works on a live message list and on the `messages_ever` union alike; the
 /// module doc says why each needs a different half of the rule.
-pub fn calls(messages: &[Message]) -> Vec<Call<'_>> {
+pub fn calls<'a>(messages: &'a [Message], programs: &'a [ProgramCall]) -> Vec<Call<'a>> {
+    walk(messages, programs, false)
+}
+
+/// [`calls`], opening a `trusted_output` child's calls too: **for the
+/// outbox's owner-facing "what this draft answers" view and nothing else**
+/// (`CODE-MODE-DESIGN.md` §7, ruling R9). That view is read by a person;
+/// R9 holds only while no model pass reads it, and
+/// `outbox_source::tests::no_model_pass_reads_the_owners_join` lists its
+/// readers and fails when a new one appears. A model pass over a draft that
+/// read this join would inherit the prose the shape kept out.
+pub fn calls_for_the_owner<'a>(
+    messages: &'a [Message],
+    programs: &'a [ProgramCall],
+) -> Vec<Call<'a>> {
+    walk(messages, programs, true)
+}
+
+fn walk<'a>(
+    messages: &'a [Message],
+    programs: &'a [ProgramCall],
+    open_shaped: bool,
+) -> Vec<Call<'a>> {
+    let mut out = messages_walk(messages);
+    if programs.is_empty() {
+        return out;
+    }
+    // Each anchor's program calls, in record order, once each by the pair
+    // that is unique: a child's ids are minted by the child's run.
+    let mut under: BTreeMap<&str, Vec<&ProgramCall>> = BTreeMap::new();
+    let mut once: BTreeSet<(&str, &str)> = BTreeSet::new();
+    for p in programs {
+        if p.shaped() && !open_shaped {
+            continue;
+        }
+        if once.insert((p.anchor(), p.id.as_str())) {
+            under.entry(p.anchor()).or_default().push(p);
+        }
+    }
+    let mut nested = Vec::with_capacity(out.len());
+    for call in out.drain(..) {
+        let (anchor, harness) = (call.id, call.harness);
+        nested.push(call);
+        for p in under.remove(anchor).into_iter().flatten() {
+            nested.push(Call {
+                id: &p.id,
+                name: &p.tool,
+                input: &p.input,
+                // An error body describes nothing about its target, as for a
+                // call in the messages.
+                result: p.text().filter(|_| !p.is_error),
+                harness,
+                within: Some(anchor),
+            });
+        }
+    }
+    nested
+}
+
+fn messages_walk(messages: &[Message]) -> Vec<Call<'_>> {
     // Results first: a `tool_result` lands in the message *after* the
     // `tool_use` that asked for it, so a single forward pass cannot pair
     // them. First seen wins, and a stale marker never occupies the slot.
@@ -113,6 +194,7 @@ pub fn calls(messages: &[Message]) -> Vec<Call<'_>> {
                 input,
                 result: results.get(id).copied(),
                 harness: message.harness,
+                within: None,
             });
         }
     }
@@ -304,7 +386,7 @@ mod tests {
     #[test]
     fn a_stale_result_on_a_live_list_leaves_the_call_without_one() {
         let live = vec![call("t1", "fs_read"), result("t1", &stale())];
-        let got = calls(&live);
+        let got = calls(&live, &[]);
         assert_eq!(got.len(), 1, "the call is still listed");
         assert_eq!(got[0].result, None);
 
@@ -325,7 +407,7 @@ mod tests {
             call("t1", "fs_read"),
             result("t1", &stale()),
         ];
-        let got = calls(&ever);
+        let got = calls(&ever, &[]);
         assert_eq!(got.len(), 1, "one call, once");
         assert_eq!(got[0].result, Some("alpha beta gamma"));
 
@@ -340,7 +422,7 @@ mod tests {
     #[test]
     fn a_call_with_no_result_is_listed_with_none() {
         let messages = [call("t1", "mail_reply")];
-        let got = calls(&messages);
+        let got = calls(&messages, &[]);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].name, "mail_reply");
         assert_eq!(got[0].result, None);
@@ -356,7 +438,7 @@ mod tests {
                 is_error: true,
             }]),
         ];
-        let got = calls(&messages);
+        let got = calls(&messages, &[]);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].result, None);
     }
@@ -364,7 +446,7 @@ mod tests {
     #[test]
     fn a_result_with_no_call_is_not_listed() {
         // Cannot cite what nothing asked for.
-        assert!(calls(&[result("orphan", "text")]).is_empty());
+        assert!(calls(&[result("orphan", "text")], &[]).is_empty());
     }
 
     #[test]
@@ -375,7 +457,7 @@ mod tests {
             result("t2", "second"),
             result("t1", "first"),
         ];
-        let got = calls(&messages);
+        let got = calls(&messages, &[]);
         let ids: Vec<&str> = got.iter().map(|r| r.id).collect();
         assert_eq!(ids, ["t1", "t2"]);
         assert_eq!(got[0].result, Some("first"));
@@ -388,7 +470,7 @@ mod tests {
         let mut check = call("c1", "shell");
         check.harness = true;
         let messages = vec![check, result("c1", "ok")];
-        let got = calls(&messages);
+        let got = calls(&messages, &[]);
         assert_eq!(got.len(), 1);
         assert!(got[0].harness);
         assert_eq!(got[0].result, Some("ok"));
