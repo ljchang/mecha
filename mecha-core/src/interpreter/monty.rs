@@ -1445,9 +1445,12 @@ mod tests {
             Launcher::write_with(&["/bin/sleep".into()], Some(&ps.display().to_string())).unwrap();
         let (mut mecha, mut reap) = stand_in(&l);
         let worker = reap.worker;
-        // The launch's two reads answered; every read from here fails.
+        // The launch's two reads answered; every read from here fails. The
+        // stand-in counts a read as it starts, so the gate waits for the
+        // loop's first, which follows the launch's two: arming at the second
+        // could land mid-read and fail the launch instead (review of #772).
         let t = std::time::Instant::now();
-        while reads() < 2 && t.elapsed() < Duration::from_secs(10) {
+        while reads() < 3 && t.elapsed() < Duration::from_secs(10) {
             std::thread::sleep(Duration::from_millis(20));
         }
         std::fs::write(&failing, "").unwrap();
