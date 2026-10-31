@@ -4016,7 +4016,7 @@ impl Agent {
                     usage.add(&program_usage(&trace[traced..]));
                     // What the programs read, onto the conversation beside its
                     // messages (§7), before anything below can return early.
-                    convo.program_calls.extend(reads);
+                    crate::tool::code::record::extend_bounded(&mut convo.program_calls, reads);
 
                     // Written back the moment it changes — here and at the
                     // mailbox delivery above, the only two places it does —
@@ -4289,7 +4289,7 @@ impl Agent {
                             )
                             .await;
                         usage.add(&program_usage(&trace[start..]));
-                        convo.program_calls.extend(reads);
+                        crate::tool::code::record::extend_bounded(&mut convo.program_calls, reads);
                         convo.taint = taint;
                         for result in &mut trace[start..] {
                             result.name = crate::step::CHECK_TRACE.into();
@@ -5373,7 +5373,7 @@ impl Agent {
         // keeps the taint the call armed. No message carries the call, so no
         // walk yields them; one made between a run and its recording is
         // written with that run's, under an anchor nothing resolves.
-        convo.program_calls.extend(reads);
+        crate::tool::code::record::extend_bounded(&mut convo.program_calls, reads);
         let (content, is_error) = blocks
             .iter()
             .find_map(|b| match b {

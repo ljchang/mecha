@@ -309,6 +309,10 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
         // written only when they are, so a retried session counts once.
         let mut replies = Vec::new();
         let mut failed = false;
+        // What the session's programs read, once: the walk takes only those
+        // under a call before each correction, so the file read does not
+        // depend on the intervention.
+        let programs = mecha_core::tool::code::record::ever(&text, &meta.id);
         for intervention in &interventions {
             // What the reflector may see, decided per intervention: full
             // excerpts under provably clean coverage, the user's own words
@@ -363,10 +367,6 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
                     // nothing it reads reaches a model or a rule.
                     if mecha_core::attribution::in_scope(&r.domain, &r.trigger) {
                         let ever = ever_before(&text, &convo.messages, intervention.at);
-                        // What its programs read, from the whole file: the
-                        // walk yields only those under a call before the
-                        // correction.
-                        let programs = mecha_core::tool::code::record::ever(&text, &meta.id);
                         r.attribution = Some(mecha_core::attribution::decide(
                             &answer,
                             &intervention.text,

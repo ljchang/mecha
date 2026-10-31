@@ -209,6 +209,50 @@ impl ProgramCall {
     }
 }
 
+/// The most program bytes one conversation holds in hand, newest first: the
+/// process-wide host-byte pool's own number, so a run's retained reads stay
+/// under the ceiling that bounded its programs while they ran (review of
+/// #784). The pool bounds programs in flight and is handed back when each
+/// ends, while the record's bytes outlive it.
+pub const RETAINED_BYTES: usize = super::defaults::PROCESS_HOST_BYTES;
+
+/// Hold at most [`RETAINED_BYTES`] of `calls`' bytes, keeping the newest:
+/// an older call past the ceiling lets its bytes go ([`Bytes::Unloaded`]),
+/// and its call stays for the walk to place. Fail-closed for every reader:
+/// a call without bytes offers no referent, never an empty one, and is
+/// recorded without an address.
+pub fn bound_held(calls: &mut [ProgramCall]) {
+    bound_at(calls, RETAINED_BYTES)
+}
+
+fn bound_at(calls: &mut [ProgramCall], ceiling: usize) {
+    let mut held = 0usize;
+    for call in calls.iter_mut().rev() {
+        let Bytes::Held(text) = &call.bytes else {
+            continue;
+        };
+        held = held.saturating_add(text.len());
+        if held > ceiling {
+            call.bytes = Bytes::Unloaded;
+        }
+    }
+}
+
+/// Add a batch's reads to a conversation's, then [`bound_held`]: the one
+/// way the loop puts program calls on a conversation, so no site can add
+/// them unbounded.
+pub fn extend_bounded(calls: &mut Vec<ProgramCall>, reads: Vec<ProgramCall>) {
+    extend_at(calls, reads, RETAINED_BYTES)
+}
+
+fn extend_at(calls: &mut Vec<ProgramCall>, reads: Vec<ProgramCall>, ceiling: usize) {
+    if reads.is_empty() {
+        return;
+    }
+    calls.extend(reads);
+    bound_at(calls, ceiling);
+}
+
 /// The blob store: `<mecha home>/programs/<session-id>/<sha256>`, each file
 /// mode 0600 in a directory mode 0700. Content-addressed within one session
 /// only, so there is nothing shared across sessions to count, and forgetting
@@ -424,6 +468,32 @@ mod tests {
             assert!(store.put(bad, "x").is_err(), "{bad:?} was accepted");
         }
         let _ = std::fs::remove_dir_all(store.root());
+    }
+
+    /// A conversation's retained reads are bounded within a run, not only
+    /// across runs (review of #784, pass 4): the host-byte pool is handed
+    /// back when a program ends while the record's bytes live on, so the
+    /// loop holds the newest up to the pool's own number and lets older ones
+    /// go. The calls stay. Without the bound every read stays resident.
+    #[test]
+    fn retained_reads_are_bounded_newest_first() {
+        assert_eq!(
+            RETAINED_BYTES,
+            crate::tool::code::defaults::PROCESS_HOST_BYTES
+        );
+        let mut held = vec![call("t1.host-1", "aaaaaaaaaa")];
+        extend_at(
+            &mut held,
+            vec![
+                call("t1.host-2", "bbbbbbbbbb"),
+                call("t1.host-3", "cccccccccc"),
+            ],
+            25,
+        );
+        assert_eq!(held.len(), 3, "every call is kept");
+        assert!(matches!(held[0].bytes, Bytes::Unloaded), "the oldest goes");
+        assert_eq!(held[1].text(), Some("bbbbbbbbbb"));
+        assert_eq!(held[2].text(), Some("cccccccccc"));
     }
 
     /// An `under` a reader cannot read the trust of is closed.
