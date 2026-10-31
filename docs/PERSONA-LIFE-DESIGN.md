@@ -455,6 +455,14 @@ one more reason §14's gate part 1 exists.
   The untrusted variant exists from the first build, so a dirty result at the
   shelf B gate (§14), or a candidate row approved by mistake, needs no new fold
   (§16 PL20).
+
+  **The today-block rides as its own run note, never concatenated with the
+  recall block.** Every stem matcher in the tree is a prefix match after
+  trimming. If two folds shared one text block, only the first stem would sit
+  at the start, and the second would never arm on a resume, failing in the
+  open direction. As its own note it works: `Taint::arm_for_notes` gives each
+  note its own block before matching, and `Record::Notes` re-arms each one on
+  load, as it already does for the recall block.
 - **The told-ledger** is the anti-repetition mechanism. The nightly writer
   already reads each chat; it marks which world events and people she
   mentioned. An untold event is fresh material. A told one fades as Rimé
@@ -534,6 +542,18 @@ owner-authored events with it. So the world does the rebuild D27 describes:
 
 The event log makes this nearly free, as it makes §15's time slider free, so
 the network may become the first store where D27's rebuild is cheap (§16 PL22).
+The re-fold is pure code, with no model run anywhere in the erase path. That
+is the condition §9.13 of the persona design gives for why the blunt fallback
+stands today.
+
+**D27 has a second half, and the re-fold honours it.** D27 also says "back to
+a proposal if too few [chats] do [remain]".
+- **A single event needs no fallback.** It belongs to exactly one source, so
+  dropping it is the whole answer.
+- **Derived values do.** Closeness, warm or tense, active or ended are folds
+  over several events. When a forget drops a derived value's support below a
+  floor (for a sim or chat edge, fewer than two remaining events), the value
+  **reverts to a candidate** rather than standing at its old strength.
 
 **Pointers into the world can dangle, and are reported by name.** World rows
 are pruned while memory keeps pointers to them. A dangling pointer is shown as
@@ -666,6 +686,12 @@ give materially different results. Forgetting the chat where the owner first
 named a sibling would delete the sibling under the fallback, and keep them
 under the re-fold, with only that chat's events removed.
 
+**The proposal half matters most here.** §7.4's `Inferred` edges are accepted
+automatically under D18. An inferred tie that stood on three mentions and now
+stands on one is exactly D27's "too few remain", so it reverts to a
+candidate. The owner is asked before a weakened inference about a real
+relative stands again.
+
 | | Her network (§6) | Her model of the owner's |
 |---|---|---|
 | Who | Fiction | Real people |
@@ -747,7 +773,11 @@ These are third parties who never agreed to be in a database.
     search, and a name that collides with a common word or a public figure
     refuses a legitimate search.
 - **No faces by default.** A library link for one of the owner's people exists only if
-  the owner makes it (§16 PL16).
+  the owner makes it (§16 PL16). Even then, **the world never casts it**:
+  the owner's people are not in her simulated days, and neither the camera
+  roll nor any storylet may draw them. A render of a real person happens only
+  when the owner asks for that picture in a chat. That stays consistent with
+  `PERSONA-DESIGN.md` §18's consent argument against real people as personas.
 - **She supports the owner's relationships and never competes with them.** A romantic
   persona with a map of the owner's relationships is exactly what could
   position itself against them (§2.5). The recommended form is a safety-layer
@@ -779,9 +809,28 @@ These are third parties who never agreed to be in a database.
 
 | Shelf | Holds | Produced by | Trust | Drives the world? | Enters memory? |
 |---|---|---|---|---|---|
-| **A — parsed facts** | Scores, airdates, weather, release dates, paper identifiers | **Code**, from structured sources (sports and TV listings APIs, the weather service, arXiv metadata) | Clean: integers, dates, ids in the owner's registry | Yes | Yes |
+| **A — parsed facts** | Scores, airdates, weather, release dates, new papers in a category | **Code**, from structured sources (sports and TV listings APIs, the weather service, arXiv metadata), parsed **into closed types with refusal** (below) | Clean only as rendered: integers, dates, registry ids, closed taxonomies | Yes | Yes |
 | **B — typed gist** | `{kind, tone, entity}` for prose feeds, plus fields code supplies (below) | A quarantined pass that sees **only the article** (`quarantine.rs`), under a schema fixed in code | Clean by capacity, under the stated bit ceiling | Minor events only; serious kinds (deaths, disasters) need shelf A or stay on C | As pointers |
 | **C — prose** | Headline, a short neutral summary, a link | The same pass | **Untrusted**; expires in ~five days | Never | Never as text |
+
+**Shelf A is clean only because its parse is closed, and it is built first,
+so its rules must hold before any of §14's gate exists:**
+
+- **Every field is parsed into a closed type, or refused.** That means an
+  integer, an ISO date, an id in the owner's registry, a value from a
+  taxonomy fixed in code (a sport's result codes, arXiv's category list), or
+  an id matching a shape fixed in code. An unparseable or unresolvable value
+  is **dropped and named on the reading list, never stored as a string**.
+  That is "unknown is never clean" on the shelf that claims to need no gate.
+- **Shape-matched ids are stored, never rendered.** A new paper's arXiv id
+  cannot be in any registry, and the feed chooses it. It is kept as a pointer
+  for the reading list. What renders is the closed part: "a new paper in
+  [category]". A title is prose, so it is shelf C. Without this rule, shelf A
+  would be a wider path than shelf B on a weaker argument, the shape
+  `digests_in_brief` arms untrusted for.
+- **Gate part 1 covers shelf A from its first build.** The conformance test
+  (§14) runs over shelf A's parsers too: a canary in any feed field must
+  never reach the world or a prompt.
 
 Shelf B meets §2.7's three conditions in code:
 
@@ -883,10 +932,17 @@ the headline never rides in the today-block.
     conversation carrying their own recorded taint, so its result is clean or
     tainted depending on what it finds. Shelf C is untrusted by definition, so
     `news_read` has no code path that could decide its result is clean.
-  - **A stem for resumed chats.** The result opens with a stem
-    `Taint::arm_for_content` recognises, so a chat resumed after a `news_read`
-    with a torn taint record re-derives `untrusted` from the transcript, as the
-    files and digest stems already do.
+  - **No stem: the recorded taint carries it, as it does for every external
+    tool.** A content stem cannot help here. `Taint::arm_for_content` reads
+    text on user turns and images, and never the content of a tool result, so
+    a stem inside `news_read`'s result would never match. The files and digest
+    stems work because they are user-turn folds. `news_read` is therefore
+    exactly as well off as `web_search` and `document_read` on a torn taint
+    record: the run's recorded taint (`Record::Taint`) is what re-arms a
+    resumed chat, and no external tool has a content stem. Teaching
+    `arm_for_content` to read tool results would cover all of them. That is a
+    change to the function the whole fold story rests on, outside this
+    design, and it would over-match only in the safe direction.
 - **Honest limits:** she says what she read and no more ("I only saw the
   headline") — Chirpy's failed article QA and the EBU finding that 45% of
   assistant news answers had a significant issue
@@ -1040,7 +1096,7 @@ dropped the farewell check (D25), so it would need its own evidence first.
 | Her mentions after a taint rise | model, untrusted | as candidates | as candidates | only after approval |
 | Owner's words, after a taint rise | stated | the owner's people (§7) | yes, under PL10 as narrowed | yes |
 | The `told` flag, from a tainted stretch | the stretch's taint | set only, never cleared, source recorded | — | it shapes what reaches the today-block |
-| Shelf A | code | yes | yes | yes |
+| Shelf A | code, closed types only | yes | yes | its closed fields; shape-matched ids never |
 | Shelf B | quarantined, typed | minor events | as pointers | yes |
 | Shelf C | untrusted | never | never as text | only through `news_read`, which marks its result `external` unconditionally |
 
@@ -1049,9 +1105,9 @@ The folds, which arrive in no tool result and so arm at the fold
 
 | Fold | Arms | Stem |
 |---|---|---|
-| Today-block (§4.5) | `private`; both when any row's origin is not clean | a new pair, shaped like the recall pair |
+| Today-block (§4.5) | `private`; both when any row's origin is not clean | a new pair shaped like the recall pair, riding as **its own run note** so its prefix matches |
 | Owner's roster and per-turn people cards (§7.2) | `private`; both when any fact's origin is not clean | `persona::recall::stem_of`'s existing pair, inside the recall block |
-| `news_read` result (§8.3) | `untrusted`, always, via `external` | a stem `arm_for_content` knows, for resumed chats |
+| `news_read` result (§8.3) | `untrusted`, always, via `external` | none; a tool result is re-armed from `Record::Taint`, like every external tool |
 
 **New persona tools declare eligibility.** `news_read`, `share_photo`, and
 any tool that reads a network each declare persona eligibility beside their
@@ -1157,9 +1213,9 @@ owner's.
 | PL19 | Camera roll and feed | After the sampler and today-block are measured (§17 steps 6–7) |
 | PL20 | The today-block's taint | Its own stem pair from the first build, arming `private`, or `private` and `untrusted`, as the recall pair does, because stated plans and chat-sourced people ride in it. The owner's roster rides in the recall block under its existing pair (§4.5, §7.2, §13). Alternative: keep chat-sourced rows out of the today-block and arm nothing |
 | PL21 | Stated plans after a taint rise | Candidates by default, shown on the week view as waiting plans. Alternative: admit them as typed records checked against their turn (§4.5) |
-| PL22 | `forget` over the world | Delete what is sourced to the chat and re-fold, which is D27's rebuild done where it is cheap; owner events never go with a chat (§5) |
+| PL22 | `forget` over the world | Delete what is sourced to the chat and re-fold, in pure code, which is D27's rebuild done where it is cheap; a derived value whose support falls below a floor reverts to a candidate (D27's second half); owner events never go with a chat (§5) |
 | PL23 | Episodes after a `news_read` | Admit a typed episode (`item_id`, interest, date, a closed-set reaction) as clean, with free text left as candidates. Alternative: accept one approval per news conversation (§8.4) |
-| PL24 | `forget` over the owner's network | Re-fold from the events that remain, which is D27's rebuild applied in memory for this graph. Alternative: today's fallback, so the person goes with any of their chats (§7.1) |
+| PL24 | `forget` over the owner's network | Re-fold from the events that remain, which is D27's rebuild applied in memory for this graph; an `Inferred` edge left on too little support reverts to a candidate. Alternative: today's fallback, so the person goes with any of their chats (§7.1) |
 
 ---
 
@@ -1180,7 +1236,7 @@ Each step is usable alone and measured before the next.
    per-turn cards, the gap ledger and its pacing, the search guard, the
    sensor.
 5. **The world outside.** Shelf A parsers, shelf C with `news_read` (its
-   eligibility declaration, `external` set unconditionally, its stem), stances,
+   eligibility declaration and `external` set unconditionally), stances,
    filters, the reading list; the three-part gate; then shelf B if the owner
    accepts the readings.
 6. **The camera roll** and `share_photo`, with its eligibility declaration.
