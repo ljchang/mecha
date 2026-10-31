@@ -1826,8 +1826,9 @@ admission check on the per-persona tool path, since that path bypasses
 `registry_as`. It also proposes
 narrowing §9.6's provenance split: PL10 (owner turns stay `Stated`), PL21
 (stated plans), PL23 (typed episodes) and PL27 (a per-persona switch that
-recalls untrusted records without approval). PL23 and PL27 carry the owner's
-direction of 2026-10-31, and they are the two that narrow §9.6 for article
+recalls untrusted records without approval). PL23, PL27 and PL28 (every part
+opt-in per persona, off by default) carry the owner's direction of 2026-10-31;
+PL23 and PL27 are the two that narrow §9.6 for article
 chats. The rest are open, and until each is ruled these rows stand as written.
 
 | # | Decision | Recommendation |

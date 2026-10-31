@@ -1,8 +1,8 @@
 # Persona lives — design
 
 > **Status (2026-10-31):** designed, nothing built. Every decision in §16 is
-> **open** except PL23 and PL27, which carry the owner's direction of the same
-> day (no approval queue for news). §1 is the owner's requests, in the order they were made; §2 is
+> **open** except PL23, PL27 and PL28, which carry the owner's direction of
+> the same day (no approval queue for news; every part opt-in per persona). §1 is the owner's requests, in the order they were made; §2 is
 > the evidence, researched the same day, with a source on every figure that
 > carries a decision. Personas, their chats and real people appear nowhere in
 > this document: every example is invented.
@@ -41,6 +41,7 @@ gives it a third input.
 | Can news poison her memory? | Not by default: prose never enters memory or the world as text, and an article chat is remembered as a typed episode with no approval queue. A per-persona switch remembers article chats in full, at a stated cost | §8.4 |
 | Pictures? | A camera roll rendered overnight from moments the simulation found photo-worthy, shared instantly in chat | §10 |
 | Social media? | An in-app feed only. Never a real account | §11 |
+| Is any of this on by default? | No. Every part (world, her people, the owner's people, news, camera, feed) is a per-persona switch, off by default; a persona with none on is unchanged | §3.1 |
 | Does she message first? | Not in the first build. If ever: off by default, capped, gated by mood, never at fixed times | §12 |
 | How do we know it works? | `persona::echo` already measures repetition; an initiative reading measures who brings new things; a three-part gate (schema conformance, a stated bit ceiling, a steering arm) decides each news shelf, the parsed-facts shelf before it reaches a prompt and the typed-gist shelf before it is built | §14 |
 
@@ -82,6 +83,9 @@ section; none is ruled yet (§16).
 - **O11 — No approval queue for news.** The owner does not want to approve
   everything that follows her reading an article. Typed memory of article
   chats by default, and a per-persona switch for full memory (PL23, PL27).
+- **O12 — Every part is optional, per persona.** The world model, pictures
+  and the rest are optional features for each persona; some personas will
+  use none of them (PL28, §3.1).
 
 ---
 
@@ -302,6 +306,42 @@ expensive parts are built.
 ---
 
 ## 3. The shape: a world beside the memory
+
+### 3.1 Every part is opt-in, per persona (owner's direction, 2026-10-31)
+
+Nothing in this design reaches a persona the owner has not turned it on
+for. Each part is a switch in that persona's `persona.toml`, **off by
+default**. A persona with none of them on is exactly the persona of today:
+no world, no today-block, no new tools, no nightly work.
+
+```toml
+[life]                     # owner-written; outside persona_propose's schema
+world     = false          # her simulated day, events, arcs, the today-block (§4–§5)
+people    = false          # her own network (§6); needs world
+my_people = false          # her model of the owner's network, and gap questions (§7)
+news      = false          # interests and feeds, shelves A/B/C, news_read (§8); needs world
+camera    = false          # the camera roll and share_photo (§10); needs world
+feed      = false          # the in-app feed (§11); needs camera
+remember_articles = false  # PL27; needs news
+```
+
+- **A switch decides what exists, not what is refused.** A tool whose
+  switch is off is never built into that persona's registry: `news_read`
+  without `news`, `share_photo` without `camera`. That follows §10.4's rule
+  against offering a tool the model cannot use, and it keeps the persona's
+  tool list, the front of its cached prefix, stable. No nightly job runs for
+  a persona with `world` off, and no block folds into its chats.
+- **Dependencies are refused by name, never silently satisfied.** `camera`
+  without `world` is a load error naming the missing switch, the way an
+  unknown key is. It never quietly turns `world` on.
+- **`my_people` stands alone.** It is memory of the owner, not of her world
+  (§7.1), so a persona can learn the owner's people without having a
+  simulated life of its own.
+- **Switches are fixed per persona version.** A chat pins the persona
+  version it started with (`PERSONA-DESIGN.md` §8.1), so turning a part on
+  applies to new chats, and nothing toggles mid-chat.
+- **The page shows them together**, each with a line on what it adds and,
+  for `news` and `remember_articles`, what it costs.
 
 ```
                  ┌──────────── world.db (per persona) ──────────────┐
@@ -1183,8 +1223,8 @@ the headline never rides in the today-block.
       - `persona_propose`'s schema has **no field** for it.
         `persona_propose` is the one door a model has to `persona.toml`, and
         its module doc already enumerates what no model may set (tools,
-        files, memory, safety switches, the lock). `remember_articles` and
-        `world` join that enumeration. Otherwise a later change adding a
+        files, memory, safety switches, the lock). The whole `[life]` table
+        (§3.1), `remember_articles` included, joins that enumeration. Otherwise a later change adding a
         settings field to the proposal schema would let a tainted chat stage
         a persona with the switch on behind one approving tap. A future reader tempted to also mark the origin clean finds
       the reason not to there, not only on the persona page. The cost also
@@ -1610,8 +1650,8 @@ ruled for repetition.
 
 ## 16. Open decisions
 
-Every row is open except PL23 and PL27, which record the owner's direction
-of 2026-10-31. The recommendation is this document's; the ruling is the
+Every row is open except PL23, PL27 and PL28, which record the owner's
+direction of 2026-10-31. The recommendation is this document's; the ruling is the
 owner's.
 
 | # | Decision | Recommendation |
@@ -1641,8 +1681,9 @@ owner's.
 | PL23 | Episodes after a `news_read` | **Owner's direction (2026-10-31):** the default. A typed episode (`item_id`, interest, date, a closed-set reaction) is admitted clean; free text is left as candidates that go unrecalled, with no approval queue (§8.4) |
 | PL24 | `forget` over the owner's network | Re-fold from the events that remain, which is D27's rebuild applied in memory for this graph; an `Inferred` edge left on too little support reverts to a candidate. Alternative: today's fallback, so the person goes with any of their chats (§7.1) |
 | PL25 | A `told` set only by a tainted stretch | Suppresses but does not license pruning; unchanged while unreviewed, since silence is not a rejection. Since PL23 keeps news off any queue, unreviewed is the ordinary state, so suppression usually lasts until the row prunes on its own score. Approval from the Memories tab makes the flag ordinary; rejection there clears it (§9). Alternative: lapse after five days unreviewed, at the cost of repeating what the owner heard |
-| PL26 | The feature registry | `part_of = Personas`, with a per-persona `world = false` in `persona.toml` as the lever. A top-level switch would buy nothing, since personas are operator-only and no trial home can run one; §14's comparison is read offline. Settled before step 1 (§17) |
+| PL26 | The feature registry | `part_of = Personas`, with the per-persona `[life]` switches (PL28) as the lever. A top-level switch would buy nothing, since personas are operator-only and no trial home can run one; §14's comparison is read offline. Settled before step 1 (§17) |
 | PL27 | Remembering article chats in full | **Owner's direction (2026-10-31):** a per-persona `remember_articles` switch, off by default, owner-written in `persona.toml`. With it on, episodes and facts from a stretch after a `news_read` are recalled without approval, origin still untrusted and re-armed on recall. The cost (possible persistent steering, no way to send) is shown beside the switch and in a `TRIFECTA.md` row. *Recommended within it:* the owner's network stays outside its reach (§8.4) |
+| PL28 | Which personas get which parts | **Owner's direction (2026-10-31):** every part is an opt-in switch per persona, off by default: `world`, `people`, `my_people`, `news`, `camera`, `feed`, `remember_articles`. A tool whose switch is off is never built; dependencies are refused by name; switches are fixed per persona version (§3.1) |
 
 ---
 
@@ -1661,9 +1702,10 @@ question is whether it gets its own `[features]` switch.
   switched feature with a `requires` edge, exercising `plan_enable`'s
   dormant chain branch for the first time. That is a new pattern, not an
   established one: `Dictate`'s `requires` is on a part.
-- **So the world is `part_of = Personas`**, on whenever personas are, with
-  **a per-persona `world = false` in `persona.toml`**, owner-written and
-  outside `persona_propose`'s schema (§8.4), as the lever. That lever is what §14's offline comparison reads, and what lets
+- **So the world is `part_of = Personas`**, available whenever personas
+  are, and **switched per persona** by the `[life]` table (§3.1), every part
+  off by default. Those switches are owner-written and outside
+  `persona_propose`'s schema (§8.4), and they are the lever. That lever is what §14's offline comparison reads, and what lets
   the owner turn the world off for one persona.
 
 That decides the `own_state` arm, the starter config line, the web app's
@@ -1681,7 +1723,9 @@ surfaces it adds to that registry: the week view and People tab (steps 1–2),
 the nightly job's switch (steps 3 and 5), the camera roll (step 6) and the
 Feed tab (step 7).
 
-1. **A day.** The routine (owner-approved), the ATUS table, the sampler,
+1. **A day.** The `[life]` switches (§3.1), all off by default, with
+   dependencies refused by name; the routine (owner-approved), the ATUS
+   table, the sampler,
    `world.db` with `days` and `state`, and a today-block holding only what she
    is doing now, as its own run note with its stem pair registered in all
    three predicates (§4.5). No model. Read echo and initiative.
