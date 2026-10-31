@@ -511,6 +511,7 @@ mod tests {
             blocked: false,
             unknown: false,
             staged: false,
+            in_program: false,
         }
     }
 
