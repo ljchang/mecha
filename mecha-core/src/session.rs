@@ -989,6 +989,27 @@ pub struct RunStats {
     pub checks_declared: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checks_passed: Option<u32>,
+    /// Code mode's counters (`CODE-MODE-DESIGN.md` §7, "Counters"), each
+    /// counted from the `code` calls' `ToolCallTrace::program`: programs
+    /// run, those that did not run to their end for a reason other than a
+    /// Stop, their sub-call passes, the input tokens those passes read, the
+    /// `peek` and `str[n]` bytes handed to programs, and the programs a
+    /// budget ended (a backstop, or an uncaught host `LimitError:`). The
+    /// passes' whole usage is in `usage` beside the run's own turns. `Option`
+    /// on `context_overflows`' rule: a row from before the sensor knows
+    /// nothing, and must never read as a run that ran no program.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub programs: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program_errors: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subcalls: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subcall_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peeked_bytes: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_stops: Option<u32>,
     /// The conditions this run happened under, when the front-end asked for
     /// them. Recorded here rather than derived later because a run
     /// reconstructed against *today's* machine state is measuring the
@@ -1176,6 +1197,17 @@ impl RunStats {
             (Some(a), Some(b)) => Some(a + b),
             (a, b) => a.or(b),
         };
+        // Code mode's counters, on the same shape and for the same reason.
+        let sum = |a: Option<u32>, b: Option<u32>| match (a, b) {
+            (Some(a), Some(b)) => Some(a.saturating_add(b)),
+            (a, b) => a.or(b),
+        };
+        self.programs = sum(self.programs, other.programs);
+        self.program_errors = sum(self.program_errors, other.program_errors);
+        self.subcalls = sum(self.subcalls, other.subcalls);
+        self.subcall_tokens = sum(self.subcall_tokens, other.subcall_tokens);
+        self.peeked_bytes = sum(self.peeked_bytes, other.peeked_bytes);
+        self.budget_stops = sum(self.budget_stops, other.budget_stops);
         self.step_escalations_attempted = match (
             self.step_escalations_attempted,
             other.step_escalations_attempted,
@@ -1251,6 +1283,9 @@ impl RunStats {
 
     /// One run's outcome as a row, before any folding.
     fn of_run(o: &crate::agent::RunOutcome) -> RunStats {
+        // Every `code` call's program, a declared check's included: a
+        // program's passes and bytes were spent whichever asked for it.
+        let programs = o.tool_calls.iter().filter_map(|c| c.program.as_ref());
         RunStats {
             turns: o.turns,
             usage: o.usage.clone(),
@@ -1326,6 +1361,27 @@ impl RunStats {
                     })
                     .count() as u32,
             ),
+            programs: Some(programs.clone().count() as u32),
+            program_errors: Some(programs.clone().filter(|p| p.failed()).count() as u32),
+            subcalls: Some(
+                programs
+                    .clone()
+                    .map(|p| p.subcalls)
+                    .fold(0, u32::saturating_add),
+            ),
+            subcall_tokens: Some(
+                programs
+                    .clone()
+                    .map(|p| u32::try_from(p.subcall_tokens).unwrap_or(u32::MAX))
+                    .fold(0, u32::saturating_add),
+            ),
+            peeked_bytes: Some(
+                programs
+                    .clone()
+                    .map(|p| u32::try_from(p.peeked_bytes).unwrap_or(u32::MAX))
+                    .fold(0, u32::saturating_add),
+            ),
+            budget_stops: Some(programs.filter(|p| p.budget_stop).count() as u32),
             homeostat: o.homeostat.clone(),
             brief: o.brief.clone().map(Box::new),
             resume_cache: o.resume_cache.clone(),
@@ -4462,6 +4518,7 @@ mod tests {
             unknown,
             staged,
             in_program: false,
+            program: None,
         };
         let outcome = RunOutcome {
             duration_secs: None,
@@ -4579,6 +4636,7 @@ mod tests {
                         unknown: false,
                         staged: false,
                         in_program: false,
+                        program: None,
                     })
                     .collect(),
                 malformed_tool_args: 1,
@@ -5192,6 +5250,7 @@ mod tests {
             unknown: false,
             staged: false,
             in_program: false,
+            program: None,
         };
         let o = crate::agent::RunOutcome {
             duration_secs: None,

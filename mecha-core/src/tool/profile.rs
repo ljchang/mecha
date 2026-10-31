@@ -26,56 +26,61 @@ impl ToolProfile {
     pub fn narrow(self, registry: &mut Registry, routed: &[String]) {
         let remove: Vec<String> = registry
             .iter()
-            .filter(|t| {
-                let n = t.name();
-                let bare = n.rsplit("__").next().unwrap_or(n);
-                let c = t.capabilities();
-                let common = matches!(bare, "todo" | "compact" | "ask_user");
-                // A tool may declare `read_only` (so a default chat can call
-                // it) and still change owner state, as
-                // `image_library_reference` does: its `destructive` says so,
-                // and a destructive tool is never a public read. Structural,
-                // so the next such tool is excluded without a name here
-                // (review of #692).
-                let public_read = t.read_only() && !c.private_data && !c.destructive;
-                let keep = match self {
-                    Self::Research => common || public_read,
-                    Self::Coding => {
-                        common
-                            || public_read
-                            || matches!(
-                                bare,
-                                "shell"
-                                    | "fs_read"
-                                    | "fs_write"
-                                    | "fs_list"
-                                    | "fs_search"
-                                    | "fs_edit"
-                                    | "skill"
-                            )
-                    }
-                    Self::Assistant => {
-                        common
-                            || t.read_only()
-                            || routed.iter().any(|s| s == n)
-                            || matches!(
-                                bare,
-                                "fs_write"
-                                    | "fs_edit"
-                                    | "skill"
-                                    | "kg_upsert"
-                                    | "kg_task_create"
-                                    | "kg_task_update"
-                                    | "mail_triage"
-                            )
-                    }
-                };
-                !keep
-            })
+            .filter(|t| !self.keeps(t.as_ref(), routed))
             .map(|t| t.name().to_string())
             .collect();
         for name in remove {
             registry.remove(&name);
+        }
+    }
+
+    /// Whether this profile keeps `t`: [`ToolProfile::narrow`]'s question for
+    /// one tool, so a tool registered after the narrowing (`code`, built
+    /// last) is judged alone rather than by narrowing the registry again,
+    /// which would judge tools the first pass never saw (the subagents).
+    pub fn keeps(self, t: &dyn super::Tool, routed: &[String]) -> bool {
+        let n = t.name();
+        let bare = n.rsplit("__").next().unwrap_or(n);
+        let c = t.capabilities();
+        let common = matches!(bare, "todo" | "compact" | "ask_user");
+        // A tool may declare `read_only` (so a default chat can call
+        // it) and still change owner state, as
+        // `image_library_reference` does: its `destructive` says so,
+        // and a destructive tool is never a public read. Structural,
+        // so the next such tool is excluded without a name here
+        // (review of #692).
+        let public_read = t.read_only() && !c.private_data && !c.destructive;
+        match self {
+            Self::Research => common || public_read,
+            Self::Coding => {
+                common
+                    || public_read
+                    || matches!(
+                        bare,
+                        "shell"
+                            | "fs_read"
+                            | "fs_write"
+                            | "fs_list"
+                            | "fs_search"
+                            | "fs_edit"
+                            | "skill"
+                    )
+            }
+            Self::Assistant => {
+                common
+                    || t.read_only()
+                    || routed.iter().any(|s| s == n)
+                    || matches!(
+                        bare,
+                        "fs_write"
+                            | "fs_edit"
+                            | "skill"
+                            | "kg_upsert"
+                            | "kg_task_create"
+                            | "kg_task_update"
+                            | "mail_triage"
+                    )
+            }
         }
     }
 }

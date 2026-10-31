@@ -2007,6 +2007,14 @@ impl Arm {
                 lever != Lever::SystemRead,
                 "`system_read` cannot be forced on in an experiment: it reads this machine's own series, which a trial's home does not have (SYSTEM-STATE-DESIGN.md R3)"
             );
+            // The same shape: the switch is not an environment's to set
+            // (`Feature::switchable_from_environment`), and a trial's home
+            // has no worker, so forced on the arm would run as the control
+            // under a matching condition hash.
+            anyhow::ensure!(
+                lever != Lever::CodeTool,
+                "`code_tool` cannot be forced on in an experiment: `[features] code` is the operator's switch, and a trial's home has no monty worker (CODE-MODE-DESIGN.md §7)"
+            );
             on.push(lever);
         }
         Ok(Lever::ALL
@@ -2110,6 +2118,7 @@ fn config_switch(lever: Lever) -> Option<fn(&mut crate::config::Config, bool)> {
         | Lever::CompactTool
         | Lever::SystemRead
         | Lever::Grants
+        | Lever::CodeTool
         | Lever::ApprovalRules => None,
     }
 }
@@ -3214,6 +3223,7 @@ pub fn child_invocation(
             Lever::CompactTool => flags.push("--no-compact-tool".into()),
             Lever::SystemRead => flags.push("--no-system-read".into()),
             Lever::Grants => flags.push("--no-grants".into()),
+            Lever::CodeTool => flags.push("--no-code-tool".into()),
             Lever::ApprovalRules => unreachable!("refused at load"),
         }
     }

@@ -31,6 +31,25 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     // Applied to this process's own local registry only; `tasks set`'s
     // separate `prepare_tools` instance is untouched as ever.
     crate::closure_guard::guard(&mut prepared.registry);
+    // `code`, as `setup::build` adds it: last, over everything else, and
+    // only past the same preflight — so with code mode on this doubles as
+    // the check that its worker starts under the sandbox.
+    if let Some(interpreter) = crate::setup::code_interpreter(&prepared, global).await? {
+        let code = mecha_core::tool::code::CodeTool::over(
+            &prepared.registry,
+            |n| !global.no_outbox && prepared.config.outbox.tools.iter().any(|t| t == n),
+            interpreter,
+        );
+        prepared.registry.insert(std::sync::Arc::new(code));
+        // And narrowed by a `--tool-profile` as a run's is, by itself.
+        if let Some(profile) = global.tool_profile {
+            crate::setup::narrow_code(
+                &mut prepared.registry,
+                profile,
+                &prepared.config.outbox.tools,
+            );
+        }
+    }
     let registry = &prepared.registry;
 
     let outbox_routed =

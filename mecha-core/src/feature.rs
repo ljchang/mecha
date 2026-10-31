@@ -61,6 +61,11 @@ pub enum Feature {
     /// `system_read`: the machine's state for the assistant
     /// (`SYSTEM-STATE-DESIGN.md` §5, R3).
     System,
+    /// `code`: a short Python program over tool results, in the pinned monty
+    /// worker under the platform's sandbox (`CODE-MODE-DESIGN.md` §7).
+    /// Present in every build, and available only in one built with the
+    /// cargo feature `monty` ([`crate::interpreter::BUILT`]).
+    Code,
 }
 
 impl Feature {
@@ -88,6 +93,7 @@ impl Feature {
         Feature::Publishing,
         Feature::Messages,
         Feature::System,
+        Feature::Code,
     ];
 
     /// The name on the command line and on the wire.
@@ -116,6 +122,7 @@ impl Feature {
             Feature::Publishing => "publishing",
             Feature::Messages => "messages",
             Feature::System => "system",
+            Feature::Code => "code",
         }
     }
 
@@ -144,6 +151,7 @@ impl Feature {
             Feature::Publishing => "Publishing tools",
             Feature::Messages => "Messages between sessions",
             Feature::System => "Machine state for the assistant",
+            Feature::Code => "Code mode (programs over tool results)",
         }
     }
 
@@ -223,7 +231,8 @@ impl Feature {
             | Feature::Voice
             | Feature::Frontdoor
             | Feature::Messages
-            | Feature::System => true,
+            | Feature::System
+            | Feature::Code => true,
             Feature::Incognito
             | Feature::Tasks
             | Feature::Ocr
@@ -268,6 +277,10 @@ impl Feature {
             | Feature::Search
             // The operator's machine, read through its own series.
             | Feature::System
+            // Its worker is a sidecar under the operator's mecha home, and a
+            // trial's home has none: switched on there, every trial would
+            // fail its preflight and blame the trial rather than the line.
+            | Feature::Code
             // A manifest's `live_servers` can carry the operator's graph in,
             // and the row cannot tell that entry from a declared one;
             // `config_at` defaults this bool instead (FEATURES-DESIGN §5.1).
@@ -593,6 +606,11 @@ pub struct Facts {
     /// worker's launchd agent on a Mac). Installed, not running: a
     /// socket-activated unit is idle until asked.
     pub voice_unit_installed: bool,
+    /// Whether the pinned monty worker is where code mode looks for it, at
+    /// its pinned size (`interpreter::worker::installed_path`). Its sha256
+    /// is checked every time a pool starts (`worker::verify`), not on every
+    /// read of this row, which a page load makes.
+    pub code_worker_installed: bool,
     /// The **global** configuration — the only one any row reads.
     ///
     /// Carried here, rather than taken beside `Facts`, so the rule is the
@@ -638,6 +656,10 @@ impl Facts {
                 crate::launchd::agents_dir(&h)
                     .join(crate::launchd::plist_name("mecha-voice-worker"))
                     .is_file()
+            }),
+            code_worker_installed: crate::interpreter::worker::pin().is_some_and(|pin| {
+                std::fs::metadata(crate::interpreter::worker::installed_path(home))
+                    .is_ok_and(|m| m.is_file() && m.len() == pin.binary_bytes)
             }),
             config: global.clone(),
         }
@@ -724,6 +746,18 @@ pub fn state(facts: &Facts, f: Feature) -> State {
     // refuses a feature alone when its requirement is off — the row must
     // not print a command the same binary rejects (found on review of #443).
     let fix = || enable_command(&facts.config, f);
+    // A feature this binary was built without is that before it is anything
+    // else: `enable` refuses it here, so a row offering the switch would
+    // print a command the same binary rejects. Switched on (by another
+    // build sharing the file), it is a yes this build cannot honour, and
+    // reads unready, shown, rather than off.
+    if let Some(why) = unbuilt(f) {
+        let (reason, fix) = (why.to_string(), Some(BUILD_WITH_MONTY.to_string()));
+        return match switch(&facts.config, f) {
+            Some(Switch::On) => State::Unready { reason, fix },
+            _ => State::Off { reason, fix },
+        };
+    }
     match switch(&facts.config, f) {
         Some(Switch::Off) => return off("turned off in [features]", fix()),
         Some(Switch::Absent) => return off("not enabled in [features]", fix()),
@@ -845,7 +879,8 @@ fn evidence(facts: &Facts, f: Feature) -> bool {
         Feature::Personas => facts.personas_stored == Some(true),
         Feature::Voice => facts.voice_unit_installed,
         Feature::Frontdoor => facts.has_factory_binary,
-        Feature::Messages | Feature::System => false,
+        // Code mode is newer than `[features]`: no install had it to lose.
+        Feature::Messages | Feature::System | Feature::Code => false,
         Feature::Incognito
         | Feature::Tasks
         | Feature::Ocr
@@ -919,6 +954,11 @@ pub fn plan_enable(cfg: &Config, ids: &[String]) -> Result<Vec<Feature>, String>
     for id in ids {
         let f = Feature::parse(id)
             .ok_or_else(|| format!("`{id}` is not a feature — `mecha features` lists them"))?;
+        if let Some(why) = unbuilt(f) {
+            return Err(format!(
+                "`{id}` cannot be switched on here: {why} — {BUILD_WITH_MONTY}"
+            ));
+        }
         // Incognito had a switch until the owner folded it into the web app
         // (2026-10-14); it has no setting to turn on, only the local model.
         if f == Feature::Incognito {
@@ -1417,6 +1457,18 @@ pub fn write_switches(path: &Path, changes: &[(Feature, bool)]) -> anyhow::Resul
     Ok(())
 }
 
+/// Why this binary cannot run `f` at all, or `None`. Only code mode can be
+/// built out: its interpreter is the cargo feature `monty`, off by default
+/// (`monty-pool` needs a newer Rust than the workspace promises).
+pub fn unbuilt(f: Feature) -> Option<&'static str> {
+    (f == Feature::Code && !crate::interpreter::BUILT).then_some(
+        "this mecha was built without code mode's interpreter (the cargo feature `monty`)",
+    )
+}
+
+/// The fix [`unbuilt`] names.
+pub const BUILD_WITH_MONTY: &str = "build mecha with `--features monty`";
+
 fn on(detail: impl Into<String>) -> State {
     State::On {
         detail: detail.into(),
@@ -1769,6 +1821,59 @@ fn own_state(facts: &Facts, f: Feature) -> State {
             true => on("`system_read` over ~/.mecha/system/series.sqlite"),
             false => tools_off("system_read"),
         },
+        // What registration asks, in its order, short of starting a worker
+        // (no process here, ever): `[tools]`, a worker pinned for this
+        // platform, the sandbox the interpreter needs
+        // (`interpreter::monty::Confinement::for_sandbox`: bwrap on Linux;
+        // a Mac's Seatbelt is the platform's, whatever `[sandbox]` says), and
+        // the worker installed. `state` has already answered for a build
+        // without the interpreter. What only a start can tell — bwrap able
+        // to build its namespaces, the worker's hash — is the preflight's,
+        // and a failed one stops the start rather than dropping the tool.
+        Feature::Code => {
+            use crate::interpreter::worker;
+            if !cfg.tools.registers(crate::tool::code::NAME) {
+                return tools_off(crate::tool::code::NAME);
+            }
+            if worker::pin().is_none() {
+                return State::Unready {
+                    reason: format!(
+                        "mecha pins no monty worker for {}-{}",
+                        std::env::consts::ARCH,
+                        std::env::consts::OS
+                    ),
+                    fix: None,
+                };
+            }
+            if !cfg!(target_os = "macos") && cfg.sandbox.kind != crate::sandbox::Backend::Bwrap {
+                return State::Unready {
+                    reason: format!(
+                        "code mode runs its interpreter only inside bwrap, and [sandbox] kind \
+                         is \"{}\"",
+                        cfg.sandbox.kind.as_str()
+                    ),
+                    fix: Some("set [sandbox] kind = \"bwrap\"".into()),
+                };
+            }
+            if !facts.code_worker_installed {
+                return off(
+                    format!(
+                        "the monty {} worker is not installed",
+                        worker::MONTY_VERSION
+                    ),
+                    "mecha features enable code",
+                );
+            }
+            on(format!(
+                "monty {} under {}",
+                worker::MONTY_VERSION,
+                if cfg!(target_os = "macos") {
+                    "Seatbelt"
+                } else {
+                    "bwrap"
+                }
+            ))
+        }
     }
 }
 
@@ -2164,6 +2269,67 @@ mod tests {
         &rows.iter().find(|r| r.id == f).unwrap().state
     }
 
+    /// Code mode's row asks what its registration asks, in its order — the
+    /// build, `[tools]`, the sandbox the interpreter needs, the worker — and
+    /// a build without the interpreter says so by name, switched on or not,
+    /// where `enable` refuses it naming the cargo feature.
+    #[test]
+    fn code_mode_reads_its_build_tools_sandbox_and_worker() {
+        let code = |facts: &Facts| state(facts, Feature::Code);
+        let mut facts = empty_machine();
+        if !crate::interpreter::BUILT {
+            let off = code(&facts);
+            assert!(
+                matches!(&off, State::Off { reason, fix: Some(fix) }
+                    if reason.contains("cargo feature `monty`") && fix.contains("--features monty")),
+                "{off:?}"
+            );
+            set_switch(&mut facts.config, Feature::Code, true);
+            let on = code(&facts);
+            assert!(
+                matches!(&on, State::Unready { reason, .. } if reason.contains("`monty`")),
+                "a yes this build cannot honour is shown, unready: {on:?}"
+            );
+            let refused = plan_enable(&facts.config, &["code".into()]).unwrap_err();
+            assert!(refused.contains("cargo feature `monty`"), "{refused}");
+            return;
+        }
+        assert_eq!(
+            plan_enable(&facts.config, &["code".into()]),
+            Ok(vec![Feature::Code])
+        );
+        assert_eq!(code(&facts).word(), "off", "the switch first");
+        set_switch(&mut facts.config, Feature::Code, true);
+        facts.config.tools.disabled = vec!["code".into()];
+        assert!(
+            matches!(code(&facts), State::Unready { reason, .. } if reason.contains("[tools]")),
+            "[tools] withholds it"
+        );
+        facts.config.tools.disabled.clear();
+        if crate::interpreter::worker::pin().is_none() {
+            assert_eq!(code(&facts).word(), "unready", "no worker pinned here");
+            return;
+        }
+        if !cfg!(target_os = "macos") {
+            facts.config.sandbox.kind = crate::sandbox::Backend::None;
+            assert!(
+                matches!(code(&facts), State::Unready { reason, fix: Some(fix) }
+                    if reason.ends_with("[sandbox] kind is \"none\"")
+                        && fix.contains("kind = \"bwrap\"")),
+                "the interpreter runs only inside bwrap here"
+            );
+            facts.config.sandbox.kind = crate::sandbox::Backend::Bwrap;
+        }
+        assert!(
+            matches!(code(&facts), State::Unready { reason, fix: Some(fix) }
+                if reason.contains("not installed") && fix == "mecha features enable code"),
+            "no worker yet: {:?}",
+            code(&facts)
+        );
+        facts.code_worker_installed = true;
+        assert_eq!(code(&facts).word(), "on");
+    }
+
     /// `Feature::ALL` is a hand-kept list, and every other test iterates it
     /// — so a variant left out of it would vanish from `mecha features` and
     /// from every test at once. This `match` has no wildcard: a new variant
@@ -2195,12 +2361,13 @@ mod tests {
                 | Feature::Frontdoor
                 | Feature::Publishing
                 | Feature::Messages
-                | Feature::System => {}
+                | Feature::System
+                | Feature::Code => {}
             }
         }
-        // The match above lists 23 — raise this with it, and a variant
+        // The match above lists 24 — raise this with it, and a variant
         // added to the match but not to `ALL` fails here.
-        assert_eq!(Feature::ALL.len(), 23);
+        assert_eq!(Feature::ALL.len(), 24);
     }
 
     #[test]
@@ -2255,6 +2422,7 @@ mod tests {
             Feature::Frontdoor,
             Feature::Messages,
             Feature::System,
+            Feature::Code,
         ] {
             assert_eq!(get(&rows, f).word(), "off", "{}", f.id());
         }
@@ -2793,6 +2961,12 @@ mod tests {
             let State::Off { fix: Some(fix), .. } = state(&facts, f) else {
                 panic!("{} is off on an empty machine", f.id())
             };
+            // Not in this build: the fix is the build, which `enable` names
+            // when it refuses.
+            if unbuilt(f).is_some() {
+                assert_eq!(fix, BUILD_WITH_MONTY, "{}", f.id());
+                continue;
+            }
             let args: Vec<String> = fix.split_whitespace().skip(3).map(String::from).collect();
             plan_enable(&cfg, &args).unwrap_or_else(|e| panic!("{fix}: {e}"));
         }
@@ -2831,7 +3005,9 @@ mod tests {
         assert!(switched_on(&cfg, Feature::Dictate));
         // Every command it prints is one `enable` accepts.
         let empty = Config::default();
-        for &f in Feature::ALL {
+        // A feature not in this build is refused by `enable` whatever is
+        // asked, naming the build (`code_mode_reads_its_build_tools_sandbox_and_worker`).
+        for &f in Feature::ALL.iter().filter(|f| unbuilt(**f).is_none()) {
             let cmd = enable_command(&empty, f);
             let args: Vec<String> = cmd.split_whitespace().skip(3).map(String::from).collect();
             plan_enable(&empty, &args).unwrap_or_else(|e| panic!("{}: {cmd}: {e}", f.id()));
