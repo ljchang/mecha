@@ -160,7 +160,7 @@ tool/        Tool trait, Registry, Approver, builtin.rs
 tool/code.rs `code`: a model's program over read-only tool results, as opaque handles and
              typed local passes; built last, its reach the run's registry ∩ read effects
 interpreter/ the monty worker a program runs in: a process per program under bwrap or
-             Seatbelt, a watchdog over it on a Mac; one that cannot start stops the run
+             Seatbelt, a watchdog over it on a Mac; one that cannot start stops the start
 jobs.rs      a tool's slow half past its turn: one per chat, delivered late by
              appended records, stopped by Stop and never by speech
 mcp.rs       stdio JSON-RPC client; wraps remote tools as Tool impls
@@ -542,10 +542,12 @@ trip over from *outside* the subsystem:
   explicit line, the one lever `Lever::bare` never throws; a scorecard
   grades the model it names, not the machine.
 - **Code mode**: with `[features] code` on, a worker or sandbox that cannot
-  start **refuses every agent-building start** (`run`, `chat`, `tui`,
-  `serve`, …), never drops the tool; `mecha features disable code` is the way
-  back. Its reach is admitted, not configured: read effects only, no egress,
-  and a host call that would prompt raises instead.
+  start **refuses the start** of `run`, `chat`, `tui` and the other commands
+  that build an agent, and never drops the tool; `mecha serve` instead comes up
+  dashboard-only, without chat. `--no-code-tool` clears one start, and
+  `mecha features disable code` is the durable way back. Its reach is
+  admitted, not configured: read effects only, no egress, and a host call that
+  would prompt raises instead.
 - **Compaction**: the cut must land on an assistant message (an orphaned
   `tool_result` is a 400), taint and carried tool state survive it, and the
   session file records a `rewrite` when history is edited.
