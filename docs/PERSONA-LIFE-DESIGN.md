@@ -473,11 +473,11 @@ one more reason §14's gate part 1 exists.
   at the start, and the second would never arm on a resume, failing in the
   open direction. As its own note it works: `Taint::arm_for_notes` gives each
   note its own block before matching, and `Record::Notes` re-arms each one on
-  load, as it already does for the recall block. A new stem is taught to all
-  three predicates the recall and scene stems are in: `arm_for_content`, the
-  `Record::Notes` re-arm, and `message::is_recorded_note`. The last keeps a
-  per-run note that somehow got stored off the wire, which the scene fold
-  already relies on.
+  load, as it already does for the recall block. A new stem is taught to the
+  two predicates the recall and scene stems are in: `arm_for_content` (which
+  the `Record::Notes` re-arm reaches through `arm_for_notes`) and
+  `message::is_recorded_note`. The second keeps a per-run note that somehow
+  got stored off the wire, which the scene fold already relies on.
 - **The told-ledger** is the anti-repetition mechanism. The nightly writer
   already reads each chat; it marks which world events and people she
   mentioned. An untold event is fresh material. A told one fades as Rimé
@@ -743,9 +743,11 @@ staged to the graph's review queue.
    `persona::recall::stem_of`'s existing pair**: the clean stem arms
    `private`, and the untrusted stem arms both when any folded fact's origin
    is not clean. That is one fold `arm_for_content` already re-derives, rather
-   than a new one. It matters beyond bookkeeping: `block_sends_after_private`
-   keys off `private`, and the writer's §9.6 split classifies by what was
-   armed. (The blind path is not one of the reasons. A persona's
+   than a new one. It matters beyond bookkeeping: the writer's §9.6 split
+   classifies by what was armed. (Two things are not reasons. A persona chat
+   forces `block_sends_after_private` off (`persona::agent::security`, D11),
+   so arming has no send-blocking effect. And the blind path is not one
+   either. A persona's
    `web_search` is built with `blind_only` (`WebSearch::for_persona`) and
    takes the blind chain whatever is armed, §7.5.) A roster folded
    silently would leave the owner's social graph in context with nothing
@@ -1140,7 +1142,11 @@ none for state.
 
 **Pruning differs by store** (§16 PL7):
 
-- **The world hard-prunes** below the threshold. An untold event is
+- **The world hard-prunes** below the threshold, **except owner-origin
+  events**, which never decay, as owner people never do (§6.3). The owner
+  wrote them on the week view and saw them there, so pruning one would cost
+  something someone saw. It would also defeat §5's promise that owner events
+  are never removed by forgetting a chat. Every other untold event is
   simulation, and deleting it costs nothing anyone saw. A *told* event was
   seen. It may be pruned because its episode carries **a snapshot** (§5):
   kind, date, people ids and the narration, everything recall needs. That
@@ -1203,8 +1209,14 @@ none for state.
   - Each is **looked up** in the camera index or in `items`, and refused as
     an expected failure if it isn't there.
   - A render's file name is chosen by the harness when it writes the file.
-  - The path stored in the index is what gets resolved under the persona's
-    jail (`ToolCtx::resolve`), never `camera_dir.join(id)`.
+  - The path stored in the index is checked against **the persona's own
+    root**, the way `persona::files` does it ("a file is named, never
+    pathed"): `canonicalize` and `strip_prefix(root)`. It is never
+    `camera_dir.join(id)`. `ToolCtx::resolve` is the wrong tool here: it
+    proves containment in the chat's *workspace*, which by construction
+    never contains the mecha home, and no grant can cover `~/.mecha`. So it
+    would refuse every camera path, and following it would push a builder
+    toward widening the jail.
 
   The precedent is `mail_triage::Record::file_name`, which turns a provider's
   thread id into a file name rather than joining it. An `event_id` of
@@ -1252,7 +1264,7 @@ dropped the farewell check (D25), so it would need its own evidence first.
 | Narrator over clean inputs | model, clean | yes | only once told | yes |
 | Her mentions in a clean chat | model, clean | as people and stated plans | yes | yes |
 | Her mentions after a taint rise | model, untrusted | as candidates | as candidates | only after approval |
-| Owner's words, after a taint rise | stated | the owner's people (§7) | yes, under PL10 as narrowed | yes |
+| Owner's words, after a taint rise | stated | no; the owner's people live in `memory.db` (§7.1) | as the owner's people and facts, under PL10 as ruled | yes |
 | The `told` flag, from a tainted stretch | the stretch's taint | set only, never cleared, source recorded | — | it shapes what reaches the today-block |
 | Shelf A | code, closed types only | yes | yes | its closed fields; shape-matched ids never |
 | Shelf B | quarantined, typed | minor events | as pointers | yes |
@@ -1290,7 +1302,9 @@ that reach further out of the registry of a persona set to `answers =
 "files"`, and D24 applies that to `document_read` by name, "since its results
 are third-party content." `news_read` is the third tool of that class on the
 same reasoning, so it is left out **at registry build**, never refused inside
-the tool, because §10.4 rejected offering a tool the model cannot use. A
+the tool, because §10.4 rejected offering a tool the model cannot use. That
+happens without a name list: `answers = "files"` filters the registry on
+`untrusted_input`, so declaring the capability (§8.3) is what withholds it. A
 `teacher` persona, whose starter suggests `"files"`, has no `news_read`.
 
 ---
