@@ -682,20 +682,31 @@ attacker selects from their own text can be an address; that is a
     never runs it. A worker computing at that moment never reads its
     stdin's EOF, and the wall clock lived in the host that died.
     - So the launcher starts a loop before it `exec`s (`monty::WATCHDOG`).
-      Once a second the loop checks, with the `kill -0` builtin, that the
-      worker and mecha are still alive, and it ends when the worker does.
-    - Both pids are recorded with their start times, and `exec` keeps a
-      process's start time. Mecha counts as gone when its pid no longer has
-      mecha's start time, so a reused pid cannot pass for a live mecha. The
-      loop then kills the worker, but only if that pid still has the
-      worker's start time, so it never kills a pid the kernel has since
-      reused.
-    - An unreadable start time fails the launch, so preflight refuses
-      rather than running unguarded.
+      Once a second it checks the worker with the `kill -0` builtin, and it
+      ends when the worker does.
+    - Both pids are recorded with their start times (`ps -o lstart`), and
+      `exec` keeps a process's start time. Mecha is alive while `kill -0`
+      reaches its pid and `ps` reads mecha's start time there, so a reused
+      pid cannot pass for a live mecha.
+    - Once mecha is gone, the loop kills the worker, but only if that pid
+      still has the worker's start time, so it never kills a pid the kernel
+      has since reused.
+    - **An unreadable `ps` is never an answer** (review of #772). An empty
+      read is as often a failed fork, under the process limit or memory
+      pressure, as a missing process. Concluding from one would kill a
+      healthy worker, or retire the watchdog and leave the worker
+      unguarded. So an empty read counts as mecha alive, or the worker's
+      start time unknown, and the loop asks again a second later. At
+      launch, an unreadable start time fails the launch instead, so
+      preflight refuses rather than running unguarded.
+      `the_watchdog_takes_no_answer_from_a_ps_that_fails` and
+      `a_launch_whose_start_times_are_unreadable_never_starts_the_worker`
+      measure both, with a `ps` stand-in.
     - The loop forks twice to leave the worker's process tree, and holds
       none of its pipes. It runs outside the profile, as fixed text that
       takes no input from a program.
-    - Each poll forks `sleep` and one `ps`. The worker's start forks one
+    - While mecha lives, each poll forks `sleep` and one `ps`. The worker's
+      start forks one
       `ps` per pid ahead of its `exec`, and §10's cold start predates that.
     - The worker outlives mecha by at most about a second:
       `the_watchdog_ends_a_worker_whose_mecha_was_killed` measured about
@@ -1188,8 +1199,9 @@ than an architecture section kept beside the code.
     polling interval of allocation, so it is weaker than a kernel limit and
     needs no knowledge of the map size.
 - **A killed mecha that its parent never reaps** leaves its Mac worker
-  running. `kill -0` reads a zombie as alive, so the watchdog (§7, R10)
-  waits for as long as the zombie lasts. A shell, launchd and systemd all
+  running. A zombie still answers `kill -0`, and `ps` reads its original
+  start time, so the watchdog (§7, R10) waits for as long as the zombie
+  lasts. A shell, launchd and systemd all
   reap their children.
 
 ---
