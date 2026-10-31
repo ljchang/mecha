@@ -772,10 +772,21 @@ pub fn state(facts: &Facts, f: Feature) -> State {
     }
     // Code mode with a precondition unmet is the same shape: `enable`
     // refuses it until the precondition is fixed, so the off row names that
-    // fix, never the command (review of #774).
-    if f == Feature::Code && switch(&facts.config, f) != Some(Switch::On) {
+    // fix, never the command alone (review of #774). An explicit `false` is
+    // still the owner's no, and reads as one; its fix is the whole path.
+    if f == Feature::Code {
         if let Some((reason, fix)) = code_unmet(&facts.config) {
-            return State::Off { reason, fix };
+            match switch(&facts.config, f) {
+                Some(Switch::Absent) => return State::Off { reason, fix },
+                Some(Switch::Off) => {
+                    return State::Off {
+                        reason: "turned off in [features]".into(),
+                        fix: fix
+                            .map(|fix| format!("{fix}, then {}", enable_command(&facts.config, f))),
+                    }
+                }
+                Some(Switch::On) | None => {}
+            }
         }
     }
     match switch(&facts.config, f) {
@@ -2362,6 +2373,17 @@ mod tests {
                 "{:?}",
                 code(&facts)
             );
+            // An explicit `false` is still the owner's no, and its fix is the
+            // whole path, which onboarding prints as what turns it on.
+            set_switch(&mut facts.config, Feature::Code, false);
+            assert!(
+                matches!(code(&facts), State::Off { reason, fix: Some(fix) }
+                    if reason == "turned off in [features]"
+                        && fix.starts_with("set [sandbox] kind = \"bwrap\", then mecha features enable code")),
+                "{:?}",
+                code(&facts)
+            );
+            facts.config.features.0.remove("code");
             facts.config.sandbox.kind = crate::sandbox::Backend::Bwrap;
         }
         if crate::interpreter::worker::pin().is_some() {
