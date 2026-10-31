@@ -444,59 +444,114 @@ async fn the_live_worker_s_profile_denies_files_the_environment_services_and_the
     let canon = |p: &str| std::path::Path::new(p).canonicalize().unwrap();
     let home = dirs::home_dir().expect("a home").canonicalize().unwrap();
     let tmp = std::env::temp_dir().canonicalize().unwrap();
-    let denied = [
+    // An existing file to write, so a write check is not a create check.
+    let existing = tmp.join(format!("mecha-code-mode-probe-{}", std::process::id()));
+    std::fs::write(&existing, b"x").unwrap();
+    let denied: Vec<(&str, std::path::PathBuf)> = vec![
         ("file-read-data", canon("/etc/passwd")),
         ("file-read-data", home.clone()),
         ("file-read-data", home.join(".ssh")),
         ("file-read-data", canon("/usr/lib")),
+        ("file-read-data", existing.clone()),
         ("file-read-metadata", home.clone()),
-        ("file-write-create", tmp.join("mecha-code-mode-probe")),
+        ("file-write-data", existing.clone()),
         ("file-write-data", canon("/dev/null")),
-        ("file-write-create", home.join("mecha-code-mode-probe")),
+        ("file-write-create", tmp.join("mecha-code-mode-new")),
+        ("file-write-create", home.join("mecha-code-mode-new")),
+        ("file-write-unlink", existing.clone()),
         ("process-exec", canon("/bin/sh")),
+        ("process-exec*", canon("/bin/sh")),
         ("process-exec", canon("/usr/bin/sandbox-exec")),
     ];
+    let ops = [
+        "network-outbound",
+        "network-inbound",
+        "network-bind",
+        "process-fork",
+    ];
+    let services = [
+        "com.apple.cfprefsd.daemon",
+        "com.apple.SecurityServer",
+        "com.apple.system.opendirectoryd.libinfo",
+        "com.apple.system.notification_center",
+        "com.apple.logd",
+    ];
+    // The whole reading first, so one run shows every answer.
+    let mut table = Vec::new();
+    for (op, path) in &denied {
+        table.push(format!(
+            "  {op:<20} {:<60} worker {:?}  this test {:?}",
+            path.display(),
+            live::denies_path(worker, op, path),
+            live::denies_path(me, op, path)
+        ));
+    }
+    for op in ops {
+        table.push(format!(
+            "  {op:<20} {:<60} worker {:?}  this test {:?}",
+            "",
+            live::denies(worker, op),
+            live::denies(me, op)
+        ));
+    }
+    for s in services {
+        table.push(format!(
+            "  {:<20} {s:<60} worker {:?}  this test {:?}",
+            "mach-lookup",
+            live::denies_service(worker, s),
+            live::denies_service(me, s)
+        ));
+    }
+    for (op, path) in [
+        ("file-read-data", std::path::Path::new("/")),
+        ("process-exec", w.path()),
+    ] {
+        table.push(format!(
+            "  {op:<20} {:<60} worker {:?}  (allowed by the profile)",
+            path.display(),
+            live::denies_path(worker, op, path)
+        ));
+    }
+    let table = table.join("\n");
+    println!("the live worker's profile, asked of the kernel:\n{table}");
+    std::fs::remove_file(&existing).ok();
     for (op, path) in &denied {
         assert_eq!(
             live::denies_path(worker, op, path),
             Some(true),
-            "the worker may {op} {}",
+            "the worker may {op} {}\n{table}",
             path.display()
         );
         assert_eq!(
             live::denies_path(me, op, path),
             Some(false),
-            "{op} {} is denied to this test too, so the check measures nothing",
+            "{op} {} is denied to this test too, so the check measures nothing\n{table}",
             path.display()
         );
     }
     // What the profile does allow reads as allowed on the same process.
     assert_eq!(
         live::denies_path(worker, "file-read-data", std::path::Path::new("/")),
-        Some(false)
+        Some(false),
+        "{table}"
     );
     assert_eq!(
         live::denies_path(worker, "process-exec", w.path()),
-        Some(false)
+        Some(false),
+        "{table}"
     );
-    for op in [
-        "network-outbound",
-        "network-inbound",
-        "network-bind",
-        "process-fork",
-    ] {
-        assert_eq!(live::denies(worker, op), Some(true), "the worker may {op}");
+    for op in ops {
+        assert_eq!(
+            live::denies(worker, op),
+            Some(true),
+            "the worker may {op}\n{table}"
+        );
     }
-    for service in [
-        "com.apple.cfprefsd.daemon",
-        "com.apple.SecurityServer",
-        "com.apple.system.opendirectoryd.libinfo",
-        "com.apple.logd",
-    ] {
+    for service in services {
         assert_eq!(
             live::denies_service(worker, service),
             Some(true),
-            "the worker may look up {service}"
+            "the worker may look up {service}\n{table}"
         );
     }
     let step = program.resume(Value::Null).await.unwrap();
