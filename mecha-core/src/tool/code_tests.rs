@@ -953,7 +953,8 @@ async fn the_tool_read_past_its_limit_raises_before_the_gate() {
             ..HostLimits::default()
         },
         BytePool::new(1 << 20),
-    );
+    )
+    .reaching(["mail_search".to_string()]);
     let read = call("mail_search", vec![]);
     let stop = tokio_util::sync::CancellationToken::new();
     run.read(&host, &read, &stop).await.unwrap();
@@ -961,6 +962,48 @@ async fn the_tool_read_past_its_limit_raises_before_the_gate() {
     let err = run.read(&host, &read, &stop).await.unwrap_err().message;
     assert!(err.starts_with("LimitError: tool reads:"), "{err}");
     assert_eq!(reached.load(Ordering::SeqCst), 2);
+}
+
+/// §2 does not rest on the interpreter alone (review of #768): a call to a
+/// name outside the program's reach that surfaced anyway — an escaped
+/// interpreter — is refused here, before the gate, which would clear
+/// `message_send` and `ask_user` (both `read_only()`, neither declaring a
+/// capability the interlock reads).
+#[tokio::test]
+async fn the_host_refuses_a_name_outside_the_reach_without_the_interpreter() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let reached = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&reached);
+    tokio::spawn(async move {
+        while let Some(req) = rx.recv().await {
+            if let HostRequest::Call { reply, .. } = req {
+                seen.fetch_add(1, Ordering::SeqCst);
+                let _ = reply.send(HostAnswer::Ran(ToolOutput::ok("sent")));
+            }
+        }
+    });
+    let host = HostCalls::new(tx, "c1", 10_000);
+    let mut run = Run::new(HostLimits::default(), BytePool::new(1 << 20))
+        .reaching(["mail_search".to_string()]);
+    let stop = tokio_util::sync::CancellationToken::new();
+    for name in ["message_send", "ask_user"] {
+        let err = run
+            .read(&host, &call(name, vec![]), &stop)
+            .await
+            .unwrap_err()
+            .message;
+        assert!(err.starts_with("ToolError:") && err.contains(name), "{err}");
+    }
+    assert_eq!(
+        reached.load(Ordering::SeqCst),
+        0,
+        "a refused name reached the gate"
+    );
+    assert_eq!(run.reads, 0, "a refused name is not a read");
+    run.read(&host, &call("mail_search", vec![]), &stop)
+        .await
+        .unwrap();
+    assert_eq!(reached.load(Ordering::SeqCst), 1);
 }
 
 /// The suspension backstop is the sum of the counted host limits (§5), and

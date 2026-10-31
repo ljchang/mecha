@@ -422,9 +422,9 @@ impl CodeTool {
             Err(why) => return ToolOutput::refusal(why),
         };
         let mut externals: Vec<String> = HOST_FUNCTIONS.iter().map(|s| s.to_string()).collect();
-        externals.extend(reach);
+        externals.extend(reach.iter().cloned());
         let cancel = ctx.cancel.clone().unwrap_or_default();
-        let mut state = Run::new(self.limits, Arc::clone(&self.pool));
+        let mut state = Run::new(self.limits, Arc::clone(&self.pool)).reaching(reach);
         let (mut program, mut step) = match self
             .interpreter
             .start(program, &externals, cancel.clone())
@@ -677,6 +677,11 @@ struct Run {
     peeked: usize,
     /// Any host call returned external content.
     external: bool,
+    /// The tools this program may call, as its start resolved them: checked
+    /// again here on every read, so §2 does not rest on the interpreter
+    /// alone refusing an unregistered name (review of #768). `ask_user` and
+    /// `message_send` would clear the gate if one reached it.
+    reach: std::collections::BTreeSet<String>,
 }
 
 impl Drop for Run {
@@ -755,7 +760,14 @@ impl Run {
             bytes: 0,
             peeked: 0,
             external: false,
+            reach: Default::default(),
         }
+    }
+
+    /// The tools this program may call; none until this is said.
+    fn reaching(mut self, names: impl IntoIterator<Item = String>) -> Self {
+        self.reach = names.into_iter().collect();
+        self
     }
 
     /// The handle a program passed, by its stub. A string that is not the
@@ -870,6 +882,15 @@ impl Run {
         call: &ExternalCall,
         cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<Value, HostRaise> {
+        if !self.reach.contains(&call.name) {
+            return Err(raise(
+                Tag::ToolError,
+                format!(
+                    "`{}` is not a tool this program may call, so nothing ran",
+                    call.name
+                ),
+            ));
+        }
         if self.reads >= self.limits.tool_reads {
             return Err(raise(
                 Tag::LimitError,
