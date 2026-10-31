@@ -4117,6 +4117,7 @@ mod tests {
             taint: crate::agent::Taint::default(),
             homeostat: None,
             brief: None,
+            resume_cache: None,
             stop_cause: crate::agent::StopCause::Completed,
             compactions: 0,
             usage_complete: true,

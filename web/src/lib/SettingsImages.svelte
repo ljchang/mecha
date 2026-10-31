@@ -45,7 +45,7 @@
 
 <p class="hint">
   How pictures are drawn in chat. A persona draws with these too, for each setting its own page leaves at
-  "chat".
+  "chat". The LoRAs every picture in chat carries are chosen under Settings → LoRAs, behind the library lock.
 </p>
 {#if error}<p class="err">{error}</p>{/if}
 {#if view}

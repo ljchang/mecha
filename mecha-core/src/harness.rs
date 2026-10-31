@@ -53,6 +53,18 @@ pub enum OverrideKey {
 }
 
 impl OverrideKey {
+    /// Whether the setting's values lie on a line, so that a value held at
+    /// one place says something about its neighbours. `effort` is a set of
+    /// kinds: `medium` staged says nothing of `high`.
+    pub fn is_ordered(self) -> bool {
+        match self {
+            OverrideKey::CompactAtTokens | OverrideKey::MaxTurns | OverrideKey::MaxOutputTokens => {
+                true
+            }
+            OverrideKey::Effort => false,
+        }
+    }
+
     pub const ALL: [OverrideKey; 4] = [
         OverrideKey::CompactAtTokens,
         OverrideKey::MaxTurns,
@@ -480,6 +492,19 @@ pub struct HarnessCandidate {
     /// carried no episodes to cite.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cites: Option<String>,
+    /// The sessions the proposer's brief showed as episodes. The held-out
+    /// slice of this candidate's point-wise comparison is drawn from
+    /// sessions *not* in this list, or "held out" would mean nothing (R36,
+    /// 2026-10-29). **`None` is a record from before the field**: nothing
+    /// is known of what it was shown, so it has no held-out points (unknown
+    /// is never clean). **`Some` of an empty list is a brief that showed no
+    /// session** — a corpus with no digests or appraisals — and everything is
+    /// held out. Told apart because the first read as the second would drop
+    /// the held-out veto for every such night (found reviewing the R36
+    /// amendment). The brief's aggregate counters and its history text are not
+    /// shown sessions: the guarantee is "never shown individually".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shown: Option<Vec<String>>,
 }
 
 /// Who rejected a candidate, and — when it was the owner — what they ruled.
@@ -561,6 +586,23 @@ pub enum HistoryVerdict {
 }
 
 impl HistoryVerdict {
+    /// Whether a record with this verdict keeps the *setting* its change
+    /// names from being proposed at any other value.
+    ///
+    /// Only the verdicts that say nothing about the setting's direction: a
+    /// change waiting on a person, or measured (or judged) to do nothing on
+    /// an instrument that has not changed since. A harm is about one value
+    /// — `max_turns=3` harmful does not say `max_turns=30` is — so it stays
+    /// the exact change's.
+    pub fn holds_setting(self) -> bool {
+        matches!(
+            self,
+            HistoryVerdict::Staged
+                | HistoryVerdict::NoObservedEffect
+                | HistoryVerdict::OwnerNoEffect
+        )
+    }
+
     /// Whether a diagnostician may propose the same change again.
     ///
     /// Only where nothing has ruled against it: too little evidence, or the
@@ -579,6 +621,52 @@ impl HistoryVerdict {
     }
 }
 
+/// The setting a config change names, whatever value it gives it.
+///
+/// Reads only the key, so a value that does not parse still names its
+/// setting. `None` for a change that is not `KEY=VALUE` over the closed set.
+pub fn setting_of(change: &str) -> Option<OverrideKey> {
+    let (key, _) = change.split_once('=')?;
+    OverrideKey::parse(key.trim())
+}
+
+/// The records that hold a setting against every other value of it, newest
+/// first per setting, in the order of [`OverrideKey::ALL`]; `on_file` is the
+/// store's order, oldest first.
+///
+/// A hold is **released by a later accepted or reverted record of the same
+/// setting**: the setting has been moved on since, so a staged or no-effect
+/// record from before it no longer says anything about where to go next.
+/// Without it, one old `max_turns=20` held the whole setting for good
+/// (found reviewing the setting hold). Both the re-derivation check and the
+/// brief read this one function, so what the brief shows and what the loop
+/// refuses cannot differ.
+///
+/// From 2026-10-09 to 10-28 the nightly proposed `max_turns` at 5, 4, 20,
+/// 100, 200, 60 and 25, each staged with arms that could not be told apart:
+/// the ban was on the exact `KEY=VALUE`, so it stepped to the next number.
+pub fn setting_holders(on_file: &[HarnessCandidate]) -> Vec<&HarnessCandidate> {
+    OverrideKey::ALL
+        .iter()
+        .filter_map(|key| {
+            let moved_on = on_file.iter().rposition(|c| {
+                // A record the override set could have applied: an
+                // unparseable or non-config one never moved the setting.
+                matches!(c.status.as_str(), STATUS_ACCEPTED | STATUS_REVERTED)
+                    && c.class == ChangeClass::Config
+                    && parse_change(&c.change).is_ok()
+                    && setting_of(&c.change) == Some(*key)
+            });
+            on_file
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(i, c)| c.held_setting() == Some(*key) && moved_on.is_none_or(|m| *i > m))
+                .map(|(_, c)| c)
+        })
+        .collect()
+}
+
 /// A change as the store compares it: the canonical spec when it parses,
 /// so spacing cannot make two records of one change look like two changes.
 pub fn canonical_change(change: &str) -> String {
@@ -588,6 +676,20 @@ pub fn canonical_change(change: &str) -> String {
 }
 
 impl HarnessCandidate {
+    /// The setting this record holds against every other value, if it holds
+    /// one: a config change that parses (a value the override set cannot
+    /// make was never going to be applied, so holds nothing) whose verdict
+    /// [`HistoryVerdict::holds_setting`]. The brief reads this too, so what
+    /// it shows and what the check refuses are one predicate.
+    pub fn held_setting(&self) -> Option<OverrideKey> {
+        (self.class == ChangeClass::Config
+            && parse_change(&self.change).is_ok()
+            && self.history_verdict().holds_setting())
+        .then(|| setting_of(&self.change))
+        .flatten()
+        .filter(|key| key.is_ordered())
+    }
+
     /// Whether this record forbids proposing its change again tonight —
     /// the one predicate the re-derivation check and the brief's grouping
     /// both read, so the brief cannot invite what the loop then refuses.
@@ -662,7 +764,8 @@ impl HarnessCandidate {
             m.work_baseline > 0 && (m.work_candidate as f64) < m.work_baseline as f64 * WORK_FLOOR;
         let lost = m.selection.losses > m.selection.wins || m.holdout.losses > m.holdout.wins;
         let lost_pointwise = m.pointwise.as_ref().is_some_and(|p| {
-            p.basis == Basis::Pointwise && p.tally.verdict() == PointwiseVerdict::Against
+            p.basis == Basis::Pointwise
+                && (p.tally.verdict() == PointwiseVerdict::Against || p.tally.origin_rejects())
         });
         if work_fell || lost || lost_pointwise {
             return HistoryVerdict::Harmed;
@@ -1438,6 +1541,27 @@ mod tests {
             .is_ok());
     }
 
+    /// A record from before `shown` reads `None` (unknown, no held-out
+    /// slice); a brief that showed nothing writes `Some([])` and reads it
+    /// back. Fails if the two collapse into one.
+    #[test]
+    fn shown_tells_a_legacy_record_from_a_brief_that_showed_nothing() {
+        let mut c: HarnessCandidate = serde_json::from_value(serde_json::json!({
+            "id": "hc-1", "created_at": "2026-10-01T00:00:00Z", "class": "config",
+            "change": "max_turns=20", "metric": "turns", "rationale": "", "evidence": "",
+            "status": "staged"
+        }))
+        .unwrap();
+        assert_eq!(c.shown, None, "no field: unknown");
+        c.shown = Some(Vec::new());
+        let wire = serde_json::to_value(&c).unwrap();
+        assert!(wire.get("shown").is_some(), "an empty list is written");
+        let back: HarnessCandidate = serde_json::from_value(wire).unwrap();
+        assert_eq!(back.shown, Some(Vec::new()));
+        c.shown = None;
+        assert!(serde_json::to_value(&c).unwrap().get("shown").is_none());
+    }
+
     /// A measurement's point-wise evidence round-trips; a record from
     /// before R36 reads `None` — unknown, never "numeric only" — and a basis
     /// a newer build wrote reads `Unknown` without failing the record.
@@ -1452,6 +1576,9 @@ mod tests {
                 undecided: 2,
                 lost_baseline: 0,
                 lost_candidate: 1,
+                origin_decided: 2,
+                origin_candidate_only: 1,
+                origin_baseline_only: 0,
             },
             basis: Basis::Pointwise,
             not_run: None,
@@ -1799,6 +1926,7 @@ accepted_at = "2026-08-22T00:00:00Z"
             reason: None,
             rejection: None,
             cites: None,
+            shown: None,
         };
         store.write(&c).unwrap();
         let read = store.find("hc-2026").unwrap();
@@ -1967,6 +2095,7 @@ mod history_verdict_tests {
             reason: Some("prose the verdict must never read".into()),
             rejection,
             cites: None,
+            shown: None,
         }
     }
 

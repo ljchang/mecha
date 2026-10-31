@@ -127,7 +127,7 @@ const COMMIT_STAMP: &str = ".mecha-commit";
 /// (`imagegen::sam_graph`), so an install on a ComfyUI with no SAM 3 node
 /// fails its check rather than linking a checkpoint nothing can load. A test
 /// builds the graphs and holds the two sets equal, both ways.
-pub const NODES: [&str; 16] = [
+pub const NODES: [&str; 17] = [
     "CLIPLoader",
     "CLIPTextEncode",
     "CheckpointLoaderSimple",
@@ -135,6 +135,7 @@ pub const NODES: [&str; 16] = [
     "ImageToMask",
     "KSampler",
     "LoadImage",
+    "LoraLoaderModelOnly",
     "MaskToImage",
     "PreviewImage",
     "SAM3_Detect",
@@ -172,6 +173,25 @@ impl Naming {
 /// The install's tree under a mecha home.
 pub fn dir(mecha_home: &Path) -> PathBuf {
     mecha_home.join("sidecars").join(ID)
+}
+
+/// Where this install's ComfyUI looks for LoRAs: what an unset
+/// `[image] loras_dir` means when mecha installed the server
+/// (`loras::Folders`).
+pub fn loras_dir(mecha_home: &Path) -> PathBuf {
+    dir(mecha_home).join("ComfyUI").join("models").join("loras")
+}
+
+/// Whether mecha installed the image server here, from the install record
+/// alone: a finished entry that wrote something. A store read with no port
+/// probe, so `doctor` may ask it; a manifest that does not read is not an
+/// install (`someone_elses` probes the port too, and is for the page).
+pub fn installed_here(mecha_home: &Path) -> bool {
+    Manifest::read(mecha_home).is_ok_and(|m| {
+        m.entries
+            .iter()
+            .any(|e| e.sidecar == ID && !e.incomplete && !e.wrote.is_empty())
+    })
 }
 
 /// What `[image] server_temp_dir` must name for this install: the unit's
@@ -1195,6 +1215,12 @@ mod tests {
             references: Vec::new(),
             reference_size: EDIT_REFERENCE_SIZE,
             mask: None,
+            // The owner's LoRAs ride every graph but the segmentation's.
+            loras: vec![crate::loras::PictureLora {
+                file: "style.safetensors".into(),
+                strength: 1.0,
+                trigger: None,
+            }],
         };
         let gguf = ImageConfig {
             diffusion_model: "model.gguf".into(),

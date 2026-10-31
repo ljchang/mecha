@@ -101,6 +101,10 @@ impl Tool for DocumentRead {
         Capabilities::default().private().untrusted()
     }
 
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        Some(crate::tool::effect::Effect::Read)
+    }
+
     async fn call(&self, input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
         let Some(raw) = input.get("path").and_then(Value::as_str) else {
             return Ok(ToolOutput::err("missing required string argument `path`"));
@@ -224,7 +228,8 @@ mod tests {
         assert!(t.read_only());
         // No destination anywhere in the schema: only a path, pages, a mode.
         let props = t.input_schema()["properties"].as_object().unwrap().clone();
-        let keys: Vec<_> = props.keys().cloned().collect();
+        let mut keys: Vec<_> = props.keys().cloned().collect();
+        keys.sort_unstable();
         assert_eq!(keys, vec!["mode", "pages", "path"]);
     }
 
@@ -289,5 +294,14 @@ mod tests {
         .unwrap();
         assert!(out.is_error, "{}", out.content);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_document_read_is_a_read() {
+        use crate::tool::effect::{class_of, EffectClass};
+        assert_eq!(class_of(&tool(), false), EffectClass::Read);
+        // Routed through the outbox, even a read is drafted, never run
+        // (CODE-MODE-DESIGN.md §2: a routed read is not admitted).
+        assert_eq!(class_of(&tool(), true), EffectClass::Staged);
     }
 }

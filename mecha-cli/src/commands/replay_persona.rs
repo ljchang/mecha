@@ -235,21 +235,6 @@ fn resolve(store: &Path, arg: &str) -> Result<(PathBuf, String, String)> {
     Ok((path, persona, id))
 }
 
-/// Whether a call is live now, as `mecha system probe voice.live` reads it:
-/// a hold shows only a turn in flight, not a call between turns. No speech
-/// engine here is no call; one whose journal cannot be read is a refusal,
-/// since unknown is not clear.
-fn voice_live() -> Result<bool> {
-    use mecha_core::system::{Measurement, Reader, Reading};
-    match Reader::new().now(Measurement::VoiceLive) {
-        Reading::Observed { value } => Ok(value != 0.0),
-        Reading::NotHere => Ok(false),
-        Reading::Unread { why } => {
-            bail!("a live call cannot be ruled out: {why}")
-        }
-    }
-}
-
 /// Wait while the owner is using the model: a call, or a turn in flight on
 /// the router (a hold some other process took). Checked before every
 /// sample, because a long run outlasts the moment it started in.
@@ -257,7 +242,7 @@ pub(super) async fn wait_for_owner(router: Option<&str>) -> Result<()> {
     let me = std::process::id();
     let mut said = false;
     loop {
-        let call = voice_live()?;
+        let call = mecha_core::system::voice_live()?;
         let turns = match router {
             Some(base) => mecha_core::hold::Holds::open_default()?
                 .live(base)
@@ -719,9 +704,6 @@ pub async fn execute(global: &GlobalOpts, arg: &str, args: &SampleArgs, json: bo
         surface,
         work,
         chat: id.clone(),
-        run_start: clock_at
-            .and_then(|t| pr::start_of_day(t, tz))
-            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
         render,
         readers: !args.no_readers,
         layers: args.layers,
@@ -806,13 +788,6 @@ pub struct Sampler {
     work: PathBuf,
     /// The chat's id, which its scene is staged by.
     chat: String,
-    /// A bound the turn's run began after: the start of the day its
-    /// calendar reference names, in the run's zone. The approximate stage
-    /// takes the persona's latest written at or before it, so it can be up
-    /// to a day early, never late: a later bound (noon) staged a scene drawn
-    /// after a morning turn (review of #615). `None` falls back to the last
-    /// recorded config's clock.
-    run_start: Option<String>,
     /// Run the picture call against a scene staged per sample.
     render: bool,
     /// Stamp the scene reader and role splitter when rendering.
@@ -858,6 +833,9 @@ impl mecha_core::tool::Tool for AnswerUnparsed {
     }
     fn capabilities(&self) -> mecha_core::tool::Capabilities {
         self.inner.capabilities()
+    }
+    fn effect(&self) -> Option<mecha_core::tool::effect::Effect> {
+        self.inner.effect()
     }
     async fn call(
         &self,
@@ -928,7 +906,6 @@ impl Sampler {
                 &self.persona,
                 &self.chat,
                 branch.line - 1,
-                self.run_start.as_deref(),
                 &scratch,
             )?)
         } else {
@@ -1012,6 +989,10 @@ impl Sampler {
             layers: false,
             layers_posed: false,
             image_tuning: Default::default(),
+            // A replay draws with no LoRAs: it has no chat layer.
+            image_loras: Default::default(),
+            // A replay re-runs the recorded call as the model writes it.
+            build_on: None,
             owner: &branch.owner,
             history: &branch.messages,
             panel: false,

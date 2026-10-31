@@ -373,7 +373,15 @@
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).trim()}`);
       const data = await res.json();
       if (signal?.aborted || sessionKey !== key || gen !== loadGen) return false;
-      const carried = carry ? entries.slice(liveFrom).filter(pageOnly) : [];
+      // The server's waiting list is the truth for a bubble still waiting:
+      // one it no longer holds — its turn started and the page missed the
+      // event — goes, and its receipt is forgotten so a late event draws it.
+      const held = new Set((data.waiting ?? []).map((w) => w.request_id));
+      const carried = (carry ? entries.slice(liveFrom).filter(pageOnly) : []).filter((e) => {
+        const gone = e.kind === 'user' && e.queued && e.delivery !== 'discarded' && !held.has(e.request_id);
+        if (gone) receivedInputs.delete(e.request_id);
+        return !gone;
+      });
       entries = data.entries.map((e) =>
         e.kind === 'tool' ? { ...e, pending: false } : e
       );
@@ -383,6 +391,13 @@
       // Before the carried cards, so they stay page-only for the next re-read.
       liveFrom = entries.length;
       entries.push(...carried);
+      // The messages still waiting for a turn of their own, as the server
+      // holds them: a page that reloaded while they wait has none of its own.
+      for (const w of data.waiting ?? []) {
+        if (!w.request_id || entries.some((e) => e.request_id === w.request_id)) continue;
+        receivedInputs.add(w.request_id);
+        entries.push({ kind: 'user', text: w.text, request_id: w.request_id, queued: true, delivery: 'queued' });
+      }
       // A `done` landed while this read was on the wire, and the read still
       // saw the run: that run is over and nothing will say so again.
       if (partialRun && doneSeq !== seq) {
@@ -438,7 +453,16 @@
     entries = entries.map(e => changed.has(e.request_id) ? { ...e, delivery } : e);
   }
   function receiveInput(ev) {
-    if (ev.request_id && receivedInputs.has(ev.request_id)) return;
+    if (ev.request_id && receivedInputs.has(ev.request_id)) {
+      // A message that waited for a turn of its own, its turn now starting:
+      // its queued bubble becomes the turn's, at the end where the turn is.
+      if (ev.type === 'user' && entries.some((e) => e.queued && e.request_id === ev.request_id)) {
+        entries = entries.filter((e) => !(e.queued && e.request_id === ev.request_id));
+        pushEntry({ kind: 'user', text: ev.text, request_id: ev.request_id, queued: false, spoken: ev.spoken, delivery: 'delivered' });
+        running = true;
+      }
+      return;
+    }
     if (ev.request_id) receivedInputs.add(ev.request_id);
     pushEntry({ kind: 'user', text: ev.text, request_id: ev.request_id, queued: ev.type === 'queued', spoken: ev.spoken, delivery: inputDelivery.get(ev.request_id) ?? 'queued' });
     if (ev.type === 'user') running = true;
@@ -1330,7 +1354,17 @@
   // and files in the composer. `regions`: the edit modal's painted regions,
   // drawn by the harness before the model replies. True when the server
   // started the turn.
-  async function send({ text: fixed = null, regenerate = null, regions = null } = {}) {
+  // A message that was not sent, sent again as it was: its bubble goes, and
+  // the words come back as the server takes them — a turn, or a wait. One
+  // the server refuses comes back, beside the notice saying why.
+  function resend(entry) {
+    entries = entries.filter((e) => !(e.queued && e.request_id === entry.request_id));
+    send({ text: entry.text, onFail: () => { entries = [...entries, entry]; } });
+  }
+
+  // `onFail`: what a send of fixed words does when the server refuses it —
+  // a Send again puts its bubble back.
+  async function send({ text: fixed = null, regenerate = null, regions = null, onFail = null } = {}) {
     const own = fixed === null;
     // The owner's `/grant` and `/revoke` go to the grants endpoint, never to
     // the model; attachments wait for the next message.
@@ -1370,7 +1404,7 @@
       if (!res.ok) throw new Error((await res.text()).trim());
       const data = await res.json();
       if (sessionKey !== key) return false;
-      if (data.started || data.steered) {
+      if (data.started || data.steered || data.waiting) {
         receiveInput({ type: data.started ? 'user' : 'queued', text, request_id, spoken: false });
       }
       // Pictures the text names that the model was not shown — said here,
@@ -1386,8 +1420,8 @@
         });
       }
       // A steer carries text only, so a picture sent into a working run is
-      // named and not shown.
-      if (data.steered && attached.some((p) => /\.(png|jpe?g|gif|webp)$/i.test(p))) {
+      // named and not shown — and so does a message that waits its turn.
+      if ((data.steered || data.waiting) && attached.some((p) => /\.(png|jpe?g|gif|webp)$/i.test(p))) {
         pushEntry({
           kind: 'notice',
           text: 'A run was in progress, so the picture went in by name only — the model was not shown it.',
@@ -1396,6 +1430,7 @@
       return !!data.started;
     } catch (e) {
       if (sessionKey !== key) return false;
+      onFail?.();
       pushEntry({ kind: 'notice', text: `send failed: ${e?.message ?? e}` });
       return false;
     }
@@ -2180,7 +2215,7 @@
       {#if entry.kind === 'user'}
         <div class="bubble" class:queued={entry.queued}>
           {entry.text}
-          {#if entry.queued}<span class="queued-tag">{entry.delivery === 'discarded' ? 'not delivered — send again' : entry.delivery === 'delivered' ? 'steered' : 'queued'}</span>{/if}
+          {#if entry.queued}<span class="queued-tag">{#if entry.delivery === 'discarded'}not sent — <button class="resend" onclick={() => resend(entry)}>send again</button>{:else}{entry.delivery === 'delivered' ? 'steered' : 'queued'}{/if}</span>{/if}
           {#if entry.spoken}<span class="queued-tag">spoken</span>{/if}
         </div>
       {:else if entry.kind === 'assistant'}
@@ -3327,6 +3362,15 @@
   .bubble.queued {
     border: 1px solid var(--accent-700);
     background: var(--bg);
+  }
+  .resend {
+    font: inherit;
+    color: var(--accent-500);
+    background: none;
+    border: 0;
+    padding: 0;
+    text-decoration: underline;
+    cursor: pointer;
   }
   .queued-tag {
     display: block;

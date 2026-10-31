@@ -663,6 +663,23 @@ Apart from those, P1 lifts only the bans the owner lifts. The brief shows
 each change once, by the record that decides it, so a retried change never
 appears under two contradicting instructions.
 
+**A held setting is held at every value** (2026-10-29). The re-derivation
+check matched the whole `KEY=VALUE`, so a staged `max_turns=20` banned
+`max_turns=20` and nothing else. From 10-09 to 10-28 the nightly proposed
+`max_turns` at 5, 4, 20, 100, 200, 60 and 25, each staged with the arms
+identical or too few to measure (`mecha harness list --all`).
+`harness::setting_holders` now names the records that hold a setting: a
+`Staged`, `NoObservedEffect` or `OwnerNoEffect` record of an ordered setting
+(`max_turns`, `compact_at_tokens`, `max_output_tokens`; `effort` is a set of
+kinds and holds nothing). The re-derivation check refuses any other value of
+a held setting, and the brief reads the same function: other values of it are
+not shown as proposable, and the holder survives the newest-20 window. **A
+later accepted or reverted record of the setting releases the hold.** A harm
+stays the exact value's: `max_turns=3` harmful does not say 30 is. A hold
+has no age limit, so a staged record the owner never resolves holds its
+setting until they do. Not done: checking, before the replay is paid for,
+that any drawn episode could reach the new limit.
+
 The live record when it was built: the gate had rejected none of the 17
 candidates. All 12 rejections were the owner's, and four of them were keys
 that never existed.
@@ -875,6 +892,12 @@ enough, so the prompt names criteria, not a tone.
   A skip is discarded today (the reply handler drops it and records
   nothing), so recording skips is part of the build.
 - The reflector's prompt is not in any run's prefix.
+- **Built** (ARCHITECTURE "What never becomes a rule, and every reply
+  counted"). Every reply is recorded, not only skips:
+  `reflector_replies.jsonl` carries the outcome, the lesson's category and
+  the prompt's hash, so before and after is a split by prompt. The
+  "before" for skips is partial: only steer and denial skips were ever
+  printed to the learning log, and followup skips were never recorded.
 
 ### P8. Behaviour-changing candidates are measured on continued branches — L
 
@@ -956,6 +979,14 @@ multi-step effects.
   (P5), `effort`.
 - It needs no ruling: it is the existing point-wise pass with a second
   point source.
+- **Built** (`PointKind::Repeat`, `counterfactual::first_repeats` and
+  `repeat_verdict`; ARCHITECTURE "Point-wise comparison at decision
+  points"). Two choices the paragraph above left open: only the **first**
+  repeat of a failure is a point, and only the arm's **decision turn** is
+  graded, because a call that leaves the dead end with other arguments is
+  answered from the recording with the failure it avoided. Both `sessions
+  compare` and a candidate's point-wise half draw these points; a
+  candidate's pool is already scoped to the served model (#726).
 
 **What R1's yes still leaves open.**
 - §14.7 says fitness is the owner's own usage, and fixture worlds are not

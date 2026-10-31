@@ -106,6 +106,10 @@ impl Tool for Recall {
         Capabilities::default()
     }
 
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        Some(crate::tool::effect::Effect::Read)
+    }
+
     async fn call(&self, input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
         let query = match input.get("query").and_then(Value::as_str) {
             Some(q) if !q.trim().is_empty() => q.to_string(),

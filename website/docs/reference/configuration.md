@@ -467,6 +467,7 @@ setup` asks about it. `mecha features enable <id>` writes `true` in place; a
 # search = false     # web search and open
 # documents = false  # PDF extraction (OCR and layout are [documents] settings)
 # image = false      # image generation and the character library
+# video = false      # video clips with sound (a [video] table names the server)
 # personas = false   # characters you write and talk to
 # voice = false      # dictation and voice calls
 # frontdoor = false  # inbound requests, polls and publishing
@@ -689,6 +690,7 @@ Repeatable. Each entry is a stdio MCP server connected at startup. Its tools app
 | `personas` | bool | `false` | Offer this server's tools to persona chats. Global config only. See below. |
 | `disabled` | bool | `false` | Skip this server without deleting its config. |
 | `disabled_tools` | array of strings | `[]` | Tools this server lists that the model is never offered, by the server's own (unprefixed) names. See below. |
+| `effects` | table of strings | `{}` | What each of this server's tools does, by its own (unprefixed) name. Global config only. See below. |
 
 The environment is an allowlist, not an inheritance. The child's environment is
 cleared, then given a minimal base (`PATH`, `HOME`, `LANG`, `LC_ALL`, `TZ`) plus
@@ -751,6 +753,27 @@ to persona chats", and `mecha doctor` names the server. A persona's background c
 to such a server names the persona in `_meta["mecha-factory.ai/persona"]`: its
 folder name, its library character and its voice-library voice. It never sends the persona's prompt,
 display name or anything the persona said.
+
+`effects` says what each of the server's tools does to the world, one class per tool:
+`read`, `read_that_records`, `store_write`, `render` or `irreversible`. `mecha tools
+--json` prints the result as each tool's `effect`. A server you did not write has no
+class until you name one: its own annotations never give it one, so a tool marked
+`readOnlyHint` is still `undeclared`. They can only make a named class more cautious:
+a tool you call `read` that the server marks `destructiveHint` or `openWorldHint` is
+`irreversible`. `mecha-mail`, `mecha-docs` and the knowledge graph are classed by
+mecha itself, and naming one of their tools here can only make it more cautious.
+`workspace` is refused, because a server writes where it was started, not in a run's
+workspace. Like `trust_result_claims`, `effects` is honoured only from your global
+config. Nothing acts on the class yet:
+
+```toml
+[[mcp]]
+name = "sketch"
+command = "~/.local/bin/sketch-mcp"
+[mcp.effects]
+look = "read"
+draw = "render"
+```
 
 ### `[[mcp]].capabilities`
 
@@ -865,6 +888,75 @@ Global file only — a project layer's `[image]` is ignored with a warning.
 `image_generate` declares no capabilities at all: what comes back is a file name
 and a seed, and the prompt goes only to a server on this machine. That is why
 the address must be loopback — the declaration is only true while it is.
+
+## `[video]`
+
+Registers the `video_generate` tool and its prompting guide,
+`video_prompt_guide`, when `video = true` in `[features]`: short clips with
+sound from MiniMax H3, rendered by a ComfyUI on this machine. Absent means no
+tool. Global file only — a project layer's `[video]` is ignored with a
+warning. mecha ships no model files and no LoRA: the defaults are the file
+names of MiniMax's ComfyUI release, which the server's operator downloads
+under its licence.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `url` | string | `http://127.0.0.1:8189` | The server. Must be on this machine (`127.0.0.1`, `::1` or `localhost`); anything else fails the load. Its own server, not `[image]`'s: a clip holds about 30 GB while it renders. |
+| `frames_model` | string | `minimax_h3_fl2va_pruned_int8_convrot.safetensors` | The diffusion model for a clip from words, optionally pinned to a first or last frame. |
+| `references_model` | string | `minimax_h3_ref2va_pruned_int8_convrot.safetensors` | The diffusion model for a clip from reference pictures and voices. |
+| `frames_turbo_lora` | string | `minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors` | The turbo LoRA for `frames_model`. |
+| `frames_turbo_steps` | integer | `6` | Its steps. |
+| `references_turbo_lora` | string | `minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors` | The turbo LoRA for `references_model`. |
+| `references_turbo_steps` | integer | `4` | Its steps. |
+| `text_encoder` | string | `qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors` | |
+| `vae` | string | `minimax_h3_video_vae_fp16.safetensors` | Encodes the references and pinned frames, and decodes the clip unless `decoder` names another. |
+| `audio_vae` | string | `minimax_h3_audio_vae_fp32.safetensors` | |
+| `decoder` | string | unset | A VAE that decodes the clip in place of `vae`, used only when the server lists it. |
+| `steps` | integer | `20` | Sampling steps without turbo. |
+| `loras` | path | unset | Your own LoRA registry for clips (below). Read when the tool is built: a restart picks up an edit. |
+| `guide_addendum` | path | unset | A Markdown file of your own notes for writing clips, appended to `video_prompt_guide`'s answer under its own heading, and read on each call, so an edit applies to the next conversation's first clip. Over 32 KB is cut, and a file that cannot be read is said in the answer. |
+
+Before anything is uploaded, every file the clip's graph names is asked of the
+video server, and a missing one is named in the result. The tool never starts the
+server. A clip waits its turn (one renders at a time on the machine, across
+every chat), then waits while a voice call is live and until the [memory
+floor](#system) admits it: 28 GB for a draft, 32 GB at full size, plus the
+floor's reserve. A voice the clip carries comes from `[voice] voices_dir`
+(`<name>.wav`): a persona's own voice for her character, then
+`~/.mecha/video/voices.toml` (`character = "voice"`), then the voice of the
+persona that links the character.
+
+**Your own LoRAs.** mecha ships none and names none. `loras` points at a
+registry you write, one `[[lora]]` table per LoRA file you have put in the
+video server's `models/loras`:
+
+```toml
+[[lora]]
+name = "wave"                         # what the model picks it by
+about = "a friendly wave"             # one line: when it applies
+file = "wave_h3.safetensors"          # one file for both H3 checkpoints, or:
+# frames = "wave_fl2va.safetensors"   # a file per checkpoint; an entry
+# references = "wave_ref2va.safetensors" # offers only the modes it names
+strength = 0.8                        # above 0, at most 2; 1 by default
+trigger = "waving hello"              # put ahead of the prompt when absent
+# always = true                       # on every clip; never offered
+```
+
+The model sees the names and `about` lines in `video_generate`'s `motion`
+argument and picks up to four per clip; an `always` entry rides every clip
+in a mode it has a file for. Give each H3 checkpoint only files trained for
+it: references mode runs `references_model` (H3's `ref2va`) and frames mode
+`frames_model` (`fl2va`), and a LoRA trained on the other breaks clips. A
+pick with no file for the clip's mode is left out and said in the result: the
+model cannot tell which mode a clip will render in. An unknown name, or a file
+the server does not list, is refused before anything is uploaded. An entry that does
+not read is left out and said once at start, and the rest still load.
+
+`video_generate` declares no capabilities, for `image_generate`'s reason: what
+comes back is a file name and what the clip was rendered at, and everything
+sent goes only to a server on this machine. An `[[mcp]]` server that lists a
+tool of the same name with `prefix_tools = false` fails the start by name, so
+switch `video` on after removing such a server.
 
 ## `[documents]`
 
@@ -1037,6 +1129,7 @@ publish_tools = ["factory__bundle_publish"]  # reviewed as a page, not as prose
 
 [work]
 keep = 10                          # entries per producer that survive `work clean`
+retain_conversations = "forever"   # a chat's pictures and files, or "90d" (global config only)
 
 # -------------------------------------------------------------------- hooks --
 

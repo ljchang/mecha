@@ -12,7 +12,7 @@
   import Settings from './lib/Settings.svelte';
   import Hud from './lib/Hud.svelte';
   import { features, loadFeatures } from './lib/features.svelte.js';
-  import { featureOf, isShown, banner, hiddenLine, bounceFor } from './lib/features.js';
+  import { featureFor, isShown, banner, hiddenLine, bounceFor } from './lib/features.js';
 
   // Hash routing keeps back/forward and reload honest with zero machinery.
   // A hash may carry a sub-view after a slash (#review/frontdoor), which the
@@ -116,11 +116,11 @@
   });
   // Switched on and not working yet, or unreadable: the view stays, with
   // the reason and the fix above it — never hidden, never silent.
-  const viewBanner = $derived(banner(features.rows, featureOf(view, route.sub)));
+  const viewBanner = $derived(banner(features.rows, featureFor(features.rows, view, route.sub)));
   // A core pane opened inside a hidden feature's view (a run's question on
   // the board's page): it opens, and says the rest of the page is off.
   const openedHidden = $derived.by(() => {
-    const f = featureOf(view, route.sub);
+    const f = featureFor(features.rows, view, route.sub);
     return f && !isShown(features.rows, f) ? hiddenLine(features.rows, f) : null;
   });
 

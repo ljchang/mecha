@@ -50,6 +50,7 @@ pub(crate) mod incognito;
 mod late;
 mod library;
 mod listen;
+mod loras;
 mod mail;
 mod model;
 mod persona_chat;
@@ -675,6 +676,40 @@ fn api() -> gate::Owned {
             "/api/settings/images",
             Owner::Of(Feature::Image),
             get(persona_chat::chat_image_settings).post(persona_chat::chat_image_settings_save),
+        )
+        // The LoRA registry, one set per family under its own feature (a
+        // route belongs to exactly one), every one behind the library unlock.
+        .at(
+            "/api/loras/image",
+            Owner::Of(Feature::Image),
+            get(loras::image_list).post(loras::image_add),
+        )
+        .at(
+            "/api/loras/image/{name}",
+            Owner::Of(Feature::Image),
+            axum::routing::put(loras::image_edit).delete(loras::image_remove),
+        )
+        // Each picture layer's LoRA list, beside its settings but never in
+        // their body: the settings read takes no unlock (§6).
+        .at(
+            "/api/loras/image/layer/chat",
+            Owner::Of(Feature::Image),
+            get(loras::image_chat_layer).put(loras::image_chat_layer_save),
+        )
+        .at(
+            "/api/loras/image/layer/persona/{name}",
+            Owner::Of(Feature::Image),
+            get(loras::image_persona_layer).put(loras::image_persona_layer_save),
+        )
+        .at(
+            "/api/loras/video",
+            Owner::Of(Feature::Video),
+            get(loras::video_list).post(loras::video_add),
+        )
+        .at(
+            "/api/loras/video/{name}",
+            Owner::Of(Feature::Video),
+            axum::routing::put(loras::video_edit).delete(loras::video_remove),
         )
         .at(
             "/api/personas/{name}/memory",
@@ -1986,7 +2021,7 @@ mod tests {
     }
 
     /// `test_router`'s state, for a test that builds its own router.
-    fn test_state() -> WebState {
+    pub(super) fn test_state() -> WebState {
         WebState {
             owner_login: Arc::new("owner@example.com".into()),
             chat: None,
@@ -2544,6 +2579,19 @@ mod tests {
             ("POST", "/api/settings/charter"),
             ("GET", "/api/settings/images"),
             ("POST", "/api/settings/images"),
+            // The owner's LoRA registry: names, descriptions and triggers.
+            ("GET", "/api/loras/image"),
+            ("POST", "/api/loras/image"),
+            ("PUT", "/api/loras/image/x"),
+            ("DELETE", "/api/loras/image/x"),
+            ("GET", "/api/loras/image/layer/chat"),
+            ("PUT", "/api/loras/image/layer/chat"),
+            ("GET", "/api/loras/image/layer/persona/x"),
+            ("PUT", "/api/loras/image/layer/persona/x"),
+            ("GET", "/api/loras/video"),
+            ("POST", "/api/loras/video"),
+            ("PUT", "/api/loras/video/x"),
+            ("DELETE", "/api/loras/video/x"),
             ("GET", "/api/settings/rules"),
             ("POST", "/api/settings/rules/retire"),
             ("POST", "/api/settings/rules/restore"),
@@ -4271,6 +4319,240 @@ mod boundary_tests {
             .await
             .expect("the run never finished");
         assert!(!room.root.exists(), "the run left its room behind");
+    }
+
+    /// A steer the run never read — here, every one: the provider answers
+    /// in words, so the run has no tool round to fold one into — gets a
+    /// turn of its own once the run ends, one turn each, in the order typed.
+    /// It used to come back "arrived too late — send again", so a second
+    /// picture asked for mid-reply never queued (owner, 2026-10-21).
+    #[tokio::test]
+    async fn a_steer_the_run_never_read_gets_its_own_turn() {
+        let _home = crate::testenv::HomeGuard::new("steer-own-turn");
+        let go = Arc::new(tokio::sync::Notify::new());
+        let (chat, asked) = chat::test_chat_waiting_counted(go.clone());
+        let app = app(chat.clone());
+        let key = "ownturn";
+        let send = |text: &str, id: &str| {
+            json_post(
+                &format!("/api/chat/{key}/send"),
+                serde_json::json!({ "text": text, "request_id": id }).to_string(),
+            )
+        };
+        let sent = body(app.clone().oneshot(send("first", "r-0")).await.unwrap()).await;
+        assert_eq!(sent["started"], true, "{sent}");
+        // Steered once the request is in flight, past the loop's last read.
+        in_flight(&asked, 1).await;
+        for (text, id) in [("also this", "r-1"), ("and this", "r-2")] {
+            let steered = body(app.clone().oneshot(send(text, id)).await.unwrap()).await;
+            assert_eq!(steered["steered"], true, "{steered}");
+        }
+        // A reloaded page still sees them, in order.
+        let v = body(
+            app.clone()
+                .oneshot(get(&format!("/api/chat/{key}")))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let waiting: Vec<&str> = v["waiting"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w["request_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(waiting, ["r-1", "r-2"], "{v}");
+        // Let each request answer until the line is empty.
+        let mut last = serde_json::Value::Null;
+        for _ in 0..300 {
+            go.notify_one();
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            last = body(
+                app.clone()
+                    .oneshot(get(&format!("/api/chat/{key}")))
+                    .await
+                    .unwrap(),
+            )
+            .await;
+            if last["running"] == false
+                && last["waiting"] == serde_json::json!([])
+                && last["entries"].as_array().is_some_and(|e| e.len() == 6)
+            {
+                break;
+            }
+        }
+        let texts: Vec<&str> = last["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["text"].as_str().unwrap_or(""))
+            .collect();
+        assert_eq!(
+            texts,
+            ["first", "late", "also this", "late", "and this", "late"],
+            "each waits for a turn of its own, in order: {last}"
+        );
+    }
+
+    /// While the line drains, a newly typed message goes behind the ones
+    /// still waiting rather than into the run a waiting message started —
+    /// a run with a tool round would read it ahead of them (review of #731,
+    /// pass 4).
+    #[tokio::test]
+    async fn a_message_typed_while_the_line_drains_keeps_its_place() {
+        let _home = crate::testenv::HomeGuard::new("drain-order");
+        let go = Arc::new(tokio::sync::Notify::new());
+        let (chat, asked) = chat::test_chat_waiting_counted(go.clone());
+        let app = app(chat.clone());
+        let key = "drainorder";
+        let send = |text: &str, id: &str| {
+            json_post(
+                &format!("/api/chat/{key}/send"),
+                serde_json::json!({ "text": text, "request_id": id }).to_string(),
+            )
+        };
+        body(app.clone().oneshot(send("first", "r-0")).await.unwrap()).await;
+        in_flight(&asked, 1).await;
+        for (text, id) in [("second", "r-1"), ("third", "r-2")] {
+            let steered = body(app.clone().oneshot(send(text, id)).await.unwrap()).await;
+            assert_eq!(steered["steered"], true, "{steered}");
+        }
+        // The first run ends; "second" gets its turn, "third" still waits.
+        go.notify_one();
+        in_flight(&asked, 2).await;
+        let typed = body(app.clone().oneshot(send("fourth", "r-3")).await.unwrap()).await;
+        assert_eq!(
+            typed["waiting"], true,
+            "steered ahead of a waiting message: {typed}"
+        );
+        let v = body(
+            app.clone()
+                .oneshot(get(&format!("/api/chat/{key}")))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let waiting: Vec<&str> = v["waiting"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w["request_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(waiting, ["r-2", "r-3"], "{v}");
+        let mut last = serde_json::Value::Null;
+        for _ in 0..300 {
+            go.notify_one();
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            last = body(
+                app.clone()
+                    .oneshot(get(&format!("/api/chat/{key}")))
+                    .await
+                    .unwrap(),
+            )
+            .await;
+            if last["running"] == false
+                && last["waiting"] == serde_json::json!([])
+                && last["entries"].as_array().is_some_and(|e| e.len() == 8)
+            {
+                break;
+            }
+        }
+        let owner: Vec<&str> = last["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["kind"] == "user")
+            .map(|e| e["text"].as_str().unwrap_or(""))
+            .collect();
+        assert_eq!(owner, ["first", "second", "third", "fourth"], "{last}");
+    }
+
+    /// The owner's Stop ends the messages waiting behind the run too — a
+    /// Stop that let the next one start at once would not have stopped
+    /// anything.
+    #[tokio::test]
+    async fn a_stop_does_not_send_the_waiting_messages() {
+        let _home = crate::testenv::HomeGuard::new("stop-waiting");
+        let go = Arc::new(tokio::sync::Notify::new());
+        let (chat, asked) = chat::test_chat_waiting_counted(go.clone());
+        let app = app(chat.clone());
+        let key = "stopwait";
+        for (text, id) in [("first", "r-0"), ("also this", "r-1")] {
+            if id == "r-1" {
+                in_flight(&asked, 1).await;
+            }
+            let sent = app
+                .clone()
+                .oneshot(json_post(
+                    &format!("/api/chat/{key}/send"),
+                    serde_json::json!({ "text": text, "request_id": id }).to_string(),
+                ))
+                .await
+                .unwrap();
+            assert!(sent.status().is_success(), "{}", sent.status());
+        }
+        let stopped = body(
+            app.clone()
+                .oneshot(json_post(&format!("/api/chat/{key}/cancel"), "{}".into()))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(stopped["cancelled"], true, "{stopped}");
+        for _ in 0..300 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            let v = body(
+                app.clone()
+                    .oneshot(get(&format!("/api/chat/{key}")))
+                    .await
+                    .unwrap(),
+            )
+            .await;
+            if v["running"] == false {
+                break;
+            }
+        }
+        // Let anything that did start answer, so a wrong turn would show.
+        for _ in 0..5 {
+            go.notify_one();
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let last = body(
+            app.clone()
+                .oneshot(get(&format!("/api/chat/{key}")))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(last["running"], false, "{last}");
+        assert_eq!(last["waiting"], serde_json::json!([]), "{last}");
+        let texts: Vec<&str> = last["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["kind"] == "user")
+            .map(|e| e["text"].as_str().unwrap_or(""))
+            .collect();
+        assert!(
+            !texts.contains(&"also this"),
+            "a stopped run's steer was sent: {last}"
+        );
+        assert_eq!(
+            asked.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "no second turn started"
+        );
+    }
+
+    /// Wait until the model has been sent `n` requests.
+    async fn in_flight(asked: &std::sync::atomic::AtomicUsize, n: usize) {
+        for _ in 0..500 {
+            if asked.load(std::sync::atomic::Ordering::SeqCst) >= n {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("the model was never sent {n} request(s)");
     }
 
     /// A page that loads while a run holds the conversation — or a phone

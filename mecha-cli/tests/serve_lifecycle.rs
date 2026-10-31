@@ -55,8 +55,8 @@ async fn a_second_ctrl_c_forces_shutdown_during_a_blocked_mcp_call() {
 }
 
 #[tokio::test]
-async fn steering_that_arrives_in_the_final_answer_is_retracted_on_every_device() {
-    check_shutdown(Case::Undelivered).await;
+async fn steering_that_arrives_in_the_final_answer_gets_its_own_turn_on_every_device() {
+    check_shutdown(Case::OwnTurn).await;
 }
 
 #[tokio::test]
@@ -69,7 +69,10 @@ enum Case {
     Partial,
     Question,
     Force,
-    Undelivered,
+    /// The steer arrives in the final answer, which reads none: it waits
+    /// for a turn of its own (owner, 2026-10-21 — it used to be retracted
+    /// as "too late", and a second picture asked for mid-reply was lost).
+    OwnTurn,
     Delivered,
 }
 
@@ -90,7 +93,7 @@ async fn check_shutdown(case: Case) {
     let question = matches!(case, Case::Question);
     let force = matches!(case, Case::Force);
     let delivered = matches!(case, Case::Delivered);
-    let finish_normally = matches!(case, Case::Delivered | Case::Undelivered);
+    let finish_normally = matches!(case, Case::Delivered | Case::OwnTurn);
     let root =
         std::env::temp_dir().join(format!("mecha-serve-exit-{}-{case:?}", std::process::id()));
     let _cleanup = FixtureCleanup(root.clone());
@@ -309,13 +312,24 @@ sandbox = false
     if finish_normally {
         finish.cancel();
         for response in [&mut events, &mut observer] {
-            let seen = read_until(response, "\"type\":\"done\"").await;
-            let receipt = if delivered {
-                "queued_delivered"
+            // A steer the run read is receipted; one it never read starts
+            // its own turn as the run ends, and that turn ends too.
+            let dones = if delivered { 1 } else { 2 };
+            let seen = read_until_n(response, "\"type\":\"done\"", dones).await;
+            if delivered {
+                assert!(seen.contains("queued_delivered"), "missing receipt: {seen}");
             } else {
-                "queued_discarded"
-            };
-            assert!(seen.contains(receipt), "missing {receipt}: {seen}");
+                assert!(
+                    !seen.contains("queued_discarded"),
+                    "a steer the run never read was dropped: {seen}"
+                );
+                let own = seen
+                    .lines()
+                    .filter_map(|line| line.strip_prefix("data: "))
+                    .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                    .any(|ev| ev["type"] == "user" && ev["request_id"] == "request-2");
+                assert!(own, "the unread steer never got its own turn: {seen}");
+            }
             assert_eq!(
                 seen.matches("request-2").count(),
                 1,
@@ -418,10 +432,9 @@ sandbox = false
         }
     }
     if finish_normally {
-        assert_eq!(
+        assert!(
             transcripts.contains("same words"),
-            delivered,
-            "only delivered steering belongs in the transcript"
+            "steering belongs in the transcript, folded in or as its own turn"
         );
     }
     let pid = std::fs::read_to_string(mcp_pid).unwrap();
@@ -444,11 +457,16 @@ sandbox = false
 }
 
 async fn read_until(response: &mut reqwest::Response, needle: &str) -> String {
+    read_until_n(response, needle, 1).await
+}
+
+/// Read until `needle` has been seen `n` times.
+async fn read_until_n(response: &mut reqwest::Response, needle: &str, n: usize) -> String {
     tokio::time::timeout(Duration::from_secs(10), async {
         let mut seen = String::new();
         while let Some(chunk) = response.chunk().await.unwrap() {
             seen.push_str(&String::from_utf8_lossy(&chunk));
-            if seen.contains(needle) {
+            if seen.matches(needle).count() >= n {
                 return seen;
             }
         }

@@ -154,6 +154,11 @@ impl Tool for LensedSearch {
     fn capabilities(&self) -> Capabilities {
         Self::lens_capabilities()
     }
+    /// A graph read, as `first_party` classes the graph's.
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        Some(crate::tool::effect::Effect::ReadThatRecords)
+    }
+
     async fn call(&self, input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
         let Some(query) = input.get("query").and_then(Value::as_str) else {
             return Ok(ToolOutput::err("missing required string argument `query`"));
@@ -307,6 +312,11 @@ impl Tool for GraphTool {
             destructive: false,
         }
     }
+    /// A graph read, as `first_party` classes the graph's.
+    fn effect(&self) -> Option<crate::tool::effect::Effect> {
+        Some(crate::tool::effect::Effect::ReadThatRecords)
+    }
+
     async fn call(&self, mut input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
         if self.name == "kg_search" {
             if let Some(o) = input.as_object_mut() {
@@ -2775,6 +2785,9 @@ mod exchange_control_tests {
     }
     #[async_trait]
     impl Provider for Script {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "script"
         }

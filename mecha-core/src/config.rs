@@ -37,6 +37,9 @@ pub struct Config {
     /// Local image generation — the `image_generate` tool. Absent means no
     /// tool. Global-file only; see [`crate::imagegen::ImageConfig`].
     pub image: Option<crate::imagegen::ImageConfig>,
+    /// Local video generation: clips with sound. Absent means no video tool.
+    /// Global-file only; see [`crate::videogen::VideoConfig`].
+    pub video: Option<crate::videogen::VideoConfig>,
     /// Document extraction — the `document_read` tool and `mecha document`.
     /// Absent means no tool. Global-file only; see
     /// [`crate::document::DocumentsConfig`].
@@ -260,6 +263,11 @@ pub struct OutboxConfig {
 pub struct WorkConfig {
     /// Entries kept per producer, newest first.
     pub keep: usize,
+    /// How long a conversation's workspace — a chat's pictures and clips, a
+    /// Slack thread's files — outlives its newest file. `forever` by default:
+    /// those are part of a conversation the owner may reopen, not scratch,
+    /// and `keep` does not count them (`work::CONVERSATION_PRODUCERS`).
+    pub retain_conversations: crate::work::Retain,
 }
 
 /// `[slack]` — tunables for the Slack remote control. **Nothing here grants
@@ -326,6 +334,7 @@ impl Default for WorkConfig {
     fn default() -> Self {
         WorkConfig {
             keep: crate::work::DEFAULT_KEEP,
+            retain_conversations: crate::work::Retain::Forever,
         }
     }
 }
@@ -425,6 +434,7 @@ impl Default for Config {
             subagents: Vec::new(),
             search: Vec::new(),
             image: None,
+            video: None,
             documents: None,
             hooks: Vec::new(),
             rules: Vec::new(),
@@ -1220,6 +1230,32 @@ pub struct McpServerConfig {
     /// background only ever uses to poll (2026-10-15). A name the server
     /// does not list is warned about at every start, never ignored quietly.
     pub disabled_tools: Vec<String>,
+    /// The effect class of this server's tools, by the server's own
+    /// (unprefixed) names: `{ draw = "render", scene = "read" }`
+    /// (`docs/ROLLOUT-DESIGN.md` §3.2, `tool::effect`). A third-party tool
+    /// has no class until this names one, and the server's own annotations
+    /// can never give it one: `readOnlyHint` promotes nothing, and
+    /// `destructiveHint` or `openWorldHint` still resolve `irreversible` over
+    /// whatever is named here. For `mecha-mail`, `mecha-docs` and the graph,
+    /// mecha's own table applies, and an entry here can only make a tool more
+    /// cautious than the table says.
+    ///
+    /// **It trusts a server more**, as `trust_result_claims` does: a class is
+    /// what a rollout or a program would believe about a tool. So only the
+    /// operator's own config may name one, and `merge_file` strips it from a
+    /// project or environment layer, loudly. `workspace` is refused at load:
+    /// a server writes where it was spawned, never in a run's workspace.
+    /// Metadata today; `mecha tools --json` prints the result as `effect`.
+    pub effects: BTreeMap<String, crate::tool::effect::Effect>,
+    /// Whether this entry came from the operator's own global config, which
+    /// is what lets mecha recognise a first-party server by its `command`
+    /// (`tool::effect::FirstParty::of`). **Derived, never written:**
+    /// `serde(skip)`, set by `merge_file` for the global layer only, so a
+    /// project file naming `./tools/mecha-mail` cannot buy its own binary
+    /// mecha's classes. `false` by default, which is unrecognised: an entry
+    /// built anywhere else gets no first-party table.
+    #[serde(skip)]
+    pub from_operator: bool,
 }
 
 /// A leading `~` in a path the owner wrote, resolved against the home
@@ -1293,6 +1329,18 @@ impl ConfigLayer {
         }
         if let Some(v) = self.voice.as_mut() {
             opt(&mut v.voices_dir);
+        }
+        if let Some(i) = self.image.as_mut() {
+            for d in i.loras_dir.iter_mut().flatten() {
+                *d = expand_home(d);
+            }
+        }
+        if let Some(v) = self.video.as_mut() {
+            opt(&mut v.guide_addendum);
+            opt(&mut v.loras);
+            for d in v.loras_dir.iter_mut().flatten() {
+                *d = expand_home(d);
+            }
         }
         if let Some(h) = self.harness.as_mut() {
             opt(&mut h.source_dir);
@@ -1453,6 +1501,24 @@ impl Config {
     /// name that does not parse is now a load error naming the fix.
     pub fn validate(&self) -> Result<()> {
         self.voice.validate()?;
+        // `workspace` is the one class a server cannot honestly claim: its
+        // writes land where it was spawned, not in a run's workspace, and the
+        // class sits ahead of the destructive row (`tool::effect::resolve`),
+        // so allowing it would let a declaration outrank `destructiveHint`.
+        for server in &self.mcp {
+            if let Some((tool, _)) = server
+                .effects
+                .iter()
+                .find(|(_, e)| **e == crate::tool::effect::Effect::Workspace)
+            {
+                anyhow::bail!(
+                    "[[mcp]] `{}` names `{tool}` \"workspace\" in effects — an MCP server \
+                     writes where it was spawned, not in a run's workspace; name it \
+                     \"store_write\" or \"irreversible\"",
+                    server.name
+                );
+            }
+        }
         // Seatbelt confines document extraction only; `[sandbox]` is shell's
         // and the MCP servers', whose confinement narrows what they declare
         // (`sandbox::Backend::Seatbelt`).
@@ -1463,6 +1529,11 @@ impl Config {
         // a confinement this system does not have is refused here, at load.
         if let Some(docs) = &self.documents {
             docs.confine_here()?;
+        }
+        // The video tool sends prompts, pictures and voices there: refused
+        // off this machine at load, as `[voice]`'s addresses are.
+        if let Some(video) = &self.video {
+            video.loopback_url()?;
         }
         // A rule that does not do what its author believes fails on every
         // start, not on the run that needed it. See `policy::ExecPolicy`.
@@ -1545,6 +1616,22 @@ impl Config {
                         path.display()
                     );
                 }
+                // `effects` vouches for what a server's tools do: the class a
+                // rollout or a program would believe (ROLLOUT-DESIGN.md §3.2).
+                if !std::mem::take(&mut server.effects).is_empty() {
+                    tracing::warn!(
+                        "[[mcp]] `{}` in {} sets effects, which is ignored — \
+                         only the global config may classify a server's tools",
+                        server.name,
+                        path.display()
+                    );
+                }
+            }
+        } else {
+            // The operator's own entries, and only these, may be recognised
+            // as a first-party server by their `command`.
+            for server in layer.mcp.iter_mut().flatten() {
+                server.from_operator = true;
             }
         }
         // `[[grant]]` is the jail's way out, and only the operator's own
@@ -1567,6 +1654,21 @@ impl Config {
             tracing::warn!(
                 "[messages] in {} is ignored — messaging policy loads from the \
                  global config only",
+                path.display()
+            );
+        }
+        // How long a conversation's pictures last is the owner's to say: a
+        // cloned repository's `retain_conversations = "1s"` would empty every
+        // chat's workspace on the next `work clean` run from inside it.
+        if trust == LayerTrust::Project
+            && layer
+                .work
+                .as_mut()
+                .is_some_and(|w| w.retain_conversations.take().is_some())
+        {
+            tracing::warn!(
+                "[work] retain_conversations in {} is ignored — conversation \
+                 retention loads from the global config only",
                 path.display()
             );
         }
@@ -1608,6 +1710,15 @@ impl Config {
         if trust == LayerTrust::Project && layer.image.take().is_some() {
             tracing::warn!(
                 "[image] in {} is ignored — image generation loads from the \
+                 global config only",
+                path.display()
+            );
+        }
+        // `[video]` for `[image]`'s reason, with the owner's pictures and
+        // voices sent beside the prompts.
+        if trust == LayerTrust::Project && layer.video.take().is_some() {
+            tracing::warn!(
+                "[video] in {} is ignored — video generation loads from the \
                  global config only",
                 path.display()
             );
@@ -2005,6 +2116,22 @@ pub struct VoiceConfig {
     pub voices_dir: Option<PathBuf>,
 }
 
+/// A voice name is a bare filename stem, and the alphabet is closed rather
+/// than denylisted: this string becomes `<voices_dir>/<name>.wav` on one
+/// side and a `voice` field the TTS resolves on the other, so anything
+/// beyond lowercase, digits, `-` and `_` is refused — including `default`,
+/// which names the default voice and must stay unshadowable: on Breeze it is
+/// `default.wav` in this same directory, so a clone of that name would
+/// silently replace it and a delete would leave every call voiceless.
+pub fn valid_voice_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 40
+        && name != "default"
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}
+
 impl VoiceConfig {
     /// Parakeet on this machine; a new install sets its own.
     pub const DEFAULT_STT_URL: &'static str = "http://127.0.0.1:8992/v1";
@@ -2122,6 +2249,7 @@ struct ConfigLayer {
     #[serde(rename = "search")]
     search: Option<Vec<SearchBackendConfig>>,
     image: Option<crate::imagegen::ImageConfig>,
+    video: Option<crate::videogen::VideoConfig>,
     documents: Option<crate::document::DocumentsConfig>,
     #[serde(rename = "hook")]
     hooks: Option<Vec<HookConfig>>,
@@ -2199,6 +2327,7 @@ struct MessagesLayer {
 #[serde(deny_unknown_fields)]
 struct WorkLayer {
     keep: Option<usize>,
+    retain_conversations: Option<crate::work::Retain>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -2474,6 +2603,11 @@ impl ConfigLayer {
         if let Some(v) = self.image {
             cfg.image = Some(v);
         }
+        // Wholesale, `[image]`'s reason. Only ever reached from the global
+        // layer — `merge_file` strips it.
+        if let Some(v) = self.video {
+            cfg.video = Some(v);
+        }
         // Wholesale, `[image]`'s reason: a URL from one layer and a
         // confinement from another is a configuration nobody wrote. Only
         // ever reached from the global layer — `merge_file` strips it.
@@ -2520,6 +2654,9 @@ impl ConfigLayer {
         if let Some(x) = self.work {
             if let Some(v) = x.keep {
                 cfg.work.keep = v;
+            }
+            if let Some(v) = x.retain_conversations {
+                cfg.work.retain_conversations = v;
             }
         }
         // Assignment here is the *global* layer's semantics. A project layer
@@ -2945,6 +3082,48 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// `[video]` is `[image]`'s hazard with the owner's pictures and voices
+    /// sent beside the prompts: ignored from a project layer, applied whole
+    /// from the global one, and refused off this machine at load.
+    #[test]
+    fn a_project_layer_cannot_choose_where_video_prompts_go() {
+        let dir = std::env::temp_dir().join(format!("mecha-video-scope-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("layer.toml");
+        std::fs::write(
+            &path,
+            "[video]\nurl = \"http://127.0.0.1:9997\"\nsteps = 8\n",
+        )
+        .unwrap();
+
+        let mut cfg = Config::default();
+        cfg.merge_file(&path, LayerTrust::Project).unwrap();
+        assert_eq!(cfg.video, None);
+
+        let mut cfg = Config::default();
+        cfg.merge_file(&path, LayerTrust::Global).unwrap();
+        let video = cfg
+            .video
+            .clone()
+            .expect("the operator's own file configures it");
+        assert_eq!(
+            (video.url.as_str(), video.steps),
+            ("http://127.0.0.1:9997", 8)
+        );
+        assert_eq!(
+            video.references_model,
+            crate::videogen::VideoConfig::default().references_model
+        );
+        cfg.validate().unwrap();
+        cfg.video = Some(crate::videogen::VideoConfig {
+            url: "http://video.example:8189".into(),
+            ..video
+        });
+        let err = format!("{:#}", cfg.validate().unwrap_err());
+        assert!(err.contains("[video] url"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_project_layer_cannot_choose_where_pages_go_or_unconfine_the_parser() {
         // `ocr_url` receives page images of the owner's documents and
@@ -3052,6 +3231,78 @@ mod tests {
             .unwrap();
         assert!(!from_environment.mcp[0].personas);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_project_layer_cannot_classify_a_servers_tools() {
+        // `effects` is the operator's word about what a server's tools do,
+        // and `from_operator` is what lets a `command` named `mecha-mail` be
+        // taken for mecha's own (ROLLOUT-DESIGN.md §3.2). A project or an
+        // experiment file may declare the server, never vouch for either.
+        use crate::tool::effect::Effect;
+        let dir = std::env::temp_dir().join(format!("mecha-effects-scope-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("layer.toml");
+        std::fs::write(
+            &path,
+            "[[mcp]]\nname = \"mail\"\ncommand = \"./tools/mecha-mail\"\n\
+             [mcp.effects]\nsketch = \"read\"\n",
+        )
+        .unwrap();
+        let mut from_global = Config::default();
+        from_global.merge_file(&path, LayerTrust::Global).unwrap();
+        assert_eq!(
+            from_global.mcp[0].effects.get("sketch"),
+            Some(&Effect::Read)
+        );
+        assert!(from_global.mcp[0].from_operator);
+
+        let mut from_project = Config::default();
+        from_project.merge_file(&path, LayerTrust::Project).unwrap();
+        assert_eq!(from_project.mcp.len(), 1, "the server itself still loads");
+        assert!(from_project.mcp[0].effects.is_empty());
+        assert!(!from_project.mcp[0].from_operator);
+
+        let mut from_environment = Config::default();
+        from_environment
+            .merge_environment_text(&std::fs::read_to_string(&path).unwrap(), &path)
+            .unwrap();
+        assert!(from_environment.mcp[0].effects.is_empty());
+        assert!(!from_environment.mcp[0].from_operator);
+
+        // And a project layer that replaces the operator's list replaces the
+        // recognition with it: the list is the project's now.
+        let mut layered = Config::default();
+        layered.merge_file(&path, LayerTrust::Global).unwrap();
+        layered.merge_file(&path, LayerTrust::Project).unwrap();
+        assert!(!layered.mcp[0].from_operator);
+        assert!(layered.mcp[0].effects.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_server_cannot_be_classed_as_writing_the_workspace() {
+        // `workspace` resolves ahead of the destructive row, and a server
+        // writes where it was spawned, not in a run's workspace: refused at
+        // load, naming the classes it could have meant.
+        let mut cfg = Config::default();
+        cfg.mcp.push(McpServerConfig {
+            name: "sketch".into(),
+            command: "sketch-mcp".into(),
+            effects: [("wipe".to_string(), crate::tool::effect::Effect::Workspace)].into(),
+            ..Default::default()
+        });
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("wipe") && err.contains("irreversible"),
+            "{err}"
+        );
+        cfg.mcp[0].effects = [(
+            "wipe".to_string(),
+            crate::tool::effect::Effect::Irreversible,
+        )]
+        .into();
+        cfg.validate().unwrap();
     }
 
     #[test]
@@ -3514,6 +3765,39 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn conversation_retention_is_forever_and_set_from_the_global_file_only() {
+        assert_eq!(
+            Config::default().work.retain_conversations,
+            crate::work::Retain::Forever
+        );
+        let dir = std::env::temp_dir().join(format!("mecha-retain-scope-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("layer.toml");
+        std::fs::write(&path, "[work]\nkeep = 4\nretain_conversations = \"1d\"\n").unwrap();
+
+        let mut from_project = Config::default();
+        from_project.merge_file(&path, LayerTrust::Project).unwrap();
+        assert_eq!(
+            from_project.work.retain_conversations,
+            crate::work::Retain::Forever,
+            "a cloned repository must not age out the owner's chats"
+        );
+        assert_eq!(
+            from_project.work.keep, 4,
+            "the rest of [work] still applies"
+        );
+
+        let mut from_global = Config::default();
+        from_global.merge_file(&path, LayerTrust::Global).unwrap();
+        assert_eq!(
+            from_global.work.retain_conversations,
+            crate::work::Retain::For(std::time::Duration::from_secs(86_400))
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// `scripts/pin.sh` decides a scheduled script's `-p` by reading
     /// `mecha config show` — `toml::to_string_pretty(&Config)` — for the
     /// default provider's `follow_loaded`, `kind` and `base_url`, the three
@@ -3560,6 +3844,20 @@ mod tests {
         assert!(
             parsed.is_ok(),
             "Config has a field ConfigLayer cannot read: {parsed:?}"
+        );
+        // The default leaves its optional tables out, so they are rendered
+        // present too: a table the layer could not read would pass above.
+        let present = Config {
+            image: Some(crate::imagegen::ImageConfig::default()),
+            video: Some(crate::videogen::VideoConfig::default()),
+            documents: Some(crate::document::DocumentsConfig::default()),
+            ..Config::default()
+        };
+        let rendered = toml::to_string(&present).unwrap();
+        let parsed = toml::from_str::<ConfigLayer>(&rendered);
+        assert!(
+            parsed.is_ok(),
+            "Config has an optional table ConfigLayer cannot read: {parsed:?}"
         );
     }
 
@@ -3788,6 +4086,10 @@ mod tests {
             "[web]\nassets = \"~/.mecha/web/dist\"\n\
              [outbox]\ndir = \"~/.mecha/outbox\"\n\
              [sandbox]\nwritable = [\"~/scratch\", \"/abs\"]\n\
+             [video]\nguide_addendum = \"~/.mecha/video-guide.md\"\n\
+             loras = \"~/.mecha/video-loras.toml\"\n\
+             loras_dir = [\"~/video-server/models/loras\", \"/abs/loras\"]\n\
+             [image]\nloras_dir = [\"~/image-server/models/loras\"]\n\
              [[mcp]]\nname = \"mail\"\ncommand = \"~/.cargo/bin/mecha-mail\"\n\
              args = [\"serve\", \"~/notes\", \"a~b\", \"~other/x\"]\n",
         )
@@ -3796,6 +4098,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(cfg.web.assets, Some(home.join(".mecha/web/dist")));
         assert_eq!(cfg.outbox.dir, Some(home.join(".mecha/outbox")));
+        // `[video]` is its own layer type, outside the `*Layer` walk below.
+        assert_eq!(
+            cfg.video.as_ref().and_then(|v| v.guide_addendum.clone()),
+            Some(home.join(".mecha/video-guide.md"))
+        );
+        assert_eq!(
+            cfg.video.as_ref().and_then(|v| v.loras.clone()),
+            Some(home.join(".mecha/video-loras.toml"))
+        );
+        // So are `[image]`'s, and both LoRA folder lists: a literal `~`
+        // there would leave every entry for that server out.
+        assert_eq!(
+            cfg.video.as_ref().and_then(|v| v.loras_dir.clone()),
+            Some(vec![
+                home.join("video-server/models/loras"),
+                PathBuf::from("/abs/loras")
+            ])
+        );
+        assert_eq!(
+            cfg.image.as_ref().and_then(|i| i.loras_dir.clone()),
+            Some(vec![home.join("image-server/models/loras")])
+        );
         assert_eq!(
             cfg.sandbox.writable,
             vec![home.join("scratch"), PathBuf::from("/abs")]

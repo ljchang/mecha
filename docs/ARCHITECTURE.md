@@ -614,6 +614,20 @@ workspace**. Six decisions, each a bug if undone:
   graph it is given, custom nodes included, so `comfy_graph` is fixed in code
   and the prompt reaches it as a JSON string value. The tool is typed values
   in, bytes out.
+- **The owner's LoRAs ride the graph, never the schema**
+  (`docs/LORA-DESIGN.md` §4–§5). A picture's list is the turn's layer (a
+  persona's `state.toml`) over the chat's (`picture-settings.toml`), read on
+  every call, each name resolved against the registry as it reads now
+  (`loras::for_picture`); the chain sits between the model's loader and the
+  sampler (`comfy_graph`), and a trigger the prompt lacks goes ahead of it.
+  The result counts what applied and why the rest did not, and names none,
+  since the model had no say. A persona's empty list is "none", a damaged
+  one applies nothing rather than the chat's, and a registry re-read that
+  fails keeps the last one read. Only the LoRA routes write the lists:
+  `set_chat` and `set_tuning` keep them as they were, so a cfg save from a
+  locked page never clears one. A `.gguf` model file takes none
+  (`model_lora`), since its loader patches by another path and was never
+  measured.
 - **No egress, earned in code.** The schema has no destination and
   `loopback_url` refuses any server that is not this machine, and the client
   follows no redirect and uses no proxy — a 307 on `/prompt` would re-send the
@@ -950,11 +964,11 @@ that lands records `plan.next` with the picture's hash, its seed and the
 chat, after the picture is saved, so a cancelled or failed render never
 advances it.
 
-- **Where:** three things, all harness-written and outside the jail. They
+- **Where:** two things, both harness-written and outside the jail. They
   are stamped by the front end (`ToolCtx::scene`), never by a model.
   - **A persona chat:** its copy beside its transcript
-    (`<id>.scene.json`), and the persona's `scene/latest.json` and
-    `scene/index/<sha256>.json`.
+    (`<id>.scene.json`), and the persona's `scene/index/<sha256>.json`.
+    A `scene/latest.json` left from before 2026-10-27 is read by nothing.
   - **The assistant's kept web chats:** the same layout one level up
     (`scene::assistant_slot`): the copy beside the transcript in `sessions/`,
     the index in `~/.mecha/scene/`.
@@ -965,6 +979,28 @@ advances it.
     so their pictures carry no record and every change to one is an edit.
   - **The guard:** `only_the_served_chats_stamp_a_scene_slot` reads the
     source for any other stamp.
+- **A new chat starts with no scene, and a new picture carries nothing**
+  (`IMAGE-SCENE-DESIGN.md` R10, the owner, 2026-10-27, reversing R7). Only
+  a call that names `picture` builds on a record: `carried` in `call` is
+  that picture's record (the chat's copy only when it records that very
+  picture), and `None` for a new picture; the scene reader and the layered
+  outfit read it. A newcomer added to a picture built on takes the clothes
+  this chat last drew them in from the chat's copy (G1b), since the picture
+  built on cannot hold them; a new picture asks nothing of it. A fresh
+  chat had drawn a place and a person from another chat's last picture.
+- **What a picture builds on is the owner's press** (R11, 2026-10-27):
+  a persona chat stamps `ToolCtx::build_on` on every typed turn
+  (`imagegen::BuildOn`). `Nothing` on a typed turn: a call whose
+  `picture` or room photo (`scene.setting.photo`) is an earlier result is
+  refused before anything renders; an upload is still allowed, decided
+  from the resolved path against the chat's `inbox/`, never the string.
+  `Picture(p)` on a Continue, Edit or Regenerate: every call that turn is
+  rebuilt onto `p`. A spoken turn and every other front end stamp `None`,
+  which leaves it to the call, and the scene note says which (`scene::note`'s
+  `by_button`): a spoken turn is still told to name the picture itself. A Continue is the edit panel's `PanelEdit`
+  with the owner's words, so the harness draws it; a picture change into a
+  running reply is refused (`PICTURE_CHANGE_WAITS`), since a steer carries
+  words alone, and the page holds Continue and Edit back while one runs.
 - **Lookup is by the picture's bytes, through the index**, so a picture
   carried into another chat brings its scene. Nothing reads a scene back out
   of a manifest: a run can write the jail.
@@ -1167,6 +1203,174 @@ edits ran 118–150 s while read-aloud was synthesising speech and 82–88 s
 when nothing else ran: Breeze TTS and the diffusion model share the GB10's
 compute and memory bandwidth, and nothing queues one behind the other.
 
+## Video generation
+
+`videogen.rs` is the port of the private H3 server into mecha, in seam
+order: the `[video]` table, the clip's graph (`videogen::graph`), its
+compiled prompt (`videogen::compose`), the typed scene that writes the
+timeline (`videogen::scene`), and `video_generate` itself
+(`videogen::tool`) behind `Feature::Video`, its own switch. The rules are
+§Image generation's, and where they need a reason of their own it is given
+here:
+
+- **One transport, two tools.** `comfy.rs` holds what both say to a
+  ComfyUI: the loopback-only address (`comfy::loopback_url`), a client that
+  follows no redirect and uses no proxy, the wait for a server that is
+  restarting, uploads into the server's temp directory only, taking a job
+  back off the server (`/interrupt` only when this job is the one running),
+  and reading back what a job wrote. What a job is stays with its tool:
+  `imagegen` keeps its trail, its held-model record and its PNG check. The
+  client never starts a server: the private server started its unit when
+  it found it down, and a model call has no business starting services on
+  the owner's machine.
+- **`[video]` is `[image]`'s hazard, with the owner's pictures and voices
+  added.** It is stripped from project layers, sits in
+  `trial_env::OPERATOR_ONLY_TABLES`, and its `url` is refused off this
+  machine at load (`Config::validate`), not only when the tool is built.
+  It is its own server too (`:8189` by default): a clip holds ~30 GB while
+  it renders, and a picture should not queue behind one.
+- **The graph is fixed, and the diffusion model reaches the sampler through
+  a LoRA chain** (`graph::lora_chain`). Turbo is the one link today, a
+  `LoraLoaderModelOnly` paired with the steps it was distilled for, so a LoRA
+  the owner adds later is one more entry in that chain and no other change.
+  mecha ships no weights, no licence text and no LoRA. The file names in
+  `VideoConfig::default` are the names MiniMax's ComfyUI release gives them,
+  as `[image]`'s are Qwen's.
+- **The owner's LoRAs are the owner's** (`loras`, `videogen::loras`,
+  `docs/LORA-DESIGN.md`). mecha ships and names none (the owner's ruling of
+  2026-10-23): the registry is `~/.mecha/loras.toml`, one file for pictures
+  and clips (for one release, the old clips-only file `[video] loras` names
+  while the new one does not exist). **An entry's `model` is checked against
+  its file**: the header is read as a bounded prefix (8 MiB at most, never
+  the tensors), its key shapes decide `qwen-image`, `h3` or neither, and an
+  entry whose file disagrees, matches neither or both, cannot be read, or
+  is in none of its server's folders (`[image] loras_dir`, `[video]
+  loras_dir`) is left out and said, since a LoRA for another model loads
+  without an error and changes little. Each file's result is kept by
+  (path, length, mtime), so an unchanged file is never re-read and cannot
+  move the schema. `mecha doctor` names every entry left out. The clip
+  registry is read when the tool is built
+  because its names and `about` lines sit in the schema's `motion`, which
+  is in the cached prefix. Each entry names its file per H3 checkpoint,
+  since a LoRA trained on the other one broke clips (2026-10-24); a pick
+  with no file for the clip's mode is left out with a note, since the model
+  cannot know the mode (a library character it names makes the clip
+  references mode, and the first real call spent three refusals finding
+  that out), and always-on entries
+  chain first, after turbo. One bad entry costs only itself, said at
+  start. A per-chat allowlist and a picker are later work (the owner,
+  2026-10-25: the registry applies everywhere for now).
+- **A library location is the setting, sent as one** (`Kind::Location`,
+  `scene.setting.location`; V-L ruled passed by the owner 2026-10-25, the
+  room photo having carried in four of four clips). Its first `view`
+  picture goes after the people, so their voice slots keep their numbers,
+  and `compose` defines it as "the location …, shown in `<Picture n>`" and
+  keeps it as "(the setting)", never as someone who "appears". The scene
+  names it, so the label lands where the place is said. One with no picture
+  is described in words, with a note; an unknown one is refused at the call,
+  naming only what was asked. The schema offers approved, unlocked names,
+  read when the tool is built (L5; `docs/TRIFECTA.md` for the cost).
+- **A character's second pictures follow every subject's own**
+  (`VideoGenerate::extras_for`, `compose::Extra`; IMAGE-COMPILER-DESIGN
+  §9.4). Bodies go all or nothing: only when everyone the clip shows (not a
+  place, an outfit or the camera person) is a library character with a
+  `full_body`, there are one or two of them, and all fit; the two pictures
+  are then one person, unbound, as V-B's retest passed. Details follow in
+  cast order while slots remain (V-D, passed 2026-10-26): "<label> is shown
+  close up in `<Picture k>`", kept where it is and nowhere else. What does
+  not fit is counted in a note, never named.
+- **A library outfit is clothes, sent as a picture of the garment alone**
+  (`Kind::Outfit`, a cast member's whole `wearing`; the owner's ruling of
+  2026-10-25, after a garment picture held a swimsuit across a cut that the
+  words alone let drift into two other designs). It goes after the people
+  and the location, is defined as "the outfit …, worn by `<Subject n>`" and
+  kept as that person's clothing in every shot, never shown on its own, and
+  is not among the subjects the clip features. A `wearing` that only
+  mentions an outfit stays the model's words; one with no picture is its
+  text. Pictures still use outfits as text only.
+- **The preflight asks for every file the graph names** (`graph::needs`),
+  and a test builds each graph shape and holds the two lists equal. A file
+  in the graph and not the preflight fails mid-render, as a node validation
+  error the model cannot act on.
+- **The prompt is compiled in two halves** (`compose`). The model writes
+  what varies: the shot timeline, the speakers, the sound. The code writes
+  what persists: who each reference picture is, what of them is kept, and
+  whose voice each audio clip is. Names become `<Subject N>` everywhere but
+  inside dialogue. A library character's clothing is the description's,
+  never the portrait's. The owner's experiment of 2026-10-13 found portrait
+  outfits leaking into every clip when retention said `fully_preserved`, so
+  a character is `partially_preserved`.
+- **A scene's problems are notes, never refusals** (`scene::compile`): a
+  cut outside the clip moves, a missing `wearing` is said, and so is a
+  script longer than the clip can speak. A draft that renders is worth more than a
+  lecture. The notes reach the model, so they are worded for it.
+- **A scene says where its lines fall and who holds the camera**
+  (`scene::compile`). A line without a `shot` goes to the next shot whose
+  action says someone speaks, never back past the line before it: a clip
+  whose second shot "speaks" had both its lines compiled into the first
+  (2026-10-25). A cast member marked `pov` is the camera: their picture
+  still gives the hands and body in view, their definition and retention
+  say the face never appears, and their voice is attached only when they
+  speak. A described tattoo is said to be the only one, since H3 puts a
+  described mark on whatever skin is in frame.
+- **A scene is mended where its words say more than its fields**
+  (`scene::repair`, before it compiles). The local model's first scene
+  through the built-in tool (2026-10-25; names changed here) said "Wren's POV" in a shot and
+  set no `pov`, and quoted its lines inside an action with no `lines`: the
+  camera person was then defined with a face that appears, the lines had no
+  speaker tag (no voice, no lip sync), and a name inside them was labelled.
+  So a shot's "<name>'s POV/point of view" (not "eyes": a close-up of
+  someone's eyes is a shot of them) makes that one cast member
+  `pov` unless the scene set it either way; and every library character
+  the shots name but `cast` omits (that scene listed no cast) joins the
+  cast, said in a note, as the camera when so described; with no `lines`, a quote after
+  "<name> says/speaks/…" (or continuing that speaker, with no other name
+  and no lettering word between) becomes their line in that shot. Each mend
+  is a note, and `label_names` leaves quoted words alone as it does `<d>`.
+- **The guide is shipped; the owner's notes are not** (`[video]
+  guide_addendum`). What a machine's renders teach about its own content
+  stays in a file under the owner's home, appended to `video_prompt_guide`
+  on each call. An unreadable file is said in the answer, not skipped.
+- **The call decides; the job renders** (`VideoGenerate::plan`, then the
+  `DeferredJob`). Everything a bad argument could cost — the chat's kept
+  settings, the scene, the persona's own character, the library characters
+  the prompt names, each picture through the path jail and each portrait
+  under the library's hash check, each voice — is read and refused at the
+  call, before a turn is taken. The private server found a bad name only
+  after it had queued.
+- **Nothing shells out, and nothing starts a server.** The private server
+  ran `mecha system admit`, `mecha system probe voice.live`, `mecha
+  imagelib show`, `ffmpeg` and `systemctl`. Here the memory gate is
+  `system::floor::admit_now`, the call gate is `system::voice_live` (moved
+  out of the persona replay, which reads the same one), the library is its
+  own API, and a voice is trimmed by `trim_wav`. A server that is down is
+  said to be down; it is the operator's to start.
+- **One clip renders at a time on the machine** (`render.turn` under
+  `~/.mecha/video/`, holding its holder's pid). The chat's job queue keeps
+  one job per conversation; this keeps one clip per machine, across chats,
+  surfaces and the private server, which takes the same file while both are
+  installed. A clip waits rather than refuses: for its turn, then while a
+  call is live, while the server has other work, and until memory is
+  admitted, for up to three hours. A call that cannot be ruled out refuses,
+  since unknown is not "no".
+- **The clip is fetched, never copied by host path.** `/view` returns the
+  bytes, an `ftyp` box is checked, and the file is created new under
+  `videos/` through `ToolCtx::resolve`, never through a link. The result's
+  first line is `video: videos/<id>.mp4`, which the page's clip player
+  reads; the immediate answer is the background MCP tool's own words, so
+  the page and the restart repair (`late::RESTARTED`) read a built-in clip
+  exactly as they read the private server's.
+- **What a clip leaves under the mecha home is the private server's.** Each
+  clip's record (`video/jobs/<id>.json`) feeds the next one's estimate, and
+  a chat's kept settings sit beside the records
+  (`video/chat-settings/<chat>.json`), outside the chat's folder, so the
+  model can neither list nor rewrite them. The same paths and shapes, so
+  the estimate and every chat's settings carry over from the private server.
+- **Withheld from incognito, eligible for a persona.** Incognito's allowlist
+  does not name it: a clip leaves its uploads and output on the server and
+  its record under the mecha home. A persona may be given it on
+  `image_generate`'s footing (`PERSONA-DESIGN.md` §3.3).
+
 ## Image library
 
 > **Superseded 2026-10-08 for `image_generate`'s call (`IMAGE-DESIGN.md`; see §Image generation
@@ -1334,6 +1538,27 @@ mecha-a3, 2026-10-09). An answer that gives nobody a part still fails. It feeds 
 - **Global only, no config key.** `~/.mecha/imagelib/`, for the skills and
   `[[trigger]]` reason: a cloned repository must not bring a character into
   a trusted session.
+- **Pages load thumbnails, made behind the lock** (`Library::thumbnail_named`,
+  `?size=thumb-v1` on the picture route). A 1024² portrait is about 1.5 MB, and
+  a screen of avatars on a phone loaded every one whole. The thumbnail is
+  looked up as its picture is — some entry the owner may see now names it —
+  and cached by the same rule, so a locked entry's is the same 404 and never
+  `immutable`. Kept under `thumbs/v1/` beside `faces/`: derived and
+  regenerable. Blob collection's walk reads only `.toml`, so a thumbnail
+  never makes its blob look referenced, and a blob nothing names is deleted
+  with its thumbnails (`forget_blob`); a stand-in for one that cannot be
+  made is never cached. The generation rides in the URL too
+  (`THUMB_QUERY`, `size=thumb-v1`), so a bump reaches browsers that cached
+  the old one for a year.
+- **`mecha imagelib upscale` redraws, then judges, then versions.** A video
+  reference is scaled down to the clip's area and never up, so a small
+  portrait is a small face to H3: a 401 px portrait matched its character at
+  0.45 in a clip and its 1024² redraw at 0.53 (2026-10-24). The redraw is a
+  one-reference standard-model edit on the encoder's own canvas
+  (`ImageGenerate::upscale`, admitted against memory like any picture), kept
+  only when ArcFace, where installed, scores it at 0.8 or more against the
+  old portrait. ArcFace is never fetched for it: that download is a judge's,
+  said at `face compare`.
 - **The lock is a browse filter** (the owner's ruling, 2026-09-28): generation
   ignores it. Incognito chats may call `image_library` and generate with a
   cast. Three writers reach outside the room on purpose, all staged locked
@@ -1349,9 +1574,14 @@ mecha-a3, 2026-10-09). An answer that gives nobody a part still fails. It feeds 
 - **Every generation writes a manifest** (`images/<stem>.json`, `create_new`
   like the PNG): the scene as written, the compiled prompt, seed, sizes, the
   model files, and each entry's name, version and portrait hash.
+- **A location's or outfit's pictures are added from the page as a
+  character's are** (`POST /api/library/reference` with the entry's `kind`;
+  absent means a character). Which pictures an entry takes is the store's
+  `RefKind::allowed_on`, asked before a child runs, and a locked entry takes
+  one only while unlocked, through the same `visible` door.
 - **The owner adds and edits from the web as from the terminal**
-  (`serve/library.rs` `add`, `edit`): each runs `add-character`, `add-style`
-  or `update` as a child, a portrait arriving base64 in the JSON body under
+  (`serve/library.rs` `add`, `edit`): each runs `add-character`, `add-style`,
+  `add-location` or `update` as a child, a portrait arriving base64 in the JSON body under
   its own body limit (`MAX_WRITE_BODY` — axum's 2 MB default would answer
   413 before the store's cap could) and staged in a private scratch
   directory. Edit honours the lock like every write, and is refused on a
@@ -3230,6 +3460,159 @@ no privilege at all — but read the paragraph above for what it does not close)
 or `docker`, or install an AppArmor profile. `mecha tools` prints the active
 sandbox, and `mecha tools --json` prints each tool's capabilities.
 
+## Code mode's interpreter
+
+`mecha-core/src/interpreter/` runs a model's program for code mode
+(`CODE-MODE-DESIGN.md`; slice 3a, the backend only, with no `code` tool yet).
+The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
+(cargo feature `monty`, off by default) is the one backend. The invariants:
+
+- **A program reaches the host only through the names it was started
+  with.** They are globals; every `NameLookup` is answered `Undefined`,
+  every `OsCall` (files, environment, sleeps, imports) `NotHandled`, and a
+  `FunctionCall` under any other name is refused in the program. Monty 1.4
+  has `eval` and `exec`, so a registered name is reachable from a built
+  string: reach is the registered set, never the source's free names.
+- **The worker pool is a third process class, confined like an MCP
+  server.** `monty-pool` clears the environment, and the launcher clears it
+  again. On Linux it runs the pinned worker under bwrap with every
+  namespace unshared, `--clearenv`, and nothing bound but the static
+  binary. On a Mac it runs it as `env -i sandbox-exec -p <profile>` under
+  `seatbelt::worker_profile`, the worker's own profile and not the
+  documents one: deny by default, exec of the worker by its canonical
+  path, `file-read-data` of `/` alone (the worker aborts before `main`
+  without it), `sysctl-read` of `hw.pagesize_compat` alone (Rust's runtime
+  panics without it), no mach-lookup, no write, no network. That list is
+  the measured minimum: macOS CI traced the worker under `(allow default
+  (with report))` and removed each grant in turn. The worker reaches for
+  more (dyld's and libSystem's sysctls, opendirectoryd and the
+  notification center), and every interpreter test passes with those
+  denied. macOS's unified log records those denials on each start; mecha
+  logs nothing. The minimum was measured on macOS 26.6. An OS update that
+  adds a startup read stops code mode on that Mac, failing closed:
+  preflight fails with the worker's stderr. Re-measure the profile then,
+  rather than debugging monty. On Linux `none`, docker (the pool kills the
+  client's pid, not the container), landlock (no network closure) and
+  Seatbelt refuse by name. `preflight` runs a program through the
+  real launcher, so a sandbox that cannot start the worker stops the start
+  rather than degrading. Under Seatbelt it also asks the kernel
+  (`sandbox_check`, `seatbelt::live`) whether the live worker is under a
+  profile that denies `/etc`, the home, a write to `/dev/null`, `/bin/sh`
+  and the network. As a control, it also asks whether the one read the
+  profile grants (`/`) reads as allowed. So a launcher that ran the worker bare fails there,
+  though every program would have succeeded. Ask `sandbox_check` only
+  what was measured to answer both ways. The bare `process-exec` is an
+  error to it (ask `process-exec*`), and a path that does not exist reads
+  as denied even for an unsandboxed process, so only existing paths are
+  asked about.
+- **On a Mac the confinement is the platform's, never a setting.**
+  `Confinement::for_sandbox` returns Seatbelt whatever `[sandbox]` names.
+  `[sandbox]` is `shell`'s table, `kind = "seatbelt"` stays a load error
+  there (`SEATBELT_IS_DOCUMENTS_ONLY`), and the interpreter's profile is
+  fixed in code. So no config field can put a shell under it, loosen it, or
+  run the worker bare. A Mac with `[sandbox] kind = "none"` still gets a
+  confined worker; Linux with it gets no code mode.
+- **A Mac has no memory wall outside the worker.** There are no cgroups,
+  so `[sandbox] memory_mb` never reaches a Seatbelt worker. The bound is
+  monty's own allocator ceiling, which macOS CI measured holding
+  (`the_memory_backstop_bounds_what_the_worker_holds`,
+  CODE-MODE-DESIGN.md §5). Above it nothing caps the worker: no limit the
+  kernel enforces is set, so a monty allocator bug would be uncapped there.
+  A second wall is proposed in CODE-MODE-DESIGN.md §12.
+- **The worker is identified by its sha256** (`worker.rs`), checked every
+  time a pool starts; a path or a version string never stands in for it.
+- **Backstops and the program's own exceptions are different types.**
+  `End::Backstop` names the wall clock, the heap, the suspension count, or
+  a worker killed under the program (a `[sandbox] memory_mb` cgroup kill
+  lands there, not as an `Err`, because the program brought it about);
+  a program that raises a backstop's message itself is `End::Raised`. The
+  suspension budget is the host's own count, which kills the worker at the
+  first suspension past it (the pool's budget sits one higher, behind it);
+  a time limit is believed only once the clock agrees, and the allocator's
+  kill only with the worker dead. The interpreter's heap message is the
+  one read as written, so raising it verbatim misreports the backstop
+  without escaping one. Recursion is monty's *catchable*
+  `RecursionError`, and `request_timeout` bounds one turn, so the program's
+  wall clock (host time included) is the backend's own deadline.
+- **Stop kills.** A cancelled program gets `cancel_grace` to reach a turn
+  boundary, then its checkout is dropped, which kills the worker; it ends
+  `End::Cancelled` with what it printed. A Stop while it waits for a free
+  worker ends it there, and handing a worker back is bounded by the same
+  grace, so no turn awaits a worker bare.
+- **Nothing in the trait enforces `preflight` before `start`.** The caller
+  that registers code mode must run it once, at start, and refuse the
+  feature when it fails.
+- **One program per worker process** (`monty::PROGRAMS_PER_WORKER`). The
+  pool serves every conversation in the process, so a reused worker could
+  run a second conversation's program inside the process that held the
+  first one's; a fresh worker costs about 4 ms (M1).
+
+**The `code` tool** (`tool/code.rs`, slices 3b and 3c; built and tested,
+registered nowhere until slice 3d):
+
+- **Admission is the run's, checked at every program's start.**
+  `Admission::over` takes a registry's plain reads (effect `Read` or
+  `ReadThatRecords`, egress `None`, not `destructive`, `read_only()`, not
+  outbox-routed), and `CodeTool::over` is built over the registry of the run
+  it serves, after its last registration. The dispatch serving a program
+  recomputes the set over its own registry and refuses a `code` whose set
+  differs, which is what a parent's `code` cloned into a child, or one built
+  too early, looks like. The function list is then narrowed by the skill
+  restriction, the run's withheld list and `forbid` rules; the gate still
+  checks each call.
+- **A host call takes `Agent::gate` with `Asking::Refuse`.** `dispatch`
+  stamps `ToolCtx::host_calls` on a tool that `hosts_programs()` and on no
+  other, and serves the channel (`Agent::serve_host_calls`) while the batch
+  executes, against the live taint, with the run's `RunPictures`. Where a
+  turn's call would ask a person (a `needs_a_person` escalation, a `prompt`
+  rule, the approver), `check` answers `Blocked` by policy instead and the
+  program gets `ToolError:`. Taint arms before the reply resumes the
+  program; each host call's trace entry is `in_program`, so `tool_calls`,
+  `tool_errors` and `tool_denied` keep counting.
+- **Results are handles; host messages carry no bytes.** A program holds a
+  stub string (`<handle 3: 48,213 chars from mail_get_thread>`), only its
+  exact stub resolves, and text enters only through `peek`, capped and
+  counted. Patterns are Rust `regex`. A tool's error body is a handle the
+  `ToolError:` names. Every per-program limit (`code::defaults`, as R4 ruled)
+  raises a `LimitError:` naming itself; host bytes are also drawn from one
+  process-wide `BytePool`.
+- **Rendered once.** The program's printed output and ending are the `code`
+  call's own `tool_result`, capped, spilled and wrapped by `dispatch` like
+  any result, and `external` when any host call's result was. A result past
+  the call's share of the budget opens with how it ended, so the cut never
+  takes the model's only feedback.
+- **`code` declares the union of its admitted reads** with egress `None`,
+  which is what `dispatch`'s precomputed turn taint reads: a `Chosen` sender
+  beside a `code` call that reads mail is refused before either runs.
+- **A sub-call is a `QuarantinedPass`** (`llm_query`, `llm_map`; slice 3c).
+  The program's host builds it (`code::Pass`: the fixed `PASS_FRAME`, the
+  instruction, each source between marker lines whose tag no source
+  contains, the schema), and the dispatch serving the program sends it
+  (`Agent::serve_pass`) to the run's own model, one at a time (R7), awaited
+  in the serving loop so a Stop drops it. No tools and one message, so
+  depth is 1 by type. Refused unsent, as `QueryError:`, when the provider's
+  `structured_output` is off or it is not `local()`; every pass is also
+  `local_only` (below). The answer is `{"answer": …}` against a
+  `code::shape::Shape` compiled to JSON Schema and checked again in Rust as
+  a whole; failing it twice raises `QueryError:`, which names what failed
+  and never the text. The envelope comes first: a refusal, an empty
+  `content` at HTTP 200 and a cut-off answer are named. Every pass is
+  `max_tokens` 8,192 whatever thinking is set to, thinking off unless the
+  program asks, and the thinking cap counts passes whose response carried
+  reasoning, never what they asked. `str[n]` text draws on `peek`'s cap,
+  and is never a `trusted_output` shape. A provider error is named by its
+  class (`code::pass_failure`), because a server's body can echo the
+  prompt.
+- **Locality is the request's, not the loop's** (R8).
+  `CompletionRequest::local_only` marks a request whose bytes must not
+  leave the machine. `Provider::local()` has no default body: it is
+  computed at construction (`kind = "local"` and `router::is_loopback` on
+  the base URL; no URL, or one that does not parse, is not local), `Halting`
+  and every wrapper forward it, and in-process test doubles answer `true`. A
+  provider that is not local refuses a `local_only` request with
+  `provider::LocalOnlyRefused` (`refuse_unless_local`, called before
+  sending), and `Failover` skips a fallback that is not local for it.
+
 ## The front door
 
 `frontdoor.rs` and `mecha frontdoor` are everything that happens to a stranger's
@@ -3505,7 +3888,17 @@ design: **reads fan out** (no `account` on a search or calendar window means
 every mailbox, merged in time order, each row tagged with its account);
 **item operations name their account** (thread and event ids are
 account-scoped, and every row a read returns carries the account, so the
-model always has it); **creates use the default or ask** (`mecha-mail
+model always has it — and leaves it behind anyway, so a thread or a named
+calendar with no account asks every account and takes the one that holds it:
+`thread_home` for a thread, `calendar_home` for a named calendar, and two
+that hold it is refused, never picked between. A calendar's criterion is a
+bare 200 — an empty window is a legitimate answer, so `thread_home`'s
+"returned something" is not available — so it also refuses when any account's
+read failed for a reason other than 400/403/404: a public calendar reads 200
+everywhere, and a transient failure at the true home would otherwise name the
+wrong account. An event update or delete
+still names its account);
+**creates use the default or ask** (`mecha-mail
 default <name>`; with several accounts and none, the error says to *ask the
 user* — worded that way because "use your best judgment" measurably makes
 models invent). **The schema declares a `default` key exactly where omitting
@@ -5109,6 +5502,24 @@ carry:
   this shape since it was written. Parity, not a regression, and the shape a
   Slack thread will show once.
 
+**A call's gate and its rendering are separate steps** (`CODE-MODE-DESIGN.md`
+§7). `Agent::dispatch`, which `run_tools` and `dispatch_one` wrap, runs each
+call's checks in `Agent::check` (phase gate, restriction, interlock, hooks,
+staging, rules, approver), runs a cleared call in `Agent::execute`, arms the
+taint from the raw output with `jobs::arm`, and only then renders it for the
+context with `jobs::render`: the cap at `output_budget_bytes`, the spill
+behind `CAP_MARKER`, and the `mark_untrusted_output` wrapper. A late job
+result takes the same two through `jobs::settle`. `Agent::gate` is the
+single-call composition of the first half: every check, the call, the taint
+armed, and the output handed back raw. It exists for a program's host call,
+which must keep raw bytes behind a handle (`Agent::serve_host_calls`, §Code
+mode's interpreter). Its `Asking` argument is the one difference from a
+turn's call: at `Asking::Refuse` every branch of `check` that would put the
+call in front of a person is `Blocked` by policy instead, after `forbid` and
+in the same order. The seam is pinned by
+`the_gate_hands_back_the_raw_result_and_rendering_it_is_todays_block` and
+`the_gate_refuses_as_dispatch_does`.
+
 **The MCP client's wire behaviour** (`mcp.rs`). Each of these was a
 silent failure before it was a rule:
 
@@ -5134,6 +5545,41 @@ silent failure before it was a rule:
   (`prefix_tools = false`) collision fails startup in `setup`. The
   "MCP servers can shadow built-ins" doc comment on `Registry::insert`
   describes the method, not a configurable behaviour.
+
+**A closed effect class per tool, earned in code and never claimed by a
+server** (`tool/effect.rs`; the definition is `ROLLOUT-DESIGN.md` §3.2, the
+second consumer `CODE-MODE-DESIGN.md` §2). It says what a call does to the
+world, which `read_only()` cannot: that flag means "skips the approval
+gate", and `message_send`, `image_generate`, `persona_propose`,
+`hud_propose` and `ask_user` are all `read_only()`.
+
+- **Declared, then resolved.** A tool declares an `Effect` in its own impl
+  (`Tool::effect`, default `None`). `effect::resolve` applies §3.2's
+  first-match order to the declaration, the operator's outbox routing and
+  the tool's `Capabilities`: routed is `Staged`, undeclared is `Undeclared`,
+  `Chosen` is `Irreversible`, `Workspace` comes before the destructive row,
+  and a declared `Irreversible` lands with it. One function, so
+  `mecha tools --json` (`effect`) and every future consumer agree.
+- **Unknown is never safe.** A tool nobody classified is `Undeclared`, never
+  `Read`; a wrapper must forward `effect` as it forwards `capabilities`, or
+  the tool it wraps turns undeclared. `EffectClass` is a wire format, and
+  `from_wire` reads an unknown name as `Undeclared`.
+- **First-party servers are mecha's table, by program.** `effect::first_party`
+  classes `mecha-mail`, `mecha-docs` and the graph at `graph_mcp::REV` by the
+  `command`'s file name (`feature::server_feature`'s match), and only for an
+  entry from the operator's global file (`McpServerConfig::from_operator`,
+  never written by any file), so a project's `./tools/mecha-mail` buys
+  nothing. A tool the table does not list is undeclared.
+- **A third-party tool is undeclared until the operator says.** `[[mcp]]
+  effects` names a class per tool; it is stripped from project and
+  environment layers (the `trust_result_claims` rule), and `workspace` is
+  refused at load, because a server writes where it was spawned and that row
+  outranks `destructive`. Annotations move a class only toward caution:
+  `destructiveHint` and `openWorldHint` reach it through `Capabilities`, and
+  `readOnlyHint` is read by nothing here.
+- **Metadata, for now.** Nothing reads the class to loosen the interlock,
+  the jail, approval or taint. A consumer that admits by it must keep every
+  existing guard and add this one.
 
 ## Background jobs
 
@@ -5161,7 +5607,8 @@ A persona may be given such a tool only on the owner's word: `personas =
 true` in the server's `[[mcp]]` entry, global layer only. Its persona form
 tells a background call which persona is asking (`mecha-factory.ai/persona`:
 folder name, linked character and voice name), and the persona page and call screen say
-"working on it…" for anything but a picture (design §9).
+"working on it…" for anything but a picture or a built-in clip (design §8 and §9 hold the
+words).
 
 `Tool::defers` is what the hosts key on, never the words: the restart repair
 (a non-picture orphan reads `not made: the server restarted`, not external),
@@ -5184,7 +5631,7 @@ which the page's still-out state and its clip player read.
   a job run later would send against that snapshot.
 - **One picture per run, structurally** (`IMAGE-DESIGN.md` §5.5). `RunPictures` records the deferred tools a run has started.
   - **The repeat is not run.** A later call to one of them in the same run is answered "Not run: … already started in this run" and never reaches the tool. In all sessions, the queue's busy refusal and the old repeat guard never stopped a model that kept calling.
-  - **Then the run closes.** Its next request is the closing one, which keeps the tools listed (so the cached prefix holds on llama-server; the cache lens counts the `tool_choice` change as a surface change), asks for words with `ToolChoice::None`, is given no reasoning budget (`think_budget: Some(0)`, which only a llama-server reads; 2026-10-15: the acknowledgement fell from 8.2 s to 0.5 s on the persona model with the same text, and the cached prefix still holds, since a zero budget changes only the generation prompt), ends with `PICTURE_ON_ITS_WAY` as its last note, and its deltas are not forwarded (the request still streams to the provider when the run is cancellable). A steer that arrives for it stays queued and is said to have come too late, and a peer's message stays unclaimed in the mailbox, since a closing turn could not act on either. A refusal on it is left as the provider said it.
+  - **Then the run closes.** Its next request is the closing one, which keeps the tools listed (so the cached prefix holds on llama-server; the cache lens counts the `tool_choice` change as a surface change), asks for words with `ToolChoice::None`, is given no reasoning budget (`think_budget: Some(0)`, which only a llama-server reads; 2026-10-15: the acknowledgement fell from 8.2 s to 0.5 s on the persona model with the same text, and the cached prefix still holds, since a zero budget changes only the generation prompt), ends with `PICTURE_ON_ITS_WAY` as its last note, and its deltas are not forwarded (the request still streams to the provider when the run is cancellable). A steer that arrives for it stays queued, and a peer's message stays unclaimed in the mailbox, since a closing turn could not act on either. The host decides what becomes of the steer, and both chat hosts give each unread message a turn of its own, in the order typed (`WebSession::waiting` and `chat::next_turn`; `PersonaSession::waiting` and `PersonaChats::next_turn`). A persona's run is one request and this closing one, so mid-reply it read almost no steer, and a second picture or clip asked for then came back "not delivered" (owner, 2026-10-21). The assistant's chat lost the same way any steer typed after its last tool round. Each turn queues its own job, since a run starts one. A message sent while others wait goes behind them, whether or not a run is live: a run the line is draining through takes no steer, or it would read a newer message ahead of older ones. A waiting message whose turn finds a run already live goes back to the front of the line. In a persona chat the message was metered and judged when it arrived (`steer_or_pause`), so its turn is not metered or judged again. A Stop, a failed or stopped run or a shutdown sends none of the waiting messages, and in a persona chat neither does a crisis pause or a judge's concern; the page marks each "not sent" with a Send again button. A transcript read lists the waiting messages (`waiting`), so a reloaded page still draws them. A refusal on it is left as the provider said it.
   - **What the owner sees.** The closing reply's call markup (Qwen's `<tool_call>` blocks, written as text) is stripped, from a reply cut off by Stop too, whose cleaned words are then sent once. Only the wrapped form is: a bare `<function=…>` was not measured. Nothing left, or an empty reply, becomes `PICTURE_ON_ITS_WAY_REPLY` (`PICTURE_NOT_STARTED_REPLY` after a busy refusal, where nothing was started), so a `<tool_call>` block written out as text never reaches the screen.
   - **When the close fires.**
     - A persona chat sets `RunContext::end_after_deferral`, so its run closes right after the picture is queued.
@@ -6145,7 +6592,7 @@ because the directory is **stable across runs of the same producer**, and gives
 `mkdir -p ~/.mecha/briefings && cat > …` — a shell redirect into a directory it
 created on the way past, outside every path jail, so nothing could read it back.
 
-Three decisions:
+Four decisions:
 
 - **`mecha trigger add` writes the workspace down** rather than leaving it
   implicit, and the runner resolves the same default when the field is unset — so
@@ -6156,6 +6603,24 @@ Three decisions:
   `[work] keep` entries per producer (default 10) and says exactly what it
   removed; the nightly runs it. Anything without a policy becomes a pile nobody
   opens.
+- **A conversation's workspace is aged, never counted.** `web`, `persona`
+  and `slack` (`work::CONVERSATION_PRODUCERS`) hold one entry per chat or
+  thread, and the pictures and clips in one are part of the
+  conversation — the page fetches them by path when the chat is reopened. A
+  count of ten deleted every picture of every chat past the tenth while the
+  chats themselves stayed (2026-10-26). They go when `[work]
+  retain_conversations` (`forever` by default, or a duration) has passed
+  since the newest file *anywhere* in the entry — a directory's own mtime
+  moves only when a direct child is added — or, for a web chat, when it is
+  forgotten. Persona chats and Slack threads have no forget path
+  (`forget::Roots` walks `~/.mecha/sessions` only), so at the default their
+  workspaces are never removed: losing a picture was judged worse than
+  keeping its bytes. An entry whose age cannot be read (an unreadable directory
+  inside) is kept and warned about, never taken for old. The setting is
+  global-only: a cloned repository's `mecha.toml` setting it to `1s` would
+  empty every chat. `voice` is not on the list: every call shares
+  `work/voice/` itself, so its entries are single files, and `keep` counts
+  them.
 - **It never removes anything a published bundle names as a source**, because
   "regenerate last week's report" must not silently lose its input. The contract
   is one field of data rather than a shared type — a mirrored version directory
@@ -6568,7 +7033,7 @@ was ever deployed.
 - **A replay sample renders against the chat's scene as of the turn, staged
   fresh per sample** (`scene::stage::stage_at`, then `Sampler::sample`). The
   scene comes back exactly from the chat's last landed picture before the
-  turn, or approximately from the persona's latest by write time. The stage
+  turn; with none, the chat had no scene (R10). The stage
   copies into a scratch folder that it proves lies outside the store and
   workspace, and only that folder is ever stamped (both stamping source
   scans name `replay_persona.rs` for this). A store shared across samples
@@ -7556,8 +8021,35 @@ through the store above (a `point-*` `Kind` per point kind).
   relocated **at its own message** (`counterfactual::locate_steer_at` /
   `locate_denial_at`, via `probe::prepare_intervention_at`), never by text
   alone, which finds the first of two identical steers.
+- **One kind needs no owner at all: a repeat** (`HARNESS-EVOLUTION-DESIGN.md`
+  P8's middle step). A failed call the run made again, unchanged, after it
+  had read the failure (`counterfactual::first_repeats`): same target and
+  identical error text, by `compact::same_failure`, the key
+  `collapse_repeated_failures` folds on, so a poll (a changing result) and a
+  refusal are never repeats. Only a **later** turn **of the same run**
+  repeats (a call doubled in one batch was issued before either answer, and
+  a top-level user turn ends the streak: the owner may have fixed the cause
+  and asked for another try, and an arm that obeys is no dead end), only
+  the **first** repeat of a
+  failure is a point (the third attempt is the same decision again, and
+  would weight one stuck episode several times in a uniform draw), and only
+  calls a registered tool answered count (#723: an invented name has no
+  answer to replay and lends no situation key). The branch regenerates the
+  repeating turn, as a denial's does, and `counterfactual::repeat_verdict`
+  (`StructuralRepeat`) **fails an arm whose decision turn makes any recorded
+  failing call again** — same tool, same input — and passes it otherwise,
+  ending the run included: the point judges the dead end, nothing more.
+  **Only the decision turn is graded** (`ReplayReport::decision_turn_calls`,
+  read back from the branch and checked against the trace, `None` after a
+  compaction): an `Arguments` divergence is not structural, so a run that
+  moved off the dead end is answered with the *recorded* failure of the call
+  it replaced, and its next turn reacts to an error it never earned. A
+  decision turn that cannot be read back is inconclusive. The supply is the
+  corpus itself, which is the point: every other posed kind waits on an
+  owner's act, and the harness gate had decided one point in total.
 - **The owner's recorded verdict decides, through a structural validator
-  only** (R27). Steer and denial reuse `StructuralSteer`/`StructuralDenial`.
+  only** (R27) — the recording's own, for a repeat (above). Steer and
+  denial reuse `StructuralSteer`/`StructuralDenial`.
   A draft point is `ProbeKind::Draft`, branched like a denial (the whole
   staging turn regenerated), and graded by `counterfactual::draft_verdict`
   (`ReleasedDraft`/`RejectedDraft`): **an arm passes only by producing the
@@ -7599,8 +8091,8 @@ through the store above (a `point-*` `Kind` per point kind).
   by `pointwise::draw`, then — row 2e-6, R39 — stably re-ordered by the
   replay priority of each point's session (`pointwise::draw_ranked`), so
   the seed decides only among equals. **A harness candidate's points are
-  never ranked** (`candidate_draw`): R36 gives the point-wise half no
-  separate holdout, so they are the confirming sample, and a prioritised
+  never ranked** (`candidate_draw`): the held-out points are the
+  confirming sample (R36), and a prioritised
   confirming sample is a biased one (§8.1;
   `candidate_points_ignore_the_replay_priority`). `--points` (default 8) counts
   driven points; unposed points cost nothing and are not charged. A point
@@ -8061,6 +8553,57 @@ a run — which **ships off**.
   ["contrast_evidence"]` forces it off whatever the environment says. On
   only after a measured run (R43). A reflection does not record that it
   was contrasted; the arm does.
+
+### What never becomes a rule, and every reply counted
+
+`HARNESS-EVOLUTION-DESIGN.md` P7, after Hermes's do-not-capture block.
+`REFLECTOR_SYSTEM` (steer, denial, followup, reject) names three kinds of
+moment to skip, as criteria rather than a tone: a failure the
+**environment** caused (a missing program, a server that was down; a
+user's denial is never one, it is the user's correction), a
+**negative claim about a tool** drawn from one bad result, and an approach
+**never resolved** in the excerpts. Each hardens into a self-imposed
+constraint that outlives its cause. The writing frame is left alone (an
+edit is shaped by neither tools nor the environment) and the mismatch frame
+carries its own count rule.
+
+- **A skip is kept apart from a reply that could not be used.**
+  `Reflector::reflect_typed` returns `Reflected`: a lesson, `Skipped`
+  (`{"skip": true}`), `Unusable` (no JSON, JSON that does not parse,
+  `"skip": false` with no lesson, or a skip that carries one), or `NotAsked` (a mismatch whose step is
+  not a learnable failure). `reflect`/`reflect_beside` keep their signature
+  and return the lesson alone. Folded together, the share of skips, which
+  is P7's measure, could not be read.
+- **Every reply is a row** in `reflector_replies.jsonl`
+  (`LearningStore::append_reply`, `ReplyRecord`): trigger, domain, outcome,
+  the lesson's id and `error_type`, the model, **the hash of the system
+  prompt sent**, so one prompt's skip share and category mix can be read
+  apart from another's, and **what the reflector was shown**: the evidence
+  class and whether a contrast success was set beside it. The prompt tells
+  the reflector to prefer a skip when excerpts are withheld, so a skip share
+  is read within an evidence class, never across a mix of them. **No text**:
+  `error_type` is the model's own string, so the row keeps it only when it
+  is a category a prompt offers (`ERROR_TYPES`, tested equal to the
+  prompts' lists) and records `unlisted` otherwise, apart from naming none. **A source's rows are
+  written before it is marked mined**, a session's ahead of its
+  reflections, and each row names the pass that wrote it. A pass that stops
+  in between leaves the source unmined, the retry writes its rows again,
+  and `replies_counting` counts a source's rows only once it is marked
+  mined, and only the last pass's, so a retried pass counts no reply twice,
+  loses none, and a pass still in flight counts nothing. Rows after the mark
+  could be lost to a stop, and rows after the reflections could leave a
+  lesson uncounted (both found on review of #730). The reflections
+  themselves are no more atomic than before the ledger: a stop between two
+  appends leaves the first on file, and the retry writes it again. `--remine-untrusted` records none: that backfill never marks a
+  session mined and is keyed by the reflections on file, which a skip does
+  not add, so a rerun would count the same skip again. `ReplyOutcome` is a
+  wire format: an unknown outcome reads as `Unknown` and is counted on its
+  own, never as unusable. `forget` purges the ledger by session and by
+  forgotten reflection, like the validation ledgers.
+- **The baseline before it is partial.** Skips used to be discarded, and
+  only steer and denial skips were ever printed to the learning log
+  (`· [steer] no lesson drawn`). Followup skips, the common case, have no
+  record before this.
 
 ## The goal system
 
@@ -8967,6 +9510,23 @@ measurably likelier to fail a step when its context holds its own earlier
 errors, so nagging about being stuck is a way of making it stick. It keys on the
 call *and* its result via `compact::target_of` — identical arguments with a
 changing result is polling, which must never grade as stuck.
+
+**A second key counts the same failure on new targets** (`boredom::error_shape`:
+the error with quoted spans, paths and numbers masked, per tool). The first
+key is blind to guessing — `fs_list` on one path outside the jail after
+another, a forbidden `shell` command reworded each turn — because every call
+is a new target; a corpus pass on 2026-10-30 found exactly that shape behind
+most model-side failures. It counts turns that bring the shape back on a
+target the streak had not seen, so an unchanged call (a poll, or the first
+key's stuck repeat) never adds to it. Unlike the loop guard it counts calls the
+*machine* refused (`ToolCallTrace::blocked`: policy, hook, interlock, phase
+gate), and says so in its own words (`Rung::Rewording`, no delegate offered: a
+child inherits the policy). **A person's `Decision::Deny` never enters the
+shape key** — the interactive approvers word every decline alike, so three
+declined calls would share a shape, and naming the owner's corrections as
+rewording would score their steering against the run through
+`boredom_notices` (review of #762). The refusal result is never edited, so
+`"Blocked by policy:"` stays `Blocked` for the miner and the guard.
 
 **The closure follow-up gate is `done`-only and reads the derived label
 beside one typed predicate.** `dropped` is the owner declining the work, so
@@ -10819,6 +11379,19 @@ silently:
 
 If you change the server's `-c`, change `context_window` to match — a stale
 value is worse than none, because the derived threshold trusts it.
+
+**Whether the prefix came back is `cache_lens`'s question, and the lens rides
+the `Conversation`, never the run.** In a chat one message is one run, so the
+request that shows a server eviction — the first one after an idle gap — is
+always a run's first, and a lens built per run could only call it a baseline.
+Carried across runs (taken off and put back around `run_loop`, as `pressure`
+is), it judges that request against the previous run's last one and the
+outcome row records the verdict with the idle gap (`RunStats::resume_cache`):
+`drop` is an eviction, `transcript_rewritten` and `surface_changed` are misses
+mecha caused. It is never persisted — a conversation read back from disk
+starts at `baseline` — and its verdicts never reach the model. Until
+2026-10-27 the lens was per run, and a week of 87k–338k-token re-reads could
+not be split into the two causes (`docs/IDLE-CACHE-DESIGN.md` §3–§4).
 
 ## Timezones
 

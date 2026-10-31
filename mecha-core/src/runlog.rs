@@ -1368,6 +1368,7 @@ mod tests {
             duration_secs: None,
             homeostat: None,
             brief: None,
+            resume_cache: None,
             context_overflows: None,
             boredom_notices: None,
             step_escalations_attempted: None,

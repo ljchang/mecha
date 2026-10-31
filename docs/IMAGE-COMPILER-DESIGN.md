@@ -163,7 +163,10 @@ The rules, each a measurement:
   not load, stays in the cast and gets its own refusal, because drawing a
   stranger in its place is the substitution the cast exists to prevent. A
   persona chat's form of the tool keeps refusing an unknown name.
-- **The style's text is appended verbatim**, never paraphrased.
+- **The style's text is appended verbatim**, never paraphrased. The one
+  exception: a picture drawn from a full figure seen from behind leaves out
+  the style's clauses about eyes, and keeps the style whole when that would
+  leave nothing (§9.4).
 - *(Lifted 2026-10-07; see the amendment at the head of this section.)*
   **`cast` and `reference_images` are exclusive in v1.** ComfyUI's encoder
   takes one reference resolution per call, so an edit canvas at 1024² and
@@ -358,7 +361,12 @@ The decisions that are this design's rather than the owner's:
 ## 9. Library v2: typed references, locations and wardrobe (ruled 2026-10-13)
 
 **Status:** ruled 2026-10-13 (L1–L7, §9.7); the owner approved the direction
-the same day (the video design's R6). Built: the reference store and CLI
+the same day (the video design's R6). **V-L ruled passed by the owner,
+2026-10-25** (a room photo carried into four of four clips from the private
+H3 server), and the `Location` kind built with video sending its first
+`view` picture (L7 step 4). Still to come: pictures resolving a scene's
+location to its text (§9.5; its images wait on E13), and the web Library
+tab's Locations section. Built: the reference store and CLI
 (step 2a, #684), pictures sending `full_body` (step 2b, #685), the web
 strip (#688) and models' reference writes (#692). Video's bodies are ruled,
 to be built in the video tool.
@@ -578,9 +586,9 @@ kind is derived from its directory (`Entry.kind`).
 
 | Reference | `image_generate` (Qwen-Image) | `video_generate` (H3) |
 |---|---|---|
-| face | the whole portrait at 512² for a new picture (E10), its crop for an edit, as now | the face crop, as now; from an attached `face` reference when there is one, else from the portrait |
+| face | the whole portrait at 512² for a new picture (E10), its crop for an edit, as now; for a new picture, not sent when the camera sees the person from behind and they have a full body (below); an edit still sends the crop | the face crop, as now; from an attached `face` reference when there is one, else from the portrait |
 | full_body | **sent** to a new picture of one person, bound to the portrait (E9b; owner, 2026-10-13); faces only for two or more (E14; owner, 2026-10-19), and on edits | **sent** beside the face crop to a cast of **one or two** when everyone has one, **unbound** (both pictures named as one subject, with no face-from/build-from split): "the person in `<Picture 1>` and `<Picture 2>`", not the face-from/build-from wording, the likely cause of V-B's extra person (V-B's retest passed for a cast of two; owner, 2026-10-14) |
-| detail | not sent; its `label` is appended to the description | sent with its label ("`<Picture k>` shows her left-forearm tattoo"), if V-D passes |
+| detail | **sent** with its label after every face and body, while five images last (`MAX_PICTURE_IMAGES`): "<Name>'s <label> is shown close up in `<imageK>`" inside the description, the identity images then named by number, and "`<imageK>` shows only <Name>'s <label>, not a person: it is kept exactly where it is, and nowhere else" (V-D for pictures passed; owner, 2026-10-26) | **sent** with its label, "`<Subject n>`'s <label> is shown close up in `<Picture k>`", kept "exactly where it is, and nowhere else" (V-D passed; owner, 2026-10-26) |
 | location | its text in the scene | its images as an environment `<Subject>`, if V-L passes |
 | outfit | its text as `wearing` | its text as `wearing` |
 
@@ -598,8 +606,37 @@ kind is derived from its directory (`Entry.kind`).
 - **Every row marked "if" is off until its measurement passes,** and the
   owner rules on the result. A reference a generator doesn't send still
   costs no image slot: the description and labels carry the facts in words.
+- **Seen from behind, the full figure stands in for the portrait** (owner,
+  2026-10-28). When the camera reads as from behind (`picture::faces_away`:
+  behind, rear, a back view, a face turned away; never with a front, a
+  shoulder looked over, or a face toward the camera), a person with a
+  `full_body` is drawn from it in both identity slots, with no portrait,
+  and the prompt says their face is turned away. The person's expression
+  and the style's clauses about eyes are left out for that picture.
+  Measured on a rear-view Continue:
+  - the portrait sent: the face turned to the camera under every wording
+    tried, at the base seed and fresh ones, 0 of 12;
+  - the full figure alone in one slot: 2 of 5 away, and a second head
+    drawn 2 of 5;
+  - in both slots: 4 of 5; with the expression and the eye clause gone
+    too: 5 of 5, no second head, base seed included.
+
+  Without a `full_body` the portrait still goes, and for a cast of one a
+  sentence carries the turn (a camera behind one of a group names that
+  one, and the sentence was never measured on more). The manifest's
+  `cast` row has no `portrait` when none went. The replay judge asks no
+  expression question of such a picture, and its identity reading finds no
+  face to match there: that is a correct rear view, not a lost identity. A style clause that names
+  eyes goes whole, so "a photograph with sharp eyes and fine grain" loses
+  its medium too: clauses are split on commas and semicolons, and a style
+  left empty keeps its words.
 - **Labels have their own budget per person,** at most 300 characters of
   detail labels appended to one description (review of #680, pass 2).
+  *Never built for pictures, and superseded there on 2026-10-26:* a label
+  now rides only beside its own close-up, so the five-image cap bounds it
+  (at most four, of `MAX_LABEL` each), and past `MAX_COMPILED_PROMPT` the
+  close-ups go with the bodies, said in counts. The counting rules below
+  still hold.
   - Labels past it are dropped, in the character's own order, and the result
     says how many, **never which** (review of #680, pass 20). A label
     describes a person, and `image_generate` declares
@@ -642,17 +679,26 @@ kind is derived from its directory (`Entry.kind`).
   1. every person's face: the portrait for pictures (E10), the face crop for
      video;
   2. each person's `full_body`, in cast order;
-  3. details, in cast order, then in each character's own order, for video
-     only: pictures never send a detail image (the table above), only its
-     label. That's greedy, so it's the mixed shape the next bullets call
-     unmeasured; it waits on V-D, whose arms include that shape.
+  3. details, in cast order, then in each character's own order, in both
+     generators. That's greedy, so it's the mixed shape the next bullets
+     describe; V-D measured it and passed for video, then for pictures
+     (owner, 2026-10-26). **Built** (`VideoGenerate::extras_for`, and
+     `imagelib::compile_with` for pictures, 2026-10-26). A picture planned in
+     layers sends none, being drawn from portraits, and says how many. A
+     close-up with no label (only a hand edit makes one) is not sent to a
+     picture, since a pointer with nothing to bind it by is worse than none;
+     video binds it as "mark" (`extras_for`).
   - **Video sends bodies, unbound, to a cast of one or two** (V-B's retest;
     owner, 2026-10-14; the table above), as pictures do: the retest
     measured two people, so three with a body each needs its own
-    measurement first (review of #693). To be built in the video tool,
-    outside this repository until the port. Video has nine slots, less any
-    pinned or other reference images: two people with a body each leave up
-    to five for details (details wait on V-D). Three with a body each would
+    measurement first (review of #693). **Built** (2026-10-26). Video has
+    nine reference slots, less any other reference images (a location, an
+    outfit); a pinned opening or closing frame is not one of them, since it
+    goes through `MiniMaxH3AddGuide` beside the slots (`videogen::graph`).
+    Two people with a body each leave up to five for details. A clip seen through someone's
+    eyes (`pov`) sends no bodies: that person is in the cast, with their own
+    picture and never a body, so bodies for the others would be the mixed
+    shape (review of #744). Three with a body each would
     leave three, once measured; that is not a rule in force.
   - **Bodies are all or nothing in both generators**: in video from V-B's
     retest (owner, 2026-10-14); in pictures from L7's step 2b (review of
@@ -664,8 +710,8 @@ kind is derived from its directory (`Entry.kind`).
     or four with two pinned images, sends faces only, never four bound
     people beside one unbound.
   - Details also bind a second image to one person, so they're the same
-    mixed shape. V-D's arms must include one person with a detail beside one
-    without, before details ship.
+    mixed shape. V-D's arms included one person with a detail beside one
+    without, and no one was drawn twice (2026-10-26).
   - **Pictures** keep their people budgets (`MAX_CAST`,
     `EDIT_REFERENCE_BUDGET`, `IMAGE-DESIGN.md` §5.2, "Budgets, as measured")
     and gain an **image** cap (review of #680, pass 6). `MAX_CAST` counts
@@ -887,7 +933,8 @@ only says what each one gates:
 | **E9b** | `full_body` for pictures (§9.4), and the two-images-one-person wording |
 | **E14** | `full_body` for pictures of one person only, and the closed foreground count without extras (§9.4; passed 2026-10-18 for the strict wording, 2/21 drawn twice; the foreground one measured 2026-10-19, 3/21, crowds unmeasured) |
 | **V-B's retest** | `full_body` for video: **passed** 2026-10-14, unbound (V-B itself failed, 2026-10-13) |
-| **V-D** | `detail` images for video |
+| **V-D** | `detail` images for video: **passed**, owner 2026-10-26 (one same-seed pair, a cast of one person with a detail beside one without: the tattoo on both forearms without the picture, on the left forearm only with it; no one drawn twice) |
+| **V-D, pictures** | `detail` images for pictures: **passed**, owner 2026-10-26. Two recorded pictures, a cast of two with a close-up for one, each re-rendered at its own seed: a ribcage tattoo given in words alone came out as a different design on both sides, 2/2; with the close-up it was the right design on the right side only, 2/2, first with hand-written wording and then with the compiler's own (`compile_with`'s prompt checked byte for byte against the recorded one with close-ups off). No one drawn twice |
 | **E13** | a location reference for pictures |
 | **V-L** | a location reference for video |
 
@@ -927,7 +974,13 @@ repository, never their names or images.
   and existing manifests stay valid.
 - **L3, each generator's references gated on its measurement** (§9.4), with
   the owner ruling on each result, and the slot-filling order of §9.4.
-- **L4, outfits are text:** an image is for browsing only.
+- **L4, outfits are text:** an image is for browsing only. **Reopened for
+  video by the owner, 2026-10-25**: a picture of the garment alone (never
+  a person wearing it) is sent as the wearer's clothes, after one measured
+  pair — the same seed and scene, words only against words plus the
+  garment picture — held the garment across a cut where the words let it
+  drift into two other designs. Pictures keep outfits as text until a
+  measurement of their own.
 - **L5, names offered to a model:** location and outfit names appear in
   `image_generate`'s description as styles do (approved, unlocked);
   `image_library` lists them, locked included, as it lists everything (§4);

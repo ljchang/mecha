@@ -837,8 +837,10 @@ mod tests {
             input: json!({}),
             is_error,
             denied,
+            blocked: false,
             unknown,
             staged: false,
+            in_program: false,
         }
     }
 
@@ -1059,8 +1061,10 @@ mod tests {
             input: json!({"command": command}),
             is_error: false,
             denied: false,
+            blocked: false,
             unknown: false,
             staged: false,
+            in_program: false,
         }
     }
 
@@ -1411,8 +1415,10 @@ mod tests {
             input: json!({"command": "cargo test -q"}),
             is_error,
             denied,
+            blocked: false,
             unknown: false,
             staged: false,
+            in_program: false,
         }
     }
 
@@ -1479,8 +1485,10 @@ mod tests {
             input: json!({}),
             is_error: true,
             denied: false,
+            blocked: false,
             unknown: false,
             staged: false,
+            in_program: false,
         };
         let work = Work::of(&[mcp_tool_called_check]);
         assert_eq!((work.calls, work.checks_declared), (1, 0));

@@ -11,7 +11,8 @@
 //! It builds no provider and connects to nothing, so the library can be
 //! inspected and edited with the model and the image server both down. The
 //! exceptions fetch pinned weights once: `install-face-detector`, and
-//! `face compare`'s first run, which fetches ArcFace as a judge does.
+//! `face compare`'s first run, which fetches ArcFace as a judge does. And
+//! `upscale` asks the image server for its redraw.
 
 use anyhow::{bail, Context, Result};
 use mecha_core::imagelib::{self, Entry, Kind, Library, NewEntry, Origin, RefKind, Status};
@@ -29,6 +30,8 @@ pub struct Args {
 pub enum KindArg {
     Character,
     Style,
+    Location,
+    Outfit,
 }
 
 /// A reference's kind, as `--as` spells it (`--kind` is the entry's kind).
@@ -38,6 +41,8 @@ pub enum RefArg {
     #[value(name = "full_body")]
     FullBody,
     Detail,
+    /// A location's or an outfit's picture.
+    View,
 }
 
 impl From<RefArg> for RefKind {
@@ -46,6 +51,19 @@ impl From<RefArg> for RefKind {
             RefArg::Face => RefKind::Face,
             RefArg::FullBody => RefKind::FullBody,
             RefArg::Detail => RefKind::Detail,
+            RefArg::View => RefKind::View,
+        }
+    }
+}
+
+impl RefArg {
+    /// The entry kind this reference goes on: the rest on a character, a
+    /// view on a location or an outfit — `--kind` when given, else whichever
+    /// holds the name (`resolve` asks for `--kind` when both do).
+    fn entry_kind(self, kind: Option<KindArg>) -> Option<KindArg> {
+        match self {
+            RefArg::View => kind,
+            RefArg::Face | RefArg::FullBody | RefArg::Detail => Some(KindArg::Character),
         }
     }
 }
@@ -55,13 +73,15 @@ impl From<KindArg> for Kind {
         match k {
             KindArg::Character => Kind::Character,
             KindArg::Style => Kind::Style,
+            KindArg::Location => Kind::Location,
+            KindArg::Outfit => Kind::Outfit,
         }
     }
 }
 
 #[derive(clap::Subcommand, Debug)]
 pub enum Cmd {
-    /// Approved characters and styles; `--all` adds candidates.
+    /// Approved characters, styles and locations; `--all` adds candidates.
     List {
         #[arg(long)]
         all: bool,
@@ -94,6 +114,27 @@ pub enum Cmd {
     /// Add a style — yours, so approved at once.
     AddStyle {
         name: String,
+        #[arg(long)]
+        text: String,
+        #[arg(long)]
+        locked: bool,
+    },
+    /// Add an outfit — yours, so approved at once. Its picture, the garment
+    /// alone with no one wearing it, goes on with `add-reference <name> --as
+    /// view`; video sends it as what its wearer has on.
+    AddOutfit {
+        name: String,
+        /// What it is: garment, colour, cut, neckline.
+        #[arg(long)]
+        text: String,
+        #[arg(long)]
+        locked: bool,
+    },
+    /// Add a location — yours, so approved at once. Its pictures go on
+    /// with `add-reference <name> --as view`.
+    AddLocation {
+        name: String,
+        /// What the place looks like: its fixtures, layout and light.
         #[arg(long)]
         text: String,
         #[arg(long)]
@@ -156,6 +197,20 @@ pub enum Cmd {
         #[arg(long)]
         seed: Option<u64>,
     },
+    /// Redraw a character's small portrait at about a megapixel with the
+    /// image model, as a new version; the old one is kept in its history. A
+    /// small portrait reaches a video clip as a small face. When ArcFace is
+    /// installed the redraw is compared with the portrait and kept only if
+    /// it is the same face.
+    Upscale {
+        name: String,
+        /// The image model's seed; a fresh one when not given.
+        #[arg(long)]
+        seed: Option<u64>,
+        /// Write the redraw here instead of saving it, to look first.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Fetch the face detector a persona's edits are anchored with
     /// (py-feat's RetinaFace-R34, 89 MB, checked against its pin). Without
     /// it those edits draw as before and their manifests say why.
@@ -169,7 +224,8 @@ pub enum Cmd {
     },
     /// Attach a typed picture to an approved character: a `face`, a
     /// `full_body` in a neutral, square-on stance (its pose carries into
-    /// pictures), or a labelled `detail` such as a tattoo. A new version.
+    /// pictures), or a labelled `detail` such as a tattoo; or a `view` to an
+    /// approved location. A new version.
     AddReference {
         name: String,
         /// What the picture is of.
@@ -180,6 +236,10 @@ pub enum Cmd {
         /// What it shows; required for a detail ("left-forearm tattoo").
         #[arg(long)]
         label: Option<String>,
+        /// For a view: the location or outfit it goes on, when both have
+        /// the name.
+        #[arg(long, value_enum)]
+        kind: Option<KindArg>,
     },
     /// Take a typed picture off a character; `--label` says which detail.
     /// A new version; the picture stays in the store for the history.
@@ -189,6 +249,8 @@ pub enum Cmd {
         as_kind: RefArg,
         #[arg(long)]
         label: Option<String>,
+        #[arg(long, value_enum)]
+        kind: Option<KindArg>,
     },
     /// Reference changes a model staged for you: from a conversation that
     /// had read outside content, or an incognito chat.
@@ -316,7 +378,16 @@ fn resolve<'a>(lib: &'a Library, name: &str, kind: Option<KindArg>) -> Result<&'
     match lib.find(&name).as_slice() {
         [] => bail!("nothing in the image library is named `{name}`"),
         [one] => Ok(one),
-        _ => bail!("both a character and a style are named `{name}`; pass --kind"),
+        several => {
+            let kinds: Vec<String> = several
+                .iter()
+                .map(|e| e.kind.with_article().to_string())
+                .collect();
+            bail!(
+                "`{name}` names {}; pass --kind",
+                mecha_core::imagelib::join_and(&kinds)
+            )
+        }
     }
 }
 
@@ -454,6 +525,10 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
         super::features::require(mecha_core::feature::Feature::Image)?;
         return install_face_detector().await;
     }
+    if let Cmd::Upscale { name, seed, out } = args.cmd {
+        super::features::require(mecha_core::feature::Feature::Image)?;
+        return upscale(&Library::default_dir()?, &name, seed, out).await;
+    }
     // Reads only: pictures on disk, and a character's face for `compare`.
     // The detector is the image feature's, as its install is.
     if let Cmd::Face { cmd } = args.cmd {
@@ -462,6 +537,150 @@ pub async fn execute(_global: &GlobalOpts, args: Args) -> Result<()> {
     }
     let dir = Library::default_dir()?;
     run(&dir, args.cmd)
+}
+
+/// A redraw closer to its portrait than this is the same face. Two redraws
+/// of one 401 px portrait scored 0.95 and 0.947 against it, and ArcFace puts
+/// two different people well under 0.5.
+const SAME_FACE: f32 = 0.8;
+
+/// `mecha imagelib upscale`: the portrait redrawn larger by the image
+/// server, compared with the portrait when ArcFace is here, then saved as a
+/// new version or written to `out`. ArcFace is never fetched for this: it is
+/// a judge's download, said and agreed to at `face compare`.
+async fn upscale(
+    dir: &std::path::Path,
+    name: &str,
+    seed: Option<u64>,
+    out: Option<PathBuf>,
+) -> Result<()> {
+    use mecha_core::{face, face_id};
+    let (lib, _) = Library::load(dir);
+    let key = name.trim().to_lowercase();
+    let entry = lib
+        .get(Kind::Character, &key)
+        .filter(|e| e.status == Status::Approved)
+        .with_context(|| format!("no approved character `{key}`"))?;
+    let (portrait, _) = lib.read_portrait(entry)?;
+    let cfg = mecha_core::config::Config::load_global()?;
+    let image = cfg
+        .image
+        .clone()
+        .context("no [image] server is configured: `mecha features enable image`")?;
+    let mut tool = mecha_core::imagegen::ImageGenerate::new(image)?.with_floor(cfg.system.clone());
+    if let Ok(home) = mecha_core::work::mecha_home() {
+        // Which model the image server holds, shared with every process
+        // that draws, as `setup` records it.
+        tool = tool.with_model_record(home.join("image").join("held-model.json"));
+    }
+    let seed = seed.unwrap_or_else(|| uuid::Uuid::new_v4().as_u64_pair().0);
+    eprintln!(
+        "Redrawing {key}'s portrait at seed {seed}; about a minute once the model is loaded…"
+    );
+    let redraw = tool
+        .upscale(&portrait, seed)
+        .await
+        .map_err(|why| anyhow::anyhow!("{key}'s portrait was not redrawn: {why}"))?;
+    // ArcFace against the old portrait: `None` when it is not installed.
+    let judge = || -> Result<Option<f32>> {
+        let (Some(detector), Some(arcface)) = (face::weights()?, face_id::weights()?) else {
+            return Ok(None);
+        };
+        let reader = face_id::Reader::load(&detector, &arcface)?;
+        let first = |bytes: &[u8], what: &str| -> Result<Vec<f32>> {
+            reader
+                .read_bytes(bytes, what)?
+                .into_iter()
+                .next()
+                .map(|(_, e)| e)
+                .with_context(|| format!("no face was found in {what}"))
+        };
+        Ok(Some(face_id::similarity(
+            &first(&portrait, "the portrait")?,
+            &first(&redraw, "the redraw")?,
+        )))
+    };
+    let said = |judged: Option<f32>| match judged {
+        Some(s) => format!("ArcFace {s:.3} against the portrait"),
+        None => "not compared: ArcFace is not installed (`mecha imagelib face compare` fetches it)"
+            .to_string(),
+    };
+    if let Some(out) = out {
+        // Written before the judge, whose score is only advice here: a
+        // judge that cannot answer (no face found, say) costs the score,
+        // never the minute of drawing (review of #735).
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&out)
+            .and_then(|mut f| std::io::Write::write_all(&mut f, &redraw))
+            .with_context(|| format!("writing {}", out.display()))?;
+        let said = judge()
+            .map(said)
+            .unwrap_or_else(|e| format!("not compared: {e:#}"));
+        println!(
+            "{} ({said}). Nothing was saved to the library.",
+            out.display()
+        );
+        return Ok(());
+    }
+    // Saving, the judge is the guard: one that cannot run stops the save.
+    let judged = judge().context(
+        "the redraw could not be compared with the portrait, so it was not saved; \
+         --out writes it to a file to look at instead",
+    )?;
+    if let Some(s) = judged.filter(|s| *s < SAME_FACE) {
+        bail!(
+            "the redraw is not the same face (ArcFace {s:.3}, under {SAME_FACE}); nothing was \
+             saved. Try another --seed, or --out to look at it."
+        );
+    }
+    let said = said(judged);
+    // A scene naming the character is never sampled at its portrait's
+    // drawing seed, so one is kept (review of #735): the seed that drew the
+    // original, whose face and pose the redraw keeps, else the redraw's.
+    let drawn_at = entry.source_seed.unwrap_or(seed);
+    let updated = imagelib::update(
+        dir,
+        Kind::Character,
+        &key,
+        None,
+        Some(redraw),
+        Some(drawn_at),
+    )?;
+    println!(
+        "`{key}` is now v{}, redrawn larger ({said}).",
+        updated.version
+    );
+    unframe(&updated.name);
+    // The face crop an edit and a clip are anchored to, cut now rather than
+    // at the next edit, so a clip made before then is not given the whole
+    // portrait and its outfit.
+    if face::weights()?.is_some() {
+        use mecha_core::face::FaceAnchors;
+        let (lib, _) = Library::load(dir);
+        if let Some(e) = lib.get(Kind::Character, &key) {
+            if let face::Anchor::Unavailable(why) = face::CachedRetinaFace.anchor(&lib, e) {
+                eprintln!("mecha: the new portrait's face crop was not cut: {why}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A new picture under the same name: a persona framed against the old one
+/// starts unframed (review of #491). After the update has landed, so a
+/// failure costs only the framing, and is said.
+fn unframe(name: &str) {
+    let cleared = mecha_core::persona::Store::default_dir()
+        .and_then(|personas| mecha_core::persona::clear_frames_for(&personas, name));
+    match cleared {
+        Ok(names) if !names.is_empty() => {
+            println!("Its new picture is unframed in {}.", names.join(", "))
+        }
+        Ok(_) => {}
+        Err(e) => eprintln!("mecha: a persona's old framing was not cleared: {e:#}"),
+    }
 }
 
 async fn install_face_detector() -> Result<()> {
@@ -670,6 +889,7 @@ fn run(dir: &std::path::Path, cmd: Cmd) -> Result<()> {
         // Async, so `execute` runs it before reaching here.
         Cmd::InstallFaceDetector => anyhow::bail!("install-face-detector runs from `execute`"),
         Cmd::Face { .. } => anyhow::bail!("face runs from `execute`"),
+        Cmd::Upscale { .. } => anyhow::bail!("upscale runs from `execute`"),
         Cmd::List { all, json } => {
             let entries: Vec<&Entry> = lib
                 .all()
@@ -788,6 +1008,42 @@ fn run(dir: &std::path::Path, cmd: Cmd) -> Result<()> {
             )?;
             println!("Added style `{}`.", e.name);
         }
+        Cmd::AddOutfit { name, text, locked } => {
+            let e = imagelib::create(
+                dir,
+                NewEntry {
+                    kind: Kind::Outfit,
+                    name,
+                    text,
+                    portrait: None,
+                    source_seed: None,
+                    origin: Origin::Owner,
+                    locked,
+                },
+            )?;
+            println!(
+                "Added outfit `{}`. Add a picture of the garment alone with `mecha imagelib add-reference {} --as view <file>`.",
+                e.name, e.name
+            );
+        }
+        Cmd::AddLocation { name, text, locked } => {
+            let e = imagelib::create(
+                dir,
+                NewEntry {
+                    kind: Kind::Location,
+                    name,
+                    text,
+                    portrait: None,
+                    source_seed: None,
+                    origin: Origin::Owner,
+                    locked,
+                },
+            )?;
+            println!(
+                "Added location `{}`. Add its pictures with `mecha imagelib add-reference {} --as view <file>`.",
+                e.name, e.name
+            );
+        }
         Cmd::Approve { name, kind, yes } => {
             let e = resolve(&lib, &name, kind)?;
             if e.status == Status::Approved {
@@ -863,11 +1119,13 @@ fn run(dir: &std::path::Path, cmd: Cmd) -> Result<()> {
             as_kind,
             file,
             label,
+            kind,
         } => {
-            let e = resolve(&lib, &name, Some(KindArg::Character))?;
+            let e = resolve(&lib, &name, as_kind.entry_kind(kind))?;
             let bytes = read_picture(&file)?;
             let kind: RefKind = as_kind.into();
-            let updated = imagelib::add_reference(dir, &e.name, kind, &bytes, label)?;
+            let updated =
+                imagelib::add_reference_to(dir, e.kind, &e.name, kind, &bytes, label, None)?;
             println!(
                 "`{}` is now v{} with a {} reference.",
                 updated.name,
@@ -886,10 +1144,12 @@ fn run(dir: &std::path::Path, cmd: Cmd) -> Result<()> {
             name,
             as_kind,
             label,
+            kind,
         } => {
-            let e = resolve(&lib, &name, Some(KindArg::Character))?;
+            let e = resolve(&lib, &name, as_kind.entry_kind(kind))?;
             let kind: RefKind = as_kind.into();
-            let updated = imagelib::remove_reference(dir, &e.name, kind, label.as_deref())?;
+            let updated =
+                imagelib::remove_reference_from(dir, e.kind, &e.name, kind, label.as_deref())?;
             println!(
                 "`{}` is now v{}, without that {} reference.",
                 updated.name,
@@ -908,23 +1168,11 @@ fn run(dir: &std::path::Path, cmd: Cmd) -> Result<()> {
             let portrait = portrait.as_ref().map(read_picture).transpose()?;
             let updated = imagelib::update(dir, e.kind, &e.name, text, portrait, seed)?;
             println!("`{}` is now v{}.", updated.name, updated.version);
-            // A new picture under the same name: a persona framed against the
-            // old one starts unframed (review of #491). Compared, not "a
-            // --portrait was passed": portraits are content-addressed, so the
-            // same file passed again changes nothing to reframe. After the
-            // update has landed, so a failure costs only the framing, and is
-            // said.
+            // Compared, not "a --portrait was passed": portraits are
+            // content-addressed, so the same file passed again changes
+            // nothing to reframe.
             if updated.portrait != e.portrait {
-                let cleared = mecha_core::persona::Store::default_dir().and_then(|personas| {
-                    mecha_core::persona::clear_frames_for(&personas, &updated.name)
-                });
-                match cleared {
-                    Ok(names) if !names.is_empty() => {
-                        println!("Its new picture is unframed in {}.", names.join(", "))
-                    }
-                    Ok(_) => {}
-                    Err(e) => eprintln!("mecha: a persona's old framing was not cleared: {e:#}"),
-                }
+                unframe(&updated.name);
             }
         }
     }
@@ -939,6 +1187,20 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mecha-imagelib-cli-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// `KindArg` converts into `Kind`, so no match can fail when `Kind`
+    /// grows; this walks `Kind::ALL` instead (§9.5: a kind missing here is
+    /// one the CLI cannot name).
+    #[test]
+    fn every_entry_kind_has_a_cli_spelling() {
+        use clap::ValueEnum;
+        for kind in Kind::ALL {
+            let arg = KindArg::from_str(kind.label(), false)
+                .unwrap_or_else(|_| panic!("no --kind {}", kind.label()));
+            assert_eq!(Kind::from(arg), kind);
+        }
+        assert_eq!(KindArg::value_variants().len(), Kind::ALL.len());
     }
 
     fn propose(dir: &std::path::Path, name: &str, origin: Origin) {

@@ -28,6 +28,9 @@ impl Drop for Root {
 const RULES: &str = "## Learned rules\n\nRules distilled from how this user has corrected \
                      you before.\n\n### behavior\n- Ask before mailing anyone outside the team.";
 
+/// The failure the recorded run read, then walked into again.
+const MISSING: &str = "no such file: q3.md";
+
 /// The draft the owner rejected, exactly as the run staged it — what the
 /// fixture model drafts again whenever the rules block rides.
 fn rejected_draft() -> Value {
@@ -138,6 +141,12 @@ fn session(home: &Path, untrusted: bool) -> String {
         Message::tool_results(vec![result("t4", "staged for review", false)]),
         Message::assistant(vec![tool_use("t5", "todo", json!({"op": "complete"}))]),
         feedback,
+        // A read that failed, and the same read again once the run had
+        // read the failure: P8's verdict-free repeat point.
+        Message::assistant(vec![tool_use("t6", "fs_read", json!({"path": "q3.md"}))]),
+        Message::tool_results(vec![result("t6", MISSING, true)]),
+        Message::assistant(vec![tool_use("t7", "fs_read", json!({"path": "q3.md"}))]),
+        Message::tool_results(vec![result("t7", MISSING, true)]),
         Message::assistant(vec![Block::text("Done.")]),
     ] {
         session.append(&Record::Message(m)).unwrap();
@@ -204,9 +213,11 @@ fn owner_acts(home: &Path, session_id: &str) {
 }
 
 /// The fixture model. Under a prompt carrying the rules block it drafts the
-/// rejected mail again, word for word; under any other it answers in prose
-/// and stops. So at the rejected draft the rules arm fails and the
-/// rules-free arm passes — a separated verdict the owner's act decided.
+/// rejected mail again, word for word — or, when the last thing it read was
+/// the missing-file failure, makes that read again; under any other it
+/// answers in prose and stops. So at the rejected draft the rules arm fails
+/// and the rules-free arm passes — a separated verdict the owner's act
+/// decided — and at the repeat the same split, decided by the recording.
 async fn fixture_model() -> (String, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -220,9 +231,18 @@ async fn fixture_model() -> (String, tokio::task::JoinHandle<()>) {
                 .map(|m| m["content"].to_string())
                 .unwrap_or_default();
             let drafts = system.contains("Learned rules");
+            let stuck = body["messages"]
+                .as_array()
+                .and_then(|m| m.last())
+                .is_some_and(|m| m["role"] == "tool" && m["content"].to_string().contains(MISSING));
             let usage = json!({"prompt_tokens": 10, "completion_tokens": 4});
+            let (name, arguments) = if stuck {
+                ("fs_read", json!({"path": "q3.md"}))
+            } else {
+                ("mail_send", rejected_draft())
+            };
             let call = json!([{"index": 0, "id": "call-1", "type": "function",
-                "function": {"name": "mail_send", "arguments": rejected_draft().to_string()}}]);
+                "function": {"name": name, "arguments": arguments.to_string()}}]);
             let streaming = body.get("stream").and_then(Value::as_bool) == Some(true);
             if streaming {
                 let (delta, finish) = if drafts {
@@ -337,18 +357,19 @@ async fn a_compare_pass_leaves_a_comparison_per_point_a_second_read_returns() {
     assert_eq!(pass["found"]["steer"], 2, "{first:#}");
     assert_eq!(pass["found"]["edited-draft"], 1, "{first:#}");
     assert_eq!(pass["found"]["rejected-draft"], 1, "{first:#}");
+    assert_eq!(pass["found"]["repeat"], 2, "{first:#}");
     assert_eq!(
-        pass["not_clean"], 4,
+        pass["not_clean"], 5,
         "the tainted session's points: {first:#}"
     );
-    assert_eq!(pass["driven"], 4, "{first:#}");
-    assert_eq!(pass["arms_driven"], 8, "{first:#}");
+    assert_eq!(pass["driven"], 5, "{first:#}");
+    assert_eq!(pass["arms_driven"], 10, "{first:#}");
     assert_eq!(pass["unposed"], 2, "{first:#}");
-    assert_eq!(pass["stored"]["written"], 6, "{first:#}");
+    assert_eq!(pass["stored"]["written"], 7, "{first:#}");
     // Counted for the model the pass drove; the two unposed points drove
     // none, so they are said beside it, never in its counts.
     assert_eq!(first["comparisons"]["model"], first["model"], "{first:#}");
-    assert_eq!(first["comparisons"]["records"], 4, "{first:#}");
+    assert_eq!(first["comparisons"]["records"], 5, "{first:#}");
     assert_eq!(first["comparisons"]["unposed"], 2, "{first:#}");
     assert_eq!(first["comparisons"]["no_model"], 0, "{first:#}");
     assert_eq!(first["comparisons"]["other_models"], 0, "{first:#}");
@@ -358,7 +379,7 @@ async fn a_compare_pass_leaves_a_comparison_per_point_a_second_read_returns() {
         .unwrap()
         .comparisons()
         .unwrap();
-    assert_eq!(rows.len(), 6, "{rows:#?}");
+    assert_eq!(rows.len(), 7, "{rows:#?}");
     assert!(
         rows.iter().all(|r| r.pointers.session_id == clean),
         "never {tainted}"
@@ -377,6 +398,15 @@ async fn a_compare_pass_leaves_a_comparison_per_point_a_second_read_returns() {
         "the arm that drafted the rejected mail again failed; the one that held it passed"
     );
     assert_eq!(rejected.model, "fixture");
+    // The repeat: no owner act at all. The arm that read the failure and
+    // made the same read again failed; the one that stopped passed.
+    let repeat = row(Kind::PointRepeat);
+    assert_eq!(repeat.validator, Validator::StructuralRepeat);
+    assert_eq!(
+        (repeat.verdict, repeat.preferred.clone()),
+        (Verdict::Separated, vec![1]),
+        "{repeat:#?}"
+    );
     // A draft the owner rewrote: neither arm wrote the owner's words, so
     // the owner never judged what they did.
     assert_eq!(
@@ -403,6 +433,7 @@ async fn a_compare_pass_leaves_a_comparison_per_point_a_second_read_returns() {
         "Totals attached",
         "cleo@",
         "only the third quarter",
+        "no such file",
     ] {
         assert!(!wire.contains(leaked), "{leaked} reached the store");
     }
@@ -410,7 +441,7 @@ async fn a_compare_pass_leaves_a_comparison_per_point_a_second_read_returns() {
     // A second pass compares nothing twice.
     let second = compare(&home, &work).await;
     server.abort();
-    assert_eq!(second["pass"]["already_compared"], 6, "{second:#}");
+    assert_eq!(second["pass"]["already_compared"], 7, "{second:#}");
     assert_eq!(second["pass"]["stored"]["written"], 0, "{second:#}");
     assert_eq!(second["pass"]["driven"], 0, "{second:#}");
     assert_eq!(
@@ -419,7 +450,7 @@ async fn a_compare_pass_leaves_a_comparison_per_point_a_second_read_returns() {
             .comparisons()
             .unwrap()
             .len(),
-        6
+        7
     );
 }
 

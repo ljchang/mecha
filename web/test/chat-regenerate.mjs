@@ -17,7 +17,7 @@ const readOut = (marker) => {
   return src.slice(start, src.indexOf('\n  }\n', start) + 4);
 };
 const fns = [
-  '  async function send({ text: fixed = null, regenerate = null, regions = null } = {}) {',
+  '  async function send({ text: fixed = null, regenerate = null, regions = null, onFail = null } = {}) {',
   '  async function regenerate(root, picture) {',
   '  async function grantCommand(command) {',
 ].map(readOut).join('\n');

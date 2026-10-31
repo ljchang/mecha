@@ -197,6 +197,13 @@ export const ROUTES = [
   ],
   ['GET', /^\/api\/settings\/voice$/, () => fx.voice],
   ['GET', /^\/api\/library\/voices$/, () => fx.voices],
+  // Settings → LoRAs, made up: the demo's registry names no real LoRA.
+  ['GET', /^\/api\/loras\/image$/, (url) => (url.searchParams.get('unlock') ? fx.lorasImage : { locked: true })],
+  ['GET', /^\/api\/loras\/video$/, (url) => (url.searchParams.get('unlock') ? fx.lorasVideo : { locked: true })],
+  ['GET', /^\/api\/loras\/image\/layer\/(chat|persona\/[^/]+)$/, (url) =>
+    url.searchParams.get('unlock') ? (url.pathname.endsWith('/chat') ? fx.loraLayerChat : fx.loraLayerPersona) : { locked: true }],
+  ['*', /^\/api\/loras\/image\/layer\//, () => new Response('the demo keeps no LoRAs', { status: 501 })],
+  ['*', /^\/api\/loras\/(image|video)(\/[^/]+)?$/, () => new Response('the demo keeps no LoRAs', { status: 501 })],
   ['GET', /^\/api\/settings\/lock$/, () => fx.lockSettings],
   ['GET', /^\/api\/settings\/images$/, () => fx.chatImages],
 

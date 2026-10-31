@@ -396,6 +396,67 @@ image = true
     let shown = String::from_utf8_lossy(&shown.stdout);
     assert!(shown.contains("character maya (v6)"), "{shown}");
     assert!(!shown.contains("tattoo"), "{shown}");
+
+    // A location and an outfit from the page: made, given a picture, listed
+    // with one the image route serves; a locked outfit takes a picture only
+    // while unlocked.
+    let r = post(
+        "/api/library/add",
+        serde_json::json!({"kind": "location", "name": "boathouse", "text": "a timber room, oars on the walls"}),
+    )
+    .await;
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    let r = post(
+        "/api/library/reference",
+        serde_json::json!({"kind": "location", "name": "boathouse", "as": "view", "picture": b64(png(63))}),
+    )
+    .await;
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    let shown = mecha(
+        &home,
+        &["imagelib", "show", "boathouse", "--kind", "location"],
+    );
+    let shown = String::from_utf8_lossy(&shown.stdout);
+    assert!(shown.contains("location boathouse (v2)"), "{shown}");
+    assert!(shown.contains("reference: view"), "{shown}");
+    let listed = list(None).await;
+    let place = listed["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["name"] == "boathouse")
+        .unwrap()
+        .clone();
+    let view = place["references"][0]["picture"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let picture = client.get(format!("{base}{view}")).send().await.unwrap();
+    assert_eq!(picture.status(), 200);
+    let r = post(
+        "/api/library/add",
+        serde_json::json!({"kind": "outfit", "name": "red-raincoat", "text": "a red hooded raincoat", "locked": true}),
+    )
+    .await;
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    let r = post(
+        "/api/library/reference",
+        serde_json::json!({"kind": "outfit", "name": "red-raincoat", "as": "view", "picture": b64(png(64))}),
+    )
+    .await;
+    assert_eq!(r.status(), 404, "locked, no token: hidden");
+    let r = post(
+        "/api/library/reference",
+        serde_json::json!({"kind": "outfit", "name": "red-raincoat", "as": "view", "picture": b64(png(64)), "unlock": token}),
+    )
+    .await;
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
+    let r = post(
+        "/api/library/reference/remove",
+        serde_json::json!({"kind": "location", "name": "boathouse", "as": "view"}),
+    )
+    .await;
+    assert!(r.status().is_success(), "{}", r.text().await.unwrap());
     // A locked character takes one only while unlocked.
     let r = post(
         "/api/library/reference",

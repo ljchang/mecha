@@ -8,12 +8,14 @@
   import EditModal from './EditModal.svelte';
   import ChatProse from './ChatProse.svelte';
   import PictureQueue from './PictureQueue.svelte';
+  import PictureLoras from './PictureLoras.svelte';
   import { replyContext } from './speech.js';
   import PersonaCall from './PersonaCall.svelte';
   import { features } from './features.svelte.js';
   import { isShown } from './features.js';
   import {
     composeEditMessage,
+    composeContinueMessage,
     composeRegenerateMessage,
     composeRegionsMessage,
     maskName,
@@ -30,8 +32,9 @@
     taintLabel, doseLine, authoringUrl, personaName, keptCharacter, OWNER_FILES, keptEdits,
     toolStatus, waitingLine, withWorking, withJob, clockOf, unsavedFiles, lockWaits, fileUrl, uploadUrl, sourceLine, sourceState, fileKind,
     citeEntries, citeOpens, citedUrl, ownWords, toolRun, sourceFileUrl, chatHeadline,
-    frameOf, frameStyle, dragFrame, MAX_FRAME_ZOOM,
+    frameOf, frameStyle, dragFrame, MAX_FRAME_ZOOM, avatarSrc,
   } from './persona.js';
+  import { thumbUrl } from './library.js';
   import PictureSettings from './PictureSettings.svelte';
   import { historyLines } from './call-lines.js';
   // The Personas tab (PERSONA-DESIGN.md §8; the owner's ruling of
@@ -401,16 +404,30 @@
         closeEdit();
         return;
       }
+      const draft = input;
       input = message;
-      imageEdit = null;
       // The edit as fields beside the message the owner sees: the harness
       // draws it itself and the persona only replies (IMAGE-DESIGN.md §5.3),
       // so nothing is parsed back out of the words.
-      await send({
+      const sent = await send({
         edit: regions.length
           ? { picture: edit.path, mask: maskPath, words: '', regions: placed }
           : { picture: edit.path, mask: maskPath ?? undefined, words: text.trim() },
       });
+      if (sent) {
+        if (imageEdit === edit) imageEdit = null;
+      } else {
+        // Refused (a reply still running, say): the panel stays, holding its
+        // picture, mask and regions, and says why, and the owner's draft
+        // comes back. The composed line alone in the composer would send as
+        // a typed turn, which builds on nothing (review of #754).
+        input = draft;
+        if (imageEdit === edit) {
+          edit.busy = false;
+          edit.error = `Not sent: ${error ?? 'the server refused it'}.`;
+        }
+        error = null;
+      }
     } catch (err) {
       if (imageEdit === edit) {
         edit.busy = false;
@@ -891,7 +908,7 @@
     const t = await res.json();
     if (key !== k || gen !== readGen) return;
     if (queueSeq === qSeq) queue = t.queue ?? [];
-    const settled = withJob(settle(t.entries, run), t.job);
+    const settled = withJob(settle(t.entries, run, t.waiting ?? null), t.job);
     const entries = t.running ? withWorking(settled, t.working) : settled;
     run = { ...emptyRun(entries, t.taint ?? null, t.citations ?? []), running: !!t.running };
     safety = t.safety ?? null;
@@ -1371,6 +1388,16 @@
     }
   }
 
+  // Continue (the owner, 2026-10-27): typing draws a new picture, and a
+  // picture is built on only from its own Continue, Edit or Regenerate. The
+  // chat the press was made in is kept with it, so it never carries into
+  // another chat.
+  let continuing = $state(null);
+  function continueFrom(path) {
+    continuing = { key, path };
+  }
+  const continuingHere = $derived(continuing && continuing.key === key ? continuing.path : null);
+
   // `text`: a turn the page composes itself (Regenerate), sent as it is,
   // which leaves the owner's draft and files in the composer. True when the
   // server took the turn.
@@ -1378,7 +1405,18 @@
     const own = fixed === null;
     const typed = own ? input.trim() : fixed;
     const attached = own ? [...attachments] : [];
-    const text = withAttachments(typed, attached);
+    // Typed under a Continue: the words go as the change to that picture,
+    // the harness draws it (IMAGE-DESIGN.md §5.3), and the persona replies.
+    const from = own && !edit ? continuingHere : null;
+    if (from) edit = { picture: from, words: typed };
+    const text = withAttachments(from ? composeContinueMessage(from, typed) ?? '' : typed, attached);
+    // A Continue is a change said in words: files alone have nothing to say
+    // about the picture, so the page says so rather than sending nothing
+    // without a word (review of #754, pass 2).
+    if (from && !typed) {
+      if (attached.length) error = 'Say what changes in the picture, or press ✕ on the Continue to send the files on their own.';
+      return;
+    }
     if (!text || !key) return;
     if (own) {
       input = '';
@@ -1392,6 +1430,7 @@
       });
       if (!res.ok) throw new Error((await res.text()).trim());
       const data = await res.json();
+      if (from) continuing = null;
       // Pictures the persona was not shown, said here since the chips are
       // gone — the assistant's chat's wording, for the same three reasons.
       if (data.started && data.pictures_not_shown > 0) {
@@ -1402,8 +1441,8 @@
         );
       }
       // A steer carries text only, so a picture sent into a live run is
-      // named and not shown.
-      if (data.steered && attached.some((p) => /\.(png|jpe?g|gif|webp)$/i.test(p))) {
+      // named and not shown — and so does a message that waits its turn.
+      if ((data.steered || data.waiting) && attached.some((p) => /\.(png|jpe?g|gif|webp)$/i.test(p))) {
         notice(`${chosen.display} was answering, so the picture went in by name only — not shown.`);
       }
     } catch (e) {
@@ -1416,6 +1455,14 @@
       return false;
     }
     return true;
+  }
+
+  // A message that was not sent, sent again as it was: its bubble goes, and
+  // the words come back as the server takes them — a turn, or a wait. One
+  // the server refuses comes back, with the error above it.
+  async function resend(entry) {
+    run = { ...run, entries: run.entries.filter((e) => !(e.queued && e.request_id === entry.request_id)) };
+    if (!(await send({ text: entry.text }))) run = { ...run, entries: [...run.entries, entry] };
   }
 
   // Regenerate (IMAGE-DESIGN.md §5.4): the picture showing, drawn again as
@@ -1510,7 +1557,7 @@
 
 {#snippet avatar(p, size)}
   <span class="avatar" style="width:{size}px;height:{size}px;font-size:{Math.round(size * 0.42)}px">
-    {#if p.portrait}<img src={p.portrait} alt="" style={frameStyle(p.frame)} />{:else}{p.display.slice(0, 1).toUpperCase()}{/if}
+    {#if p.portrait}<img src={avatarSrc(p.portrait, p.frame, size)} alt="" style={frameStyle(p.frame)} />{:else}{p.display.slice(0, 1).toUpperCase()}{/if}
   </span>
 {/snippet}
 
@@ -1777,6 +1824,11 @@
                (Settings → Images). -->
           {#if chosen.image}
             <PictureSettings img={chosen.image} opts={data?.image_options} {busy} save={saveImage} {token} />
+            <!-- Its picture LoRAs, beside the settings and never in their
+                 body: their own route, behind the library unlock (L3). -->
+            {#if isShown(features.rows, 'image')}
+              <PictureLoras persona={chosen.name} {token} />
+            {/if}
           {/if}
         {/if}
         {#if asForm && current.form.form}
@@ -1875,7 +1927,7 @@
               <div class="reviewmeta">tools: {review.tools?.length ? review.tools.join(', ') : 'none'}</div>
               {#if review.character}
                 <div class="reviewchar">
-                  {#if review.character.portrait}<img src={review.character.portrait} alt="" />{/if}
+                  {#if review.character.portrait}<img src={thumbUrl(review.character.portrait)} alt="" />{/if}
                   <div>
                     <div class="reviewcharname">
                       {review.character.name}{#if review.character.waiting}<span class="badge">portrait waiting too</span>{/if}
@@ -2010,7 +2062,7 @@
         {#each run.entries as entry, i (i)}
           {#if entry.kind === 'user'}
             <div class="bubble" class:queued={entry.queued}>
-              {ownWords(entry.text)}{#if entry.queued}<span class="queued-tag">{entry.delivery === 'discarded' ? 'not delivered — send again' : entry.delivery === 'delivered' ? 'steered' : 'queued'}</span>{/if}
+              {ownWords(entry.text)}{#if entry.queued}<span class="queued-tag">{#if entry.delivery === 'discarded'}not sent — <button class="resend" onclick={() => resend(entry)}>send again</button>{:else}{entry.delivery === 'delivered' ? 'steered' : 'queued'}{/if}</span>{/if}
             </div>
           {:else if entry.kind === 'assistant'}
             <!-- Each citation as the harness checked it (§10.4): "quoted" is
@@ -2055,7 +2107,10 @@
                   <button class="vstep" aria-label="Next version" disabled={at === list.length - 1} onclick={() => stepVersion(picture, list, 1)}>›</button>
                 </span>
               {/if}
-              <button class="genedit" onclick={() => editImage(shown)}>Edit</button>
+              <!-- Held back while a reply runs, as Regenerate is: a change to a
+                   picture waits for it (PICTURE_CHANGE_WAITS). -->
+              <button class="genedit" class:on={continuingHere === shown} disabled={run.running} title={run.running ? `${chosen.display} is answering` : 'Build the next picture on this one'} onclick={() => continueFrom(shown)}>Continue</button>
+              <button class="genedit" disabled={run.running} title={run.running ? `${chosen.display} is answering` : 'Change this picture'} onclick={() => editImage(shown)}>Edit</button>
               {#if redrawable(entry)}<button class="genedit" disabled={run.running} title={run.running ? `${chosen.display} is answering` : 'Draw this picture again at a new seed'} onclick={() => regenerate(picture, shown)}>Regenerate</button>{/if}
               <button class="genedit" onclick={() => savePicture(shown)}>Download</button>
               {#if pictureNote?.path === shown}<span class="genfail">not downloaded: {pictureNote.why}</span>{/if}
@@ -2129,6 +2184,13 @@
       {/if}
     </div>
     {#if key}
+      {#if continuingHere}
+        <div class="attach-row continue-row">
+          <img class="continue-thumb" src={pictureUrl(continuingHere)} alt="" />
+          <span class="continue-note">Continuing this picture: say what changes.</span>
+          <button class="attach-chip" title="Draw a new picture instead" aria-label="Stop continuing this picture" onclick={() => (continuing = null)}>✕</button>
+        </div>
+      {/if}
       {#if attachments.length}
         <div class="attach-row">
           {#each attachments as p, i}
@@ -2148,7 +2210,7 @@
           <textarea
             rows="1"
             use:grow={input}
-            placeholder={`Say something to ${chosen.display}`}
+            placeholder={continuingHere ? 'What happens next in this picture' : `Say something to ${chosen.display}`}
             aria-label={`Message to ${chosen.display}`}
             bind:value={input}
             onkeydown={onKey}
@@ -2381,6 +2443,7 @@
   .bubble { align-self: flex-end; max-width: 82%; background: var(--surface); border-radius: var(--radius); padding: 11px 14px; font-size: 14px; line-height: 1.45; white-space: pre-wrap; }
   .bubble.queued { border: 1px solid var(--accent-700); background: var(--bg); }
   .queued-tag { display: block; margin-top: 4px; font-family: var(--mono); font-size: 9px; color: var(--text-muted); }
+  .resend { font: inherit; color: var(--accent-500); background: none; border: 0; padding: 0; text-decoration: underline; cursor: pointer; }
   .answer { max-width: 92%; font-size: 14px; line-height: 1.5; white-space: pre-wrap; }
   .citedsheet { max-height: 75%; }
   .sheetacts { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -2420,6 +2483,10 @@
   /* As the assistant's chat attaches: chips above the composer, an overlay
      while a file is dragged over the page. */
   .attach-row { display: flex; gap: 6px; flex-wrap: wrap; padding: 8px var(--gutter) 0; }
+  .continue-row { align-items: center; }
+  .continue-thumb { width: 36px; height: 36px; object-fit: cover; border-radius: 6px; border: 1px solid var(--accent-700); }
+  .continue-note { font-size: 12px; color: var(--text-muted); flex: 1; min-width: 0; }
+  .genedit.on { background: var(--accent-900); }
   .attach-chip { font-family: var(--mono); font-size: 11px; color: var(--text); background: var(--accent-900); border: 1px solid var(--accent-700); border-radius: var(--radius-chip); padding: 6px 10px; cursor: pointer; }
   .attachbtn { flex: none; display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; padding: 0; background: transparent; border: none; border-radius: 22px; color: var(--accent-400); cursor: pointer; }
   .attachbtn:disabled { opacity: 0.4; cursor: default; }

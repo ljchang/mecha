@@ -10,6 +10,7 @@
 import { changesOf } from './tomlform.js';
 import { isDirty as mdDirty } from './mdform.js';
 import { stillOut } from './picture.js';
+import { thumbUrl } from './library.js';
 
 // A persona chat key, exactly as the server mints one: `p-` and twelve hex.
 const KEY = /^p-[0-9a-f]{12}$/;
@@ -357,6 +358,8 @@ export function toolStatus(entries, i) {
 
 const DOING = {
   image_generate: 'drawing a picture',
+  video_generate: 'making a clip',
+  video_prompt_guide: 'reading the video guide',
   image_view: 'looking at an image',
   web_search: 'searching the web',
   fs_read: 'reading a file',
@@ -429,13 +432,24 @@ function pageOnly(e) {
   return e.kind === 'notice' || e.kind === 'crisis' || (e.queued && e.delivery === 'discarded');
 }
 
+// A message no run has read yet, waiting for a turn of its own.
+function stillWaiting(e) {
+  return e.queued && e.delivery == null;
+}
+
 // The transcript after a finished run: the server's, which has the whole
 // answer — the part that streamed before a late subscriber arrived too —
 // with what only the page held carried across, in the order it arrived.
 // Re-reading without this deleted the failure notice and the "not
 // delivered" receipt one round trip after drawing them (review of #415).
-export function settle(serverEntries, local) {
-  return [...(serverEntries ?? []), ...local.entries.filter(pageOnly)];
+// Then the messages still waiting, last, in the order they will be sent:
+// the server's list when the read has one (a reloaded page has nothing of
+// its own), else the page's.
+export function settle(serverEntries, local, waiting = null) {
+  const queued = waiting
+    ? waiting.map((w) => ({ kind: 'user', text: w.text, queued: true, request_id: w.request_id ?? null, delivery: null }))
+    : local.entries.filter(stillWaiting);
+  return [...(serverEntries ?? []), ...local.entries.filter(pageOnly), ...queued];
 }
 
 function markDelivery(state, ids, delivery) {
@@ -450,11 +464,17 @@ function markDelivery(state, ids, delivery) {
 // the server may grow a kind this page does not draw yet.
 export function applyEvent(state, ev) {
   switch (ev?.type) {
+    // A waiting message's turn starting takes its bubble out of the queue:
+    // the same words, now the turn's (matched by receipt).
     case 'user': {
       const s = flush(state);
-      return { ...s, running: true, entries: [...s.entries, { kind: 'user', text: ev.text }] };
+      const entries = ev.request_id ? s.entries.filter((e) => !(e.queued && e.request_id === ev.request_id)) : s.entries;
+      return { ...s, running: true, entries: [...entries, { kind: 'user', text: ev.text, request_id: ev.request_id ?? null }] };
     }
+    // Once per receipt: a message that raced into a run and back to the
+    // line is announced twice, and is one bubble.
     case 'queued':
+      if (ev.request_id && state.entries.some((e) => e.queued && e.request_id === ev.request_id)) return state;
       return {
         ...state,
         entries: [...state.entries, { kind: 'user', text: ev.text, queued: true, request_id: ev.request_id ?? null, delivery: null }],
@@ -622,6 +642,17 @@ export function frameOf(frame) {
   const ok = (v) => typeof v === 'number' && Number.isFinite(v);
   if (!frame || !ok(frame.x) || !ok(frame.y) || !ok(frame.zoom)) return { ...DEFAULT_FRAME };
   return { x: clamp(frame.x, 0, 1), y: clamp(frame.y, 0, 1), zoom: clamp(frame.zoom, 1, MAX_FRAME_ZOOM) };
+}
+
+// The picture an avatar `size` CSS pixels wide loads: the library's small
+// JPEG unless the frame zooms it past what that holds at a phone's three
+// device pixels. An avatar is filled by the picture's short side, which in a
+// thumbnail 512 px long is 341 for a 2:3 portrait and 288 for 9:16, so 96 CSS
+// pixels (288 device) is the most it holds for every portrait (review of
+// #736).
+export const THUMB_AVATAR = 96;
+export function avatarSrc(portrait, frame, size) {
+  return size * frameOf(frame).zoom > THUMB_AVATAR ? portrait : thumbUrl(portrait);
 }
 
 // The `<img>`'s style for a frame.

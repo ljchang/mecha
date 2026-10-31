@@ -23,6 +23,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   uncensored Qwen3.6 comes with the production model's MTP head already
   grafted on, hosted at `mecha-factory/Qwen3.6-35B-A3B-Uncensored-MTP-GGUF`.
   (`docs/MODEL-CATALOG-DESIGN.md`)
+- **One LoRA registry for pictures and clips, checked against the files.**
+  `~/.mecha/loras.toml` holds both kinds; each entry says `model =
+  "qwen-image"` or `"h3"`, and mecha reads each file's header to check it,
+  leaving out (and saying) an entry whose file is for another model, cannot
+  be read, or is not in the server's LoRA folders. **Set `[video] loras_dir`
+  (and `[image] loras_dir` for a ComfyUI you installed yourself) before
+  updating**, to the folders each server loads LoRAs from: without it every
+  clip LoRA is left out. The old `[video] loras` file is still read for this
+  release while the new one does not exist; `mecha doctor` says it has
+  moved, and names every entry left out.
+
+- **Pictures use your LoRAs.** Turn picture LoRAs on for every picture in
+  chat in Settings → LoRAs, and per persona on its page (or let it follow
+  the chat's list). At most three a picture. They apply on the standard and
+  turbo models, not on a `.gguf` model file. A trigger word the prompt lacks
+  is added ahead of it. The picture's result says how many applied, never
+  which. Behind the library lock, as the registry is.
+
+- **Settings → LoRAs.** Add, edit and remove your LoRAs from the web app,
+  picture and clip ones in their own sections, each shown while its feature
+  is on. The Add list is the files each server already has, with the model
+  each was made for read from the file. The pane sits behind the library
+  lock. Clip changes reach clips when mecha next restarts.
+
+- **Video clips can use your own LoRAs, places and clothes.** `[video] loras`
+  points at a registry you write (mecha ships and names none): always-on
+  entries ride every clip and the model picks the rest per clip; one with no
+  file for the clip's H3 checkpoint is left out with a note. The image
+  library gains **locations** (a place's text and up to three photos) and
+  **outfits** (clothes, with a picture of the garment alone): a scene names a
+  location as its setting, or an outfit as someone's whole `wearing`, and its
+  picture goes with it. Add and lock both, and their pictures, in the Library
+  tab. `[video] guide_addendum` appends your own notes to the video guide.
+
+- **Clips send a character's full body and labelled details.** After the
+  faces, a full-body picture goes to a cast of one or two when everyone shown
+  has one (none when the clip is seen through someone's eyes), and each
+  labelled detail, such as a tattoo, goes while H3's nine slots last. A
+  tattoo that words alone put on both forearms stayed on one with its
+  picture. What does not fit is counted in the result.
+
+- **Pictures send labelled details too.** A character's close-ups, such as a
+  tattoo, go after the faces and bodies while a new picture's five images
+  last, each tied to its person by name. A tattoo that words alone drew as a
+  different design on both sides came out as the right one, on one side,
+  with its picture. A picture planned in layers is drawn from portraits and
+  sends none; what was left out is counted in the result.
+
+- **Scenes are mended where a model's prose says more than its fields.** A
+  line quoted inside an action becomes a spoken line; "Wren's POV" makes Wren
+  the camera, whose face never appears; names inside quoted speech stay as
+  written; and lines go to the shot whose action says someone speaks.
+
+- **`mecha imagelib upscale`: redraw a small portrait larger.** The image
+  model draws the same photograph again at about a megapixel, saved as a new
+  version with the old one kept. With ArcFace installed the redraw is kept
+  only when it is the same face (`--out` writes it to a file instead). A
+  401 px portrait redrawn this way matched its character at 0.53 in a video
+  clip, against 0.45 as it was.
+
+- **The library and persona pages load small pictures.** Grid tiles and
+  avatars now ask for a 512 px JPEG of each portrait (`?size=thumb-v1` on the
+  picture route), made once and kept beside the face crops, under the same
+  lock as the picture. A 1024² portrait is about 1.5 MB; its thumbnail is a
+  few tens of KB.
 
 - **`mecha-mail auth` takes a sign-in app you already have.** Before the
   registration pages it asks whether you have one, from another machine for
@@ -66,7 +131,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it still speaks in it.
 
 - **The assistant's chat shows how long a picture or clip has been running.**
-  A still-out row reads "working on it… 2:14" or "drawing a picture… 0:41",
+  A still-out row reads "making a clip… 2:14" or "drawing a picture… 0:41"
+  ("working on it…" for another tool's background work),
   as a persona chat's already did, and keeps counting across a reload.
 
 - **`[[mcp]] disabled_tools` withholds single tools from a server.** By the
@@ -150,6 +216,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Continue on a picture is the only way to build on it.** Every picture in
+  a persona chat has a Continue button beside Edit and Regenerate: press it,
+  say what changes, and the next picture builds on that one. Typing without
+  it always draws a new picture, and the harness refuses a call that names an
+  earlier picture on a typed turn, so the model never decides which was
+  meant. A change to a picture sent while a reply runs waits for it
+  (`IMAGE-SCENE-DESIGN.md` R11).
+- **A new picture starts from nothing, and a new chat starts with no scene.**
+  A persona's new chat no longer continues from her last picture, and within
+  a chat a picture builds on an earlier one only when it names that picture,
+  which the model is told to do only when the owner asks to continue, build
+  on, edit or change it. A new picture takes no place, clothes or people from
+  the chat's record. Reverses ruling R7 (`IMAGE-SCENE-DESIGN.md` R10).
+
 - **Settings → Voice picks from the voice library.** The assistant's voice
   picker lists the library's unlocked voices as they stand, so a voice
   recorded a moment ago is there without a call first. It used to list the
@@ -167,6 +247,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and what mecha publishes getting a lasting link.
 
 ### Fixed
+
+- **Pictures and clips no longer disappear from older chats.** The nightly
+  `mecha work clean` counted a chat's workspace like a morning brief and kept
+  only the ten newest per surface, so every picture drawn in an older persona
+  or web chat was deleted while the chat itself stayed. Conversation
+  workspaces (web, persona, Slack) are no longer counted: they are kept
+  until `[work] retain_conversations` says otherwise, `forever` by default, or
+  a duration like `90d` measured from the newest file in the chat. Deleting a
+  web chat still removes its files; persona chats and Slack threads have no
+  delete yet, so their files are bounded only by this setting. Pictures
+  already removed are not recovered.
 
 - **A new picture of two or more library characters no longer draws one of
   them twice.** It now sends their portraits only, even when they have a

@@ -540,6 +540,9 @@ mod tests {
     }
     #[async_trait::async_trait]
     impl crate::provider::Provider for Writer {
+        fn local(&self) -> bool {
+            true
+        }
         fn id(&self) -> &str {
             "scripted"
         }

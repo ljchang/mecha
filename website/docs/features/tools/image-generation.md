@@ -253,7 +253,30 @@ From a terminal:
 mecha imagelib add-character maya --portrait maya.png \
   --description "a woman in her mid-30s with short curly black hair; slim, average height"
 mecha imagelib add-style watercolour --text "loose watercolour, soft washes, paper texture"
+mecha imagelib add-location boathouse --text "a timber boathouse, oars on the walls, a slipway door"
+mecha imagelib add-reference boathouse --as view boathouse.jpg
+mecha imagelib add-outfit red-raincoat --text "a red hooded raincoat, knee length, wooden toggles"
+mecha imagelib add-reference red-raincoat --as view raincoat.png
 ```
+
+A **location** is a place: its text, and up to three pictures, added on its
+page in the **Library** tab's Locations pane or with `--as view`. A video clip whose scene names it (`setting.location`) is set
+there, its first picture sent as the setting. An **outfit** is clothes: its
+text, and a picture of the garment alone (on its page in the Outfits pane, or
+`--as view`; no one wearing it). A
+clip that dresses someone in it, by giving its name as their whole
+`wearing`, sends the picture as what they have on, which keeps the exact
+garment from shot to shot. Pictures don't use locations or outfit pictures
+yet.
+
+**A small portrait can be redrawn larger.** `mecha imagelib upscale maya`
+asks the image model for the same photograph at about 1024×1024 and saves it
+as a new version, the old one kept in its history; a portrait already that
+size is left alone. With ArcFace installed (`mecha imagelib face compare`
+fetches it), the redraw is kept only if it is the same face, and `--out
+redraw.png` writes it to a file to look at first. It matters most for video:
+a clip is given each reference at most at its own size, so a small portrait
+becomes a small, blurry face.
 
 **Using them.** Name them in a chat, and say what each is wearing and doing:
 "Maya and John sharing a picnic by a lake, in the watercolour style — Maya in

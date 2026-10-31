@@ -1,7 +1,13 @@
 // The image library page's pure logic, kept out of the component so the
 // tests exercise the shipped code (web/test/library.mjs).
 
-export const PANES = ['characters', 'styles', 'voices', 'candidates'];
+export const PANES = ['characters', 'styles', 'locations', 'outfits', 'voices', 'candidates'];
+
+// The entry kind each library pane lists. A kind with no pane (a later
+// build's) is listed nowhere and counted nowhere, never as a character: a
+// Character fallback here showed a location in no pane and counted it among
+// the characters (review of #740).
+const PANE_KIND = { characters: 'character', styles: 'style', locations: 'location', outfits: 'outfit' };
 
 // Which pane a hash sub names; anything else is the characters pane.
 export function paneOf(sub) {
@@ -16,18 +22,20 @@ export function entriesFor(pane, entries) {
   if (pane === 'candidates') return list.filter((e) => e.status === 'candidate');
   // Voices are not library entries: their pane reads its own list.
   if (pane === 'voices') return [];
-  const kind = pane === 'styles' ? 'style' : 'character';
+  const kind = PANE_KIND[pane];
   return list.filter((e) => e.status === 'approved' && e.kind === kind);
 }
 
 // A model's staged reference changes wait in the candidates pane too, so the
 // chip counts them (docs/IMAGE-COMPILER-DESIGN.md §9.3, 2026-10-14).
 export function counts(entries, pending = []) {
-  const out = { characters: 0, styles: 0, candidates: (pending ?? []).length };
+  const out = { characters: 0, styles: 0, locations: 0, outfits: 0, candidates: (pending ?? []).length };
   for (const e of entries ?? []) {
     if (e.status === 'candidate') out.candidates += 1;
-    else if (e.kind === 'style') out.styles += 1;
-    else out.characters += 1;
+    else {
+      const pane = Object.keys(PANE_KIND).find((p) => PANE_KIND[p] === e.kind);
+      if (pane) out[pane] += 1;
+    }
   }
   return out;
 }
@@ -61,6 +69,17 @@ export function originLabel(origin) {
 // A token lives in the page's memory and nowhere else (no-storage.mjs).
 export function listUrl(token) {
   return token ? `/api/library?unlock=${encodeURIComponent(token)}` : '/api/library';
+}
+
+// A library picture's small JPEG (at most 512 px long): what a grid tile or
+// an avatar loads, where the whole portrait can be megabytes. The size names
+// the thumbnail's generation, so a new one is a new URL to a browser that
+// cached the old for a year: `imagelib::THUMB_QUERY` must say the same.
+// Anything that is not the picture route is left as it is.
+export const THUMB_SIZE = 'thumb-v1';
+export function thumbUrl(url) {
+  if (typeof url !== 'string' || !url.startsWith('/api/library/portrait/')) return url;
+  return `${url}${url.includes('?') ? '&' : '?'}size=${THUMB_SIZE}`;
 }
 
 // The voice library (Library → Voices), with the unlock when there is one:
@@ -150,7 +169,7 @@ export function tameName(typed) {
 
 // The store's caps on an entry's text (imagelib.rs MAX_DESCRIPTION,
 // MAX_STYLE_TEXT): the form says so before the server has to.
-export const TEXT_MAX = { character: 400, style: 1000 };
+export const TEXT_MAX = { character: 400, style: 1000, location: 400, outfit: 300 };
 
 // A portrait's longest edge as the page sends it. Generation sends every
 // portrait at 512² (research E10), so a phone's 4000-pixel photo buys
@@ -205,13 +224,33 @@ export function formBody(form, entry = null, token = null) {
 // RefKind::limit): the page hides an add the store would refuse, and the
 // store still refuses it.
 export const REF_KINDS = ['full_body', 'face', 'detail'];
-export const REF_LIMIT = { face: 1, full_body: 1, detail: 4 };
-export const REF_TITLE = { face: 'Face', full_body: 'Full body', detail: 'Detail' };
+export const REF_LIMIT = { face: 1, full_body: 1, detail: 4, view: 3 };
+export const REF_TITLE = { face: 'Face', full_body: 'Full body', detail: 'Detail', view: 'Picture' };
+
+// The pictures each entry kind takes, as the store allows them
+// (imagelib.rs RefKind::allowed_on): a style takes none.
+export const PICTURE_KINDS = { character: REF_KINDS, location: ['view'], outfit: ['view'] };
+export const pictureKinds = (entryKind) => PICTURE_KINDS[entryKind] ?? [];
+
+// How an entry is used, said on its page.
+export function useNote(entry) {
+  if (!entry) return '';
+  return {
+    character: `In a chat, name ${entry.name} and say what they are wearing and doing.`,
+    style: `In a chat, name ${entry.name} as the look of a picture.`,
+    location: `In a clip, name ${entry.name} as where it happens; its first picture is the setting.`,
+    outfit: `In a clip, dress someone in ${entry.name} by naming it as what they wear; its picture comes with it.`,
+  }[entry.kind] ?? '';
+}
 // A detail's label is sent beside the description, so it is short.
 export const LABEL_MAX = 100;
 
 // What each kind is for and what it does, said where it is added.
-export function refNote(kind) {
+export function refNote(kind, entryKind = 'character') {
+  if (kind === 'view' && entryKind === 'location')
+    return 'A wide photo of the empty room, from about where the camera would stand. Clips are set there; the first picture is the one sent.';
+  if (kind === 'view' && entryKind === 'outfit')
+    return 'The garment alone, laid flat or on an invisible mannequin, with no one wearing it. Clips send it as what the wearer has on.';
   return {
     full_body:
       'Head to toe, standing square-on with arms relaxed: its stance carries into pictures. Sent with a new picture of this person alone; pictures with others use portraits.',
@@ -222,9 +261,10 @@ export function refNote(kind) {
   }[kind];
 }
 
-// Whether another `kind` fits: approved characters only, under the limit.
+// Whether another `kind` fits: an approved entry whose kind takes it, under
+// the limit.
 export function refAddable(entry, kind) {
-  if (!entry || entry.kind !== 'character' || entry.status !== 'approved') return false;
+  if (!entry || !pictureKinds(entry.kind).includes(kind) || entry.status !== 'approved') return false;
   const have = (entry.references ?? []).filter((r) => r.kind === kind).length;
   return have < (REF_LIMIT[kind] ?? 0);
 }
@@ -241,11 +281,23 @@ export function refProblem(form, entry = null) {
   return null;
 }
 
+// The label a picture is sent with: the owner's, or for a second or third
+// view with none, `view 2` / `view 3` — the store tells pictures of one kind
+// apart by label, so two unlabelled views are one too many (review of #743).
+export function sentLabel(form, entry) {
+  const label = (form.label ?? '').trim();
+  if (label || form.kind !== 'view') return label;
+  const taken = new Set((entry?.references ?? []).filter((r) => r.kind === 'view').map((r) => r.label ?? ''));
+  if (!taken.has('')) return '';
+  for (let n = 2; ; n += 1) if (!taken.has(`view ${n}`)) return `view ${n}`;
+}
+
 // The body POST /api/library/reference takes.
 export function refBody(form, entry, token = null) {
-  const label = (form.label ?? '').trim();
+  const label = sentLabel(form, entry);
   return {
     name: entry.name,
+    ...(entry.kind && entry.kind !== 'character' ? { kind: entry.kind } : {}),
     as: form.kind,
     picture: form.picture,
     ...(label ? { label } : {}),
@@ -258,6 +310,7 @@ export function refBody(form, entry, token = null) {
 export function refRemoveBody(entry, ref, token = null) {
   return {
     name: entry.name,
+    ...(entry.kind && entry.kind !== 'character' ? { kind: entry.kind } : {}),
     as: ref.kind,
     ...(ref.label ? { label: ref.label } : {}),
     ...(token ? { unlock: token } : {}),
@@ -270,4 +323,10 @@ export function refRemoveBody(entry, ref, token = null) {
 // image until the save (2026-10-14).
 export function previewOf(b64) {
   return `data:image/jpeg;base64,${b64}`;
+}
+
+// The picture a location or outfit row shows: its first, the one a clip is
+// sent.
+export function firstPicture(entry) {
+  return (entry?.references ?? []).find((r) => r.kind === 'view')?.picture ?? null;
 }
