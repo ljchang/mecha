@@ -41,6 +41,14 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             interpreter,
         );
         prepared.registry.insert(std::sync::Arc::new(code));
+        // And narrowed by a `--tool-profile` as a run's is, by itself.
+        if let Some(profile) = global.tool_profile {
+            crate::setup::narrow_code(
+                &mut prepared.registry,
+                profile,
+                &prepared.config.outbox.tools,
+            );
+        }
     }
     let registry = &prepared.registry;
 

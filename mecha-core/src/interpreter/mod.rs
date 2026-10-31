@@ -94,7 +94,10 @@ pub fn limits_not_applied(sandbox: &crate::sandbox::SandboxConfig, macos: bool) 
     }
     (macos && !set.is_empty()).then(|| {
         format!(
-            "code mode: [sandbox] {} does not reach the interpreter's worker on a Mac —              Seatbelt has no cgroup to apply it, so monty's own memory ceiling is the only              bound on a program there, and nothing limits its CPU (`shell` still gets the              limits under its own sandbox)",
+            "code mode: [sandbox] {} does not reach the interpreter's worker on a Mac: \
+             Seatbelt has no cgroup to apply it, so monty's own memory ceiling is the only \
+             bound on a program there, and no CPU quota applies (`shell` still gets the \
+             limits under its own sandbox)",
             set.join(", ")
         )
     })

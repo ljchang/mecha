@@ -2954,6 +2954,7 @@ fn the_mac_limits_gap_is_named_only_on_a_mac_with_limits_set() {
         "{said}"
     );
     assert!(said.contains("Seatbelt"), "{said}");
+    assert!(!said.contains("  "), "a lost line continuation: {said}");
     assert_eq!(
         limits_not_applied(&limited, false),
         None,

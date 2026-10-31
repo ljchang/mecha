@@ -1848,7 +1848,8 @@ fn own_state(facts: &Facts, f: Feature) -> State {
             if !cfg!(target_os = "macos") && cfg.sandbox.kind != crate::sandbox::Backend::Bwrap {
                 return State::Unready {
                     reason: format!(
-                        "code mode runs its interpreter only inside bwrap, and [sandbox] kind                          is \"{}\"",
+                        "code mode runs its interpreter only inside bwrap, and [sandbox] kind \
+                         is \"{}\"",
                         cfg.sandbox.kind.as_str()
                     ),
                     fix: Some("set [sandbox] kind = \"bwrap\"".into()),
@@ -2313,7 +2314,8 @@ mod tests {
             facts.config.sandbox.kind = crate::sandbox::Backend::None;
             assert!(
                 matches!(code(&facts), State::Unready { reason, fix: Some(fix) }
-                    if reason.contains("bwrap") && fix.contains("kind = \"bwrap\"")),
+                    if reason.ends_with("[sandbox] kind is \"none\"")
+                        && fix.contains("kind = \"bwrap\"")),
                 "the interpreter runs only inside bwrap here"
             );
             facts.config.sandbox.kind = crate::sandbox::Backend::Bwrap;
