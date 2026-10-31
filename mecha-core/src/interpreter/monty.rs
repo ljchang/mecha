@@ -88,6 +88,13 @@ pub enum Confinement {
 }
 
 impl Confinement {
+    /// Whether the launcher must start [`WATCHDOG`] beside the worker:
+    /// Seatbelt has no `--die-with-parent`, so nothing else ends a worker
+    /// whose mecha was `SIGKILL`ed (`CODE-MODE-DESIGN.md` §7).
+    fn watchdog(&self) -> bool {
+        matches!(self, Confinement::Seatbelt { .. })
+    }
+
     /// The confinement this platform gives a worker, or a refusal naming why
     /// it gives none. On Linux that is the configured sandbox, and `none`
     /// refuses too: the sandbox is the second wall (§7), because round 1 of
@@ -179,8 +186,8 @@ impl Confinement {
             // `env -i` execs `sandbox-exec`, which applies the profile and
             // execs the worker: one process from the launcher's shell to the
             // program, so the pid the pool holds is the confined worker.
-            // There is no `--die-with-parent` here: a worker outlives a
-            // `SIGKILL`ed mecha (`CODE-MODE-DESIGN.md` §12).
+            // There is no `--die-with-parent` here; the launcher's
+            // [`WATCHDOG`] stands in for it.
             Confinement::Seatbelt { sandbox_exec } => {
                 return Ok(vec![
                     ENV.into(),
@@ -319,7 +326,14 @@ struct Launcher {
 }
 
 impl Launcher {
-    fn write(argv: &[String]) -> Result<Self> {
+    /// `watchdog` puts [`WATCHDOG`] ahead of the `exec`.
+    fn write(argv: &[String], watchdog: bool) -> Result<Self> {
+        Self::write_with(argv, watchdog.then_some(PS))
+    }
+
+    /// [`Self::write`], with the watchdog reading start times through `ps`
+    /// when one is given: [`PS`], or a test's stand-in.
+    fn write_with(argv: &[String], ps: Option<&str>) -> Result<Self> {
         let dir = std::env::temp_dir().join(format!("mecha-monty-{}", uuid::Uuid::new_v4()));
         let mut builder = std::fs::DirBuilder::new();
         // Created 0700, never chmodded after: no window where it is open.
@@ -330,13 +344,22 @@ impl Launcher {
             .with_context(|| format!("creating {}", dir.display()))?;
         let script = dir.join("worker");
         let log = dir.join("worker.log");
-        let mut body = String::from("#!/bin/sh\nexec");
+        let quoted_log = sh_quote(&log.display().to_string());
+        let mut body = String::from("#!/bin/sh\n");
+        if let Some(ps) = ps {
+            body.push_str(
+                &WATCHDOG
+                    .replace("{log}", &quoted_log)
+                    .replace("{ps}", &sh_quote(ps)),
+            );
+        }
+        body.push_str("exec");
         for a in argv {
             body.push(' ');
             body.push_str(&sh_quote(a));
         }
         body.push_str(" \"$@\" 2>>");
-        body.push_str(&sh_quote(&log.display().to_string()));
+        body.push_str(&quoted_log);
         body.push('\n');
         std::fs::write(&script, body)?;
         #[cfg(unix)]
@@ -369,6 +392,66 @@ impl Drop for Launcher {
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
+
+/// What ends a Seatbelt worker whose mecha died without dropping the pool.
+///
+/// bwrap's `--die-with-parent` has no macOS counterpart, and the launch
+/// chain is all `exec`s, so the pool's kill on drop is the only thing that
+/// ends a worker, and a `SIGKILL`ed mecha never runs it. A worker computing
+/// at that moment never reads its stdin's EOF, and the wall clock died with
+/// the host, so it would spin until someone killed it.
+///
+/// The launcher runs this before it `exec`s the chain, so `$$` is the
+/// worker's pid from then on, and `$PPID` is mecha. Each pid is recorded
+/// with its start time (`ps -o lstart`), because a pid alone names a
+/// process only until the kernel reuses it, and `exec` keeps a process's
+/// start time. Once a second the loop checks both:
+///
+/// - It ends when the worker does (`kill -0`, a builtin).
+/// - Mecha is alive while `kill -0` reaches its pid **and** that pid still
+///   has mecha's start time, so a reused pid cannot pass for a live mecha.
+///   A reused pid owned by another user fails `kill -0` (`EPERM`), which
+///   reads as gone, the right answer.
+/// - Once mecha is gone, it kills the worker, but only if that pid still
+///   has the worker's start time, so a reused pid is never killed. A
+///   worker pid that reads another start time means the worker is gone,
+///   and the loop ends.
+///
+/// **An unreadable `ps` is never an answer** (review of #772). An empty
+/// read means a failed fork as often as a missing process, under the
+/// process limit or memory pressure, which is exactly when a worker sits at
+/// `max_memory`. Concluding from it would kill a healthy worker, or retire
+/// the watchdog and leave the worker unguarded. So an empty read of
+/// mecha's start time counts as alive, an empty read of the worker's
+/// counts as unknown, and the loop asks again a second later. At launch, a
+/// start time that cannot be read fails the launch: the worker never
+/// starts, and preflight refuses code mode, rather than running it
+/// unguarded. The loop forks twice to leave the worker's process tree, so
+/// it neither outlives the worker inside it nor stops with it, and it holds
+/// none of the worker's pipes. It runs outside the profile: it is this
+/// fixed text, with no input from a program. `PATH` is empty here, so every
+/// command it forks is named absolutely. `{log}` is the quoted stderr log,
+/// and `{ps}` is [`PS`], or a test's stand-in.
+const WATCHDOG: &str = r#"w=$$ p=$PPID
+t=$({ps} -o lstart= -p "$w" 2>>{log})
+tp=$({ps} -o lstart= -p "$p" 2>>{log})
+if [ -z "$t" ] || [ -z "$tp" ]; then echo "watchdog: a start time is unreadable" >>{log}; exit 1; fi
+( (
+while kill -0 "$w" 2>/dev/null; do
+if kill -0 "$p" 2>/dev/null; then
+c=$({ps} -o lstart= -p "$p" 2>/dev/null)
+if [ -z "$c" ] || [ "$c" = "$tp" ]; then /bin/sleep 1; continue; fi
+fi
+c=$({ps} -o lstart= -p "$w" 2>/dev/null)
+if [ "$c" = "$t" ]; then kill -9 "$w"; exit 0; fi
+if [ -n "$c" ]; then exit 0; fi
+/bin/sleep 1
+done
+) </dev/null >/dev/null 2>&1 & ) </dev/null >/dev/null 2>&1
+"#;
+
+/// What [`WATCHDOG`] reads start times with.
+const PS: &str = "/bin/ps";
 
 fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
@@ -410,7 +493,7 @@ impl Monty {
         // Hashed again here, so "verified" means "at this pool's start",
         // not whenever a `VerifiedWorker` was last made.
         let worker = super::worker::verify(worker.path())?;
-        let launcher = Launcher::write(&confinement.argv(worker.path())?)?;
+        let launcher = Launcher::write(&confinement.argv(worker.path())?, confinement.watchdog())?;
         let mut cfg = PoolConfig::subprocess(&launcher.script);
         cfg.min_processes = 0;
         cfg.max_processes = max_workers.max(1);
@@ -1199,7 +1282,7 @@ mod tests {
 
     #[test]
     fn the_launcher_quotes_every_argument() {
-        let l = Launcher::write(&["/x/b'w rap".into(), "--ro-bind".into()]).unwrap();
+        let l = Launcher::write(&["/x/b'w rap".into(), "--ro-bind".into()], false).unwrap();
         let body = std::fs::read_to_string(&l.script).unwrap();
         assert!(
             body.starts_with("#!/bin/sh\nexec '/x/b'\\''w rap' '--ro-bind' \"$@\" 2>>'"),
@@ -1211,6 +1294,212 @@ mod tests {
             !dir.exists(),
             "the private directory outlived the interpreter"
         );
+    }
+
+    /// The gate that decides whether the guard exists at all: Seatbelt's
+    /// launcher starts the watchdog, and bwrap's is the bare `exec` it was
+    /// (review of #772).
+    #[test]
+    fn only_seatbelt_starts_the_watchdog() {
+        let worker = Path::new("/x/monty");
+        let body = |c: &Confinement| {
+            let l = Launcher::write(&c.argv(worker).unwrap(), c.watchdog()).unwrap();
+            std::fs::read_to_string(&l.script).unwrap()
+        };
+        let seatbelt = body(&Confinement::seatbelt_at(SANDBOX_EXEC));
+        assert!(
+            seatbelt.contains(&format!("{} -o lstart=", sh_quote(PS))),
+            "{seatbelt}"
+        );
+        let bwrap = body(&Confinement::bwrap_at("/usr/bin/bwrap"));
+        assert!(bwrap.starts_with("#!/bin/sh\nexec "), "{bwrap}");
+        assert!(!bwrap.contains("lstart"), "{bwrap}");
+    }
+
+    /// The worker and the stand-in mecha a watchdog test started, killed if
+    /// an assert fails first. `mecha` is cleared once reaped, and the whole
+    /// guard is forgotten on success, so it never signals a pid the kernel
+    /// is free to reuse.
+    struct Reap {
+        worker: u32,
+        mecha: Option<u32>,
+    }
+
+    impl Drop for Reap {
+        fn drop(&mut self) {
+            // SAFETY: plain signals to the processes this test started.
+            unsafe {
+                libc::kill(self.worker as i32, libc::SIGKILL);
+                if let Some(m) = self.mecha {
+                    libc::kill(m as i32, libc::SIGKILL);
+                }
+            }
+        }
+    }
+
+    /// A stand-in mecha, a shell that starts `l`'s launcher with
+    /// `/bin/sleep 600` as the worker and then `exec`s `sleep` itself, so it
+    /// keeps its pid and start time as mecha would. The guard holds the
+    /// launcher's pid, which is the worker's once it `exec`s.
+    fn stand_in(l: &Launcher) -> (std::process::Child, Reap) {
+        use std::io::BufRead;
+        let mut mecha = std::process::Command::new("/bin/sh")
+            .args([
+                "-c",
+                "\"$0\" 600 </dev/null >/dev/null 2>&1 & echo $!; exec /bin/sleep 600",
+            ])
+            .arg(&l.script)
+            .env_clear()
+            .stdout(std::process::Stdio::piped())
+            // Not this test's stderr: a stand-in left by a failed assert
+            // would hold the harness's pipe for ten minutes.
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(mecha.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let reap = Reap {
+            worker: line.trim().parse().unwrap(),
+            mecha: Some(mecha.id()),
+        };
+        (mecha, reap)
+    }
+
+    /// `SIGKILL`s the stand-in and reaps it, as a real mecha's parent would:
+    /// a zombie still answers `kill -0` and `ps`.
+    fn kill_mecha(mecha: &mut std::process::Child, reap: &mut Reap) {
+        mecha.kill().unwrap();
+        mecha.wait().unwrap();
+        reap.mecha = None;
+    }
+
+    /// Whether `pid` is gone within `limit`.
+    fn gone_within(pid: u32, limit: Duration) -> bool {
+        let t = std::time::Instant::now();
+        while !test_process::is_gone(pid) && t.elapsed() < limit {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        test_process::is_gone(pid)
+    }
+
+    /// A worker whose mecha was `SIGKILL`ed is ended by the launcher's
+    /// watchdog, and one whose mecha lives is left alone. The script is plain
+    /// `sh`, so this runs on Linux too, though only Seatbelt starts it.
+    /// Without the watchdog the sleep outlives the kill by ten minutes.
+    #[test]
+    fn the_watchdog_ends_a_worker_whose_mecha_was_killed() {
+        let l = Launcher::write(&["/bin/sleep".into()], true).unwrap();
+        let (mut mecha, mut reap) = stand_in(&l);
+        let worker = reap.worker;
+        // Past two polls: the watchdog leaves a worker whose mecha lives, and
+        // the launcher did not refuse.
+        std::thread::sleep(Duration::from_millis(2500));
+        assert!(
+            !test_process::is_gone(worker),
+            "the worker ended while its mecha lived: {}",
+            l.log_tail()
+        );
+        // The loop left the worker's tree: the pool kills one pid, and a
+        // backstop stops the whole tree.
+        assert_eq!(test_process::tree(worker), vec![worker]);
+        kill_mecha(&mut mecha, &mut reap);
+        assert!(
+            gone_within(worker, Duration::from_secs(10)),
+            "the worker outlived its killed mecha"
+        );
+        std::mem::forget(reap);
+    }
+
+    /// A `ps` that fails mid-program is no answer: the watchdog neither
+    /// kills a worker whose mecha lives nor retires, and once `ps` answers
+    /// again it ends the worker of a mecha that died meanwhile. The old loop
+    /// read the empty answer as "mecha is gone", and with the worker's read
+    /// failing too it exited, so this worker outlived its mecha (review of
+    /// #772).
+    #[test]
+    fn the_watchdog_takes_no_answer_from_a_ps_that_fails() {
+        let dir = std::env::temp_dir().join(format!("mecha-ps-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let (calls, failing, ps) = (dir.join("calls"), dir.join("failing"), dir.join("ps"));
+        std::fs::write(
+            &ps,
+            format!(
+                "#!/bin/sh\necho >>{}\n[ -e {} ] && exit 1\nexec /bin/ps \"$@\"\n",
+                sh_quote(&calls.display().to_string()),
+                sh_quote(&failing.display().to_string()),
+            ),
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&ps, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let reads = || {
+            std::fs::read_to_string(&calls)
+                .map(|c| c.lines().count())
+                .unwrap_or(0)
+        };
+        let l =
+            Launcher::write_with(&["/bin/sleep".into()], Some(&ps.display().to_string())).unwrap();
+        let (mut mecha, mut reap) = stand_in(&l);
+        let worker = reap.worker;
+        // The launch's two reads answered; every read from here fails. The
+        // stand-in counts a read as it starts, so the gate waits for the
+        // loop's first, which follows the launch's two: arming at the second
+        // could land mid-read and fail the launch instead (review of #772).
+        let t = std::time::Instant::now();
+        while reads() < 3 && t.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::fs::write(&failing, "").unwrap();
+        let before = reads();
+        std::thread::sleep(Duration::from_millis(2500));
+        assert!(
+            !test_process::is_gone(worker),
+            "a failed read of a live mecha killed its worker"
+        );
+        assert!(
+            reads() > before,
+            "the watchdog stopped asking after a failed read"
+        );
+        // Mecha dies while every read fails: the worker's start time is
+        // unknown, so it is not killed yet, and the watchdog keeps asking.
+        kill_mecha(&mut mecha, &mut reap);
+        std::thread::sleep(Duration::from_millis(2500));
+        assert!(!test_process::is_gone(worker));
+        let before = reads();
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(
+            reads() > before,
+            "the watchdog retired on an unreadable answer"
+        );
+        // `ps` answers again, and the orphan is ended.
+        std::fs::remove_file(&failing).unwrap();
+        assert!(
+            gone_within(worker, Duration::from_secs(10)),
+            "the worker outlived its killed mecha once ps answered again"
+        );
+        std::mem::forget(reap);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A launch that cannot read the start times never starts the worker,
+    /// and says why in the log preflight quotes: a watchdog that cannot
+    /// tell a reused pid from its own must not guard by guessing.
+    #[test]
+    fn a_launch_whose_start_times_are_unreadable_never_starts_the_worker() {
+        let l = Launcher::write_with(&["/bin/sleep".into()], Some("/nonexistent/ps")).unwrap();
+        let (mut mecha, mut reap) = stand_in(&l);
+        assert!(
+            gone_within(reap.worker, Duration::from_secs(5)),
+            "the worker started without a watchdog"
+        );
+        assert!(l.log_tail().contains("unreadable"), "{}", l.log_tail());
+        // The launcher's pid is reaped with its parent, and free after.
+        kill_mecha(&mut mecha, &mut reap);
+        std::mem::forget(reap);
     }
 
     #[test]
