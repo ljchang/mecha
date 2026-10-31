@@ -1308,37 +1308,28 @@ the headline never rides in the today-block.
     `remember_articles = true` in that persona's `persona.toml`, owner-written,
     never in layered config, and off by default. With it on, records written
     from a stretch after a `news_read` (episodes and facts, her own and the
-    owner's) are **recalled without approval**. **The owner's network is
-    outside its reach**: edges and people about the owner's real relatives
-    and friends from such a stretch stay unrecalled candidates, like the
-    default. **That carve-out alone is narrower than it looks.** The owner's
-    network is a layer over facts about the owner (§7.1). If the switch
-    admitted a *fact* naming a real person while holding back the edge, a
-    planted claim about that person would still be recalled with no tap.
-    Holding back the edge would only stop the claim being drawn on the People
-    tab and auto-accepted under D18. Otherwise an article could plant
-    *fabricated claims about real people*. That is §2.7's "capacity does not
-    bound truth" landing in the one store that holds third parties who never
-    agreed to be in a database (§7.5).
-    - **A carve-out by person id would be vacuous where it matters.** It
-      needs the owner's-network graph, and `my_people` is off by default and
-      independent of this switch. With `news` and `remember_articles` on and
-      `my_people` off, the configuration an owner who wants news and no taps
-      arrives at, there are no ids to check, and nothing would be held back.
-    - **So the recommended carve-out is structural: under the switch, facts
-      about the owner are not admitted at all.** The switch recalls the
-      stretch's episodes and her own persona facts. Facts in the owner's
-      tables (`User`, `Inferred`), and so everything about the owner's
-      people, stay unrecalled candidates, as by default. That works with or
-      without `my_people`, needs no graph, and needs no judgement by the
-      writer, which reads the tainted stretch and could be steered not to tag
-      a fact. What it costs: something the owner said about themselves after
-      an article is not remembered without approval. The episode still says
-      they talked about it.
-    - The alternatives, for the owner's ruling: make `remember_articles`
-      require `my_people`, refused by name, and hold back facts naming a
-      person in the graph by id; or apply no carve-out and accept the risk. Their origin stays untrusted, because
-    the switch changes what is recalled, never what is clean.
+    owner's) are **recalled without approval**.
+    - **Including facts about the owner and the owner's people** (ruled
+      2026-10-31: no carve-out). The owner chose this knowing the residual:
+      the rule works by position in the chat, not by topic. So a fact about
+      the owner or a relative, said in the same chat after an article, is
+      written by a model that had the article in front of it. A booby-trapped
+      article could, in principle, get a false claim about a real person
+      (a relative's health, a person who doesn't exist) remembered with no
+      tap and shown on the People tab. That is §2.7's "capacity does not
+      bound truth" landing in the one store that holds third parties who
+      never agreed to be in a database (§7.5).
+    - **What keeps it visible rather than silent:** every record recalled
+      under the switch keeps its untrusted origin, and the Memories and
+      People tabs badge it "from an article chat". A planted claim is
+      therefore marked where the owner sees it, `forget` removes it with its
+      chat, and correcting it makes the owner's version a `Stated` event that
+      wins.
+    - The alternatives were weighed and declined: (a) admit no facts about
+      the owner under the switch; (b) require `my_people` and hold back facts
+      naming a person in the graph by id.
+    - Their origin stays untrusted, because the switch changes what is
+      recalled, never what is clean.
     - **Recall still re-arms the taint** they were written under (§9.6). So
       a later chat that recalls one opens untrusted, and its own records are
       recalled under the same switch. For that persona, the provenance gate
@@ -1358,7 +1349,8 @@ the headline never rides in the today-block.
       the reason not to there, not only on the persona page. The cost also
       goes beside D11's in `PERSONA-DESIGN.md` §3.3.
     - **What it costs:** a planted instruction in an article could persist
-      in that persona's memory and steer her later. It **cannot send
+      in that persona's memory and steer her later, and a planted claim about
+      the owner or a real relative could be remembered as fact (above). It **cannot send
       anything**: personas have no `Chosen` sender (§3.3), and the only
       residual way out is a blind search query reaching the configured
       search backends, the cost D11 already accepted. The feeds are ones
@@ -1877,7 +1869,7 @@ this document's; the ruling is the owner's.
 | PL24 | `forget` over the owner's network | Re-fold from the events that remain, which is D27's rebuild applied in memory for this graph; an `Inferred` edge left on too little support reverts to a candidate. Alternative: today's fallback, so the person goes with any of their chats (§7.1) |
 | PL25 | A `told` set only by a tainted stretch | Suppresses but does not license pruning; unchanged while unreviewed, since silence is not a rejection. Since PL23 keeps news off any queue, unreviewed is the ordinary state, so suppression usually lasts until the row prunes on its own score. Approval from the Memories tab makes the flag ordinary; rejection there clears it (§9). Alternative: lapse after five days unreviewed, at the cost of repeating what the owner heard |
 | PL26 | The feature registry | **Ruled (2026-10-31):** `part_of = Personas`, with the per-persona `[life]` switches (PL28) as the lever. A top-level switch would buy nothing, since personas are operator-only and no trial home can run one; §14's comparison is read offline. Settled before step 1 (§17) |
-| PL27 | Remembering article chats in full | **Owner's direction (2026-10-31):** a per-persona `remember_articles` switch, off by default, owner-written in `persona.toml`. With it on, episodes and facts from a stretch after a `news_read` are recalled without approval, origin still untrusted and re-armed on recall. The cost (possible persistent steering, no way to send) is shown beside the switch and in a `TRIFECTA.md` row. *Recommended within it:* facts about the owner (and so the owner's people) are not admitted under the switch, structurally, with no dependency on `my_people`; alternatives are requiring `my_people` with a by-id carve-out, or none (§8.4) |
+| PL27 | Remembering article chats in full | **Owner's direction (2026-10-31):** a per-persona `remember_articles` switch, off by default, owner-written in `persona.toml`. With it on, episodes and facts from a stretch after a `news_read` are recalled without approval, origin still untrusted and re-armed on recall. The cost (possible persistent steering, no way to send) is shown beside the switch and in a `TRIFECTA.md` row. **Ruled within it (2026-10-31): no carve-out.** Facts about the owner and the owner's people are recalled too, with the residual (a planted claim about a real person) accepted, kept visible by an "from an article chat" badge and stated in the `TRIFECTA.md` row (§8.4) |
 | PL28 | Which personas get which parts | **Owner's direction (2026-10-31):** every part is an opt-in switch per persona, off by default: `world`, `people`, `my_people`, `news`, `camera`, `feed`, `remember_articles`. A tool whose switch is off is never built; dependencies are refused by name; switches are fixed per persona version (§3.1) |
 
 ---
