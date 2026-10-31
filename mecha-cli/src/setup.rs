@@ -3073,6 +3073,27 @@ mod surface_only_tests {
 
 #[cfg(test)]
 mod tests {
+    /// Every tool `persona_agent` builds over the persona's own store goes
+    /// through `persona::admit_own` (#776): the rule lives where the compiler
+    /// cannot see it, and a bare insert there skips the persona declaration,
+    /// the read-only refusal and `answers = "files"` without a test noticing
+    /// — the four tools it builds today would pass either way (review of
+    /// #778).
+    #[test]
+    fn persona_agent_admits_every_tool_through_the_persona_checks() {
+        let src = include_str!("setup.rs");
+        let start = src
+            .find("pub fn persona_agent(")
+            .expect("persona_agent is here");
+        let body = &src[start..];
+        let body = &body[..body.find("\n}\n").expect("persona_agent ends")];
+        assert!(
+            !body.contains(".insert("),
+            "persona_agent inserts a tool directly; use persona::admit_own"
+        );
+        assert_eq!(body.matches("persona::admit_own(").count(), 4);
+    }
+
     /// A routed name under a server that did not start is that server
     /// down, not a typo; a typo under a live server, or a name under no
     /// server, still warns (the owner's fresh Mac, 2026-10-14).
