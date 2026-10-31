@@ -1817,6 +1817,12 @@ not care, and says so.
 
 Every row is ruled; the ruling is the owner's, in §1 where it was said in words.
 
+`PERSONA-LIFE-DESIGN.md` (open, 2026-10-31) proposes changes that reach these
+rulings: a network store that deviates from §4.3 (its PL5), memory pruning
+against D26 (PL7), the owner's network inside `memory.db` (PL13), and D27's
+rebuild applied to the world and that network (PL22, PL24). None is ruled;
+until one is, these rows stand as written.
+
 | # | Decision | Recommendation |
 |---|---|---|
 | D1 | Where personas live | **Ruled (R15):** `~/.mecha/personas/`, a folder per persona — Markdown and TOML for what the owner writes, a SQLite `memory.db` per persona plus a `shared.db`, transcripts as JSONL sessions; three levels (everyone, a group, one persona); links by name; never `graph.db` (§4) |
