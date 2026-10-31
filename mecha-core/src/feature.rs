@@ -770,6 +770,14 @@ pub fn state(facts: &Facts, f: Feature) -> State {
             _ => State::Off { reason, fix },
         };
     }
+    // Code mode with a precondition unmet is the same shape: `enable`
+    // refuses it until the precondition is fixed, so the off row names that
+    // fix, never the command (review of #774).
+    if f == Feature::Code && switch(&facts.config, f) != Some(Switch::On) {
+        if let Some((reason, fix)) = code_unmet(&facts.config) {
+            return State::Off { reason, fix };
+        }
+    }
     match switch(&facts.config, f) {
         Some(Switch::Off) => return off("turned off in [features]", fix()),
         Some(Switch::Absent) => return off("not enabled in [features]", fix()),
@@ -960,6 +968,36 @@ pub const WORLD_IS_PER_PERSONA: &str =
     "`world` is part of `personas` and is switched per persona, never here — `[life] world` in \
      a persona's persona.toml turns it on or off for that persona";
 
+/// What this machine's configuration lacks for code mode to start, with the
+/// fix when there is one, or `None`. Unlike `[tools]` leaving `code` out,
+/// which only withholds the tool, each of these fails every start once the
+/// switch is on: a worker pinned for this platform, and on Linux the bwrap
+/// sandbox `interpreter::monty::Confinement::for_sandbox` requires (a Mac's
+/// Seatbelt is the platform's, whatever `[sandbox]` says). So the row and
+/// [`plan_enable`] ask the same question (review of #774).
+fn code_unmet(cfg: &Config) -> Option<(String, Option<String>)> {
+    if crate::interpreter::worker::pin().is_none() {
+        return Some((
+            format!(
+                "mecha pins no monty worker for {}-{}",
+                std::env::consts::ARCH,
+                std::env::consts::OS
+            ),
+            None,
+        ));
+    }
+    if !cfg!(target_os = "macos") && cfg.sandbox.kind != crate::sandbox::Backend::Bwrap {
+        return Some((
+            format!(
+                "code mode runs its interpreter only inside bwrap, and [sandbox] kind is \"{}\"",
+                cfg.sandbox.kind.as_str()
+            ),
+            Some("set [sandbox] kind = \"bwrap\"".into()),
+        ));
+    }
+    None
+}
+
 /// Check a request to switch features on, before anything is written.
 ///
 /// A part id is refused by name, pointing at its parent and the setting that
@@ -977,6 +1015,18 @@ pub fn plan_enable(cfg: &Config, ids: &[String]) -> Result<Vec<Feature>, String>
             return Err(format!(
                 "`{id}` cannot be switched on here: {why} — {BUILD_WITH_MONTY}"
             ));
+        }
+        // A switch on with these unmet would stop every start, not degrade
+        // one, so it is refused before it is written (review of #774).
+        if f == Feature::Code {
+            if let Some((why, fix)) = code_unmet(cfg) {
+                return Err(match fix {
+                    Some(fix) => {
+                        format!("`{id}` cannot be switched on yet: {why} — {fix}, then enable it")
+                    }
+                    None => format!("`{id}` cannot be switched on here: {why}"),
+                });
+            }
         }
         // Incognito had a switch until the owner folded it into the web app
         // (2026-10-14); it has no setting to turn on, only the local model.
@@ -1858,25 +1908,8 @@ fn own_state(facts: &Facts, f: Feature) -> State {
             if !cfg.tools.registers(crate::tool::code::NAME) {
                 return tools_off(crate::tool::code::NAME);
             }
-            if worker::pin().is_none() {
-                return State::Unready {
-                    reason: format!(
-                        "mecha pins no monty worker for {}-{}",
-                        std::env::consts::ARCH,
-                        std::env::consts::OS
-                    ),
-                    fix: None,
-                };
-            }
-            if !cfg!(target_os = "macos") && cfg.sandbox.kind != crate::sandbox::Backend::Bwrap {
-                return State::Unready {
-                    reason: format!(
-                        "code mode runs its interpreter only inside bwrap, and [sandbox] kind \
-                         is \"{}\"",
-                        cfg.sandbox.kind.as_str()
-                    ),
-                    fix: Some("set [sandbox] kind = \"bwrap\"".into()),
-                };
+            if let Some((reason, fix)) = code_unmet(cfg) {
+                return State::Unready { reason, fix };
             }
             if !facts.code_worker_installed {
                 return off(
@@ -1884,7 +1917,7 @@ fn own_state(facts: &Facts, f: Feature) -> State {
                         "the monty {} worker is not installed",
                         worker::MONTY_VERSION
                     ),
-                    "mecha features enable code",
+                    enable_command(cfg, f),
                 );
             }
             on(format!(
@@ -2317,10 +2350,26 @@ mod tests {
             assert!(refused.contains("cargo feature `monty`"), "{refused}");
             return;
         }
-        assert_eq!(
-            plan_enable(&facts.config, &["code".into()]),
-            Ok(vec![Feature::Code])
-        );
+        if crate::interpreter::worker::pin().is_some() && !cfg!(target_os = "macos") {
+            // The default `[sandbox]` is `none`: a switch written now would
+            // stop every start, so it is refused, naming the fix (review of
+            // #774).
+            let refused = plan_enable(&facts.config, &["code".into()]).unwrap_err();
+            assert!(refused.contains("kind = \"bwrap\""), "{refused}");
+            // And the off row names the same fix, never the refused command.
+            assert!(
+                matches!(code(&facts), State::Off { fix: Some(fix), .. } if fix.contains("kind = \"bwrap\"")),
+                "{:?}",
+                code(&facts)
+            );
+            facts.config.sandbox.kind = crate::sandbox::Backend::Bwrap;
+        }
+        if crate::interpreter::worker::pin().is_some() {
+            assert_eq!(
+                plan_enable(&facts.config, &["code".into()]),
+                Ok(vec![Feature::Code])
+            );
+        }
         assert_eq!(code(&facts).word(), "off", "the switch first");
         set_switch(&mut facts.config, Feature::Code, true);
         facts.config.tools.disabled = vec!["code".into()];
@@ -3013,6 +3062,12 @@ mod tests {
             ..empty_machine()
         };
         for &f in Feature::ALL.iter().filter(|f| f.has_switch()) {
+            // Code mode with a precondition unmet names that precondition's
+            // fix (or none, with no worker pinned here), never `enable`
+            // (`code_mode_reads_its_build_tools_sandbox_and_worker`).
+            if f == Feature::Code && unbuilt(f).is_none() && code_unmet(&cfg).is_some() {
+                continue;
+            }
             let State::Off { fix: Some(fix), .. } = state(&facts, f) else {
                 panic!("{} is off on an empty machine", f.id())
             };
@@ -3062,7 +3117,13 @@ mod tests {
         let empty = Config::default();
         // A feature not in this build is refused by `enable` whatever is
         // asked, naming the build (`code_mode_reads_its_build_tools_sandbox_and_worker`).
-        for &f in Feature::ALL.iter().filter(|f| unbuilt(**f).is_none()) {
+        // Nor is code mode with a precondition unmet: its row names that
+        // precondition's fix instead.
+        for &f in Feature::ALL
+            .iter()
+            .filter(|f| unbuilt(**f).is_none())
+            .filter(|f| **f != Feature::Code || code_unmet(&empty).is_none())
+        {
             let cmd = enable_command(&empty, f);
             let args: Vec<String> = cmd.split_whitespace().skip(3).map(String::from).collect();
             plan_enable(&empty, &args).unwrap_or_else(|e| panic!("{}: {cmd}: {e}", f.id()));
