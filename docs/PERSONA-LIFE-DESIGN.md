@@ -681,7 +681,9 @@ arrivals**, never the live shelf:
 - shelf A, at most 48 bits, the larger channel, and clean by provider trust
   under render ranges rather than by capacity alone (§8.2).
 
-That is **at most about 77 bits a night**. (Reading the live shelf over five
+That is **at most about 77 bits a night**, plus the publisher's placement
+of shelf B's three arrivals among k interests, at most 3·log₂k bits, which
+no vocabulary carries (§8.2). (Reading the live shelf over five
 days would be about 385, which is why it reads arrivals.)
 That influence can *select among* narrations the model would write anyway,
 but it cannot *author* a string. That is a stronger argument than the model
@@ -1480,7 +1482,9 @@ the headline never rides in the today-block.
   live shelf, the same rule as the narrator (§4.4): at most three shelf A and
   three shelf B items, so **at most about 77 bits a day** of shelf values,
   against about 385 over the live shelf. That is the constant §14's bit test
-  checks for the block. It rides every turn, which is why it is held to the
+  checks for the block. The placement of those items among k interests adds
+  at most 3·log₂k bits a day beside it, which part 2 cannot see (it has no
+  vocabulary) and part 3 covers (§14). It rides every turn, which is why it is held to the
   narrower figure. In the first build, without shelf B, its shelf C lines
   carry an interest and an opaque id, both code's, so a line's *fields* carry
   0 attacker bits from a publisher whose feeds map to one interest. A
@@ -1589,12 +1593,13 @@ the headline never rides in the today-block.
       bits per episode**. `interest` follows from the item, so the writer
       adds nothing to it, but it keeps the publisher's placement: a
       publisher reaching feeds under k interests chose it, at most log₂k
-      bits an episode. That sits outside the ceiling and, unlike the shelves'
-      placement channel (§8.2), outlives the five-day expiry, kept as long as
-      the episode is recalled, past any window the steering arm's days
-      would see. So it is bounded by construction instead, beside
-      `owner_reaction` (§14, out of the gate's reach): one episode per item
-      read and three a day (below), at most 3·log₂k bits a day.
+      bits an episode. That sits outside the ceiling and outlives the five-day
+      expiry, kept as long as the episode is recalled, past any window the
+      steering arm's days would see; shelf B's placement does too, through
+      the narration it steers (§8.2). So both are bounded by construction
+      instead, beside `owner_reaction` (§14, out of the gate's reach): here
+      one episode per item read and three a day (below), at most 3·log₂k
+      bits a day.
     - **One typed episode per item read, fixed by code.** If the writer could
       choose which of several read items an episode is about, that choice
       would add log₂n bits over n items read. So the count is set by the recorded `news_read`
@@ -1881,12 +1886,7 @@ entirely: they never decay.
   events**, which never decay, as owner people never do (§6.3). The owner
   wrote them on the week view and saw them there, so pruning one would cost
   something someone saw. It would also defeat §5's promise that owner events
-  are never removed by forgetting a chat. **A node that points at a shared
-  person is pruned in two steps** (§3.2): on the persona's own knobs it
-  leaves everything she reads, but its hold (the dates and retellings its
-  score comes from, no name or line) stays until the shipped defaults would
-  prune it too, so a member's sooner knobs cannot release the shared node
-  early. A `forget` removes a hold's chat-sourced rows like any other (§5). Every other untold event is
+  are never removed by forgetting a chat. Every other untold event is
   simulation, and deleting it costs nothing anyone saw. A *told* event was
   seen. It may be pruned because its episode carries **a snapshot** (§5):
   kind, date, people ids and the narration, everything recall needs. That
@@ -1933,6 +1933,13 @@ entirely: they never decay.
   what gets an episode. So some suppressed events have no episode to approve
   or reject. Those stay quiet until their row prunes on its ordinary score,
   so suppression is bounded in time even with nothing to review.
+
+  **A second exception: a node that points at a shared person is pruned in
+  two steps** (§3.2). On the persona's own knobs it leaves everything she
+  reads, but its hold (the dates and retellings its score comes from, no
+  name or line) stays until the shipped defaults would prune it too, so a
+  member's sooner knobs cannot release the shared node early. A `forget`
+  removes a hold's chat-sourced rows like any other (§5).
 
   Suppression by an injection therefore stays bounded to what the chat was
   shown (§4.5), visible on the week view, and never reaches deletion. The
@@ -2259,12 +2266,13 @@ ruled for repetition.
   and what a feed places through them, each bounded by construction instead:
   - the `told` flag, bounded to events the chat was shown (§4.5);
   - the typed episode's `owner_reaction`, 2 bits per episode (§8.4);
-  - the typed episode's `interest`, which follows from the item and keeps
-    the publisher's placement, at most log₂k bits an episode and three
-    episodes a day (§8.4). It outlives the five-day expiry, so part 3's
-    window would not see it. The cap bounds its rate, 3·log₂k bits a day,
-    and the live total is that times the days an episode stays recalled
-    (§8.4);
+  - the publisher's placement where it outlives the five-day expiry, so
+    part 3's window would not see it: the typed episode's `interest`, at
+    most log₂k bits an episode and three episodes a day (§8.4), and shelf
+    B's `interest` in the narration snapshotted from it, at most log₂k bits
+    an item and three arrivals a night (§4.4, §8.2). The caps bound the
+    rate, 3·log₂k bits a day each, and the live total is that times the
+    days the memory stays recalled (§8.4);
   - the retelling boost and `known_to_owner`, which a tainted stretch never
     writes at all (§4.5);
   - typed plans under `remember_articles` (PL21), at most about 20 bits a
