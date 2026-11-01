@@ -1823,17 +1823,19 @@ module.
   routine an approval replaced, the backup approval promises.
 - **The routine drafter answers typed anchors, never TOML**
   (`persona::drafter`). One quarantined pass over `identity.md` and
-  `motivation.md` on the persona's own model (`PersonaUse::Judge`, as her
-  crisis judge), the answer constrained to a schema where the provider
-  takes one; the harness renders the file, so a model's words reach it only
+  `motivation.md` on the persona's own model, unseeded as her own turns
+  are (`PersonaUse::Converse`: a pinned seed would make a redraft the same
+  week), the answer constrained to a schema where the provider takes one; the harness renders the file, so a model's words reach it only
   as an anchor's label, which `routine::parse` caps and checks. The answer
   has no field for `cell`, and approving a draft that names none keeps the
   routine's (`routine::kept_cell`): her kind of week is the owner's pick,
   and approval must not quietly undo it. It drafts only for an approved
   persona whose recorded origin is not untrusted, since an approved label
   is clean text in her days; `stage_draft` refuses an untrusted draft
-  again at the door. The envelope is read before the answer: a refusal or
-  a reply cut off at its cap stages nothing.
+  again at the door. Every refusal that needs no answer (the persona, a
+  waiting draft the owner edited, `routine::may_stage`) comes before the
+  model runs, and the envelope is read before the answer: a refusal or a
+  reply cut off at its cap stages nothing.
 - **Group membership lives once**, in each persona's `groups`. `groups.toml`
   only declares groups; a persona naming an undeclared group is a broken link.
 - **Links are by name, resolved on load, broken ones named**

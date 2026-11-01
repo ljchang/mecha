@@ -318,8 +318,10 @@ async fn draft_routine(global: &GlobalOpts, dir: &Path, name: &str) -> Result<()
     use mecha_core::persona::drafter;
     let store = load(dir);
     let p = find(&store, name)?.clone();
-    // Refused before the model is asked, never after it answered.
+    // What can be refused without the answer is refused before the model
+    // runs: the persona, and a waiting draft the owner has edited.
     drafter::check(&p)?;
+    mecha_core::persona::routine::may_stage(dir, &p.name)?;
     // One request with no tools: no MCP server is started for it.
     let opts = GlobalOpts {
         no_mcp: true,
@@ -331,7 +333,9 @@ async fn draft_routine(global: &GlobalOpts, dir: &Path, name: &str) -> Result<()
             eprintln!("waiting: the model is switching to {}", s.to)
         })
         .await?;
-    let provider = crate::setup::persona_provider(&bound, crate::setup::PersonaUse::Judge)?;
+    // Unseeded, as her own turns are: a pinned seed would make a redraft
+    // after a discard the same week again (review of #799).
+    let provider = crate::setup::persona_provider(&bound, crate::setup::PersonaUse::Converse)?;
     eprintln!("drafting `{}`'s week with {}", p.name, bound.model);
     let r = drafter::draft(provider.as_ref(), &bound.model, dir, &p).await?;
     println!(
