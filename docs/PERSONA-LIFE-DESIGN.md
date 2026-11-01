@@ -824,7 +824,8 @@ one more reason §14's gate part 1 exists.
   a day are not times, so a stretch carried in from the night before has
   no "since". The untrusted stem is chosen by the folded row's
   `days.source`, which only the sampler writes so far, and a source this
-  binary does not know is never clean. An anchor label read back from
+  binary does not know is never clean; a stretch carried past 4am keeps
+  the source of the row it ran as. An anchor label read back from
   `world.db` is held to the routine parser's limits, or the day is
   unreadable and drawn again. With `[life] world` off, or no routine with
   a cell, there is no note; a day that will not read is logged and left

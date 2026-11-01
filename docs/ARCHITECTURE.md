@@ -1788,7 +1788,9 @@ module.
   the stored day unreadable and redrawn, never shown in part, and an anchor
   label is held on the way out to what the routine's parser lets in, since
   it reaches a chat. A day that cannot be read when it is pruned folds as
-  a whole day of unreadable minutes, so a week always adds up to its days.
+  a whole day of unreadable minutes, so a week always adds up to its days;
+  the fold takes the write lock before its first read, since serve and the
+  CLI both prune and a day folded from two reads would count twice.
   No day is drawn without a `cell` in `routine.toml`, the owner's pick,
   never a guess.
 - **The today-block is a run note of its own, with its own stem pair**
