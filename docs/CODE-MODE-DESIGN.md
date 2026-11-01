@@ -1474,7 +1474,8 @@ single run each, so this says the path works, not how often it does; M2
 
 The answers: `fs_read` says a cut first, with the file's size, and a
 program's read takes the whole file up to the host-byte limit
-(ARCHITECTURE.md, *A cut read says so first*); `peek` takes `start` (§3);
+(ARCHITECTURE.md, *A cut read says so first*; `shell` and `http_fetch`
+followed, after the rerun below); `peek` takes `start` (§3);
 and the description has a judgement example, asking each item's relevant
 part, in a domain unlike any fixture. A repeat must vary the seed to count
 as a second sample.
