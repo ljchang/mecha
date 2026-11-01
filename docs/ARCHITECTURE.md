@@ -1857,6 +1857,22 @@ module.
   `network.md` is rendered after every write and never read back.
   `world.db` migrates additively (version 2 adds the network), and a
   read-only open of a version-1 store is an empty network, never an error.
+- **Her people reach her prompt from her version, never live** (PL32).
+  `network::prompt_section` renders only clean people and edges, within
+  `PROMPT_CHARS`, and while `[life] people` is on `version_files` adds it
+  as `people.md`, so a network change is a new version and the agent cache
+  (keyed by digest) rebuilds. `load_version` reads `people.md` only when the
+  version has one and re-digests it, so one added to an old version or
+  taken from a new one is refused. A network that cannot be read is no
+  version, never a prompt without her people. `Store::problems` names a
+  person's broken portrait link (`network::check_character`, the one rule
+  both doors ask).
+- **People proposed from `identity.md` are an owner's draft** (PL31,
+  `persona::people_draft`): one quarantined pass, every proposed person
+  checked by the network's own door before it stages, accepted only
+  against the `identity.md` digest it was read from, and added as owner
+  rows. The owner's prose is never rewritten; the lines that still name
+  someone in her network are listed for the owner to edit.
 - **Group membership lives once**, in each persona's `groups`. `groups.toml`
   only declares groups; a persona naming an undeclared group is a broken link.
 - **Links are by name, resolved on load, broken ones named**

@@ -12,9 +12,11 @@
 > with its world switch, the Week tab's cell picker, and reviewing a
 > drafted routine there (draft, edit, approve, discard). Step 2 has begun
 > with her network's store (`persona::network`, `mecha persona people`,
-> `network.md`, §6.6); the `identity.md` migration with the network in her
-> chats, then the People tab, are next. **Every decision in §16
-> is ruled** by the owner, the same day: PL1–PL22, PL24–PL26, PL29 and PL30 as rulings,
+> `network.md`, §6.6), her people in her prompt (PL32) and proposed from
+> `identity.md` (`persona::people_draft`, PL31); the People tab is next.
+> **Every decision in §16
+> is ruled** by the owner: PL1–PL22, PL24–PL26, PL29 and PL30 as rulings
+> on 2026-10-31, PL31 and PL32 on 2026-11-01,
 > and PL23, PL27 and PL28 as the owner's direction (no approval queue for
 > news; every part opt-in per persona). §1 is the owner's requests, in the order they were made; §2 is
 > the evidence, researched the same day, with a source on every figure that
@@ -1193,7 +1195,28 @@ renders `network.md`. Two choices the design left open: an undated `met`
 or `formed` folds as the edge's start, and any other undated event as of
 the day it was recorded, since it happened no later; and only an owner
 event can be taken back one at a time, since a chat's events go with
-`forget`. Everyone is owner-written in this step, so nothing decays yet.
+`forget`. A tie's forming sets no mood: only `strengthened`, `reconciled`
+and `renewed` make an edge warm and `conflict` tense, since an ex is
+formed too (found on a live run, where a proposed ex came back warm).
+Everyone is owner-written in this step, so nothing decays yet.
+
+**As built (step 2, into her chats; PL31, PL32):** `mecha persona people
+propose` runs one quarantined pass over `identity.md` on her own model
+(`persona::people_draft`), refused for a persona that is not approved or
+whose origin is untrusted, since an accepted person is an owner row. The
+typed answer is checked by the network's own door (`network::check_new`)
+and staged as `people.draft.json` against `identity.md`'s digest; `accept`
+(all, or `--only 1,3`) adds each as an owner row, skips anyone already
+there by name or alias, and lists the `identity.md` lines that still name
+them for the owner to edit, as `people show` does whenever one does.
+Nothing rewrites the prose. Her people reach her prompt as "The people in
+your life", after "Who you are" (`network::prompt_section`): the closest
+two layers a line each, the rest by name and role, ended ties, then the
+ties between people, only from clean sources, within `PROMPT_CHARS`
+(3000), dropping from the outside in and saying how many were left out.
+While `[life] people` is on it is snapshotted into her version as
+`people.md`, so a change to her network is a new version and a chat
+renders the one it pinned.
 
 ---
 
@@ -2483,6 +2506,8 @@ this document's; the ruling is the owner's.
 | PL27 | Remembering article chats in full | **Owner's direction (2026-10-31):** a per-persona `remember_articles` switch, off by default, owner-written in `persona.toml`. With it on, episodes and facts from a stretch after a `news_read` are recalled without approval, origin still untrusted and re-armed on recall. The cost (possible persistent steering, no way to send) is shown beside the switch and in a `TRIFECTA.md` row. **Ruled within it (2026-10-31): no carve-out.** Facts about the owner and the owner's people are recalled too, with the residual (a planted claim about a real person) accepted, kept visible by an "from an article chat" badge and stated in the `TRIFECTA.md` row (§8.4) |
 | PL28 | Which personas get which parts | **Owner's direction (2026-10-31):** every part is an opt-in switch per persona, off by default: `world`, `people`, `my_people`, `news`, `camera`, `feed`, `proactive`, `remember_articles`. A tool whose switch is off is never built; dependencies are refused by name; the switches that decide which tools, blocks and runs exist are fixed per persona version (`proactive` at the scheduler's next check), and `remember_articles` is read live, never reaching backwards (§3.1) |
 | PL29 | How a shared row decays | **Ruled (2026-10-31), as recommended:** a group's and everyone's rows that decay do so under the shipped `[life.decay]` defaults (§9's owner-origin and `state` exemptions hold at every level), since members may disagree and a shared row is one row; a level's own knobs, if wanted, come with the group world (§17 step 3), in the owner's files. This carves an exception out of PL7, whose knobs are per persona (§3.2). Applied in §3.2 to the holder test that decides when a shared person goes: member nodes are scored for it under the shipped defaults, in both directions, so a looser member's node cannot pin the shared node and a stricter member's leaves her view on her own knobs while its hold stays until the defaults would prune it |
+| PL31 | Who takes the people out of `identity.md` once they are approved into her network | **Ruled (2026-11-01): the owner, with a list.** Her model proposes the people `identity.md` names; after accepting, the owner is shown the lines that still name them and edits the file. Nothing rewrites the owner's prose; until the edit she reads them in both places (§6.6) |
+| PL32 | Where her network reaches her chats | **Ruled (2026-11-01): beside `identity.md`.** A "people in your life" section in her system prompt, the closest a line each and the rest by name, within a size limit, snapshotted with her version so it changes only when the network does. Only owner-written (clean) people; chat and simulation people (step 3) reach her another way, since untrusted text never enters a system prompt (§6.6) |
 | PL30 | Which stem the today-block takes on a day with a shelf C line | **Ruled (2026-10-31), as recommended:** the clean stem, for a shelf C line in the first build; once shelf B ships, the id rides its interest line, which folds by the origin of the half it comes from, like any row (§4.5; an `items` row carries one origin per shelf half, §5). The line's two fields are code's (an interest from the owner's feed mapping and a harness-minted id), so what folds carries no attacker text; the row it was selected from is untrusted, and its presence, count and timing (about 3 bits a day), and for a publisher reaching feeds under k interests at most log₂k bits a line, 3·log₂k a day, are the residual §14's steering arm covers inside its measured days; what outlives them in memory is bounded by construction (§14, out of the gate's reach). §4.5 names the line as the one exception to its per-row rule, because it is a line code composes, not a row's fields; a typed plan, whose fields are code-shaped but attacker-chosen, gets no such exemption. The alternative, the untrusted stem, rejected: it makes every chat on a news day a candidate under §9.6 from the first build, on the feature's main path, which PL23's typed episode was ruled to avoid (§4.5, §8.3, §13) |
 
 ---

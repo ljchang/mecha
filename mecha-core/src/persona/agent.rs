@@ -80,6 +80,9 @@ pub struct Pinned {
     pub motivation: String,
     /// Each named template's text as snapshotted, in the order named.
     pub relationships: Vec<(String, String)>,
+    /// Her people as snapshotted (`persona::PEOPLE_FILE`, PL32); empty when
+    /// the version has none.
+    pub people: String,
 }
 
 /// Pin a new chat to the persona as it stands: approved only, a version
@@ -129,6 +132,17 @@ pub fn load_version(dir: &Path, name: &str, digest: &str) -> Result<Pinned> {
         files.push((format!("relationships/{r}.md"), text.clone()));
         relationships.push((r.clone(), text));
     }
+    // Her people ride in a version only when it was taken with them, and
+    // the digest below holds the file to what was taken: one added to an
+    // old version, or taken from a new one, is refused.
+    let people_path = vdir.join(super::PEOPLE_FILE);
+    let people = if people_path.exists() {
+        let text = read_prose(&people_path)?;
+        files.push((super::PEOPLE_FILE.to_string(), text.clone()));
+        text
+    } else {
+        String::new()
+    };
     if digest_of(&files) != digest {
         bail!("`{name}`'s version {digest} was changed on disk after it was taken; refusing it");
     }
@@ -148,6 +162,7 @@ pub fn load_version(dir: &Path, name: &str, digest: &str) -> Result<Pinned> {
         settings,
         identity,
         motivation,
+        people,
         relationships,
     })
 }
@@ -174,8 +189,8 @@ fn prose(text: &str) -> String {
 }
 
 /// The system prompt, in cache order (§8.2): the shared base, the date
-/// guidance, the relationship templates, then the persona's own identity and
-/// motivation. A function of the pinned version alone, so every chat on one
+/// guidance, the relationship templates, then the persona's own identity,
+/// her people (PL32) and motivation. A function of the pinned version alone, so every chat on one
 /// version sends the same bytes. Everything that changes per chat — a
 /// session goal, the re-anchor, recalled memory — rides in the messages.
 pub fn system_prompt(p: &Pinned) -> Result<String> {
@@ -206,6 +221,12 @@ pub fn system_prompt(p: &Pinned) -> Result<String> {
     if !identity.is_empty() {
         out.push_str("\n\n# Who you are\n\n");
         out.push_str(&identity);
+    }
+    // Her people (PL32), beside who she is: rendered by the harness from
+    // what the owner wrote of her network, snapshotted with the version.
+    if !p.people.trim().is_empty() {
+        out.push_str("\n\n# The people in your life\n\n");
+        out.push_str(p.people.trim());
     }
     let motivation = prose(&p.motivation);
     if !motivation.is_empty() {
@@ -1120,6 +1141,111 @@ mod tests {
         let off = system_prompt(&pin(&dir, "mara").unwrap()).unwrap();
         assert!(!off.contains(DISCLOSED), "{off}");
         assert!(off.contains(SINCERE));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Her people reach her prompt only while `[life] people` is on (PL32),
+    /// from the version a chat pinned, never read live.
+    #[test]
+    fn her_people_ride_in_the_version_beside_who_she_is() {
+        use crate::persona::network::{self, Layer, NewPerson, Tie, When};
+        let dir = scratch();
+        super::super::create(&dir, &no_lib(), new("mara")).unwrap();
+        fill_core(&dir, "mara");
+        let pdir = dir.join("mara");
+        network::add_person(
+            &pdir,
+            &NewPerson {
+                name: "Ines".into(),
+                aliases: vec![],
+                role: Some("older sister".into()),
+                description: Some("Runs a bakery two towns over.".into()),
+                character: None,
+                tie: Some(Tie::Kin),
+                label: Some("sister".into()),
+                layer: Some(Layer::Five),
+                since: When::UNKNOWN,
+            },
+        )
+        .unwrap();
+        // Off: no section and no file, though the network has someone.
+        let off = pin(&dir, "mara").unwrap();
+        assert_eq!(off.people, "");
+        assert!(!system_prompt(&off)
+            .unwrap()
+            .contains("# The people in your life"));
+        assert!(!pdir
+            .join("versions")
+            .join(&off.digest)
+            .join(crate::persona::PEOPLE_FILE)
+            .exists());
+
+        let toml = pdir.join("persona.toml");
+        let text = std::fs::read_to_string(&toml).unwrap();
+        std::fs::write(
+            &toml,
+            text.replace("world     = false", "world     = true")
+                .replace("people    = false", "people    = true"),
+        )
+        .unwrap();
+        let on = pin(&dir, "mara").unwrap();
+        let prompt = system_prompt(&on).unwrap();
+        let at = |s: &str| {
+            prompt
+                .find(s)
+                .unwrap_or_else(|| panic!("{s} missing:\n{prompt}"))
+        };
+        assert!(at("# Who you are") < at("# The people in your life"));
+        assert!(
+            prompt.contains("- Ines (your older sister, sister). Runs a bakery two towns over."),
+            "{prompt}"
+        );
+
+        // A change to her network is a new version; the pinned one renders
+        // as it was taken.
+        network::add_person(
+            &pdir,
+            &NewPerson {
+                name: "Theo".into(),
+                aliases: vec![],
+                role: Some("lab partner".into()),
+                description: None,
+                character: None,
+                tie: Some(Tie::Colleague),
+                label: None,
+                layer: Some(Layer::Fifty),
+                since: When::UNKNOWN,
+            },
+        )
+        .unwrap();
+        let newer = pin(&dir, "mara").unwrap();
+        assert_ne!(newer.digest, on.digest);
+        assert!(system_prompt(&newer)
+            .unwrap()
+            .contains("Others in your life: Theo (your lab partner, colleague)."));
+        assert_eq!(
+            system_prompt(&load_version(&dir, "mara", &on.digest).unwrap()).unwrap(),
+            prompt
+        );
+
+        // Taken from a version, or added to one taken without it: refused.
+        let file = pdir
+            .join("versions")
+            .join(&on.digest)
+            .join(crate::persona::PEOPLE_FILE);
+        std::fs::remove_file(&file).unwrap();
+        assert!(
+            format!("{:#}", load_version(&dir, "mara", &on.digest).unwrap_err())
+                .contains("changed on disk")
+        );
+        std::fs::write(
+            pdir.join("versions")
+                .join(&off.digest)
+                .join(crate::persona::PEOPLE_FILE),
+            "- Someone\n",
+        )
+        .unwrap();
+        assert!(load_version(&dir, "mara", &off.digest).is_err());
         std::fs::remove_dir_all(dir).ok();
     }
 

@@ -263,6 +263,20 @@ pub enum PeopleCmd {
         #[arg(long)]
         yes: bool,
     },
+    /// Have her own model find the people identity.md names, as a
+    /// proposal waiting on you (PL6).
+    Propose { name: String },
+    /// The people proposed from identity.md, numbered, waiting on you.
+    Proposal { name: String },
+    /// Add the proposed people to her network, or only some (`--only 1,3`),
+    /// then list the identity.md lines that still name them.
+    Accept {
+        name: String,
+        #[arg(long, value_delimiter = ',')]
+        only: Option<Vec<usize>>,
+    },
+    /// Drop the proposal; her network is untouched.
+    Dismiss { name: String },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -407,6 +421,12 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     {
         return draft_routine(global, &dir, &name).await;
     }
+    if let Cmd::People {
+        cmd: PeopleCmd::Propose { name },
+    } = args.cmd
+    {
+        return propose_people(global, &dir, &name).await;
+    }
     let lib_dir = Library::default_dir()?;
     run(&dir, &lib_dir, args.cmd)
 }
@@ -452,6 +472,44 @@ async fn draft_routine(global: &GlobalOpts, dir: &Path, name: &str) -> Result<()
          `approve {}` makes it her routine.",
         r.anchors.len(),
         p.name,
+        p.name,
+        p.name,
+        p.name
+    );
+    Ok(())
+}
+
+/// `mecha persona people propose`: her own model reads identity.md for the
+/// people it names (`persona::people_draft`), held through the router's
+/// hold as a draft is, and stages them for the owner to accept.
+async fn propose_people(global: &GlobalOpts, dir: &Path, name: &str) -> Result<()> {
+    use mecha_core::persona::{drafter, people_draft};
+    let store = load(dir);
+    let p = find(&store, name)?.clone();
+    drafter::check(&p)?;
+    let opts = GlobalOpts {
+        no_mcp: true,
+        ..global.clone()
+    };
+    let follower = crate::follow::Follower::start(opts, Box::new(|_| {})).await?;
+    let (_held, bound) = follower
+        .enter("people proposal", |s| {
+            eprintln!("waiting: the model is switching to {}", s.to)
+        })
+        .await?;
+    let provider = crate::setup::persona_provider(&bound, crate::setup::PersonaUse::Converse)?;
+    eprintln!("reading `{}`'s people with {}", p.name, bound.model);
+    let Some(d) = people_draft::propose(provider.as_ref(), &bound.model, dir, &p).await? else {
+        println!(
+            "The model found no one named in `{}`'s identity.md, so nothing waits on you.",
+            p.name
+        );
+        return Ok(());
+    };
+    println!(
+        "Proposed {} people from `{}`'s identity.md. `mecha persona people proposal {}` \
+         reads them; `accept {}` adds them (or `--only 1,3`).",
+        d.people.len(),
         p.name,
         p.name,
         p.name
@@ -1573,6 +1631,7 @@ fn people_cmd(dir: &Path, lib: &Library, cmd: PeopleCmd) -> Result<()> {
     use mecha_core::persona::network::{
         self, EventKind, Layer, NewEvent, NewPerson, PersonEdit, Tie, When,
     };
+    use mecha_core::persona::people_draft;
     let wire = |v: serde_json::Value| v.as_str().unwrap_or_default().to_string();
     let ties: Vec<String> = Tie::ALL
         .iter()
@@ -1599,6 +1658,22 @@ fn people_cmd(dir: &Path, lib: &Library, cmd: PeopleCmd) -> Result<()> {
     let store = load(dir);
     let open =
         |name: &str| -> Result<std::path::PathBuf> { Ok(dir.join(&find(&store, name)?.name)) };
+    // The identity.md lines naming someone in her network: the owner edits
+    // them so each person lives in one place (PL31); nothing rewrites them.
+    let overlap = |p: &Persona| -> Result<()> {
+        let lines = people_draft::identity_overlap(dir, p)?;
+        if !lines.is_empty() {
+            println!(
+                "\nidentity.md still names people who now live in her network. Edit these \
+                 lines (`mecha persona edit {}`) so each lives in one place:",
+                p.name
+            );
+            for (n, l) in lines {
+                println!("  {n:>4}: {l}");
+            }
+        }
+        Ok(())
+    };
     match cmd {
         PeopleCmd::Show { name, json } => {
             let n = network::Network::read(&open(&name)?)?;
@@ -1606,7 +1681,60 @@ fn people_cmd(dir: &Path, lib: &Library, cmd: PeopleCmd) -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&n.to_json())?);
             } else {
                 print!("{}", network::markdown(&n));
+                overlap(find(&store, &name)?)?;
             }
+        }
+        PeopleCmd::Propose { .. } => bail!("`people propose` is run by `execute`"),
+        PeopleCmd::Proposal { name } => {
+            let p = find(&store, &name)?;
+            let Some(d) = people_draft::read(&dir.join(&p.name))? else {
+                println!("No proposal of people is waiting for `{}`.", p.name);
+                return Ok(());
+            };
+            if d.identity != persona::text_digest(&p.identity) {
+                println!("identity.md changed since these were read from it; propose again.\n");
+            }
+            for (i, q) in d.people.iter().enumerate() {
+                let mut line = format!("{:>2}. {}", i + 1, q.name);
+                // A label that only repeats the role is said once.
+                let mut what: Vec<String> = q.role.iter().cloned().collect();
+                if let Some(l) = q.label.clone().filter(|l| q.role.as_ref() != Some(l)) {
+                    what.push(l);
+                }
+                if !what.is_empty() {
+                    line.push_str(&format!(" ({})", what.join(", ")));
+                }
+                if !q.aliases.is_empty() {
+                    line.push_str(&format!(", also {}", q.aliases.join(", ")));
+                }
+                if let Some(l) = q.layer {
+                    line.push_str(&format!(", closest {l}"));
+                }
+                if let Some(d) = &q.description {
+                    line.push_str(&format!(". {d}"));
+                }
+                println!("{line}");
+            }
+            println!(
+                "\n`mecha persona people accept {}` adds them all, or `--only 1,3`.",
+                p.name
+            );
+        }
+        PeopleCmd::Accept { name, only } => {
+            let p = find(&store, &name)?;
+            let got = people_draft::accept(dir, p, only.as_deref())?;
+            for (_, n) in &got.added {
+                println!("Added {n}.");
+            }
+            for n in &got.already {
+                println!("{n} is already in her network; left as it is.");
+            }
+            overlap(p)?;
+        }
+        PeopleCmd::Dismiss { name } => {
+            let p = find(&store, &name)?;
+            people_draft::dismiss(&dir.join(&p.name))?;
+            println!("Dropped the proposal; her network is untouched.");
         }
         PeopleCmd::Export { name } => {
             let n = network::Network::read(&open(&name)?)?;
@@ -2372,6 +2500,67 @@ mod tests {
             .events
             .iter()
             .all(|e| e.person != theo && e.other.as_deref() != Some(theo.as_str())));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn people_proposed_from_identity_are_accepted_from_the_cli() {
+        use mecha_core::persona::{network::Network, people_draft};
+        let dir = scratch();
+        let lib = dir.join("imagelib");
+        let store = dir.join("personas");
+        run(&store, &lib, new("mara")).unwrap();
+        let id = store.join("mara").join("identity.md");
+        let text = std::fs::read_to_string(&id).unwrap();
+        std::fs::write(
+            &id,
+            format!("{text}\n## Core\nHer brother Oskar fixes bicycles.\n"),
+        )
+        .unwrap();
+        let people = |cmd: PeopleCmd| run(&store, &lib, Cmd::People { cmd });
+        // Nothing waiting yet is said, never an error.
+        people(PeopleCmd::Proposal {
+            name: "mara".into(),
+        })
+        .unwrap();
+        let p = Store::load(&store).get("mara").unwrap().clone();
+        people_draft::stage(
+            &store,
+            &p,
+            r#"{"people": [
+                {"name": "Oskar", "aliases": [], "role": "brother", "description": "Fixes bicycles.",
+                 "tie": "kin", "label": "brother", "layer": 5},
+                {"name": "Pell", "aliases": [], "role": null, "description": null,
+                 "tie": null, "label": null, "layer": null}
+            ]}"#,
+        )
+        .unwrap();
+        people(PeopleCmd::Proposal {
+            name: "mara".into(),
+        })
+        .unwrap();
+        people(PeopleCmd::Accept {
+            name: "mara".into(),
+            only: Some(vec![1]),
+        })
+        .unwrap();
+        let n = Network::read(&store.join("mara")).unwrap();
+        assert_eq!(
+            n.people.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+            vec!["Oskar"]
+        );
+        assert_eq!(people_draft::read(&store.join("mara")).unwrap(), None);
+        assert!(
+            people(PeopleCmd::Dismiss {
+                name: "mara".into()
+            })
+            .is_err(),
+            "nothing left to dismiss"
+        );
+        // identity.md still names him: the owner's to edit, never rewritten.
+        assert!(std::fs::read_to_string(&id)
+            .unwrap()
+            .contains("Oskar fixes bicycles"));
         std::fs::remove_dir_all(dir).ok();
     }
 

@@ -46,6 +46,7 @@ pub mod judge;
 pub mod memory;
 pub mod memory_tools;
 pub mod network;
+pub mod people_draft;
 pub mod recall;
 pub mod replay;
 pub mod replay_judge;
@@ -58,6 +59,11 @@ pub mod turn;
 pub mod variety;
 pub mod world;
 pub mod writer;
+
+/// Her people as a version holds them: the section her prompt renders
+/// from her network (`network::prompt_section`, PL32), present only while
+/// `[life] people` is on and someone is in it.
+pub const PEOPLE_FILE: &str = "people.md";
 
 /// A name — persona, relationship, group or voice: `[a-z0-9][a-z0-9_-]*`.
 pub const MAX_NAME: usize = 64;
@@ -1287,6 +1293,20 @@ impl Store {
                 .get(r)
                 .ok_or_else(|| anyhow!("names relationship `{r}`, which is not there"))?;
             files.push((format!("relationships/{r}.md"), t.raw.clone()));
+        }
+        // Her people, as her prompt renders them (PL32), while `[life]
+        // people` is on and there is someone to name: a version covers what
+        // a chat renders, so a change to her network is a new version. A
+        // network that cannot be read is no version, never a prompt
+        // without her people in it.
+        if p.settings.life.people {
+            let section = network::prompt_section(
+                &network::Network::read(&dir)
+                    .with_context(|| format!("reading `{}`'s network", p.name))?,
+            );
+            if !section.is_empty() {
+                files.push((PEOPLE_FILE.to_string(), section));
+            }
         }
         Ok(files)
     }
