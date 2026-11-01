@@ -54,6 +54,13 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io
 # native-tls to match reqwest above — two TLS stacks in one binary is two
 # certificate stores to reason about.
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+# Slack's socket names its crypto provider (`mecha_slack::socket::tls_config`),
+# because code mode's interpreter links rustls's aws-lc-rs provider beside the
+# ring one everything else uses, and rustls then refuses to pick a default.
+# Default features off: they would ask for aws-lc-rs again.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+# The roots tokio-tungstenite's own rustls path trusts, the same version.
+webpki-roots = "0.26"
 toml = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
