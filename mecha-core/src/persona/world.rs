@@ -13,8 +13,12 @@
 //! about a day stays what the day was. A stored day of today or later is
 //! drawn again when what it was drawn from has changed (her routine, her
 //! cell, the table); a past one is kept, because the past does not change
-//! when the routine does. Every row names its source, and an unknown source
-//! is never clean.
+//! when the routine does, and is read back even when the routine no longer
+//! loads. A day older than [`KEEP_DAYS`] is drawn and returned, never
+//! stored, so it is never folded into its week twice. Every row names its
+//! source, and an unknown source is never clean; `days.source` is for
+//! `forget` and the today-block's fold to read, and the sampler is its only
+//! writer so far.
 
 use anyhow::{bail, Context, Result};
 use chrono::{Datelike, Days, NaiveDate};
@@ -174,6 +178,18 @@ impl World {
         let conn = connect(&pdir.join(WORLD_DB), true)?.expect("created");
         migrate(&conn)?;
         Ok(World { conn })
+    }
+
+    /// The persona's world if it has one, read-only and never created.
+    fn open_existing(pdir: &Path) -> Result<Option<World>> {
+        let Some(conn) = connect(&pdir.join(WORLD_DB), false)? else {
+            return Ok(None);
+        };
+        let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if version != 1 {
+            bail!("world.db is version {version}; this binary reads 1");
+        }
+        Ok(Some(World { conn }))
     }
 
     /// The day stored for `date`, if there is one this binary can read
@@ -424,6 +440,15 @@ pub fn day(store_dir: &Path, name: &str, date: NaiveDate, today: NaiveDate) -> R
         bail!("[life] world is off for `{name}`: she has no simulated days");
     }
     let pdir = store_dir.join(&persona.name);
+    // A past day already stored is what it was, whatever the routine says
+    // now, or whether it still loads.
+    if date < today {
+        if let Some(world) = World::open_existing(&pdir)? {
+            if let Some((stored, _)) = world.stored(date)? {
+                return Ok(stored);
+            }
+        }
+    }
     let Some(text) = routine::read(store_dir, &persona.name)?.routine else {
         bail!(
             "`{name}` has no routine.toml, so no cell to draw her days from; \
@@ -438,14 +463,19 @@ pub fn day(store_dir: &Path, name: &str, date: NaiveDate, today: NaiveDate) -> R
              days from; add `cell = \"…\"` (`mecha persona routine edit {name}`)"
         );
     };
+    let day = sampler::sample(atus::table(), cell, &routine, &persona.name, date);
+    if date < today - Days::new(KEEP_DAYS) {
+        // Past what the store keeps: stored, it would be folded into its
+        // week at once, and again on every asking.
+        return Ok(day);
+    }
     let digest = inputs(&text);
     let mut world = World::open(&pdir)?;
     if let Some((stored, was)) = world.stored(date)? {
-        if date < today || was == digest {
+        if was == digest {
             return Ok(stored);
         }
     }
-    let day = sampler::sample(atus::table(), cell, &routine, &persona.name, date);
     world.store(&day, &digest)?;
     world.prune(today)?;
     Ok(day)
@@ -561,6 +591,27 @@ mod tests {
             .sum();
         assert!(minutes.contains(&(Activity::Sleep, sleep)));
         assert_eq!(world.prune(monday + Days::new(30)).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_day_past_the_store_is_drawn_never_stored_or_folded() {
+        let dir = store(Some("cell = \"at_home\"\n"), true);
+        let (old, today) = (date("2026-10-05"), date("2026-11-02"));
+        let first = day(dir.as_path(), "mara", old, today).unwrap();
+        assert_eq!(day(dir.as_path(), "mara", old, today).unwrap(), first);
+        let world = World::open(&dir.join("mara")).unwrap();
+        assert!(world.stored(old).unwrap().is_none());
+        assert!(world.week(old).unwrap().is_none(), "folded on an asking");
+    }
+
+    #[test]
+    fn a_stored_past_day_is_read_back_when_the_routine_no_longer_loads() {
+        let dir = store(Some("cell = \"student\"\n"), true);
+        let (yesterday, today) = (date("2026-11-01"), date("2026-11-02"));
+        let past = day(dir.as_path(), "mara", yesterday, yesterday).unwrap();
+        std::fs::write(dir.join("mara").join(routine::FILE), "cell = \"nurse\"\n").unwrap();
+        assert_eq!(day(dir.as_path(), "mara", yesterday, today).unwrap(), past);
+        assert!(day(dir.as_path(), "mara", today, today).is_err());
     }
 
     #[test]

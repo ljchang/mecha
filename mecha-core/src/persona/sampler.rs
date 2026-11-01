@@ -88,7 +88,25 @@ pub fn sample(table: &Table, cell: Cell, routine: &Routine, persona: &str, date:
         draw: Draw(seed(persona, date)),
         backoffs: 0,
     };
-    let anchors = s.place_anchors(routine, date);
+    // Anchors are the first draws of a day's stream, so the day before's
+    // can be redrawn here to carry the tail of one that ran past 4am.
+    let before = date.pred_opt().map(|prev| {
+        let mut draw = Draw(seed(persona, prev));
+        place_anchors(routine, prev, &mut draw)
+    });
+    let tails = before.into_iter().flatten().filter_map(|a| {
+        (a.reaches > DAY_END).then(|| Placed {
+            start: DAY_START,
+            end: (a.reaches - MINUTES_PER_DAY).min(DAY_END),
+            reaches: a.reaches - MINUTES_PER_DAY,
+            ..a
+        })
+    });
+    let anchors = keep_first(
+        tails
+            .chain(place_anchors(routine, date, &mut s.draw))
+            .collect(),
+    );
     let mut out: Vec<Stretch> = Vec::new();
     let mut next_anchor = 0;
     let (mut t, mut from) = (DAY_START, Activity::Sleep);
@@ -152,7 +170,56 @@ struct Placed {
     activity: Activity,
     label: String,
     start: u32,
+    /// Where the day ends it: at [`DAY_END`] for one that runs on.
     end: u32,
+    /// Where it would end, past [`DAY_END`] for one the next day carries.
+    reaches: u32,
+}
+
+/// The anchors that happen on `date`, each drawn against its chance, in
+/// start order: its weekday's from 4am on, and the next weekday's before
+/// 4am, which the day reaches into. Overlaps are left for [`keep_first`].
+///
+/// The day before's tail is carried from its own anchors alone, not from
+/// whatever it carried in turn: a tail long enough to knock out one of that
+/// day's anchors would have to run past a whole day.
+fn place_anchors(routine: &Routine, date: NaiveDate, draw: &mut Draw) -> Vec<Placed> {
+    let today = date.weekday().num_days_from_monday();
+    let mut placed: Vec<Placed> = Vec::new();
+    for a in &routine.anchors {
+        for (weekday, offset) in [(today, 0), ((today + 1) % 7, MINUTES_PER_DAY)] {
+            let start = a.start + offset;
+            if !a.on(weekday) || !(DAY_START..DAY_END).contains(&start) {
+                continue;
+            }
+            // Drawn even at a chance of 1, so one anchor's chance never
+            // shifts the draws of the rest of the day.
+            if draw.unit() >= a.chance {
+                continue;
+            }
+            placed.push(Placed {
+                activity: a.activity,
+                label: a.what.clone().unwrap_or_else(|| a.activity.id().into()),
+                start,
+                end: (start + a.minutes).min(DAY_END),
+                reaches: start + a.minutes,
+            });
+        }
+    }
+    keep_first(placed)
+}
+
+/// In start order, dropping any that overlaps one kept before it: the
+/// earlier start wins, the earlier in the list on a tie.
+fn keep_first(mut placed: Vec<Placed>) -> Vec<Placed> {
+    placed.sort_by_key(|p| p.start);
+    let mut kept: Vec<Placed> = Vec::new();
+    for p in placed {
+        if kept.last().is_none_or(|k| p.start >= k.end) {
+            kept.push(p);
+        }
+    }
+    kept
 }
 
 struct Sampler<'a> {
@@ -164,54 +231,36 @@ struct Sampler<'a> {
 }
 
 impl Sampler<'_> {
-    /// The anchors that happen on `date`, each drawn against its chance, in
-    /// start order. Its weekday's from 4am on, and the next weekday's before
-    /// 4am, which the day reaches into. Where two that happened overlap, the
-    /// one that starts first is kept, the earlier in the file on a tie.
-    fn place_anchors(&mut self, routine: &Routine, date: NaiveDate) -> Vec<Placed> {
-        let today = date.weekday().num_days_from_monday();
-        let mut placed: Vec<Placed> = Vec::new();
-        for a in &routine.anchors {
-            for (weekday, offset) in [(today, 0), ((today + 1) % 7, MINUTES_PER_DAY)] {
-                let start = a.start + offset;
-                if !a.on(weekday) || !(DAY_START..DAY_END).contains(&start) {
-                    continue;
-                }
-                // Drawn even at a chance of 1, so one anchor's chance
-                // never shifts the draws of the rest of the day.
-                if self.draw.unit() >= a.chance {
-                    continue;
-                }
-                placed.push(Placed {
-                    activity: a.activity,
-                    label: a.what.clone().unwrap_or_else(|| a.activity.id().into()),
-                    start,
-                    end: (start + a.minutes).min(DAY_END),
-                });
-            }
-        }
-        placed.sort_by_key(|p| p.start);
-        let mut kept: Vec<Placed> = Vec::new();
-        for p in placed {
-            if kept.last().is_none_or(|k| p.start >= k.end) {
-                kept.push(p);
-            }
-        }
-        kept
-    }
-
     /// When a night's sleep ends, for a day that opens asleep: an hour drawn
-    /// from when the table's sleep stretches ended, a minute within it.
+    /// from when the table's sleep stretches ended, a minute within it. The
+    /// cell's counts across the hours are blended with the pool's shares
+    /// across them, as a row is ([`Sampler::blend`]), so an hour the cell has
+    /// no row for keeps the pool's chance of it at the cell's scale.
     fn wake(&mut self) -> u32 {
-        let mut by_hour = BTreeMap::new();
-        for hour in WAKE_HOURS {
-            // Not counted as a backoff: a cell with no sleep ending at 4am
-            // is ordinary, and the draw is over the hours together.
-            let ended: f64 = self
-                .blend(|c| self.table.next(c, self.day, hour, Activity::Sleep).cloned())
-                .map_or(0.0, |(w, _)| w.values().sum());
-            by_hour.insert(hour, ended);
+        let ended = |cell: Option<Cell>, hour: u8| -> Option<f64> {
+            self.table
+                .next(cell, self.day, hour, Activity::Sleep)
+                .map(|w| w.values().sum())
+        };
+        let pool: BTreeMap<u8, f64> = WAKE_HOURS
+            .map(|h| (h, ended(None, h).unwrap_or(0.0)))
+            .collect();
+        let pool_total: f64 = pool.values().sum();
+        let cell: BTreeMap<u8, Option<f64>> =
+            WAKE_HOURS.map(|h| (h, ended(Some(self.cell), h))).collect();
+        if cell.values().all(Option::is_none) {
+            self.backoffs += 1;
         }
+        let by_hour: BTreeMap<u8, f64> = WAKE_HOURS
+            .map(|h| {
+                let share = if pool_total > 0.0 {
+                    pool[&h] / pool_total
+                } else {
+                    0.0
+                };
+                (h, cell[&h].unwrap_or(0.0) + PRIOR * share)
+            })
+            .collect();
         let hour = match self.draw.pick(&by_hour) {
             Some(h) => h,
             None => {
@@ -261,9 +310,12 @@ impl Sampler<'_> {
         }
         self.backoffs += 1;
         // The pool's: this band, then the nearest, later first.
-        let at = Band::ALL.iter().position(|b| *b == band).expect("a band");
-        for d in 0..Band::ALL.len() {
-            for i in [(at + d) % 4, (at + 4 - d) % 4] {
+        let (n, at) = (
+            Band::ALL.len(),
+            Band::ALL.iter().position(|b| *b == band).expect("a band"),
+        );
+        for d in 0..n {
+            for i in [(at + d) % n, (at + n - d) % n] {
                 if let Some(d) = self.table.durations(None, self.day, Band::ALL[i], act) {
                     return d.at(u);
                 }
@@ -484,6 +536,32 @@ mod tests {
         let s = thu.stretches.iter().find(|s| s.anchor.is_some()).unwrap();
         assert_eq!((s.end - 60), MINUTES_PER_DAY + 60);
         check_shape(&thu);
+    }
+
+    #[test]
+    fn a_night_shift_past_4am_carries_into_the_next_day() {
+        let r = routine::parse(
+            "cell = \"full_time\"\n[[anchor]]\nwhat = \"ward\"\nactivity = \"work\"\ndays = [\"mon\"]\nat = \"22:00\"\nminutes = 480\n",
+        )
+        .unwrap();
+        let mon = sample(table(), Cell::FullTime, &r, "mara", date("2026-01-05"));
+        let tue = sample(table(), Cell::FullTime, &r, "mara", date("2026-01-06"));
+        let wed = sample(table(), Cell::FullTime, &r, "mara", date("2026-01-07"));
+        let ward = |d: &Day| -> Vec<(u32, u32)> {
+            d.stretches
+                .iter()
+                .filter(|s| s.anchor.as_deref() == Some("ward"))
+                .map(|s| (s.start, s.end))
+                .collect()
+        };
+        assert_eq!(ward(&mon).last().map(|w| w.1), Some(DAY_END));
+        // Tuesday opens on the shift's last two hours, not asleep.
+        assert_eq!(ward(&tue), vec![(DAY_START, 6 * 60)]);
+        assert_eq!(tue.stretches[0].activity, Activity::Work);
+        assert!(ward(&wed).is_empty());
+        for d in [&mon, &tue, &wed] {
+            check_shape(d);
+        }
     }
 
     #[test]
