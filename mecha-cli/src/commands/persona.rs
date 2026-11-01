@@ -1152,13 +1152,15 @@ fn render_day(name: &str, day: &mecha_core::persona::sampler::Day, json: bool) -
             .as_deref()
             .map(|a| format!("[{a}] "))
             .unwrap_or_default();
-        writeln!(
-            out,
-            "  {}–{}  {:<16} {anchor}{who}",
-            clock(s.start),
-            clock(s.end),
-            s.activity.id()
-        )?;
+        // A stretch that runs across midnight sits above the rule, so its
+        // end says it is the next day's.
+        let next_day = if s.start < 24 * 60 && s.end > 24 * 60 {
+            "+1"
+        } else {
+            ""
+        };
+        let span = format!("{}–{}{next_day}", clock(s.start), clock(s.end));
+        writeln!(out, "  {span:<13}  {:<16} {anchor}{who}", s.activity.id())?;
     }
     if day.backoffs > 0 {
         writeln!(
@@ -1600,12 +1602,25 @@ mod tests {
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[0], "juno, Monday 2026-11-02 (weekday, student)");
         assert!(
-            lines[1].starts_with("  04:00–10:00  sleep") && lines[1].trim_end().ends_with("sleep")
+            lines[1].starts_with("  04:00–10:00    sleep")
+                && lines[1].trim_end().ends_with("sleep"),
+            "{}",
+            lines[1]
         );
         assert!(lines[2].ends_with("[lecture] alone"), "{}", lines[2]);
-        assert!(lines[3].ends_with("with partner, friend"), "{}", lines[3]);
+        // The stretch across midnight says where it ends, in one column.
+        assert!(
+            lines[3].starts_with("  11:15–01:00+1  eating ")
+                && lines[3].ends_with("with partner, friend"),
+            "{}",
+            lines[3]
+        );
         assert_eq!(lines[4], "  ── after midnight ──");
-        assert!(lines[5].starts_with("  01:00–04:00  work"), "{}", lines[5]);
+        assert!(
+            lines[5].starts_with("  01:00–04:00    work"),
+            "{}",
+            lines[5]
+        );
         assert!(text.contains("2 draws read past the student rows"));
         let json: serde_json::Value =
             serde_json::from_str(&render_day("juno", &day, true).unwrap()).unwrap();

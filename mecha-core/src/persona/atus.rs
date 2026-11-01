@@ -207,6 +207,10 @@ impl Company {
             Company::Public => "public",
         }
     }
+
+    pub fn from_id(id: &str) -> Option<Company> {
+        Company::ALL.iter().copied().find(|k| k.id() == id)
+    }
 }
 
 /// How long a stretch lasts, as quantiles of the stretches seen.
@@ -766,6 +770,10 @@ mod tests {
         assert_eq!(bands[22], Band::Night);
         assert!(Band::ALL.iter().all(|b| bands.contains(b)));
         assert!(Cell::ALL.iter().all(|c| Cell::from_id(c.id()) == Some(*c)));
+        assert!(Company::ALL
+            .iter()
+            .all(|c| Company::from_id(c.id()) == Some(*c)));
+        assert_eq!(Company::from_id("stranger"), None);
         // `share` indexes `present` by discriminant, and `present` is filled
         // in `ALL`'s order (the `C` row's), so the two must be one order.
         assert!(Company::ALL
