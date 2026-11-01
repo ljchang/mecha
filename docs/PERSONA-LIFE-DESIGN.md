@@ -412,7 +412,8 @@ threshold per persona once the access log says where it should sit. The
     and neither threshold is safe to guess; shared rows fold on PL29's shipped
     default, which needs no file). Rows the threshold never reads still fold:
     owner-origin rows and `state`, which §9 exempts from decay, and `days`
-    and `items`, which are pruned on a fixed age (§5). A day's companions
+    and `items`, which are pruned on a fixed age (§5). Events, arcs and
+    `people` rows decay on the threshold (§9), so they are withheld. A day's companions
     who are decaying `people` rows are withheld with them and render as
     "someone", as a pruned id does (§6.3). So a typo empties the part of the block that
     needs the owner's numbers, not the whole of it. The decay knobs have no "off", and shipped defaults
@@ -1877,16 +1878,15 @@ entirely: they never decay.
 **Pruning differs by store** (§16 PL7):
 
 - **The world hard-prunes** below the threshold, **except owner-origin
-  events**, which never decay, as owner people never do (§6.3). **A node
-  that points at a shared person is pruned in two steps** (§3.2): on the
-  persona's own knobs it leaves everything she reads, but its hold (the dates
-  and retellings its score comes from, no name or line) stays until the
-  shipped defaults would prune it too, so a member's sooner knobs cannot
-  release the shared node early. A `forget` removes a hold's chat-sourced
-  rows like any other (§5). The owner
+  events**, which never decay, as owner people never do (§6.3). The owner
   wrote them on the week view and saw them there, so pruning one would cost
   something someone saw. It would also defeat §5's promise that owner events
-  are never removed by forgetting a chat. Every other untold event is
+  are never removed by forgetting a chat. **A node that points at a shared
+  person is pruned in two steps** (§3.2): on the persona's own knobs it
+  leaves everything she reads, but its hold (the dates and retellings its
+  score comes from, no name or line) stays until the shipped defaults would
+  prune it too, so a member's sooner knobs cannot release the shared node
+  early. A `forget` removes a hold's chat-sourced rows like any other (§5). Every other untold event is
   simulation, and deleting it costs nothing anyone saw. A *told* event was
   seen. It may be pruned because its episode carries **a snapshot** (§5):
   kind, date, people ids and the narration, everything recall needs. That
@@ -2256,13 +2256,15 @@ ruled for repetition.
 - **Cost:** narrator tokens and wall clock per night, against the scheduled
   jobs' windows.
 - **Out of the gate's reach:** the in-chat writes from a tainted stretch,
-  each bounded by construction instead:
+  and what a feed places through them, each bounded by construction instead:
   - the `told` flag, bounded to events the chat was shown (§4.5);
   - the typed episode's `owner_reaction`, 2 bits per episode (§8.4);
   - the typed episode's `interest`, which follows from the item and keeps
     the publisher's placement, at most log₂k bits an episode and three
     episodes a day (§8.4). It outlives the five-day expiry, so part 3's
-    window would not see it, and the cap is what bounds it;
+    window would not see it. The cap bounds its rate, 3·log₂k bits a day,
+    and the live total is that times the days an episode stays recalled
+    (§8.4);
   - the retelling boost and `known_to_owner`, which a tainted stretch never
     writes at all (§4.5);
   - typed plans under `remember_articles` (PL21), at most about 20 bits a
