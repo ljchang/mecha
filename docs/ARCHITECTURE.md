@@ -4863,10 +4863,6 @@ Five things in it that cost something to get right, or would have:
   discards blocks past its cap and silently removes oversized images, which
   leaves a human reading a complete-looking message that is missing the part
   that mattered. Where something is cut, the cut says so.
-
-**The front-end lives in `mecha-cli/src/slack/`**, beside `tui/`, and is the
-only part that knows about both sides. Three decisions there:
-
 - **The socket names its TLS crypto provider** (`socket::tls_config`, used by
   `socket::dial`). A mecha built with code mode links rustls's aws-lc-rs
   provider through `monty-pool` beside the ring one everything else uses, and
@@ -4875,6 +4871,10 @@ only part that knows about both sides. Three decisions there:
   the connector, while CI stayed green, because every socket fixture is
   `ws://` and never builds a TLS connector. `mecha-cli/tests/slack_tls.rs`
   dials `wss://` in the build that links both.
+
+**The front-end lives in `mecha-cli/src/slack/`**, beside `tui/`, and is the
+only part that knows about both sides. Three decisions there:
+
 - **A Slack thread is a `Conversation`**, which hands the trifecta interlock
   the right granularity for free: a new thread is an honest clean slate, and a
   thread that fetched a hostile page on Monday still remembers on Tuesday. Any
