@@ -1800,6 +1800,12 @@ module.
   `message::is_recorded_note` and `agent::is_harness_voice`, as every
   persona fold is; joined to another note, its stem would not sit at the
   start and would never arm on a resume.
+- **A week view never redraws a folded day** (`world::week_view`). A day
+  past `KEEP_DAYS` is shown as its week's minutes, because drawing it again
+  would show a day no chat was told; and the reasons she has no days (world
+  off, no routine, no cell) are checked before any day, so finding out
+  draws nothing. Its route is `Feature::World`'s, and the per-persona switch
+  answers as a state, never a refusal.
 - **Group membership lives once**, in each persona's `groups`. `groups.toml`
   only declares groups; a persona naming an undeclared group is a broken link.
 - **Links are by name, resolved on load, broken ones named**

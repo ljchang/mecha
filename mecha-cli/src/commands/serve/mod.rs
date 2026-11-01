@@ -717,6 +717,11 @@ fn api() -> gate::Owned {
             get(persona_chat::memory).post(persona_chat::memory_act),
         )
         .at(
+            "/api/personas/{name}/week",
+            Owner::Of(Feature::World),
+            get(persona_chat::week),
+        )
+        .at(
             "/api/personas/{name}/chats",
             Owner::Of(Feature::Personas),
             get(persona_chat::history).post(persona_chat::open),
