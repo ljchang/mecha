@@ -537,11 +537,18 @@ fn event_of(r: &rusqlite::Row) -> rusqlite::Result<EdgeEvent> {
     let on: Option<String> = r.get(7)?;
     let on = on.and_then(|d| NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok());
     let precision = unwire(&r.get::<_, String>(8)?).unwrap_or(Precision::Unknown);
+    let kind = unwire(&r.get::<_, String>(3)?).unwrap_or(EventKind::Unknown);
+    // A ring this binary does not know makes the event one it cannot read,
+    // counted as such, never "not placed" (review of #801).
+    let kind = match layer {
+        Some(n) if Layer::of_size(n).is_none() => EventKind::Unknown,
+        _ => kind,
+    };
     Ok(EdgeEvent {
         uid: r.get(0)?,
         person: r.get(1)?,
         other: r.get(2)?,
-        kind: unwire(&r.get::<_, String>(3)?).unwrap_or(EventKind::Unknown),
+        kind,
         tie: r
             .get::<_, Option<String>>(4)?
             .map(|t| unwire(&t).unwrap_or(Tie::Unknown)),
@@ -946,10 +953,65 @@ fn person_line(p: &Person, e: &Edge) -> String {
     if let Some(v) = e.valence {
         notes.push(wire(&v));
     }
+    // What the fold could not read, or read from a source that is not
+    // clean, is said where the owner reads, not only in the JSON.
+    if let Some(n) = edge_warning(e) {
+        notes.push(n);
+    }
     if !notes.is_empty() {
         line.push_str(&format!(" ({})", notes.join(", ")));
     }
     line
+}
+
+/// What an edge's fold could not vouch for, in words: events this binary
+/// cannot read, and events from a source that is not clean. `None` for an
+/// edge folded whole from clean events.
+fn edge_warning(e: &Edge) -> Option<String> {
+    let mut out = Vec::new();
+    if e.unreadable > 0 {
+        out.push(format!(
+            "{} event{} this version cannot read",
+            e.unreadable,
+            if e.unreadable == 1 { "" } else { "s" }
+        ));
+    }
+    if e.unclean {
+        out.push("some of it from a source that is not clean".to_string());
+    }
+    (!out.is_empty()).then(|| out.join("; "))
+}
+
+impl Network {
+    /// Each edge whose fold could not vouch for everything it folded, as a
+    /// predicate following the persona's name (`Store::problems`): the owner
+    /// reads it beside her other problems rather than in the JSON alone.
+    pub fn unreadable_edges(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for p in &self.people {
+            if let Some(w) = edge_warning(&self.her_edge(&p.uid)) {
+                out.push(format!(
+                    "has {} in her network, whose tie holds {w}",
+                    p.name
+                ));
+            }
+        }
+        for ((a, b), e) in self.ties() {
+            if let Some(w) = edge_warning(&e) {
+                let name = |id: &str| {
+                    self.person(id)
+                        .map_or("someone", |p| p.name.as_str())
+                        .to_string()
+                };
+                out.push(format!(
+                    "has a tie between {} and {} in her network that holds {w}",
+                    name(&a),
+                    name(&b)
+                ));
+            }
+        }
+        out
+    }
 }
 
 /// `network.md`'s text: her people by layer, innermost first, then those
@@ -1594,6 +1656,70 @@ mod tests {
                 "{line}"
             );
         }
+    }
+
+    #[test]
+    fn what_a_fold_cannot_read_is_said_where_the_owner_reads() {
+        let pdir = pdir();
+        let ines = add_person(&pdir, &sister()).unwrap();
+        let theo = add_person(
+            &pdir,
+            &NewPerson {
+                name: "Theo".into(),
+                aliases: vec![],
+                ..sister()
+            },
+        )
+        .unwrap();
+        record(&pdir, &ines, None, &at(EventKind::Conflict, "2025")).unwrap();
+        record(&pdir, &ines, Some(&theo), &at(EventKind::Met, "2024")).unwrap();
+        let n = Network::read(&pdir).unwrap();
+        assert!(
+            n.unreadable_edges().is_empty(),
+            "a whole fold is not a finding"
+        );
+        // A newer binary wrote an event kind, a ring, and a source this one
+        // does not know.
+        let mut w = World::open(&pdir).unwrap();
+        let c = w.conn_mut();
+        c.execute(
+            "UPDATE edge_events SET event = 'eloped' WHERE person = ?1 AND event = 'conflict'",
+            [&ines],
+        )
+        .unwrap();
+        c.execute("UPDATE edge_events SET layer = 500 WHERE person = ?1 AND event = 'formed' AND other IS NULL", [&theo]).unwrap();
+        c.execute(
+            "UPDATE edge_events SET source = 'feed' WHERE other IS NOT NULL",
+            [],
+        )
+        .unwrap();
+        drop(w);
+        render(&pdir).unwrap();
+        let n = Network::read(&pdir).unwrap();
+        assert_eq!(n.her_edge(&ines).unreadable, 1);
+        assert_eq!(
+            n.her_edge(&theo).unreadable,
+            1,
+            "an unknown ring is an unreadable event"
+        );
+        let md = std::fs::read_to_string(pdir.join(NETWORK_MD)).unwrap();
+        assert!(md.contains("1 event this version cannot read"), "{md}");
+        let problems = n.unreadable_edges();
+        assert_eq!(problems.len(), 3, "{problems:?}");
+        assert!(problems
+            .iter()
+            .any(|p| p.starts_with("has Ines in her network, whose tie holds 1 event")));
+        assert!(problems
+            .iter()
+            .any(|p| p.contains("tie between") && p.contains("not clean")));
+        let store = crate::persona::Store::load(pdir.parent().unwrap());
+        let listed = store.problems(store.get("mara").unwrap(), &no_lib());
+        assert!(
+            listed
+                .iter()
+                .any(|p| p.contains("this version cannot read")),
+            "{listed:?}"
+        );
     }
 
     #[test]

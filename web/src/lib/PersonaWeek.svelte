@@ -217,7 +217,7 @@
           <div class="wdacts">
             <button class="abtn" disabled={acting || saving || !draft.anchors?.length} onclick={() => actOnDraft('POST', '/routine/draft/approve')}>Approve</button>
             <button class="linkbtn" disabled={acting} onclick={() => (draftText = draft.text)}>Edit</button>
-            <button class="linkbtn" disabled={acting} onclick={() => actOnDraft('DELETE', '/routine/draft')}>Discard</button>
+            <button class="linkbtn" disabled={acting || saving} onclick={() => actOnDraft('DELETE', '/routine/draft')}>Discard</button>
           </div>
         {/if}
       {:else}
