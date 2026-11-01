@@ -8,6 +8,11 @@
 //! never over it, and the draft becomes the routine only when the owner
 //! approves it as shown. Nothing here reads a draft as a routine.
 //!
+//! The routine also names her **cell**: which of the time-use table's six
+//! kinds of week her unanchored hours are drawn from (`persona::atus`). The
+//! owner picks it per persona, and with none named no day is sampled: a
+//! guessed week would look as plausible as a right one.
+//!
 //! A draft is staged only from a clean run. The anchors' labels are a
 //! model's text once a draft is approved, so refusing an untrusted draft at
 //! the door is what lets every routine the sampler reads be clean without
@@ -18,6 +23,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
 use super::activity::Activity;
+use super::atus::Cell;
 use super::Origin;
 
 /// The routine the sampler reads.
@@ -42,7 +48,12 @@ const DAY_NAMES: [&str; 7] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 /// a routine with no anchors and the sampler fills every hour.
 pub const TEMPLATE: &str = "\
 # Her week. Each [[anchor]] is something that happens at a fixed time;
-# the rest of each day is filled in from time-use data.
+# the rest of each day is filled in from time-use data, from the kind of
+# week `cell` names. No day is sampled until it names one:
+#
+# cell = \"student\"   # student, full_time, full_time_parent (a child under
+#                      # 13 at home), part_time, at_home (not working, under
+#                      # 65) or retired
 #
 # [[anchor]]
 # what = \"gym\"             # a few words for the week view (optional)
@@ -56,6 +67,9 @@ pub const TEMPLATE: &str = "\
 /// A validated routine.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Routine {
+    /// Whose time-use her unanchored hours are drawn from; `None` samples
+    /// no day.
+    pub cell: Option<Cell>,
     pub anchors: Vec<Anchor>,
 }
 
@@ -87,6 +101,7 @@ impl Anchor {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FileForm {
+    cell: Option<Cell>,
     #[serde(default)]
     anchor: Vec<AnchorForm>,
 }
@@ -164,7 +179,10 @@ pub fn parse(text: &str) -> Result<Routine> {
         });
     }
     certain_clashes(&anchors)?;
-    Ok(Routine { anchors })
+    Ok(Routine {
+        cell: form.cell,
+        anchors,
+    })
 }
 
 fn days_of(words: &[String]) -> std::result::Result<u8, String> {
@@ -441,6 +459,24 @@ chance = 0.7
         assert_eq!(r.anchors[0].days, 0b001_1111);
         assert_eq!(r.anchors[0].chance, 1.0);
         assert_eq!(r.anchors[1].days, 0b110_0000);
+    }
+
+    #[test]
+    fn a_routine_names_its_cell_and_an_unknown_one_is_refused() {
+        assert_eq!(
+            parse("cell = \"retired\"\n").unwrap().cell,
+            Some(Cell::Retired)
+        );
+        assert_eq!(parse(GYM).unwrap().cell, None);
+        assert_eq!(
+            parse(TEMPLATE).unwrap(),
+            Routine {
+                cell: None,
+                anchors: vec![]
+            }
+        );
+        let why = refusal("cell = \"nurse\"\n");
+        assert!(why.contains("nurse"), "{why}");
     }
 
     #[test]

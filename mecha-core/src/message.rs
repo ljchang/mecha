@@ -773,6 +773,8 @@ pub fn is_recorded_note(block: &Block) -> bool {
             && !crate::persona::recall::is_chat_start(text))
         // The scene note: per run, never stored, so a recorded one is stale.
         || crate::scene::stem_of(text).is_some()
+        // The today-block, the same.
+        || crate::persona::today::stem_of(text).is_some()
 }
 
 /// The recorded notes [`PriorNudges::Drop`] leaves out, as (message, block)

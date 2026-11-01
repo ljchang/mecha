@@ -1775,6 +1775,31 @@ module.
   are code, where a test sees them. The script holds a copy of the activity
   mapping and the table records what it gave every code it met, so a test
   fails until the table is rewritten after either side changes.
+- **A sampled day is drawn once, stored, and redrawn only forward**
+  (`persona::sampler`, `persona::world`). The draw is seeded by persona and
+  date and reads no clock, so the same inputs give the same day. Only today
+  and the fourteen days before it are stored. Today's is redrawn when the
+  digest of what it was drawn from (the routine's text, the table's text
+  pin, the sampler's version) changes; a past day is kept, because what a
+  chat was told about a day must stay what the day was, and so is the
+  anchor it carried past 4am, which the next day reads rather than
+  re-deriving from a routine edited since. Bump `SAMPLER_VERSION` for any change that would draw a
+  different day from the same inputs. A row this binary cannot read makes
+  the stored day unreadable and redrawn, never shown in part, and an anchor
+  label is held on the way out to what the routine's parser lets in, since
+  it reaches a chat. A day that cannot be read when it is pruned folds as
+  a whole day of unreadable minutes, so a week always adds up to its days;
+  the fold takes the write lock before its first read, since serve and the
+  CLI both prune and a day folded from two reads would count twice.
+  No day is drawn without a `cell` in `routine.toml`, the owner's pick,
+  never a guess.
+- **The today-block is a run note of its own, with its own stem pair**
+  (`persona::today`). Both stems arm `private`; the untrusted one is
+  chosen by any folded row's source that is not clean, and an unknown
+  source never is. It is registered in `Taint::arm_for_content`,
+  `message::is_recorded_note` and `agent::is_harness_voice`, as every
+  persona fold is; joined to another note, its stem would not sit at the
+  start and would never arm on a resume.
 - **Group membership lives once**, in each persona's `groups`. `groups.toml`
   only declares groups; a persona naming an undeclared group is a broken link.
 - **Links are by name, resolved on load, broken ones named**

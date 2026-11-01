@@ -37,9 +37,9 @@ use super::activity::Activity;
 const TABLE: &[u8] = include_bytes!("../../data/atus/table.tsv.gz");
 /// sha256 of the table's text, the script's `TEXT_SHA256`: what the pinned
 /// ATUS files produce. The text, not the gzip file, whose bytes depend on
-/// which zlib wrote them.
-#[cfg(test)]
-const TEXT_SHA256: &str = "b51bd371dc2ed22bfd42c42911a400fa6c2f4f7624d48d7ac630648a724ce37b";
+/// which zlib wrote them. A sampled day records it, so a day drawn from
+/// another table is known to be one.
+pub const TEXT_SHA256: &str = "b51bd371dc2ed22bfd42c42911a400fa6c2f4f7624d48d7ac630648a724ce37b";
 /// The format `V` row this reader understands.
 const VERSION: &str = "2";
 /// Quantiles per duration row: 0%, 5%, …, 100%.
@@ -206,6 +206,10 @@ impl Company {
             Company::Colleague => "colleague",
             Company::Public => "public",
         }
+    }
+
+    pub fn from_id(id: &str) -> Option<Company> {
+        Company::ALL.iter().copied().find(|k| k.id() == id)
     }
 }
 
@@ -766,6 +770,10 @@ mod tests {
         assert_eq!(bands[22], Band::Night);
         assert!(Band::ALL.iter().all(|b| bands.contains(b)));
         assert!(Cell::ALL.iter().all(|c| Cell::from_id(c.id()) == Some(*c)));
+        assert!(Company::ALL
+            .iter()
+            .all(|c| Company::from_id(c.id()) == Some(*c)));
+        assert_eq!(Company::from_id("stranger"), None);
         // `share` indexes `present` by discriminant, and `present` is filled
         // in `ALL`'s order (the `C` row's), so the two must be one order.
         assert!(Company::ALL
