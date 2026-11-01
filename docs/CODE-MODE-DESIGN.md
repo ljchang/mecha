@@ -1478,3 +1478,19 @@ program's read takes the whole file up to the host-byte limit
 and the description has a judgement example, asking each item's relevant
 part, in a domain unlike any fixture. A repeat must vary the seed to count
 as a second sample.
+
+**Rerun on #796's build (2026-11-01), seeds varied** by a run directory's
+`mecha.toml` (a provider table there replaces the global one whole, so it
+carries the full block):
+
+| Task | Before | After |
+|---|---|---|
+| the log | "0" | **right**: 7 failures, every date, the last code; 11 programs, 8 failed first |
+| the minutes, seed 42 | 4 of 10, 9 wrong | 10 of 10, 1 wrong, by `llm_map` over each ending (32 sub-calls) |
+| the minutes, seed 7 | | **exactly right**, by printing each ending and judging them itself |
+| the 300 notes, seed 7 | | Marco right; Priya 150 (144): a fixed 100-character window after "Attendees:" ran into the next line |
+| the 300 notes, seed 1234 | | Priya right; Marco 124: attendance counted as presenting again |
+
+What is left is reading, not machinery: a window where a line-scoped pattern
+(`Attendees:.*Priya`, the description's own) was exact, and "presented" read
+as "attended". Programs still fail first on habits about half the time.

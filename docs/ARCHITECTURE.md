@@ -5104,9 +5104,12 @@ with the file's size and the line to read on from, because the dispatch's
 result cap keeps the head: a note after the text landed in the spill file's
 tail, the cap marker named the 200 KB read as the whole output, and a model
 reported a 1.5 MB log as two days long with no failures in it (2026-11-01).
-A program's read (`ToolCtx::for_program`, set by the gate for a host call
-alone) is capped at code mode's host-byte limit instead, because it becomes a
-handle and never enters the context window the turn cap protects.
+A program's read is capped at what the program can still hold
+(`ToolCtx::program_room`, at most code mode's 64 MB host-byte limit), because
+it becomes a handle and never enters the context window the turn cap
+protects, and reading past the room would be refused anyway. `call_ctx` sets
+the mark on every call, as it does `host_calls`, so a subagent's run, which
+is based on a call's context, never inherits it (review of #796).
 
 **An MCP client's lifetime owns its child and readers.** `McpClient` enables
 `kill_on_drop` before spawning and aborts its reader task handles on drop.
