@@ -337,7 +337,15 @@ async fn draft_routine(global: &GlobalOpts, dir: &Path, name: &str) -> Result<()
     // after a discard the same week again (review of #799).
     let provider = crate::setup::persona_provider(&bound, crate::setup::PersonaUse::Converse)?;
     eprintln!("drafting `{}`'s week with {}", p.name, bound.model);
-    let r = drafter::draft(provider.as_ref(), &bound.model, dir, &p).await?;
+    let Some(r) = drafter::draft(provider.as_ref(), &bound.model, dir, &p).await? else {
+        println!(
+            "The model found no fixed point in `{}`'s week to draft from what you wrote \
+             of her, so nothing waits on you. `mecha persona routine edit {}` writes \
+             her routine by hand.",
+            p.name, p.name
+        );
+        return Ok(());
+    };
     println!(
         "Drafted {} anchor(s) for `{}`, waiting on you beside her routine. \
          `mecha persona routine show {}` reads it; `edit {} --draft` changes it; \
@@ -1308,21 +1316,8 @@ fn routine_cmd(dir: &Path, cmd: RoutineCmd, edit_file: &dyn Fn(&Path) -> Result<
     // By folder, as `edit` finds a persona: one whose persona.toml no longer
     // parses still has a week to look at. `routine::read` checks the name.
     let named = |name: &str| -> Result<String> { Ok(name.trim().to_lowercase()) };
-    let anchors = |r: &Routine| -> Vec<serde_json::Value> {
-        r.anchors
-            .iter()
-            .map(|a| {
-                serde_json::json!({
-                    "what": a.what,
-                    "activity": a.activity,
-                    "days": (0..7).filter(|d| a.on(*d)).collect::<Vec<_>>(),
-                    "start_minute": a.start,
-                    "minutes": a.minutes,
-                    "chance": a.chance,
-                })
-            })
-            .collect()
-    };
+    let anchors =
+        |r: &Routine| -> Vec<serde_json::Value> { r.anchors.iter().map(|a| a.to_json()).collect() };
     match cmd {
         RoutineCmd::Show { name, json } => {
             let name = named(&name)?;

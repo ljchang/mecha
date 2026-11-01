@@ -1896,16 +1896,38 @@ impl PersonaChats {
         // digest a change sends back so an editor's edit is never
         // overwritten. A routine that does not load names no cell here;
         // the week below says why.
-        use mecha_core::persona::routine;
-        let text = routine::read(&self.store, &p.name).map_err(failed)?.routine;
+        use mecha_core::persona::{drafter, routine};
+        let texts = routine::read(&self.store, &p.name).map_err(failed)?;
+        let text = texts.routine;
         let cell = text
             .as_deref()
             .and_then(|t| routine::parse(t).ok())
             .and_then(|r| r.cell)
             .map(|c| c.id());
+        // A waiting draft as the owner reviews it: the text itself, the
+        // anchors it would give her (or why it does not load), the digest an
+        // approval or an edit sends back, the kind of week approving keeps,
+        // and whether it is now the owner's, which a redraft may not replace.
+        let draft = texts.draft.as_deref().map(|d| {
+            let parsed = routine::parse(d);
+            serde_json::json!({
+                "text": d,
+                "digest": mecha_core::persona::text_digest(d),
+                "anchors": parsed.as_ref().ok().map(|r| r.anchors.iter().map(|a| a.to_json()).collect::<Vec<_>>()),
+                "error": parsed.as_ref().err().map(|e| format!("{e:#}")),
+                "kept_cell": routine::kept_cell(d, text.as_deref()).map(|c| c.id()),
+                "edited": routine::may_stage(&self.store, &p.name).is_err(),
+            })
+        });
         let mut out = serde_json::json!({
             "today": today.to_string(),
-            "routine": { "digest": routine::digest_of(text.as_deref()), "cell": cell },
+            "routine": {
+                "digest": routine::digest_of(text.as_deref()),
+                "cell": cell,
+                "draft": draft,
+                // Why no draft can be asked for her, or null when one can.
+                "undraftable": drafter::check(&p).err().map(|e| format!("{e:#}")),
+            },
         });
         match mecha_core::persona::world::week_view(&self.store, &p.name, date, today)
             .map_err(failed)?
@@ -1940,18 +1962,91 @@ impl PersonaChats {
                 body.cell
             )));
         };
-        // Stale is an edit made elsewhere (409), a disk that would not take
-        // the write is the server's failure, and the rest is the file as
-        // it stands refusing the pick (review of #797).
-        routine::set_cell(&self.store, &p.name, cell, &body.base).map_err(|e| {
-            if e.downcast_ref::<routine::StaleRoutine>().is_some() {
-                Refusal::Conflict(format!("{e:#}"))
-            } else if e.chain().any(|c| c.is::<std::io::Error>()) {
-                Refusal::Failed(format!("{e:#}"))
-            } else {
-                Refusal::Bad(format!("{e:#}"))
+        routine::set_cell(&self.store, &p.name, cell, &body.base).map_err(routine_refusal)?;
+        self.week(
+            library,
+            &p.name,
+            body.unlock.as_deref(),
+            body.date.as_deref(),
+            tz,
+        )
+    }
+
+    /// Her own model drafts her week from what the owner wrote of her, held
+    /// on the router as a turn is, and staged beside her routine to wait on
+    /// the owner (`persona::drafter`). What can be refused without the
+    /// answer is refused before the model runs, as a 409: she cannot be
+    /// drafted for as she stands. Answers with the week, and how many
+    /// anchors were drafted: 0 is the model finding no fixed point, a
+    /// finding with nothing staged.
+    pub async fn draft_routine(
+        &self,
+        follower: &crate::follow::Follower,
+        library: &LibraryState,
+        name: &str,
+        body: &DraftBody,
+        tz: Option<chrono_tz::Tz>,
+    ) -> Result<serde_json::Value, Refusal> {
+        use mecha_core::persona::{drafter, routine};
+        let p = self
+            .visible(library, name, body.unlock.as_deref())
+            .ok_or(Refusal::NotFound)?;
+        drafter::check(&p).map_err(|e| Refusal::Conflict(format!("{e:#}")))?;
+        routine::may_stage(&self.store, &p.name)
+            .map_err(|e| Refusal::Conflict(format!("{e:#}")))?;
+        let (_held, bound) = follower
+            .enter("routine draft", |_| {})
+            .await
+            .map_err(failed)?;
+        // Unseeded, as her own turns are: a pinned seed would make a
+        // redraft after a discard the same week again.
+        let provider = (self.provider)(&bound, PersonaUse::Converse).map_err(failed)?;
+        let drafted = drafter::draft(provider.as_ref(), &bound.model, &self.store, &p)
+            .await
+            .map_err(failed)?;
+        let mut out = self.week(
+            library,
+            &p.name,
+            body.unlock.as_deref(),
+            body.date.as_deref(),
+            tz,
+        )?;
+        out["drafted"] = serde_json::json!(drafted.map_or(0, |r| r.anchors.len()));
+        Ok(out)
+    }
+
+    /// The owner approves the waiting draft as shown (`digest`), keeping her
+    /// kind of week when the draft names none (`routine::kept_cell`), or
+    /// edits it (`text`, over the draft as shown), or discards it. Each
+    /// answers with the week as it now stands.
+    pub fn act_on_draft(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        act: DraftAct,
+        body: &DraftBody,
+        tz: Option<chrono_tz::Tz>,
+    ) -> Result<serde_json::Value, Refusal> {
+        use mecha_core::persona::routine;
+        let p = self
+            .visible(library, name, body.unlock.as_deref())
+            .ok_or(Refusal::NotFound)?;
+        match act {
+            DraftAct::Approve => {
+                routine::approve_draft_as_shown(&self.store, &p.name, &body.digest)
+                    .map_err(routine_refusal)?;
             }
-        })?;
+            DraftAct::Edit => {
+                let Some(text) = body.text.as_deref() else {
+                    return Err(Refusal::Bad("an edit carries the draft's `text`".into()));
+                };
+                routine::edit_draft(&self.store, &p.name, text, &body.digest)
+                    .map_err(routine_refusal)?;
+            }
+            DraftAct::Discard => {
+                routine::discard_draft(&self.store, &p.name).map_err(routine_refusal)?;
+            }
+        }
         self.week(
             library,
             &p.name,
@@ -5898,6 +5993,44 @@ pub struct CellBody {
     unlock: Option<String>,
 }
 
+/// A refusal from `routine`'s owner doors: stale is an edit made elsewhere
+/// (409), a disk that would not take the write is the server's failure,
+/// and the rest is the file as it stands refusing the change.
+fn routine_refusal(e: anyhow::Error) -> Refusal {
+    if e.downcast_ref::<mecha_core::persona::routine::StaleRoutine>()
+        .is_some()
+    {
+        Refusal::Conflict(format!("{e:#}"))
+    } else if e.chain().any(|c| c.is::<std::io::Error>()) {
+        Refusal::Failed(format!("{e:#}"))
+    } else {
+        Refusal::Bad(format!("{e:#}"))
+    }
+}
+
+#[derive(serde::Deserialize, Default)]
+pub struct DraftBody {
+    /// The draft's digest as the page was shown it (approve, edit).
+    #[serde(default)]
+    digest: String,
+    /// The owner's text for the draft (edit).
+    #[serde(default)]
+    text: Option<String>,
+    /// The week the page is showing, answered back after the change.
+    #[serde(default)]
+    date: Option<String>,
+    #[serde(default)]
+    unlock: Option<String>,
+}
+
+/// What the owner does to a waiting draft.
+#[derive(Debug, Clone, Copy)]
+pub enum DraftAct {
+    Approve,
+    Edit,
+    Discard,
+}
+
 /// POST /api/personas/{name}/routine/cell
 pub async fn set_cell(
     State(state): Web,
@@ -5915,6 +6048,78 @@ pub async fn set_cell(
         Ok(result) => respond(result),
         Err(e) => Refusal::Failed(format!("setting a persona's week: {e}")).into_response(),
     }
+}
+
+/// POST /api/personas/{name}/routine/draft: her model drafts her week.
+pub async fn draft_routine(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<DraftBody>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let tz = chat.follower.current().config.agent.timezone();
+    respond(
+        chat.personas
+            .draft_routine(&chat.follower, &state.library, &name, &body, tz)
+            .await,
+    )
+}
+
+/// The owner's doors to a waiting draft: PUT edits it, DELETE discards it,
+/// POST `/approve` makes it her routine.
+async fn act_on_draft(
+    state: super::WebState,
+    name: String,
+    act: DraftAct,
+    body: DraftBody,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let personas = Arc::clone(&chat.personas);
+    let library = Arc::clone(&state.library);
+    let tz = chat.follower.current().config.agent.timezone();
+    match tokio::task::spawn_blocking(move || {
+        personas.act_on_draft(&library, &name, act, &body, tz)
+    })
+    .await
+    {
+        Ok(result) => respond(result),
+        Err(e) => {
+            Refusal::Failed(format!("changing a persona's routine draft: {e}")).into_response()
+        }
+    }
+}
+
+/// PUT /api/personas/{name}/routine/draft
+pub async fn edit_draft(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<DraftBody>,
+) -> axum::response::Response {
+    act_on_draft(state, name, DraftAct::Edit, body).await
+}
+
+/// DELETE /api/personas/{name}/routine/draft
+pub async fn discard_draft(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<DraftBody>,
+) -> axum::response::Response {
+    act_on_draft(state, name, DraftAct::Discard, body).await
+}
+
+/// POST /api/personas/{name}/routine/draft/approve
+pub async fn approve_draft(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<DraftBody>,
+) -> axum::response::Response {
+    act_on_draft(state, name, DraftAct::Approve, body).await
 }
 
 #[derive(serde::Deserialize)]
@@ -8600,6 +8805,189 @@ mod tests {
     /// reason she has no days, an activity, or a kind of week the page does
     /// not know would fall back silently (to the CLI's prose, to "not named
     /// here", or to no label), so each list is held to its enum here.
+    /// `mara` with her days switched on, in a world whose model answers
+    /// every persona request with `answer`.
+    fn world_drafting(answer: &str) -> World {
+        let w = world_with(Mode::Say(answer.into()));
+        let toml = w.store().join("mara").join("persona.toml");
+        let text = std::fs::read_to_string(&toml).unwrap();
+        std::fs::write(&toml, text.replace("world     = false", "world     = true")).unwrap();
+        w
+    }
+
+    const DRAFTED: &str = r#"{"anchors": [
+        {"what": "pottery class", "activity": "class", "days": ["tue"],
+         "at": "18:30", "minutes": 120, "chance": 1},
+        {"what": "early swim", "activity": "exercise", "days": ["weekdays"],
+         "at": "06:30", "minutes": 45, "chance": 0.6}
+    ]}"#;
+
+    #[tokio::test]
+    async fn the_owner_reviews_a_drafted_week_and_her_pick_survives_approval() {
+        let w = world_drafting(DRAFTED);
+        let ps = w.personas();
+        let body = |digest: &str, text: Option<&str>| DraftBody {
+            digest: digest.into(),
+            text: text.map(Into::into),
+            ..DraftBody::default()
+        };
+        let cell = CellBody {
+            cell: "part_time".into(),
+            base: String::new(),
+            date: None,
+            unlock: None,
+        };
+        ps.set_cell(&w.library, "mara", &cell, None).unwrap();
+
+        let before = ps.week(&w.library, "mara", None, None, None).unwrap();
+        assert_eq!(before["routine"]["draft"], serde_json::Value::Null);
+        assert_eq!(before["routine"]["undraftable"], serde_json::Value::Null);
+        let drafted = ps
+            .draft_routine(&w.chat.follower, &w.library, "mara", &body("", None), None)
+            .await
+            .unwrap();
+        assert_eq!(drafted["drafted"], 2);
+        let draft = &drafted["routine"]["draft"];
+        assert_eq!(draft["anchors"].as_array().unwrap().len(), 2);
+        assert_eq!(draft["anchors"][0]["start_minute"], 18 * 60 + 30);
+        assert_eq!(draft["kept_cell"], "part_time");
+        assert_eq!(draft["edited"], false);
+        // One quarantined question: no tools went with it.
+        let asked = w.seen.lock().unwrap().last().cloned().unwrap();
+        assert!(asked.tools.is_empty());
+        assert!(asked.system.unwrap().contains("weekly routine"));
+
+        // The owner edits it as shown; a stale edit is a 409.
+        let shown = draft["digest"].as_str().unwrap().to_string();
+        let text = draft["text"].as_str().unwrap().replace("18:30", "19:00");
+        assert!(matches!(
+            ps.act_on_draft(
+                &w.library,
+                "mara",
+                DraftAct::Edit,
+                &body("0", Some(&text)),
+                None
+            ),
+            Err(Refusal::Conflict(_))
+        ));
+        let edited = ps
+            .act_on_draft(
+                &w.library,
+                "mara",
+                DraftAct::Edit,
+                &body(&shown, Some(&text)),
+                None,
+            )
+            .unwrap();
+        let draft = &edited["routine"]["draft"];
+        assert_eq!(draft["anchors"][0]["start_minute"], 19 * 60);
+        assert_eq!(draft["edited"], true);
+        // Now hers: a redraft is refused before the model runs.
+        let asked_before = w.seen.lock().unwrap().len();
+        assert!(matches!(
+            ps.draft_routine(&w.chat.follower, &w.library, "mara", &body("", None), None)
+                .await,
+            Err(Refusal::Conflict(why)) if why.contains("edited")
+        ));
+        assert_eq!(w.seen.lock().unwrap().len(), asked_before);
+
+        // Approved over the digest shown, her kind of week kept; a stale
+        // approval is a 409.
+        assert!(matches!(
+            ps.act_on_draft(
+                &w.library,
+                "mara",
+                DraftAct::Approve,
+                &body(&shown, None),
+                None
+            ),
+            Err(Refusal::Conflict(_))
+        ));
+        let now = draft["digest"].as_str().unwrap().to_string();
+        let approved = ps
+            .act_on_draft(
+                &w.library,
+                "mara",
+                DraftAct::Approve,
+                &body(&now, None),
+                None,
+            )
+            .unwrap();
+        assert_eq!(approved["routine"]["cell"], "part_time");
+        assert_eq!(approved["routine"]["draft"], serde_json::Value::Null);
+        assert_eq!(approved["week"]["days"].as_array().unwrap().len(), 7);
+        // Nothing waits, so nothing to discard.
+        assert!(matches!(
+            ps.act_on_draft(&w.library, "mara", DraftAct::Discard, &body("", None), None),
+            Err(Refusal::Bad(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_week_with_no_fixed_point_is_a_finding_and_a_candidate_is_not_drafted() {
+        let w = world_drafting(r#"{"anchors": []}"#);
+        let ps = w.personas();
+        let none = ps
+            .draft_routine(
+                &w.chat.follower,
+                &w.library,
+                "mara",
+                &DraftBody::default(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(none["drafted"], 0);
+        assert_eq!(none["routine"]["draft"], serde_json::Value::Null);
+        // A model answer with a draft, discarded: the routine untouched.
+        let w = world_drafting(DRAFTED);
+        let ps = w.personas();
+        ps.draft_routine(
+            &w.chat.follower,
+            &w.library,
+            "mara",
+            &DraftBody::default(),
+            None,
+        )
+        .await
+        .unwrap();
+        let gone = ps
+            .act_on_draft(
+                &w.library,
+                "mara",
+                DraftAct::Discard,
+                &DraftBody::default(),
+                None,
+            )
+            .unwrap();
+        assert_eq!(gone["routine"]["draft"], serde_json::Value::Null);
+        assert_eq!(gone["routine"]["digest"], "");
+        // A candidate persona says why on the week, and the route refuses.
+        let state = w.store().join("mara").join("state.toml");
+        let text = std::fs::read_to_string(&state).unwrap();
+        std::fs::write(
+            &state,
+            text.replace("status = \"approved\"", "status = \"candidate\""),
+        )
+        .unwrap();
+        let week = ps.week(&w.library, "mara", None, None, None).unwrap();
+        assert!(week["routine"]["undraftable"]
+            .as_str()
+            .unwrap()
+            .contains("candidate"));
+        assert!(matches!(
+            ps.draft_routine(
+                &w.chat.follower,
+                &w.library,
+                "mara",
+                &DraftBody::default(),
+                None
+            )
+            .await,
+            Err(Refusal::Conflict(_))
+        ));
+    }
+
     #[test]
     fn the_week_views_keys_are_the_enums_ids() {
         use mecha_core::persona::{activity::Activity, atus::Cell, world::Absent};

@@ -92,6 +92,19 @@ impl Anchor {
         day < 7 && self.days & (1 << day) != 0
     }
 
+    /// As the CLI's `--json` and the Week tab read it: days as 0 (Monday)
+    /// to 6, the start as minutes after midnight.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "what": self.what,
+            "activity": self.activity,
+            "days": (0..7).filter(|d| self.on(*d)).collect::<Vec<_>>(),
+            "start_minute": self.start,
+            "minutes": self.minutes,
+            "chance": self.chance,
+        })
+    }
+
     /// How a refusal names it: its label, or its activity when it has none.
     fn name(&self) -> &str {
         self.what.as_deref().unwrap_or(self.activity.id())
@@ -483,6 +496,38 @@ pub fn set_cell(dir: &Path, name: &str, cell: Cell, base: &str) -> Result<Routin
     Ok(routine)
 }
 
+/// The owner's edit of a waiting draft, before approving it (§4.1, PL1):
+/// written only over the draft as shown (`base`, its digest), so an edit
+/// made in an editor meanwhile is never overwritten ([`StaleRoutine`]), and
+/// only if it loads, so a draft can always be approved as saved. The staged
+/// record is left as the model wrote it, so the draft now reads as the
+/// owner's and a model never drafts over it ([`may_stage`]).
+pub fn edit_draft(dir: &Path, name: &str, text: &str, base: &str) -> Result<Routine> {
+    let pdir = persona_dir(dir, name)?;
+    let Some(waiting) = read_if_there(&pdir.join(DRAFT))? else {
+        bail!("`{name}` has no routine draft waiting");
+    };
+    if super::text_digest(&waiting) != base {
+        return Err(StaleRoutine {
+            name: name.into(),
+            file: DRAFT,
+        }
+        .into());
+    }
+    if text.len() as u64 > super::MAX_PROSE_BYTES {
+        bail!(
+            "the draft is capped at {} KB",
+            super::MAX_PROSE_BYTES / 1024
+        );
+    }
+    if let Some(c) = super::forbidden_control(text) {
+        bail!("the draft holds a control character (U+{:04X})", c as u32);
+    }
+    let routine = parse(text).context("the draft does not load as saved")?;
+    super::write_private(&pdir.join(DRAFT), text.as_bytes())?;
+    Ok(routine)
+}
+
 /// Drop a waiting draft. The routine is untouched.
 pub fn discard_draft(dir: &Path, name: &str) -> Result<()> {
     let pdir = persona_dir(dir, name)?;
@@ -742,6 +787,39 @@ chance = 0.7
         stage_draft(&dir, "mara", GYM, Origin::ModelClean).unwrap();
         let stale = approve_draft_as_shown(&dir, "mara", "0").unwrap_err();
         assert!(stale.downcast_ref::<StaleRoutine>().is_some(), "{stale:#}");
+    }
+
+    #[test]
+    fn the_owner_edits_a_draft_as_shown_and_it_becomes_theirs() {
+        let dir = made();
+        stage_draft(&dir, "mara", GYM, Origin::ModelClean).unwrap();
+        let base = crate::persona::text_digest(GYM);
+        let mine = GYM.replace("07:00", "06:30");
+        let r = edit_draft(&dir, "mara", &mine, &base).unwrap();
+        assert_eq!(r.anchors[0].start, 6 * 60 + 30);
+        assert_eq!(
+            read(&dir, "mara").unwrap().draft.as_deref(),
+            Some(mine.as_str())
+        );
+        // Shown the model's text, the disk holds the owner's: typed, unwritten.
+        let stale = edit_draft(&dir, "mara", GYM, &base).unwrap_err();
+        assert!(stale.downcast_ref::<StaleRoutine>().is_some(), "{stale:#}");
+        // A save that does not load is refused, so the draft stays approvable.
+        let mbase = crate::persona::text_digest(&mine);
+        let bad = format!(
+            "{:#}",
+            edit_draft(&dir, "mara", "[[anchor]]\nactivity = \"nap\"", &mbase).unwrap_err()
+        );
+        assert!(bad.contains("does not load"), "{bad}");
+        assert_eq!(
+            read(&dir, "mara").unwrap().draft.as_deref(),
+            Some(mine.as_str())
+        );
+        // Edited, it is the owner's: a model may not draft over it.
+        assert!(format!("{:#}", may_stage(&dir, "mara").unwrap_err()).contains("edited"));
+        // No draft waiting, nothing to edit.
+        discard_draft(&dir, "mara").unwrap();
+        assert!(edit_draft(&dir, "mara", GYM, "").is_err());
     }
 
     #[test]

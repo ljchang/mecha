@@ -34,11 +34,14 @@ const DAY_WORDS: [&str; 10] = [
     "mon", "tue", "wed", "thu", "fri", "sat", "sun", "weekdays", "weekends", "daily",
 ];
 
-/// What every drafted file opens with, ahead of its anchors.
+/// What every drafted file opens with, ahead of its anchors. Worded to stay
+/// true once approved, since approval keeps it, and to send a change of her
+/// kind of week to the picker: approval writes the routine's `cell` above
+/// this comment, so "add one here" would make two (review of #799).
 pub const HEADER: &str = "\
-# Drafted by a model from what you wrote of her. Read it, change anything,
-# then approve it: it becomes her routine only then. Her kind of week stays
-# the one her routine names; add `cell = \"...\"` here to change it.
+# Drafted by a model from what you wrote of her. None of it reached her days
+# until you approved it, and any line can be changed before or after. Her
+# kind of week is set with the Week tab's picker, never here.
 ";
 
 fn system() -> String {
@@ -159,16 +162,20 @@ struct Drafted {
 
 /// The draft's text from the model's answer: [`HEADER`], then the anchors
 /// rendered by the harness, checked as strictly as the sampler loads a
-/// routine. Refused when the answer holds no JSON, a field the answer has
-/// no place for (a `cell` among them), no anchor, or one that does not load.
-pub fn render(reply: &str) -> Result<String> {
-    let (Some(start), Some(end)) = (reply.find('{'), reply.rfind('}')) else {
+/// routine. `None` when the model found no fixed point in her week, which
+/// the frame invites: a finding, not a failure, and nothing to stage.
+/// Refused when the answer holds no JSON, a field it has no place for (a
+/// `cell` among them), or an anchor that does not load.
+pub fn render(reply: &str) -> Result<Option<String>> {
+    // The shared brace matcher: a closing sentence holding a `}` must not
+    // widen the answer into invalid JSON and lose the run (review of #799).
+    let Some(body) = crate::eval::extract_json(reply) else {
         bail!("the drafter answered no JSON");
     };
-    let r: Reply = serde_json::from_str(reply.get(start..=end).unwrap_or_default())
-        .context("the drafter's answer is not a list of anchors")?;
+    let r: Reply =
+        serde_json::from_str(&body).context("the drafter's answer is not a list of anchors")?;
     if r.anchors.is_empty() {
-        bail!("the drafter found no fixed points in her week to draft");
+        return Ok(None);
     }
     let mut list = toml_edit::ArrayOfTables::new();
     for a in r.anchors {
@@ -192,28 +199,32 @@ pub fn render(reply: &str) -> Result<String> {
     doc["anchor"] = toml_edit::Item::ArrayOfTables(list);
     let text = format!("{HEADER}\n{doc}");
     routine::parse(&text).context("the drafted routine does not load")?;
-    Ok(text)
+    Ok(Some(text))
 }
 
 /// Stage the model's answer for `p` as her waiting draft, beside her
-/// routine and never over it, and the draft as it will load.
-pub fn stage(dir: &Path, p: &Persona, reply: &str) -> Result<Routine> {
+/// routine and never over it, and the draft as it will load; `None`, with
+/// nothing staged, when the model found no fixed point to draft.
+pub fn stage(dir: &Path, p: &Persona, reply: &str) -> Result<Option<Routine>> {
     check(p)?;
-    let text = render(reply)?;
+    let Some(text) = render(reply)? else {
+        return Ok(None);
+    };
     routine::stage_draft(dir, &p.name, &text, Origin::ModelClean)?;
-    routine::parse(&text)
+    routine::parse(&text).map(Some)
 }
 
 /// Ask `provider` for `p`'s week on `model` and stage the answer as her
 /// waiting draft. The reply's envelope is read before its words: a refusal,
 /// or an answer cut off at its token cap, is an error naming it, never a
-/// draft of whatever part of an answer arrived.
+/// draft of whatever part of an answer arrived. `None` when the model
+/// found no fixed point in her week, with nothing staged.
 pub async fn draft(
     provider: &dyn crate::provider::Provider,
     model: &str,
     dir: &Path,
     p: &Persona,
-) -> Result<Routine> {
+) -> Result<Option<Routine>> {
     use crate::message::StopReason;
     // Every refusal that does not need the answer, before the model runs.
     check(p)?;
@@ -297,7 +308,13 @@ mod tests {
 
     #[test]
     fn the_answer_is_rendered_by_the_harness_and_loads() {
-        let text = render(&format!("Here is her week:\n```json\n{ANSWER}\n```")).unwrap();
+        // Fenced, with a closing sentence that holds a brace: the shared
+        // matcher takes the answer and leaves the sentence.
+        let text = render(&format!(
+            "Here is her week:\n```json\n{ANSWER}\n```\nThe evenings are {{flexible}}."
+        ))
+        .unwrap()
+        .unwrap();
         assert!(text.starts_with(HEADER), "{text}");
         let r = routine::parse(&text).unwrap();
         assert_eq!(r.cell, None);
@@ -318,7 +335,7 @@ mod tests {
         // key or a table of the file.
         let sly = r#"{"anchors": [{"what": "gym\" ] [[anchor]] cell = \"retired", "activity": "exercise",
             "days": ["mon"], "at": "07:00", "minutes": 60, "chance": 1}]}"#;
-        let r = routine::parse(&render(sly).unwrap()).unwrap();
+        let r = routine::parse(&render(sly).unwrap().unwrap()).unwrap();
         assert_eq!(r.cell, None);
         assert_eq!(r.anchors.len(), 1);
         assert_eq!(
@@ -335,7 +352,6 @@ mod tests {
     fn an_answer_that_is_not_a_week_is_refused() {
         for (reply, want) in [
             ("no idea", "answered no JSON"),
-            (r#"{"anchors": []}"#, "no fixed points"),
             (
                 r#"{"cell": "retired", "anchors": []}"#,
                 "not a list of anchors",
@@ -376,7 +392,7 @@ mod tests {
     #[test]
     fn a_staged_draft_waits_beside_her_routine() {
         let (dir, p) = mara();
-        let r = stage(&dir, &p, ANSWER).unwrap();
+        let r = stage(&dir, &p, ANSWER).unwrap().unwrap();
         assert_eq!(r.anchors.len(), 2);
         let texts = routine::read(&dir, "mara").unwrap();
         assert_eq!(texts.routine, None);
@@ -439,6 +455,7 @@ mod tests {
             &p,
         )
         .await
+        .unwrap()
         .unwrap();
         assert_eq!(r.anchors.len(), 2);
         assert!(routine::read(&dir, "mara").unwrap().draft.is_some());
@@ -485,5 +502,42 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         p.state.origin = Origin::ModelUntrusted;
         assert!(draft(&Unasked, "unasked-1", &dir, &p).await.is_err());
+    }
+
+    #[test]
+    fn no_fixed_point_is_a_finding_and_stages_nothing() {
+        // The frame invites an empty list; answering it is not a failure.
+        assert_eq!(render(r#"{"anchors": []}"#).unwrap(), None);
+        let (dir, p) = mara();
+        assert_eq!(stage(&dir, &p, r#"{"anchors": []}"#).unwrap(), None);
+        assert_eq!(
+            routine::read(&dir, "mara").unwrap(),
+            routine::Texts::default()
+        );
+    }
+
+    #[test]
+    fn an_approved_draft_keeps_the_picked_cell_once_and_its_header_stays_true() {
+        // The shape production makes: a rendered draft, HEADER and all,
+        // approved over a routine naming her kind of week.
+        let (dir, p) = mara();
+        let pdir = dir.join("mara");
+        std::fs::write(pdir.join(routine::FILE), "cell = \"part_time\"\n").unwrap();
+        stage(&dir, &p, ANSWER).unwrap().unwrap();
+        let draft = routine::read(&dir, "mara").unwrap().draft.unwrap();
+        let r = routine::approve_draft_as_shown(&dir, "mara", &crate::persona::text_digest(&draft))
+            .unwrap();
+        assert_eq!(r.cell, Some(crate::persona::atus::Cell::PartTime));
+        assert_eq!(r.anchors.len(), 2);
+        let text = routine::read(&dir, "mara").unwrap().routine.unwrap();
+        assert_eq!(text.matches("cell = ").count(), 1, "{text}");
+        assert!(
+            text.find("cell = ").unwrap() < text.find("[[anchor]]").unwrap(),
+            "{text}"
+        );
+        // The header survives approval, so it must not invite a second
+        // `cell` line, which would stop her routine loading.
+        assert!(text.contains(HEADER), "{text}");
+        assert!(!HEADER.contains("cell ="), "{HEADER}");
     }
 }
