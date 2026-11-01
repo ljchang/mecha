@@ -345,17 +345,7 @@ pub fn stage_draft(dir: &Path, name: &str, text: &str, origin: Origin) -> Result
     if routine.anchors.is_empty() {
         bail!("the draft holds no anchors");
     }
-    if let Some(waiting) = read_if_there(&pdir.join(DRAFT))? {
-        // No record, or one that disagrees, is an edit: unknown is the
-        // owner's here, because the cost of guessing wrong is their work.
-        let staged = std::fs::read_to_string(pdir.join(STAGED)).unwrap_or_default();
-        if staged.trim() != super::text_digest(&waiting) {
-            bail!(
-                "`{name}`'s waiting routine draft has been edited since it was staged; \
-                 approve or discard it before another is drafted"
-            );
-        }
-    }
+    may_stage(dir, name)?;
     super::write_private(&pdir.join(DRAFT), text.as_bytes())?;
     super::write_private(&pdir.join(STAGED), super::text_digest(text).as_bytes())
 }
@@ -394,14 +384,35 @@ pub fn kept_cell(draft: &str, routine: Option<&str>) -> Option<Cell> {
     parse(routine?).ok()?.cell
 }
 
-/// `text` with `cell` set at its root, every other line, comment and anchor
-/// as written: `toml_edit` places a root key above the first `[[anchor]]`.
-fn with_cell(text: &str, cell: Cell) -> Result<String> {
+/// `text`, the file named `file`, with `cell` set at its root, every other
+/// line, comment and anchor as written: `toml_edit` places a root key above
+/// the first `[[anchor]]`.
+fn with_cell(text: &str, file: &str, cell: Cell) -> Result<String> {
     let mut doc: toml_edit::DocumentMut = text
         .parse()
-        .with_context(|| format!("{FILE} is not TOML; fix it by hand first"))?;
+        .with_context(|| format!("{file} is not TOML; fix it by hand first"))?;
     doc["cell"] = toml_edit::value(cell.id());
     Ok(doc.to_string())
+}
+
+/// Refused when a draft waits that the owner has edited since it was
+/// staged: a model never overwrites the owner's text (§4.1). Asked by
+/// [`stage_draft`], and by a drafter before it spends a model run on an
+/// answer that would be refused here (review of #799).
+pub fn may_stage(dir: &Path, name: &str) -> Result<()> {
+    let pdir = persona_dir(dir, name)?;
+    if let Some(waiting) = read_if_there(&pdir.join(DRAFT))? {
+        // No record, or one that disagrees, is an edit: unknown is the
+        // owner's here, because the cost of guessing wrong is their work.
+        let staged = std::fs::read_to_string(pdir.join(STAGED)).unwrap_or_default();
+        if staged.trim() != super::text_digest(&waiting) {
+            bail!(
+                "`{name}`'s waiting routine draft has been edited since it was staged; \
+                 approve or discard it before another is drafted"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Make the waiting draft the routine, only if it still hashes to
@@ -426,7 +437,7 @@ pub fn approve_draft_as_shown(dir: &Path, name: &str, digest: &str) -> Result<Ro
     let old = read_if_there(&pdir.join(FILE))?;
     let text = match kept_cell(&text, old.as_deref()) {
         Some(cell) => {
-            let kept = with_cell(&text, cell)?;
+            let kept = with_cell(&text, DRAFT, cell)?;
             routine = parse(&kept).context("the draft does not load with her kind of week")?;
             kept
         }
@@ -466,7 +477,7 @@ pub fn set_cell(dir: &Path, name: &str, cell: Cell, base: &str) -> Result<Routin
         }
         .into());
     }
-    let text = with_cell(old.as_deref().unwrap_or(TEMPLATE), cell)?;
+    let text = with_cell(old.as_deref().unwrap_or(TEMPLATE), FILE, cell)?;
     let routine = parse(&text).with_context(|| format!("{FILE} does not load"))?;
     super::write_private(&pdir.join(FILE), text.as_bytes())?;
     Ok(routine)

@@ -65,7 +65,9 @@
       if (res.status === 409) {
         const why = (await res.text()).trim();
         await load();
-        error = `${why} It is shown as it stands now.`;
+        // A reload that failed keeps its own words: the week is gone, and
+        // saying it is shown would say the opposite of the page.
+        if (data) error = `${why} It is shown as it stands now.`;
         return;
       }
       if (!res.ok) throw new Error((await res.text()).trim());

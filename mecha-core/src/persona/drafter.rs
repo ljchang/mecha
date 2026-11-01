@@ -86,7 +86,7 @@ pub fn schema() -> serde_json::Value {
                         },
                         "at": { "type": "string", "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$" },
                         "minutes": { "type": "integer", "minimum": 5, "maximum": 1440 },
-                        "chance": { "type": "number", "minimum": 0.05, "maximum": 1 },
+                        "chance": { "type": "number", "minimum": 0.01, "maximum": 1 },
                     },
                     "required": ["what", "activity", "days", "at", "minutes", "chance"],
                     "additionalProperties": false,
@@ -215,6 +215,9 @@ pub async fn draft(
     p: &Persona,
 ) -> Result<Routine> {
     use crate::message::StopReason;
+    // Every refusal that does not need the answer, before the model runs.
+    check(p)?;
+    routine::may_stage(dir, &p.name)?;
     let request = request(model, p, provider.structured_output())?;
     let response = provider.complete(&request, None).await?;
     match response.stop_reason {
@@ -439,5 +442,48 @@ mod tests {
         .unwrap();
         assert_eq!(r.anchors.len(), 2);
         assert!(routine::read(&dir, "mara").unwrap().draft.is_some());
+    }
+
+    /// A model that must not be asked.
+    struct Unasked;
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for Unasked {
+        fn local(&self) -> bool {
+            true
+        }
+        fn id(&self) -> &str {
+            "unasked"
+        }
+        fn default_model(&self) -> &str {
+            "unasked-1"
+        }
+        async fn complete(
+            &self,
+            _req: &crate::message::CompletionRequest,
+            _sink: Option<&crate::provider::StreamSink>,
+        ) -> Result<crate::message::CompletionResponse> {
+            panic!("the drafter asked a model whose answer it would refuse")
+        }
+    }
+
+    #[tokio::test]
+    async fn a_draft_the_owner_edited_is_refused_before_the_model_runs() {
+        let (dir, mut p) = mara();
+        stage(&dir, &p, ANSWER).unwrap();
+        let path = dir.join("mara").join(routine::DRAFT);
+        let mine = std::fs::read_to_string(&path)
+            .unwrap()
+            .replace("18:30", "19:00");
+        std::fs::write(&path, &mine).unwrap();
+        let got = format!(
+            "{:#}",
+            draft(&Unasked, "unasked-1", &dir, &p).await.unwrap_err()
+        );
+        assert!(got.contains("edited since it was staged"), "{got}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), mine);
+        // And a persona that may not be drafted for is refused unasked too.
+        std::fs::remove_file(&path).unwrap();
+        p.state.origin = Origin::ModelUntrusted;
+        assert!(draft(&Unasked, "unasked-1", &dir, &p).await.is_err());
     }
 }
