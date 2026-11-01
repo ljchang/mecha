@@ -63,6 +63,18 @@ pub struct Day {
     /// Draws that had to read past her cell's row at that hour: the pool
     /// alone, a nearer hour or band, or the last resort.
     pub backoffs: u32,
+    /// The anchor that runs past this day's end, which the next day opens
+    /// with. Stored with the day, so the next day reads what this one was.
+    pub carries: Option<Carry>,
+}
+
+/// An anchor that ran past a day's 4am.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Carry {
+    pub activity: Activity,
+    pub label: String,
+    /// Where it ends, in the next day's minutes: past [`DAY_START`].
+    pub until: u32,
 }
 
 /// The day type ATUS would file `date` under.
@@ -81,6 +93,39 @@ pub fn seed(persona: &str, date: NaiveDate) -> u64 {
 
 /// Sample `persona`'s day on `date`, in `cell`, around `routine`'s anchors.
 pub fn sample(table: &Table, cell: Cell, routine: &Routine, persona: &str, date: NaiveDate) -> Day {
+    let before = date
+        .pred_opt()
+        .and_then(|prev| carried_from(routine, persona, prev));
+    sample_after(table, cell, routine, persona, date, before)
+}
+
+/// The anchor `routine` would carry out of `persona`'s `date`, redrawn:
+/// what a day before that is not stored passes on. Anchors are the first
+/// draws of a day's stream, so this needs nothing else of the day. It reads
+/// the day's own anchors, not what that day carried in turn: a tail long
+/// enough to knock one of them out would have run past a whole day.
+pub fn carried_from(routine: &Routine, persona: &str, date: NaiveDate) -> Option<Carry> {
+    let mut draw = Draw(seed(persona, date));
+    place_anchors(routine, date, &mut draw)
+        .into_iter()
+        .find(|a| a.reaches > DAY_END)
+        .map(|a| Carry {
+            activity: a.activity,
+            label: a.label,
+            until: a.reaches - MINUTES_PER_DAY,
+        })
+}
+
+/// [`sample`], opening with `before`: what the day before carried, as
+/// stored when it was drawn.
+pub fn sample_after(
+    table: &Table,
+    cell: Cell,
+    routine: &Routine,
+    persona: &str,
+    date: NaiveDate,
+    before: Option<Carry>,
+) -> Day {
     let mut s = Sampler {
         table,
         cell,
@@ -88,25 +133,23 @@ pub fn sample(table: &Table, cell: Cell, routine: &Routine, persona: &str, date:
         draw: Draw(seed(persona, date)),
         backoffs: 0,
     };
-    // Anchors are the first draws of a day's stream, so the day before's
-    // can be redrawn here to carry the tail of one that ran past 4am.
-    let before = date.pred_opt().map(|prev| {
-        let mut draw = Draw(seed(persona, prev));
-        place_anchors(routine, prev, &mut draw)
-    });
-    let tails = before.into_iter().flatten().filter_map(|a| {
-        (a.reaches > DAY_END).then(|| Placed {
-            start: DAY_START,
-            end: (a.reaches - MINUTES_PER_DAY).min(DAY_END),
-            reaches: a.reaches - MINUTES_PER_DAY,
-            ..a
-        })
+    let tail = before.filter(|c| c.until > DAY_START).map(|c| Placed {
+        activity: c.activity,
+        label: c.label,
+        start: DAY_START,
+        end: c.until.min(DAY_END),
+        reaches: c.until,
     });
     let anchors = keep_first(
-        tails
+        tail.into_iter()
             .chain(place_anchors(routine, date, &mut s.draw))
             .collect(),
     );
+    let carries = anchors.iter().find(|a| a.reaches > DAY_END).map(|a| Carry {
+        activity: a.activity,
+        label: a.label.clone(),
+        until: a.reaches - MINUTES_PER_DAY,
+    });
     let mut out: Vec<Stretch> = Vec::new();
     let mut next_anchor = 0;
     let (mut t, mut from) = (DAY_START, Activity::Sleep);
@@ -162,6 +205,7 @@ pub fn sample(table: &Table, cell: Cell, routine: &Routine, persona: &str, date:
         day_type: s.day,
         stretches: out,
         backoffs: s.backoffs,
+        carries,
     }
 }
 
@@ -178,11 +222,7 @@ struct Placed {
 
 /// The anchors that happen on `date`, each drawn against its chance, in
 /// start order: its weekday's from 4am on, and the next weekday's before
-/// 4am, which the day reaches into. Overlaps are left for [`keep_first`].
-///
-/// The day before's tail is carried from its own anchors alone, not from
-/// whatever it carried in turn: a tail long enough to knock out one of that
-/// day's anchors would have to run past a whole day.
+/// 4am, which the day reaches into. Overlaps are settled by [`keep_first`].
 fn place_anchors(routine: &Routine, date: NaiveDate, draw: &mut Draw) -> Vec<Placed> {
     let today = date.weekday().num_days_from_monday();
     let mut placed: Vec<Placed> = Vec::new();
@@ -555,6 +595,9 @@ mod tests {
                 .collect()
         };
         assert_eq!(ward(&mon).last().map(|w| w.1), Some(DAY_END));
+        assert_eq!(mon.carries.as_ref().map(|c| c.until), Some(6 * 60));
+        assert_eq!(carried_from(&r, "mara", date("2026-01-05")), mon.carries);
+        assert!(tue.carries.is_none());
         // Tuesday opens on the shift's last two hours, not asleep.
         assert_eq!(ward(&tue), vec![(DAY_START, 6 * 60)]);
         assert_eq!(tue.stretches[0].activity, Activity::Work);
@@ -562,6 +605,38 @@ mod tests {
         for d in [&mon, &tue, &wed] {
             check_shape(d);
         }
+    }
+
+    #[test]
+    fn the_next_day_opens_on_what_was_carried_not_what_the_routine_says_now() {
+        // The day before as stored carried two hours; the routine now says
+        // the shift ends at 4am. The stored carry wins.
+        let now = routine::parse("cell = \"full_time\"\n").unwrap();
+        let carried = Carry {
+            activity: Activity::Work,
+            label: "ward".into(),
+            until: 6 * 60,
+        };
+        let tue = sample_after(
+            table(),
+            Cell::FullTime,
+            &now,
+            "mara",
+            date("2026-01-06"),
+            Some(carried),
+        );
+        assert_eq!(tue.stretches[0].anchor.as_deref(), Some("ward"));
+        assert_eq!(tue.stretches[0].end, 6 * 60);
+        let plain = sample_after(
+            table(),
+            Cell::FullTime,
+            &now,
+            "mara",
+            date("2026-01-06"),
+            None,
+        );
+        assert_eq!(plain.stretches[0].activity, Activity::Sleep);
+        check_shape(&tue);
     }
 
     #[test]

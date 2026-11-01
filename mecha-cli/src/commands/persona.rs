@@ -122,6 +122,8 @@ pub enum Cmd {
         /// YYYY-MM-DD; today when left out.
         #[arg(long)]
         date: Option<String>,
+        /// As JSON. A day runs 4am to 4am, so a minute past 1439 is the
+        /// next morning.
         #[arg(long)]
         json: bool,
     },
@@ -1076,7 +1078,7 @@ fn run_with(
 /// waiting draft. The editor writes the file itself, as `edit` does, and
 /// what it left is read back through the sampler's own door.
 fn day_cmd(dir: &Path, name: &str, date: Option<&str>, json: bool) -> Result<()> {
-    use mecha_core::persona::{sampler, world};
+    use mecha_core::persona::world;
     // The owner's calendar day, not the machine's UTC one.
     let cfg = mecha_core::config::Config::load(&std::env::current_dir()?)?;
     let today = match cfg.agent.timezone() {
@@ -1090,6 +1092,15 @@ fn day_cmd(dir: &Path, name: &str, date: Option<&str>, json: bool) -> Result<()>
     };
     let name = name.trim().to_lowercase();
     let day = world::day(dir, &name, date, today)?;
+    print!("{}", render_day(&name, &day, json)?);
+    Ok(())
+}
+
+/// A day as `mecha persona day` prints it.
+fn render_day(name: &str, day: &mecha_core::persona::sampler::Day, json: bool) -> Result<String> {
+    use mecha_core::persona::sampler;
+    use std::fmt::Write;
+    let mut out = String::new();
     let clock = |m: u32| format!("{:02}:{:02}", (m / 60) % 24, m % 60);
     let company = |s: &sampler::Stretch| -> Option<Vec<&'static str>> {
         s.company
@@ -1097,7 +1108,7 @@ fn day_cmd(dir: &Path, name: &str, date: Option<&str>, json: bool) -> Result<()>
             .map(|c| c.iter().map(|k| k.id()).collect())
     };
     if json {
-        let out = serde_json::json!({
+        let value = serde_json::json!({
             "date": day.date.to_string(),
             "cell": day.cell.id(),
             "day_type": day.day_type.id(),
@@ -1109,21 +1120,27 @@ fn day_cmd(dir: &Path, name: &str, date: Option<&str>, json: bool) -> Result<()>
                 "company": company(s),
                 "anchor": s.anchor,
             })).collect::<Vec<_>>(),
+            "carries": day.carries.as_ref().map(|c| serde_json::json!({
+                "activity": c.activity.id(),
+                "anchor": c.label,
+                "until_minute": c.until,
+            })),
         });
-        println!("{}", serde_json::to_string_pretty(&out)?);
-        return Ok(());
+        writeln!(out, "{}", serde_json::to_string_pretty(&value)?)?;
+        return Ok(out);
     }
-    println!(
+    writeln!(
+        out,
         "{name}, {} {} ({}, {})",
         day.date.format("%A"),
         day.date,
         day.day_type.id(),
         day.cell.id()
-    );
+    )?;
     let mut midnight = false;
     for s in &day.stretches {
         if !midnight && s.start >= 24 * 60 {
-            println!("  ── after midnight ──");
+            writeln!(out, "  ── after midnight ──")?;
             midnight = true;
         }
         let who = match company(s) {
@@ -1136,21 +1153,23 @@ fn day_cmd(dir: &Path, name: &str, date: Option<&str>, json: bool) -> Result<()>
             .as_deref()
             .map(|a| format!("[{a}] "))
             .unwrap_or_default();
-        println!(
+        writeln!(
+            out,
             "  {}–{}  {:<16} {anchor}{who}",
             clock(s.start),
             clock(s.end),
             s.activity.id()
-        );
+        )?;
     }
     if day.backoffs > 0 {
-        println!(
+        writeln!(
+            out,
             "\n{} draws read past the {} rows, to the pool or a nearer hour.",
             day.backoffs,
             day.cell.id()
-        );
+        )?;
     }
-    Ok(())
+    Ok(out)
 }
 
 fn routine_cmd(dir: &Path, cmd: RoutineCmd, edit_file: &dyn Fn(&Path) -> Result<()>) -> Result<()> {
@@ -1526,6 +1545,74 @@ fn memory_cmd(dir: &Path, cmd: MemoryCmd) -> Result<()> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn a_day_prints_its_clock_company_anchors_and_the_turn_of_midnight() {
+        use mecha_core::persona::activity::Activity;
+        use mecha_core::persona::atus::{Cell, Company, DayType};
+        use mecha_core::persona::sampler::{Carry, Day, Stretch};
+        let stretch =
+            |activity, start, end, company: Option<Vec<Company>>, anchor: Option<&str>| Stretch {
+                activity,
+                start,
+                end,
+                company,
+                anchor: anchor.map(Into::into),
+            };
+        let day = Day {
+            date: chrono::NaiveDate::from_ymd_opt(2026, 11, 2).unwrap(),
+            cell: Cell::Student,
+            day_type: DayType::Weekday,
+            stretches: vec![
+                stretch(Activity::Sleep, 240, 600, None, None),
+                stretch(
+                    Activity::Class,
+                    600,
+                    675,
+                    Some(vec![Company::Alone]),
+                    Some("lecture"),
+                ),
+                stretch(
+                    Activity::Eating,
+                    675,
+                    1500,
+                    Some(vec![Company::Partner, Company::Friend]),
+                    None,
+                ),
+                stretch(
+                    Activity::Work,
+                    1500,
+                    1680,
+                    Some(vec![Company::Colleague]),
+                    Some("ward"),
+                ),
+            ],
+            backoffs: 2,
+            carries: Some(Carry {
+                activity: Activity::Work,
+                label: "ward".into(),
+                until: 360,
+            }),
+        };
+        let text = render_day("juno", &day, false).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "juno, Monday 2026-11-02 (weekday, student)");
+        assert!(
+            lines[1].starts_with("  04:00–10:00  sleep") && lines[1].trim_end().ends_with("sleep")
+        );
+        assert!(lines[2].ends_with("[lecture] alone"), "{}", lines[2]);
+        assert!(lines[3].ends_with("with partner, friend"), "{}", lines[3]);
+        assert_eq!(lines[4], "  ── after midnight ──");
+        assert!(lines[5].starts_with("  01:00–04:00  work"), "{}", lines[5]);
+        assert!(text.contains("2 draws read past the student rows"));
+        let json: serde_json::Value =
+            serde_json::from_str(&render_day("juno", &day, true).unwrap()).unwrap();
+        assert_eq!(json["stretches"][3]["end_minute"], 1680);
+        assert_eq!(json["stretches"][0]["company"], serde_json::Value::Null);
+        assert_eq!(json["stretches"][1]["company"][0], "alone");
+        assert_eq!(json["carries"]["until_minute"], 360);
+        assert_eq!(json["backoffs"], 2);
+    }
 
     fn scratch() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("mecha-persona-cli-{}", uuid::Uuid::new_v4()));
