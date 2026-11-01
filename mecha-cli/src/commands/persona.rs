@@ -320,7 +320,12 @@ async fn draft_routine(global: &GlobalOpts, dir: &Path, name: &str) -> Result<()
     let p = find(&store, name)?.clone();
     // Refused before the model is asked, never after it answered.
     drafter::check(&p)?;
-    let follower = crate::follow::Follower::start(global.clone(), Box::new(|_| {})).await?;
+    // One request with no tools: no MCP server is started for it.
+    let opts = GlobalOpts {
+        no_mcp: true,
+        ..global.clone()
+    };
+    let follower = crate::follow::Follower::start(opts, Box::new(|_| {})).await?;
     let (_held, bound) = follower
         .enter("routine draft", |s| {
             eprintln!("waiting: the model is switching to {}", s.to)
