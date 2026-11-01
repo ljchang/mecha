@@ -35,19 +35,20 @@ const MAX_OUTPUT_BYTES: usize = 200_000;
 /// with room to spare.
 const NOTICE_BYTES: usize = 512;
 
-fn truncate(mut s: String, what: &str) -> String {
-    if s.len() > MAX_OUTPUT_BYTES {
-        let mut cut = MAX_OUTPUT_BYTES;
-        while !s.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        let total = s.len();
-        s.truncate(cut);
-        s.push_str(&format!(
-            "\n\n[truncated: {what} was {total} bytes, showing first {cut}]"
-        ));
+/// Cut `s` to at most `cap` bytes on a char boundary; true when it cut.
+/// Nothing is appended: every caller says the cut **first**, because the
+/// dispatch's cap (`cap_result`) keeps a result's head, and a note after the
+/// text lands in the part it spills (`fs_read`'s incident, 2026-11-01).
+fn cut_at(s: &mut String, cap: usize) -> bool {
+    if s.len() <= cap {
+        return false;
     }
-    s
+    let mut cut = cap;
+    while !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    s.truncate(cut);
+    true
 }
 
 fn arg_str<'a>(input: &'a Value, key: &str) -> Result<&'a str> {
@@ -117,13 +118,25 @@ impl Tool for FsRead {
         // The notice is prepended, so a program's cut read leaves room for
         // it: capped at the room alone, every cut read came to the room plus
         // the notice, and the host-byte charge refused it whole where the
-        // program used to get the first 200 KB (review of #796).
+        // program used to get the first 200 KB (review of #796). The room is
+        // the path as the notice *shows* it: `display` writes each byte of a
+        // non-UTF-8 name as a three-byte U+FFFD, so the raw length undercounts.
+        let shown = path.display().to_string();
         let cap = match ctx.program_room {
             Some(room) => room
                 .min(crate::tool::code::defaults::HOST_BYTES)
-                .saturating_sub(NOTICE_BYTES + path.as_os_str().len()),
+                .saturating_sub(NOTICE_BYTES + shown.len()),
             None => MAX_OUTPUT_BYTES,
         };
+        // A program with less room than the notice reads nothing. Read anyway,
+        // it was cut at byte 0 of line 1 and told that line alone was too
+        // long for fs_read, about a file of short lines (review of #796).
+        if cap == 0 && ctx.program_room.is_some() {
+            return Ok(ToolOutput::err(format!(
+                "{shown} was not read: this program has too little left of its limit on \
+                 tool results to hold any of it."
+            )));
+        }
         let text = match read_file_window(&path, offset, limit, cap).await {
             Ok((text, None)) => text,
             // **The cut is said first, with the file's size.** It used to be a
@@ -154,7 +167,7 @@ impl Tool for FsRead {
                     "[truncated: {} is {size} bytes, and this read stopped at its {cap}-byte \
                      limit partway through line {line}. This is not the whole file: {on}.]\n\n\
                      {text}",
-                    path.display()
+                    shown
                 )
             }
             Err(e) => {
@@ -219,30 +232,49 @@ async fn read_file_window(
     #[cfg(unix)]
     options.custom_flags(libc::O_NONBLOCK);
     let file = options.open(path).await?;
-    if !file.metadata().await?.is_file() {
+    let meta = file.metadata().await?;
+    if !meta.is_file() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "not a regular file",
         ));
     }
-    read_text_window(&mut tokio::io::BufReader::new(file), offset, limit, cap).await
+    // Sized once, to the file or the cap and the byte past it: grown by
+    // doubling, a program's 64 MB read held a 128 MB buffer (review of #796).
+    // A `limit` reads a window of unknown size, so it grows as before rather
+    // than hold a whole file's room for ten lines.
+    let size = usize::try_from(meta.len()).unwrap_or(usize::MAX);
+    let capacity = match limit {
+        Some(_) => 0,
+        None => size.min(cap).saturating_add(1),
+    };
+    read_text_window(
+        &mut tokio::io::BufReader::new(file),
+        offset,
+        limit,
+        cap,
+        capacity,
+    )
+    .await
 }
 
 /// Skip unwanted lines without allocating them; stop after the requested
 /// lines or one byte beyond `cap`, even for a single huge line. The text
 /// comes back with the line the cut fell on, if one did, for the caller to
-/// say first; nothing is appended to the text.
+/// say first; nothing is appended to the text. `capacity` sizes the buffer,
+/// which becomes the text without a copy.
 async fn read_text_window<R: tokio::io::AsyncBufRead + Unpin>(
     reader: &mut R,
     offset: u64,
     limit: Option<u64>,
     cap: usize,
+    capacity: usize,
 ) -> std::io::Result<(String, Option<u64>)> {
     use tokio::io::AsyncBufReadExt;
     let selected = offset != 1 || limit.is_some();
     let mut line = 1u64;
     let mut remaining = limit.unwrap_or(u64::MAX);
-    let mut bytes = Vec::new();
+    let mut bytes = Vec::with_capacity(capacity);
     while remaining > 0 && bytes.len() <= cap {
         let buf = reader.fill_buf().await?;
         if buf.is_empty() {
@@ -268,13 +300,12 @@ async fn read_text_window<R: tokio::io::AsyncBufRead + Unpin>(
     }
     // A cap may bisect a UTF-8 character. Only that incomplete suffix is
     // dropped; an invalid sequence in the returned region is still an error.
-    let text = match std::str::from_utf8(&bytes) {
-        Ok(text) => text,
-        Err(e) if truncated && e.error_len().is_none() => {
-            std::str::from_utf8(&bytes[..e.valid_up_to()]).expect("validated prefix")
-        }
+    match std::str::from_utf8(&bytes) {
+        Ok(_) => {}
+        Err(e) if truncated && e.error_len().is_none() => bytes.truncate(e.valid_up_to()),
         Err(e) => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
-    };
+    }
+    let text = String::from_utf8(bytes).expect("validated above");
     // The line to read on from, as the loop counted it: the line the cut
     // bisected (reading on overlaps a little, the safe direction), or, when
     // the cut fell just before a newline, the first line not read. Counting
@@ -285,7 +316,7 @@ async fn read_text_window<R: tokio::io::AsyncBufRead + Unpin>(
     let text = if selected {
         text.lines().collect::<Vec<_>>().join("\n")
     } else {
-        text.to_owned()
+        text
     };
     Ok((text, cut))
 }
@@ -802,7 +833,7 @@ impl Tool for Shell {
                 child.wait(),
             )
         };
-        let ((stdout, out_dropped), (stderr, err_dropped), status) =
+        let ((stdout, out_total), (stderr, err_total), status) =
             match tokio::time::timeout(ctx.shell_timeout, fut).await {
                 Err(_) => {
                     return Ok(ToolOutput::err(format!(
@@ -819,26 +850,40 @@ impl Tool for Shell {
 
         let mut body = String::new();
         body.push_str(&String::from_utf8_lossy(&stdout));
-        if !stderr.is_empty() {
-            if !body.is_empty() && !body.ends_with('\n') {
-                body.push('\n');
-            }
-            body.push_str(&String::from_utf8_lossy(&stderr));
+        if !stderr.is_empty() && !body.is_empty() && !body.ends_with('\n') {
+            body.push('\n');
         }
-        // Bound the transcript copy *before* naming the discard: `truncate`
-        // cuts the tail, and the tail is exactly where the marker goes.
-        let mut body = truncate(body, "output");
-        if out_dropped || err_dropped {
-            if !body.is_empty() && !body.ends_with('\n') {
-                body.push('\n');
-            }
-            body.push_str(&format!(
-                "[output exceeded {MAX_OUTPUT_BYTES} bytes; the rest was discarded as it streamed. \
-                 Redirect to a file and read it in pieces if more is needed.]"
-            ));
-        }
+        let err_from = body.len();
+        body.push_str(&String::from_utf8_lossy(&stderr));
+        let cut = cut_at(&mut body, MAX_OUTPUT_BYTES)
+            || out_total > stdout.len() as u64
+            || err_total > stderr.len() as u64;
         if body.trim().is_empty() {
             body.push_str("(no output)");
+        }
+        // **The cut is said first, with what the command really wrote.** It
+        // was a line after the text, which the dispatch's head cut moves into
+        // the spill file — the shape that read a 1.5 MB log as "0 failures"
+        // through `fs_read` (2026-11-01). Each stream is counted, because
+        // stderr comes second and a full stdout leaves none of it shown: an
+        // error the model is not told it missed reads as a clean run.
+        if cut {
+            let out_shown = body.len().min(err_from).min(stdout.len());
+            let err_shown = body.len().saturating_sub(err_from).min(stderr.len());
+            let wrote = if err_total == 0 {
+                format!(
+                    "the command wrote {out_total} bytes, and only the first {out_shown} are shown"
+                )
+            } else {
+                format!(
+                    "the command wrote {out_total} bytes to stdout (the first {out_shown} shown) \
+                     and {err_total} to stderr (the first {err_shown} shown)"
+                )
+            };
+            body = format!(
+                "[truncated: {wrote}. This is not all of it: redirect the output to a file and \
+                 read that with fs_read, or narrow the command.]\n\n{body}"
+            );
         }
 
         let code = status.code().unwrap_or(-1);
@@ -866,13 +911,15 @@ impl Tool for Shell {
 async fn drain_capped(
     pipe: Option<impl tokio::io::AsyncRead + Unpin>,
     cap: usize,
-) -> (Vec<u8>, bool) {
+) -> (Vec<u8>, u64) {
     use tokio::io::AsyncReadExt;
     let Some(mut pipe) = pipe else {
-        return (Vec::new(), false);
+        return (Vec::new(), 0);
     };
     let mut kept = Vec::new();
-    let mut dropped = false;
+    // Every byte the pipe carried, kept or not: the cut notice says how much
+    // the command wrote, not how much was held.
+    let mut total = 0u64;
     let mut buf = [0u8; 8192];
     loop {
         match pipe.read(&mut buf).await {
@@ -880,11 +927,11 @@ async fn drain_capped(
             Ok(n) => {
                 let take = n.min(cap.saturating_sub(kept.len()));
                 kept.extend_from_slice(&buf[..take]);
-                dropped |= take < n;
+                total += n as u64;
             }
         }
     }
-    (kept, dropped)
+    (kept, total)
 }
 
 pub struct HttpFetch;
@@ -1018,7 +1065,9 @@ pub(crate) async fn fetch_vetted(url: &str, ctx: &ToolCtx) -> Result<Fetched> {
     let status = resp.status();
     // Read at most one byte past the cap, then stop — `.text()` buffers
     // however much the server chooses to send, and the server is the
-    // untrusted side of this call. `truncate` below marks the cut.
+    // untrusted side of this call. The notice below marks the cut.
+    let length = resp.content_length();
+    let mut whole = true;
     let mut raw: Vec<u8> = Vec::new();
     let mut body_stream = resp.bytes_stream();
     while let Some(chunk) = body_stream.next().await {
@@ -1035,17 +1084,39 @@ pub(crate) async fn fetch_vetted(url: &str, ctx: &ToolCtx) -> Result<Fetched> {
             }
         }
         if raw.len() > MAX_OUTPUT_BYTES {
+            whole = false;
             break;
         }
     }
-    let body = String::from_utf8_lossy(&raw);
+    let mut body = String::from_utf8_lossy(&raw).into_owned();
+    // **The cut is said first**, as `fs_read`'s is: the dispatch keeps a
+    // result's head, and a note after the body moved into the spill file.
+    // The size is what is known, never the bytes held: a read that stopped
+    // early knows only the server's Content-Length, if it sent one, or that
+    // there was more (the old note gave the bytes held as the body's size).
+    let notice = if cut_at(&mut body, MAX_OUTPUT_BYTES) {
+        let size = match (whole, length) {
+            (true, _) => format!("{} bytes", raw.len()),
+            (false, Some(n)) if n > raw.len() as u64 => {
+                format!("{n} bytes by its Content-Length")
+            }
+            (false, _) => format!("more than {} bytes", raw.len()),
+        };
+        format!(
+            "[truncated: the body is {size}, and only the first {} are shown. This is not \
+             the whole response, and http_fetch cannot fetch the rest of it.]\n",
+            body.len()
+        )
+    } else {
+        String::new()
+    };
     // The body is third-party content even on a 4xx — an injection hides
     // just as well in an error page.
     Ok(Fetched::Done(ToolOutput {
         deferred: None,
         program: None,
         reads: Vec::new(),
-        content: truncate(format!("HTTP {status}\n\n{body}"), "body"),
+        content: format!("HTTP {status}\n{notice}\n{body}"),
         is_error: !status.is_success(),
         external: true,
         refusal: false,
@@ -1608,7 +1679,39 @@ mod tests {
             "kept {} bytes",
             out.content.len()
         );
-        assert!(out.content.contains("discarded"), "the cut must be named");
+        // Said first, with what the command wrote rather than what was kept,
+        // so the dispatch's head cut keeps it.
+        let head = "[truncated: the command wrote 1000000 bytes, and only the first 200000 \
+                    are shown. This is not all of it";
+        assert!(out.content.starts_with(head), "{}", &out.content[..300]);
+        let capped = crate::tool::cap_result(out.content.clone(), 24_000, None, "shell", "t");
+        assert!(capped.starts_with(head));
+
+        // A full stdout leaves no room for stderr, and the notice says so:
+        // an error the model is not told it missed reads as a clean run.
+        let out = shell
+            .call(
+                json!({"command": "yes flood | head -c 300000; echo boom >&2; exit 3"}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error);
+        assert!(
+            out.content.starts_with(
+                "exit status 3\n[truncated: the command wrote 300000 bytes to stdout (the \
+                 first 200000 shown) and 5 to stderr (the first 0 shown)."
+            ),
+            "{}",
+            &out.content[..300]
+        );
+
+        // Output under the cap carries no notice.
+        let out = shell
+            .call(json!({"command": "echo fine"}), &ctx(&dir))
+            .await
+            .unwrap();
+        assert_eq!(out.content, "fine\n");
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1663,7 +1766,18 @@ mod tests {
             "kept {} bytes",
             out.content.len()
         );
-        assert!(out.content.contains("[truncated"), "the cut must be named");
+        // Said first, under the status line, with the server's length rather
+        // than the bytes held: the old note gave those as the body's size.
+        assert!(
+            out.content.starts_with(
+                "HTTP 200 OK\n[truncated: the body is 1000000 bytes by its Content-Length, and \
+                 only the first 200000 are shown. This is not the whole response"
+            ),
+            "{}",
+            &out.content[..300]
+        );
+        let capped = crate::tool::cap_result(out.content.clone(), 24_000, None, "http_fetch", "t");
+        assert!(capped.starts_with("HTTP 200 OK\n[truncated: the body is 1000000 bytes"));
     }
 
     #[tokio::test]
@@ -1749,7 +1863,7 @@ mod read_window_tests {
         // The writer remains open. Reading the whole stream would time out.
         let text = tokio::time::timeout(
             std::time::Duration::from_secs(1),
-            read_text_window(&mut BufReader::new(reader), 2, Some(1), MAX_OUTPUT_BYTES),
+            read_text_window(&mut BufReader::new(reader), 2, Some(1), MAX_OUTPUT_BYTES, 0),
         )
         .await
         .unwrap()
@@ -1864,14 +1978,50 @@ mod read_window_tests {
             cut.content.contains("line 00001 of the log"),
             "the read kept text"
         );
+        // Less room than the notice: nothing is read, and the refusal says
+        // why, rather than that line 1 alone is longer than the limit.
+        let none = ToolCtx {
+            program_room: Some(300),
+            ..ctx(&dir)
+        };
+        let none = read(json!({"path": "big.log"}), none).await;
+        assert!(none.is_error, "{}", none.content);
+        assert!(none.content.contains("was not read"), "{}", none.content);
+        assert!(!none.content.contains("alone is longer"));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The notice's room is the path as it is shown: `display` writes each
+    /// byte of a non-UTF-8 name as a three-byte U+FFFD, so counted raw, a
+    /// cut read under such a workspace overran the program's room.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_cut_reads_notice_fits_the_room_under_a_non_utf8_path() {
+        use std::os::unix::ffi::OsStrExt;
+        let root = std::env::temp_dir().join(format!("mecha-test-{}", uuid::Uuid::new_v4()));
+        let dir = root.join(std::ffi::OsStr::from_bytes(&[0xff; 200]));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("big.log"), "line of the log\n".repeat(1000)).unwrap();
+        let ctx = ToolCtx {
+            workspace: dir.clone(),
+            program_room: Some(5000),
+            ..Default::default()
+        };
+        let out = FsRead.call(json!({"path": "big.log"}), &ctx).await.unwrap();
+        assert!(
+            out.content.starts_with("[truncated:"),
+            "{}",
+            &out.content[..100]
+        );
+        assert!(out.content.len() <= 5000, "{} bytes", out.content.len());
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[tokio::test]
     async fn a_huge_single_line_is_capped_before_reading_the_tail() {
         let data = "é".repeat(MAX_OUTPUT_BYTES);
         let mut reader = data.as_bytes();
-        let (result, cut) = read_text_window(&mut reader, 1, None, MAX_OUTPUT_BYTES)
+        let (result, cut) = read_text_window(&mut reader, 1, None, MAX_OUTPUT_BYTES, 0)
             .await
             .unwrap();
         assert!(result.starts_with(&"é".repeat(MAX_OUTPUT_BYTES / 2)));
@@ -1885,7 +2035,7 @@ mod read_window_tests {
         for offset in 1..=6 {
             for limit in [None, Some(0), Some(1), Some(3), Some(10)] {
                 let (actual, cut) =
-                    read_text_window(&mut data.as_bytes(), offset, limit, MAX_OUTPUT_BYTES)
+                    read_text_window(&mut data.as_bytes(), offset, limit, MAX_OUTPUT_BYTES, 0)
                         .await
                         .unwrap();
                 assert_eq!(cut, None);
@@ -1902,12 +2052,12 @@ mod read_window_tests {
             }
         }
         assert!(
-            read_text_window(&mut b"\xff".as_slice(), 1, None, MAX_OUTPUT_BYTES)
+            read_text_window(&mut b"\xff".as_slice(), 1, None, MAX_OUTPUT_BYTES, 0)
                 .await
                 .is_err()
         );
         assert_eq!(
-            read_text_window(&mut b"ok\n\xff".as_slice(), 1, Some(1), MAX_OUTPUT_BYTES)
+            read_text_window(&mut b"ok\n\xff".as_slice(), 1, Some(1), MAX_OUTPUT_BYTES, 0)
                 .await
                 .unwrap()
                 .0,
@@ -1915,7 +2065,7 @@ mod read_window_tests {
         );
         // The cap falls inside a multibyte character and must not call it binary.
         let data = "€".repeat(MAX_OUTPUT_BYTES);
-        let (_, cut) = read_text_window(&mut data.as_bytes(), 1, None, MAX_OUTPUT_BYTES)
+        let (_, cut) = read_text_window(&mut data.as_bytes(), 1, None, MAX_OUTPUT_BYTES, 0)
             .await
             .unwrap();
         assert!(cut.is_some());
