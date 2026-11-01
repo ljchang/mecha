@@ -625,7 +625,10 @@ pub fn now(store_dir: &Path, name: &str, at: NaiveDateTime) -> Result<Option<Now
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum When {
-    /// Past [`KEEP_DAYS`]: folded into its week's minutes, no longer whole.
+    /// Past [`KEEP_DAYS`] and no longer stored: folded into its week's
+    /// minutes if it was ever drawn. The store keeps only a count of folded
+    /// days a week, never which, so a surface says "not kept" for the day
+    /// and leaves the count to the week's summary.
     Folded,
     /// Kept as it was drawn.
     Past,
