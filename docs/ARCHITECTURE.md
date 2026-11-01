@@ -1800,6 +1800,17 @@ module.
   `message::is_recorded_note` and `agent::is_harness_voice`, as every
   persona fold is; joined to another note, its stem would not sit at the
   start and would never arm on a resume.
+- **A week view never redraws a folded day** (`world::week_view`). A day
+  past `KEEP_DAYS` is shown as its week's minutes, because drawing it again
+  would show a day no chat was told. Kept days are read from the store
+  before the routine is asked for, since a past day does not need it; the
+  reasons the rest cannot be drawn (no routine, no cell, one that does not
+  load) are checked once before any draw, so finding out draws nothing. Its route is `Feature::World`'s, and the per-persona switch
+  answers as a state, never a refusal.
+  Asking stores the in-window days it draws, so `GET /week` is a read that
+  writes: it asks for the page's header itself (`serve::request_verified`),
+  since `owner_guard` asks it only of mutations, or a page on another site
+  could sweep the dates and store days no chat was told.
 - **Group membership lives once**, in each persona's `groups`. `groups.toml`
   only declares groups; a persona naming an undeclared group is a broken link.
 - **Links are by name, resolved on load, broken ones named**
