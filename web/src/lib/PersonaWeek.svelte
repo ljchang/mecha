@@ -5,7 +5,7 @@
   // her life switched off says so here rather than failing.
   import { untrack } from 'svelte';
   import { apiFetch as fetch } from './api.js';
-  import { weekUrl, weekDays, foldedHours, shiftWeek, WEEK_ABSENT, WEEK_GROUPS } from './persona.js';
+  import { weekUrl, weekDays, foldedHours, weekUnavailable, shiftWeek, WEEK_ABSENT, WEEK_GROUPS } from './persona.js';
 
   let { name, token = null, onclose } = $props();
 
@@ -18,6 +18,7 @@
 
   const days = $derived(weekDays(data));
   const folded = $derived(foldedHours(data));
+  const unavailable = $derived(weekUnavailable(data));
   const monday = $derived(data?.week?.monday ?? null);
   // Where the bar's ticks sit: 8am, noon, 6pm and midnight on a 4am day.
   const TICKS = [
@@ -78,7 +79,9 @@
             {#if d.when === 'today'}<span class="wtag">today</span>{:else if d.when === 'ahead'}<span class="wtag dim">ahead</span>{/if}
           </div>
           {#if d.folded}
-            <div class="wbar folded"><span>folded into the week</span></div>
+            <div class="wbar folded"><span>{folded ? 'folded into the week' : 'not kept'}</span></div>
+          {:else if d.undrawn}
+            <div class="wbar folded"><span>not drawn</span></div>
           {:else}
             <div class="wbar" class:ahead={d.when === 'ahead'}>
               {#each TICKS as [at]}<span class="tick" style:left="{at}%"></span>{/each}
@@ -111,6 +114,9 @@
         </div>
       </div>
     </div>
+    {#if unavailable}
+      <div class="warnline">The days not drawn wait on her routine: {unavailable}</div>
+    {/if}
     <div class="wlegend">
       {#each WEEK_GROUPS as [group, label]}<span class="lchip"><span class="swatch {group}"></span>{label}</span>{/each}
     </div>

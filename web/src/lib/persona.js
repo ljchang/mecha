@@ -863,7 +863,10 @@ export function weekDays(data) {
       weekday: date.toLocaleDateString(undefined, { weekday: 'short' }),
       dayOfMonth: date.getDate(),
       when: d.when,
-      folded: !d.day,
+      folded: d.when === 'folded',
+      // Neither kept nor folded: her routine could not draw it
+      // (`week.unavailable` says why).
+      undrawn: !d.day && d.when !== 'folded',
       bars: stretches.map((s, i) => ({
         ...s,
         group: ACTIVITY_GROUP[s.activity] ?? 'leisure',
@@ -874,6 +877,11 @@ export function weekDays(data) {
       })),
     };
   });
+}
+
+// Why the days not drawn wait, when the week still shows kept ones.
+export function weekUnavailable(data) {
+  return data?.week?.unavailable ?? null;
 }
 
 // What the week's folded days left: hours by activity, most first.
