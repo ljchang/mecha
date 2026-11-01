@@ -9,8 +9,9 @@
 > `mecha persona day`), and the today-block's first line, what she is doing
 > now (`persona::today`, §4.5), and a read-only week view (`world::week_view`,
 > `mecha persona week`, the editor's Week tab, §15), the form's Life section
-> with its world switch, and the Week tab's cell picker; reviewing a
-> drafted routine on the Personas page is next. **Every decision in §16
+> with its world switch, the Week tab's cell picker, and reviewing a
+> drafted routine there (draft, edit, approve, discard); step 2, her
+> people, is next. **Every decision in §16
 > is ruled** by the owner, the same day: PL1–PL22, PL24–PL26, PL29 and PL30 as rulings,
 > and PL23, PL27 and PL28 as the owner's direction (no approval queue for
 > news; every part opt-in per persona). §1 is the owner's requests, in the order they were made; §2 is
@@ -607,8 +608,11 @@ file, so its words reach the draft only as anchor labels. Her kind of week
 that names none keeps the routine's, so a draft cannot quietly undo the
 pick. Only an approved persona whose recorded origin is not untrusted is
 drafted for. `mecha persona routine draft <name>` drafts from the CLI;
-show, edit (`--draft`), approve and discard were already there. Reviewing
-a draft on the Personas page comes next.
+show, edit (`--draft`), approve and discard were already there. The Week
+tab reviews a draft too (§15). The draft's header comment survives
+approval, so it is worded to stay true after it and sends a change of her
+kind of week to the picker: approval writes `cell` above it, and a
+comment inviting "add `cell` here" would have made two, which does not load.
 
 ### 4.2 The day sampler
 
@@ -2400,6 +2404,18 @@ ruled for repetition.
     over the routine the page was shown. The persona form's Life section
     holds the `world` switch, "Her days"; the other `[life]` switches join
     it as their steps build them.
+  - **Reviewing a drafted routine (step 1):** under the picker, the Week
+    tab asks her model for a draft (`POST …/routine/draft`, tens of
+    seconds, the button says so) unless she cannot be drafted for, when it
+    says why. A waiting draft is shown as the anchors it would give her,
+    one line each (days, hours, name, activity, how often), with the kind
+    of week approving keeps and that her routine's anchors are replaced.
+    Approve (`POST …/routine/draft/approve`) and an owner's edit (`PUT
+    …/routine/draft`, the text itself) go only over the draft as shown, a
+    409 re-reading the week; Discard is `DELETE`. An edit that does not
+    load is refused, so a draft can always be approved as saved, and an
+    edited draft is the owner's, which no redraft replaces. A draft that
+    found no fixed point says so and stages nothing.
 - **People**, two views:
   - *Her people* — concentric Dunbar rings with her at the centre, portraits
     from library links, warm or tense lines, ended relationships greyed on an

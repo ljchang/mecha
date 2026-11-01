@@ -86,7 +86,7 @@ assert.throws(() => chatUrl('p-0123456789ab', '/mode'));
   assert.deepEqual(Object.keys(IMAGE_PRESETS), ['default', 'guided', 'turbo']);
 }
 assert.ok(ENDPOINTS.includes('/api/persona-chat/X/events'));
-assert.equal(ENDPOINTS.length, 32);
+assert.equal(ENDPOINTS.length, 34);
 // A proposal is read, approved and turned away through the persona door.
 for (const s of ['review', 'approve', 'reject']) assert.ok(ENDPOINTS.includes(`/api/personas/X/${s}`), s);
 assert.ok(ENDPOINTS.includes('/api/personas/X/frame'));

@@ -1867,7 +1867,23 @@ export function personaWeek(date) {
   }
   return {
     today: DEMO_TODAY,
-    routine: { digest: '0'.repeat(64), cell: 'full_time' },
+    routine: {
+      digest: '0'.repeat(64),
+      cell: 'full_time',
+      // A drafted week waiting on the owner, so the demo shows the review.
+      draft: {
+        text: '# Drafted by a model from what you wrote of her.\n\n[[anchor]]\nwhat = "field survey"\nactivity = "work"\ndays = ["tue", "thu"]\nat = "08:00"\nminutes = 360\nchance = 1.0\n\n[[anchor]]\nwhat = "harbour swim"\nactivity = "exercise"\ndays = ["sat"]\nat = "07:00"\nminutes = 60\nchance = 0.7\n',
+        digest: '1'.repeat(64),
+        anchors: [
+          { what: 'field survey', activity: 'work', days: [1, 3], start_minute: 480, minutes: 360, chance: 1 },
+          { what: 'harbour swim', activity: 'exercise', days: [5], start_minute: 420, minutes: 60, chance: 0.7 },
+        ],
+        error: null,
+        kept_cell: 'full_time',
+        edited: false,
+      },
+      undraftable: null,
+    },
     week: { monday: monday.toISOString().slice(0, 10), days, folded: null, unavailable: null },
   };
 }
