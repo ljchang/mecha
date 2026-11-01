@@ -1775,6 +1775,16 @@ module.
   are code, where a test sees them. The script holds a copy of the activity
   mapping and the table records what it gave every code it met, so a test
   fails until the table is rewritten after either side changes.
+- **A sampled day is drawn once, stored, and redrawn only forward**
+  (`persona::sampler`, `persona::world`). The draw is seeded by persona and
+  date and reads no clock, so the same inputs give the same day. A stored
+  day of today or later is redrawn when the digest of what it was drawn from
+  (the routine's text, the table's text pin, the sampler's version) changes;
+  a past day is kept, because what a chat was told about a day must stay
+  what the day was. Bump `SAMPLER_VERSION` for any change that would draw a
+  different day from the same inputs. A row this binary cannot read makes
+  the stored day unreadable and redrawn, never shown in part. No day is
+  drawn without a `cell` in `routine.toml`, the owner's pick, never a guess.
 - **Group membership lives once**, in each persona's `groups`. `groups.toml`
   only declares groups; a persona naming an undeclared group is a broken link.
 - **Links are by name, resolved on load, broken ones named**

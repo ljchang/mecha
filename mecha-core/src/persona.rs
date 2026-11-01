@@ -49,9 +49,11 @@ pub mod replay;
 pub mod replay_judge;
 pub mod routine;
 pub mod safety;
+pub mod sampler;
 pub mod search;
 pub mod turn;
 pub mod variety;
+pub mod world;
 pub mod writer;
 
 /// A name — persona, relationship, group or voice: `[a-z0-9][a-z0-9_-]*`.
