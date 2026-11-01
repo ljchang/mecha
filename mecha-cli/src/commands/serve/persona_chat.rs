@@ -1892,18 +1892,63 @@ impl PersonaChats {
             Some(d) => chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d")
                 .map_err(|_| Refusal::Bad(format!("`{d}` is not a date (YYYY-MM-DD)")))?,
         };
+        // Her routine as the cell picker needs it: what it names, and the
+        // digest a change sends back so an editor's edit is never
+        // overwritten. A routine that does not load names no cell here;
+        // the week below says why.
+        use mecha_core::persona::routine;
+        let text = routine::read(&self.store, &p.name).map_err(failed)?.routine;
+        let cell = text
+            .as_deref()
+            .and_then(|t| routine::parse(t).ok())
+            .and_then(|r| r.cell)
+            .map(|c| c.id());
+        let mut out = serde_json::json!({
+            "today": today.to_string(),
+            "routine": { "digest": routine::digest_of(text.as_deref()), "cell": cell },
+        });
         match mecha_core::persona::world::week_view(&self.store, &p.name, date, today)
             .map_err(failed)?
         {
-            Ok(week) => {
-                Ok(serde_json::json!({ "today": today.to_string(), "week": week.to_json() }))
+            Ok(week) => out["week"] = week.to_json(),
+            Err(why) => {
+                out["absent"] = serde_json::json!(why);
+                out["why"] = serde_json::json!(why.why(&p.name));
             }
-            Err(why) => Ok(serde_json::json!({
-                "today": today.to_string(),
-                "absent": why,
-                "why": why.why(&p.name),
-            })),
         }
+        Ok(out)
+    }
+
+    /// The owner picks her kind of week from the Week tab: `cell` set in
+    /// `routine.toml` (written from its template if she has none), only if
+    /// the file is still what the page was shown. Answers with the week as
+    /// it now stands, on the owner's calendar.
+    pub fn set_cell(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        body: &CellBody,
+        tz: Option<chrono_tz::Tz>,
+    ) -> Result<serde_json::Value, Refusal> {
+        use mecha_core::persona::{atus::Cell, routine};
+        let p = self
+            .visible(library, name, body.unlock.as_deref())
+            .ok_or(Refusal::NotFound)?;
+        let Some(cell) = Cell::from_id(&body.cell) else {
+            return Err(Refusal::Bad(format!(
+                "`{}` is not a kind of week",
+                body.cell
+            )));
+        };
+        routine::set_cell(&self.store, &p.name, cell, &body.base)
+            .map_err(|e| Refusal::Bad(format!("{e:#}")))?;
+        self.week(
+            library,
+            &p.name,
+            body.unlock.as_deref(),
+            body.date.as_deref(),
+            tz,
+        )
     }
 
     /// What `name` remembers, for the owner's curation page (§9.8): every
@@ -5831,6 +5876,38 @@ pub async fn memory(
 }
 
 #[derive(serde::Deserialize)]
+pub struct CellBody {
+    cell: String,
+    /// `routine::digest_of` the routine as the page was shown it.
+    #[serde(default)]
+    base: String,
+    /// The week the page is showing, answered back after the change.
+    #[serde(default)]
+    date: Option<String>,
+    #[serde(default)]
+    unlock: Option<String>,
+}
+
+/// POST /api/personas/{name}/routine/cell
+pub async fn set_cell(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<CellBody>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let personas = Arc::clone(&chat.personas);
+    let library = Arc::clone(&state.library);
+    let tz = chat.follower.current().config.agent.timezone();
+    match tokio::task::spawn_blocking(move || personas.set_cell(&library, &name, &body, tz)).await {
+        Ok(result) => respond(result),
+        Err(e) => Refusal::Failed(format!("setting a persona's week: {e}")).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
 pub struct WeekQuery {
     #[serde(default)]
     unlock: Option<String>,
@@ -8404,6 +8481,14 @@ mod tests {
         use mecha_core::persona::today::{TODAY_STEM, UNTRUSTED_TODAY_STEM};
         let w = world();
         let key = |opened: serde_json::Value| opened["key"].as_str().unwrap().to_string();
+        // Her routine names a cell from the start, so with the switch off
+        // the switch is the only thing keeping the note out.
+        let dir = w.store().join("mara");
+        std::fs::write(
+            dir.join(mecha_core::persona::routine::FILE),
+            "cell = \"part_time\"\n",
+        )
+        .unwrap();
         let off = key(w
             .personas()
             .open(&w.chat, &w.library, "mara", None, None)
@@ -8413,16 +8498,10 @@ mod tests {
         let seen = w.seen.lock().unwrap().clone();
         assert!(!seen[0].messages.last().unwrap().text().contains(TODAY_STEM));
 
-        let dir = w.store().join("mara");
         let toml = dir.join("persona.toml");
         let text = std::fs::read_to_string(&toml).unwrap();
         assert!(text.contains("world     = false"));
         std::fs::write(&toml, text.replace("world     = false", "world     = true")).unwrap();
-        std::fs::write(
-            dir.join(mecha_core::persona::routine::FILE),
-            "cell = \"part_time\"\n",
-        )
-        .unwrap();
         let on = key(w
             .personas()
             .open(&w.chat, &w.library, "mara", None, None)
@@ -8445,6 +8524,131 @@ mod tests {
         }
         // Her day was drawn and kept, so the next turn reads it back.
         assert!(dir.join(mecha_core::persona::world::WORLD_DB).exists());
+    }
+
+    /// §17: a persona with no days answers the week as a 200 saying which,
+    /// never a route error; a locked one is missing without its token; and
+    /// the owner's cell pick writes routine.toml only over what was shown.
+    #[tokio::test]
+    async fn the_week_says_why_it_is_empty_and_the_owner_picks_her_week() {
+        let w = world();
+        let week = |date: Option<&str>| w.personas().week(&w.library, "mara", None, date, None);
+        let off = week(None).unwrap();
+        assert_eq!(off["absent"], "off");
+        assert!(off["why"].as_str().unwrap().contains("[life] world is off"));
+        assert!(off.get("week").is_none());
+        let dir = w.store().join("mara");
+        let toml = dir.join("persona.toml");
+        let text = std::fs::read_to_string(&toml).unwrap();
+        std::fs::write(&toml, text.replace("world     = false", "world     = true")).unwrap();
+        let none = week(None).unwrap();
+        assert_eq!(none["absent"], "no_routine");
+        assert_eq!(none["routine"]["digest"], "");
+        assert_eq!(none["routine"]["cell"], serde_json::Value::Null);
+        assert!(matches!(week(Some("someday")), Err(Refusal::Bad(_))));
+
+        let body = |cell: &str, base: &str| CellBody {
+            cell: cell.into(),
+            base: base.into(),
+            date: None,
+            unlock: None,
+        };
+        let picked = w
+            .personas()
+            .set_cell(&w.library, "mara", &body("part_time", ""), None)
+            .unwrap();
+        assert_eq!(picked["routine"]["cell"], "part_time");
+        assert_eq!(picked["week"]["days"].as_array().unwrap().len(), 7);
+        // Sent with the digest of no file, over a file that is now there.
+        assert!(matches!(
+            w.personas().set_cell(&w.library, "mara", &body("retired", ""), None),
+            Err(Refusal::Bad(why)) if why.contains("changed since it was shown")
+        ));
+        assert!(matches!(
+            w.personas()
+                .set_cell(&w.library, "mara", &body("astronaut", ""), None),
+            Err(Refusal::Bad(_))
+        ));
+        let base = picked["routine"]["digest"].as_str().unwrap().to_string();
+        let again = w
+            .personas()
+            .set_cell(&w.library, "mara", &body("retired", &base), None)
+            .unwrap();
+        assert_eq!(again["routine"]["cell"], "retired");
+
+        store::set_locked(&w.store(), "mara", true).unwrap();
+        assert!(matches!(week(None), Err(Refusal::NotFound)));
+        assert!(matches!(
+            w.personas()
+                .set_cell(&w.library, "mara", &body("student", &base), None),
+            Err(Refusal::NotFound)
+        ));
+    }
+
+    /// The web app's words and colours are keyed by the Rust enums' ids: a
+    /// reason she has no days, an activity, or a kind of week the page does
+    /// not know would fall back silently (to the CLI's prose, to "not named
+    /// here", or to no label), so each list is held to its enum here.
+    #[test]
+    fn the_week_views_keys_are_the_enums_ids() {
+        use mecha_core::persona::{activity::Activity, atus::Cell, world::Absent};
+        let js = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/src/lib/persona.js"),
+        )
+        .unwrap();
+        // The keys of `export const NAME = { … };`, or the first strings of
+        // `export const NAME = [ [...], … ];`.
+        let block = |name: &str| -> Vec<String> {
+            let start = js
+                .find(&format!("export const {name} = "))
+                .unwrap_or_else(|| panic!("{name}"));
+            let rest = &js[start..];
+            let close = if rest.lines().next().unwrap().trim_end().ends_with('[') {
+                "\n];"
+            } else {
+                "\n};"
+            };
+            let end = rest.find(close).unwrap();
+            let body = &rest[..end];
+            let mut keys = Vec::new();
+            for line in body.lines().skip(1) {
+                let line = line.trim();
+                if line.starts_with("//") {
+                    continue;
+                }
+                if let Some(inner) = line.strip_prefix("['") {
+                    keys.push(inner.split('\'').next().unwrap().to_string());
+                    continue;
+                }
+                for pair in line.split(',') {
+                    if let Some((k, _)) = pair.split_once(':') {
+                        let k = k.trim();
+                        if !k.is_empty() && k.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
+                            keys.push(k.to_string());
+                        }
+                    }
+                }
+            }
+            keys.sort();
+            keys
+        };
+        let sorted = |mut v: Vec<String>| {
+            v.sort();
+            v
+        };
+        let wire = |v: serde_json::Value| v.as_str().unwrap().to_string();
+        assert_eq!(
+            block("WEEK_ABSENT"),
+            sorted(Absent::ALL.map(|a| wire(serde_json::json!(a))).to_vec())
+        );
+        assert_eq!(
+            block("ACTIVITY_GROUP"),
+            sorted(Activity::ALL.iter().map(|a| a.id().to_string()).collect())
+        );
+        assert_eq!(
+            block("WEEK_CELLS"),
+            sorted(Cell::ALL.iter().map(|c| c.id().to_string()).collect())
+        );
     }
 
     /// §9.7, on every turn: past the first reply, an owner message that

@@ -2401,10 +2401,10 @@ const UNBUILT: &str = "Not built yet: saved now, used once it is.";
 
 /// `persona.toml` as a form (`tomlform`): every key [`Settings`] reads
 /// except `voice_speed`, a number the form has no field kind for (it is
-/// edited as text), and `[life]`, which joins once `world` does something,
-/// so its help text is true when it ships (its `[life.decay]` knobs are
-/// numbers too). Edited in place — the owner's comments stay — and saved
-/// through [`edit_settings`].
+/// edited as text), and the `[life]` switches past `world`, each of which
+/// joins when its step builds it, so its help text is true when it ships
+/// (the `[life.decay]` knobs are numbers too). Edited in place — the
+/// owner's comments stay — and saved through [`edit_settings`].
 pub fn settings_form(c: &FormChoices) -> crate::tomlform::Form {
     use crate::tomlform::{Field, Form, Kind, Opt, Section};
     let text = |max, placeholder: &str| Kind::Text {
@@ -2566,6 +2566,15 @@ pub fn settings_form(c: &FormChoices) -> crate::tomlform::Form {
                     .help(UNBUILT)
                     .unbuilt(),
                 ),
+            // PERSONA-LIFE-DESIGN.md §3.1, step 1: only `world` does
+            // something yet. Her kind of week (the cell) lives in
+            // routine.toml, so it is picked on the Week tab, not here.
+            Section::new("Life")
+                .help("A life of her own between your chats, every part off until you turn it on.")
+                .field(Field::toggle("life.world", "Her days").help(
+                    "Days drawn from her routine and time-use diaries; what she is doing now \
+                     comes into each chat. Pick her kind of week on the Week tab.",
+                )),
         ],
     }
 }
