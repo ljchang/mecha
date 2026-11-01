@@ -456,6 +456,11 @@ impl Tool for ReplayTool {
     fn hosts_programs(&self) -> bool {
         self.inner.hosts_programs()
     }
+    /// Delegated so a replayed program sees `fs_list`'s names as the live
+    /// one did.
+    fn lists_names(&self) -> bool {
+        self.inner.lists_names()
+    }
     /// The live tool's capabilities, minus `external_send` in the modes where
     /// nothing executes — the sandbox's rule in the other direction. A
     /// replayed "send" sends nothing: its answer comes from the recording, so

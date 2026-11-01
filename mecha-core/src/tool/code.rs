@@ -92,13 +92,6 @@ pub mod record;
 /// The tool's registered name.
 pub const NAME: &str = "code";
 
-/// The tool whose result a program gets as a list of `str`, not a handle:
-/// a directory's names. Every run's model opened with
-/// `name.startswith(...)` on them and burned its first programs on the
-/// TypeError (2026-11-01). The names still draw on `peek`'s cap and count,
-/// because a file name is text that someone else may have chosen.
-const LISTING: &str = "fs_list";
-
 /// §5's host limits, as R4 ruled them on 2026-10-31 (`CODE-MODE-DESIGN.md`
 /// §11: §5's proposals, unchanged, after M0 and M1), with the owner's two
 /// raises of 2026-11-01: the peek cap and tool reads. They live here, in one
@@ -299,6 +292,11 @@ impl ProgramStats {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Admission {
     tools: BTreeMap<String, (Capabilities, EffectClass)>,
+    /// The admitted tools whose result a program gets as a list of `str`,
+    /// not a handle (`Tool::lists_names`, §3). Every live run opened with
+    /// `name.startswith(...)` on `fs_list`'s entries and spent its first
+    /// programs on the error (2026-11-01).
+    listings: std::collections::BTreeSet<String>,
 }
 
 impl Admission {
@@ -306,15 +304,19 @@ impl Admission {
     /// routing for the run (`[outbox] tools`): a routed read resolves
     /// `Staged` and is not admitted, so nothing in a program can stage.
     pub fn over(registry: &Registry, routed: impl Fn(&str) -> bool) -> Self {
+        let mut listings = std::collections::BTreeSet::new();
         let tools = registry
             .iter()
             .filter_map(|t| {
                 let class = effect::class_of(t.as_ref(), routed(t.name()));
-                Self::admits(t.as_ref(), class)
-                    .then(|| (t.name().to_string(), (t.capabilities(), class)))
+                let admitted = Self::admits(t.as_ref(), class);
+                if admitted && t.lists_names() {
+                    listings.insert(t.name().to_string());
+                }
+                admitted.then(|| (t.name().to_string(), (t.capabilities(), class)))
             })
             .collect();
-        Admission { tools }
+        Admission { tools, listings }
     }
 
     /// §2's rule for one tool whose effect class is `class`: a plain read
@@ -342,6 +344,11 @@ impl Admission {
 
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.tools.keys().map(String::as_str)
+    }
+
+    /// The admitted tools that answer a program with names (`listings`).
+    pub fn listings(&self) -> impl Iterator<Item = &str> {
+        self.listings.iter().map(String::as_str)
     }
 
     pub fn contains(&self, name: &str) -> bool {
@@ -631,7 +638,9 @@ impl CodeTool {
         let mut externals: Vec<String> = HOST_FUNCTIONS.iter().map(|s| s.to_string()).collect();
         externals.extend(reach.iter().cloned());
         let cancel = ctx.cancel.clone().unwrap_or_default();
-        let mut state = Run::new(self.limits, Arc::clone(&self.pool)).reaching(reach);
+        let mut state = Run::new(self.limits, Arc::clone(&self.pool))
+            .reaching(reach)
+            .listing(self.admission.listings().map(str::to_string));
         let (mut program, mut step) = match self
             .interpreter
             .start(program, &externals, cancel.clone())
@@ -689,6 +698,16 @@ impl CodeTool {
     }
 }
 
+/// The description's worked example. A model copies it nearly verbatim
+/// (§13), so `the_descriptions_example_runs_as_written` runs this text, not
+/// a tidier copy: a subdirectory in the listing once would have ended the
+/// program on `fs_read`, with the test's own guard hiding it (review of #793).
+const EXAMPLE: &str = "hits = []\n\
+    for name in fs_list(path=\"notes\"):\n    if name.endswith(\"/\"):\n        continue\n    \
+    h = fs_read(path=\"notes/\" + name)\n    if count(h, \"Attendees:.*Priya\") > 0:\n        \
+    hits.append(name)\n\
+    print(len(hits), hits)\n";
+
 /// The tool's description: what a program can do, and the tools it may call
 /// as built. Fixed at construction, so it never changes a cached prefix
 /// between turns.
@@ -706,12 +725,11 @@ fn describe(admission: &Admission) -> String {
          stub. Count and search a handle without reading it, and peek only to learn a format \
          or fetch a short field. Before a sweep, peek at one item, and match the field the \
          question is about (an attendee list, a presenter line), not the name anywhere in \
-         the text. For example, which notes list someone as attending:\n\
-         hits = []\n\
-         for name in fs_list(path=\"notes\"):\n    h = fs_read(path=\"notes/\" + name)\n    \
-         if count(h, \"Attendees:.*Priya\") > 0:\n        hits.append(name)\n\
-         print(len(hits), hits)\n\
-         Use count or find for anything a pattern can match, such as a name in a list, a \
+         the text. For example, which notes list someone as attending:\n",
+    );
+    d.push_str(EXAMPLE);
+    d.push_str(
+        "Use count or find for anything a pattern can match, such as a name in a list, a \
          date or a heading: they cost no sub-calls. Work on handles with size(h), \
          slice(h, start, end), lines(h), split(h, pattern), chunks(h, n, overlap=0) (n \
          characters each, at least 256), find(h, pattern) (a list of [start, end] character \
@@ -962,6 +980,8 @@ struct Run {
     /// alone refusing an unregistered name (review of #768). `ask_user` and
     /// `message_send` would clear the gate if one reached it.
     reach: std::collections::BTreeSet<String>,
+    /// The reachable tools whose names come back as `str` ([`Admission`]).
+    listings: std::collections::BTreeSet<String>,
     /// Every host call that ran, in issue order: the program record (§7).
     recorded: Vec<record::ProgramCall>,
 }
@@ -1048,6 +1068,7 @@ impl Run {
             limit_raised: false,
             external: false,
             reach: Default::default(),
+            listings: Default::default(),
             recorded: Vec::new(),
         }
     }
@@ -1081,6 +1102,13 @@ impl Run {
     /// The tools this program may call; none until this is said.
     fn reaching(mut self, names: impl IntoIterator<Item = String>) -> Self {
         self.reach = names.into_iter().collect();
+        self
+    }
+
+    /// The tools whose result this program takes as names; none until this
+    /// is said, so every result is a handle by default.
+    fn listing(mut self, names: impl IntoIterator<Item = String>) -> Self {
+        self.listings = names.into_iter().collect();
         self
     }
 
@@ -1263,8 +1291,8 @@ impl Run {
                     failed,
                     Arc::clone(&bytes),
                 ));
-                if name == LISTING && !failed {
-                    return self.names(&bytes);
+                if !failed && self.listings.contains(name) {
+                    return self.names(name, &bytes);
                 }
                 self.room_for(1, name)?;
                 let h = self.shared(bytes, name, out.external)?;
@@ -1827,9 +1855,9 @@ impl Run {
         Ok(handle_value(self.mint(leaf)))
     }
 
-    /// [`LISTING`]'s answer, one `str` per entry (a directory's ends in `/`),
-    /// counted with `peek` and refused whole if it would cross the cap.
-    fn names(&mut self, listing: &str) -> Result<Value, HostRaise> {
+    /// A listing tool's answer, one `str` per entry (a directory's ends in
+    /// `/`), counted with `peek` and refused whole if it would cross the cap.
+    fn names(&mut self, tool: &str, listing: &str) -> Result<Value, HostRaise> {
         // `fs_list`'s own spelling of nothing. A directory holding one file
         // of exactly that name reads the same, here as in the tool's result.
         if listing == "(empty directory)" {
@@ -1840,7 +1868,7 @@ impl Run {
             return Err(raise(
                 Tag::LimitError,
                 format!(
-                    "peek bytes: `{LISTING}`'s {bytes} bytes of names would take this program \
+                    "peek bytes: `{tool}`'s {bytes} bytes of names would take this program \
                      past its {} ({} used)",
                     self.limits.peek_bytes, self.peeked
                 ),
