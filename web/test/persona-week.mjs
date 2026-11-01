@@ -1,6 +1,6 @@
 // The persona week view's pure logic, imported from the shipped module.
 import assert from 'node:assert/strict';
-import { personaUrl, ENDPOINTS, weekUrl, weekDays, foldedHours, weekUnavailable, shiftWeek, stretchLine, dayClock, WEEK_ABSENT } from '../src/lib/persona.js';
+import { personaUrl, ENDPOINTS, weekUrl, weekDays, foldedHours, weekUnavailable, cellBody, WEEK_CELLS, ACTIVITY_GROUP, shiftWeek, stretchLine, dayClock, WEEK_ABSENT } from '../src/lib/persona.js';
 import { PANE_FEATURE } from '../src/lib/features.js';
 
 // The endpoint is one the builder accepts, and so one the docs demo checks.
@@ -13,6 +13,15 @@ assert.equal(weekUrl('mara', '2026-11-02', null), '/api/personas/mara/week?date=
 // A personas sub is a persona's name, so the Week tab takes no pane row:
 // one would hand a persona named `week` the world's banner.
 assert.equal(PANE_FEATURE['personas/week'], undefined);
+
+// The cell pick goes to its own endpoint, with the routine as shown.
+assert.ok(ENDPOINTS.includes('/api/personas/X/routine/cell'));
+assert.equal(WEEK_CELLS.length, 6);
+assert.deepEqual(cellBody('retired', { routine: { digest: 'abc' } }, '2026-11-02', 'tok'), { cell: 'retired', base: 'abc', date: '2026-11-02', unlock: 'tok' });
+assert.deepEqual(cellBody('student', { routine: { digest: '' } }, null), { cell: 'student', base: '', date: undefined, unlock: undefined });
+assert.throws(() => cellBody('astronaut', {}, null), /not a kind of week/);
+// Every activity has a group; Rust holds the key set to Activity::ALL.
+assert.equal(Object.keys(ACTIVITY_GROUP).length, 26);
 
 // Each reason she has no days has its own words.
 for (const why of ['off', 'no_routine', 'no_cell']) assert.ok(WEEK_ABSENT[why]);

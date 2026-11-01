@@ -386,6 +386,39 @@ pub fn approve_draft_as_shown(dir: &Path, name: &str, digest: &str) -> Result<Ro
     Ok(routine)
 }
 
+/// The digest the web app sends back with an edit: of `routine.toml` as it
+/// was shown, or empty when there was none.
+pub fn digest_of(text: Option<&str>) -> String {
+    text.map(super::text_digest).unwrap_or_default()
+}
+
+/// The owner picks her kind of week: `cell` set in `routine.toml`, every
+/// other line, comment and anchor left as written, and the file written
+/// from [`TEMPLATE`] first if she has none. Only if the file still hashes
+/// to `base` ([`digest_of`]), what the owner was shown, so an edit made in
+/// an editor meanwhile is never overwritten. The routine it replaces is
+/// kept as [`PREVIOUS`], as an approval keeps it.
+pub fn set_cell(dir: &Path, name: &str, cell: Cell, base: &str) -> Result<Routine> {
+    let pdir = persona_dir(dir, name)?;
+    let old = read_if_there(&pdir.join(FILE))?;
+    if digest_of(old.as_deref()) != base {
+        bail!("`{name}`'s {FILE} changed since it was shown; read it again before changing it");
+    }
+    let mut doc: toml_edit::DocumentMut = old
+        .as_deref()
+        .unwrap_or(TEMPLATE)
+        .parse()
+        .with_context(|| format!("{FILE} is not TOML; fix it by hand first"))?;
+    doc["cell"] = toml_edit::value(cell.id());
+    let text = doc.to_string();
+    let routine = parse(&text).with_context(|| format!("{FILE} does not load"))?;
+    if let Some(old) = &old {
+        super::write_private(&pdir.join(PREVIOUS), old.as_bytes())?;
+    }
+    super::write_private(&pdir.join(FILE), text.as_bytes())?;
+    Ok(routine)
+}
+
 /// Drop a waiting draft. The routine is untouched.
 pub fn discard_draft(dir: &Path, name: &str) -> Result<()> {
     let pdir = persona_dir(dir, name)?;
@@ -459,6 +492,41 @@ chance = 0.7
         assert_eq!(r.anchors[0].days, 0b001_1111);
         assert_eq!(r.anchors[0].chance, 1.0);
         assert_eq!(r.anchors[1].days, 0b110_0000);
+    }
+
+    #[test]
+    fn the_owner_picks_a_cell_and_every_other_line_stays_as_written() {
+        let dir = made();
+        // None yet: written from the template, its comments kept.
+        let r = set_cell(&dir, "mara", Cell::PartTime, "").unwrap();
+        assert_eq!(r.cell, Some(Cell::PartTime));
+        let text = read(&dir, "mara").unwrap().routine.unwrap();
+        assert!(text.contains("cell = \"part_time\""), "{text}");
+        assert!(text.contains("# [[anchor]]"), "{text}");
+        // A routine of the owner's: anchors and comments untouched, the
+        // cell replaced, and the old file kept.
+        let mine = format!("# my week\ncell = \"student\"\n{GYM}");
+        std::fs::write(dir.join("mara").join(FILE), &mine).unwrap();
+        let base = digest_of(Some(&mine));
+        let r = set_cell(&dir, "mara", Cell::Retired, &base).unwrap();
+        assert_eq!((r.cell, r.anchors.len()), (Some(Cell::Retired), 1));
+        let text = read(&dir, "mara").unwrap().routine.unwrap();
+        assert_eq!(text, mine.replace("\"student\"", "\"retired\""));
+        assert_eq!(
+            std::fs::read_to_string(dir.join("mara").join(PREVIOUS)).unwrap(),
+            mine
+        );
+        // Shown one file, the disk holds another: refused, nothing written.
+        let why = format!(
+            "{:#}",
+            set_cell(&dir, "mara", Cell::AtHome, &base).unwrap_err()
+        );
+        assert!(why.contains("changed since it was shown"), "{why}");
+        assert!(read(&dir, "mara")
+            .unwrap()
+            .routine
+            .unwrap()
+            .contains("retired"));
     }
 
     #[test]

@@ -722,6 +722,11 @@ fn api() -> gate::Owned {
             get(persona_chat::week),
         )
         .at(
+            "/api/personas/{name}/routine/cell",
+            Owner::Of(Feature::World),
+            axum::routing::post(persona_chat::set_cell),
+        )
+        .at(
             "/api/personas/{name}/chats",
             Owner::Of(Feature::Personas),
             get(persona_chat::history).post(persona_chat::open),
