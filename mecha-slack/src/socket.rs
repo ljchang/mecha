@@ -23,7 +23,13 @@
 //!   take twenty minutes. Whether Slack replays unacked envelopes is
 //!   undocumented, which is the other half of why every event carries an
 //!   `event_id` to dedupe on.
+//! - **The socket names its TLS crypto provider** ([`tls_config`]). A mecha
+//!   built with code mode links rustls's aws-lc-rs provider (through
+//!   `monty-pool`) beside the ring one, and rustls refuses to pick a default
+//!   between two. `connect_async` asks for that default, and in that build it
+//!   panicked on every connect, so the connector crash-looped (2026-11-01).
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures::{SinkExt, StreamExt};
@@ -34,6 +40,22 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::envelope::{interpret, Envelope, Inbound};
 use crate::error::{SlackError, SlackResult};
 use crate::http::Slack;
+
+/// The TLS client config the socket connects with: rustls with the ring
+/// provider named, never the process default, and the webpki roots
+/// tokio-tungstenite's own rustls path trusts. A binary that links two
+/// providers has no default, and asking for one panics (module docs).
+pub fn tls_config() -> SlackResult<rustls::ClientConfig> {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    Ok(rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|e| SlackError::Disconnected(format!("could not configure TLS: {e}")))?
+    .with_root_certificates(roots)
+    .with_no_client_auth())
+}
 
 /// How long the old connection is drained after its replacement is open.
 /// Slack's warning is about ten seconds; this outlasts it slightly so a frame
@@ -91,9 +113,11 @@ impl SocketMode {
             url.push_str("&debug_reconnects=true");
         }
 
-        let (ws, _) = tokio_tungstenite::connect_async(&url)
-            .await
-            .map_err(|e| SlackError::Disconnected(format!("could not open the socket: {e}")))?;
+        let tls = tokio_tungstenite::Connector::Rustls(Arc::new(tls_config()?));
+        let (ws, _) =
+            tokio_tungstenite::connect_async_tls_with_config(&url, None, false, Some(tls))
+                .await
+                .map_err(|e| SlackError::Disconnected(format!("could not open the socket: {e}")))?;
         Ok(Connection { ws })
     }
 
