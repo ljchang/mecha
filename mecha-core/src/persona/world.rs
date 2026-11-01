@@ -241,7 +241,8 @@ fn migrate(conn: &Connection) -> Result<()> {
              COMMIT;",
         )?;
     }
-    debug_assert_eq!(SCHEMA, 2, "a new step goes above, and this moves with it");
+    // A new step goes above, and this moves with it.
+    const _: () = assert!(SCHEMA == 2);
     Ok(())
 }
 

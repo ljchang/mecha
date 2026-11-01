@@ -465,6 +465,12 @@ pub fn approve_draft_as_shown(dir: &Path, name: &str, digest: &str) -> Result<Ro
     // The owner may have edited the draft into something that no longer
     // loads; approving that would leave her with no week at all.
     let mut routine = parse(&text).context("the draft does not load")?;
+    // Whichever door it came through (the CLI's `approve --yes`, the
+    // page's POST, an editor's save): an empty draft would leave her with
+    // no anchors at all (review of #801).
+    if routine.anchors.is_empty() {
+        bail!("`{name}`'s routine draft holds no anchors; edit or discard it");
+    }
     let old = read_if_there(&pdir.join(FILE))?;
     let text = match kept_cell(&text, old.as_deref()) {
         Some(cell) => {
@@ -781,6 +787,31 @@ chance = 0.7
         assert_eq!(
             std::fs::read_to_string(pdir.join(PREVIOUS)).unwrap(),
             TEMPLATE
+        );
+    }
+
+    #[test]
+    fn an_emptied_draft_is_never_approved_whatever_door() {
+        let dir = made();
+        let pdir = dir.join("mara");
+        std::fs::write(pdir.join(FILE), GYM).unwrap();
+        stage_draft(&dir, "mara", GYM, Origin::ModelClean).unwrap();
+        // Emptied by hand in an editor, past `edit_draft`'s check.
+        std::fs::write(pdir.join(DRAFT), "# nothing left\n").unwrap();
+        let why = format!(
+            "{:#}",
+            approve_draft_as_shown(
+                &dir,
+                "mara",
+                &crate::persona::text_digest("# nothing left\n")
+            )
+            .unwrap_err()
+        );
+        assert!(why.contains("no anchors"), "{why}");
+        assert_eq!(
+            load(&pdir).unwrap().unwrap().anchors.len(),
+            1,
+            "her routine was emptied"
         );
     }
 

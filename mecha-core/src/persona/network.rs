@@ -376,7 +376,8 @@ fn order(e: &EdgeEvent) -> (NaiveDate, &str) {
 ///   `renewed` make it warm; the rest leave it.
 /// - `ended` ends it and `paused` pauses it; `met`, `formed`,
 ///   `strengthened`, `reconciled` and `renewed` make it active again.
-/// - It started at its first `met` or `formed`, ended at its latest
+/// - It started at its first dated `met` or `formed` (an undated one when
+///   none is dated), ended at its latest
 ///   `ended` while it stays ended, and was last touched at its latest dated
 ///   event.
 pub fn fold(events: &[EdgeEvent]) -> Edge {
@@ -437,7 +438,12 @@ pub fn fold(events: &[EdgeEvent]) -> Edge {
             }
             _ => {}
         }
-        if matches!(e.kind, EventKind::Met | EventKind::Formed) && edge.started.is_none() {
+        // The first start, and a dated one over an undated one: an undated
+        // start folds first, and must not hide a date the owner recorded
+        // later (review of #801).
+        if matches!(e.kind, EventKind::Met | EventKind::Formed)
+            && edge.started.is_none_or(|s| s.on.is_none())
+        {
             edge.started = Some(e.when);
         }
         if e.when.on.is_some() {
@@ -985,11 +991,18 @@ pub fn markdown(n: &Network) -> String {
             ended.join("\n")
         ));
     }
-    let ties: Vec<String> = n
+    let mut ties: Vec<String> = n
         .ties()
         .into_iter()
         .filter_map(|((a, b), e)| {
             let (a, b) = (n.person(&a)?, n.person(&b)?);
+            // Named in alphabetical order, so the file reads the same on
+            // every install and does not churn on a rewrite.
+            let (a, b) = if b.name.to_lowercase() < a.name.to_lowercase() {
+                (b, a)
+            } else {
+                (a, b)
+            };
             let mut line = format!("- {} and {}", a.name, b.name);
             if let Some(t) = tie_words(&e) {
                 line.push_str(&format!(": {t}"));
@@ -1002,10 +1015,45 @@ pub fn markdown(n: &Network) -> String {
             Some(line)
         })
         .collect();
+    ties.sort();
     if !ties.is_empty() {
         out.push_str(&format!("\n## Between them\n\n{}\n", ties.join("\n")));
     }
     out
+}
+
+/// Whether `name` may be someone's portrait: a library character the owner
+/// has approved, as `persona.toml`'s own `character` must be. Both doors
+/// that write a person (the CLI, the People tab) ask here.
+pub fn check_character(lib: &crate::imagelib::Library, name: &str) -> Result<()> {
+    match lib.get(crate::imagelib::Kind::Character, name) {
+        None => bail!("there is no character `{name}` in the image library"),
+        Some(e) if e.status != crate::imagelib::Status::Approved => {
+            bail!("`{name}` is a candidate in the image library; approve it first")
+        }
+        Some(_) => Ok(()),
+    }
+}
+
+impl Network {
+    /// Each person whose portrait link is broken, named: the library
+    /// character gone, or no longer approved. Links are by name and
+    /// resolved on load, so a link that broke after it was written is
+    /// reported, never silently shown as no portrait.
+    pub fn broken_links(&self, lib: &crate::imagelib::Library) -> Vec<String> {
+        self.people
+            .iter()
+            .filter_map(|p| {
+                let c = p.character.as_deref()?;
+                check_character(lib, c).err().map(|e| {
+                    format!(
+                        "{} in her network names a portrait that is broken: {e:#}",
+                        p.name
+                    )
+                })
+            })
+            .collect()
+    }
 }
 
 /// Write `network.md` from the store as it now stands.
@@ -1227,6 +1275,11 @@ mod tests {
             "the undated reconciliation fell when recorded"
         );
 
+        // An undated start does not hide a dated one recorded later.
+        let dated = ev(EventKind::Met, "2015", "2026-01-02T00:00:00Z");
+        let e = fold(&[ev(EventKind::Formed, "", "2026-01-01T00:00:00Z"), dated]);
+        assert_eq!(e.started.unwrap().render().as_deref(), Some("2015"));
+
         // Nothing set is nothing claimed.
         let bare = fold(&[ev(EventKind::Met, "", "1")]);
         assert_eq!(
@@ -1316,14 +1369,9 @@ mod tests {
         let ties = n.ties();
         assert_eq!(ties.len(), 1);
         assert_eq!(ties.values().next().unwrap().valence, Some(Valence::Tense));
-        assert!(
-            std::fs::read_to_string(pdir.join(NETWORK_MD))
-                .unwrap()
-                .contains("## Between them\n\n- Ines and Theo: friend (tense)")
-                || std::fs::read_to_string(pdir.join(NETWORK_MD))
-                    .unwrap()
-                    .contains("- Theo and Ines: friend (tense)")
-        );
+        assert!(std::fs::read_to_string(pdir.join(NETWORK_MD))
+            .unwrap()
+            .contains("## Between them\n\n- Ines and Theo: friend (tense)"));
 
         // An edit replaces who someone is; a cleared role is gone.
         edit_person(
@@ -1436,7 +1484,9 @@ mod tests {
             Network::read(&pdir).unwrap().her_edge(&id).valence,
             Some(Valence::Warm)
         );
-        // A row from another source (a chat, later) is forget's, not this door's.
+        // A row from any other source is forget's, not this door's. There
+        // is no chat source yet, so `chat` loads as an unknown one: the
+        // fail-closed case.
         let mut w = World::open(&pdir).unwrap();
         w.conn_mut()
             .execute(
@@ -1462,6 +1512,62 @@ mod tests {
         // The first write migrates it, and the old table stays.
         add_person(&pdir, &sister()).unwrap();
         assert_eq!(Network::read(&pdir).unwrap().people.len(), 1);
+    }
+
+    #[test]
+    fn a_portrait_link_is_checked_in_core_and_a_broken_one_is_named() {
+        let dir = scratch();
+        let lib_dir = dir.join("imagelib");
+        let mut png = Vec::new();
+        image::RgbImage::new(4, 4)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        crate::imagelib::create(
+            &lib_dir,
+            crate::imagelib::NewEntry {
+                kind: crate::imagelib::Kind::Character,
+                name: "ines".into(),
+                text: "tall, flour on her sleeves".into(),
+                portrait: Some(png),
+                source_seed: None,
+                origin: crate::imagelib::Origin::Owner,
+                locked: false,
+            },
+        )
+        .unwrap();
+        let lib = || crate::imagelib::Library::load(&lib_dir).0;
+        assert!(check_character(&lib(), "nobody")
+            .unwrap_err()
+            .to_string()
+            .contains("no character"));
+        crate::persona::create(&dir, &no_lib(), new("mara")).unwrap();
+        let pdir = dir.join("mara");
+        let mut p = sister();
+        p.character = Some("ines".into());
+        add_person(&pdir, &p).unwrap();
+        // Approved (an owner entry is): nothing broken, on the network or
+        // the persona.
+        check_character(&lib(), "ines").unwrap();
+        assert!(Network::read(&pdir)
+            .unwrap()
+            .broken_links(&lib())
+            .is_empty());
+        // The character goes from the library afterwards: named on load.
+        std::fs::remove_dir_all(&lib_dir).unwrap();
+        let broken = Network::read(&pdir).unwrap().broken_links(&lib());
+        assert_eq!(broken.len(), 1);
+        assert!(
+            broken[0].contains("Ines") && broken[0].contains("no character `ines`"),
+            "{broken:?}"
+        );
+        let store = crate::persona::Store::load(&dir);
+        let problems = store.problems(store.get("mara").unwrap(), &lib());
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("names a portrait that is broken")),
+            "{problems:?}"
+        );
     }
 
     #[test]
