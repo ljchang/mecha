@@ -14,9 +14,11 @@ Run from the repo root:
 
 It rewrites mecha-core/data/atus/table.tsv.gz (`zcat` it to read it). Every
 input is pinned by sha256, a file that does not match its pin is refused, and
-the gzip header carries no timestamp, so the same command always writes the
-same bytes. It is compressed because it is a megabyte of numbers no diff
-should carry: this script and its pins are what review reads.
+the table's text is pinned too (`TEXT_SHA256`, which `persona::atus` checks
+against the shipped file), so a re-run says whether the pinned inputs still
+give the shipped rows. The pin is on the text, not the gzip file, whose bytes
+depend on which zlib wrote them. It is compressed because it is a megabyte of
+numbers no diff should carry: this script and its pins are what review reads.
 
 The activity mapping below is a copy of `Activity::atus` in
 `mecha-core/src/persona/activity.rs`. The table records the activity it gave
@@ -58,6 +60,9 @@ PINS = {
     "atusrost-2024.zip": "126b373b481a6ca572d87809bdf3554a883a86283124c31a7cd46011a82ad84f",
     "atusrost-2025.zip": "b10ac3ee0d2fd6229d8c0a1978a4497412f30b4ae16b24e393adc57a658ddd89",
 }
+
+# sha256 of the table's text (before gzip) that the pins above produce.
+TEXT_SHA256 = "47629ab8cdf2f255c20f440113a50594392f02b6b7e07ba999e6e25325dfca9e"
 
 # `Activity::atus`, longest prefix wins.
 ACTIVITIES = {
@@ -103,6 +108,9 @@ COMPANY = [
     ("colleague", {59, 60, 61}),
     ("public", {57, 58, 62}),
 ]
+# A positive who code in none of the sets above is refused: counted, it would
+# read as a stretch nobody shared.
+KNOWN_WHO = set().union(*(codes for _, codes in COMPANY))
 
 # Clock hours a duration is conditioned on, by when the stretch starts.
 BANDS = [("night", 22, 6), ("morning", 6, 12), ("afternoon", 12, 17), ("evening", 17, 22)]
@@ -212,6 +220,8 @@ def main():
         for r in rows(args.cache, "who", year):
             code = int(r["TUWHO_CODE"])
             if code > 0:
+                if code not in KNOWN_WHO:
+                    sys.exit(f"{year}: TUWHO_CODE {code} is in no COMPANY set; map it there first")
                 who[(r["TUCASEID"], r["TUACTIVITY_N"])].add(code)
         episodes = collections.defaultdict(list)
         for r in rows(args.cache, "act", year):
@@ -299,6 +309,9 @@ def main():
     OUT.write_bytes(gzip.compress(text, compresslevel=9, mtime=0))
     kinds = collections.Counter(line[0] for line in out if not line.startswith("#"))
     print(f"wrote {OUT.relative_to(ROOT)}: {len(diaries)} diaries, " + ", ".join(f"{k}={v}" for k, v in sorted(kinds.items())))
+    digest = hashlib.sha256(text).hexdigest()
+    if digest != TEXT_SHA256:
+        print(f"the table's text changed: sha256 {digest}; set TEXT_SHA256 here and in persona::atus")
 
 
 if __name__ == "__main__":
