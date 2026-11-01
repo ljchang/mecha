@@ -407,7 +407,9 @@ threshold per persona once the access log says where it should sit. The
     unreadable live file then fails toward the safe side for each setting:
     no recall under `remember_articles`, `intensity` at `"capped"`,
     `name_search_filter` **on** (the one setting whose safe direction is on),
-    and **no pruning that night**, and **no persona-level decaying rows in
+    and **no pruning of her own rows that night** (a shared node's test
+    reads only the shipped defaults, §3.2, so her typo does not stall the
+    group's), and **no persona-level decaying rows in
     that turn's today-block** (the fold reads `world_prune_below` too, §3.2,
     and neither threshold is safe to guess; shared rows fold on PL29's shipped
     default, which needs no file). Rows the threshold never reads still fold:
@@ -919,9 +921,9 @@ situation, a state row is lasting.
 
 **Every row carries an origin and a source** (owner edit, storylet, chat turn,
 feed item), which is what `forget` on a chat works from. **An `items` row
-carries one origin per shelf half:** clean for shelves A and B's typed
-columns, which §8.2's single constructor emits, and untrusted for shelf C's
-prose column. A fold's per-row test reads the origin of the half it folds
+carries one origin per shelf half:** clean for shelf A's typed columns,
+by §8.2's closed parse, and for shelf B's, the clean half §8.2's single
+constructor emits; untrusted for shelf C's prose column. A fold's per-row test reads the origin of the half it folds
 from (§4.5), so a shelf B line beside a shelf C column stays clean.
 
 **D27 is a rebuild that memory doesn't yet have, and the world can do it
@@ -1375,7 +1377,9 @@ Shelf B meets §2.7's three conditions in code:
     mapping, so the extraction adds 0 attacker bits. A publisher reaching
     feeds the owner mapped under k interests still chooses among them by
     where it publishes, at most log₂k bits an item. Like the count below,
-    that sits outside the per-item ceiling (§14 part 3);
+    that sits outside the per-item ceiling: §14 part 3 measures it while it
+    steers inside the measured days, and what narration carries past them
+    is bounded by construction (§14, out of the gate's reach);
   - **salience** is computed by code from kind and entity, never extracted
     (0 bits);
   - **the order** of the items is a lexical sort over the extracted values
@@ -1482,7 +1486,7 @@ the headline never rides in the today-block.
   live shelf, the same rule as the narrator (§4.4): at most three shelf A and
   three shelf B items, so **at most about 77 bits a day** of shelf values,
   against about 385 over the live shelf. That is the constant §14's bit test
-  checks for the block. The placement of those items among k interests adds
+  checks for the block. The placement of shelf B's three items among k interests adds
   at most 3·log₂k bits a day beside it, which part 2 cannot see (it has no
   vocabulary) and part 3 covers (§14). It rides every turn, which is why it is held to the
   narrower figure. In the first build, without shelf B, its shelf C lines
@@ -1934,17 +1938,17 @@ entirely: they never decay.
   or reject. Those stay quiet until their row prunes on its ordinary score,
   so suppression is bounded in time even with nothing to review.
 
+  Suppression by an injection therefore stays bounded to what the chat was
+  shown (§4.5), visible on the week view, and never reaches deletion. The
+  cost of the rule is that a suppressed event stays quiet until the owner
+  rejects the episode or the row prunes on its own score (§16 PL25).
+
   **A second exception: a node that points at a shared person is pruned in
   two steps** (§3.2). On the persona's own knobs it leaves everything she
   reads, but its hold (the dates and retellings its score comes from, no
   name or line) stays until the shipped defaults would prune it too, so a
   member's sooner knobs cannot release the shared node early. A `forget`
   removes a hold's chat-sourced rows like any other (§5).
-
-  Suppression by an injection therefore stays bounded to what the chat was
-  shown (§4.5), visible on the week view, and never reaches deletion. The
-  cost of the rule is that a suppressed event stays quiet until the owner
-  rejects the episode or the row prunes on its own score (§16 PL25).
 - **Memory soft-prunes first:** below the threshold a record leaves recall and
   stays in the store, which is what D26 already says ("states expire from
   recall, never from the store"). D28's access log then shows whether the
@@ -2083,7 +2087,7 @@ to keep proactive messages from ever becoming one.
 | The `told` flag, from a tainted stretch | the stretch's taint | set only, never cleared, source recorded | — | it shapes what reaches the today-block |
 | Shelf A | code, closed types only | yes | yes | its closed fields; shape-matched ids never |
 | Shelf B | quarantined, typed | minor events | as pointers | yes |
-| Shelf C | untrusted | never | never as text; a typed episode by default, or full records recalled under PL27 | its prose only through `news_read`, which declares `untrusted_input` and marks every result `external`; in the first build, without shelf B, and only once the owner has read the gate's readings (§17 step 5), the today-block carries one line per item, its interest and an opaque id, both code's, whose presence, count and timing are the publisher's (§8.3) |
+| Shelf C | untrusted | never | never as text; a typed episode by default, or full records recalled under PL27 | its prose only through `news_read`, which declares `untrusted_input` and marks every result `external`; in the first build, without shelf B, and only once the owner has read the gate's readings (§17 step 5), the today-block carries one line per item, its interest and an opaque id, both code's, whose presence, count, timing and placement among interests are the publisher's (§8.3) |
 
 The folds, which arrive in no tool result and so arm at the fold
 (`PERSONA-DESIGN.md` §9.7):
@@ -2253,7 +2257,9 @@ ruled for repetition.
      per day on top of the item's fields, and the number of surviving items
      (0–3) adds about 2 bits more, and a publisher reaching feeds under k
      interests picks among them, at most log₂k bits an item (§8.2). Those
-     count, timing and placement channels would show here, and nowhere else.
+     count, timing and placement channels would show here, and nowhere else,
+     for as long as they stay inside the measured days; what outlives them
+     in memory is bounded by construction (out of the gate's reach, below).
 
   **Each shelf ships only when the owner has read all three parts for it:
   shelves A and C before their first build reaches a prompt, shelf B before
