@@ -1836,6 +1836,14 @@ module.
   waiting draft the owner edited, `routine::may_stage`) comes before the
   model runs, and the envelope is read before the answer: a refusal or a
   reply cut off at its cap stages nothing.
+- **The owner reviews a draft as shown** (`routine::edit_draft`,
+  `approve_draft_as_shown`, both over the draft's digest the page was
+  shown, a stale one typed `StaleRoutine` and answered 409). An owner's
+  edit must load, so a draft can always be approved as saved, and leaves
+  the staged record as the model wrote it, so the draft reads as the
+  owner's and `may_stage` refuses a redraft over it. The server's draft
+  route holds the router as a turn does and refuses before the model runs
+  whatever needs no answer, as 409s.
 - **Group membership lives once**, in each persona's `groups`. `groups.toml`
   only declares groups; a persona naming an undeclared group is a broken link.
 - **Links are by name, resolved on load, broken ones named**

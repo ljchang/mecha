@@ -5,7 +5,7 @@
   // her life switched off says so here rather than failing.
   import { untrack } from 'svelte';
   import { apiFetch as fetch } from './api.js';
-  import { personaUrl, weekUrl, weekDays, foldedHours, weekUnavailable, shiftWeek, cellBody, WEEK_ABSENT, WEEK_GROUPS, WEEK_CELLS } from './persona.js';
+  import { personaUrl, weekUrl, weekDays, foldedHours, weekUnavailable, shiftWeek, cellBody, draftBody, anchorLine, WEEK_ABSENT, WEEK_GROUPS, WEEK_CELLS } from './persona.js';
 
   let { name, token = null, onclose } = $props();
 
@@ -17,11 +17,20 @@
   let picked = $state(null);
   // A cell pick on its way to routine.toml.
   let saving = $state(false);
+  // A draft being asked of her model, or acted on.
+  let drafting = $state(false);
+  let acting = $state(false);
+  // The owner's text while editing a draft, null when not editing.
+  let draftText = $state(null);
+  // What the last draft found, when it found nothing to stage.
+  let draftNote = $state('');
 
   const days = $derived(weekDays(data));
   const folded = $derived(foldedHours(data));
   const unavailable = $derived(weekUnavailable(data));
   const monday = $derived(data?.week?.monday ?? null);
+  const draft = $derived(data?.routine?.draft ?? null);
+  const cellLabel = (id) => WEEK_CELLS.find(([c]) => c === id)?.[1] ?? id;
   // Where the bar's ticks sit: 8am, noon, 6pm and midnight on a 4am day.
   const TICKS = [
     [((8 * 60 - 240) / 1440) * 100, '8'],
@@ -81,6 +90,60 @@
     }
   }
 
+  // Her model drafts her week from what the owner wrote of her (§4.1): a
+  // model run of tens of seconds, so the button says so while it runs. Zero
+  // anchors is the model finding no fixed point, said rather than failed.
+  async function draftWeek() {
+    drafting = true;
+    error = '';
+    draftNote = '';
+    try {
+      const res = await fetch(personaUrl(name, '/routine/draft', null), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(draftBody(data, date, token)),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      data = await res.json();
+      picked = null;
+      if (data.drafted === 0) draftNote = 'Her model found no fixed point in her week to draft from what you wrote of her.';
+    } catch (e) {
+      error = String(e?.message ?? e);
+    } finally {
+      drafting = false;
+    }
+  }
+
+  // The owner's doors to a waiting draft: approve it as shown, save an edit
+  // over it as shown, or discard it. A 409 (changed since it was shown)
+  // reads the week again, as a stale cell pick does.
+  async function actOnDraft(method, suffix, text = undefined) {
+    acting = true;
+    error = '';
+    try {
+      const res = await fetch(personaUrl(name, suffix, null), {
+        method,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(draftBody(data, date, token, text)),
+      });
+      if (res.status === 409) {
+        const why = (await res.text()).trim();
+        await load();
+        draftText = null;
+        if (data) error = `${why} It is shown as it stands now.`;
+        return;
+      }
+      if (!res.ok) throw new Error((await res.text()).trim());
+      data = await res.json();
+      draftText = null;
+      picked = null;
+    } catch (e) {
+      error = String(e?.message ?? e);
+    } finally {
+      acting = false;
+    }
+  }
+
   function step(weeks) {
     if (!monday) return;
     date = shiftWeek(monday, weeks);
@@ -95,6 +158,8 @@
     void token;
     untrack(() => {
       date = null;
+      draftText = null;
+      draftNote = '';
       load();
     });
   });
@@ -123,6 +188,39 @@
         {#each WEEK_CELLS as [id, label]}<option value={id}>{label}</option>{/each}
       </select>
     </label>
+    <!-- Her routine's anchors, drafted by her model and shown as they would
+         land before anything reaches her days (§4.1). -->
+    <div class="wdraft">
+      {#if draft}
+        <div class="wdhead">A drafted week waits on you{#if draft.edited} · edited by you{/if}</div>
+        {#if draftText !== null}
+          <textarea class="wdtext" rows="14" spellcheck="false" bind:value={draftText} disabled={acting}></textarea>
+          <div class="wdacts">
+            <button class="abtn" disabled={acting} onclick={() => actOnDraft('PUT', '/routine/draft', draftText)}>Save draft</button>
+            <button class="linkbtn" disabled={acting} onclick={() => (draftText = null)}>Cancel</button>
+          </div>
+        {:else}
+          {#if draft.anchors}
+            <ul class="wdlist">{#each draft.anchors as a}<li>{anchorLine(a)}</li>{/each}</ul>
+          {:else}
+            <div class="warnline">It does not load, so it cannot be approved yet: {draft.error}</div>
+          {/if}
+          {#if draft.kept_cell}<p class="wnote">Approving keeps her kind of week: {cellLabel(draft.kept_cell)}.</p>{/if}
+          {#if data.routine.digest}<p class="wnote">Approving replaces the anchors her routine has now; the old routine is kept beside it.</p>{/if}
+          <div class="wdacts">
+            <button class="abtn" disabled={acting || !draft.anchors} onclick={() => actOnDraft('POST', '/routine/draft/approve')}>Approve</button>
+            <button class="linkbtn" disabled={acting} onclick={() => (draftText = draft.text)}>Edit</button>
+            <button class="linkbtn" disabled={acting} onclick={() => actOnDraft('DELETE', '/routine/draft')}>Discard</button>
+          </div>
+        {/if}
+      {:else}
+        <button class="abtn" disabled={drafting || !!data.routine.undraftable} onclick={draftWeek}>
+          {drafting ? 'Drafting her week…' : 'Draft her week from what you wrote'}
+        </button>
+        {#if data.routine.undraftable}<p class="wnote">{data.routine.undraftable}</p>{/if}
+        {#if draftNote}<p class="wnote">{draftNote}</p>{/if}
+      {/if}
+    </div>
   {/if}
   {#if data?.week}
     <div class="wnav">
@@ -234,5 +332,12 @@
   .linkbtn { background: none; border: none; padding: 4px 0; min-height: 32px; color: var(--accent-400); font-size: 12px; cursor: pointer; }
   .warnline { font-size: 12px; color: var(--hazard); line-height: 1.45; }
   .barnote { font-size: 11px; color: var(--text-muted); line-height: 1.5; }
+  .wdraft { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--accent-900); border-radius: var(--radius); }
+  .wdhead { font-size: 13px; color: var(--text); }
+  .wdlist { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text); line-height: 1.4; }
+  .wdtext { width: 100%; box-sizing: border-box; padding: 8px; background: var(--surface); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font-family: var(--mono); font-size: 12px; line-height: 1.45; resize: vertical; }
+  @media (pointer: coarse) { .wdtext { font-size: 16px; } }
+  .wdacts { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .abtn:disabled, .linkbtn:disabled { opacity: 0.5; cursor: default; }
   .abtn { min-height: 44px; padding: 0 16px; background: var(--surface); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font-size: 14px; cursor: pointer; }
 </style>
