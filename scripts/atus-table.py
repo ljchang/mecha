@@ -64,7 +64,7 @@ PINS = {
 }
 
 # sha256 of the table's text (before gzip) that the pins above produce.
-TEXT_SHA256 = "aa054ec649045b591efde2a7a56999792e26443b4412fe9f670b477b1113711e"
+TEXT_SHA256 = "b51bd371dc2ed22bfd42c42911a400fa6c2f4f7624d48d7ac630648a724ce37b"
 
 # `Activity::atus`, longest prefix wins.
 ACTIVITIES = {
@@ -113,6 +113,7 @@ COMPANY = [
 # A positive who code in none of the sets above is refused: counted, it would
 # read as a stretch nobody shared.
 KNOWN_WHO = set().union(*(codes for _, codes in COMPANY))
+ALONE = COMPANY[0][1]
 
 # Clock hours a duration is conditioned on, by when the stretch starts.
 BANDS = [("night", 22, 6), ("morning", 6, 12), ("afternoon", 12, 17), ("evening", 17, 22)]
@@ -246,10 +247,19 @@ def main():
             for n, act, hour, dur, company in eps:
                 if runs and act is not None and runs[-1]["act"] == act:
                     runs[-1]["dur"] += dur
-                    if company is not None:
-                        runs[-1]["who"] = (runs[-1]["who"] or set()) | company
+                    runs[-1]["asked"].append(company)
                     continue
-                runs.append({"act": act, "hour": hour, "dur": dur, "who": company, "first": n == 1})
+                runs.append({"act": act, "hour": hour, "dur": dur, "asked": [company], "first": n == 1})
+            # A stretch has company only if the Who file covers all of it,
+            # and was alone only if nobody was there for any of it: merged
+            # episodes can be eating with a partner, then waiting alone.
+            for run in runs:
+                asked = run.pop("asked")
+                if any(c is None for c in asked):
+                    run["who"] = None
+                    continue
+                who = set().union(*asked)
+                run["who"] = who - ALONE if who - ALONE else who
             cell, day, weight = resp[case]
             diaries.append((cell, day, weight, runs))
 
@@ -279,7 +289,8 @@ def main():
             out.append(f"N\t{cell}\t{day}\t{len(members)}\t{weighted:.2f}")
             trans = collections.defaultdict(collections.Counter)
             durs = collections.defaultdict(list)
-            company = collections.defaultdict(lambda: [0.0] * (len(COMPANY) + 1))
+            # weight, one count per COMPANY kind, then stretches with anyone.
+            company = collections.defaultdict(lambda: [0.0] * (len(COMPANY) + 2))
             for w, runs in members:
                 for prev, run in zip([None] + runs, runs):
                     if run["act"] is None:
@@ -296,6 +307,8 @@ def main():
                         for i, (_, wanted) in enumerate(COMPANY):
                             if run["who"] & wanted:
                                 row[i + 1] += w
+                        if run["who"] - ALONE:
+                            row[-1] += w
             for (hour, a), tos in sorted(trans.items()):
                 pairs = " ".join(f"{b}={n:.2f}" for b, n in sorted(tos.items()) if round(n, 2) > 0)
                 if pairs:
