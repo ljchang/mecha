@@ -1258,7 +1258,10 @@ impl Store {
         // Her network's portrait links, resolved on load like the persona's
         // own; a network that cannot be read is named, never an empty one.
         match network::Network::read(&self.persona_dir(&p.name)) {
-            Ok(n) => out.extend(n.broken_links(lib)),
+            Ok(n) => {
+                out.extend(n.broken_links(lib));
+                out.extend(n.unreadable_edges());
+            }
             Err(e) => out.push(format!("her network does not load: {e:#}")),
         }
         out
