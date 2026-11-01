@@ -177,9 +177,12 @@ the call's `ToolOutput::external` and the tool's capabilities.
     `"Priya Okafor" in text` searched the stub's own text and returned
     `False`, so its program reported 0 meetings attended, with nothing
     raised. The model caught it only because 0 looked wrong.
-  - Text that merely reads like a stub is never a handle. File text reaches
-    a program only as a `peek` string, and the marker's key holds a NUL that
-    tool data cannot spell into an object a program receives.
+  - Text cannot reach anything new by looking like a stub. A stub-shaped
+    string a program passes back resolves only if it is the exact stub of a
+    handle this program already holds (`held()`), which `peek` of a tool's
+    error body relies on. And tool data cannot turn into a handle object:
+    file text reaches a program only as a `peek` string, and the marker's
+    key holds a NUL.
 - **A program that reaches for the filesystem is told where its data is.**
   An `os` call is refused with a `PermissionError` that says a program has
   no files, environment, network or clock, and lists the functions it was
