@@ -583,7 +583,7 @@ impl World {
 pub fn day(store_dir: &Path, name: &str, date: NaiveDate, today: NaiveDate) -> Result<Day> {
     match draw(store_dir, name, date, today)? {
         Drawn::Day(day, _) => Ok(day),
-        Drawn::Absent(why) => bail!(why),
+        Drawn::Absent(why) => bail!(why.why(name)),
     }
 }
 
@@ -621,12 +621,167 @@ pub fn now(store_dir: &Path, name: &str, at: NaiveDateTime) -> Result<Option<Now
     }))
 }
 
+/// Where a day of a week view stands against today.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum When {
+    /// Past [`KEEP_DAYS`]: folded into its week's minutes, no longer whole.
+    Folded,
+    /// Kept as it was drawn.
+    Past,
+    Today,
+    /// Drawn as it would be now and never stored, so it may change until it
+    /// comes.
+    Ahead,
+}
+
+/// One day of a week view.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WeekDay {
+    pub date: NaiveDate,
+    pub when: When,
+    /// `None` for a folded day.
+    pub day: Option<Day>,
+    /// Each stretch's source, in stretch order.
+    pub sources: Vec<Source>,
+}
+
+/// A week of her days, Monday first, and what its folded days left.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WeekView {
+    pub monday: NaiveDate,
+    pub days: Vec<WeekDay>,
+    /// The minutes of the days already folded, if any are.
+    pub folded: Option<Week>,
+}
+
+impl WeekView {
+    /// The week as `mecha persona week --json` and the web app's week view
+    /// read it: each day as [`Day::to_json`], `null` once folded, with its
+    /// stretches' sources beside it.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "monday": self.monday.to_string(),
+            "days": self.days.iter().map(|d| serde_json::json!({
+                "date": d.date.to_string(),
+                "when": d.when,
+                "day": d.day.as_ref().map(Day::to_json),
+                "sources": d.sources,
+            })).collect::<Vec<_>>(),
+            "folded": self.folded.as_ref().map(|w| serde_json::json!({
+                "days": w.days,
+                "minutes": w.minutes.iter().map(|(a, m)| serde_json::json!({
+                    "activity": a.id(), "minutes": m,
+                })).collect::<Vec<_>>(),
+                "unreadable": w.unreadable,
+            })),
+        })
+    }
+}
+
+/// The week holding `date`, each day as [`day`] gives it and a folded one
+/// left as its week's minutes rather than drawn again. `Ok(Err(_))` names
+/// why she has no days at all.
+pub fn week_view(
+    store_dir: &Path,
+    name: &str,
+    date: NaiveDate,
+    today: NaiveDate,
+) -> Result<std::result::Result<WeekView, Absent>> {
+    let store = super::Store::load(store_dir);
+    let Some(persona) = store.get(name) else {
+        bail!("no persona named `{name}`");
+    };
+    // Asked before any day, so a week whose days are all folded still says
+    // why she has none, and nothing is drawn to find out.
+    if !persona.settings.life.world {
+        return Ok(Err(Absent::Off));
+    }
+    match routine::read(store_dir, &persona.name)?.routine {
+        None => return Ok(Err(Absent::NoRoutine)),
+        Some(text) => {
+            let routine = routine::parse(&text)
+                .with_context(|| format!("{} does not load", routine::FILE))?;
+            if routine.cell.is_none() {
+                return Ok(Err(Absent::NoCell));
+            }
+        }
+    }
+    let monday = week_of(date);
+    let oldest = today - Days::new(KEEP_DAYS);
+    let mut days = Vec::with_capacity(7);
+    for i in 0..7 {
+        let d = monday + Days::new(i);
+        if d < oldest {
+            days.push(WeekDay {
+                date: d,
+                when: When::Folded,
+                day: None,
+                sources: Vec::new(),
+            });
+            continue;
+        }
+        let (day, sources) = match draw(store_dir, name, d, today)? {
+            Drawn::Day(day, sources) => (day, sources),
+            Drawn::Absent(why) => return Ok(Err(why)),
+        };
+        let when = match d.cmp(&today) {
+            std::cmp::Ordering::Less => When::Past,
+            std::cmp::Ordering::Equal => When::Today,
+            std::cmp::Ordering::Greater => When::Ahead,
+        };
+        days.push(WeekDay {
+            date: d,
+            when,
+            day: Some(day),
+            sources,
+        });
+    }
+    let folded = World::open_existing(&store_dir.join(&persona.name))?
+        .map(|w| w.week(monday))
+        .transpose()?
+        .flatten();
+    Ok(Ok(WeekView {
+        monday,
+        days,
+        folded,
+    }))
+}
+
 /// A day, or why she has none.
 enum Drawn {
     /// The day, with each stretch's source in stretch order.
     Day(Day, Vec<Source>),
-    /// The refusal [`day`] gives, naming what is missing.
-    Absent(String),
+    Absent(Absent),
+}
+
+/// Why a persona has no days to draw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Absent {
+    /// `[life] world` is off for her.
+    Off,
+    /// She has no `routine.toml`.
+    NoRoutine,
+    /// Her routine names no `cell`.
+    NoCell,
+}
+
+impl Absent {
+    /// The refusal [`day`] gives, naming the fix.
+    pub fn why(self, name: &str) -> String {
+        match self {
+            Absent::Off => format!("[life] world is off for `{name}`: she has no simulated days"),
+            Absent::NoRoutine => format!(
+                "`{name}` has no routine.toml, so no cell to draw her days from; \
+                 `mecha persona routine edit {name}` writes one"
+            ),
+            Absent::NoCell => format!(
+                "`{name}`'s routine.toml names no cell, so there is no kind of week to draw her \
+                 days from; add `cell = \"…\"` (`mecha persona routine edit {name}`)"
+            ),
+        }
+    }
 }
 
 fn draw(store_dir: &Path, name: &str, date: NaiveDate, today: NaiveDate) -> Result<Drawn> {
@@ -635,9 +790,7 @@ fn draw(store_dir: &Path, name: &str, date: NaiveDate, today: NaiveDate) -> Resu
         bail!("no persona named `{name}`");
     };
     if !persona.settings.life.world {
-        return Ok(Drawn::Absent(format!(
-            "[life] world is off for `{name}`: she has no simulated days"
-        )));
+        return Ok(Drawn::Absent(Absent::Off));
     }
     let pdir = store_dir.join(&persona.name);
     let existing = World::open_existing(&pdir)?;
@@ -654,20 +807,28 @@ fn draw(store_dir: &Path, name: &str, date: NaiveDate, today: NaiveDate) -> Resu
         }
     }
     let Some(text) = routine::read(store_dir, &persona.name)?.routine else {
-        return Ok(Drawn::Absent(format!(
-            "`{name}` has no routine.toml, so no cell to draw her days from; \
-             `mecha persona routine edit {name}` writes one"
-        )));
+        return Ok(Drawn::Absent(Absent::NoRoutine));
     };
     let routine =
         routine::parse(&text).with_context(|| format!("{} does not load", routine::FILE))?;
     let Some(cell) = routine.cell else {
-        return Ok(Drawn::Absent(format!(
-            "`{name}`'s routine.toml names no cell, so there is no kind of week to draw her \
-             days from; add `cell = \"…\"` (`mecha persona routine edit {name}`)"
-        )));
+        return Ok(Drawn::Absent(Absent::NoCell));
     };
     let digest = inputs(&text);
+    // Today, already drawn from these inputs: read back without drawing it
+    // again or opening the store to write, which every chat turn would
+    // otherwise pay (`now`).
+    if date == today {
+        if let Some(st) = existing
+            .as_ref()
+            .map(|w| w.stored(date))
+            .transpose()?
+            .flatten()
+            .filter(|st| st.digest == digest)
+        {
+            return Ok(Drawn::Day(st.day, st.sources));
+        }
+    }
     // The day before opens this one with what it carried past 4am, as it
     // was stored; redrawn only when it is not stored, or is a stale
     // future day.
@@ -1091,6 +1252,81 @@ mod tests {
         assert_ne!(inputs_of("1", "abd", text), base);
         assert_ne!(inputs_of("1", "abc", "cell = \"retired\"\n"), base);
         assert_ne!(inputs_of("1a", "bc", text), inputs_of("1", "abc", text));
+    }
+
+    #[test]
+    fn a_week_says_why_she_has_no_days_and_draws_nothing_to_find_out() {
+        let d = date("2026-11-04");
+        for (routine, world, why) in [
+            (Some("cell = \"student\"\n"), false, Absent::Off),
+            (None, true, Absent::NoRoutine),
+            (Some(routine::TEMPLATE), true, Absent::NoCell),
+        ] {
+            let dir = store(routine, world);
+            assert_eq!(week_view(dir.as_path(), "mara", d, d).unwrap(), Err(why));
+            assert!(!dir.join("mara").join(WORLD_DB).exists());
+        }
+    }
+
+    #[test]
+    fn a_week_keeps_its_past_shows_today_and_stores_nothing_ahead() {
+        let dir = store(Some("cell = \"full_time\"\n"), true);
+        // A Wednesday: Monday and Tuesday are past, Thursday on ahead.
+        let today = date("2026-11-04");
+        let w = week_view(dir.as_path(), "mara", today, today)
+            .unwrap()
+            .unwrap();
+        assert_eq!(w.monday, date("2026-11-02"));
+        let when: Vec<When> = w.days.iter().map(|d| d.when).collect();
+        assert_eq!(
+            when,
+            [
+                When::Past,
+                When::Past,
+                When::Today,
+                When::Ahead,
+                When::Ahead,
+                When::Ahead,
+                When::Ahead
+            ]
+        );
+        assert_eq!(w.folded, None);
+        let world = World::open(&dir.join("mara")).unwrap();
+        for d in &w.days {
+            let drawn = d.day.as_ref().unwrap();
+            assert_eq!(d.sources.len(), drawn.stretches.len());
+            assert_eq!(
+                world.stored(d.date).unwrap().is_some(),
+                d.when != When::Ahead,
+                "{}",
+                d.date
+            );
+            assert_eq!(&day(dir.as_path(), "mara", d.date, today).unwrap(), drawn);
+        }
+    }
+
+    #[test]
+    fn a_week_past_the_store_shows_its_folded_minutes_never_a_redraw() {
+        let dir = store(Some("cell = \"retired\"\n"), true);
+        let monday = date("2026-10-05");
+        for i in 0..7 {
+            let d = monday + Days::new(i);
+            day(dir.as_path(), "mara", d, d).unwrap();
+        }
+        let today = date("2026-11-02");
+        // Drawing today prunes everything past fourteen days.
+        day(dir.as_path(), "mara", today, today).unwrap();
+        let w = week_view(dir.as_path(), "mara", monday, today)
+            .unwrap()
+            .unwrap();
+        assert!(w
+            .days
+            .iter()
+            .all(|d| d.when == When::Folded && d.day.is_none()));
+        let folded = w.folded.unwrap();
+        assert_eq!(folded.days, 7);
+        let named: u32 = folded.minutes.iter().map(|(_, m)| m).sum();
+        assert_eq!(named, 7 * sampler::MINUTES_PER_DAY);
     }
 
     #[test]

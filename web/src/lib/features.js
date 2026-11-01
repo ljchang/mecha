@@ -45,6 +45,10 @@ export const PANE_FEATURE = {
   'settings/images': 'image',
   'settings/loras': ['image', 'video'],
   'library/voices': 'voice',
+  // Her week, a tab of the persona editor rather than a route of its own;
+  // the per-persona `[life] world` switch is the pane's second gate, and a
+  // persona with it off shows that state, never a route error.
+  'personas/week': 'world',
 };
 
 /** A pane's features as a list: none, one, or several. */

@@ -1,0 +1,66 @@
+// The persona week view's pure logic, imported from the shipped module.
+import assert from 'node:assert/strict';
+import { personaUrl, ENDPOINTS, weekUrl, weekDays, foldedHours, shiftWeek, stretchLine, dayClock, WEEK_ABSENT } from '../src/lib/persona.js';
+import { PANE_FEATURE } from '../src/lib/features.js';
+
+// The endpoint is one the builder accepts, and so one the docs demo checks.
+assert.equal(personaUrl('mara', '/week', 'tok'), '/api/personas/mara/week?unlock=tok');
+assert.ok(ENDPOINTS.includes('/api/personas/X/week'));
+assert.equal(weekUrl('mara', null, null), '/api/personas/mara/week');
+assert.equal(weekUrl('mara', '2026-11-02', 'tok'), '/api/personas/mara/week?unlock=tok&date=2026-11-02');
+assert.equal(weekUrl('mara', '2026-11-02', null), '/api/personas/mara/week?date=2026-11-02');
+
+// The pane is recorded against the world part, the one #654 missed.
+assert.equal(PANE_FEATURE['personas/week'], 'world');
+
+// Each reason she has no days has its own words.
+for (const why of ['off', 'no_routine', 'no_cell']) assert.ok(WEEK_ABSENT[why]);
+
+// A day's stretches sit on a 4am-to-4am bar; past midnight is the next morning.
+assert.equal(dayClock(25 * 60 + 5), '01:05');
+const data = {
+  week: {
+    monday: '2026-11-02',
+    days: [
+      {
+        date: '2026-11-02',
+        when: 'today',
+        sources: ['sampler', 'mystery'],
+        day: {
+          stretches: [
+            { activity: 'sleep', start_minute: 240, end_minute: 600, company: null, anchor: null },
+            { activity: 'exercise', start_minute: 600, end_minute: 1680, company: ['friend', 'colleague'], anchor: 'swim' },
+          ],
+        },
+      },
+      { date: '2026-10-26', when: 'folded', sources: [], day: null },
+    ],
+    folded: { days: 2, minutes: [{ activity: 'sleep', minutes: 960 }, { activity: 'personal_care', minutes: 1920 }], unreadable: 0 },
+  },
+};
+const days = weekDays(data);
+assert.equal(days.length, 2);
+const [sleep, swim] = days[0].bars;
+assert.equal(sleep.left, 0);
+assert.equal(sleep.width, 25);
+assert.equal(sleep.group, 'rest');
+assert.equal(sleep.unclean, false);
+assert.equal(swim.left + swim.width, 100, 'the day ends at the next 4am');
+assert.equal(swim.unclean, true, 'an unknown source is never clean');
+assert.equal(swim.line, '10:00–04:00 exercise (swim), with friend, colleague');
+assert.equal(days[1].folded, true);
+assert.equal(days[1].bars.length, 0);
+assert.equal(stretchLine({ activity: 'tv', start_minute: 1200, end_minute: 1260, company: ['alone'], anchor: 'tv' }), '20:00–21:00 tv, alone');
+
+// Folded minutes, most first.
+const f = foldedHours(data);
+assert.deepEqual(f.rows, [{ activity: 'personal care', hours: '32h00' }, { activity: 'sleep', hours: '16h00' }]);
+assert.equal(f.unreadable, null);
+assert.equal(foldedHours({ week: { days: [], folded: null } }), null);
+
+// A week away by whole days, across a month and a clock change.
+assert.equal(shiftWeek('2026-10-26', 1), '2026-11-02');
+assert.equal(shiftWeek('2026-11-02', -1), '2026-10-26');
+assert.equal(shiftWeek('2026-12-28', 1), '2027-01-04');
+
+console.log('persona-week: ok');

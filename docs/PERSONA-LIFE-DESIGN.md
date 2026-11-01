@@ -7,7 +7,9 @@
 > yet), the ATUS table (`persona::atus`, §4.2), and the day sampler with
 > `world.db`'s `days` and `state` (`persona::sampler`, `persona::world`,
 > `mecha persona day`), and the today-block's first line, what she is doing
-> now (`persona::today`, §4.5); the week view is next. **Every decision in §16
+> now (`persona::today`, §4.5), and a read-only week view (`world::week_view`,
+> `mecha persona week`, the editor's Week tab, §15); the form's Life section
+> and the routine drafter are next. **Every decision in §16
 > is ruled** by the owner, the same day: PL1–PL22, PL24–PL26, PL29 and PL30 as rulings,
 > and PL23, PL27 and PL28 as the owner's direction (no approval queue for
 > news; every part opt-in per persona). §1 is the owner's requests, in the order they were made; §2 is
@@ -2360,6 +2362,16 @@ ruled for repetition.
 - **Week view** on the persona page: her routine and sampled days; the owner
   adds or edits events ("the formal is Saturday"), and what the owner writes outranks
   what the simulation drew.
+  - **As built (step 1, read only):** a Week tab in the persona editor,
+    beside Memories, shown while `world` is on (`PANE_FEATURE`'s
+    `personas/week` row), reading `GET /api/personas/{name}/week`, owned by
+    `Feature::World`. Each day is a 4am-to-4am bar coloured by activity
+    group; a tapped stretch says its times, routine label and company, and
+    one from a source that is not clean is hatched. A day past fourteen days
+    shows as folded, with its week's minutes below, never drawn again; a
+    day ahead is drawn and marked so, never stored. A persona with `world`
+    off, no routine or no cell answers with which, and the tab says it,
+    never a route error. Owner events wait for step 3's event table.
 - **People**, two views:
   - *Her people* — concentric Dunbar rings with her at the centre, portraits
     from library links, warm or tense lines, ended relationships greyed on an

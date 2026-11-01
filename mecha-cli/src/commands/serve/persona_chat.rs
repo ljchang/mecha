@@ -1875,6 +1875,44 @@ impl PersonaChats {
     /// Read-only and never created: no store yet is an empty page. Only this
     /// persona's own rows, so a locked persona's facts shared with everyone
     /// can never surface through another's page.
+    /// Her week for the persona page (PERSONA-LIFE-DESIGN.md §15): the
+    /// week holding `date` (this week when `None`) on the owner's calendar,
+    /// or why she has no days. A persona with `[life] world` off answers
+    /// with that, never a route error, so the pane can say so (§17).
+    pub fn week(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        token: Option<&str>,
+        date: Option<&str>,
+        tz: Option<chrono_tz::Tz>,
+    ) -> Result<serde_json::Value, Refusal> {
+        let p = self
+            .visible(library, name, token)
+            .ok_or(Refusal::NotFound)?;
+        let today = match tz {
+            Some(tz) => chrono::Utc::now().with_timezone(&tz).date_naive(),
+            None => chrono::Local::now().date_naive(),
+        };
+        let date = match date {
+            None => today,
+            Some(d) => chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d")
+                .map_err(|_| Refusal::Bad(format!("`{d}` is not a date (YYYY-MM-DD)")))?,
+        };
+        match mecha_core::persona::world::week_view(&self.store, &p.name, date, today)
+            .map_err(failed)?
+        {
+            Ok(week) => {
+                Ok(serde_json::json!({ "today": today.to_string(), "week": week.to_json() }))
+            }
+            Err(why) => Ok(serde_json::json!({
+                "today": today.to_string(),
+                "absent": why,
+                "why": why.why(&p.name),
+            })),
+        }
+    }
+
     pub fn memory(
         &self,
         library: &LibraryState,
@@ -5792,6 +5830,37 @@ pub async fn memory(
     }
 }
 
+#[derive(serde::Deserialize)]
+pub struct WeekQuery {
+    #[serde(default)]
+    unlock: Option<String>,
+    #[serde(default)]
+    date: Option<String>,
+}
+
+/// GET /api/personas/{name}/week
+pub async fn week(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Query(q): Query<WeekQuery>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let personas = Arc::clone(&chat.personas);
+    let library = Arc::clone(&state.library);
+    let tz = chat.follower.current().config.agent.timezone();
+    match tokio::task::spawn_blocking(move || {
+        personas.week(&library, &name, q.unlock.as_deref(), q.date.as_deref(), tz)
+    })
+    .await
+    {
+        Ok(result) => respond(result),
+        Err(e) => Refusal::Failed(format!("reading a persona's week: {e}")).into_response(),
+    }
+}
+
 /// POST /api/personas/{name}/memory
 pub async fn memory_act(
     State(state): Web,
@@ -8315,6 +8384,58 @@ mod tests {
             .text();
         assert!(newest.contains("pass it as `picture`"), "{newest}");
         assert!(!newest.contains("Continue on a picture"), "{newest}");
+    }
+
+    /// PERSONA-LIFE-DESIGN.md §4.5: with `[life] world` on and a routine
+    /// naming her cell, every request's newest message carries what she is
+    /// doing now, once, as a run note never stored in a message; with the
+    /// switch off, none does.
+    #[tokio::test]
+    async fn her_day_rides_as_a_note_only_with_the_world_switched_on() {
+        use mecha_core::persona::today::{TODAY_STEM, UNTRUSTED_TODAY_STEM};
+        let w = world();
+        let key = |opened: serde_json::Value| opened["key"].as_str().unwrap().to_string();
+        let off = key(w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap());
+        turn(&w, &off, "Hello there.").await;
+        let seen = w.seen.lock().unwrap().clone();
+        assert!(!seen[0].messages.last().unwrap().text().contains(TODAY_STEM));
+
+        let dir = w.store().join("mara");
+        let toml = dir.join("persona.toml");
+        let text = std::fs::read_to_string(&toml).unwrap();
+        assert!(text.contains("world     = false"));
+        std::fs::write(&toml, text.replace("world     = false", "world     = true")).unwrap();
+        std::fs::write(
+            dir.join(mecha_core::persona::routine::FILE),
+            "cell = \"part_time\"\n",
+        )
+        .unwrap();
+        let on = key(w
+            .personas()
+            .open(&w.chat, &w.library, "mara", None, None)
+            .await
+            .unwrap());
+        turn(&w, &on, "Hello again.").await;
+        turn(&w, &on, "And then?").await;
+        let seen = w.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 3);
+        for req in &seen[1..] {
+            let newest = req.messages.last().unwrap().text();
+            assert!(newest.contains(TODAY_STEM), "{newest}");
+            assert!(!newest.contains(UNTRUSTED_TODAY_STEM), "{newest}");
+            let copies: usize = req
+                .messages
+                .iter()
+                .map(|m| m.text().matches(TODAY_STEM).count())
+                .sum();
+            assert_eq!(copies, 1, "a note, never stored in a message");
+        }
+        // Her day was drawn and kept, so the next turn reads it back.
+        assert!(dir.join(mecha_core::persona::world::WORLD_DB).exists());
     }
 
     /// §9.7, on every turn: past the first reply, an owner message that
