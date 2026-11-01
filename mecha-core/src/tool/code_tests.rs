@@ -1432,6 +1432,16 @@ async fn a_programs_read_holds_the_whole_file() {
 #[cfg(feature = "monty")]
 #[tokio::test]
 async fn the_judgement_example_runs_as_written() {
+    // Needs no interpreter, so it is asked before the skip: a machine
+    // without monty still catches `describe` dropping the example.
+    let admitted = Admission::over(
+        &registry_of(vec![
+            Arc::new(crate::tool::builtin::FsList),
+            Arc::new(crate::tool::builtin::FsRead),
+        ]),
+        |_| false,
+    );
+    assert!(describe(&admitted).contains(JUDGE_EXAMPLE));
     let Some(interp) = monty().await else {
         return;
     };
@@ -1458,14 +1468,6 @@ async fn the_judgement_example_runs_as_written() {
         )
         .unwrap();
     }
-    let admitted = Admission::over(
-        &registry_of(vec![
-            Arc::new(crate::tool::builtin::FsList),
-            Arc::new(crate::tool::builtin::FsRead),
-        ]),
-        |_| false,
-    );
-    assert!(describe(&admitted).contains(JUDGE_EXAMPLE));
     let (d, _) = run(&agent, JUDGE_EXAMPLE).await;
     assert!(!d.is_error, "{}", d.content);
     assert!(
