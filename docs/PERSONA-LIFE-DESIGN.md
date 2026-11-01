@@ -508,7 +508,9 @@ Each level is its own `world.db`: `~/.mecha/personas/world.db` for everyone,
   the shared one early. Her node leaves everything she reads on her own
   knobs, but its hold, the dates and retellings the score is computed from
   and no name or line, stays until the defaults would prune it as well, so
-  the test always has a row to score. A node of hers that outlives the
+  decay alone never leaves the test without a row to score. A `forget` can:
+  it removes the chat's contribution to the hold like any row (§5), and a
+  hold built only from forgotten chats goes, as the owner's erasure should. A node of hers that outlives the
   shared one points at a pruned id, which renders as "someone" (§6.3). So a tainted chat
   with one persona cannot plant an event that reaches every member, nor
   silence one for them all: a tainted `told` stays within §4.5's bound,
@@ -729,10 +731,11 @@ one more reason §14's gate part 1 exists.
     residual §14's steering arm covers. Nothing else is exempt. Once shelf B ships, the id rides
     shelf B's interest line instead (§8.3), and that line folds by the
     origin of the clean half §8.2's single constructor emits, never the
-    untrusted half beside it in the same `items` row (§5): clean by shelf
+    untrusted half beside it in the same `items` row (an `items` row
+    carries one origin per shelf half, §5): clean by shelf
     B's capacity, with the untrusted variant below ready if its gate (§14,
     PL20) comes back dirty.
-    It is not inherited from this exception.
+    Shelf B's line is clean by its own capacity, not by this exception.
 
   The untrusted variant exists from the first build, so a dirty result at the
   shelf B gate (§14), or a candidate row approved by mistake, needs no new fold
@@ -912,7 +915,11 @@ fact): an event is momentary, a mood is short-term state, an arc is an ongoing
 situation, a state row is lasting.
 
 **Every row carries an origin and a source** (owner edit, storylet, chat turn,
-feed item), which is what `forget` on a chat works from.
+feed item), which is what `forget` on a chat works from. **An `items` row
+carries one origin per shelf half:** clean for shelves A and B's typed
+columns, which §8.2's single constructor emits, and untrusted for shelf C's
+prose column. A fold's per-row test reads the origin of the half it folds
+from (§4.5), so a shelf B line beside a shelf C column stays clean.
 
 **D27 is a rebuild that memory doesn't yet have, and the world can do it
 cheaply.** D27 ruled "rebuild the fact from the chats that remain"; until that
@@ -1581,10 +1588,12 @@ the headline never rides in the today-block.
       bits per episode**. `interest` follows from the item, so the writer
       adds nothing to it, but it keeps the publisher's placement: a
       publisher reaching feeds under k interests chose it, at most log₂k
-      bits an episode. Like the shelves' placement channel (§8.2) that sits
-      outside the ceiling, under the steering arm (§14 part 3), and unlike
-      the shelves' it outlives the five-day expiry, kept as long as the
-      episode is recalled.
+      bits an episode. That sits outside the ceiling and, unlike the shelves'
+      placement channel (§8.2), outlives the five-day expiry, kept as long as
+      the episode is recalled, past any window the steering arm's days
+      would see. So it is bounded by construction instead, beside
+      `owner_reaction` (§14, out of the gate's reach): one episode per item
+      read and three a day (below), at most 3·log₂k bits a day.
     - **One typed episode per item read, fixed by code.** If the writer could
       choose which of several read items an episode is about, that choice
       would add log₂n bits over n items read. So the count is set by the recorded `news_read`
@@ -1868,7 +1877,13 @@ entirely: they never decay.
 **Pruning differs by store** (§16 PL7):
 
 - **The world hard-prunes** below the threshold, **except owner-origin
-  events**, which never decay, as owner people never do (§6.3). The owner
+  events**, which never decay, as owner people never do (§6.3). **A node
+  that points at a shared person is pruned in two steps** (§3.2): on the
+  persona's own knobs it leaves everything she reads, but its hold (the dates
+  and retellings its score comes from, no name or line) stays until the
+  shipped defaults would prune it too, so a member's sooner knobs cannot
+  release the shared node early. A `forget` removes a hold's chat-sourced
+  rows like any other (§5). The owner
   wrote them on the week view and saw them there, so pruning one would cost
   something someone saw. It would also defeat §5's promise that owner events
   are never removed by forgetting a chat. Every other untold event is
@@ -2244,6 +2259,10 @@ ruled for repetition.
   each bounded by construction instead:
   - the `told` flag, bounded to events the chat was shown (§4.5);
   - the typed episode's `owner_reaction`, 2 bits per episode (§8.4);
+  - the typed episode's `interest`, which follows from the item and keeps
+    the publisher's placement, at most log₂k bits an episode and three
+    episodes a day (§8.4). It outlives the five-day expiry, so part 3's
+    window would not see it, and the cap is what bounds it;
   - the retelling boost and `known_to_owner`, which a tainted stretch never
     writes at all (§4.5);
   - typed plans under `remember_articles` (PL21), at most about 20 bits a
@@ -2294,7 +2313,7 @@ this document's; the ruling is the owner's.
 | PL6 | People already in `identity.md` | **Ruled (2026-10-31): people live in one place.** They are proposed once as owner nodes; after approval the network is their only home and `identity.md` keeps personality (§6.6) |
 | PL7 | Pruning | **Ruled (2026-10-31):** the world hard-prunes, except owner-origin rows; memory soft-prunes (out of recall, kept in the store); hard deletion of memories only by amending D26 after D28's readout. **The decay parameters are exposed per persona**, read live: the world's half-lives, retelling boost and threshold in `[life.decay]`, and memory's recall threshold in `[memory] recall_below`, off by default (§9, §3.1) |
 | PL8 | Importance to the owner | **Ruled (2026-10-31):** inferred from engagement and pins, with no rating prompts or UI control; and she may ask in conversation when it is natural and the inference is unsure, within §7.3's one-question-a-chat budget, the answer counting as a `Stated` signal (§9) |
-| PL9 | News shelves | **Ruled (2026-10-31):** Build A and C first, with shelf A's per-field render bounds and stated figures (at most 16 bits an item, three a day, five-day expiry; §8.2), and shelves A and C through all three gate parts, steering included, before either reaches a prompt. In that first build, shelf C's count-and-timing channel (about 3 bits a day), with log₂k bits a line for a publisher reaching feeds under k interests (§8.3), is the entire residual, and only the steering arm sees it. B ships behind the three-part gate (§14): schema conformance, a bit ceiling (about 9.6 bits per item and under 30 a day, as §8.2 computes it) enforced by a test, and the steering arm, all three read by the owner |
+| PL9 | News shelves | **Ruled (2026-10-31):** Build A and C first, with shelf A's per-field render bounds and stated figures (at most 16 bits an item, three a day, five-day expiry; §8.2), and shelves A and C through all three gate parts, steering included, before either reaches a prompt. In that first build, shelf C's count-and-timing channel (about 3 bits a day), with at most log₂k bits a line, 3·log₂k a day, for a publisher reaching feeds under k interests (§8.3), is the entire residual, and only the steering arm sees it. B ships behind the three-part gate (§14): schema conformance, a bit ceiling (about 9.6 bits per item and under 30 a day, as §8.2 computes it) enforced by a test, and the steering arm, all three read by the owner |
 | PL10 | The writer after a taint rise | **Ruled (2026-10-31):** Keep today's rule (everything after the rise is a candidate). PL23's typed episode keeps the gist and PL27's switch gives full memory where the owner wants it, which is what PL10 was reaching for (§8.4) |
 | PL11 | Feed sources | **Ruled (2026-10-31):** Registered per persona, per group and for everyone (PL4), in their folders under `~/.mecha/personas/`, never in layered config; any future global table global-layer-only and stripped from project layers loudly (§8.1) |
 | PL12 | Topics withheld by default | **Ruled (2026-10-31):** Politics, deaths, disasters and crime, unless a feed is opted in |
@@ -2315,7 +2334,7 @@ this document's; the ruling is the owner's.
 | PL27 | Remembering article chats in full | **Owner's direction (2026-10-31):** a per-persona `remember_articles` switch, off by default, owner-written in `persona.toml`. With it on, episodes and facts from a stretch after a `news_read` are recalled without approval, origin still untrusted and re-armed on recall. The cost (possible persistent steering, no way to send) is shown beside the switch and in a `TRIFECTA.md` row. **Ruled within it (2026-10-31): no carve-out.** Facts about the owner and the owner's people are recalled too, with the residual (a planted claim about a real person) accepted, kept visible by an "from an article chat" badge and stated in the `TRIFECTA.md` row (§8.4) |
 | PL28 | Which personas get which parts | **Owner's direction (2026-10-31):** every part is an opt-in switch per persona, off by default: `world`, `people`, `my_people`, `news`, `camera`, `feed`, `proactive`, `remember_articles`. A tool whose switch is off is never built; dependencies are refused by name; the switches that decide which tools, blocks and runs exist are fixed per persona version (`proactive` at the scheduler's next check), and `remember_articles` is read live, never reaching backwards (§3.1) |
 | PL29 | How a shared row decays | **Ruled (2026-10-31), as recommended:** a group's and everyone's rows that decay do so under the shipped `[life.decay]` defaults (§9's owner-origin and `state` exemptions hold at every level), since members may disagree and a shared row is one row; a level's own knobs, if wanted, come with the group world (§17 step 3), in the owner's files. This carves an exception out of PL7, whose knobs are per persona (§3.2). Applied in §3.2 to the holder test that decides when a shared person goes: member nodes are scored for it under the shipped defaults, in both directions, so a looser member's node cannot pin the shared node and a stricter member's leaves her view on her own knobs while its hold stays until the defaults would prune it |
-| PL30 | Which stem the today-block takes on a day with a shelf C line | **Ruled (2026-10-31), as recommended:** the clean stem, for a shelf C line in the first build; once shelf B ships, the id rides its interest line, which folds by its row's origin like any row (§4.5). The line's two fields are code's (an interest from the owner's feed mapping and a harness-minted id), so what folds carries no attacker text; the row it was selected from is untrusted, and its presence, count and timing (about 3 bits a day), and for a publisher reaching feeds under k interests at most log₂k bits a line, are the residual §14's steering arm covers. §4.5 names the line as the one exception to its per-row rule, because it is a line code composes, not a row's fields; a typed plan, whose fields are code-shaped but attacker-chosen, gets no such exemption. The alternative, the untrusted stem, rejected: it makes every chat on a news day a candidate under §9.6 from the first build, on the feature's main path, which PL23's typed episode was ruled to avoid (§4.5, §8.3, §13) |
+| PL30 | Which stem the today-block takes on a day with a shelf C line | **Ruled (2026-10-31), as recommended:** the clean stem, for a shelf C line in the first build; once shelf B ships, the id rides its interest line, which folds by the origin of the half it comes from, like any row (§4.5; an `items` row carries one origin per shelf half, §5). The line's two fields are code's (an interest from the owner's feed mapping and a harness-minted id), so what folds carries no attacker text; the row it was selected from is untrusted, and its presence, count and timing (about 3 bits a day), and for a publisher reaching feeds under k interests at most log₂k bits a line, 3·log₂k a day, are the residual §14's steering arm covers. §4.5 names the line as the one exception to its per-row rule, because it is a line code composes, not a row's fields; a typed plan, whose fields are code-shaped but attacker-chosen, gets no such exemption. The alternative, the untrusted stem, rejected: it makes every chat on a news day a candidate under §9.6 from the first build, on the feature's main path, which PL23's typed episode was ruled to avoid (§4.5, §8.3, §13) |
 
 ---
 
