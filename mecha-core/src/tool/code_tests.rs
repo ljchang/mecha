@@ -1424,6 +1424,31 @@ async fn a_programs_read_holds_the_whole_file() {
         "{}",
         d.content
     );
+
+    // With less room than the file, the read is cut to fit, notice and all,
+    // and the program holds it, where capping at the room alone left the
+    // notice over and the charge refused the handle (review of #796).
+    let Some(interp) = monty().await else {
+        return;
+    };
+    let mut registry = registry_of(vec![Arc::new(crate::tool::builtin::FsRead)]);
+    let code = CodeTool::over(&registry, |_| false, interp)
+        .with_pool(BytePool::new(1 << 30))
+        .with_limits(HostLimits {
+            host_bytes: 50_000,
+            ..HostLimits::default()
+        });
+    registry.insert(Arc::new(code));
+    let agent = agent_over(registry, Vec::new());
+    let jail = agent.context().tools.workspace.clone();
+    std::fs::write(jail.join("big.log"), "x".repeat(299_999) + "\n").unwrap();
+    let (d, _) = run(
+        &agent,
+        "h = fs_read(path='big.log')\nprint(size(h) <= 50000, count(h, '^\\[truncated'))",
+    )
+    .await;
+    assert!(!d.is_error, "{}", d.content);
+    assert!(unwrapped(&d.content).starts_with("True 1"), "{}", d.content);
 }
 
 /// The description's judgement example, run as the model reads it

@@ -30,6 +30,11 @@ pub fn all(sandbox: Arc<Sandbox>) -> Vec<Arc<dyn Tool>> {
 /// context instead of blowing the window on one file.
 const MAX_OUTPUT_BYTES: usize = 200_000;
 
+/// The most a cut `fs_read`'s notice adds beside its path: the fixed text
+/// and four numbers (size, limit, line, line) of at most 20 digits each,
+/// with room to spare.
+const NOTICE_BYTES: usize = 512;
+
 fn truncate(mut s: String, what: &str) -> String {
     if s.len() > MAX_OUTPUT_BYTES {
         let mut cut = MAX_OUTPUT_BYTES;
@@ -108,8 +113,15 @@ impl Tool for FsRead {
         // A program's read becomes a handle, which never enters the context
         // window the turn cap protects, so it may hold the file up to the
         // program's own host-byte limit (`CODE-MODE-DESIGN.md` §5).
+        //
+        // The notice is prepended, so a program's cut read leaves room for
+        // it: capped at the room alone, every cut read came to the room plus
+        // the notice, and the host-byte charge refused it whole where the
+        // program used to get the first 200 KB (review of #796).
         let cap = match ctx.program_room {
-            Some(room) => room.min(crate::tool::code::defaults::HOST_BYTES),
+            Some(room) => room
+                .min(crate::tool::code::defaults::HOST_BYTES)
+                .saturating_sub(NOTICE_BYTES + path.as_os_str().len()),
             None => MAX_OUTPUT_BYTES,
         };
         let text = match read_file_window(&path, offset, limit, cap).await {
@@ -1834,19 +1846,24 @@ mod read_window_tests {
         };
         let whole = read(json!({"path": "big.log"}), program).await;
         assert_eq!(whole.content, body, "a program's read is the whole file");
-        // A program with little room left reads only that much, cut and said,
-        // so the refusal that follows costs a small read, not the whole file.
+        // A program with little room left reads only that much, cut and
+        // said, and notice and text together fit the room, so the program
+        // can hold the handle the charge would otherwise refuse.
         let short = ToolCtx {
             program_room: Some(1000),
             ..ctx(&dir)
         };
         let cut = read(json!({"path": "big.log"}), short).await;
         assert!(
-            cut.content.contains("stopped at its 1000-byte limit"),
+            cut.content.starts_with("[truncated:"),
             "{}",
             &cut.content[..200]
         );
-        assert!(cut.content.len() < 1400, "{} bytes", cut.content.len());
+        assert!(cut.content.len() <= 1000, "{} bytes", cut.content.len());
+        assert!(
+            cut.content.contains("line 00001 of the log"),
+            "the read kept text"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
