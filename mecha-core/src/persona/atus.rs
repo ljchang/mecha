@@ -20,8 +20,9 @@
 //!   starts at); a cell with fewer than 20 stretches has no row, and the
 //!   pool's (`all`) stands in.
 //! - `W`: who was there, as weighted counts of stretches with each kind of
-//!   company present. ATUS does not ask during sleep, grooming or private
-//!   activities, so those have no row.
+//!   company present, then of stretches with anyone, so that alone and
+//!   anyone can be checked to add up to every stretch. ATUS does not ask
+//!   during sleep, grooming or private activities, so those have no row.
 //! - `M`: every lexicon code the files used, and the activity the script gave
 //!   it, so a test can hold the script's mapping to [`Activity::of_atus`].
 
@@ -38,7 +39,7 @@ const TABLE: &[u8] = include_bytes!("../../data/atus/table.tsv.gz");
 /// ATUS files produce. The text, not the gzip file, whose bytes depend on
 /// which zlib wrote them.
 #[cfg(test)]
-const TEXT_SHA256: &str = "aa054ec649045b591efde2a7a56999792e26443b4412fe9f670b477b1113711e";
+const TEXT_SHA256: &str = "b51bd371dc2ed22bfd42c42911a400fa6c2f4f7624d48d7ac630648a724ce37b";
 /// The format `V` row this reader understands.
 const VERSION: &str = "2";
 /// Quantiles per duration row: 0%, 5%, …, 100%.
@@ -156,6 +157,8 @@ impl Band {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Company {
+    /// Nobody, for the whole stretch. Never counted beside another kind, so
+    /// `1 - share(Alone)` is the share of stretches with someone.
     Alone,
     /// Spouse or unmarried partner.
     Partner,
@@ -232,8 +235,8 @@ pub struct CompanyCounts {
     /// The weighted count of stretches the Who file covered.
     pub weight: f64,
     /// For each of [`Company::ALL`], the weighted count of those stretches
-    /// it was present for. They overlap: a dinner can hold a partner and a
-    /// child.
+    /// it was present for. People overlap (a dinner can hold a partner and a
+    /// child); `Alone` overlaps none of them.
     pub present: [f64; Company::ALL.len()],
 }
 
@@ -429,13 +432,13 @@ impl Table {
             }
             "W" => {
                 ensure!(
-                    f.len() == 5 + Company::ALL.len(),
+                    f.len() == 6 + Company::ALL.len(),
                     "a W row has {} fields",
-                    5 + Company::ALL.len()
+                    6 + Company::ALL.len()
                 );
                 let weight = count(f[4])?;
                 let mut present = [0.0; Company::ALL.len()];
-                for (p, s) in present.iter_mut().zip(&f[5..]) {
+                for (p, s) in present.iter_mut().zip(&f[5..5 + Company::ALL.len()]) {
                     *p = count(s)?;
                     // Both are written to the cent, so a true `p <= weight`
                     // can read a cent over, and a weight in the thousands
@@ -445,6 +448,12 @@ impl Table {
                         "company present more often than the activity"
                     );
                 }
+                // Every stretch was alone or with someone, never both.
+                let anyone = count(f[5 + Company::ALL.len()])?;
+                ensure!(
+                    (present[0] + anyone - weight).abs() <= 0.02 + weight * 1e-9,
+                    "alone counted beside company"
+                );
                 let key = (Some(self::cell(f[1])?), day_type(f[2])?, activity(f[3])?);
                 let row = CompanyCounts { weight, present };
                 ensure!(self.company.insert(key, row).is_none(), "a repeated W row");
@@ -651,6 +660,8 @@ mod tests {
                 .sum::<f64>()
                 / t.weighted_diaries(c, wd)
         };
+        // Against a denominator that is not empty, or ten times is any rate.
+        assert!(student(Cell::Retired) > 0.0);
         assert!(student(Cell::Student) > 10.0 * student(Cell::Retired));
         let work = t.company(None, wd, Activity::Work).unwrap();
         assert!(work.share(Company::Colleague).unwrap() > work.share(Company::Partner).unwrap());
@@ -707,8 +718,12 @@ mod tests {
                 "decrease",
             ),
             (
-                "W\tstudent\tweekday\twork\t1\t2\t0\t0\t0\t0\t0\t0\t0\t0\t0\n",
+                "W\tstudent\tweekday\twork\t1\t2\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\n",
                 "more often",
+            ),
+            (
+                "W\tstudent\tweekday\twork\t2\t1\t0\t0\t0\t0\t0\t0\t0\t1.5\t0\t1.5\n",
+                "alone counted beside",
             ),
             (
                 &format!(
