@@ -802,6 +802,8 @@ export function memoryActBody(action, id, extra = {}, token = null) {
 // minute past 1439 is the next morning.
 const DAY_START = 240;
 const DAY_MINUTES = 1440;
+// Midnight, in a day's own minutes.
+const MIDNIGHT = 24 * 60;
 
 // Why she has no days, said with its fix; the server's `why` is the CLI's.
 export const WEEK_ABSENT = {
@@ -827,6 +829,7 @@ export const WEEK_GROUPS = [
   ['move', 'out and about'],
   ['social', 'with people'],
   ['leisure', 'free time'],
+  ['unknown', 'not named here'],
 ];
 
 // A minute of her day as a clock time.
@@ -842,7 +845,10 @@ export function hoursOf(m) {
 
 // One stretch said in a line: when, what, the routine's name, and company.
 export function stretchLine(s) {
-  let line = `${dayClock(s.start_minute)}–${dayClock(s.end_minute)} ${s.activity.replace(/_/g, ' ')}`;
+  // A stretch across midnight says its end is the next day's, as
+  // `mecha persona day` does.
+  const nextDay = s.start_minute < MIDNIGHT && s.end_minute > MIDNIGHT ? '+1' : '';
+  let line = `${dayClock(s.start_minute)}–${dayClock(s.end_minute)}${nextDay} ${s.activity.replace(/_/g, ' ')}`;
   if (s.anchor && s.anchor !== s.activity) line += ` (${s.anchor})`;
   const who = s.company ?? [];
   if (who.length === 1 && who[0] === 'alone') line += ', alone';
@@ -869,7 +875,9 @@ export function weekDays(data) {
       undrawn: !d.day && d.when !== 'folded',
       bars: stretches.map((s, i) => ({
         ...s,
-        group: ACTIVITY_GROUP[s.activity] ?? 'leisure',
+        // An activity this bundle does not know is said as unknown, never
+        // coloured as one it does (a stale build beside a newer binary).
+        group: ACTIVITY_GROUP[s.activity] ?? 'unknown',
         left: ((s.start_minute - DAY_START) / DAY_MINUTES) * 100,
         width: ((s.end_minute - s.start_minute) / DAY_MINUTES) * 100,
         unclean: !['sampler', 'owner'].includes(d.sources?.[i]),

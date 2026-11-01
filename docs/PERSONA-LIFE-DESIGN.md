@@ -2367,7 +2367,8 @@ ruled for repetition.
     (`isShown(features.rows, 'world')`; no `PANE_FEATURE` row, §17),
     reading `GET /api/personas/{name}/week`, owned by
     `Feature::World`. Asking stores the in-window days it draws and may
-    prune, as `mecha persona day` does. Each day is a 4am-to-4am bar
+    prune, as `mecha persona day` does, so the route asks for the page's
+    own header as a mutation would. Each day is a 4am-to-4am bar
     coloured by activity group; a tapped stretch says its times, routine
     label and company, and one from a source that is not clean is hatched.
     A day already kept is shown from the store first, with no routine

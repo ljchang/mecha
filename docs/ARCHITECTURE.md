@@ -1807,6 +1807,10 @@ module.
   reasons the rest cannot be drawn (no routine, no cell, one that does not
   load) are checked once before any draw, so finding out draws nothing. Its route is `Feature::World`'s, and the per-persona switch
   answers as a state, never a refusal.
+  Asking stores the in-window days it draws, so `GET /week` is a read that
+  writes: it asks for the page's header itself (`serve::request_verified`),
+  since `owner_guard` asks it only of mutations, or a page on another site
+  could sweep the dates and store days no chat was told.
 - **Group membership lives once**, in each persona's `groups`. `groups.toml`
   only declares groups; a persona naming an undeclared group is a broken link.
 - **Links are by name, resolved on load, broken ones named**
