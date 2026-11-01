@@ -1397,10 +1397,9 @@ mod tests {
             .find_map(|l| l.trim().parse().ok())
     }
 
-    /// Whether the hung `ps` is gone within 10 s, its group having been sent
-    /// `SIGKILL` (a loaded runner once took longer than 3 s to finish one);
-    /// killed here if not, so a failing test leaves nothing behind, and the
-    /// error says what it was doing.
+    /// Whether the group kill reached the hung `ps` within 10 s: gone, or a
+    /// `SIGKILL` pending. Killed here if not, so a failing test leaves nothing
+    /// behind, and the error says what it was last seen doing.
     async fn hung_ps_gone(pid: u32) -> Result<(), String> {
         // Killed is the claim, gone or a `SIGKILL` pending: how soon the
         // kernel finishes it is the scheduler's (see `watchdog`'s own test).
