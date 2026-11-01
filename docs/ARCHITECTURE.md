@@ -5134,9 +5134,9 @@ is based on a call's context, never inherits it (review of #796).
 `shell` and `http_fetch` follow the same rule: every builtin's cut note
 opens its result (`lossy_prefix` appends nothing), and gives the size that
 is known, never the bytes held, in the source's bytes rather than the
-decoded text's: an invalid byte decodes to a three-byte U+FFFD. `shell` counts each stream as it drains, and
-names stderr apart, because stderr comes second and a full stdout leaves
-none of it shown; `http_fetch` stops reading one byte past the cap, so it
+decoded text's: an invalid byte decodes to a three-byte U+FFFD. `shell`
+counts each stream as it drains, and names stderr apart, because stderr
+comes second and a full stdout leaves none of it shown; `http_fetch` stops reading one byte past the cap, so it
 knows only the server's Content-Length, or that there was more. The notice's
 room is the path as `display` writes it, three bytes per non-UTF-8 byte, and
 a program with less room than the notice is refused before anything is read.

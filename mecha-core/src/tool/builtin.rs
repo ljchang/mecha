@@ -150,10 +150,13 @@ impl Tool for FsRead {
         // it was cut at byte 0 of line 1 and told that line alone was too
         // long for fs_read, about a file of short lines (review of #796).
         if cap == 0 && ctx.program_room.is_some() {
-            return Ok(ToolOutput::err(format!(
-                "{shown} was not read: this program has too little left of its limit on \
-                 tool results to hold any of it."
-            )));
+            // Without the path, so the refusal fits a room a long path would
+            // not, rather than be charged and raised as the limit (review of
+            // #798).
+            return Ok(ToolOutput::err(
+                "The file was not read: this program has too little left of its limit on \
+                 tool results to hold any of it.",
+            ));
         }
         let text = match read_file_window(&path, offset, limit, cap).await {
             Ok((text, None)) => text,
@@ -1112,7 +1115,7 @@ pub(crate) async fn fetch_vetted(url: &str, ctx: &ToolCtx) -> Result<Fetched> {
     let notice = if shown < raw.len() {
         let size = match (whole, length) {
             (true, _) => format!("{} bytes", raw.len()),
-            (false, Some(n)) if n > raw.len() as u64 => {
+            (false, Some(n)) if n >= raw.len() as u64 => {
                 format!("{n} bytes by its Content-Length")
             }
             (false, _) => format!("more than {} bytes", raw.len()),
@@ -1720,12 +1723,13 @@ mod tests {
             &out.content[..300]
         );
 
+        // `LC_ALL=C`, or macOS's `tr` writes \377 as a two-byte UTF-8 `ÿ`.
         // Bytes that are not UTF-8 decode three to one, so 100 KB of them
         // overruns the cap as text: the notice counts the command's bytes,
         // never the decoded ones (review of #798: "the first 200000" of 100000).
         let out = shell
             .call(
-                json!({"command": "head -c 100000 /dev/zero | tr '\\0' '\\377'"}),
+                json!({"command": "head -c 100000 /dev/zero | LC_ALL=C tr '\\0' '\\377'"}),
                 &ctx(&dir),
             )
             .await
