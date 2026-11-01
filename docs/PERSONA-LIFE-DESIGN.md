@@ -1,8 +1,10 @@
 # Persona lives — design
 
 > **Status (2026-10-31):** designed; §17's registry step and the `[life]`
-> switches of step 1 are built (`Feature::World`, `persona::Life`), and the
-> rest of step 1 is next. **Every decision in §16
+> switches of step 1 are built (`Feature::World`, `persona::Life`), and so
+> is the routine's file with its activity set and owner approval
+> (`persona::routine`, `persona::activity`; the model drafter is not built
+> yet); the rest of step 1 is next. **Every decision in §16
 > is ruled** by the owner, the same day: PL1–PL22, PL24–PL26, PL29 and PL30 as rulings,
 > and PL23, PL27 and PL28 as the owner's direction (no approval queue for
 > news; every part opt-in per persona). §1 is the owner's requests, in the order they were made; §2 is

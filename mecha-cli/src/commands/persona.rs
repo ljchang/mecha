@@ -108,6 +108,38 @@ pub enum Cmd {
         #[command(subcommand)]
         cmd: MemoryCmd,
     },
+    /// Her week: the anchors her days are built around, and a model's draft
+    /// waiting on you (`PERSONA-LIFE-DESIGN.md` §4.1).
+    Routine {
+        #[command(subcommand)]
+        cmd: RoutineCmd,
+    },
+}
+
+#[derive(clap::Subcommand, Debug)]
+pub enum RoutineCmd {
+    /// The routine, a waiting draft, and the activities an anchor may name.
+    Show {
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Edit routine.toml in $EDITOR, starting from a commented template.
+    Edit {
+        name: String,
+        /// Edit the waiting draft instead, before approving it.
+        #[arg(long)]
+        draft: bool,
+    },
+    /// Make the waiting draft the routine, after reading it. The routine it
+    /// replaces is kept as routine.previous.toml.
+    Approve {
+        name: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Drop the waiting draft; the routine is untouched.
+    Discard { name: String },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -224,6 +256,9 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
             }
             | Cmd::Memory {
                 cmd: MemoryCmd::Show { .. } | MemoryCmd::Export { .. } | MemoryCmd::Shared { .. }
+            }
+            | Cmd::Routine {
+                cmd: RoutineCmd::Show { .. }
             }
     ) {
         super::features::require(mecha_core::feature::Feature::Personas)?;
@@ -919,6 +954,7 @@ fn run_with(
             println!("Removed `{}` — kept at {}.", p.name, to.display());
         }
         Cmd::Memory { cmd } => memory_cmd(dir, cmd)?,
+        Cmd::Routine { cmd } => routine_cmd(dir, cmd, edit_file)?,
         Cmd::Relationship { cmd } => {
             persona::seed_starters(dir)?;
             let store = load(dir);
@@ -1020,6 +1056,144 @@ fn run_with(
                 );
             }
         },
+    }
+    Ok(())
+}
+
+/// `mecha persona routine`: the owner's door to `routine.toml` and a
+/// waiting draft. The editor writes the file itself, as `edit` does, and
+/// what it left is read back through the sampler's own door.
+fn routine_cmd(dir: &Path, cmd: RoutineCmd, edit_file: &dyn Fn(&Path) -> Result<()>) -> Result<()> {
+    use mecha_core::persona::activity::Activity;
+    use mecha_core::persona::routine::{self, Routine};
+    // By folder, as `edit` finds a persona: one whose persona.toml no longer
+    // parses still has a week to look at. `routine::read` checks the name.
+    let named = |name: &str| -> Result<String> { Ok(name.trim().to_lowercase()) };
+    let anchors = |r: &Routine| -> Vec<serde_json::Value> {
+        r.anchors
+            .iter()
+            .map(|a| {
+                serde_json::json!({
+                    "what": a.what,
+                    "activity": a.activity,
+                    "days": (0..7).filter(|d| a.on(*d)).collect::<Vec<_>>(),
+                    "start_minute": a.start,
+                    "minutes": a.minutes,
+                    "chance": a.chance,
+                })
+            })
+            .collect()
+    };
+    match cmd {
+        RoutineCmd::Show { name, json } => {
+            let name = named(&name)?;
+            let texts = routine::read(dir, &name)?;
+            let parsed = texts.routine.as_deref().map(routine::parse).transpose();
+            if json {
+                let out = serde_json::json!({
+                    // `null` with an error beside it when it does not load —
+                    // never an empty week.
+                    "routine": parsed.as_ref().ok().map(|r| r.as_ref().map(anchors)),
+                    "error": parsed.as_ref().err().map(|e| format!("{e:#}")),
+                    "draft": texts.draft,
+                    "activities": Activity::ALL.iter().map(|a| a.id()).collect::<Vec<_>>(),
+                });
+                println!("{}", serde_json::to_string_pretty(&out)?);
+                return Ok(());
+            }
+            match (&texts.routine, &parsed) {
+                (None, _) => println!(
+                    "`{name}` has no routine: her days would come from time-use data alone. \
+                     `mecha persona routine edit {name}` writes one."
+                ),
+                (Some(_), Err(e)) => println!("routine.toml does not load: {e:#}"),
+                (Some(text), Ok(_)) => println!("── routine.toml ──\n{}", text.trim()),
+            }
+            if let Some(draft) = &texts.draft {
+                println!(
+                    "\n── routine.draft.toml (waiting on you) ──\n{}\n\n\
+                     `mecha persona routine approve {name}` makes it the routine; \
+                     `discard` drops it.",
+                    draft.trim()
+                );
+            }
+            let ids: Vec<&str> = Activity::ALL.iter().map(|a| a.id()).collect();
+            println!("\nActivities an anchor may name: {}", ids.join(", "));
+        }
+        RoutineCmd::Edit { name, draft } => {
+            let name = named(&name)?;
+            let file = if draft {
+                if routine::read(dir, &name)?.draft.is_none() {
+                    bail!("`{name}` has no routine draft waiting");
+                }
+                dir.join(&name).join(routine::DRAFT)
+            } else {
+                routine::ensure(dir, &name)?
+            };
+            edit_file(&file)?;
+            // Read back through the store's door, so a save is checked as
+            // strictly as the sampler will load it.
+            let texts = routine::read(dir, &name)?;
+            let Some(text) = (if draft { texts.draft } else { texts.routine }) else {
+                println!(
+                    "{} was removed{}.",
+                    file.file_name().unwrap_or_default().to_string_lossy(),
+                    if draft {
+                        ""
+                    } else {
+                        ": her days come from time-use data alone"
+                    }
+                );
+                return Ok(());
+            };
+            match routine::parse(&text) {
+                Ok(r) => println!(
+                    "Saved: {} anchor(s){}.",
+                    r.anchors.len(),
+                    if draft {
+                        format!(" — `mecha persona routine approve {name}` when it reads right")
+                    } else {
+                        String::new()
+                    }
+                ),
+                Err(e) => bail!(
+                    "{} was saved but does not load, so {}: {e:#}. \
+                     `mecha persona routine edit {name}{}` to fix it.",
+                    file.file_name().unwrap_or_default().to_string_lossy(),
+                    if draft {
+                        "it cannot be approved yet"
+                    } else {
+                        "no day is built from it"
+                    },
+                    if draft { " --draft" } else { "" },
+                ),
+            }
+        }
+        RoutineCmd::Approve { name, yes } => {
+            let name = named(&name)?;
+            let texts = routine::read(dir, &name)?;
+            let Some(draft) = texts.draft else {
+                bail!("`{name}` has no routine draft waiting");
+            };
+            println!("── routine.draft.toml ──\n{}", draft.trim());
+            if texts.routine.is_some() {
+                println!("\nIt replaces the routine `{name}` has now, which is kept as routine.previous.toml.");
+            }
+            if !yes && !confirm(&format!("Make this `{name}`'s routine?"))? {
+                println!("Not approved.");
+                return Ok(());
+            }
+            let r = routine::approve_draft_as_shown(dir, &name, &persona::text_digest(&draft))?;
+            println!(
+                "Approved: `{name}`'s routine has {} anchor(s).",
+                r.anchors.len()
+            );
+        }
+        RoutineCmd::Discard { name } => {
+            let name = named(&name)?;
+            routine::discard_draft(dir, &name)?;
+            println!("Dropped `{name}`'s routine draft.");
+        }
     }
     Ok(())
 }
@@ -1351,6 +1525,81 @@ mod tests {
         let edited = format!("{edited}");
         assert!(edited.contains("will NOT load"), "{edited}");
         assert!(edited.contains("edit mara --settings"), "{edited}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_routine_starts_from_the_template_and_a_draft_waits_for_approval() {
+        use mecha_core::persona::routine;
+        let dir = scratch();
+        let lib = dir.join("imagelib");
+        let store = dir.join("personas");
+        run(&store, &lib, new("mara")).unwrap();
+        let edit = |draft: bool, write: &'static str| {
+            run_with(
+                &store,
+                &lib,
+                Cmd::Routine {
+                    cmd: RoutineCmd::Edit {
+                        name: "Mara".into(),
+                        draft,
+                    },
+                },
+                &move |path: &Path| {
+                    let before = std::fs::read_to_string(path).unwrap();
+                    std::fs::write(path, format!("{before}{write}")).unwrap();
+                    Ok(())
+                },
+            )
+        };
+        // The editor opens on the template, and an anchor appended to it loads.
+        edit(false, "[[anchor]]\nactivity = \"work\"\ndays = [\"weekdays\"]\nat = \"09:00\"\nminutes = 480\n").unwrap();
+        let pdir = store.join("mara");
+        let text = std::fs::read_to_string(pdir.join(routine::FILE)).unwrap();
+        assert!(text.starts_with(routine::TEMPLATE), "{text}");
+        assert_eq!(routine::load(&pdir).unwrap().unwrap().anchors.len(), 1);
+
+        // A save that does not load is kept as written and says how to fix it.
+        let refused = edit(false, "[[anchor]]\nactivity = \"nap\"\n").unwrap_err();
+        assert!(
+            format!("{refused}").contains("edit mara` to fix"),
+            "{refused}"
+        );
+        let loaded = Store::load(&store);
+        let problems = loaded.problems(loaded.get("mara").unwrap(), &Library::load(&lib).0);
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.contains("routine.toml does not load")),
+            "{problems:?}"
+        );
+        std::fs::write(pdir.join(routine::FILE), &text).unwrap();
+
+        assert!(format!("{}", edit(true, "").unwrap_err()).contains("no routine draft"));
+        let draft = "[[anchor]]\nwhat = \"choir\"\nactivity = \"hobbies\"\ndays = [\"wed\"]\nat = \"19:30\"\nminutes = 90\n";
+        routine::stage_draft(&store, "mara", draft, Origin::ModelClean).unwrap();
+        edit(true, "chance = 0.8\n").unwrap();
+        run(
+            &store,
+            &lib,
+            Cmd::Routine {
+                cmd: RoutineCmd::Approve {
+                    name: "mara".into(),
+                    yes: true,
+                },
+            },
+        )
+        .unwrap();
+        let r = routine::load(&pdir).unwrap().unwrap();
+        assert_eq!(
+            (r.anchors.len(), r.anchors[0].chance),
+            (1, 0.8),
+            "the owner's edit to the draft was lost"
+        );
+        assert_eq!(
+            std::fs::read_to_string(pdir.join(routine::PREVIOUS)).unwrap(),
+            text
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 
