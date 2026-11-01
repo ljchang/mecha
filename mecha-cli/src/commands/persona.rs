@@ -1235,8 +1235,10 @@ fn render_week(
         writeln!(out, "\nThe days not drawn wait on her routine: {why}")?;
     }
     if let Some(f) = &week.folded {
-        let line: Vec<String> = f
-            .minutes
+        // Most first, as each day's line and the web app's summary are.
+        let mut minutes = f.minutes.clone();
+        minutes.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.id().cmp(b.0.id())));
+        let line: Vec<String> = minutes
             .iter()
             .map(|(a, m)| format!("{} {}", a.id(), hours(*m)))
             .collect();
@@ -1749,7 +1751,7 @@ mod tests {
             days,
             folded: Some(Week {
                 days: 1,
-                minutes: vec![(Activity::Sleep, 1440)],
+                minutes: vec![(Activity::Sleep, 1000), (Activity::Work, 440)],
                 unreadable: 30,
             }),
             unavailable: None,
@@ -1763,7 +1765,11 @@ mod tests {
             "{}",
             lines[2]
         );
-        assert!(text.contains("Folded, 1 day(s): sleep 24h00"), "{text}");
+        // Most first, though `Week` holds them in Activity order.
+        assert!(
+            text.contains("Folded, 1 day(s): sleep 16h40, work 7h20"),
+            "{text}"
+        );
         assert!(text.contains("and 0h30 this binary cannot name"), "{text}");
         let json: serde_json::Value =
             serde_json::from_str(&render_week("juno", &week, true).unwrap()).unwrap();
