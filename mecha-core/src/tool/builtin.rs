@@ -263,9 +263,13 @@ async fn read_text_window<R: tokio::io::AsyncBufRead + Unpin>(
         }
         Err(e) => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
     };
-    // The line the cut fell on: every complete line kept, plus the one it
-    // bisected, so reading on from it overlaps a little, the safe direction.
-    let cut = truncated.then(|| offset + text.matches('\n').count() as u64);
+    // The line to read on from, as the loop counted it: the line the cut
+    // bisected (reading on overlaps a little, the safe direction), or, when
+    // the cut fell just before a newline, the first line not read. Counting
+    // the kept text's newlines instead named the line before in that case,
+    // and for a first line that fitted to its last byte said no offset got
+    // past it, where offset 2 read on (review of #796).
+    let cut = truncated.then_some(line);
     let text = if selected {
         text.lines().collect::<Vec<_>>().join("\n")
     } else {
@@ -1803,6 +1807,17 @@ mod read_window_tests {
             "{}",
             &one.content[..300]
         );
+        // A first line that fits the limit to its last byte, newline aside:
+        // the cut is on the boundary, and the notice reads on from line 2.
+        std::fs::write(dir.join("edge.log"), "a".repeat(200_000) + "\nsecond\n").unwrap();
+        let edge = read(json!({"path": "edge.log"}), ctx(&dir)).await;
+        assert!(
+            edge.content.contains("read on with offset 2."),
+            "{}",
+            &edge.content[..300]
+        );
+        let on = read(json!({"path": "edge.log", "offset": 2}), ctx(&dir)).await;
+        assert_eq!(on.content, "second");
         let later = read(
             json!({"path": "big.log", "offset": 7, "limit": 1}),
             ctx(&dir),
