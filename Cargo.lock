@@ -1914,6 +1914,7 @@ dependencies = [
  "ratatui",
  "reqwest",
  "rusqlite",
+ "rustls",
  "rustyline",
  "serde",
  "serde_json",
@@ -2001,6 +2002,7 @@ dependencies = [
  "chrono",
  "futures",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -2008,6 +2010,7 @@ dependencies = [
  "tokio-tungstenite 0.30.0",
  "tracing",
  "uuid",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]

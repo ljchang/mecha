@@ -63,6 +63,9 @@ reqwest.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+# Only for `slack_tls`'s test: the build with code mode links two rustls
+# providers, and it checks rustls cannot pick a default there.
+rustls.workspace = true
 # Only to list the first-party servers' real tool definitions in
 # `tests/effect_class.rs`, so a tool `mecha-mail` or `mecha-docs` adds and
 # mecha's effect table does not name fails there rather than shipping
