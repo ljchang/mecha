@@ -1202,12 +1202,13 @@ fn render_week(
     writeln!(out, "{name}, the week of {}", week.monday)?;
     for d in &week.days {
         let when = match d.when {
-            When::Folded => "folded",
+            // Folded or never drawn: the store keeps only the week's count.
+            When::Folded => "not kept",
             When::Past => "",
             When::Today => "today",
             When::Ahead => "ahead",
         };
-        write!(out, "  {} {}  {when:<6}", d.date.format("%a"), d.date)?;
+        write!(out, "  {} {}  {when:<8}", d.date.format("%a"), d.date)?;
         let Some(day) = &d.day else {
             match d.when {
                 When::Folded => writeln!(out)?,
@@ -1756,7 +1757,7 @@ mod tests {
         let text = render_week("juno", &week, false).unwrap();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[0], "juno, the week of 2026-11-02");
-        assert!(lines[1].contains("2026-11-02  folded"), "{}", lines[1]);
+        assert!(lines[1].contains("2026-11-02  not kept"), "{}", lines[1]);
         assert!(
             lines[2].contains("today") && lines[2].ends_with("sleep 22h00, reading 2h00"),
             "{}",

@@ -79,7 +79,9 @@
             {#if d.when === 'today'}<span class="wtag">today</span>{:else if d.when === 'ahead'}<span class="wtag dim">ahead</span>{/if}
           </div>
           {#if d.folded}
-            <div class="wbar folded"><span>{folded ? 'folded into the week' : 'not kept'}</span></div>
+            <!-- The store counts folded days a week, never which, so a day
+                 here may be folded or may never have been drawn. -->
+            <div class="wbar folded"><span>not kept</span></div>
           {:else if d.undrawn}
             <div class="wbar folded"><span>not drawn</span></div>
           {:else}

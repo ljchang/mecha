@@ -2362,16 +2362,21 @@ ruled for repetition.
 - **Week view** on the persona page: her routine and sampled days; the owner
   adds or edits events ("the formal is Saturday"), and what the owner writes outranks
   what the simulation drew.
-  - **As built (step 1, read only):** a Week tab in the persona editor,
-    beside Memories, shown while `world` is on (`PANE_FEATURE`'s
-    `personas/week` row), reading `GET /api/personas/{name}/week`, owned by
-    `Feature::World`. Each day is a 4am-to-4am bar coloured by activity
-    group; a tapped stretch says its times, routine label and company, and
-    one from a source that is not clean is hatched. A day already kept is
-    shown from the store first, with no routine needed, so a routine that
-    breaks or goes leaves the kept days showing and says why the rest are
-    not drawn. A day past fourteen days shows as folded, with its week's
-    minutes below, once `prune` has folded it, and is never drawn again; a
+  - **As built (step 1, read only to the owner):** a Week tab in the
+    persona editor, beside Memories, shown while `world` is on
+    (`isShown(features.rows, 'world')`; `PANE_FEATURE`'s `personas/week`
+    row records it but gates nothing, since a `personas` sub is a persona's
+    name), reading `GET /api/personas/{name}/week`, owned by
+    `Feature::World`. Asking stores the in-window days it draws and may
+    prune, as `mecha persona day` does. Each day is a 4am-to-4am bar
+    coloured by activity group; a tapped stretch says its times, routine
+    label and company, and one from a source that is not clean is hatched.
+    A day already kept is shown from the store first, with no routine
+    needed, so a routine that breaks or goes leaves the kept days showing
+    and says why the rest are not drawn. A day past fourteen days that is
+    no longer stored shows as "not kept", never drawn again, with its
+    week's folded minutes below; the store counts folded days a week, never
+    which, so the day cannot say whether it was folded or never drawn. A
     day ahead is drawn and marked so, never stored. A persona with `world`
     off, or with nothing kept and no routine or cell, answers with which,
     and the tab says it, never a route error. Owner events wait for step

@@ -45,9 +45,11 @@ export const PANE_FEATURE = {
   'settings/images': 'image',
   'settings/loras': ['image', 'video'],
   'library/voices': 'voice',
-  // Her week, a tab of the persona editor rather than a route of its own;
-  // the per-persona `[life] world` switch is the pane's second gate, and a
-  // persona with it off shows that state, never a route error.
+  // Her week (PERSONA-LIFE-DESIGN.md §15 asks for this row). Recorded
+  // against a real feature id, but it gates nothing: a `personas` sub is a
+  // persona's name, so this key is the deep link to one named `week`, and
+  // the Week tab is gated by `isShown(features.rows, 'world')` in the
+  // editor. Never add `personas/<word>` expecting a pane.
   'personas/week': 'world',
 };
 
