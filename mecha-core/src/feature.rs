@@ -779,11 +779,18 @@ pub fn state(facts: &Facts, f: Feature) -> State {
             match switch(&facts.config, f) {
                 Some(Switch::Absent) => return State::Off { reason, fix },
                 Some(Switch::Off) => {
+                    // With a fix, the reason is the owner's no and the fix is
+                    // the whole path. With none (no worker pinned for this
+                    // platform), the reason keeps that fact, the only place it
+                    // shows (review of #781).
                     return State::Off {
-                        reason: "turned off in [features]".into(),
+                        reason: match &fix {
+                            Some(_) => "turned off in [features]".into(),
+                            None => format!("turned off in [features]; {reason}"),
+                        },
                         fix: fix
                             .map(|fix| format!("{fix}, then {}", enable_command(&facts.config, f))),
-                    }
+                    };
                 }
                 Some(Switch::On) | None => {}
             }
@@ -2402,6 +2409,14 @@ mod tests {
         facts.config.tools.disabled.clear();
         if crate::interpreter::worker::pin().is_none() {
             assert_eq!(code(&facts).word(), "unready", "no worker pinned here");
+            // An explicit no keeps the platform fact, there being no fix.
+            set_switch(&mut facts.config, Feature::Code, false);
+            assert!(
+                matches!(code(&facts), State::Off { reason, fix: None }
+                    if reason.starts_with("turned off in [features]; mecha pins no monty worker")),
+                "{:?}",
+                code(&facts)
+            );
             return;
         }
         if !cfg!(target_os = "macos") {

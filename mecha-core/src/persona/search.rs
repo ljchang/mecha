@@ -907,12 +907,10 @@ mod tests {
                    [urchins.md: \"Found by words only: the search by meaning\"]"
                 .into(),
         }]);
-        let got = super::super::cite::check_conversation(&[
-            crate::message::Message::user("go"),
-            ask,
-            back,
-            reply,
-        ]);
+        let got = super::super::cite::check_conversation(
+            &[crate::message::Message::user("go"), ask, back, reply],
+            &[],
+        );
         assert_eq!(
             got[0].verdict,
             super::super::cite::Verdict::Quoted { found: None }

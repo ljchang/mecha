@@ -1275,6 +1275,24 @@ pub struct Conversation {
     /// (`cache_lens` module docs). Never persisted; a conversation read back
     /// from disk starts with nothing to compare against.
     pub cache_lens: crate::cache_lens::CacheLens,
+    /// What this conversation's programs read (`CODE-MODE-DESIGN.md` §7):
+    /// every host call that ran, in issue order, each under the `code` call
+    /// (or the subagent call) that made it — this run's with their bytes in hand,
+    /// an earlier run's without (the store has a recorded run's). The
+    /// grounding walk's second source ([`crate::grounding::calls`]), so a
+    /// draft staged after a program read a thread joins to that thread.
+    ///
+    /// Beside the messages rather than in them, as `taint` is: the only
+    /// message list several readers hold *is* the model's context, and these
+    /// must never enter it. A compaction rewrites the messages and nothing
+    /// here, so a cut carries them, never summarised.
+    pub program_calls: Vec<crate::tool::code::record::ProgramCall>,
+    /// Where this run's entries of `program_calls` begin: set at run start,
+    /// and what [`Session::record_run`] writes from, so a call is recorded
+    /// once, by the run that made it.
+    ///
+    /// [`Session::record_run`]: crate::session::Session::record_run
+    pub program_calls_from: usize,
 }
 
 impl Conversation {
@@ -1293,6 +1311,8 @@ impl Conversation {
             harness_notes: Vec::new(),
             grants: Vec::new(),
             cache_lens: crate::cache_lens::CacheLens::default(),
+            program_calls: Vec::new(),
+            program_calls_from: 0,
         }
     }
 
@@ -1311,6 +1331,8 @@ impl Conversation {
             harness_notes: Vec::new(),
             grants: Vec::new(),
             cache_lens: crate::cache_lens::CacheLens::default(),
+            program_calls: Vec::new(),
+            program_calls_from: 0,
         }
     }
 
@@ -1471,6 +1493,8 @@ impl From<Vec<Message>> for Conversation {
             harness_notes: Vec::new(),
             grants: Vec::new(),
             cache_lens: crate::cache_lens::CacheLens::default(),
+            program_calls: Vec::new(),
+            program_calls_from: 0,
         }
     }
 }
@@ -1533,6 +1557,15 @@ impl ToolCallTrace {
         }
     }
 }
+
+/// One batch's results, as [`Agent::dispatch`] returns them: the result
+/// blocks, each call's provenance by id, and what the batch's programs read
+/// (`CODE-MODE-DESIGN.md` §7), for the caller to put on the conversation.
+type Batch = (
+    Vec<Block>,
+    std::collections::BTreeMap<String, bool>,
+    Vec<crate::tool::code::record::ProgramCall>,
+);
 
 /// The sub-call passes' usage of every program in `trace`
 /// (`ToolCallTrace::program`): what the loop adds to the run's own after a
@@ -3154,6 +3187,16 @@ impl Agent {
         // record at all. Without this, a `--no-session` chat accumulates
         // every compacted state it ever passed through.
         convo.rewritten.clear();
+        // Likewise what the programs read: the previous run's were the
+        // previous recording's to write. Their bytes go now — the store holds
+        // a recorded run's (`record::ever`), and a run's live readers read only
+        // its own — so a conversation holds one run's raw reads at most,
+        // never every program it ever ran (review of #784). The calls stay,
+        // for the walk to place.
+        for call in &mut convo.program_calls {
+            call.bytes = crate::tool::code::record::Bytes::Unloaded;
+        }
+        convo.program_calls_from = convo.program_calls.len();
         // What this run sends beside the history, for the recording.
         convo.harness_notes = harness_notes;
         // Whatever happens below, including an early return, the conversation
@@ -3948,7 +3991,7 @@ impl Agent {
                     // Where this turn's traces begin: the guard's refusal
                     // streak skips the calls the harness refused.
                     let traced = trace.len();
-                    let (results, provenance) = self
+                    let (results, provenance, reads) = self
                         .run_tools(
                             cx,
                             &response.message,
@@ -3971,6 +4014,9 @@ impl Agent {
                     // (`CODE-MODE-DESIGN.md` §5's last line): their tokens join
                     // the run's usage before the next ceiling check reads it.
                     usage.add(&program_usage(&trace[traced..]));
+                    // What the programs read, onto the conversation beside its
+                    // messages (§7), before anything below can return early.
+                    crate::tool::code::record::extend_bounded(&mut convo.program_calls, reads);
 
                     // Written back the moment it changes — here and at the
                     // mailbox delivery above, the only two places it does —
@@ -4225,7 +4271,7 @@ impl Agent {
                         // Preserve refused checks in their trace, without reporting
                         // harness dispatch as a model-initiated send attempt.
                         let mut check_blocks = 0;
-                        let (results, provenance) = self
+                        let (results, provenance, reads) = self
                             .run_tools(
                                 cx,
                                 &request,
@@ -4243,6 +4289,7 @@ impl Agent {
                             )
                             .await;
                         usage.add(&program_usage(&trace[start..]));
+                        crate::tool::code::record::extend_bounded(&mut convo.program_calls, reads);
                         convo.taint = taint;
                         for result in &mut trace[start..] {
                             result.name = crate::step::CHECK_TRACE.into();
@@ -5215,7 +5262,7 @@ impl Agent {
         run_pictures: &mut RunPictures,
         output_budget: usize,
         context: Option<crate::pressure::Forecast>,
-    ) -> (Vec<Block>, std::collections::BTreeMap<String, bool>) {
+    ) -> Batch {
         let calls: Vec<(String, String, Value)> = assistant
             .tool_uses()
             .into_iter()
@@ -5308,7 +5355,7 @@ impl Agent {
         Self::arm_at_start(cx, convo);
         let mut trace = Vec::new();
         let mut blocked_sends = 0;
-        let (blocks, provenance) = self
+        let (blocks, provenance, reads) = self
             .dispatch(
                 cx,
                 vec![(call_id.clone(), name.to_string(), input)],
@@ -5322,6 +5369,11 @@ impl Agent {
                 false,
             )
             .await;
+        // The conversation keeps what a harness call's program read, as it
+        // keeps the taint the call armed. No message carries the call, so no
+        // walk yields them; one made between a run and its recording is
+        // written with that run's, under an anchor nothing resolves.
+        crate::tool::code::record::extend_bounded(&mut convo.program_calls, reads);
         let (content, is_error) = blocks
             .iter()
             .find_map(|b| match b {
@@ -5363,7 +5415,7 @@ impl Agent {
         // Whether a deferred call may go to the host's job queue: a model
         // turn's may; a harness call's runs inline (`dispatch_one`).
         defer: bool,
-    ) -> (Vec<Block>, std::collections::BTreeMap<String, bool>) {
+    ) -> Batch {
         // Refusals and staging notices are ours; executed results overwrite
         // their entries with the tool's actual per-call classification.
         let mut provenance: std::collections::BTreeMap<String, bool> =
@@ -5543,6 +5595,7 @@ impl Agent {
         // `tool_result` blocks first, and the OpenAI dialect lifts them out
         // into `role: "tool"` messages ahead of the parts array anyway.
         let mut pictures = Vec::new();
+        let mut batch_reads = Vec::new();
         for (i, id, name, mut out) in executed {
             // A deferred call's slow half (`ToolOutput::deferred`): handed to
             // the host's queue, where it outlives this run and its output
@@ -5660,6 +5713,14 @@ impl Agent {
                 };
             }
             provenance.insert(id.clone(), out.external);
+            // What a program read (§7): a `code` call's own host calls, or a
+            // child's carried up by a subagent, which this call's id is the
+            // only place to name.
+            batch_reads.extend(
+                std::mem::take(&mut out.reads)
+                    .into_iter()
+                    .map(|r| r.anchored_at(&id)),
+            );
             // The gate's last step, then the rendering (`CODE-MODE-DESIGN.md`
             // §7): taint armed from what actually ran, read off the raw
             // result; then capped, and an outside result marked as data. The
@@ -5737,7 +5798,7 @@ impl Agent {
         }
         let mut blocks: Vec<Block> = results.into_iter().flatten().collect();
         blocks.append(&mut pictures);
-        (blocks, provenance)
+        (blocks, provenance, batch_reads)
     }
 
     /// What a batch of calls will arm, forecast from declared reach before
@@ -5897,7 +5958,10 @@ impl Agent {
         if cx.tools.grants.live() != grants_before {
             emit(events, AgentEvent::Grants(cx.tools.grants.all()));
         }
-        Gated::Ran { output, terms }
+        Gated::Ran {
+            output: Box::new(output),
+            terms,
+        }
     }
 
     /// Serve the host calls of the programs running in this batch, until the
@@ -5937,6 +6001,7 @@ impl Agent {
                 } => {
                     made += 1;
                     let call = (format!("{call_id}.host-{made}"), name, input);
+                    let host_id = call.0.clone();
                     let before = trace.len();
                     let gated = self
                         .gate(
@@ -5957,7 +6022,10 @@ impl Agent {
                     let _ = reply.send(match gated {
                         Gated::Refused(why) => HostAnswer::Refused(why),
                         Gated::Staged(notice) => HostAnswer::Staged(notice),
-                        Gated::Ran { output, .. } => HostAnswer::Ran(output),
+                        Gated::Ran { output, .. } => HostAnswer::Ran {
+                            id: host_id,
+                            output: *output,
+                        },
                     });
                 }
                 HostRequest::Pass { pass, reply } => {
@@ -7076,7 +7144,7 @@ pub(crate) enum Gated {
     /// [`jobs::render`](crate::jobs::render) applies to whatever of it
     /// re-enters the context.
     Ran {
-        output: ToolOutput,
+        output: Box<ToolOutput>,
         /// Read by the test that pins the seam; a host call keeps the raw
         /// bytes and is rendered with its `code` call instead.
         #[cfg_attr(not(test), allow(dead_code))]
@@ -11241,7 +11309,7 @@ mod tests {
             .await;
         assert!(today.content.contains(crate::tool::CAP_MARKER));
         assert!(today.content.starts_with("<untrusted-content"));
-        let rendered = crate::jobs::render("long_page", &today.call_id, output, &terms);
+        let rendered = crate::jobs::render("long_page", &today.call_id, *output, &terms);
         assert_eq!(rendered.content, today.content);
         assert_eq!(rendered.is_error, today.is_error);
         assert_eq!(convo.taint, taint, "both paths arm the same taint");
