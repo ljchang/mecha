@@ -38,6 +38,7 @@ pub mod agent;
 pub mod atus;
 pub mod call;
 pub mod cite;
+pub mod drafter;
 pub mod echo;
 pub mod edit;
 pub mod files;

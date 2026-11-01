@@ -1549,16 +1549,23 @@ mod tests {
 
     #[test]
     fn every_absent_reason_is_in_all() {
-        // Exhaustive, so a new reason does not compile until it is listed.
-        for a in Absent::ALL {
+        // The match is the guard: a new reason does not compile here until
+        // it takes a bit, which is the moment to list it in `ALL`. What the
+        // asserts add is that `ALL` lists every bit once.
+        let bit = |a: Absent| -> u8 {
             match a {
-                Absent::Off | Absent::NoRoutine | Absent::NoCell => {}
+                Absent::Off => 1,
+                Absent::NoRoutine => 2,
+                Absent::NoCell => 4,
             }
-        }
-        let count = |a: Absent| match a {
-            Absent::Off | Absent::NoRoutine | Absent::NoCell => 3,
         };
-        assert_eq!(Absent::ALL.len(), count(Absent::Off));
+        let seen = Absent::ALL.iter().fold(0u8, |m, a| m | bit(*a));
+        assert_eq!(seen, 0b111, "a reason is missing from ALL");
+        assert_eq!(
+            Absent::ALL.len(),
+            seen.count_ones() as usize,
+            "a reason is listed twice"
+        );
     }
 
     #[test]
