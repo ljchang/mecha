@@ -5116,7 +5116,8 @@ result cap keeps the head: a note after the text landed in the spill file's
 tail, the cap marker named the 200 KB read as the whole output, and a model
 reported a 1.5 MB log as two days long with no failures in it (2026-11-01).
 A program's read is capped at what the program can still hold
-(`ToolCtx::program_room`, at most code mode's 64 MB host-byte limit), because
+(`ToolCtx::program_room`, at most code mode's 64 MB host-byte limit), less
+room for the notice, so a cut read is still a handle the program can hold:
 it becomes a handle and never enters the context window the turn cap
 protects, and reading past the room would be refused anyway. `call_ctx` sets
 the mark on every call, as it does `host_calls`, so a subagent's run, which
