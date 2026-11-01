@@ -689,8 +689,8 @@ fn describe(admission: &Admission) -> String {
          all in one step, instead of you reading each into your context. It runs a short \
          Python program (monty, a subset of Python 3). A program has no os, open, files, \
          network or clock: it reaches data only by calling the tools listed at the end, \
-         with keyword arguments. A tool returns a handle, not text: `in`, len(), split() and \
-         string methods raise on a handle, and print(h) shows only a stub. Count and search \
+         with keyword arguments. A tool returns a handle, not text: `in`, len(), h.split() \
+         and other string methods raise on a handle, and print(h) shows only a stub. Count and search \
          a handle without reading it, and peek only to learn a format or fetch a short field. \
          For example, which notes name someone:\n\
          hits = []\n\
