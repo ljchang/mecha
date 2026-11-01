@@ -3,14 +3,14 @@
 > **Status (2026-10-31):** designed; §17's registry step and the `[life]`
 > switches of step 1 are built (`Feature::World`, `persona::Life`), and so
 > is the routine's file with its activity set and owner approval
-> (`persona::routine`, `persona::activity`; the model drafter is not built
-> yet), the ATUS table (`persona::atus`, §4.2), and the day sampler with
+> (`persona::routine`, `persona::activity`), the model drafter
+> (`persona::drafter`, `mecha persona routine draft`), the ATUS table (`persona::atus`, §4.2), and the day sampler with
 > `world.db`'s `days` and `state` (`persona::sampler`, `persona::world`,
 > `mecha persona day`), and the today-block's first line, what she is doing
 > now (`persona::today`, §4.5), and a read-only week view (`world::week_view`,
 > `mecha persona week`, the editor's Week tab, §15), the form's Life section
-> with its world switch, and the Week tab's cell picker; the routine drafter
-> is next. **Every decision in §16
+> with its world switch, and the Week tab's cell picker; reviewing a
+> drafted routine on the Personas page is next. **Every decision in §16
 > is ruled** by the owner, the same day: PL1–PL22, PL24–PL26, PL29 and PL30 as rulings,
 > and PL23, PL27 and PL28 as the owner's direction (no approval queue for
 > news; every part opt-in per persona). §1 is the owner's requests, in the order they were made; §2 is
@@ -597,6 +597,18 @@ owner-origin change, so the model never overwrites it, and a redraft
 requested later comes back as a new candidate beside the owner's version,
 never over it. A term calendar, holidays and seasons ride in the same
 file or a group's.
+
+**As built (step 1):** the drafter (`persona::drafter`) is one
+quarantined pass over `identity.md` and `motivation.md` on the persona's
+own model, which already reads both on every turn, so no new destination
+sees her text. The model answers typed anchors and the harness renders the
+file, so its words reach the draft only as anchor labels. Her kind of week
+(`cell`) is not drafted: the owner picks it (§15), and approving a draft
+that names none keeps the routine's, so a draft cannot quietly undo the
+pick. Only an approved persona whose recorded origin is not untrusted is
+drafted for. `mecha persona routine draft <name>` drafts from the CLI;
+show, edit (`--draft`), approve and discard were already there. Reviewing
+a draft on the Personas page comes next.
 
 ### 4.2 The day sampler
 
