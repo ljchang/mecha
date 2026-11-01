@@ -212,21 +212,23 @@ pub async fn detail(State(state): St, UrlPath(id): UrlPath<String>) -> Response 
         Err(e) => return (StatusCode::NOT_FOUND, format!("{e:#}\n")).into_response(),
     };
     // One read of the drafting transcript feeds both pure halves.
-    let messages = state
+    let drafting = state
         .review
         .sessions_dir
         .as_ref()
-        .map(|dir| outbox_source::messages_for_item(&item, dir))
+        .map(|dir| outbox_source::drafting(&item, dir))
         .unwrap_or_default();
     let sources = match item.kind {
-        OutboxKind::Message => outbox_source::from_messages(&item, &messages),
+        OutboxKind::Message => {
+            outbox_source::from_messages(&item, &drafting.messages, &drafting.programs)
+        }
         // A publish's reviewable object is the rendered page, not a thread.
         OutboxKind::Publish => Vec::new(),
     };
     // The goal note rides on every kind: a published page serves a line as
     // much as a message does, and releasing either confirms it. Resolved
     // here, where the other store reads live, so `detail_json` stays pure.
-    let serves = outbox_source::serves_at_staging(&item, &messages)
+    let serves = outbox_source::serves_at_staging(&item, &drafting.messages)
         .map(crate::commands::outbox::serves_note);
     let mut body = detail_json(&item, &sources, serves.as_ref());
     // A pending dashboard publish is reviewed as its rendered page, on the

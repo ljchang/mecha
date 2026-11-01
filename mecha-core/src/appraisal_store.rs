@@ -393,13 +393,19 @@ impl SessionEvidence {
             .map(DateTime::<Utc>::from);
         let transcript = crate::session::Session::parse(path, &text)?;
         let ever = crate::session::Session::messages_ever(&text);
-        let mut evidence = SessionEvidence::of(&transcript, &ever);
+        let programs = crate::tool::code::record::ever(&text, &transcript.meta.id);
+        let mut evidence = SessionEvidence::of(&transcript, &ever, &programs);
         evidence.ended_at = ended_at;
         Ok((transcript, evidence))
     }
 
-    /// Both views are of one text, read once by [`Self::read`].
-    fn of(transcript: &crate::session::Transcript, ever: &[Message]) -> SessionEvidence {
+    /// Both views are of one text, read once by [`Self::read`]; `programs`
+    /// are what its programs read (`tool::code::record::ever`).
+    fn of(
+        transcript: &crate::session::Transcript,
+        ever: &[Message],
+        programs: &[crate::tool::code::record::ProgramCall],
+    ) -> SessionEvidence {
         // Taint only grows, so the checkpoint covering the last message
         // covers the session; none after it is unknown, which is untrusted.
         let messages = transcript.convo.messages.len();
@@ -418,7 +424,7 @@ impl SessionEvidence {
             origin: classify_origin(taint),
             anchor: transcript.convo.goal_anchor.clone(),
             situation,
-            packet: packet(ever),
+            packet: packet(ever, programs),
             ended_at: None,
             touched_tasks: touched_tasks(ever),
         }
@@ -477,8 +483,11 @@ impl SessionEvidence {
 
 /// The referents a claim may cite: every surviving call result, and every
 /// owner turn. See the module doc for why the agent's words are not here.
-fn packet(ever: &[Message]) -> Vec<crate::grounding::Evidence> {
-    let mut out: Vec<crate::grounding::Evidence> = crate::grounding::calls(ever)
+fn packet(
+    ever: &[Message],
+    programs: &[crate::tool::code::record::ProgramCall],
+) -> Vec<crate::grounding::Evidence> {
+    let mut out: Vec<crate::grounding::Evidence> = crate::grounding::calls(ever, programs)
         .into_iter()
         .filter_map(|call| {
             call.result.map(|text| crate::grounding::Evidence {
@@ -3082,7 +3091,7 @@ mod tests {
             harness,
             Message::assistant(vec![Block::text("I drafted it.")]),
         ];
-        let ids: Vec<String> = packet(&ever).into_iter().map(|e| e.id).collect();
+        let ids: Vec<String> = packet(&ever, &[]).into_iter().map(|e| e.id).collect();
         assert_eq!(ids, vec!["turn:0".to_string()]);
 
         // A turn of two owner blocks — a steer beside tool results — is the
@@ -3095,7 +3104,7 @@ mod tests {
         }]);
         steer.content.push(Block::text("only b.md, "));
         steer.content.push(Block::text("and quickly"));
-        let got = packet(std::slice::from_ref(&steer));
+        let got = packet(std::slice::from_ref(&steer), &[]);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].text, crate::agent::owner_text(&steer));
         assert_eq!(got[0].text, "only b.md, and quickly");

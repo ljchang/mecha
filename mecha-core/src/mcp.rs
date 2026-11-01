@@ -636,6 +636,7 @@ impl McpClient {
         ToolOutput {
             deferred: None,
             program: None,
+            reads: Vec::new(),
             content: if text.is_empty() {
                 "(no content)".into()
             } else {

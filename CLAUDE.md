@@ -157,6 +157,10 @@ quarantine.rs a one-shot with no tools and no history: the property in the type
 mail_triage.rs the front door's shape one directory over: a typed verdict per
              thread, out of a quarantined pass the privileged run never reads
 tool/        Tool trait, Registry, Approver, builtin.rs
+tool/code.rs `code`: a model's program over read-only tool results, as opaque handles and
+             typed local passes; built last, its reach the run's registry ∩ read effects
+interpreter/ the monty worker a program runs in: a process per program under bwrap or
+             Seatbelt, a watchdog over it on a Mac; one that cannot start stops the start
 jobs.rs      a tool's slow half past its turn: one per chat, delivered late by
              appended records, stopped by Stop and never by speech
 mcp.rs       stdio JSON-RPC client; wraps remote tools as Tool impls
@@ -510,7 +514,8 @@ it has one — and where a section above condensed something (provider notes,
 the model server, the security model), the full text with its measurements is
 there: interruption and steering · provider notes · the local model server ·
 the chat model catalog · images ·
-the security model in full · the front door · web search · mecha-mail ·
+the security model in full · code mode's interpreter · the front door ·
+web search · mecha-mail ·
 documents · the task board · the unified queue (`/queues`) · skills ·
 mecha-slack · the remote control · hooks · the outbox · the work directory ·
 triggers · the HUD · system state · the run-quality corpus (the gate, diagnosis, harness rumination) ·
@@ -536,6 +541,13 @@ trip over from *outside* the subsystem:
   (`RunConfig::levers_off`) — and lifts the approval rules by its own
   explicit line, the one lever `Lever::bare` never throws; a scorecard
   grades the model it names, not the machine.
+- **Code mode**: with `[features] code` on, a worker or sandbox that cannot
+  start **refuses the start** of `run`, `chat`, `tui` and the other commands
+  that build an agent, and never drops the tool; `mecha serve` instead comes up
+  dashboard-only, without chat. `--no-code-tool` clears one start, and
+  `mecha features disable code` is the durable way back. Its reach is
+  admitted, not configured: read effects only, no egress, and a host call that
+  would prompt raises instead.
 - **Compaction**: the cut must land on an assistant message (an orphaned
   `tool_result` is a 400), taint and carried tool state survive it, and the
   session file records a `rewrite` when history is edited.
