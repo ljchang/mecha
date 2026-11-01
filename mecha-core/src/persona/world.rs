@@ -31,7 +31,7 @@ use super::activity::Activity;
 use super::atus::{self, Cell, Company};
 use super::memory::{connect, now, uid};
 use super::routine;
-use super::sampler::{self, Day, Stretch};
+use super::sampler::{self, Carry, Day, Stretch};
 
 pub const WORLD_DB: &str = "world.db";
 /// How long a sampled day is kept whole.
@@ -75,9 +75,11 @@ pub enum StateKey {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Week {
     pub days: u32,
-    /// In [`Activity`] order; an activity this binary does not know is
-    /// left out.
+    /// In [`Activity`] order.
     pub minutes: Vec<(Activity, u32)>,
+    /// Minutes under an activity this binary does not know: counted here,
+    /// so the week still adds up to its days.
+    pub unreadable: u32,
 }
 
 /// A slow fact about her life, current until a later row supersedes it.
@@ -129,6 +131,9 @@ fn migrate(conn: &Connection) -> Result<()> {
                  cell TEXT NOT NULL,
                  inputs TEXT NOT NULL,
                  backoffs INTEGER NOT NULL,
+                 carry_activity TEXT,
+                 carry_label TEXT,
+                 carry_until INTEGER,
                  sampled_at TEXT NOT NULL
              );
              CREATE TABLE weeks (
@@ -186,10 +191,13 @@ impl World {
             return Ok(None);
         };
         let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version != 1 {
-            bail!("world.db is version {version}; this binary reads 1");
+        match version {
+            // Created and never migrated (an open that failed its checks):
+            // nothing in it, and the next writable open says why.
+            0 => Ok(None),
+            1 => Ok(Some(World { conn })),
+            v => bail!("world.db is version {v}; this binary reads up to 1"),
         }
-        Ok(Some(World { conn }))
     }
 
     /// The day stored for `date`, if there is one this binary can read
@@ -199,22 +207,42 @@ impl World {
         let head = self
             .conn
             .query_row(
-                "SELECT cell, inputs, backoffs FROM sampled WHERE date = ?1",
+                "SELECT cell, inputs, backoffs, carry_activity, carry_label, carry_until
+                 FROM sampled WHERE date = ?1",
                 [&key],
                 |r| {
                     Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, u32>(2)?,
+                        (
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, u32>(2)?,
+                        ),
+                        (
+                            r.get::<_, Option<String>>(3)?,
+                            r.get::<_, Option<String>>(4)?,
+                            r.get::<_, Option<u32>>(5)?,
+                        ),
                     ))
                 },
             )
             .optional()?;
-        let Some((cell, digest, backoffs)) = head else {
+        let Some(((cell, digest, backoffs), carry)) = head else {
             return Ok(None);
         };
         let Some(cell) = Cell::from_id(&cell) else {
             return Ok(None);
+        };
+        let carries = match carry {
+            (None, None, None) => None,
+            (Some(act), Some(label), Some(until)) => match Activity::from_id(&act) {
+                Some(activity) => Some(Carry {
+                    activity,
+                    label,
+                    until,
+                }),
+                None => return Ok(None),
+            },
+            _ => return Ok(None),
         };
         let mut stmt = self.conn.prepare(
             "SELECT activity, start, end, company, anchor FROM days WHERE date = ?1 ORDER BY seq",
@@ -266,6 +294,7 @@ impl World {
             day_type: sampler::day_type(date),
             stretches,
             backoffs,
+            carries,
         };
         Ok(Some((day, digest)))
     }
@@ -296,10 +325,21 @@ impl World {
             )?;
         }
         tx.execute(
-            "INSERT INTO sampled (date, cell, inputs, backoffs, sampled_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT (date) DO UPDATE SET cell = ?2, inputs = ?3, backoffs = ?4, sampled_at = ?5",
-            params![key, day.cell.id(), digest, day.backoffs, now()],
+            "INSERT INTO sampled
+                 (date, cell, inputs, backoffs, carry_activity, carry_label, carry_until, sampled_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT (date) DO UPDATE SET cell = ?2, inputs = ?3, backoffs = ?4,
+                 carry_activity = ?5, carry_label = ?6, carry_until = ?7, sampled_at = ?8",
+            params![
+                key,
+                day.cell.id(),
+                digest,
+                day.backoffs,
+                day.carries.as_ref().map(|c| c.activity.id()),
+                day.carries.as_ref().map(|c| c.label.as_str()),
+                day.carries.as_ref().map(|c| c.until),
+                now()
+            ],
         )?;
         tx.commit()?;
         Ok(())
@@ -356,15 +396,20 @@ impl World {
         let rows = stmt.query_map([&key], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?))
         })?;
-        let mut out = Vec::new();
+        let (mut out, mut unreadable) = (Vec::new(), 0);
         for row in rows {
             let (act, minutes) = row?;
-            if let Some(a) = Activity::from_id(&act) {
-                out.push((a, minutes));
+            match Activity::from_id(&act) {
+                Some(a) => out.push((a, minutes)),
+                None => unreadable += minutes,
             }
         }
         out.sort();
-        Ok(Some(Week { days, minutes: out }))
+        Ok(Some(Week {
+            days,
+            minutes: out,
+            unreadable,
+        }))
     }
 
     /// Write a state row, superseding the current one for its key.
@@ -440,13 +485,17 @@ pub fn day(store_dir: &Path, name: &str, date: NaiveDate, today: NaiveDate) -> R
         bail!("[life] world is off for `{name}`: she has no simulated days");
     }
     let pdir = store_dir.join(&persona.name);
+    let existing = World::open_existing(&pdir)?;
     // A past day already stored is what it was, whatever the routine says
     // now, or whether it still loads.
     if date < today {
-        if let Some(world) = World::open_existing(&pdir)? {
-            if let Some((stored, _)) = world.stored(date)? {
-                return Ok(stored);
-            }
+        if let Some((stored, _)) = existing
+            .as_ref()
+            .map(|w| w.stored(date))
+            .transpose()?
+            .flatten()
+        {
+            return Ok(stored);
         }
     }
     let Some(text) = routine::read(store_dir, &persona.name)?.routine else {
@@ -463,13 +512,27 @@ pub fn day(store_dir: &Path, name: &str, date: NaiveDate, today: NaiveDate) -> R
              days from; add `cell = \"…\"` (`mecha persona routine edit {name}`)"
         );
     };
-    let day = sampler::sample(atus::table(), cell, &routine, &persona.name, date);
-    if date < today - Days::new(KEEP_DAYS) {
-        // Past what the store keeps: stored, it would be folded into its
-        // week at once, and again on every asking.
+    let digest = inputs(&text);
+    // The day before opens this one with what it carried past 4am, as it
+    // was stored; redrawn only when it is not stored, or is a stale
+    // future day.
+    let prev = date.pred_opt();
+    let stored_prev = match (&existing, prev) {
+        (Some(w), Some(p)) => w.stored(p)?.filter(|(_, was)| p < today || *was == digest),
+        _ => None,
+    };
+    let before = match stored_prev {
+        Some((d, _)) => d.carries,
+        None => prev.and_then(|p| sampler::carried_from(&routine, &persona.name, p)),
+    };
+    let day = sampler::sample_after(atus::table(), cell, &routine, &persona.name, date, before);
+    let keep = Days::new(KEEP_DAYS);
+    if date < today - keep || date > today + keep {
+        // Outside what the store keeps. A day past it would be folded into
+        // its week at once and again on every asking, and one far ahead
+        // would sit uncollected until its date passed.
         return Ok(day);
     }
-    let digest = inputs(&text);
     let mut world = World::open(&pdir)?;
     if let Some((stored, was)) = world.stored(date)? {
         if was == digest {
@@ -579,7 +642,12 @@ mod tests {
         let mut world = World::open(&dir.as_path().join("mara")).unwrap();
         assert_eq!(world.prune(monday + Days::new(30)).unwrap(), 7);
         assert!(world.stored(monday).unwrap().is_none());
-        let Week { days, minutes } = world.week(monday).unwrap().unwrap();
+        let Week {
+            days,
+            minutes,
+            unreadable,
+        } = world.week(monday).unwrap().unwrap();
+        assert_eq!(unreadable, 0);
         assert_eq!(days, 7);
         let total: u32 = minutes.iter().map(|(_, m)| m).sum();
         assert_eq!(total, 7 * 24 * 60);
@@ -612,6 +680,53 @@ mod tests {
         std::fs::write(dir.join("mara").join(routine::FILE), "cell = \"nurse\"\n").unwrap();
         assert_eq!(day(dir.as_path(), "mara", yesterday, today).unwrap(), past);
         assert!(day(dir.as_path(), "mara", today, today).is_err());
+    }
+
+    #[test]
+    fn a_night_shift_carries_what_the_stored_day_ran_not_the_edited_routine() {
+        let shift = |minutes: u32| {
+            format!(
+                "cell = \"full_time\"\n[[anchor]]\nwhat = \"ward\"\nactivity = \"work\"\n\
+                 days = [\"mon\"]\nat = \"22:00\"\nminutes = {minutes}\n"
+            )
+        };
+        let dir = store(Some(&shift(480)), true);
+        let (mon, tue) = (date("2026-01-05"), date("2026-01-06"));
+        let monday = day(dir.as_path(), "mara", mon, mon).unwrap();
+        assert_eq!(monday.carries.as_ref().map(|c| c.until), Some(6 * 60));
+        // The owner lengthens the shift after Monday was drawn and told.
+        std::fs::write(dir.join("mara").join(routine::FILE), shift(600)).unwrap();
+        let tuesday = day(dir.as_path(), "mara", tue, tue).unwrap();
+        let first = &tuesday.stretches[0];
+        assert_eq!(first.anchor.as_deref(), Some("ward"));
+        assert_eq!((first.start, first.end), (sampler::DAY_START, 6 * 60));
+        assert_eq!(day(dir.as_path(), "mara", mon, tue).unwrap(), monday);
+    }
+
+    #[test]
+    fn a_day_far_ahead_is_drawn_never_stored() {
+        let dir = store(Some("cell = \"retired\"\n"), true);
+        let (far, today) = (date("2099-01-01"), date("2026-11-02"));
+        let drawn = day(dir.as_path(), "mara", far, today).unwrap();
+        assert_eq!(day(dir.as_path(), "mara", far, today).unwrap(), drawn);
+        let world = World::open(&dir.join("mara")).unwrap();
+        assert!(world.stored(far).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_week_counts_minutes_it_cannot_name_rather_than_dropping_them() {
+        let dir = store(None, true);
+        let world = World::open(&dir.join("mara")).unwrap();
+        world
+            .conn
+            .execute_batch(
+                "INSERT INTO week_days VALUES ('2026-10-05', 1);
+                 INSERT INTO weeks VALUES ('2026-10-05', 'sleep', 480), ('2026-10-05', 'juggling', 960);",
+            )
+            .unwrap();
+        let week = world.week(date("2026-10-05")).unwrap().unwrap();
+        assert_eq!(week.minutes, vec![(Activity::Sleep, 480)]);
+        assert_eq!(week.unreadable, 960);
     }
 
     #[test]
