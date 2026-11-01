@@ -127,6 +127,16 @@ pub enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Her week: each day's hours by activity, Monday first; a day past two
+    /// weeks shows as its week's folded minutes. Needs what `day` needs.
+    Week {
+        name: String,
+        /// Any day of the week, YYYY-MM-DD; this week when left out.
+        #[arg(long)]
+        date: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -969,6 +979,7 @@ fn run_with(
         Cmd::Memory { cmd } => memory_cmd(dir, cmd)?,
         Cmd::Routine { cmd } => routine_cmd(dir, cmd, edit_file)?,
         Cmd::Day { name, date, json } => day_cmd(dir, &name, date.as_deref(), json)?,
+        Cmd::Week { name, date, json } => week_cmd(dir, &name, date.as_deref(), json)?,
         Cmd::Relationship { cmd } => {
             persona::seed_starters(dir)?;
             let store = load(dir);
@@ -1074,11 +1085,9 @@ fn run_with(
     Ok(())
 }
 
-/// `mecha persona day`: the sampled day, through `world::day`'s own door,
-/// drawn and stored on the first asking and read back on the next.
-fn day_cmd(dir: &Path, name: &str, date: Option<&str>, json: bool) -> Result<()> {
-    use mecha_core::persona::world;
-    // The owner's calendar day, not the machine's UTC one.
+/// The owner's calendar day, not the machine's UTC one, and `date` read
+/// against it.
+fn owner_dates(date: Option<&str>) -> Result<(chrono::NaiveDate, chrono::NaiveDate)> {
     let cfg = mecha_core::config::Config::load(&std::env::current_dir()?)?;
     let today = match cfg.agent.timezone() {
         Some(tz) => chrono::Utc::now().with_timezone(&tz).date_naive(),
@@ -1089,6 +1098,14 @@ fn day_cmd(dir: &Path, name: &str, date: Option<&str>, json: bool) -> Result<()>
         Some(d) => chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d")
             .with_context(|| format!("`{d}` is not a date (YYYY-MM-DD)"))?,
     };
+    Ok((date, today))
+}
+
+/// `mecha persona day`: the sampled day, through `world::day`'s own door,
+/// drawn and stored on the first asking and read back on the next.
+fn day_cmd(dir: &Path, name: &str, date: Option<&str>, json: bool) -> Result<()> {
+    use mecha_core::persona::world;
+    let (date, today) = owner_dates(date)?;
     let name = name.trim().to_lowercase();
     let day = world::day(dir, &name, date, today)?;
     print!("{}", render_day(&name, &day, json)?);
@@ -1107,25 +1124,7 @@ fn render_day(name: &str, day: &mecha_core::persona::sampler::Day, json: bool) -
             .map(|c| c.iter().map(|k| k.id()).collect())
     };
     if json {
-        let value = serde_json::json!({
-            "date": day.date.to_string(),
-            "cell": day.cell.id(),
-            "day_type": day.day_type.id(),
-            "backoffs": day.backoffs,
-            "stretches": day.stretches.iter().map(|s| serde_json::json!({
-                "activity": s.activity.id(),
-                "start_minute": s.start,
-                "end_minute": s.end,
-                "company": company(s),
-                "anchor": s.anchor,
-            })).collect::<Vec<_>>(),
-            "carries": day.carries.as_ref().map(|c| serde_json::json!({
-                "activity": c.activity.id(),
-                "anchor": c.label,
-                "until_minute": c.until,
-            })),
-        });
-        writeln!(out, "{}", serde_json::to_string_pretty(&value)?)?;
+        writeln!(out, "{}", serde_json::to_string_pretty(&day.to_json())?)?;
         return Ok(out);
     }
     writeln!(
@@ -1169,6 +1168,82 @@ fn render_day(name: &str, day: &mecha_core::persona::sampler::Day, json: bool) -
             day.backoffs,
             day.cell.id()
         )?;
+    }
+    Ok(out)
+}
+
+/// `mecha persona week`: the week holding a date, through `world::week_view`.
+fn week_cmd(dir: &Path, name: &str, date: Option<&str>, json: bool) -> Result<()> {
+    use mecha_core::persona::world;
+    let (date, today) = owner_dates(date)?;
+    let name = name.trim().to_lowercase();
+    match world::week_view(dir, &name, date, today)? {
+        Ok(week) => print!("{}", render_week(&name, &week, json)?),
+        Err(why) => bail!(why.why(&name)),
+    }
+    Ok(())
+}
+
+/// A week as `mecha persona week` prints it: a line a day, its hours by
+/// activity, most first.
+fn render_week(
+    name: &str,
+    week: &mecha_core::persona::world::WeekView,
+    json: bool,
+) -> Result<String> {
+    use mecha_core::persona::world::When;
+    use std::fmt::Write;
+    let mut out = String::new();
+    if json {
+        writeln!(out, "{}", serde_json::to_string_pretty(&week.to_json())?)?;
+        return Ok(out);
+    }
+    let hours = |m: u32| format!("{}h{:02}", m / 60, m % 60);
+    writeln!(out, "{name}, the week of {}", week.monday)?;
+    for d in &week.days {
+        let when = match d.when {
+            // Folded or never drawn: the store keeps only the week's count.
+            When::Folded => "not kept",
+            When::Past => "",
+            When::Today => "today",
+            When::Ahead => "ahead",
+        };
+        write!(out, "  {} {}  {when:<8}", d.date.format("%a"), d.date)?;
+        let Some(day) = &d.day else {
+            match d.when {
+                When::Folded => writeln!(out)?,
+                _ => writeln!(out, "  not drawn")?,
+            }
+            continue;
+        };
+        let mut by: Vec<(&str, u32)> = Vec::new();
+        for s in &day.stretches {
+            let id = s.activity.id();
+            match by.iter_mut().find(|(a, _)| *a == id) {
+                Some((_, m)) => *m += s.end - s.start,
+                None => by.push((id, s.end - s.start)),
+            }
+        }
+        by.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+        let line: Vec<String> = by
+            .iter()
+            .map(|(a, m)| format!("{a} {}", hours(*m)))
+            .collect();
+        writeln!(out, "  {}", line.join(", "))?;
+    }
+    if let Some(why) = &week.unavailable {
+        writeln!(out, "\nThe days not drawn wait on her routine: {why}")?;
+    }
+    if let Some(f) = &week.folded {
+        let line: Vec<String> = f
+            .minutes
+            .iter()
+            .map(|(a, m)| format!("{} {}", a.id(), hours(*m)))
+            .collect();
+        writeln!(out, "\nFolded, {} day(s): {}", f.days, line.join(", "))?;
+        if f.unreadable > 0 {
+            writeln!(out, "  and {} this binary cannot name", hours(f.unreadable))?;
+        }
     }
     Ok(out)
 }
@@ -1629,6 +1704,74 @@ mod tests {
         assert_eq!(json["stretches"][1]["company"][0], "alone");
         assert_eq!(json["carries"]["until_minute"], 360);
         assert_eq!(json["backoffs"], 2);
+    }
+
+    #[test]
+    fn a_week_prints_a_line_a_day_most_hours_first_and_its_folded_minutes() {
+        use mecha_core::persona::activity::Activity;
+        use mecha_core::persona::atus::{Cell, DayType};
+        use mecha_core::persona::sampler::{Day, Stretch};
+        use mecha_core::persona::world::{Source, Week, WeekDay, WeekView, When};
+        let date = |d: u32| chrono::NaiveDate::from_ymd_opt(2026, 11, d).unwrap();
+        let stretch = |activity, start, end| Stretch {
+            activity,
+            start,
+            end,
+            company: None,
+            anchor: None,
+        };
+        let day = Day {
+            date: date(3),
+            cell: Cell::Retired,
+            day_type: DayType::Weekday,
+            stretches: vec![
+                stretch(Activity::Sleep, 240, 600),
+                stretch(Activity::Reading, 600, 720),
+                stretch(Activity::Sleep, 720, 1680),
+            ],
+            backoffs: 0,
+            carries: None,
+        };
+        let mut days = vec![WeekDay {
+            date: date(2),
+            when: When::Folded,
+            day: None,
+            sources: vec![],
+        }];
+        days.push(WeekDay {
+            date: date(3),
+            when: When::Today,
+            day: Some(day),
+            sources: vec![Source::Sampler; 3],
+        });
+        let week = WeekView {
+            monday: date(2),
+            days,
+            folded: Some(Week {
+                days: 1,
+                minutes: vec![(Activity::Sleep, 1440)],
+                unreadable: 30,
+            }),
+            unavailable: None,
+        };
+        let text = render_week("juno", &week, false).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "juno, the week of 2026-11-02");
+        assert!(lines[1].contains("2026-11-02  not kept"), "{}", lines[1]);
+        assert!(
+            lines[2].contains("today") && lines[2].ends_with("sleep 22h00, reading 2h00"),
+            "{}",
+            lines[2]
+        );
+        assert!(text.contains("Folded, 1 day(s): sleep 24h00"), "{text}");
+        assert!(text.contains("and 0h30 this binary cannot name"), "{text}");
+        let json: serde_json::Value =
+            serde_json::from_str(&render_week("juno", &week, true).unwrap()).unwrap();
+        assert_eq!(json["days"][0]["when"], "folded");
+        assert_eq!(json["days"][0]["day"], serde_json::Value::Null);
+        assert_eq!(json["days"][1]["sources"][0], "sampler");
+        assert_eq!(json["days"][1]["day"]["stretches"][2]["end_minute"], 1680);
+        assert_eq!(json["folded"]["minutes"][0]["activity"], "sleep");
     }
 
     fn scratch() -> PathBuf {

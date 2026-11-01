@@ -45,6 +45,10 @@ export const PANE_FEATURE = {
   'settings/images': 'image',
   'settings/loras': ['image', 'video'],
   'library/voices': 'voice',
+  // No `personas/...` rows. A personas sub is a persona's name, so such a
+  // key would be the deep link to a persona so named, and would give her
+  // page another feature's banner. The world's tabs live in the persona
+  // editor, gated there by isShown(features.rows, 'world').
 };
 
 /** A pane's features as a list: none, one, or several. */
