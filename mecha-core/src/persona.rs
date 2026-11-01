@@ -33,6 +33,7 @@ use std::path::{Path, PathBuf};
 use crate::imagelib::{self, write_atomic_mode};
 pub use crate::imagelib::{Origin, Status};
 
+pub mod activity;
 pub mod agent;
 pub mod call;
 pub mod cite;
@@ -45,6 +46,7 @@ pub mod memory_tools;
 pub mod recall;
 pub mod replay;
 pub mod replay_judge;
+pub mod routine;
 pub mod safety;
 pub mod search;
 pub mod turn;
@@ -1243,6 +1245,9 @@ impl Store {
                     "{file} has an unclosed `<!--`: everything after it is left out"
                 ));
             }
+        }
+        if let Err(e) = routine::load(&self.persona_dir(&p.name)) {
+            out.push(format!("{e:#}"));
         }
         out
     }
