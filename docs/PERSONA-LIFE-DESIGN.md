@@ -4,7 +4,8 @@
 > switches of step 1 are built (`Feature::World`, `persona::Life`), and so
 > is the routine's file with its activity set and owner approval
 > (`persona::routine`, `persona::activity`; the model drafter is not built
-> yet); the rest of step 1 is next. **Every decision in §16
+> yet), and the ATUS table (`persona::atus`, §4.2); the rest of step 1 is
+> next. **Every decision in §16
 > is ruled** by the owner, the same day: PL1–PL22, PL24–PL26, PL29 and PL30 as rulings,
 > and PL23, PL27 and PL28 as the owner's direction (no approval queue for
 > news; every part opt-in per persona). §1 is the owner's requests, in the order they were made; §2 is
@@ -596,7 +597,19 @@ file or a group's.
 A semi-Markov chain over ATUS tier-1/2 activities (§2.2), estimated once from
 the public files for a handful of demographic cells and shipped as a table:
 per-hour transition probabilities, an empirical duration distribution per
-activity, and a who-was-present distribution from the Who file. Each day:
+activity, and a who-was-present distribution from the Who file.
+
+- **As built (`persona::atus`):** the 2023–2025 files, holidays left out,
+  in six cells: a full-time college student, full-time employed without and
+  with a household child under 13, part-time employed, not employed under
+  65, and 65 or older. The table holds weighted counts, so how a thin cell
+  backs off to the pool is the sampler's code. Durations are 21 quantiles
+  per start band, leaving out each diary's first stretch, which began
+  before the diary's 4am. Who was there is ten kinds of company, from
+  partner to colleague to strangers, which casting maps onto her network's
+  edge types. How a persona is placed in a cell is the sampler's step.
+
+Each day:
 
 1. Place the routine's anchors (each drawn against its probability).
 2. Fill the gaps from the chain, conditioned on day type and cell.
