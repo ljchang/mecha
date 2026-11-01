@@ -427,6 +427,11 @@ pub(crate) enum HostRequest {
         call_id: String,
         name: String,
         input: Value,
+        /// Bytes the program may still hold (its host-byte limit's rest), so
+        /// a tool that can stop early does, rather than read what the charge
+        /// would refuse (`ToolCtx::program_room`). The process pool is left
+        /// out: it moves with other programs.
+        room: usize,
         reply: oneshot::Sender<HostAnswer>,
     },
     /// One sub-call pass (§4), to the model the run already holds.
@@ -552,7 +557,7 @@ impl HostCalls {
         answer.await.unwrap_or_else(|_| gone())
     }
 
-    async fn call(&self, name: &str, input: Value) -> HostAnswer {
+    async fn call(&self, name: &str, input: Value, room: usize) -> HostAnswer {
         let (reply, answer) = oneshot::channel();
         let gone = || HostAnswer::Refused("the run that started this program has ended".into());
         if self
@@ -561,6 +566,7 @@ impl HostCalls {
                 call_id: self.call_id.clone(),
                 name: name.to_string(),
                 input,
+                room,
                 reply,
             })
             .is_err()
@@ -795,7 +801,7 @@ fn describe(admission: &Admission) -> String {
          those parts and judge them yourself.",
     );
     // Shown only beside the tools it uses, as the first example is.
-    if admission.listings().any(|n| n == "fs_list") && admission.contains("fs_read") {
+    if listings.contains(&"fs_list") && admission.contains("fs_read") {
         d.push_str(" For example, which tickets ended unhappily:\n");
         d.push_str(JUDGE_EXAMPLE);
     } else {
@@ -1319,7 +1325,7 @@ impl Run {
         // wait ends, the raise lands, and the interpreter, seeing the token,
         // ends the program `Cancelled` at that suspension.
         let answer = tokio::select! {
-            a = host.call(name, input.clone()) => a,
+            a = host.call(name, input.clone(), self.limits.host_bytes.saturating_sub(self.bytes)) => a,
             () = cancel.cancelled() => HostAnswer::Refused(
                 "stopped: the run was cancelled while this call ran".into(),
             ),

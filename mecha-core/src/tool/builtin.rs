@@ -108,10 +108,9 @@ impl Tool for FsRead {
         // A program's read becomes a handle, which never enters the context
         // window the turn cap protects, so it may hold the file up to the
         // program's own host-byte limit (`CODE-MODE-DESIGN.md` §5).
-        let cap = if ctx.for_program {
-            crate::tool::code::defaults::HOST_BYTES
-        } else {
-            MAX_OUTPUT_BYTES
+        let cap = match ctx.program_room {
+            Some(room) => room.min(crate::tool::code::defaults::HOST_BYTES),
+            None => MAX_OUTPUT_BYTES,
         };
         let text = match read_file_window(&path, offset, limit, cap).await {
             Ok((text, None)) => text,
@@ -1782,11 +1781,24 @@ mod read_window_tests {
         );
 
         let program = ToolCtx {
-            for_program: true,
+            program_room: Some(64 << 20),
             ..ctx(&dir)
         };
         let whole = read(json!({"path": "big.log"}), program).await;
         assert_eq!(whole.content, body, "a program's read is the whole file");
+        // A program with little room left reads only that much, cut and said,
+        // so the refusal that follows costs a small read, not the whole file.
+        let short = ToolCtx {
+            program_room: Some(1000),
+            ..ctx(&dir)
+        };
+        let cut = read(json!({"path": "big.log"}), short).await;
+        assert!(
+            cut.content.contains("stopped at its 1000-byte limit"),
+            "{}",
+            &cut.content[..200]
+        );
+        assert!(cut.content.len() < 1400, "{} bytes", cut.content.len());
         std::fs::remove_dir_all(&dir).ok();
     }
 

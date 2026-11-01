@@ -1401,7 +1401,7 @@ async fn the_descriptions_example_runs_as_written() {
 }
 
 /// A program's `fs_read` is a host call, and the gate marks it so
-/// (`ToolCtx::for_program`): the file comes back whole as a handle, where a
+/// (`ToolCtx::program_room`): the file comes back whole as a handle, where a
 /// turn's read stops at 200 KB. Through the real dispatch, because the mark
 /// is the gate's to set.
 #[cfg(feature = "monty")]
