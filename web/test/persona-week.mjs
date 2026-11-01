@@ -10,8 +10,9 @@ assert.equal(weekUrl('mara', null, null), '/api/personas/mara/week');
 assert.equal(weekUrl('mara', '2026-11-02', 'tok'), '/api/personas/mara/week?unlock=tok&date=2026-11-02');
 assert.equal(weekUrl('mara', '2026-11-02', null), '/api/personas/mara/week?date=2026-11-02');
 
-// The pane is recorded against the world part, the one #654 missed.
-assert.equal(PANE_FEATURE['personas/week'], 'world');
+// A personas sub is a persona's name, so the Week tab takes no pane row:
+// one would hand a persona named `week` the world's banner.
+assert.equal(PANE_FEATURE['personas/week'], undefined);
 
 // Each reason she has no days has its own words.
 for (const why of ['off', 'no_routine', 'no_cell']) assert.ok(WEEK_ABSENT[why]);
