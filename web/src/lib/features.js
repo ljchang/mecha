@@ -45,12 +45,10 @@ export const PANE_FEATURE = {
   'settings/images': 'image',
   'settings/loras': ['image', 'video'],
   'library/voices': 'voice',
-  // Her week (PERSONA-LIFE-DESIGN.md §15 asks for this row). Recorded
-  // against a real feature id, but it gates nothing: a `personas` sub is a
-  // persona's name, so this key is the deep link to one named `week`, and
-  // the Week tab is gated by `isShown(features.rows, 'world')` in the
-  // editor. Never add `personas/<word>` expecting a pane.
-  'personas/week': 'world',
+  // No `personas/...` rows. A personas sub is a persona's name, so such a
+  // key would be the deep link to a persona so named, and would give her
+  // page another feature's banner. The world's tabs live in the persona
+  // editor, gated there by isShown(features.rows, 'world').
 };
 
 /** A pane's features as a list: none, one, or several. */

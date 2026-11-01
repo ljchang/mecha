@@ -2364,9 +2364,8 @@ ruled for repetition.
   what the simulation drew.
   - **As built (step 1, read only to the owner):** a Week tab in the
     persona editor, beside Memories, shown while `world` is on
-    (`isShown(features.rows, 'world')`; `PANE_FEATURE`'s `personas/week`
-    row records it but gates nothing, since a `personas` sub is a persona's
-    name), reading `GET /api/personas/{name}/week`, owned by
+    (`isShown(features.rows, 'world')`; no `PANE_FEATURE` row, §17),
+    reading `GET /api/personas/{name}/week`, owned by
     `Feature::World`. Asking stores the in-window days it draws and may
     prune, as `mecha persona day` does. Each day is a 4am-to-4am bar
     coloured by activity group; a tapped stretch says its times, routine
@@ -2483,6 +2482,16 @@ items (episodes, plans, proposed merges) gets a Home card, and
 surfaces it adds to that registry: the week view and People tab (steps 1–2),
 the nightly job's switch (steps 3 and 5), the camera roll (step 6) and the
 Feed tab (step 7).
+
+**As built (step 1):** `PANE_FEATURE` gains no `personas/...` row. Under
+the `personas` view the route's sub is a persona's name (`App.svelte` hands
+it to `Personas` as the persona to open), so `personas/week` would be the
+deep link to a persona named `week`, giving her page the world's banner
+and the world's hidden-line in place of the personas ones. The world's
+surfaces are tabs in the persona editor, each gated there by
+`isShown(features.rows, 'world')`, a literal the registry's test holds to a
+real id. A world surface that becomes a route of its own needs a sub that
+cannot be a persona's name before it can take a row.
 
 1. **A day.** The `[life]` switches (§3.1), all off by default, with
    dependencies refused by name, and `intensity`'s row in
