@@ -1041,7 +1041,11 @@ event:
   does, the episodes that mention them name them by id, and a pruned id
   renders as "someone" (§5);
 - **a sim person never mentioned** decays out of the outer layers when
-  untouched.
+  untouched;
+- **a node that points at a shared person** prunes in two steps: on her
+  own knobs for everything she reads, while its hold stays until the
+  shipped defaults would prune it, so the group's holder test keeps a row
+  to score (§3.2, §9).
 
 The world has no recall ranking to demote a person out of, so memory's
 soft-prune does not apply here. The owner's people (§7) are the ones that
@@ -1488,7 +1492,8 @@ the headline never rides in the today-block.
   against about 385 over the live shelf. That is the constant §14's bit test
   checks for the block. The placement of shelf B's three items among k interests adds
   at most 3·log₂k bits a day beside it, which part 2 cannot see (it has no
-  vocabulary) and part 3 covers (§14). It rides every turn, which is why it is held to the
+  vocabulary) and part 3 covers while it steers inside the measured days;
+  what narration carries past them is bounded by construction (§14). It rides every turn, which is why it is held to the
   narrower figure. In the first build, without shelf B, its shelf C lines
   carry an interest and an opaque id, both code's, so a line's *fields* carry
   0 attacker bits from a publisher whose feeds map to one interest. A
@@ -1882,7 +1887,8 @@ clamped quietly. The asymmetry with `intensity` (an unknown value loads as
 `"capped"` with a note) is deliberate. An enum has a safe narrowest value to
 land on. A number out of range has none: clamping a threshold could as easily
 loosen pruning as tighten it, so the owner is told instead. Owner-origin rows and state ignore the world threshold
-entirely: they never decay.
+entirely: they never decay. A shared person's hold reads the shipped
+defaults rather than her knobs (§3.2, the second exception below).
 
 **Pruning differs by store** (§16 PL7):
 
@@ -2327,7 +2333,7 @@ this document's; the ruling is the owner's.
 | PL4 | Shared worlds across personas | **Ruled (2026-10-31):** a three-level hierarchy (everyone, group, persona), each its own `world.db`. A shared event exists once and each persona experiences it her own way; visibility decides who knows; only the owner, the simulation and level-registered feeds write above the persona level (§3.2) |
 | PL5 | Where the network lives | **Ruled (2026-10-31): built like memories.** SQLite in `world.db` with per-event origin and owner precedence, edited on the People tab and the CLI, with a rendered `network.md` for reading; a stated deviation from §4.3 (§6.6) |
 | PL6 | People already in `identity.md` | **Ruled (2026-10-31): people live in one place.** They are proposed once as owner nodes; after approval the network is their only home and `identity.md` keeps personality (§6.6) |
-| PL7 | Pruning | **Ruled (2026-10-31):** the world hard-prunes, except owner-origin rows; memory soft-prunes (out of recall, kept in the store); hard deletion of memories only by amending D26 after D28's readout. **The decay parameters are exposed per persona**, read live: the world's half-lives, retelling boost and threshold in `[life.decay]`, and memory's recall threshold in `[memory] recall_below`, off by default (§9, §3.1) |
+| PL7 | Pruning | **Ruled (2026-10-31):** the world hard-prunes, except owner-origin rows (and a node pointing at a shared person keeps its hold until the shipped defaults would prune it, PL29's application, §3.2); memory soft-prunes (out of recall, kept in the store); hard deletion of memories only by amending D26 after D28's readout. **The decay parameters are exposed per persona**, read live: the world's half-lives, retelling boost and threshold in `[life.decay]`, and memory's recall threshold in `[memory] recall_below`, off by default (§9, §3.1) |
 | PL8 | Importance to the owner | **Ruled (2026-10-31):** inferred from engagement and pins, with no rating prompts or UI control; and she may ask in conversation when it is natural and the inference is unsure, within §7.3's one-question-a-chat budget, the answer counting as a `Stated` signal (§9) |
 | PL9 | News shelves | **Ruled (2026-10-31):** Build A and C first, with shelf A's per-field render bounds and stated figures (at most 16 bits an item, three a day, five-day expiry; §8.2), and shelves A and C through all three gate parts, steering included, before either reaches a prompt. In that first build, shelf C's count-and-timing channel (about 3 bits a day), with at most log₂k bits a line, 3·log₂k a day, for a publisher reaching feeds under k interests (§8.3), is the entire residual, and only the steering arm sees it. B ships behind the three-part gate (§14): schema conformance, a bit ceiling (about 9.6 bits per item and under 30 a day, as §8.2 computes it) enforced by a test, and the steering arm, all three read by the owner |
 | PL10 | The writer after a taint rise | **Ruled (2026-10-31):** Keep today's rule (everything after the rise is a candidate). PL23's typed episode keeps the gist and PL27's switch gives full memory where the owner wants it, which is what PL10 was reaching for (§8.4) |
