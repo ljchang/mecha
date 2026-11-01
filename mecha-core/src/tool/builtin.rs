@@ -406,6 +406,10 @@ impl Tool for FsList {
         "List the entries of a directory. Directories are suffixed with `/`."
     }
 
+    fn lists_names(&self) -> bool {
+        true
+    }
+
     fn input_schema(&self) -> Value {
         json!({
             "type": "object",
