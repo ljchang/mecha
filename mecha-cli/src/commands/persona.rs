@@ -1074,9 +1074,8 @@ fn run_with(
     Ok(())
 }
 
-/// `mecha persona routine`: the owner's door to `routine.toml` and a
-/// waiting draft. The editor writes the file itself, as `edit` does, and
-/// what it left is read back through the sampler's own door.
+/// `mecha persona day`: the sampled day, through `world::day`'s own door,
+/// drawn and stored on the first asking and read back on the next.
 fn day_cmd(dir: &Path, name: &str, date: Option<&str>, json: bool) -> Result<()> {
     use mecha_core::persona::world;
     // The owner's calendar day, not the machine's UTC one.
@@ -1172,6 +1171,9 @@ fn render_day(name: &str, day: &mecha_core::persona::sampler::Day, json: bool) -
     Ok(out)
 }
 
+/// `mecha persona routine`: the owner's door to `routine.toml` and a
+/// waiting draft. The editor writes the file itself, as `edit` does, and
+/// what it left is read back through the sampler's own door.
 fn routine_cmd(dir: &Path, cmd: RoutineCmd, edit_file: &dyn Fn(&Path) -> Result<()>) -> Result<()> {
     use mecha_core::persona::activity::Activity;
     use mecha_core::persona::routine::{self, Routine};
