@@ -35,20 +35,38 @@ const MAX_OUTPUT_BYTES: usize = 200_000;
 /// with room to spare.
 const NOTICE_BYTES: usize = 512;
 
-/// Cut `s` to at most `cap` bytes on a char boundary; true when it cut.
-/// Nothing is appended: every caller says the cut **first**, because the
-/// dispatch's cap (`cap_result`) keeps a result's head, and a note after the
-/// text lands in the part it spills (`fs_read`'s incident, 2026-11-01).
-fn cut_at(s: &mut String, cap: usize) -> bool {
-    if s.len() <= cap {
-        return false;
+/// `raw` as lossy text of at most `cap` bytes, and how many of `raw`'s bytes
+/// it shows. Nothing is appended: every caller says a cut **first**, because
+/// the dispatch's cap (`cap_result`) keeps a result's head, and a note after
+/// the text lands in the part it spills (`fs_read`'s incident, 2026-11-01).
+/// The count is of `raw`, because each invalid sequence decodes to a
+/// three-byte U+FFFD: cutting the decoded text and counting it, a 100 KB PNG
+/// was "100000 bytes, the first 200000 shown" (review of #798).
+fn lossy_prefix(raw: &[u8], cap: usize) -> (String, usize) {
+    let mut text = String::with_capacity(raw.len().min(cap));
+    let mut used = 0;
+    for chunk in raw.utf8_chunks() {
+        let valid = chunk.valid();
+        let room = cap - text.len();
+        if valid.len() > room {
+            let mut cut = room;
+            while !valid.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            text.push_str(&valid[..cut]);
+            return (text, used + cut);
+        }
+        text.push_str(valid);
+        used += valid.len();
+        if !chunk.invalid().is_empty() {
+            if cap - text.len() < char::REPLACEMENT_CHARACTER.len_utf8() {
+                return (text, used);
+            }
+            text.push(char::REPLACEMENT_CHARACTER);
+            used += chunk.invalid().len();
+        }
     }
-    let mut cut = cap;
-    while !s.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    s.truncate(cut);
-    true
+    (text, used)
 }
 
 fn arg_str<'a>(input: &'a Value, key: &str) -> Result<&'a str> {
@@ -241,12 +259,13 @@ async fn read_file_window(
     }
     // Sized once, to the file or the cap and the byte past it: grown by
     // doubling, a program's 64 MB read held a 128 MB buffer (review of #796).
-    // A `limit` reads a window of unknown size, so it grows as before rather
-    // than hold a whole file's room for ten lines.
+    // An offset or a `limit` reads a window of unknown size, so it grows as
+    // before rather than hold a whole file's room for its tail or ten lines.
     let size = usize::try_from(meta.len()).unwrap_or(usize::MAX);
-    let capacity = match limit {
-        Some(_) => 0,
-        None => size.min(cap).saturating_add(1),
+    let capacity = if offset == 1 && limit.is_none() {
+        size.min(cap).saturating_add(1)
+    } else {
+        0
     };
     read_text_window(
         &mut tokio::io::BufReader::new(file),
@@ -848,16 +867,14 @@ impl Tool for Shell {
             Err(e) => return Ok(ToolOutput::err(format!("cannot run command: {e}"))),
         };
 
-        let mut body = String::new();
-        body.push_str(&String::from_utf8_lossy(&stdout));
+        let (mut body, out_shown) = lossy_prefix(&stdout, MAX_OUTPUT_BYTES);
         if !stderr.is_empty() && !body.is_empty() && !body.ends_with('\n') {
             body.push('\n');
         }
-        let err_from = body.len();
-        body.push_str(&String::from_utf8_lossy(&stderr));
-        let cut = cut_at(&mut body, MAX_OUTPUT_BYTES)
-            || out_total > stdout.len() as u64
-            || err_total > stderr.len() as u64;
+        let (err_text, err_shown) =
+            lossy_prefix(&stderr, MAX_OUTPUT_BYTES.saturating_sub(body.len()));
+        body.push_str(&err_text);
+        let cut = out_total > out_shown as u64 || err_total > err_shown as u64;
         if body.trim().is_empty() {
             body.push_str("(no output)");
         }
@@ -868,8 +885,6 @@ impl Tool for Shell {
         // stderr comes second and a full stdout leaves none of it shown: an
         // error the model is not told it missed reads as a clean run.
         if cut {
-            let out_shown = body.len().min(err_from).min(stdout.len());
-            let err_shown = body.len().saturating_sub(err_from).min(stderr.len());
             let wrote = if err_total == 0 {
                 format!(
                     "the command wrote {out_total} bytes, and only the first {out_shown} are shown"
@@ -1088,13 +1103,13 @@ pub(crate) async fn fetch_vetted(url: &str, ctx: &ToolCtx) -> Result<Fetched> {
             break;
         }
     }
-    let mut body = String::from_utf8_lossy(&raw).into_owned();
+    let (body, shown) = lossy_prefix(&raw, MAX_OUTPUT_BYTES);
     // **The cut is said first**, as `fs_read`'s is: the dispatch keeps a
     // result's head, and a note after the body moved into the spill file.
     // The size is what is known, never the bytes held: a read that stopped
     // early knows only the server's Content-Length, if it sent one, or that
     // there was more (the old note gave the bytes held as the body's size).
-    let notice = if cut_at(&mut body, MAX_OUTPUT_BYTES) {
+    let notice = if shown < raw.len() {
         let size = match (whole, length) {
             (true, _) => format!("{} bytes", raw.len()),
             (false, Some(n)) if n > raw.len() as u64 => {
@@ -1103,9 +1118,8 @@ pub(crate) async fn fetch_vetted(url: &str, ctx: &ToolCtx) -> Result<Fetched> {
             (false, _) => format!("more than {} bytes", raw.len()),
         };
         format!(
-            "[truncated: the body is {size}, and only the first {} are shown. This is not \
-             the whole response, and http_fetch cannot fetch the rest of it.]\n",
-            body.len()
+            "[truncated: the body is {size}, and only the first {shown} are shown. This is not \
+             the whole response, and http_fetch cannot fetch the rest of it.]\n"
         )
     } else {
         String::new()
@@ -1706,6 +1720,24 @@ mod tests {
             &out.content[..300]
         );
 
+        // Bytes that are not UTF-8 decode three to one, so 100 KB of them
+        // overruns the cap as text: the notice counts the command's bytes,
+        // never the decoded ones (review of #798: "the first 200000" of 100000).
+        let out = shell
+            .call(
+                json!({"command": "head -c 100000 /dev/zero | tr '\\0' '\\377'"}),
+                &ctx(&dir),
+            )
+            .await
+            .unwrap();
+        assert!(
+            out.content.starts_with(
+                "[truncated: the command wrote 100000 bytes, and only the first 66666 are shown."
+            ),
+            "{}",
+            &out.content[..200]
+        );
+
         // Output under the cap carries no notice.
         let out = shell
             .call(json!({"command": "echo fine"}), &ctx(&dir))
@@ -1991,10 +2023,32 @@ mod read_window_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[test]
+    fn a_lossy_prefix_counts_the_bytes_it_shows() {
+        assert_eq!(lossy_prefix(b"ok", 10), ("ok".to_string(), 2));
+        // Never bisects a character, and counts the bytes behind it.
+        assert_eq!(
+            lossy_prefix("h\u{e9}llo".as_bytes(), 2),
+            ("h".to_string(), 1)
+        );
+        assert_eq!(
+            lossy_prefix("h\u{e9}llo".as_bytes(), 3),
+            ("h\u{e9}".to_string(), 3)
+        );
+        // Each invalid byte is a three-byte U+FFFD: the text fits the cap,
+        // and the count is of the raw bytes it stands for.
+        let (text, shown) = lossy_prefix(&[0xff; 100_000], 200_000);
+        assert!(text.len() <= 200_000);
+        assert_eq!(shown, 66_666);
+        let (text, shown) = lossy_prefix(b"ab\xffcd", 4);
+        assert_eq!((text.as_str(), shown), ("ab", 2), "no room for the U+FFFD");
+    }
+
     /// The notice's room is the path as it is shown: `display` writes each
     /// byte of a non-UTF-8 name as a three-byte U+FFFD, so counted raw, a
-    /// cut read under such a workspace overran the program's room.
-    #[cfg(unix)]
+    /// cut read under such a workspace overran the program's room. Linux
+    /// only: APFS refuses a name that is not UTF-8, so macOS cannot make one.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn a_cut_reads_notice_fits_the_room_under_a_non_utf8_path() {
         use std::os::unix::ffi::OsStrExt;
