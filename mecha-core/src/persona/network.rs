@@ -1039,18 +1039,27 @@ impl Network {
     /// Each person whose portrait link is broken, named: the library
     /// character gone, or no longer approved. Links are by name and
     /// resolved on load, so a link that broke after it was written is
-    /// reported, never silently shown as no portrait.
+    /// reported, never silently shown as no portrait. A predicate that
+    /// follows the persona's name, as `Store::problems`' entries do.
+    ///
+    /// **The character's name is never quoted.** These lines reach pages a
+    /// viewer may see without the library's unlock, and a locked candidate,
+    /// or one since removed, would be named there; the owner reads which
+    /// character with `mecha persona people show --json` (review of #801).
     pub fn broken_links(&self, lib: &crate::imagelib::Library) -> Vec<String> {
         self.people
             .iter()
-            .filter_map(|p| {
-                let c = p.character.as_deref()?;
-                check_character(lib, c).err().map(|e| {
-                    format!(
-                        "{} in her network names a portrait that is broken: {e:#}",
-                        p.name
-                    )
-                })
+            .filter(|p| {
+                p.character
+                    .as_deref()
+                    .is_some_and(|c| check_character(lib, c).is_err())
+            })
+            .map(|p| {
+                format!(
+                    "has {} in her network, whose portrait is not an approved image-library \
+                     character",
+                    p.name
+                )
             })
             .collect()
     }
@@ -1522,19 +1531,25 @@ mod tests {
         image::RgbImage::new(4, 4)
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .unwrap();
-        crate::imagelib::create(
-            &lib_dir,
-            crate::imagelib::NewEntry {
-                kind: crate::imagelib::Kind::Character,
-                name: "ines".into(),
-                text: "tall, flour on her sleeves".into(),
-                portrait: Some(png),
-                source_seed: None,
-                origin: crate::imagelib::Origin::Owner,
-                locked: false,
-            },
-        )
-        .unwrap();
+        let entry = |name: &str, origin, locked| {
+            crate::imagelib::create(
+                &lib_dir,
+                crate::imagelib::NewEntry {
+                    kind: crate::imagelib::Kind::Character,
+                    name: name.into(),
+                    text: "tall, flour on her sleeves".into(),
+                    portrait: Some(png.clone()),
+                    source_seed: None,
+                    origin,
+                    locked,
+                },
+            )
+            .unwrap();
+        };
+        entry("flourhand", crate::imagelib::Origin::Owner, false);
+        // A locked candidate: its name must never reach a page a viewer
+        // sees without the unlock.
+        entry("veiledone", crate::imagelib::Origin::ModelClean, true);
         let lib = || crate::imagelib::Library::load(&lib_dir).0;
         assert!(check_character(&lib(), "nobody")
             .unwrap_err()
@@ -1543,31 +1558,42 @@ mod tests {
         crate::persona::create(&dir, &no_lib(), new("mara")).unwrap();
         let pdir = dir.join("mara");
         let mut p = sister();
-        p.character = Some("ines".into());
+        p.character = Some("flourhand".into());
         add_person(&pdir, &p).unwrap();
         // Approved (an owner entry is): nothing broken, on the network or
         // the persona.
-        check_character(&lib(), "ines").unwrap();
+        check_character(&lib(), "flourhand").unwrap();
         assert!(Network::read(&pdir)
             .unwrap()
             .broken_links(&lib())
             .is_empty());
-        // The character goes from the library afterwards: named on load.
-        std::fs::remove_dir_all(&lib_dir).unwrap();
+        // Linked to the locked candidate (written past the CLI's check, as
+        // a later un-approval would leave it): broken, and named only by
+        // the person.
+        let mut theo = sister();
+        theo.name = "Theo".into();
+        theo.aliases = vec![];
+        theo.character = Some("veiledone".into());
+        add_person(&pdir, &theo).unwrap();
         let broken = Network::read(&pdir).unwrap().broken_links(&lib());
-        assert_eq!(broken.len(), 1);
+        assert_eq!(broken.len(), 1, "{broken:?}");
         assert!(
-            broken[0].contains("Ines") && broken[0].contains("no character `ines`"),
+            broken[0].starts_with("has Theo in her network"),
             "{broken:?}"
         );
+        // The character goes from the library afterwards: both broken, and
+        // no library name in any line the persona's page may show.
+        std::fs::remove_dir_all(&lib_dir).unwrap();
         let store = crate::persona::Store::load(&dir);
         let problems = store.problems(store.get("mara").unwrap(), &lib());
-        assert!(
-            problems
-                .iter()
-                .any(|p| p.contains("names a portrait that is broken")),
-            "{problems:?}"
-        );
+        let portraits: Vec<&String> = problems.iter().filter(|p| p.contains("portrait")).collect();
+        assert_eq!(portraits.len(), 2, "{problems:?}");
+        for line in &problems {
+            assert!(
+                !line.contains("veiledone") && !line.contains("flourhand"),
+                "{line}"
+            );
+        }
     }
 
     #[test]
