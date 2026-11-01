@@ -1397,25 +1397,26 @@ mod tests {
             .find_map(|l| l.trim().parse().ok())
     }
 
-    /// Whether the hung `ps` is gone within 10 s, its group having been sent
-    /// `SIGKILL` (a loaded runner once took longer than 3 s to finish one);
-    /// killed here if not, so a failing test leaves nothing behind, and the
-    /// error says what it was doing.
+    /// Whether the group kill reached the hung `ps` within 10 s: gone, or a
+    /// `SIGKILL` pending. Killed here if not, so a failing test leaves nothing
+    /// behind, and the error says what it was last seen doing.
     async fn hung_ps_gone(pid: u32) -> Result<(), String> {
+        // Killed is the claim, gone or a `SIGKILL` pending: how soon the
+        // kernel finishes it is the scheduler's (see `watchdog`'s own test).
         let t = std::time::Instant::now();
-        while !test_process::is_gone(pid) && t.elapsed() < Duration::from_secs(10) {
+        let mut seen = String::new();
+        while !test_process::is_killed(pid) && t.elapsed() < Duration::from_secs(10) {
+            seen = format!(
+                "{:?}, stat {:?}",
+                test_process::state(pid),
+                test_process::stat_line(pid)
+            );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        if test_process::is_gone(pid) {
+        if test_process::is_killed(pid) {
             return Ok(());
         }
-        let left = format!(
-            "{:?}, stat {:?}",
-            test_process::state(pid),
-            std::fs::read_to_string(format!("/proc/{pid}/stat"))
-                .unwrap_or_default()
-                .trim()
-        );
+        let left = format!("last seen as {seen}");
         // SAFETY: a plain signal to the stand-in this test started.
         unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
         Err(left)

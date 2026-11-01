@@ -402,16 +402,26 @@ mod tests {
             .filter_map(|l| l.trim().parse().ok())
             .collect();
         assert_eq!(hung.len(), 1, "the handshake's first read hung: {hung:?}");
-        // The group was sent `SIGKILL`, so the `ps` is dying or dead; 10 s, as
-        // the other waits here, because a loaded runner once took longer than
-        // 3 s to finish it (PR #785's CI). What it was doing is in the message.
-        let gone = gone_within(hung[0], Duration::from_secs(10)).await;
-        let left = (!gone).then(|| linger(hung[0]));
-        if !gone {
+        // What this test claims is that the group kill reached the hung `ps`:
+        // gone, or a `SIGKILL` pending. How soon the kernel finishes it off is
+        // the scheduler's, and on loaded runners it read as alive to the last
+        // poll and as gone a moment later (#785, #783, #788's CI), so the poll
+        // keeps the last state it saw for the message.
+        let t = std::time::Instant::now();
+        let mut seen = String::new();
+        while !process::is_killed(hung[0]) && t.elapsed() < Duration::from_secs(10) {
+            seen = linger(hung[0]);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let killed = process::is_killed(hung[0]);
+        if !killed {
             // SAFETY: a plain signal to the stand-in this test started.
             unsafe { libc::kill(hung[0] as libc::pid_t, libc::SIGKILL) };
         }
-        assert!(gone, "the hung ps outlived the refused watchdog: {left:?}");
+        assert!(
+            killed,
+            "the hung ps outlived the refused watchdog, last seen as {seen}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
