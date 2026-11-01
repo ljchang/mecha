@@ -26,6 +26,31 @@ fn slacks_socket_builds_its_tls_though_two_crypto_providers_are_linked() {
     mecha_slack::socket::tls_config().expect("the socket's TLS config builds");
 }
 
+/// The socket's own connect, driven against `wss://`, never asks for the
+/// process default. A plain TCP listener accepts, so tungstenite builds its TLS
+/// connector, and the handshake then fails on a peer that speaks no TLS. On
+/// the old call site (`connect_async`, the default provider) that build
+/// panicked in a `monty` build, which is the regression that shipped: a
+/// `ws://` fixture never builds a connector at all (review of #788).
+#[tokio::test]
+async fn slacks_socket_dials_wss_without_asking_for_a_default_provider() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let held = tokio::spawn(async move {
+        // Accepted and closed: the TCP connect succeeds, so the connector is
+        // built, and the handshake ends on the close.
+        let _ = listener.accept().await.unwrap();
+    });
+    let dialled = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        mecha_slack::socket::dial(&format!("wss://127.0.0.1:{port}/link")),
+    )
+    .await
+    .expect("the dial finished");
+    assert!(dialled.is_err(), "a peer that speaks no TLS was dialled");
+    held.abort();
+}
+
 /// The socket's config builds in any build, one provider or two.
 #[test]
 fn slacks_socket_builds_its_tls() {

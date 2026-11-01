@@ -57,6 +57,19 @@ pub fn tls_config() -> SlackResult<rustls::ClientConfig> {
     .with_no_client_auth())
 }
 
+/// The connect step of [`SocketMode::open`]: the WebSocket dialled with
+/// [`tls_config`] named, never the process default (module docs). Public so
+/// a test can drive it against a `wss://` URL. A plaintext `ws://` fixture
+/// never builds a TLS connector, which is how the default-provider panic
+/// went untested.
+pub async fn dial(url: &str) -> SlackResult<Connection> {
+    let tls = tokio_tungstenite::Connector::Rustls(Arc::new(tls_config()?));
+    let (ws, _) = tokio_tungstenite::connect_async_tls_with_config(url, None, false, Some(tls))
+        .await
+        .map_err(|e| SlackError::Disconnected(format!("could not open the socket: {e}")))?;
+    Ok(Connection { ws })
+}
+
 /// How long the old connection is drained after its replacement is open.
 /// Slack's warning is about ten seconds; this outlasts it slightly so a frame
 /// in flight is not lost to arithmetic.
@@ -113,12 +126,7 @@ impl SocketMode {
             url.push_str("&debug_reconnects=true");
         }
 
-        let tls = tokio_tungstenite::Connector::Rustls(Arc::new(tls_config()?));
-        let (ws, _) =
-            tokio_tungstenite::connect_async_tls_with_config(&url, None, false, Some(tls))
-                .await
-                .map_err(|e| SlackError::Disconnected(format!("could not open the socket: {e}")))?;
-        Ok(Connection { ws })
+        dial(&url).await
     }
 
     /// Run until cancelled, forwarding every inbound frame and reconnecting on
