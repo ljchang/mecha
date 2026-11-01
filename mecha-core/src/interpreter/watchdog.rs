@@ -215,6 +215,19 @@ mod tests {
         process::is_gone(pid)
     }
 
+    /// What a process that should be gone is doing: its state, and on
+    /// Linux its `/proc` stat line (state, parent, group) and wait channel.
+    fn linger(pid: u32) -> String {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+        let wchan = std::fs::read_to_string(format!("/proc/{pid}/wchan")).unwrap_or_default();
+        format!(
+            "{:?}, pgid {}, stat {:?}, wchan {wchan:?}",
+            process::state(pid),
+            pgid(pid),
+            stat.trim()
+        )
+    }
+
     fn pgid(pid: u32) -> i32 {
         // SAFETY: a plain query of a process this test started.
         unsafe { libc::getpgid(pid as libc::pid_t) }
@@ -389,12 +402,16 @@ mod tests {
             .filter_map(|l| l.trim().parse().ok())
             .collect();
         assert_eq!(hung.len(), 1, "the handshake's first read hung: {hung:?}");
-        let gone = gone_within(hung[0], Duration::from_secs(3)).await;
+        // The group was sent `SIGKILL`, so the `ps` is dying or dead; 10 s, as
+        // the other waits here, because a loaded runner once took longer than
+        // 3 s to finish it (PR #785's CI). What it was doing is in the message.
+        let gone = gone_within(hung[0], Duration::from_secs(10)).await;
+        let left = (!gone).then(|| linger(hung[0]));
         if !gone {
             // SAFETY: a plain signal to the stand-in this test started.
             unsafe { libc::kill(hung[0] as libc::pid_t, libc::SIGKILL) };
         }
-        assert!(gone, "the hung ps outlived the refused watchdog");
+        assert!(gone, "the hung ps outlived the refused watchdog: {left:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
