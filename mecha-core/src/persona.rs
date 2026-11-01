@@ -1255,6 +1255,12 @@ impl Store {
         if let Err(e) = routine::load(&self.persona_dir(&p.name)) {
             out.push(format!("{e:#}"));
         }
+        // Her network's portrait links, resolved on load like the persona's
+        // own; a network that cannot be read is named, never an empty one.
+        match network::Network::read(&self.persona_dir(&p.name)) {
+            Ok(n) => out.extend(n.broken_links(lib)),
+            Err(e) => out.push(format!("her network does not load: {e:#}")),
+        }
         out
     }
 

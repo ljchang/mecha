@@ -1595,17 +1595,7 @@ fn people_cmd(dir: &Path, lib: &Library, cmd: PeopleCmd) -> Result<()> {
     };
     let when =
         |w: Option<String>| -> Result<When> { w.map_or(Ok(When::UNKNOWN), |w| When::parse(&w)) };
-    // A portrait is a library character the owner has approved, named as
-    // persona.toml names one.
-    let character = |c: &str| -> Result<()> {
-        match lib.get(imagelib::Kind::Character, c) {
-            None => bail!("there is no character `{c}` in the image library"),
-            Some(e) if e.status != Status::Approved => {
-                bail!("`{c}` is a candidate in the image library; approve it first")
-            }
-            Some(_) => Ok(()),
-        }
-    };
+    let character = |c: &str| network::check_character(lib, c);
     let store = load(dir);
     let open =
         |name: &str| -> Result<std::path::PathBuf> { Ok(dir.join(&find(&store, name)?.name)) };
@@ -1730,6 +1720,11 @@ fn people_cmd(dir: &Path, lib: &Library, cmd: PeopleCmd) -> Result<()> {
             );
         }
         PeopleCmd::Retract { name, event } => {
+            // At least an id's first four characters, as a person's id
+            // prefix: an empty one would match every event.
+            if event.trim().len() < 4 {
+                bail!("name the event by at least the first four characters of its id");
+            }
             let pdir = open(&name)?;
             let n = network::Network::read(&pdir)?;
             let hits: Vec<_> = n
