@@ -159,7 +159,17 @@ impl SourceRead {
 /// composing a *new* message answers nothing) all mean the same thing — no
 /// context to show — and none of them is an error worth failing a review over.
 pub fn for_item(item: &OutboxItem, sessions_dir: &Path) -> Vec<SourceRead> {
-    from_messages(item, &messages_for_item(item, sessions_dir))
+    let drafting = drafting(item, sessions_dir);
+    from_messages(item, &drafting.messages, &drafting.programs)
+}
+
+/// What the drafting session ever held: its messages, and what its
+/// programs read (`CODE-MODE-DESIGN.md` §7), each call's bytes loaded from
+/// the session's blob store.
+#[derive(Debug, Default)]
+pub struct Drafting {
+    pub messages: Vec<Message>,
+    pub programs: Vec<crate::tool::code::record::ProgramCall>,
 }
 
 /// Everything the drafting session ever held, read once for every reader
@@ -169,17 +179,26 @@ pub fn for_item(item: &OutboxItem, sessions_dir: &Path) -> Vec<SourceRead> {
 /// (found on review). Empty when the item names no session, the session
 /// is gone, or the file cannot be read: for every reader here that is
 /// honest absence, not an error.
-pub fn messages_for_item(item: &OutboxItem, sessions_dir: &Path) -> Vec<Message> {
+pub fn drafting(item: &OutboxItem, sessions_dir: &Path) -> Drafting {
     let Some(id) = item.session_id.as_deref() else {
-        return Vec::new();
+        return Drafting::default();
     };
     let Ok(path) = Session::find(sessions_dir, id) else {
-        return Vec::new();
+        return Drafting::default();
     };
     let Ok(text) = std::fs::read_to_string(&path) else {
-        return Vec::new();
+        return Drafting::default();
     };
-    Session::messages_ever(&text)
+    // The file's own name is the whole id, whatever prefix the item held.
+    let whole = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(id)
+        .to_string();
+    Drafting {
+        messages: Session::messages_ever(&text),
+        programs: crate::tool::code::record::ever(&text, &whole),
+    }
 }
 
 /// What the drafting run's plan served when it staged this draft — the
@@ -241,7 +260,18 @@ fn is_staging_call(item: &OutboxItem, id: &str, name: &str, input: &serde_json::
 /// live store — the same split as [`crate::compact`], for the same reason:
 /// getting it wrong is silent, and the symptom is a reviewer reading the
 /// wrong original.
-pub fn from_messages(item: &OutboxItem, messages: &[Message]) -> Vec<SourceRead> {
+///
+/// `programs` are what the session's programs read: a draft staged after a
+/// program read a thread joins to that thread (`CODE-MODE-DESIGN.md` §8).
+/// This is the owner's view, so a `trusted_output` child's reads are opened
+/// too ([`crate::grounding::calls_for_the_owner`], ruling R9): a person reads
+/// them, and no model pass does —
+/// `tests::no_model_pass_reads_the_owners_join` holds the list.
+pub fn from_messages(
+    item: &OutboxItem,
+    messages: &[Message],
+    programs: &[crate::tool::code::record::ProgramCall],
+) -> Vec<SourceRead> {
     // Keys the *model* named, which is not every key the draft holds: the loop
     // pins a tool's declared schema defaults into a staged call, and a pinned
     // value is a constant this harness wrote rather than evidence of what the
@@ -278,7 +308,7 @@ pub fn from_messages(item: &OutboxItem, messages: &[Message]) -> Vec<SourceRead>
         input,
         result,
         ..
-    } in crate::grounding::calls(messages)
+    } in crate::grounding::calls_for_the_owner(messages, programs)
     {
         // The staging call. Everything after it is what the run did *with* the
         // draft, not what it drafted from, and the call itself joins to its own
@@ -513,6 +543,79 @@ mod tests {
         }
     }
 
+    /// R9 (`CODE-MODE-DESIGN.md` §11): the owner's "what this draft answers"
+    /// view may open a `trusted_output` child's program reads only while no
+    /// model pass reads that join. These are its readers, each a surface a
+    /// person reads, and nothing else in the workspace reaches the join or
+    /// the walk that opens the shape:
+    ///
+    /// - `commands/outbox.rs`: `outbox show` (`review_reads`), `outbox edit`'s
+    ///   quoted original (`source_reads`, under a marker the save cuts);
+    /// - `tui/outbox.rs`: the TUI's review pane (`review_reads`);
+    /// - `serve/review.rs`: the web review pane (`from_messages`).
+    ///
+    /// A new caller fails this until someone has looked at it. One that hands
+    /// the join to a model — a forecast, a title — must not be added to the
+    /// list: R9 would no longer hold, and the walk it reads is the default
+    /// `grounding::calls`, which keeps the shape closed.
+    #[test]
+    fn no_model_pass_reads_the_owners_join() {
+        const ENTRIES: [&str; 5] = [
+            "source_reads(",
+            "review_reads(",
+            "outbox_source::from_messages",
+            "outbox_source::for_item",
+            "calls_for_the_owner",
+        ];
+        const READERS: [&str; 6] = [
+            "mecha-core/src/outbox_source.rs",
+            "mecha-core/src/grounding.rs",
+            "mecha-core/src/tool/code_tests.rs",
+            "mecha-cli/src/commands/outbox.rs",
+            "mecha-cli/src/tui/outbox.rs",
+            "mecha-cli/src/commands/serve/review.rs",
+        ];
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let mut found = Vec::new();
+        let mut stack: Vec<std::path::PathBuf> =
+            ["mecha-core", "mecha-cli", "mecha-mail", "mecha-slack"]
+                .iter()
+                .map(|c| root.join(c))
+                .collect();
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    if path.file_name().is_some_and(|n| n != "target") {
+                        stack.push(path);
+                    }
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let text = std::fs::read_to_string(&path).unwrap_or_default();
+                    if ENTRIES.iter().any(|e| text.contains(e)) {
+                        let rel = path.strip_prefix(root).unwrap();
+                        found.push(rel.to_string_lossy().replace('\\', "/"));
+                    }
+                }
+            }
+        }
+        assert!(
+            found
+                .iter()
+                .any(|f| f == "mecha-cli/src/commands/serve/review.rs"),
+            "the scan found none of the known readers: {found:?}"
+        );
+        let unlisted: Vec<_> = found
+            .iter()
+            .filter(|f| !READERS.contains(&f.as_str()))
+            .collect();
+        assert!(
+            unlisted.is_empty(),
+            "a new reader of the owner's join, which opens a shaped child's reads (R9): \
+             {unlisted:?}. A surface a person reads joins the list; a model pass must \
+             walk `grounding::calls` instead"
+        );
+    }
+
     fn call(id: &str, name: &str, input: Value) -> Message {
         Message::assistant(vec![Block::ToolUse {
             id: id.into(),
@@ -568,14 +671,14 @@ mod tests {
         ];
 
         assert!(
-            from_messages(&item, &messages).is_empty(),
+            from_messages(&item, &messages, &[]).is_empty(),
             "an unrelated listing was offered as the source of the draft"
         );
 
         // The guard is the *authorship*, not the key: the same argument named
         // by the model is evidence, and still joins.
         item.filled_defaults.clear();
-        assert_eq!(from_messages(&item, &messages).len(), 1);
+        assert_eq!(from_messages(&item, &messages, &[]).len(), 1);
     }
 
     /// **The regression that made `call_id` necessary.**
@@ -617,7 +720,7 @@ mod tests {
             call("b", "mail__mail_reply", sent),
             result("b", "Drafted, not sent: staged as `i1`."),
         ];
-        let reads = from_messages(&item, &messages);
+        let reads = from_messages(&item, &messages, &[]);
 
         // The read, and only the read. Without the id anchor the staging call
         // is a candidate, `found.reverse()` puts it first, and `reads[0]` is
@@ -645,7 +748,7 @@ mod tests {
             call("b", "mail__mail_reply", item.args_before.clone()),
             result("b", "Drafted, not sent: staged as `i1`."),
         ];
-        let reads = from_messages(&item, &messages);
+        let reads = from_messages(&item, &messages, &[]);
         assert_eq!(reads.len(), 1, "{reads:?}");
         assert_eq!(reads[0].tool, "mail__mail_get_thread");
         assert_eq!(reads[0].keys, vec!["thread_id".to_string()]);
@@ -682,7 +785,7 @@ mod tests {
             call("b", "mail__calendar_delete_event", item.args_before.clone()),
             result("b", "Drafted, not sent: staged as `i1`."),
         ];
-        let reads = from_messages(&item, &messages);
+        let reads = from_messages(&item, &messages, &[]);
         assert_eq!(reads.len(), 1, "{reads:?}");
         assert_eq!(reads[0].join, Join::Returned);
         assert_eq!(reads[0].keys, vec!["event_id".to_string()]);
@@ -713,7 +816,7 @@ mod tests {
             call("b", "mail__calendar_delete_event", item.args_before.clone()),
         ];
         assert!(
-            from_messages(&item, &messages).is_empty(),
+            from_messages(&item, &messages, &[]).is_empty(),
             "`primary` is seven characters and matches every calendar result"
         );
     }
@@ -733,7 +836,7 @@ mod tests {
             result("a", "thread 1a035af8bbc75864\n\nFrom: Alan"),
             call("b", "mail__mail_reply", item.args_before.clone()),
         ];
-        let reads = from_messages(&item, &messages);
+        let reads = from_messages(&item, &messages, &[]);
         assert_eq!(reads.len(), 1, "{reads:?}");
         assert_eq!(reads[0].join, Join::Asked, "the stronger join wins");
         assert!(reads[0].heading().contains("drafted from"));
@@ -749,7 +852,7 @@ mod tests {
             call("b", "mail__mail_reply", item.args_before.clone()),
             result("b", "Drafted, not sent: staged as `i1`."),
         ];
-        assert!(from_messages(&item, &messages).is_empty());
+        assert!(from_messages(&item, &messages, &[]).is_empty());
     }
 
     #[test]
@@ -766,7 +869,7 @@ mod tests {
             ),
             result("a", "42 threads"),
         ];
-        assert!(from_messages(&item, &messages).is_empty());
+        assert!(from_messages(&item, &messages, &[]).is_empty());
     }
 
     #[test]
@@ -794,7 +897,7 @@ mod tests {
                 "[superseded: a later mail__mail_get_thread call covered the same target…]",
             ),
         ];
-        let reads = from_messages(&item, &messages);
+        let reads = from_messages(&item, &messages, &[]);
         assert_eq!(reads.len(), 1, "{reads:?}");
         assert!(
             reads[0].text.contains("Dear Dr. Example"),
@@ -814,7 +917,7 @@ mod tests {
                 is_error: true,
             }]),
         ];
-        assert!(from_messages(&item, &messages).is_empty());
+        assert!(from_messages(&item, &messages, &[]).is_empty());
     }
 
     /// The walk ends at the staging call even when that call's own result is
@@ -838,7 +941,7 @@ mod tests {
             result("b", "a read made after the draft, not before it"),
         ];
         assert!(
-            from_messages(&item, &messages).is_empty(),
+            from_messages(&item, &messages, &[]).is_empty(),
             "a read after the staging call was offered as the original"
         );
     }
@@ -856,7 +959,7 @@ mod tests {
             ));
             messages.push(result(&id, &format!("read {i}")));
         }
-        let reads = from_messages(&item, &messages);
+        let reads = from_messages(&item, &messages, &[]);
         assert_eq!(reads.len(), MAX_READS);
         assert!(reads[0].text.contains(&format!("read {}", MAX_READS + 1)));
     }
@@ -937,7 +1040,7 @@ mod tests {
         // A new message composed from scratch answers nothing, and saying so
         // by returning nothing is the honest answer rather than a failure.
         let item = draft(json!({"to": "a@b.c", "subject": "hi", "body_markdown": "Hello"}));
-        assert!(from_messages(&item, &[]).is_empty());
+        assert!(from_messages(&item, &[], &[]).is_empty());
     }
 
     /// §17.7 item 3's note on the artifact: the plan's `serves` as of the

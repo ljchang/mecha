@@ -436,6 +436,17 @@ impl Tool for Subagent {
         };
 
         let result = self.agent.run_in(&cx, &mut convo, child_events).await;
+        // What the child's programs read (`CODE-MODE-DESIGN.md` §7). A child
+        // writes no session, so they ride up on this call's output, each
+        // under this subagent, for the parent's session to record. A
+        // `trusted_output` child's are marked so: carried for the owner's
+        // review and replay, and yielded by the grounding walk to no reader
+        // by default, since for those readers this call's result is the
+        // shaped answer and nothing under it.
+        let reads: Vec<_> = std::mem::take(&mut convo.program_calls)
+            .into_iter()
+            .map(|c| c.carried_up(&self.profile.name, self.profile.trusted_output))
+            .collect();
 
         // Drain the forwarder before building the result, on both paths.
         // `run_in` dropped its sender on return, so this terminates — and it
@@ -448,10 +459,10 @@ impl Tool for Subagent {
         let outcome = match result {
             Ok(o) => o,
             Err(e) => {
-                return Ok(ToolOutput::err(format!(
-                    "subagent `{}` failed: {e:#}",
-                    self.profile.name
-                )))
+                let mut out =
+                    ToolOutput::err(format!("subagent `{}` failed: {e:#}", self.profile.name));
+                out.reads = reads;
+                return Ok(out);
             }
         };
 
@@ -497,7 +508,8 @@ impl Tool for Subagent {
                 .push_str("\n\n[note: the subagent attempted an outbound call that was blocked]");
         }
 
-        let output = ToolOutput::ok(content);
+        let mut output = ToolOutput::ok(content);
+        output.reads = reads;
         // Marking the answer as external is what keeps the parent's interlock
         // honest — see the module docs on why a summary is not laundering.
         // The loop's taint rule needs `untrusted_input && external`, so a

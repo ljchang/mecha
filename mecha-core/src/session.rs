@@ -388,6 +388,22 @@ pub enum Record {
     PendingNote {
         note: String,
     },
+    /// What a run's programs read (`CODE-MODE-DESIGN.md` §7): every host call
+    /// that ran, each under the `code` call — or the subagent call — that
+    /// made it, with a pointer into the session's blob store
+    /// (`tool::code::record`) and never the bytes. Written by
+    /// [`Session::record_run`] after the run's messages; read back by
+    /// [`Session::programs_ever`] for the grounding walk's second source.
+    ///
+    /// **Nothing that rebuilds a conversation reads it**, so it never enters
+    /// a model's context. A struct variant, for `Title`'s reason: a newtype of
+    /// a list has no fields for the internally tagged enum to merge, and
+    /// would fail to serialise at runtime. A build from before this record
+    /// skips the line as one it cannot parse, as with [`Record::Extend`], and
+    /// loses nothing it can use.
+    Program {
+        calls: Vec<crate::tool::code::record::ProgramCall>,
+    },
 }
 
 /// A late failure's extra tool error, in the one place every outcome reader
@@ -998,6 +1014,11 @@ pub struct RunStats {
     /// passes' whole usage is in `usage` beside the run's own turns. `Option`
     /// on `context_overflows`' rule: a row from before the sensor knows
     /// nothing, and must never read as a run that ran no program.
+    ///
+    /// **`subcall_tokens` and `peeked_bytes` saturate at `u32::MAX`** here,
+    /// where `ProgramStats` counts them in `u64`: a row that reads the
+    /// maximum is "at least that many", never the exact figure, and the
+    /// trace entry's own count is the one to ask (review of #774).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub programs: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1898,7 +1919,64 @@ impl Session {
         })?;
         self.append(&Record::GoalAnchor {
             goal: convo.goal_anchor.clone(),
-        })
+        })?;
+        self.record_programs(convo)
+    }
+
+    /// What this run's programs read (`Record::Program`): each call's bytes
+    /// stored once in the session's blob directory, then one record of the
+    /// calls pointing into it. Nothing when the run ran no program.
+    ///
+    /// **A blob that cannot be stored fails no recording.** Its call is
+    /// written with no address, which loads as `Bytes::Missing` — ungrounded
+    /// by name, never an empty result — and the failure is warned. Failing
+    /// `record_run` instead took the records its callers write after it with
+    /// it: `Record::Taint`, whose absence resumes a run that read a
+    /// stranger's text with both interlock legs clear, and the run's outcome
+    /// (review of #784). Only a failure of the session file itself fails here.
+    fn record_programs(&self, convo: &Conversation) -> Result<()> {
+        let fresh = convo
+            .program_calls
+            .get(convo.program_calls_from..)
+            .unwrap_or_default();
+        if fresh.is_empty() {
+            return Ok(());
+        }
+        let store = crate::tool::code::record::Store::default_root();
+        let mut unstored = (0usize, None);
+        let mut calls = Vec::with_capacity(fresh.len());
+        for call in fresh {
+            let mut call = call.clone();
+            if let Some(text) = call.text() {
+                let put = match &store {
+                    Ok(s) => s.put(&self.meta.id, text),
+                    Err(e) => Err(anyhow::anyhow!("the program store cannot be found: {e:#}")),
+                };
+                match put {
+                    Ok(blob) => call.blob = Some(blob),
+                    Err(e) => {
+                        unstored.0 += 1;
+                        unstored.1.get_or_insert_with(|| format!("{e:#}"));
+                    }
+                }
+            } else {
+                // Let go in the run, past `record::RETAINED_BYTES`.
+                unstored.0 += 1;
+                unstored.1.get_or_insert_with(|| {
+                    "its bytes were let go past the conversation's retained ceiling".into()
+                });
+            }
+            calls.push(call);
+        }
+        if let (n @ 1.., Some(error)) = unstored {
+            tracing::warn!(
+                session = %self.meta.id,
+                unstored = n,
+                %error,
+                "program reads recorded without their bytes: they ground nothing"
+            );
+        }
+        self.append(&Record::Program { calls })
     }
 
     /// Record the conversation's grants now, between runs — an owner's
@@ -2324,6 +2402,10 @@ impl Session {
                 }
                 Ok(Record::LateFailure { run, .. }) => late_failures.push(run),
                 Ok(Record::PendingNote { note }) => pending_notes.push(note),
+                // What a run's programs read: never part of the conversation
+                // this rebuilds, so never in a model's context. Its reader is
+                // `Session::programs_ever`.
+                Ok(Record::Program { .. }) => {}
                 Ok(Record::GoalAnchor { goal }) => {
                     anchors.push((Some(messages.len()), goal.clone()));
                     anchored_since_outcome = true;
@@ -2472,6 +2554,35 @@ impl Session {
                 }
                 Ok(_) => {}
                 Err(e) => tracing::debug!(error = %e, "skipping malformed transcript line"),
+            }
+        }
+        all
+    }
+
+    /// Every program call the transcript recorded (`Record::Program`), in
+    /// record order, once each — [`Session::messages_ever`]'s sibling for the
+    /// grounding walk's second source (`CODE-MODE-DESIGN.md` §7). The bytes
+    /// are not loaded: `tool::code::record::ever` loads them from the
+    /// session's store. Once each by the subagent call it came up through and
+    /// its own id, since a child's ids are minted by the child's run and only
+    /// the pair is unique. Malformed lines are skipped as `messages_ever`
+    /// skips them.
+    pub fn programs_ever(transcript: &str) -> Vec<crate::tool::code::record::ProgramCall> {
+        let mut seen = HashSet::new();
+        let mut all = Vec::new();
+        for line in transcript.lines().filter(|l| !l.trim().is_empty()) {
+            // Only a line that names the record is parsed whole: a long
+            // session's messages are most of its bytes.
+            if !line.contains(r#""record":"program""#) {
+                continue;
+            }
+            if let Ok(Record::Program { calls }) = serde_json::from_str::<Record>(line) {
+                for call in calls {
+                    let key = (call.under.as_ref().map(|u| u.call.clone()), call.id.clone());
+                    if seen.insert(key) {
+                        all.push(call);
+                    }
+                }
             }
         }
         all
