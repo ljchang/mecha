@@ -4863,10 +4863,11 @@ Five things in it that cost something to get right, or would have:
   discards blocks past its cap and silently removes oversized images, which
   leaves a human reading a complete-looking message that is missing the part
   that mattered. Where something is cut, the cut says so.
-- **The socket names its TLS crypto provider** (`socket::tls_config`, used by
-  `socket::dial`). A mecha built with code mode links rustls's aws-lc-rs
-  provider through `monty-pool` beside the ring one everything else uses, and
-  rustls then refuses to pick a process default. `connect_async` asked for
+- **A TLS client here names its crypto provider; the socket's is ring**
+  (`socket::tls_config`, used by `socket::dial`). A mecha built with code
+  mode links rustls's aws-lc-rs provider through `monty-pool` beside the
+  ring one everything else uses, and rustls then refuses to pick a process
+  default, so a client that asks for one panics. `connect_async` asked for
   one, so the first deploy with code mode built in (2026-11-01) crash-looped
   the connector, while CI stayed green, because every socket fixture is
   `ws://` and never builds a TLS connector. `mecha-cli/tests/slack_tls.rs`
