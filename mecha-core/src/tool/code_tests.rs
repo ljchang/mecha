@@ -992,6 +992,58 @@ async fn the_tool_read_past_its_limit_raises_before_the_gate() {
     assert_eq!(reached.load(Ordering::SeqCst), 2);
 }
 
+/// `fs_list` answers a program with its names as `str`, not a handle: every
+/// live run opened with `name.startswith(...)` on them (2026-11-01). The
+/// names draw on `peek`'s cap and count, refused whole past it; the tool's
+/// spelling of an empty directory is an empty list, and a failed listing is
+/// still a `ToolError` naming a handle.
+#[tokio::test]
+async fn a_listing_reaches_a_program_as_names_counted_with_peek() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let answers = std::sync::Mutex::new(std::collections::VecDeque::from([
+        ToolOutput::ok("a.md\nsub/"),
+        ToolOutput::ok("(empty directory)"),
+        ToolOutput::ok("c.md\nd.md"),
+        ToolOutput::err("cannot list nowhere: not found"),
+    ]));
+    tokio::spawn(async move {
+        while let Some(req) = rx.recv().await {
+            if let HostRequest::Call { reply, .. } = req {
+                let output = answers.lock().unwrap().pop_front().unwrap();
+                let _ = reply.send(HostAnswer::Ran {
+                    id: "t.host-1".into(),
+                    output,
+                });
+            }
+        }
+    });
+    let host = HostCalls::new(tx, "c1", 10_000);
+    let mut run = Run::new(
+        HostLimits {
+            peek_bytes: 12,
+            ..HostLimits::default()
+        },
+        BytePool::new(1 << 20),
+    )
+    .reaching(["fs_list".to_string()]);
+    let list = call("fs_list", vec![]);
+    let stop = tokio_util::sync::CancellationToken::new();
+    assert_eq!(
+        run.read(&host, &list, &stop).await.unwrap(),
+        json!(["a.md", "sub/"])
+    );
+    assert_eq!(run.read(&host, &list, &stop).await.unwrap(), json!([]));
+    // 9 bytes counted so far; 9 more would cross 12.
+    let err = run.read(&host, &list, &stop).await.unwrap_err().message;
+    assert!(err.starts_with("LimitError: peek bytes:"), "{err}");
+    let err = run.read(&host, &list, &stop).await.unwrap_err().message;
+    assert!(
+        err.starts_with("ToolError: `fs_list` returned an error; its text is <handle"),
+        "{err}"
+    );
+    assert_eq!(run.stats(None).peeked_bytes, 9);
+}
+
 /// §2 does not rest on the interpreter alone (review of #768): a call to a
 /// name outside the program's reach that surfaced anyway — an escaped
 /// interpreter — is refused here, before the gate, which would clear
@@ -1219,6 +1271,41 @@ async fn a_handle_used_as_text_raises_and_says_what_to_use() {
     assert!(
         d.content
             .starts_with("1\n<handle 1: 16 chars from document_read>"),
+        "{}",
+        d.content
+    );
+}
+
+/// The description's own example runs as written: names from `fs_list`
+/// take string methods, and each file is read and counted without a peek.
+#[cfg(feature = "monty")]
+#[tokio::test]
+async fn a_program_walks_a_listing_by_name() {
+    let Some(interp) = monty().await else {
+        return;
+    };
+    let agent = with_code(
+        vec![
+            Arc::new(crate::tool::builtin::FsList),
+            Arc::new(crate::tool::builtin::FsRead),
+        ],
+        interp,
+    );
+    let jail = agent.context().tools.workspace.clone();
+    std::fs::create_dir_all(jail.join("notes/old")).unwrap();
+    std::fs::write(jail.join("notes/1.md"), "Attendees: Priya, Marco").unwrap();
+    std::fs::write(jail.join("notes/2.md"), "Attendees: Marco").unwrap();
+    std::fs::write(jail.join("notes/3.md"), "Attendees: Priya").unwrap();
+    let (d, _) = run(
+        &agent,
+        "hits = []\nfor name in fs_list(path='notes'):\n    if name.endswith('/'):\n        \
+         continue\n    h = fs_read(path='notes/' + name)\n    \
+         if count(h, 'Attendees:.*Priya') > 0:\n        hits.append(name)\nprint(len(hits), hits)",
+    )
+    .await;
+    assert!(!d.is_error, "{}", d.content);
+    assert!(
+        unwrapped(&d.content).starts_with("2 ['1.md', '3.md']"),
         "{}",
         d.content
     );

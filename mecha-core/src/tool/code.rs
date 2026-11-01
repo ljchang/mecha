@@ -92,8 +92,16 @@ pub mod record;
 /// The tool's registered name.
 pub const NAME: &str = "code";
 
+/// The tool whose result a program gets as a list of `str`, not a handle:
+/// a directory's names. Every run's model opened with
+/// `name.startswith(...)` on them and burned its first programs on the
+/// TypeError (2026-11-01). The names still draw on `peek`'s cap and count,
+/// because a file name is text that someone else may have chosen.
+const LISTING: &str = "fs_list";
+
 /// §5's host limits, as R4 ruled them on 2026-10-31 (`CODE-MODE-DESIGN.md`
-/// §11: §5's proposals, unchanged, after M0 and M1). They live here, in one
+/// §11: §5's proposals, unchanged, after M0 and M1), with the owner's two
+/// raises of 2026-11-01: the peek cap and tool reads. They live here, in one
 /// place, and
 /// [`crate::interpreter::COUNTED_HOST_LIMITS`] sizes the suspension backstop
 /// from the same counts (a test holds the two together).
@@ -112,8 +120,10 @@ pub mod defaults {
     /// server's 4,096 reasoning budget, so a pass that thinks anyway (a
     /// preset that lost `--jinja`) still has room to answer. Not a §5 row.
     pub const PASS_MAX_TOKENS: u32 = 8192;
-    /// Tool reads per program.
-    pub const TOOL_READS: u32 = 256;
+    /// Tool reads per program. Was 256, under a 300-file sweep: each `code`
+    /// call starts with nothing from the last, so a job past the limit had no
+    /// way to finish (owner, 2026-11-01).
+    pub const TOOL_READS: u32 = 2048;
     /// Handle operations per program, `budget()` included.
     pub const HANDLE_OPERATIONS: u32 = 2048;
     /// Bytes the program's handles may hold: every tool read's raw result,
@@ -689,16 +699,18 @@ fn describe(admission: &Admission) -> String {
          all in one step, instead of you reading each into your context. It runs a short \
          Python program (monty, a subset of Python 3). A program has no os, open, files, \
          network or clock: it reaches data only by calling the tools listed at the end, \
-         with keyword arguments. A tool returns a handle, not text: `in`, len(), h.split() \
-         and other string methods raise on a handle, and print(h) shows only a stub. Count and search \
-         a handle without reading it, and peek only to learn a format or fetch a short field. \
-         For example, which notes name someone:\n\
+         with keyword arguments. Nothing a program holds survives to the next `code` call, \
+         so do the whole job in one program. fs_list returns a list of names (str; a \
+         directory's ends in /). Every other tool returns a handle, not text: `in`, len(), \
+         h.split() and other string methods raise on a handle, and print(h) shows only a \
+         stub. Count and search a handle without reading it, and peek only to learn a format \
+         or fetch a short field. For example, which notes name someone:\n\
          hits = []\n\
-         for n in lines(fs_list(path=\"notes\")):\n    name = peek(n, 200).strip()\n    \
-         h = fs_read(path=\"notes/\" + name)\n    if count(h, \"Attendees:.*Priya\") > 0:\n        \
-         hits.append(name)\n\
+         for name in fs_list(path=\"notes\"):\n    h = fs_read(path=\"notes/\" + name)\n    \
+         if count(h, \"Attendees:.*Priya\") > 0:\n        hits.append(name)\n\
          print(len(hits), hits)\n\
-         Work on handles with size(h), \
+         Use count or find for anything a pattern can match, such as a name in a list, a \
+         date or a heading: they cost no sub-calls. Work on handles with size(h), \
          slice(h, start, end), lines(h), split(h, pattern), chunks(h, n, overlap=0) (n \
          characters each, at least 256), find(h, pattern) (a list of [start, end] character \
          offsets), count(h, pattern) and json_get(h, path) (a string, object or array leaf \
@@ -712,8 +724,8 @@ fn describe(admission: &Admission) -> String {
          most n characters (counted with peek). llm_map(instruction, sources, shape) asks \
          once per handle, one at a time, and returns a list; it raises at the first failed \
          item. Pass thinking=True only when a question needs reasoning: it is far slower. \
-         Sub-calls are few (budget()[\"sub_calls\"]), so find or slice first and ask about \
-         what matters. To keep going past one bad source, loop instead, checking the budget \
+         Sub-calls are few (budget()[\"sub_calls\"]): keep them for judgement a pattern \
+         cannot make, and find or slice first so each one asks about what matters. To keep going past one bad source, loop instead, checking the budget \
          first:\n\
          for h in hs:\n    if budget()[\"sub_calls\"] < 2:\n        break\n    try:\n        \
          out.append(llm_query(q, h, \"bool\"))\n    except RuntimeError as e:\n        \
@@ -1249,6 +1261,9 @@ impl Run {
                     failed,
                     Arc::clone(&bytes),
                 ));
+                if name == LISTING && !failed {
+                    return self.names(&bytes);
+                }
                 self.room_for(1, name)?;
                 let h = self.shared(bytes, name, out.external)?;
                 let s = self.mint(h);
@@ -1808,6 +1823,34 @@ impl Run {
         let tool = h.buf.tool.clone();
         let leaf = self.buffer(leaf, &tool, h.buf.external)?;
         Ok(handle_value(self.mint(leaf)))
+    }
+
+    /// [`LISTING`]'s answer, one `str` per entry (a directory's ends in `/`),
+    /// counted with `peek` and refused whole if it would cross the cap.
+    fn names(&mut self, listing: &str) -> Result<Value, HostRaise> {
+        // `fs_list`'s own spelling of nothing. A directory holding one file
+        // of exactly that name reads the same, here as in the tool's result.
+        if listing == "(empty directory)" {
+            return Ok(Value::Array(Vec::new()));
+        }
+        let bytes = listing.len();
+        if self.peeked.saturating_add(bytes) > self.limits.peek_bytes {
+            return Err(raise(
+                Tag::LimitError,
+                format!(
+                    "peek bytes: `{LISTING}`'s {bytes} bytes of names would take this program \
+                     past its {} ({} used)",
+                    self.limits.peek_bytes, self.peeked
+                ),
+            ));
+        }
+        self.peeked += bytes;
+        Ok(Value::Array(
+            listing
+                .lines()
+                .map(|n| Value::String(n.to_string()))
+                .collect(),
+        ))
     }
 
     fn peek(&mut self, a: &Args<'_>) -> Result<Value, HostRaise> {
