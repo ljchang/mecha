@@ -1980,20 +1980,33 @@ impl PersonaChats {
     /// anchors were drafted: 0 is the model finding no fixed point, a
     /// finding with nothing staged.
     pub async fn draft_routine(
-        &self,
+        self: &Arc<Self>,
         follower: &crate::follow::Follower,
-        library: &LibraryState,
+        library: &Arc<LibraryState>,
         name: &str,
         body: &DraftBody,
         tz: Option<chrono_tz::Tz>,
     ) -> Result<serde_json::Value, Refusal> {
         use mecha_core::persona::{drafter, routine};
-        let p = self
-            .visible(library, name, body.unlock.as_deref())
-            .ok_or(Refusal::NotFound)?;
-        drafter::check(&p).map_err(|e| Refusal::Conflict(format!("{e:#}")))?;
-        routine::may_stage(&self.store, &p.name)
-            .map_err(|e| Refusal::Conflict(format!("{e:#}")))?;
+        let conflict = |e: anyhow::Error| Refusal::Conflict(format!("{e:#}"));
+        // The store is read off the executor, as every other route here
+        // reads it (review of #800).
+        let (me, lib, who, unlock) = (
+            Arc::clone(self),
+            Arc::clone(library),
+            name.to_string(),
+            body.unlock.clone(),
+        );
+        let p = tokio::task::spawn_blocking(move || -> Result<Persona, Refusal> {
+            let p = me
+                .visible(&lib, &who, unlock.as_deref())
+                .ok_or(Refusal::NotFound)?;
+            drafter::check(&p).map_err(conflict)?;
+            routine::may_stage(&me.store, &p.name).map_err(conflict)?;
+            Ok(p)
+        })
+        .await
+        .map_err(|e| Refusal::Failed(format!("reading her routine: {e}")))??;
         let (_held, bound) = follower
             .enter("routine draft", |_| {})
             .await
@@ -2001,16 +2014,29 @@ impl PersonaChats {
         // Unseeded, as her own turns are: a pinned seed would make a
         // redraft after a discard the same week again.
         let provider = (self.provider)(&bound, PersonaUse::Converse).map_err(failed)?;
+        // An edit that landed while the model ran is the conflict it is,
+        // not the run failing (review of #800).
         let drafted = drafter::draft(provider.as_ref(), &bound.model, &self.store, &p)
             .await
-            .map_err(failed)?;
-        let mut out = self.week(
-            library,
-            &p.name,
-            body.unlock.as_deref(),
-            body.date.as_deref(),
-            tz,
-        )?;
+            .map_err(|e| {
+                if e.chain().any(|c| c.is::<routine::EditedDraft>()) {
+                    conflict(e)
+                } else {
+                    failed(e)
+                }
+            })?;
+        let (me, lib, body) = (Arc::clone(self), Arc::clone(library), body.clone());
+        let mut out = tokio::task::spawn_blocking(move || {
+            me.week(
+                &lib,
+                &p.name,
+                body.unlock.as_deref(),
+                body.date.as_deref(),
+                tz,
+            )
+        })
+        .await
+        .map_err(|e| Refusal::Failed(format!("reading her week: {e}")))??;
         out["drafted"] = serde_json::json!(drafted.map_or(0, |r| r.anchors.len()));
         Ok(out)
     }
@@ -6008,7 +6034,7 @@ fn routine_refusal(e: anyhow::Error) -> Refusal {
     }
 }
 
-#[derive(serde::Deserialize, Default)]
+#[derive(serde::Deserialize, Default, Clone)]
 pub struct DraftBody {
     /// The draft's digest as the page was shown it (approve, edit).
     #[serde(default)]

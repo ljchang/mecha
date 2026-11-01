@@ -10,8 +10,10 @@
 > now (`persona::today`, §4.5), and a read-only week view (`world::week_view`,
 > `mecha persona week`, the editor's Week tab, §15), the form's Life section
 > with its world switch, the Week tab's cell picker, and reviewing a
-> drafted routine there (draft, edit, approve, discard); step 2, her
-> people, is next. **Every decision in §16
+> drafted routine there (draft, edit, approve, discard). Step 2 has begun
+> with her network's store (`persona::network`, `mecha persona people`,
+> `network.md`, §6.6); the `identity.md` migration with the network in her
+> chats, then the People tab, are next. **Every decision in §16
 > is ruled** by the owner, the same day: PL1–PL22, PL24–PL26, PL29 and PL30 as rulings,
 > and PL23, PL27 and PL28 as the owner's direction (no approval queue for
 > news; every part opt-in per persona). §1 is the owner's requests, in the order they were made; §2 is
@@ -1182,6 +1184,16 @@ parsed back into it. People
 already written into `identity.md` are proposed once as owner nodes; after
 approval the network is their home and `identity.md` keeps personality, so the
 fact lives in one place (§16 PL6).
+
+**As built (step 2, the store):** `world.db` version 2 adds `people` and
+`edge_events`; `persona::network` folds an edge's events into its state.
+The owner writes it with `mecha persona people add | edit | event |
+retract | remove`, reads it with `show` and `export`, and every write
+renders `network.md`. Two choices the design left open: an undated `met`
+or `formed` folds as the edge's start, and any other undated event as of
+the day it was recorded, since it happened no later; and only an owner
+event can be taken back one at a time, since a chat's events go with
+`forget`. Everyone is owner-written in this step, so nothing decays yet.
 
 ---
 
