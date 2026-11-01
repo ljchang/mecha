@@ -125,7 +125,7 @@ pub mod defaults {
     pub const LIVE_HANDLES: usize = 4096;
     /// Text `peek` may hand the program, in bytes: one count with `str[n]`
     /// sub-call results (`peeked_bytes`).
-    pub const PEEK_BYTES: usize = 16 * 1024;
+    pub const PEEK_BYTES: usize = 256 * 1024;
     /// `peek`'s `n` when the program names none.
     pub const PEEK_DEFAULT: usize = 2000;
     /// The least `n` `chunks` accepts, so one counted operation cannot mint
@@ -684,16 +684,27 @@ impl CodeTool {
 /// between turns.
 fn describe(admission: &Admission) -> String {
     let mut d = String::from(
-        "Run a short Python program (monty, a subset of Python 3) over tool results \
-         without reading them into your context. A tool called from the program returns a \
-         handle, not text: print(h) shows only a stub. Work on handles with size(h), \
+        "Use this when a question needs many tool results combined: more than a handful of \
+         files, threads or items to count, filter, compare or join. One program reads them \
+         all in one step, instead of you reading each into your context. It runs a short \
+         Python program (monty, a subset of Python 3). A program has no os, open, files, \
+         network or clock: it reaches data only by calling the tools listed at the end, \
+         with keyword arguments. A tool returns a handle, not text: `in`, len(), split() and \
+         string methods raise on a handle, and print(h) shows only a stub. Count and search \
+         a handle without reading it, and peek only to learn a format or fetch a short field. \
+         For example, which notes name someone:\n\
+         hits = []\n\
+         for n in lines(fs_list(path=\"notes\")):\n    name = peek(n, 200).strip()\n    \
+         h = fs_read(path=\"notes/\" + name)\n    if count(h, \"Attendees:.*Priya\") > 0:\n        \
+         hits.append(name)\n\
+         print(len(hits), hits)\n\
+         Work on handles with size(h), \
          slice(h, start, end), lines(h), split(h, pattern), chunks(h, n, overlap=0) (n \
          characters each, at least 256), find(h, pattern) (a list of [start, end] character \
          offsets), count(h, pattern) and json_get(h, path) (a string, object or array leaf \
          stays a handle; a number, bool or null comes back as itself). peek(h, n=2000) is \
          the only way to see a handle's text, and is capped per program; budget() says what \
-         is left of each limit. Patterns are Rust regular expressions. Call a tool with \
-         keyword arguments, as in fs_read(path=\"notes.txt\"). \
+         is left of each limit. Patterns are Rust regular expressions. \
          llm_query(instruction, source, shape) asks the model one question about a handle \
          (or a list of them) and returns an answer of that shape: \"bool\", \"int\", \
          \"float\", \"int[0,100]\", a list of labels such as [\"urgent\", \"fyi\", \"none\"], \
@@ -885,6 +896,22 @@ fn grouped(n: usize) -> String {
     out
 }
 
+/// A handle as the program receives it: marked, so the backend hands over an
+/// object string operations refuse on (`interpreter::HANDLE_MARK`). A bare
+/// stub string let `"Priya" in h` search the stub and answer `False`, and a
+/// program counted 0 meetings with nothing raised (#791).
+fn handle_value(stub: String) -> Value {
+    json!({ crate::interpreter::HANDLE_MARK: stub })
+}
+
+/// A handle argument's stub: the string a backend hands back for the object
+/// [`handle_value`] made, or that marked value itself, when a host is driven
+/// without a backend between (the unit tests).
+fn stub_of(v: &Value) -> Option<&str> {
+    v.as_str()
+        .or_else(|| v.get(crate::interpreter::HANDLE_MARK)?.as_str())
+}
+
 fn stub(id: u64, h: &Handle) -> String {
     format!(
         "<handle {id}: {} chars from {}>",
@@ -1056,7 +1083,7 @@ impl Run {
                 ),
             )
         };
-        let s = a.get(0, "h").and_then(Value::as_str).ok_or_else(not)?;
+        let s = a.get(0, "h").and_then(stub_of).ok_or_else(not)?;
         self.held(s).ok_or_else(not)
     }
 
@@ -1149,9 +1176,7 @@ impl Run {
     fn mint_all(&mut self, hs: Vec<Handle>, f: &str) -> Result<Value, HostRaise> {
         self.room_for(hs.len(), f)?;
         Ok(Value::Array(
-            hs.into_iter()
-                .map(|h| Value::String(self.mint(h)))
-                .collect(),
+            hs.into_iter().map(|h| handle_value(self.mint(h))).collect(),
         ))
     }
 
@@ -1233,7 +1258,7 @@ impl Run {
                         format!("`{name}` returned an error; its text is {s}"),
                     ))
                 } else {
-                    Ok(Value::String(s))
+                    Ok(handle_value(s))
                 }
             }
         }
@@ -1277,7 +1302,7 @@ impl Run {
             )
         };
         let resolve = |v: &Value, i: usize| {
-            v.as_str()
+            stub_of(v)
                 .and_then(|s| self.held(s))
                 .map(|(_, h)| h)
                 .ok_or_else(|| not_held(i))
@@ -1299,7 +1324,7 @@ impl Run {
                 .enumerate()
                 .map(|(i, v)| resolve(v, i))
                 .collect::<Result<_, _>>()?],
-            (false, Some(v @ Value::String(_))) => vec![vec![resolve(v, 0)?]],
+            (false, Some(v)) if stub_of(v).is_some() => vec![vec![resolve(v, 0)?]],
             (false, _) => {
                 return Err(q(
                     "`llm_query`: `source` must be a handle or a non-empty list of handles"
@@ -1609,7 +1634,7 @@ impl Run {
         }
         self.room_for(1, "slice")?;
         let b = h.bytes_at(&[s as usize, e as usize]);
-        Ok(Value::String(self.mint(h.sub(b[0], b[1]))))
+        Ok(handle_value(self.mint(h.sub(b[0], b[1]))))
     }
 
     fn lines(&mut self, a: &Args<'_>) -> Result<Value, HostRaise> {
@@ -1782,7 +1807,7 @@ impl Run {
         self.room_for(1, "json_get")?;
         let tool = h.buf.tool.clone();
         let leaf = self.buffer(leaf, &tool, h.buf.external)?;
-        Ok(Value::String(self.mint(leaf)))
+        Ok(handle_value(self.mint(leaf)))
     }
 
     fn peek(&mut self, a: &Args<'_>) -> Result<Value, HostRaise> {
@@ -1963,6 +1988,15 @@ fn render(f: Finished, cap: usize) -> (String, bool) {
     if out.is_empty() {
         out = "(the program printed nothing and its last line has no value)".to_string();
     }
+    let mut out = handles_as_stubs(&out);
+    // A handle used as text raises a TypeError that names a 'function',
+    // which says nothing about what to do instead (#791).
+    if is_error && out.contains("TypeError") && out.contains("'function'") {
+        out.push_str(
+            "\n[a handle is not text: search it with find(h, pattern) or count(h, pattern), \
+             split it with lines(h), and read a short part with peek(h, n)]",
+        );
+    }
     if out.len() > cap {
         out = format!(
             "[this program's result is {} bytes, past this call's share of the output budget \
@@ -1971,6 +2005,28 @@ fn render(f: Finished, cap: usize) -> (String, bool) {
         );
     }
     (out, is_error)
+}
+
+/// `text` with each handle shown as its stub. A backend prints a handle as
+/// the object it is (`<function '<handle 1: 6 chars from fs_read>'
+/// external>`, `interpreter::HANDLE_MARK`); the model reads `<handle 1: …>`.
+fn handles_as_stubs(text: &str) -> String {
+    const OPEN: &str = "<function '<handle ";
+    const CLOSE: &str = "' external>";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find(OPEN) {
+        let after = &rest[i + OPEN.len()..];
+        let Some(j) = after.find(CLOSE) else {
+            break;
+        };
+        out.push_str(&rest[..i]);
+        out.push_str("<handle ");
+        out.push_str(&after[..j]);
+        rest = &after[j + CLOSE.len()..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// A traceback no longer than about `room` bytes: the first line, a count

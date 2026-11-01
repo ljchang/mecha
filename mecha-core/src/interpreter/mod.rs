@@ -46,6 +46,15 @@ mod watchdog;
 mod test_process;
 pub mod worker;
 
+/// The key that marks a host answer as an opaque reference rather than data:
+/// `{HANDLE_MARK: "<handle 2: 420 chars from fs_read>"}`. A backend hands the
+/// program an object string operations refuse on, so `"x" in h` raises
+/// instead of searching the stub's own text, and the program's value comes
+/// back to the host as the stub string. The NUL keeps tool data from
+/// spelling it: text reaches a program only as a string (`peek`), and an
+/// object only as a handle.
+pub const HANDLE_MARK: &str = "\u{0}handle";
+
 /// Whether this binary has an interpreter at all: the cargo feature `monty`,
 /// on by default. A build without it (`--no-default-features`) still knows
 /// code mode, and says by name that it cannot run it (`feature::unbuilt`).
