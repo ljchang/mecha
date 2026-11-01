@@ -35,6 +35,7 @@ pub use crate::imagelib::{Origin, Status};
 
 pub mod activity;
 pub mod agent;
+pub mod atus;
 pub mod call;
 pub mod cite;
 pub mod echo;
