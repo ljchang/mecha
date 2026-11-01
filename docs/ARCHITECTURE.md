@@ -1803,14 +1803,22 @@ module.
 - **A week view never redraws a folded day** (`world::week_view`). A day
   past `KEEP_DAYS` is shown as its week's minutes, because drawing it again
   would show a day no chat was told. Kept days are read from the store
-  before the routine is asked for, since a past day does not need it; the
-  reasons the rest cannot be drawn (no routine, no cell, one that does not
-  load) are checked once before any draw, so finding out draws nothing. Its route is `Feature::World`'s, and the per-persona switch
-  answers as a state, never a refusal.
-  Asking stores the in-window days it draws, so `GET /week` is a read that
-  writes: it asks for the page's header itself (`serve::request_verified`),
-  since `owner_guard` asks it only of mutations, or a page on another site
-  could sweep the dates and store days no chat was told.
+  before the routine is asked for, since a past day does not need it. The
+  reasons the rest cannot be drawn (no routine, no cell) are checked once
+  before any draw, through the same `drawable` the draw itself reads its
+  routine from, so finding out draws nothing and the two cannot disagree;
+  a routine that does not load is an error naming the file, not one of
+  those states. Its route is `Feature::World`'s, and the per-persona switch
+  answers as a state, never a refusal. Asking stores the in-window days it
+  draws, so `GET /week` is a read that writes: it asks for the page's
+  header itself (`serve::request_verified`), since `owner_guard` asks it
+  only of mutations, or a page on another site could sweep the dates and
+  store days no chat was told.
+- **The owner's cell pick edits one key** (`routine::set_cell`): `cell` is
+  set in `routine.toml` through `toml_edit`, every other line and comment
+  kept, the file written from its template if there is none, and only over
+  the digest the page was shown, so an edit made in an editor meanwhile is
+  never overwritten.
 - **Group membership lives once**, in each persona's `groups`. `groups.toml`
   only declares groups; a persona naming an undeclared group is a broken link.
 - **Links are by name, resolved on load, broken ones named**

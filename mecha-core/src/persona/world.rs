@@ -754,9 +754,17 @@ pub fn week_view(
     // days already kept shows them with the reason beside the rest.
     let mut unavailable = None;
     if !pending.is_empty() {
-        let shown = days.iter().any(|d| d.day.is_some());
+        // Something to show is a kept day or a folded one with minutes: a
+        // week whose rest cannot be drawn still shows what the store holds.
+        let folded_before = existing
+            .as_ref()
+            .map(|w| w.week(monday))
+            .transpose()?
+            .flatten();
+        let shown = days.iter().any(|d| d.day.is_some())
+            || (folded_before.is_some() && days.iter().any(|d| d.when == When::Folded));
         match drawable(store_dir, &persona.name) {
-            Ok(Ok(())) => {
+            Ok(Ok(_)) => {
                 for &i in &pending {
                     match draw(store_dir, name, days[i].date, today)? {
                         Drawn::Day(day, sources) => {
@@ -803,16 +811,32 @@ pub fn week_view(
 
 /// Whether her days can be drawn: `Ok(Err(_))` names what is missing, and
 /// `Err` is a routine that does not load.
-fn drawable(store_dir: &Path, name: &str) -> Result<std::result::Result<(), Absent>> {
+///
+/// The one place her routine is asked whether it can draw: [`draw`] reads
+/// its routine through here too, so the week view's question before any
+/// draw and the draw's own cannot disagree when a reason is added.
+fn drawable(store_dir: &Path, name: &str) -> Result<std::result::Result<Drawing, Absent>> {
     let Some(text) = routine::read(store_dir, name)?.routine else {
         return Ok(Err(Absent::NoRoutine));
     };
     let routine =
         routine::parse(&text).with_context(|| format!("{} does not load", routine::FILE))?;
     Ok(match routine.cell {
-        Some(_) => Ok(()),
+        Some(cell) => Ok(Drawing {
+            digest: inputs(&text),
+            routine,
+            cell,
+        }),
         None => Err(Absent::NoCell),
     })
+}
+
+/// What a day is drawn from: her routine, the cell it names, and the
+/// digest of the inputs.
+struct Drawing {
+    routine: routine::Routine,
+    cell: Cell,
+    digest: String,
 }
 
 /// A day, or why she has none.
@@ -822,7 +846,9 @@ enum Drawn {
     Absent(Absent),
 }
 
-/// Why a persona has no days to draw.
+/// Why a persona has no days to draw. A routine that does not load is not
+/// one of these: it is an error naming the file, because it is broken
+/// rather than unset, and the owner's fix is different.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Absent {
@@ -835,6 +861,9 @@ pub enum Absent {
 }
 
 impl Absent {
+    /// Every reason, for the surfaces that key words on them.
+    pub const ALL: [Absent; 3] = [Absent::Off, Absent::NoRoutine, Absent::NoCell];
+
     /// The refusal [`day`] gives, naming the fix.
     pub fn why(self, name: &str) -> String {
         match self {
@@ -873,15 +902,14 @@ fn draw(store_dir: &Path, name: &str, date: NaiveDate, today: NaiveDate) -> Resu
             return Ok(Drawn::Day(st.day, st.sources));
         }
     }
-    let Some(text) = routine::read(store_dir, &persona.name)?.routine else {
-        return Ok(Drawn::Absent(Absent::NoRoutine));
+    let Drawing {
+        routine,
+        cell,
+        digest,
+    } = match drawable(store_dir, &persona.name)? {
+        Ok(d) => d,
+        Err(why) => return Ok(Drawn::Absent(why)),
     };
-    let routine =
-        routine::parse(&text).with_context(|| format!("{} does not load", routine::FILE))?;
-    let Some(cell) = routine.cell else {
-        return Ok(Drawn::Absent(Absent::NoCell));
-    };
-    let digest = inputs(&text);
     // Today, already drawn from these inputs: read back without drawing it
     // again or opening the store to write, which every chat turn would
     // otherwise pay (`now`).
@@ -1491,6 +1519,46 @@ mod tests {
                 .unwrap(),
             w
         );
+    }
+
+    #[test]
+    fn a_week_with_folded_minutes_shows_them_when_the_rest_cannot_be_drawn() {
+        let dir = store(Some("cell = \"student\"\n"), true);
+        let monday = date("2026-10-19");
+        for i in 0..2 {
+            let d = monday + Days::new(i);
+            day(dir.as_path(), "mara", d, d).unwrap();
+        }
+        // A chat on 11-04 prunes Monday and Tuesday into their week; then
+        // the routine goes.
+        let today = date("2026-11-04");
+        day(dir.as_path(), "mara", today, today).unwrap();
+        std::fs::remove_file(dir.join("mara").join(routine::FILE)).unwrap();
+        let w = week_view(dir.as_path(), "mara", monday, today)
+            .unwrap()
+            .unwrap();
+        assert_eq!(w.folded.as_ref().map(|f| f.days), Some(2));
+        assert!(w.days[..2].iter().all(|d| d.when == When::Folded));
+        assert!(w.days[2..].iter().all(|d| d.day.is_none()));
+        assert!(w
+            .unavailable
+            .as_deref()
+            .unwrap()
+            .contains("no routine.toml"));
+    }
+
+    #[test]
+    fn every_absent_reason_is_in_all() {
+        // Exhaustive, so a new reason does not compile until it is listed.
+        for a in Absent::ALL {
+            match a {
+                Absent::Off | Absent::NoRoutine | Absent::NoCell => {}
+            }
+        }
+        let count = |a: Absent| match a {
+            Absent::Off | Absent::NoRoutine | Absent::NoCell => 3,
+        };
+        assert_eq!(Absent::ALL.len(), count(Absent::Off));
     }
 
     #[test]

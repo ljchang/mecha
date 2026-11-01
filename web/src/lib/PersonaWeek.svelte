@@ -5,7 +5,7 @@
   // her life switched off says so here rather than failing.
   import { untrack } from 'svelte';
   import { apiFetch as fetch } from './api.js';
-  import { weekUrl, weekDays, foldedHours, weekUnavailable, shiftWeek, WEEK_ABSENT, WEEK_GROUPS } from './persona.js';
+  import { personaUrl, weekUrl, weekDays, foldedHours, weekUnavailable, shiftWeek, cellBody, WEEK_ABSENT, WEEK_GROUPS, WEEK_CELLS } from './persona.js';
 
   let { name, token = null, onclose } = $props();
 
@@ -15,6 +15,8 @@
   let date = $state(null);
   // The stretch tapped, as `${date}/${index}`, whose line shows under its day.
   let picked = $state(null);
+  // A cell pick on its way to routine.toml.
+  let saving = $state(false);
 
   const days = $derived(weekDays(data));
   const folded = $derived(foldedHours(data));
@@ -38,7 +40,32 @@
       data = await res.json();
       picked = null;
     } catch (e) {
+      // A failed step keeps no stale week under the error, or the nav
+      // would step on from a week no longer shown.
+      data = null;
       error = String(e?.message ?? e);
+    }
+  }
+
+  // The owner picks her kind of week: written into routine.toml over the
+  // file as shown, and the week answered back as it now stands.
+  async function pickCell(cell) {
+    if (!cell || cell === data?.routine?.cell) return;
+    saving = true;
+    error = '';
+    try {
+      const res = await fetch(personaUrl(name, '/routine/cell', null), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(cellBody(cell, data, date, token)),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      data = await res.json();
+      picked = null;
+    } catch (e) {
+      error = String(e?.message ?? e);
+    } finally {
+      saving = false;
     }
   }
 
@@ -67,7 +94,17 @@
     <div class="wnote">loading…</div>
   {:else if data?.absent}
     <p class="wnote">{WEEK_ABSENT[data.absent] ?? data.why}</p>
-  {:else if data}
+  {/if}
+  {#if data && data.absent !== 'off' && data.routine}
+    <label class="wcell">
+      <span>Kind of week</span>
+      <select disabled={saving} value={data.routine.cell ?? ''} onchange={(e) => pickCell(e.currentTarget.value)}>
+        {#if !data.routine.cell}<option value="" disabled>Pick one…</option>{/if}
+        {#each WEEK_CELLS as [id, label]}<option value={id}>{label}</option>{/each}
+      </select>
+    </label>
+  {/if}
+  {#if data?.week}
     <div class="wnav">
       <button class="linkbtn" onclick={() => step(-1)}>‹ Earlier</button>
       <span class="wtitle">Week of {monday}</span>
@@ -139,6 +176,10 @@
 <style>
   .week { display: flex; flex-direction: column; gap: 14px; }
   .wnav { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .wcell { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--text-muted); }
+  .wcell select { min-height: 36px; padding: 0 8px; background: var(--surface); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font: inherit; font-size: 13px; }
+  /* A field under 16px makes iOS zoom the page, and it stays zoomed. */
+  @media (pointer: coarse) { .wcell select { font-size: 16px; } }
   .wtitle { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
   .wrows { display: flex; flex-direction: column; gap: 8px; }
   .wrow { display: grid; grid-template-columns: 64px 1fr; column-gap: 10px; row-gap: 4px; align-items: center; }
