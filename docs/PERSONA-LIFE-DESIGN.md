@@ -8,8 +8,9 @@
 > `world.db`'s `days` and `state` (`persona::sampler`, `persona::world`,
 > `mecha persona day`), and the today-block's first line, what she is doing
 > now (`persona::today`, §4.5), and a read-only week view (`world::week_view`,
-> `mecha persona week`, the editor's Week tab, §15); the form's Life section
-> and the routine drafter are next. **Every decision in §16
+> `mecha persona week`, the editor's Week tab, §15), the form's Life section
+> with its world switch, and the Week tab's cell picker; the routine drafter
+> is next. **Every decision in §16
 > is ruled** by the owner, the same day: PL1–PL22, PL24–PL26, PL29 and PL30 as rulings,
 > and PL23, PL27 and PL28 as the owner's direction (no approval queue for
 > news; every part opt-in per persona). §1 is the owner's requests, in the order they were made; §2 is
@@ -2381,6 +2382,12 @@ ruled for repetition.
     off, or with nothing kept and no routine or cell, answers with which,
     and the tab says it, never a route error. Owner events wait for step
     3's event table.
+  - **The cell picker (step 1):** the Week tab offers her kind of week
+    whenever `world` is on, and writes `cell` into `routine.toml`
+    (`POST /api/personas/{name}/routine/cell`), every other line kept, only
+    over the routine the page was shown. The persona form's Life section
+    holds the `world` switch, "Her days"; the other `[life]` switches join
+    it as their steps build them.
 - **People**, two views:
   - *Her people* — concentric Dunbar rings with her at the centre, portraits
     from library links, warm or tense lines, ended relationships greyed on an

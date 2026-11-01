@@ -1846,23 +1846,27 @@ const demoDay = (date, when, weekend) => ({
   },
 });
 
-export const personaWeek = {
-  today: '2026-09-30',
-  week: {
-    monday: '2026-09-28',
-    days: [
-      demoDay('2026-09-28', 'past', false),
-      demoDay('2026-09-29', 'past', false),
-      demoDay('2026-09-30', 'today', false),
-      demoDay('2026-10-01', 'ahead', false),
-      demoDay('2026-10-02', 'ahead', false),
-      demoDay('2026-10-03', 'ahead', true),
-      demoDay('2026-10-04', 'ahead', true),
-    ],
-    folded: null,
-    unavailable: null,
-  },
-};
+// The week holding `date` (YYYY-MM-DD, this demo week when absent), so
+// Earlier and Later step as they do on a real server. Today is fixed.
+const DEMO_TODAY = '2026-09-30';
+export function personaWeek(date) {
+  const at = new Date(`${date ?? DEMO_TODAY}T12:00:00Z`);
+  const monday = new Date(at);
+  monday.setUTCDate(at.getUTCDate() - ((at.getUTCDay() + 6) % 7));
+  const days = [];
+  for (let i = 0; i < 7; i += 1) {
+    const d = new Date(monday);
+    d.setUTCDate(monday.getUTCDate() + i);
+    const iso = d.toISOString().slice(0, 10);
+    const when = iso < DEMO_TODAY ? 'past' : iso === DEMO_TODAY ? 'today' : 'ahead';
+    days.push(demoDay(iso, when, i >= 5));
+  }
+  return {
+    today: DEMO_TODAY,
+    routine: { digest: '0'.repeat(64), cell: 'full_time' },
+    week: { monday: monday.toISOString().slice(0, 10), days, folded: null, unavailable: null },
+  };
+}
 
 export const personaFiles = {
   identity: {
