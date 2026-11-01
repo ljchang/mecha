@@ -773,11 +773,23 @@ pub fn week_view(
             Err(e) => unavailable = Some(format!("{e:#}")),
         }
     }
-    // Read after the draws, which may have pruned.
-    let folded = World::open_existing(&store_dir.join(&persona.name))?
-        .map(|w| w.week(monday))
-        .transpose()?
-        .flatten();
+    // Read after the draws, which may have pruned: a draw ends in `prune`,
+    // which can fold a day this call already showed as kept. Such a day is
+    // shown folded, as the next asking would show it, never twice.
+    let after = World::open_existing(&store_dir.join(&persona.name))?;
+    if let Some(w) = &after {
+        for d in days
+            .iter_mut()
+            .filter(|d| d.when == When::Past && d.date < oldest)
+        {
+            if w.stored(d.date)?.is_none() {
+                d.when = When::Folded;
+                d.day = None;
+                d.sources = Vec::new();
+            }
+        }
+    }
+    let folded = after.map(|w| w.week(monday)).transpose()?.flatten();
     Ok(Ok(WeekView {
         monday,
         days,
@@ -1447,6 +1459,35 @@ mod tests {
             .iter()
             .all(|d| d.when == When::Past && d.day.is_some()));
         assert_eq!(w.folded, None);
+    }
+
+    #[test]
+    fn a_day_folded_by_this_weeks_own_draw_is_shown_folded_never_twice() {
+        let dir = store(Some("cell = \"student\"\n"), true);
+        // Chatted on Monday and Tuesday of the week of 10-19, then nothing.
+        let monday = date("2026-10-19");
+        for i in 0..2 {
+            let d = monday + Days::new(i);
+            day(dir.as_path(), "mara", d, d).unwrap();
+        }
+        // Today is 11-04, so the keep window starts at 10-21: drawing the
+        // week's missing Wednesday prunes Monday and Tuesday.
+        let today = date("2026-11-04");
+        let w = week_view(dir.as_path(), "mara", monday, today)
+            .unwrap()
+            .unwrap();
+        assert!(w.days[..2]
+            .iter()
+            .all(|d| d.when == When::Folded && d.day.is_none()));
+        assert!(w.days[2..].iter().all(|d| d.day.is_some()));
+        assert_eq!(w.folded.as_ref().map(|f| f.days), Some(2));
+        // And asked again, the same week.
+        assert_eq!(
+            week_view(dir.as_path(), "mara", monday, today)
+                .unwrap()
+                .unwrap(),
+            w
+        );
     }
 
     #[test]
