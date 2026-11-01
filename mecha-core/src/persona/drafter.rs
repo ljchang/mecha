@@ -399,6 +399,18 @@ mod tests {
         assert_eq!(routine::parse(&texts.draft.unwrap()).unwrap(), r);
         // A redraft replaces a draft still as staged.
         stage(&dir, &p, ANSWER).unwrap();
+        // One the owner edited meanwhile is refused, typed through the
+        // chain, so a surface answers it as a conflict.
+        let path = dir.join("mara").join(routine::DRAFT);
+        let mine = std::fs::read_to_string(&path)
+            .unwrap()
+            .replace("18:30", "19:00");
+        std::fs::write(&path, mine).unwrap();
+        let raced = stage(&dir, &p, ANSWER).unwrap_err();
+        assert!(
+            raced.chain().any(|c| c.is::<routine::EditedDraft>()),
+            "{raced:#}"
+        );
     }
 
     /// A model that answers what it is told to, with a chosen stop reason.

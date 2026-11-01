@@ -62,7 +62,12 @@
   // refused; a stale one (409, an edit made elsewhere) reads the week
   // again, so the next pick is made over the file as it now stands.
   async function pickCell(select, cell) {
-    if (!cell || cell === data?.routine?.cell) return;
+    // Not while a draft runs or lands: whichever answer came last would
+    // show, and a pick's answer was read before the draft was staged.
+    if (!cell || cell === data?.routine?.cell || drafting || acting) {
+      select.value = data?.routine?.cell ?? '';
+      return;
+    }
     saving = true;
     error = '';
     try {
@@ -183,7 +188,7 @@
   {#if data && data.absent !== 'off' && data.routine}
     <label class="wcell">
       <span>Kind of week</span>
-      <select disabled={saving} value={data.routine.cell ?? ''} onchange={(e) => pickCell(e.currentTarget, e.currentTarget.value)}>
+      <select disabled={saving || drafting || acting} value={data.routine.cell ?? ''} onchange={(e) => pickCell(e.currentTarget, e.currentTarget.value)}>
         {#if !data.routine.cell}<option value="" disabled>Pick one…</option>{/if}
         {#each WEEK_CELLS as [id, label]}<option value={id}>{label}</option>{/each}
       </select>
@@ -200,21 +205,23 @@
             <button class="linkbtn" disabled={acting} onclick={() => (draftText = null)}>Cancel</button>
           </div>
         {:else}
-          {#if draft.anchors}
+          {#if draft.anchors?.length}
             <ul class="wdlist">{#each draft.anchors as a}<li>{anchorLine(a)}</li>{/each}</ul>
+          {:else if draft.anchors}
+            <div class="warnline">It holds no anchors, so approving it would empty her week. Edit it or discard it.</div>
           {:else}
             <div class="warnline">It does not load, so it cannot be approved yet: {draft.error}</div>
           {/if}
           {#if draft.kept_cell}<p class="wnote">Approving keeps her kind of week: {cellLabel(draft.kept_cell)}.</p>{/if}
           {#if data.routine.digest}<p class="wnote">Approving replaces the anchors her routine has now; the old routine is kept beside it.</p>{/if}
           <div class="wdacts">
-            <button class="abtn" disabled={acting || !draft.anchors} onclick={() => actOnDraft('POST', '/routine/draft/approve')}>Approve</button>
+            <button class="abtn" disabled={acting || saving || !draft.anchors?.length} onclick={() => actOnDraft('POST', '/routine/draft/approve')}>Approve</button>
             <button class="linkbtn" disabled={acting} onclick={() => (draftText = draft.text)}>Edit</button>
             <button class="linkbtn" disabled={acting} onclick={() => actOnDraft('DELETE', '/routine/draft')}>Discard</button>
           </div>
         {/if}
       {:else}
-        <button class="abtn" disabled={drafting || !!data.routine.undraftable} onclick={draftWeek}>
+        <button class="abtn" disabled={drafting || saving || !!data.routine.undraftable} onclick={draftWeek}>
           {drafting ? 'Drafting her week…' : 'Draft her week from what you wrote'}
         </button>
         {#if data.routine.undraftable}<p class="wnote">{data.routine.undraftable}</p>{/if}

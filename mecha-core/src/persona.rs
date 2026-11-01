@@ -45,6 +45,7 @@ pub mod files;
 pub mod judge;
 pub mod memory;
 pub mod memory_tools;
+pub mod network;
 pub mod recall;
 pub mod replay;
 pub mod replay_judge;
