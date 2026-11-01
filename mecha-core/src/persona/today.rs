@@ -109,7 +109,12 @@ pub fn note(now: &Now) -> String {
         Some([Company::Alone]) => said.push_str(", alone"),
         Some(kinds) => {
             let names: Vec<&str> = kinds.iter().map(|k| who(*k)).collect();
-            said.push_str(&format!(", with {}", names.join(" and ")));
+            let listed = match names.split_last() {
+                Some((last, [])) => last.to_string(),
+                Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+                None => String::new(),
+            };
+            said.push_str(&format!(", with {listed}"));
         }
     }
     let stem = if now.source.is_clean() {
@@ -182,6 +187,14 @@ mod tests {
         s.anchor = Some("sleep".into());
         let text = note(&now(s, Source::Sampler));
         assert!(text.contains("You are asleep. Let it"), "{text}");
+        // Three kinds of company read as a list.
+        let mut s = stretch(Activity::Eating, 19 * 60, 20 * 60);
+        s.company = Some(vec![Company::Partner, Company::Family, Company::Colleague]);
+        let text = note(&now(s, Source::Sampler));
+        assert!(
+            text.contains("with your partner, family and colleagues."),
+            "{text}"
+        );
         // Past midnight, the clock wraps.
         let mut late = stretch(Activity::Socializing, 22 * 60, 25 * 60 + 15);
         late.company = Some(vec![Company::Alone]);

@@ -310,8 +310,9 @@ impl World {
                 Some(c) => {
                     let kinds: Option<Vec<Company>> = c.split(',').map(Company::from_id).collect();
                     match kinds {
-                        Some(k) => Some(k),
-                        None => return Ok(None),
+                        // Alone is never beside anyone (`Stretch::company`).
+                        Some(k) if !(k.len() > 1 && k.contains(&Company::Alone)) => Some(k),
+                        _ => return Ok(None),
                     }
                 }
             };
@@ -357,8 +358,10 @@ impl World {
         }))
     }
 
-    /// Replace whatever is stored for the day with `day`.
-    fn store(&mut self, day: &Day, digest: &str) -> Result<()> {
+    /// Replace whatever is stored for the day with `day`, each stretch
+    /// under its source in `sources` (stretch order; a missing one is
+    /// unknown).
+    fn store(&mut self, day: &Day, digest: &str, sources: &[Source]) -> Result<()> {
         let key = day.date.to_string();
         let tx = self.conn.transaction()?;
         tx.execute("DELETE FROM days WHERE date = ?1", [&key])?;
@@ -378,7 +381,7 @@ impl World {
                     s.end,
                     company,
                     s.anchor,
-                    wire(&Source::Sampler)
+                    wire(&sources.get(seq).copied().unwrap_or(Source::Unknown))
                 ],
             )?;
         }
@@ -410,11 +413,32 @@ impl World {
     /// unreadable minutes, so a week always adds up to its days.
     pub fn prune(&mut self, today: NaiveDate) -> Result<usize> {
         let cutoff = (today - Days::new(KEEP_DAYS)).to_string();
+        // The write lock before the first read: the fold adds to a week and
+        // deletes what it added from, so two processes folding from one
+        // read (serve's chat turn and the CLI, on the first draw of a day)
+        // would count a day twice, once as the minutes it held and once as a
+        // day gone unreadable. `transaction()` would hold `conn` mutably
+        // across `stored`, so the lock is taken by hand.
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        match self.fold(&cutoff) {
+            Ok(n) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(n)
+            }
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    }
+
+    /// [`World::prune`]'s reads and writes, inside its transaction.
+    fn fold(&self, cutoff: &str) -> Result<usize> {
         let old: Vec<String> = {
             let mut stmt = self
                 .conn
                 .prepare("SELECT date FROM sampled WHERE date < ?1 ORDER BY date")?;
-            let rows = stmt.query_map([&cutoff], |r| r.get(0))?;
+            let rows = stmt.query_map([cutoff], |r| r.get(0))?;
             rows.collect::<rusqlite::Result<_>>()?
         };
         let mut folds = Vec::new();
@@ -437,24 +461,24 @@ impl World {
             }
             folds.push((week_of(d).to_string(), minutes));
         }
-        let tx = self.conn.transaction()?;
         for (week, minutes) in &folds {
             for (activity, m) in minutes {
-                tx.execute(
+                self.conn.execute(
                     "INSERT INTO weeks (week, activity, minutes) VALUES (?1, ?2, ?3)
                      ON CONFLICT (week, activity) DO UPDATE SET minutes = minutes + excluded.minutes",
                     params![week, activity, m],
                 )?;
             }
-            tx.execute(
+            self.conn.execute(
                 "INSERT INTO week_days (week, days) VALUES (?1, 1)
                  ON CONFLICT (week) DO UPDATE SET days = days + 1",
                 [week],
             )?;
         }
-        tx.execute("DELETE FROM days WHERE date < ?1", [&cutoff])?;
-        tx.execute("DELETE FROM sampled WHERE date < ?1", [&cutoff])?;
-        tx.commit()?;
+        self.conn
+            .execute("DELETE FROM days WHERE date < ?1", [cutoff])?;
+        self.conn
+            .execute("DELETE FROM sampled WHERE date < ?1", [cutoff])?;
         Ok(old.len())
     }
 
@@ -652,12 +676,27 @@ fn draw(store_dir: &Path, name: &str, date: NaiveDate, today: NaiveDate) -> Resu
         (Some(w), Some(p)) => w.stored(p)?.filter(|st| p < today || st.digest == digest),
         _ => None,
     };
-    let before = match stored_prev {
-        Some(st) => st.day.carries,
-        None => prev.and_then(|p| sampler::carried_from(&routine, &persona.name, p)),
+    // What the day before carried keeps the source of the stretch it ran
+    // as, its last: a label read out of a row that is not clean is never
+    // stamped clean by being carried past 4am.
+    let (before, carried) = match stored_prev {
+        Some(st) => {
+            let from = st.sources.last().copied().unwrap_or(Source::Unknown);
+            (st.day.carries, from)
+        }
+        None => (
+            prev.and_then(|p| sampler::carried_from(&routine, &persona.name, p)),
+            Source::Sampler,
+        ),
     };
+    let label = before.as_ref().map(|c| c.label.clone());
     let day = sampler::sample_after(atus::table(), cell, &routine, &persona.name, date, before);
-    let drawn = vec![Source::Sampler; day.stretches.len()];
+    let mut drawn = vec![Source::Sampler; day.stretches.len()];
+    if let (Some(label), Some(first)) = (label, day.stretches.first()) {
+        if first.start == sampler::DAY_START && first.anchor.as_deref() == Some(label.as_str()) {
+            drawn[0] = carried;
+        }
+    }
     if date < today - Days::new(KEEP_DAYS) || date > today {
         // Outside what the store keeps. A day past it would be folded into
         // its week at once and again on every asking. A day ahead is drawn
@@ -672,7 +711,7 @@ fn draw(store_dir: &Path, name: &str, date: NaiveDate, today: NaiveDate) -> Resu
             return Ok(Drawn::Day(st.day, st.sources));
         }
     }
-    world.store(&day, &digest)?;
+    world.store(&day, &digest, &drawn)?;
     world.prune(today)?;
     Ok(Drawn::Day(day, drawn))
 }
@@ -925,6 +964,51 @@ mod tests {
                 None
             );
         }
+    }
+
+    #[test]
+    fn a_label_carried_out_of_a_day_that_is_not_clean_stays_unclean() {
+        let dir = store(Some(NIGHT_SHIFT), true);
+        let (mon, tue) = (date("2026-01-05"), date("2026-01-06"));
+        day(dir.as_path(), "mara", mon, mon).unwrap();
+        // Another writer's rows, under a source this binary does not know.
+        World::open(&dir.join("mara"))
+            .unwrap()
+            .conn
+            .execute(
+                "UPDATE days SET source = 'model' WHERE date = '2026-01-05'",
+                [],
+            )
+            .unwrap();
+        let carried = now(dir.as_path(), "mara", at("2026-01-06 05:00"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(carried.date, tue);
+        assert_eq!(carried.stretch.anchor.as_deref(), Some("ward"));
+        assert_eq!(carried.source, Source::Unknown);
+        // Stored that way, so a later read of Tuesday says the same; the rest
+        // of Tuesday is the sampler's own draw.
+        let world = World::open(&dir.join("mara")).unwrap();
+        let st = world.stored(tue).unwrap().unwrap();
+        assert_eq!(st.sources[0], Source::Unknown);
+        assert!(st.sources[1..].iter().all(|s| *s == Source::Sampler));
+    }
+
+    #[test]
+    fn alone_beside_anyone_makes_the_stored_day_unreadable() {
+        let dir = store(Some("cell = \"student\"\n"), true);
+        let d = date("2026-11-02");
+        day(dir.as_path(), "mara", d, d).unwrap();
+        let world = World::open(&dir.join("mara")).unwrap();
+        world
+            .conn
+            .execute(
+                "UPDATE days SET company = 'alone,friend'
+                 WHERE seq = (SELECT MIN(seq) FROM days WHERE company IS NOT NULL)",
+                [],
+            )
+            .unwrap();
+        assert!(world.stored(d).unwrap().is_none());
     }
 
     #[test]
