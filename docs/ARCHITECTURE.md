@@ -3519,9 +3519,13 @@ The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
 (cargo feature `monty`, on by default since 2026-10-31) is the one backend. The invariants:
 
 - **A program reaches the host only through the names it was started
-  with.** They are globals; every `NameLookup` is answered `Undefined`,
-  every `OsCall` (files, environment, sleeps, imports) `NotHandled`, and a
-  `FunctionCall` under any other name is refused in the program. Monty 1.4
+  with.** They are globals. Every `NameLookup` is answered `Undefined`. An
+  unknown import (an `OsCall` named `import`) is answered `NotHandled`, so
+  it stays monty's own `ModuleNotFoundError` and `except ImportError:`
+  catches it. Every other `OsCall` (files, environment, clock) is a
+  `PermissionError` naming the functions the program was given
+  (`os_refusal`). A `FunctionCall` under any other name is refused in the
+  program. Monty 1.4
   has `eval` and `exec`, so a registered name is reachable from a built
   string: reach is the registered set, never the source's free names.
 - **The worker pool is a third process class, confined like an MCP
@@ -3634,9 +3638,13 @@ The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
   program; each host call's trace entry is `in_program`, so `tool_calls`,
   `tool_errors` and `tool_denied` keep counting.
 - **Results are handles; host messages carry no bytes.** A program holds a
-  stub string (`<handle 3: 48,213 chars from mail_get_thread>`), only its
-  exact stub resolves, and text enters only through `peek`, capped and
-  counted. Patterns are Rust `regex`. A tool's error body is a handle the
+  handle as an object string operations refuse on: the host marks it in its
+  answer (`interpreter::HANDLE_MARK`), so `"x" in h` and `len(h)` raise
+  `TypeError` and `h.split(...)` raises `AttributeError`, never an answer
+  about the stub's own text (#791). It prints, and comes back to the host,
+  as its stub (`<handle 3: 48,213 chars from mail_get_thread>`). Only that
+  exact stub resolves, to a handle this program holds, and text enters only
+  through `peek`, capped and counted. Patterns are Rust `regex`. A tool's error body is a handle the
   `ToolError:` names. Every per-program limit (`code::defaults`, as R4 ruled)
   raises a `LimitError:` naming itself; host bytes are also drawn from one
   process-wide `BytePool`.
