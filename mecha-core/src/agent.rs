@@ -6160,6 +6160,7 @@ impl Agent {
     /// own (`CODE-MODE-DESIGN.md` §7). A subagent's run is based on a call's
     /// context, which is how an inherited mark would have reached a child's
     /// turn reads (review of #796).
+    #[allow(clippy::too_many_arguments)]
     fn call_ctx(
         cx: &RunContext,
         id: &str,
@@ -7282,10 +7283,6 @@ mod tests {
     use serde_json::json;
     use std::sync::Mutex;
 
-    /// The stuck-loop digest is one call however the model ordered its
-    /// arguments (review of #755): a repeat written in a new order still
-    /// counts toward `REFUSED_REPEATS`.
-
     /// A program's mark is stamped on every call, never inherited: a
     /// subagent's run is based on a call's context, so a base context
     /// carrying `program_room` must not hand it to the next call's tool
@@ -7326,6 +7323,10 @@ mod tests {
         );
         assert_eq!(host.program_room, Some(9));
     }
+
+    /// The stuck-loop digest is one call however the model ordered its
+    /// arguments (review of #755): a repeat written in a new order still
+    /// counts toward `REFUSED_REPEATS`.
     #[test]
     fn a_repeat_in_another_key_order_has_the_same_digest() {
         let a: Value = serde_json::from_str(r#"{"query":"x","limit":5}"#).unwrap();
