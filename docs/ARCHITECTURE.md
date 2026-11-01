@@ -1766,8 +1766,9 @@ module.
   `Store::problems` entry, never an empty week.
 - **The ATUS table ships counts, and the code that reads it decides**
   (`persona::atus`, §4.2). `scripts/atus-table.py` writes
-  `mecha-core/data/atus/table.tsv.gz` from sha256-pinned public files, the
-  same bytes on every run; it is gzipped because no diff should carry a
+  `mecha-core/data/atus/table.tsv.gz` from sha256-pinned public files, and
+  pins the sha256 of the table's text (not the gzip file, whose bytes
+  depend on the zlib), refusing to overwrite it when the text would change; it is gzipped because no diff should carry a
   megabyte of numbers, so the script and its pins are what review reads.
   Rows are weighted counts, never probabilities, on one weight scale per day
   type, so the pool is the exact sum of the cells. Backoff and smoothing

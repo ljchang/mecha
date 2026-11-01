@@ -7,7 +7,8 @@
 //! the pool, smoothing an hour that saw nothing) is decided in code here and
 //! in the sampler, where a test can see it. Counts are in diaries: weights
 //! are scaled to a mean of 1 per day type, one scale across every cell, so a
-//! cell's counts add up to the pool's.
+//! cell's counts add up to the pool's. Each `N` row carries a cell's diaries
+//! and their weighted total, which is what lets a test check that scale.
 //!
 //! What a row holds, by its first field:
 //!
@@ -37,9 +38,9 @@ const TABLE: &[u8] = include_bytes!("../../data/atus/table.tsv.gz");
 /// ATUS files produce. The text, not the gzip file, whose bytes depend on
 /// which zlib wrote them.
 #[cfg(test)]
-const TEXT_SHA256: &str = "47629ab8cdf2f255c20f440113a50594392f02b6b7e07ba999e6e25325dfca9e";
+const TEXT_SHA256: &str = "aa054ec649045b591efde2a7a56999792e26443b4412fe9f670b477b1113711e";
 /// The format `V` row this reader understands.
-const VERSION: &str = "1";
+const VERSION: &str = "2";
 /// Quantiles per duration row: 0%, 5%, …, 100%.
 pub const QUANTILES: usize = 21;
 const MINUTES_PER_DAY: u32 = 24 * 60;
@@ -233,7 +234,7 @@ pub struct CompanyCounts {
     /// For each of [`Company::ALL`], the weighted count of those stretches
     /// it was present for. They overlap: a dinner can hold a partner and a
     /// child.
-    pub present: [f64; 10],
+    pub present: [f64; Company::ALL.len()],
 }
 
 impl CompanyCounts {
@@ -257,7 +258,8 @@ type Step = (Option<Cell>, DayType, u8, Activity);
 /// The parsed table. `None` as a cell means the pool of every cell.
 #[derive(Debug, Default)]
 pub struct Table {
-    diaries: BTreeMap<(Cell, DayType), u32>,
+    /// Diaries, and their weights summed under the table's scale.
+    diaries: BTreeMap<(Cell, DayType), (u32, f64)>,
     transitions: BTreeMap<Step, BTreeMap<Activity, f64>>,
     durations: BTreeMap<(Option<Cell>, DayType, Band, Activity), Durations>,
     company: BTreeMap<(Option<Cell>, DayType, Activity), CompanyCounts>,
@@ -296,6 +298,8 @@ impl Table {
             t.row(line, &mut version, &mut columns)
                 .with_context(|| format!("ATUS table line {}", n + 1))?;
         }
+        // Checked once every row is read, so a V row need not come first;
+        // the shipped table writes it first.
         ensure!(version, "the ATUS table has no V row");
         ensure!(columns, "the ATUS table has no C row");
         // The pool is the sum of the cells, which the shared weight scale
@@ -313,7 +317,7 @@ impl Table {
                 .entry((None, day, act))
                 .or_insert_with(|| CompanyCounts {
                     weight: 0.0,
-                    present: [0.0; 10],
+                    present: [0.0; Company::ALL.len()],
                 })
                 .add(&counts);
         }
@@ -356,12 +360,14 @@ impl Table {
                 self.codes.push((code.to_string(), act));
             }
             "N" => {
-                let [_, cell, day, n] = f[..] else {
-                    bail!("an N row has 4 fields")
+                let [_, cell, day, n, weighted] = f[..] else {
+                    bail!("an N row has 5 fields")
                 };
                 let key = (self::cell(cell)?, day_type(day)?);
                 ensure!(
-                    self.diaries.insert(key, n.parse()?).is_none(),
+                    self.diaries
+                        .insert(key, (n.parse()?, count(weighted)?))
+                        .is_none(),
                     "a repeated N row"
                 );
             }
@@ -428,7 +434,7 @@ impl Table {
                     5 + Company::ALL.len()
                 );
                 let weight = count(f[4])?;
-                let mut present = [0.0; 10];
+                let mut present = [0.0; Company::ALL.len()];
                 for (p, s) in present.iter_mut().zip(&f[5..]) {
                     *p = count(s)?;
                     // Both are written to the cent, so a true `p <= weight`
@@ -450,7 +456,13 @@ impl Table {
 
     /// How many diaries a cell's counts came from, for a day type.
     pub fn diaries(&self, cell: Cell, day: DayType) -> u32 {
-        self.diaries.get(&(cell, day)).copied().unwrap_or(0)
+        self.diaries.get(&(cell, day)).map_or(0, |d| d.0)
+    }
+
+    /// The same diaries' weights, in the unit every count is in: what a
+    /// cell's counts divide by to be per diary.
+    pub fn weighted_diaries(&self, cell: Cell, day: DayType) -> f64 {
+        self.diaries.get(&(cell, day)).map_or(0.0, |d| d.1)
     }
 
     /// What began at `hour` after `from`, as weighted counts by activity, in
@@ -519,7 +531,7 @@ fn count(s: &str) -> Result<f64> {
 mod tests {
     use super::*;
 
-    const HEAD: &str = "V\t1\nC\talone\tpartner\tchild\tparent\tfamily\thousemate\tfriend\tacquaintance\tcolleague\tpublic\n";
+    const HEAD: &str = "V\t2\nC\talone\tpartner\tchild\tparent\tfamily\thousemate\tfriend\tacquaintance\tcolleague\tpublic\n";
 
     fn most_likely(tos: &BTreeMap<Activity, f64>) -> Activity {
         *tos.iter().max_by(|a, b| a.1.total_cmp(b.1)).unwrap().0
@@ -595,16 +607,26 @@ mod tests {
     }
 
     #[test]
-    fn the_pool_is_the_sum_of_the_cells() {
+    fn one_weight_scale_spans_every_cell() {
+        // Adding a cell's counts to the pool's (the sampler's backoff) is
+        // sound only if every cell shares one scale. One mean per day type
+        // makes all cells' weighted diaries sum to their number, which a
+        // wrong or missing scale breaks. A scale per cell keeps that sum but
+        // makes each cell's weights total exactly its own count, which the
+        // second check refuses: ATUS weights differ by cell.
         let t = table();
-        let (day, hour, from) = (DayType::Weekday, 7, Activity::Sleep);
-        let pooled = t.next(None, day, hour, from).unwrap()[&Activity::PersonalCare];
-        let summed: f64 = Cell::ALL
-            .iter()
-            .filter_map(|c| t.next(Some(*c), day, hour, from))
-            .filter_map(|tos| tos.get(&Activity::PersonalCare))
-            .sum();
-        assert!((pooled - summed).abs() < 1e-9, "{pooled} vs {summed}");
+        for day in DayType::ALL {
+            let n: u32 = Cell::ALL.iter().map(|c| t.diaries(*c, day)).sum();
+            let w: f64 = Cell::ALL.iter().map(|c| t.weighted_diaries(*c, day)).sum();
+            assert!((w - f64::from(n)).abs() < 0.05, "{}: {w} vs {n}", day.id());
+            let uneven = Cell::ALL
+                .iter()
+                .any(|c| (t.weighted_diaries(*c, day) - f64::from(t.diaries(*c, day))).abs() > 1.0);
+            assert!(
+                uneven,
+                "every cell's weights average 1, as a per-cell scale would give"
+            );
+        }
     }
 
     #[test]
@@ -627,7 +649,7 @@ mod tests {
                 .filter_map(|h| t.next(Some(c), wd, h, Activity::Commute))
                 .filter_map(|tos| tos.get(&Activity::Class))
                 .sum::<f64>()
-                / f64::from(t.diaries(c, wd))
+                / t.weighted_diaries(c, wd)
         };
         assert!(student(Cell::Student) > 10.0 * student(Cell::Retired));
         let work = t.company(None, wd, Activity::Work).unwrap();
@@ -688,6 +710,17 @@ mod tests {
                 "W\tstudent\tweekday\twork\t1\t2\t0\t0\t0\t0\t0\t0\t0\t0\t0\n",
                 "more often",
             ),
+            (
+                &format!(
+                    "D\tall\tweekday\tnight\tsleep\t1\t{}\n",
+                    q.replace("\t20", "\t1441")
+                ),
+                "past a day",
+            ),
+            ("D\tall\tweekday\tnight\tsleep\t1\t0\n", "a D row has"),
+            ("W\tstudent\tweekday\twork\t1\t0\n", "a W row has"),
+            ("T\tstudent\tweekday\t7\tsleep\n", "a T row has"),
+            ("N\tstudent\tweekday\t1\n", "an N row has"),
         ] {
             let err = format!("{:#}", Table::parse(&format!("{HEAD}{body}")).unwrap_err());
             assert!(
@@ -695,15 +728,15 @@ mod tests {
                 "{body:?}: {err}"
             );
         }
-        let twice = format!("{HEAD}N\tstudent\tweekday\t1\nN\tstudent\tweekday\t2\n");
+        let twice = format!("{HEAD}N\tstudent\tweekday\t1\t1\nN\tstudent\tweekday\t2\t2\n");
         let err = format!("{:#}", Table::parse(&twice).unwrap_err());
         assert!(
             err.contains("line 4") && err.contains("repeated N"),
             "{err}"
         );
-        let err = Table::parse("V\t2\n").unwrap_err();
-        assert!(format!("{err:#}").contains("is not 1"));
-        let err = Table::parse("V\t1\nC\tpartner\talone\n").unwrap_err();
+        let err = Table::parse("V\t1\n").unwrap_err();
+        assert!(format!("{err:#}").contains("is not 2"));
+        let err = Table::parse("V\t2\nC\tpartner\talone\n").unwrap_err();
         assert!(format!("{err:#}").contains("company columns"));
         assert!(Table::parse(HEAD).is_ok());
     }
