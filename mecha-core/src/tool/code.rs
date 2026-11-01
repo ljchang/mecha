@@ -704,7 +704,9 @@ fn describe(admission: &Admission) -> String {
          directory's ends in /). Every other tool returns a handle, not text: `in`, len(), \
          h.split() and other string methods raise on a handle, and print(h) shows only a \
          stub. Count and search a handle without reading it, and peek only to learn a format \
-         or fetch a short field. For example, which notes name someone:\n\
+         or fetch a short field. Before a sweep, peek at one item, and match the field the \
+         question is about (an attendee list, a presenter line), not the name anywhere in \
+         the text. For example, which notes list someone as attending:\n\
          hits = []\n\
          for name in fs_list(path=\"notes\"):\n    h = fs_read(path=\"notes/\" + name)\n    \
          if count(h, \"Attendees:.*Priya\") > 0:\n        hits.append(name)\n\

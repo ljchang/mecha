@@ -1425,3 +1425,15 @@ fictional notes, 846 KB, the same kind of question, not told about `code`.
 The answer: tool reads at 2,048, `fs_list`'s names as `str` (§3), and a
 description that says to do the whole job in one program and to keep
 sub-calls for what a pattern cannot judge.
+
+**The third run (2026-11-01, #793's build, the same fixture).** It answered
+in 85 s and 10 turns: 7 programs, 3 failed, 536 host calls, no sub-calls.
+- **Priya: right**, 144 meetings, every number listed.
+- **Marco: wrong, for a reading reason.** It counted "Marco Bellini"
+  anywhere in a note, which is the 124 meetings he attended, and called them
+  the meetings he presented (25). The 25 decisions it owed were all in its
+  list of 124. Nothing in the program was broken; it never looked at a
+  note's layout before the sweep. The description now says to peek at one
+  item first and match the field the question names.
+- **The first program still used `in` on a handle**, which raised with the
+  hint, and the next program used `count`.
