@@ -156,7 +156,8 @@ def fetch(cache, name):
         path.with_suffix(".part").rename(path)
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     if digest != PINS[name]:
-        sys.exit(f"{path}: sha256 {digest} is not the pin {PINS[name]}; refusing it")
+        path.unlink()
+        sys.exit(f"{path}: sha256 {digest} is not the pin {PINS[name]}; refused and removed")
     return path
 
 
@@ -264,7 +265,7 @@ def main():
             out.append(f"N\t{cell}\t{day}\t{len(members)}")
             trans = collections.defaultdict(collections.Counter)
             durs = collections.defaultdict(list)
-            company = collections.defaultdict(lambda: [0.0] * (len(COMPANY) + 1) + [0])
+            company = collections.defaultdict(lambda: [0.0] * (len(COMPANY) + 1))
             for w, runs in members:
                 for prev, run in zip([None] + runs, runs):
                     if run["act"] is None:
@@ -281,14 +282,13 @@ def main():
                         for i, (_, wanted) in enumerate(COMPANY):
                             if run["who"] & wanted:
                                 row[i + 1] += w
-                        row[-1] += 1
             for (hour, a), tos in sorted(trans.items()):
                 pairs = " ".join(f"{b}={n:.2f}" for b, n in sorted(tos.items()) if round(n, 2) > 0)
                 if pairs:
                     out.append(f"T\t{cell}\t{day}\t{hour}\t{a}\t{pairs}")
             out.extend(duration_rows(cell, day, durs))
             for act, row in sorted(company.items()):
-                counts = "\t".join(f"{x:.2f}" for x in row[:-1])
+                counts = "\t".join(f"{x:.2f}" for x in row)
                 out.append(f"W\t{cell}\t{day}\t{act}\t{counts}")
     for day in ("weekday", "weekend"):
         durs = {k[1:]: v for k, v in pooled_durs.items() if k[0] == day}
