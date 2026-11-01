@@ -225,7 +225,7 @@ pub fn bound_held(calls: &mut [ProgramCall]) {
     bound_at(calls, RETAINED_BYTES)
 }
 
-fn bound_at(calls: &mut [ProgramCall], ceiling: usize) {
+pub(crate) fn bound_at(calls: &mut [ProgramCall], ceiling: usize) {
     let mut held = 0usize;
     for call in calls.iter_mut().rev() {
         let Bytes::Held(text) = &call.bytes else {

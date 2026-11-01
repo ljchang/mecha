@@ -105,8 +105,34 @@ impl Tool for FsRead {
             .unwrap_or(1)
             .max(1);
         let limit = input.get("limit").and_then(Value::as_u64);
-        let text = match read_file_window(&path, offset, limit).await {
-            Ok(t) => t,
+        // A program's read becomes a handle, which never enters the context
+        // window the turn cap protects, so it may hold the file up to the
+        // program's own host-byte limit (`CODE-MODE-DESIGN.md` §5).
+        let cap = if ctx.for_program {
+            crate::tool::code::defaults::HOST_BYTES
+        } else {
+            MAX_OUTPUT_BYTES
+        };
+        let text = match read_file_window(&path, offset, limit, cap).await {
+            Ok((text, None)) => text,
+            // **The cut is said first, with the file's size.** It used to be a
+            // line after the text, and the dispatch's 24 KB cap keeps the head:
+            // the note landed in the spill file's tail, the marker said "the
+            // first 24000 of 200068 bytes", and a model reading on through the
+            // spill took its end for the file's. It reported a 1.5 MB log as
+            // two days long with no failures in it (2026-11-01).
+            Ok((text, Some(line))) => {
+                let size = tokio::fs::metadata(&path)
+                    .await
+                    .map(|m| m.len().to_string())
+                    .unwrap_or_else(|_| "an unknown number of".into());
+                format!(
+                    "[truncated: {} is {size} bytes, and this read stopped at its {cap}-byte \
+                     limit partway through line {line}. This is not the whole file: read on \
+                     with offset {line}.]\n\n{text}",
+                    path.display()
+                )
+            }
             Err(e) => {
                 // **A binary file is a different failure and has to say so.**
                 // `read_to_string` reports "stream did not contain valid
@@ -160,7 +186,8 @@ async fn read_file_window(
     path: &std::path::Path,
     offset: u64,
     limit: Option<u64>,
-) -> std::io::Result<String> {
+    cap: usize,
+) -> std::io::Result<(String, Option<u64>)> {
     let mut options = tokio::fs::OpenOptions::new();
     options.read(true);
     // A workspace can contain a FIFO. Open without waiting for its writer,
@@ -174,22 +201,25 @@ async fn read_file_window(
             "not a regular file",
         ));
     }
-    read_text_window(&mut tokio::io::BufReader::new(file), offset, limit).await
+    read_text_window(&mut tokio::io::BufReader::new(file), offset, limit, cap).await
 }
 
 /// Skip unwanted lines without allocating them; stop after the requested
-/// lines or one byte beyond the output ceiling, even for a single huge line.
+/// lines or one byte beyond `cap`, even for a single huge line. The text
+/// comes back with the line the cut fell on, if one did, for the caller to
+/// say first; nothing is appended to the text.
 async fn read_text_window<R: tokio::io::AsyncBufRead + Unpin>(
     reader: &mut R,
     offset: u64,
     limit: Option<u64>,
-) -> std::io::Result<String> {
+    cap: usize,
+) -> std::io::Result<(String, Option<u64>)> {
     use tokio::io::AsyncBufReadExt;
     let selected = offset != 1 || limit.is_some();
     let mut line = 1u64;
     let mut remaining = limit.unwrap_or(u64::MAX);
     let mut bytes = Vec::new();
-    while remaining > 0 && bytes.len() <= MAX_OUTPUT_BYTES {
+    while remaining > 0 && bytes.len() <= cap {
         let buf = reader.fill_buf().await?;
         if buf.is_empty() {
             break;
@@ -197,7 +227,7 @@ async fn read_text_window<R: tokio::io::AsyncBufRead + Unpin>(
         let newline = buf.iter().position(|&b| b == b'\n');
         let mut take = newline.map_or(buf.len(), |i| i + 1);
         if line >= offset {
-            take = take.min(MAX_OUTPUT_BYTES + 1 - bytes.len());
+            take = take.min(cap + 1 - bytes.len());
             bytes.extend_from_slice(&buf[..take]);
             if newline.is_some_and(|i| i + 1 == take) {
                 remaining -= 1;
@@ -208,9 +238,9 @@ async fn read_text_window<R: tokio::io::AsyncBufRead + Unpin>(
         }
         reader.consume(take);
     }
-    let truncated = bytes.len() > MAX_OUTPUT_BYTES;
+    let truncated = bytes.len() > cap;
     if truncated {
-        bytes.truncate(MAX_OUTPUT_BYTES);
+        bytes.truncate(cap);
     }
     // A cap may bisect a UTF-8 character. Only that incomplete suffix is
     // dropped; an invalid sequence in the returned region is still an error.
@@ -221,15 +251,15 @@ async fn read_text_window<R: tokio::io::AsyncBufRead + Unpin>(
         }
         Err(e) => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
     };
-    let mut text = if selected {
+    // The line the cut fell on: every complete line kept, plus the one it
+    // bisected, so reading on from it overlaps a little, the safe direction.
+    let cut = truncated.then(|| offset + text.matches('\n').count() as u64);
+    let text = if selected {
         text.lines().collect::<Vec<_>>().join("\n")
     } else {
         text.to_owned()
     };
-    if truncated {
-        text.push_str("\n\n[truncated: byte limit reached; use offset and limit to read more]");
-    }
-    Ok(text)
+    Ok((text, cut))
 }
 
 /// Create or replace a file without following a symlink at its final
@@ -1691,21 +1721,84 @@ mod read_window_tests {
         // The writer remains open. Reading the whole stream would time out.
         let text = tokio::time::timeout(
             std::time::Duration::from_secs(1),
-            read_text_window(&mut BufReader::new(reader), 2, Some(1)),
+            read_text_window(&mut BufReader::new(reader), 2, Some(1), MAX_OUTPUT_BYTES),
         )
         .await
         .unwrap()
         .unwrap();
-        assert_eq!(text, "wanted");
+        assert_eq!(text, ("wanted".to_string(), None));
+    }
+
+    /// A file past the turn cap says so first, with its real size and the
+    /// line to read on from, so the dispatch's head cut cannot hide it: the
+    /// note used to follow the text, landed in the spill file's tail, and a
+    /// model reported a 1.5 MB log as two days long (2026-11-01). The offset
+    /// it names continues the read, and a program's read gets the whole file.
+    #[tokio::test]
+    async fn a_cut_read_says_so_first_and_a_program_reads_the_whole_file() {
+        let dir = std::env::temp_dir().join(format!("mecha-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let body: String = (1..=40_000)
+            .map(|i| format!("line {i:05} of the log\n"))
+            .collect();
+        std::fs::write(dir.join("big.log"), &body).unwrap();
+        let ctx = |dir: &std::path::Path| ToolCtx {
+            workspace: dir.to_path_buf(),
+            ..Default::default()
+        };
+        let read =
+            |input: Value, ctx: ToolCtx| async move { FsRead.call(input, &ctx).await.unwrap() };
+
+        let out = read(json!({"path": "big.log"}), ctx(&dir)).await;
+        let head = format!(
+            "[truncated: {} is {} bytes, and this read stopped at its 200000-byte limit \
+             partway through line ",
+            dir.join("big.log").canonicalize().unwrap().display(),
+            body.len()
+        );
+        assert!(out.content.starts_with(&head), "{}", &out.content[..300]);
+        // After the dispatch's own cap, the note is still what the model reads.
+        let capped = crate::tool::cap_result(out.content.clone(), 24_000, None, "fs_read", "t");
+        assert!(capped.starts_with(&head));
+        let line: u64 = out.content[head.len()..]
+            .split('.')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(out
+            .content
+            .contains(&format!("read on with offset {line}.]")));
+        let next = read(
+            json!({"path": "big.log", "offset": line, "limit": 1}),
+            ctx(&dir),
+        )
+        .await;
+        let last_kept = out.content.trim_end().lines().last().unwrap();
+        assert!(
+            last_kept.len() <= next.content.len() && next.content.starts_with(last_kept),
+            "offset {line} reads on from the cut: kept {last_kept:?}, next {:?}",
+            next.content
+        );
+
+        let program = ToolCtx {
+            for_program: true,
+            ..ctx(&dir)
+        };
+        let whole = read(json!({"path": "big.log"}), program).await;
+        assert_eq!(whole.content, body, "a program's read is the whole file");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[tokio::test]
     async fn a_huge_single_line_is_capped_before_reading_the_tail() {
         let data = "é".repeat(MAX_OUTPUT_BYTES);
         let mut reader = data.as_bytes();
-        let result = read_text_window(&mut reader, 1, None).await.unwrap();
+        let (result, cut) = read_text_window(&mut reader, 1, None, MAX_OUTPUT_BYTES)
+            .await
+            .unwrap();
         assert!(result.starts_with(&"é".repeat(MAX_OUTPUT_BYTES / 2)));
-        assert!(result.contains("truncated"));
+        assert_eq!(cut, Some(1), "the cut fell on the only line");
         assert_eq!(reader.len(), data.len() - MAX_OUTPUT_BYTES - 1);
     }
 
@@ -1714,9 +1807,11 @@ mod read_window_tests {
         let data = "one\r\n\r\nthree\nfour";
         for offset in 1..=6 {
             for limit in [None, Some(0), Some(1), Some(3), Some(10)] {
-                let actual = read_text_window(&mut data.as_bytes(), offset, limit)
-                    .await
-                    .unwrap();
+                let (actual, cut) =
+                    read_text_window(&mut data.as_bytes(), offset, limit, MAX_OUTPUT_BYTES)
+                        .await
+                        .unwrap();
+                assert_eq!(cut, None);
                 let expected = if offset == 1 && limit.is_none() {
                     data.to_owned()
                 } else {
@@ -1729,20 +1824,23 @@ mod read_window_tests {
                 assert_eq!(actual, expected, "offset={offset}, limit={limit:?}");
             }
         }
-        assert!(read_text_window(&mut b"\xff".as_slice(), 1, None)
-            .await
-            .is_err());
-        assert_eq!(
-            read_text_window(&mut b"ok\n\xff".as_slice(), 1, Some(1))
+        assert!(
+            read_text_window(&mut b"\xff".as_slice(), 1, None, MAX_OUTPUT_BYTES)
                 .await
-                .unwrap(),
+                .is_err()
+        );
+        assert_eq!(
+            read_text_window(&mut b"ok\n\xff".as_slice(), 1, Some(1), MAX_OUTPUT_BYTES)
+                .await
+                .unwrap()
+                .0,
             "ok"
         );
         // The cap falls inside a multibyte character and must not call it binary.
         let data = "€".repeat(MAX_OUTPUT_BYTES);
-        assert!(read_text_window(&mut data.as_bytes(), 1, None)
+        let (_, cut) = read_text_window(&mut data.as_bytes(), 1, None, MAX_OUTPUT_BYTES)
             .await
-            .unwrap()
-            .contains("truncated"));
+            .unwrap();
+        assert!(cut.is_some());
     }
 }
