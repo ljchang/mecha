@@ -417,7 +417,8 @@ threshold per persona once the access log says where it should sit. The
     default, which needs no file). Rows the threshold never reads still fold:
     owner-origin rows and `state`, which §9 exempts from decay, and `days`
     and `items`, which are pruned on a fixed age (§5). Events, arcs and
-    `people` rows decay on the threshold (§9), so they are withheld. A day's companions
+    `people` rows that are not owner-origin decay on the threshold (§9), so
+    they are withheld. A day's companions
     who are decaying `people` rows are withheld with them and render as
     "someone", as a pruned id does (§6.3). So a typo empties the part of the block that
     needs the owner's numbers, not the whole of it. The decay knobs have no "off", and shipped defaults
@@ -2324,7 +2325,8 @@ ruled for repetition.
   - **The publisher's placement where it outlives the five-day expiry**,
     out of reach because memory outlives the arm's measured days, so part
     3's window would not see it: the typed episode's `interest`, at most
-    log₂k bits an episode and three episodes a day (§8.4), and shelf B's
+    log₂k bits an episode and three episodes a day (§8.4), which is the
+    only way the first build's shelf C line persists (PL30), and shelf B's
     `interest` in the narration snapshotted from it, at most log₂k bits an
     item and three arrivals a night (§4.4, §8.2). The caps bound the rate,
     3·log₂k bits a day each, and the live total is that times the days the
