@@ -275,11 +275,12 @@ pub struct Backstops {
     pub max_printed_bytes: usize,
 }
 
-/// §5's counted host limits, as R4 ruled them: 32 sub-calls, 256 tool
-/// reads and 2,048 handle operations. Thinking passes are a subset of
+/// §5's counted host limits, as R4 ruled them and the owner raised tool
+/// reads (2026-11-01): 32 sub-calls, 2,048 tool reads and 2,048 handle
+/// operations. Thinking passes are a subset of
 /// sub-calls and add nothing; an `llm_query` or `llm_map` call is one
 /// suspension and spends a handle operation, so the sum still bounds it.
-pub const COUNTED_HOST_LIMITS: u64 = 32 + 256 + 2048;
+pub const COUNTED_HOST_LIMITS: u64 = 32 + 2048 + 2048;
 
 impl Default for Backstops {
     fn default() -> Self {
@@ -454,11 +455,11 @@ mod tests {
         let lines = [
             Backstop::WallClock(Duration::from_secs(600)).to_string(),
             Backstop::Memory(1024).to_string(),
-            Backstop::Suspensions(2336).to_string(),
+            Backstop::Suspensions(4128).to_string(),
         ];
         assert!(lines[0].contains("wall-clock") && lines[0].contains("600 s"));
         assert!(lines[1].contains("memory") && lines[1].contains("1024"));
-        assert!(lines[2].contains("suspension") && lines[2].contains("2336"));
+        assert!(lines[2].contains("suspension") && lines[2].contains("4128"));
         let killed = Backstop::WorkerKilled { signal: Some(9) }.to_string();
         assert!(killed.contains("killed by signal 9"), "{killed}");
         let lost = Backstop::WorkerKilled { signal: None }.to_string();
@@ -469,6 +470,6 @@ mod tests {
     fn the_default_backstops_are_the_designs() {
         let b = Backstops::default();
         assert_eq!(b.wall_clock, Duration::from_secs(600));
-        assert_eq!(b.max_suspensions, 2336);
+        assert_eq!(b.max_suspensions, 4128);
     }
 }

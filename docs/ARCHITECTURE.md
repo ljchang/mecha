@@ -3632,7 +3632,10 @@ The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
   about the stub's own text (#791). It prints, and comes back to the host,
   as its stub (`<handle 3: 48,213 chars from mail_get_thread>`). Only that
   exact stub resolves, to a handle this program holds, and text enters only
-  through `peek`, capped and counted. Patterns are Rust `regex`. A tool's error body is a handle the
+  through `peek`, capped and counted. The one exception is `fs_list`
+  (`code::LISTING`): its names arrive as a list of `str`, charged to the same
+  cap and count, because every live run opened with string methods on them.
+  Patterns are Rust `regex`. A tool's error body is a handle the
   `ToolError:` names. Every per-program limit (`code::defaults`, as R4 ruled)
   raises a `LimitError:` naming itself; host bytes are also drawn from one
   process-wide `BytePool`.
