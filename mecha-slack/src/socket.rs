@@ -12,7 +12,7 @@
 //! that nothing ever has to dial home, and its comment is the argument here
 //! too: *instant is a property of who waits, not of who calls.*
 //!
-//! Two behaviours worth knowing before changing anything:
+//! Four behaviours worth knowing before changing anything:
 //!
 //! - **Reconnect is make-before-break.** Slack rotates connections every few
 //!   hours and gives about ten seconds' warning. Opening the replacement before
@@ -58,11 +58,11 @@ pub fn tls_config() -> SlackResult<rustls::ClientConfig> {
 }
 
 /// The connect step of [`SocketMode::open`]: the WebSocket dialled with
-/// [`tls_config`] named, never the process default (module docs). Public so
-/// a test can drive it against a `wss://` URL. A plaintext `ws://` fixture
-/// never builds a TLS connector, which is how the default-provider panic
-/// went untested.
-pub async fn dial(url: &str) -> SlackResult<Connection> {
+/// [`tls_config`] named, never the process default (module docs). A
+/// plaintext `ws://` fixture never builds a TLS connector, which is how the
+/// default-provider panic went untested; `mecha-cli/tests/slack_tls.rs`
+/// drives `open` over `wss://` instead.
+async fn dial(url: &str) -> SlackResult<Connection> {
     let tls = tokio_tungstenite::Connector::Rustls(Arc::new(tls_config()?));
     let (ws, _) = tokio_tungstenite::connect_async_tls_with_config(url, None, false, Some(tls))
         .await
