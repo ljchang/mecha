@@ -354,8 +354,11 @@ impl Table {
                 let [_, cell, day, n] = f[..] else {
                     bail!("an N row has 4 fields")
                 };
-                self.diaries
-                    .insert((self::cell(cell)?, day_type(day)?), n.parse()?);
+                let key = (self::cell(cell)?, day_type(day)?);
+                ensure!(
+                    self.diaries.insert(key, n.parse()?).is_none(),
+                    "a repeated N row"
+                );
             }
             "T" => {
                 let [_, cell, day, hour, from, pairs] = f[..] else {
@@ -423,8 +426,11 @@ impl Table {
                 let mut present = [0.0; 10];
                 for (p, s) in present.iter_mut().zip(&f[5..]) {
                     *p = count(s)?;
+                    // Both are written to the cent, so a true `p <= weight`
+                    // can read a cent over, and a weight in the thousands
+                    // rounds past a fixed epsilon in f64.
                     ensure!(
-                        *p <= weight + 0.01,
+                        *p <= weight + 0.02 + weight * 1e-9,
                         "company present more often than the activity"
                     );
                 }
@@ -676,6 +682,12 @@ mod tests {
                 "{body:?}: {err}"
             );
         }
+        let twice = format!("{HEAD}N\tstudent\tweekday\t1\nN\tstudent\tweekday\t2\n");
+        let err = format!("{:#}", Table::parse(&twice).unwrap_err());
+        assert!(
+            err.contains("line 4") && err.contains("repeated N"),
+            "{err}"
+        );
         let err = Table::parse("V\t2\n").unwrap_err();
         assert!(format!("{err:#}").contains("is not 1"));
         let err = Table::parse("V\t1\nC\tpartner\talone\n").unwrap_err();
@@ -693,5 +705,11 @@ mod tests {
         assert_eq!(bands[22], Band::Night);
         assert!(Band::ALL.iter().all(|b| bands.contains(b)));
         assert!(Cell::ALL.iter().all(|c| Cell::from_id(c.id()) == Some(*c)));
+        // `share` indexes `present` by discriminant, and `present` is filled
+        // in `ALL`'s order (the `C` row's), so the two must be one order.
+        assert!(Company::ALL
+            .iter()
+            .enumerate()
+            .all(|(i, c)| *c as usize == i));
     }
 }
