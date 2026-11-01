@@ -19,8 +19,12 @@
 //!   write, no network, no service.
 //! - **No mounts, and every `OsCall` and `NameLookup` is refused.** Monty's
 //!   files, environment, clock-driven sleeps and unknown imports all arrive
-//!   as `OsCall`s; this backend answers each `NotHandled`, so the program
-//!   gets monty's own `PermissionError`/`RuntimeError`/`ModuleNotFoundError`.
+//!   as `OsCall`s. An unknown import is answered `NotHandled`, so it stays
+//!   monty's own `ModuleNotFoundError` and `except ImportError:` catches it.
+//!   Every other one is a `PermissionError` that says a program has no files,
+//!   environment, network or clock and names the functions it was given
+//!   (`os_refusal`): monty's bare `Permission denied: '/notes'` read as a
+//!   sandbox fault (#791).
 //!   A `NameLookup` (an undefined name) is answered `Undefined`. Registered
 //!   functions are globals, so no lookup is ever needed to reach one.
 //! - **`preflight` runs a program through the real confinement**, and a
@@ -756,6 +760,12 @@ impl MontyProgram {
                 // refusal that says where the data is. Monty's own bare
                 // `PermissionError: Permission denied: '/notes'` read as a
                 // sandbox fault, and a model went probing paths (#791).
+                // An unknown import is an `OsCall` too, and stays monty's own
+                // `ModuleNotFoundError`, so `except ImportError:` still
+                // catches it (review of #791).
+                TurnEvent::OsCall { function_name, .. } if function_name == "import" => {
+                    Req::Resume(ResumeValue::NotHandled)
+                }
                 TurnEvent::OsCall { .. } => Req::Resume(ResumeValue::Error(MontyException::new(
                     ExcType::PermissionError,
                     Some(os_refusal(&self.externals)),
@@ -923,15 +933,21 @@ impl Program for MontyProgram {
 /// the way to its data. Their names are the program's own externals, so the
 /// backend names no tool.
 fn os_refusal(externals: &BTreeSet<String>) -> String {
-    let mut given: Vec<&str> = externals.iter().map(String::as_str).collect();
-    given.truncate(24);
+    const SHOWN: usize = 32;
+    let given: Vec<&str> = externals.iter().map(String::as_str).take(SHOWN).collect();
+    let more = externals.len().saturating_sub(SHOWN);
     format!(
-        "a program has no files, environment, network or clock; read through the functions \
-         it was given, which return handles: {}",
+        "a program has no files, environment, network or clock; reach data through the \
+         functions it was given: {}{}",
         if given.is_empty() {
             "none".to_string()
         } else {
             given.join(", ")
+        },
+        if more > 0 {
+            format!(", and {more} more")
+        } else {
+            String::new()
         }
     )
 }

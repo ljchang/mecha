@@ -166,8 +166,11 @@ the call's `ToolOutput::external` and the tool's capabilities.
 - **A handle is not a string, and using one as text raises** (#791). The
   host marks each handle in its answer (`interpreter::HANDLE_MARK`), and the
   backend hands the program an object that string operations refuse on:
-  `"Priya" in h`, `len(h)` and `h.split()` raise `TypeError`, and the
-  `code` result adds a line naming `find`, `count`, `lines` and `peek`.
+  `"Priya" in h` and `len(h)` raise `TypeError`, and a method such as
+  `h.split(",")` raises `AttributeError`. The `code` result adds a line
+  saying what to use instead: `split(h, ...)` for a method that is a host
+  function of the same name, and `find`, `count`, `lines` and `peek`
+  otherwise.
   The program's value goes back to the host as its stub, and the result
   shows it as one.
   - *Incident:* handles used to be the stub string itself. A model's
@@ -180,7 +183,8 @@ the call's `ToolOutput::external` and the tool's capabilities.
 - **A program that reaches for the filesystem is told where its data is.**
   An `os` call is refused with a `PermissionError` that says a program has
   no files, environment, network or clock, and lists the functions it was
-  given. Monty's own `Permission denied: '/notes'` read as a sandbox fault,
+  given. An unknown import is left as monty's own `ModuleNotFoundError`, so
+  a program's `except ImportError:` still catches it. Monty's own `Permission denied: '/notes'` read as a sandbox fault,
   and the model went probing paths.
 
 - **Taint is unchanged.** It arms on the host call, from the result's

@@ -1224,6 +1224,59 @@ async fn a_handle_used_as_text_raises_and_says_what_to_use() {
     );
 }
 
+/// A handle has no methods: `h.split(",")` names the call to make instead,
+/// and `len(h)` raises with the hint, where both used to answer about the
+/// stub's own text (review of #791).
+#[cfg(feature = "monty")]
+#[tokio::test]
+async fn a_handles_methods_and_len_say_what_to_use() {
+    let Some(interp) = monty().await else {
+        return;
+    };
+    let doc: Arc<dyn Tool> = Arc::new(Fake::read("document_read", "a, b"));
+    for (src, error, want) in [
+        (
+            "h = document_read()\nh.split(',')",
+            "AttributeError",
+            "call split(h, ...)",
+        ),
+        (
+            "h = document_read()\nh.strip()",
+            "AttributeError",
+            "a handle has no method 'strip'",
+        ),
+        (
+            "h = document_read()\nlen(h)",
+            "TypeError",
+            "a handle is not text",
+        ),
+    ] {
+        let agent = with_code(vec![Arc::clone(&doc)], Arc::clone(&interp));
+        let (d, _) = run(&agent, src).await;
+        assert!(d.is_error, "{src}: {}", d.content);
+        assert!(d.content.contains(error), "{src}: {}", d.content);
+        assert!(d.content.contains(want), "{src}: {}", d.content);
+    }
+}
+
+/// A missing module is still an `ImportError` a program can catch: the OS
+/// refusal is for files, the environment and the clock, not imports.
+#[cfg(feature = "monty")]
+#[tokio::test]
+async fn an_unknown_import_is_still_an_import_error() {
+    let Some(interp) = monty().await else {
+        return;
+    };
+    let agent = with_code(Vec::new(), interp);
+    let (d, _) = run(
+        &agent,
+        "try:\n    import nosuchmodule\nexcept ImportError:\n    print('caught')",
+    )
+    .await;
+    assert!(!d.is_error, "{}", d.content);
+    assert!(d.content.starts_with("caught"), "{}", d.content);
+}
+
 /// A program that reaches for the filesystem is told it has none, and what
 /// it was given instead, by name. Monty's own `Permission denied: '/notes'`
 /// read as a sandbox fault, and a model went probing paths (#791).
