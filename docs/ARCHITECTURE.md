@@ -1752,6 +1752,18 @@ module.
   value, and a clamped threshold could loosen pruning as easily as tighten it.
   The world is `Feature::World`, `part_of = Personas` with no switch of its
   own (PL26); `enable world` names the `[life]` table instead.
+- **The routine is the owner's file, and a draft never stands in for it**
+  (`persona::routine`, §4.1 and PL1 there). `routine.toml` holds her week's
+  anchors over the closed `persona::activity::Activity` set, which the
+  sampler, typed plans and the routine share and which maps ATUS codes by
+  longest prefix. A model's draft waits in `routine.draft.toml`, beside the
+  routine and never over it; only `approve_draft_as_shown`, digest-checked
+  against what the owner read, swaps it in, keeping the old one as
+  `routine.previous.toml`. A draft is staged only from a clean run, so every
+  approved routine is clean without an origin carried past approval. Two
+  anchors that always happen may not overlap (the week is a circle, so
+  Sunday night runs into Monday), and a routine that does not parse is a
+  `Store::problems` entry, never an empty week.
 - **Group membership lives once**, in each persona's `groups`. `groups.toml`
   only declares groups; a persona naming an undeclared group is a broken link.
 - **Links are by name, resolved on load, broken ones named**
