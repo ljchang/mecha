@@ -4,8 +4,9 @@
 > switches of step 1 are built (`Feature::World`, `persona::Life`), and so
 > is the routine's file with its activity set and owner approval
 > (`persona::routine`, `persona::activity`; the model drafter is not built
-> yet), and the ATUS table (`persona::atus`, §4.2); the rest of step 1 is
-> next. **Every decision in §16
+> yet), the ATUS table (`persona::atus`, §4.2), and the day sampler with
+> `world.db`'s `days` and `state` (`persona::sampler`, `persona::world`,
+> `mecha persona day`); the today-block and the week view are next. **Every decision in §16
 > is ruled** by the owner, the same day: PL1–PL22, PL24–PL26, PL29 and PL30 as rulings,
 > and PL23, PL27 and PL28 as the owner's direction (no approval queue for
 > news; every part opt-in per persona). §1 is the owner's requests, in the order they were made; §2 is
@@ -588,6 +589,29 @@ activity, and a who-was-present distribution from the Who file.
   before the diary's 4am. Who was there is ten kinds of company, from
   partner to colleague to strangers, which casting maps onto her network's
   edge types. How a persona is placed in a cell is the sampler's step.
+- **As built (`persona::sampler`, `persona::world`):** the owner picks her
+  cell per persona, as `cell` in `routine.toml` (ruled 2026-11-01: "we
+  would need to pick this per persona"). With none named no day is drawn,
+  and `mecha persona day` says why: a guessed week would look as plausible
+  as a right one. A day runs 4am to 4am, as a diary does, so an anchor
+  before 4am belongs to the day before. It opens asleep, waking at an hour
+  drawn from when the table's sleep stretches ended, unless an anchor opens
+  it. Anchors are placed first, each drawn against its chance (drawn even
+  at 1, so one anchor's chance never shifts the rest of the day's draws);
+  where two that happened overlap, the earlier start is kept. A drawn
+  stretch cut short by an anchor of the same activity becomes that anchor
+  begun early. A cell's transition counts are blended with the pool's
+  shares at a weight of five stretches, so a thin row follows the pool
+  and a thick one its cell; where the pool has no row, the nearest hour
+  of the pool's (or band's, for a duration) stands in, and every such step
+  is counted on the day. Company is the Who file's shares the same way:
+  alone, or one or more kinds of company, never both, and none where ATUS
+  does not ask. Casting people into those kinds waits for her network
+  (step 2), and traits moving the numbers waits for the storyteller
+  (step 3). A day is stored when first asked for; one of today or later is
+  drawn again when its routine, cell or table changed, and a past one is
+  kept. After fourteen days a day folds into its week's minutes per
+  activity.
 
 Each day:
 

@@ -9,7 +9,7 @@
 //!
 //! Like `mecha imagelib`, it builds no provider and connects to nothing.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use mecha_core::imagelib::{self, Library};
 use mecha_core::persona::{self, NewPersona, Origin, Persona, Status, Store};
 use std::path::Path;
@@ -113,6 +113,17 @@ pub enum Cmd {
     Routine {
         #[command(subcommand)]
         cmd: RoutineCmd,
+    },
+    /// Her day: drawn from her routine and time-use data the first time it
+    /// is asked for, then kept (`PERSONA-LIFE-DESIGN.md` §4.2). Needs
+    /// `[life] world = true` and a `cell` in routine.toml.
+    Day {
+        name: String,
+        /// YYYY-MM-DD; today when left out.
+        #[arg(long)]
+        date: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -955,6 +966,7 @@ fn run_with(
         }
         Cmd::Memory { cmd } => memory_cmd(dir, cmd)?,
         Cmd::Routine { cmd } => routine_cmd(dir, cmd, edit_file)?,
+        Cmd::Day { name, date, json } => day_cmd(dir, &name, date.as_deref(), json)?,
         Cmd::Relationship { cmd } => {
             persona::seed_starters(dir)?;
             let store = load(dir);
@@ -1063,6 +1075,84 @@ fn run_with(
 /// `mecha persona routine`: the owner's door to `routine.toml` and a
 /// waiting draft. The editor writes the file itself, as `edit` does, and
 /// what it left is read back through the sampler's own door.
+fn day_cmd(dir: &Path, name: &str, date: Option<&str>, json: bool) -> Result<()> {
+    use mecha_core::persona::{sampler, world};
+    // The owner's calendar day, not the machine's UTC one.
+    let cfg = mecha_core::config::Config::load(&std::env::current_dir()?)?;
+    let today = match cfg.agent.timezone() {
+        Some(tz) => chrono::Utc::now().with_timezone(&tz).date_naive(),
+        None => chrono::Local::now().date_naive(),
+    };
+    let date = match date {
+        None => today,
+        Some(d) => chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d")
+            .with_context(|| format!("`{d}` is not a date (YYYY-MM-DD)"))?,
+    };
+    let name = name.trim().to_lowercase();
+    let day = world::day(dir, &name, date, today)?;
+    let clock = |m: u32| format!("{:02}:{:02}", (m / 60) % 24, m % 60);
+    let company = |s: &sampler::Stretch| -> Option<Vec<&'static str>> {
+        s.company
+            .as_ref()
+            .map(|c| c.iter().map(|k| k.id()).collect())
+    };
+    if json {
+        let out = serde_json::json!({
+            "date": day.date.to_string(),
+            "cell": day.cell.id(),
+            "day_type": day.day_type.id(),
+            "backoffs": day.backoffs,
+            "stretches": day.stretches.iter().map(|s| serde_json::json!({
+                "activity": s.activity.id(),
+                "start_minute": s.start,
+                "end_minute": s.end,
+                "company": company(s),
+                "anchor": s.anchor,
+            })).collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+    println!(
+        "{name}, {} {} ({}, {})",
+        day.date.format("%A"),
+        day.date,
+        day.day_type.id(),
+        day.cell.id()
+    );
+    let mut midnight = false;
+    for s in &day.stretches {
+        if !midnight && s.start >= 24 * 60 {
+            println!("  ── after midnight ──");
+            midnight = true;
+        }
+        let who = match company(s) {
+            None => String::new(),
+            Some(c) if c == ["alone"] => "alone".into(),
+            Some(c) => format!("with {}", c.join(", ")),
+        };
+        let anchor = s
+            .anchor
+            .as_deref()
+            .map(|a| format!("[{a}] "))
+            .unwrap_or_default();
+        println!(
+            "  {}–{}  {:<16} {anchor}{who}",
+            clock(s.start),
+            clock(s.end),
+            s.activity.id()
+        );
+    }
+    if day.backoffs > 0 {
+        println!(
+            "\n{} draws read past the {} rows, to the pool or a nearer hour.",
+            day.backoffs,
+            day.cell.id()
+        );
+    }
+    Ok(())
+}
+
 fn routine_cmd(dir: &Path, cmd: RoutineCmd, edit_file: &dyn Fn(&Path) -> Result<()>) -> Result<()> {
     use mecha_core::persona::activity::Activity;
     use mecha_core::persona::routine::{self, Routine};
@@ -1094,6 +1184,7 @@ fn routine_cmd(dir: &Path, cmd: RoutineCmd, edit_file: &dyn Fn(&Path) -> Result<
                     // `null` with an error beside it when it does not load —
                     // never an empty week.
                     "routine": parsed.as_ref().ok().map(|r| r.as_ref().map(anchors)),
+                    "cell": parsed.as_ref().ok().and_then(|r| r.as_ref()).and_then(|r| r.cell).map(|c| c.id()),
                     "error": parsed.as_ref().err().map(|e| format!("{e:#}")),
                     "draft": texts.draft,
                     "activities": Activity::ALL.iter().map(|a| a.id()).collect::<Vec<_>>(),
@@ -1103,11 +1194,21 @@ fn routine_cmd(dir: &Path, cmd: RoutineCmd, edit_file: &dyn Fn(&Path) -> Result<
             }
             match (&texts.routine, &parsed) {
                 (None, _) => println!(
-                    "`{name}` has no routine: her days would come from time-use data alone. \
+                    "`{name}` has no routine, so no day is drawn for her: it names her cell, \
+                     the kind of week her days come from. \
                      `mecha persona routine edit {name}` writes one."
                 ),
                 (Some(_), Err(e)) => println!("routine.toml does not load: {e:#}"),
-                (Some(text), Ok(_)) => println!("── routine.toml ──\n{}", text.trim()),
+                (Some(text), Ok(r)) => {
+                    println!("── routine.toml ──\n{}", text.trim());
+                    if r.as_ref().is_some_and(|r| r.cell.is_none()) {
+                        println!(
+                            "\nIt names no cell, so no day is drawn for her until it does \
+                             (`cell = \"student\"`, `full_time`, `full_time_parent`, \
+                             `part_time`, `at_home` or `retired`)."
+                        );
+                    }
+                }
             }
             if let Some(draft) = &texts.draft {
                 println!(
@@ -1141,15 +1242,19 @@ fn routine_cmd(dir: &Path, cmd: RoutineCmd, edit_file: &dyn Fn(&Path) -> Result<
                     if draft {
                         ""
                     } else {
-                        ": her days come from time-use data alone"
+                        ": no day is drawn for her until a routine names her cell"
                     }
                 );
                 return Ok(());
             };
             match routine::parse(&text) {
                 Ok(r) => println!(
-                    "Saved: {} anchor(s){}.",
+                    "Saved: {} anchor(s), {}{}.",
                     r.anchors.len(),
+                    match r.cell {
+                        Some(c) => format!("cell {}", c.id()),
+                        None => "no cell, so no day is drawn yet".into(),
+                    },
                     if draft {
                         format!(" — `mecha persona routine approve {name}` when it reads right")
                     } else {

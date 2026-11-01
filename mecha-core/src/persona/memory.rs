@@ -367,11 +367,11 @@ fn unlist(s: &str) -> Vec<String> {
     serde_json::from_str(s).unwrap_or_default()
 }
 
-fn now() -> String {
+pub(super) fn now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
-fn uid() -> String {
+pub(super) fn uid() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
 
@@ -388,7 +388,7 @@ fn check_text(text: &str, max: usize, what: &str) -> Result<()> {
 // ── opening ─────────────────────────────────────────────────────────────
 
 /// Open (creating, owner-only) or open existing (read-only, never creating).
-fn connect(path: &Path, create: bool) -> Result<Option<Connection>> {
+pub(super) fn connect(path: &Path, create: bool) -> Result<Option<Connection>> {
     if !create && !path.is_file() {
         return Ok(None);
     }
