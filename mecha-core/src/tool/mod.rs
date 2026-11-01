@@ -1000,6 +1000,16 @@ pub struct ToolCtx {
     /// other call's context is built with `None`, so a child run never
     /// inherits a parent's channel. Never the model's.
     pub host_calls: Option<code::HostCalls>,
+    /// `Some(room)` when this call is a program's host call
+    /// (`CODE-MODE-DESIGN.md` §7): its result becomes a handle the program
+    /// holds rather than text in the model's context, and the program can
+    /// hold at most `room` more bytes. A tool may then return more than it
+    /// would to a turn, as `fs_read` does (up to `room`): its turn cap
+    /// protects the context window, which a handle never enters, and reading
+    /// past `room` would be refused anyway, so it is not worth reading.
+    /// Stamped per call by `Agent::call_ctx`, as `host_calls` is, so no run
+    /// inherits it from the call that started it; never the model's.
+    pub program_room: Option<usize>,
 }
 
 /// The last confirmed goal, and how the plan has moved against it.
@@ -1199,6 +1209,7 @@ impl Default for ToolCtx {
             image_loras: crate::loras::Layer::Inherit,
             build_on: None,
             host_calls: None,
+            program_room: None,
         }
     }
 }

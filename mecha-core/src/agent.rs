@@ -5562,6 +5562,7 @@ impl Agent {
                     context,
                     work,
                     host_calls,
+                    None,
                 );
                 async move {
                     let out = Self::execute(&tool, &name, input, &tool_ctx).await;
@@ -5923,6 +5924,7 @@ impl Agent {
         run_pictures: &mut RunPictures,
         context: Option<crate::pressure::Forecast>,
         asking: Asking,
+        program_room: Option<usize>,
     ) -> Gated {
         let (id, name, input) = call;
         let grants_before = cx.tools.grants.live();
@@ -5948,7 +5950,16 @@ impl Agent {
         };
         let work =
             crate::step::Work::of(trace).in_run(cx.tools.work.map(|w| w.run).unwrap_or_default());
-        let tool_ctx = Self::call_ctx(cx, id, turn_taint, recorded_taint, context, work, None);
+        let tool_ctx = Self::call_ctx(
+            cx,
+            id,
+            turn_taint,
+            recorded_taint,
+            context,
+            work,
+            None,
+            program_room,
+        );
         let mut output = Self::execute(&tool, name, input.clone(), &tool_ctx).await;
         let terms = self.terms(
             cx,
@@ -6008,6 +6019,7 @@ impl Agent {
                     call_id,
                     name,
                     input,
+                    room,
                     reply,
                 } => {
                     made += 1;
@@ -6025,6 +6037,7 @@ impl Agent {
                             run_pictures,
                             context,
                             Asking::Refuse,
+                            Some(room),
                         )
                         .await;
                     for t in &mut trace[before..] {
@@ -6142,8 +6155,12 @@ impl Agent {
     ///
     /// `host_calls` is the program channel, for a tool that
     /// [`hosts_programs`](crate::tool::Tool::hosts_programs) and for no
-    /// other: every context is built with it set here, so none inherits one
-    /// from the run's own (`CODE-MODE-DESIGN.md` §7).
+    /// other, and `program_room` marks a program's host call: every context
+    /// is built with both set here, so none inherits either from the run's
+    /// own (`CODE-MODE-DESIGN.md` §7). A subagent's run is based on a call's
+    /// context, which is how an inherited mark would have reached a child's
+    /// turn reads (review of #796).
+    #[allow(clippy::too_many_arguments)]
     fn call_ctx(
         cx: &RunContext,
         id: &str,
@@ -6152,6 +6169,7 @@ impl Agent {
         context: Option<crate::pressure::Forecast>,
         work: crate::step::Work,
         host_calls: Option<crate::tool::code::HostCalls>,
+        program_room: Option<usize>,
     ) -> Arc<ToolCtx> {
         Arc::new(ToolCtx {
             call_id: Some(id.to_string()),
@@ -6160,6 +6178,7 @@ impl Agent {
             context,
             work: Some(work),
             host_calls,
+            program_room,
             ..(*cx.tools).clone()
         })
     }
@@ -7263,6 +7282,47 @@ mod tests {
     use async_trait::async_trait;
     use serde_json::json;
     use std::sync::Mutex;
+
+    /// A program's mark is stamped on every call, never inherited: a
+    /// subagent's run is based on a call's context, so a base context
+    /// carrying `program_room` must not hand it to the next call's tool
+    /// (review of #796), as `host_calls` is not handed on either.
+    #[test]
+    fn a_call_context_never_inherits_a_programs_mark() {
+        let base = ToolCtx {
+            program_room: Some(64),
+            ..ToolCtx::default()
+        };
+        let cx = RunContext::new(
+            base,
+            Arc::new(ModeApprover {
+                mode: PermissionMode::Allow,
+            }),
+        );
+        let w = crate::step::Work::default();
+        let turn = Agent::call_ctx(
+            &cx,
+            "t1",
+            Taint::default(),
+            Taint::default(),
+            None,
+            w,
+            None,
+            None,
+        );
+        assert_eq!(turn.program_room, None);
+        let host = Agent::call_ctx(
+            &cx,
+            "t2",
+            Taint::default(),
+            Taint::default(),
+            None,
+            w,
+            None,
+            Some(9),
+        );
+        assert_eq!(host.program_room, Some(9));
+    }
 
     /// The stuck-loop digest is one call however the model ordered its
     /// arguments (review of #755): a repeat written in a new order still
@@ -11301,6 +11361,7 @@ mod tests {
                 &mut RunPictures::default(),
                 None,
                 Asking::Person,
+                None,
             )
             .await;
         let Gated::Ran { output, terms } = gated else {
@@ -11352,6 +11413,7 @@ mod tests {
                     &mut RunPictures::default(),
                     None,
                     Asking::Person,
+                    None,
                 )
                 .await;
             assert_eq!(trace.len(), 1, "one trace entry per call");

@@ -157,7 +157,7 @@ the call's `ToolOutput::external` and the tool's capabilities.
 | `count(h, pattern)` | int | |
 | `json_get(h, path)` | Handle for a string, object or array leaf; a number, bool or null as itself | structured tool output without decoding it into the program. A string leaf is text and stays a handle, or it would bypass `peek`'s cap and count |
 | `budget()` | dict of ints | the remaining amount of each **per-program** §5 host limit, read without spending anything, so a program can check before a sweep. The process-wide byte pool is left out: it moves with other programs, and reading it would be a cross-program observable, the `find`/`count` oracle's cousin |
-| `peek(h, n=2000)` | str | **the only way a handle's text enters the program**; a `str[n]` sub-call result (§4) is the other way prose does, and both draw on one cap and one count |
+| `peek(h, n=2000, start=0)` | str | **the only way a handle's text enters the program**; a `str[n]` sub-call result (§4) is the other way prose does, and both draw on one cap and one count. `start` is a character offset, as `find` gives them, negative from the end as `slice`'s are (2026-11-01: without it a model peeked "around" a `find` hit, read the note's head instead, and missed 7 of 25 matches) |
 
 **`fs_list` is the one tool whose result is not a handle.** A program gets
 its names as a list of `str` (a directory's ends in `/`; the tool's
@@ -544,9 +544,12 @@ programs that each hit the limit again (§13). Each read still meets the
 whole gate and arms taint. The 64 MB host-byte limit bounds what handles
 hold, not what the program record keeps: a read whose bytes the limit
 refuses is already recorded, and a program can catch the `LimitError:` and
-read on, so the record can reach 64 MB plus one result per read. That term
-grew with the raise (review of #793). A per-program bound on recorded bytes
-would close it, and is not built. Each limit's error says which limit it
+read on, so the record could reach 64 MB plus one result per read. That term
+grew with the raise (review of #793), and again when a program's `fs_read`
+began to return up to 64 MB. So the record is bounded while the program
+runs too: every read applies the conversation's own ceiling
+(`record::RETAINED_BYTES`, 256 MB, newest kept), and an older call past it
+keeps its record without its bytes, which grounding reads as no referent. Each limit's error says which limit it
 was, because that error is the model's only feedback.
 
 Each run's total also draws on its existing `RunContext` budget.
@@ -1457,3 +1460,37 @@ in 85 s and 10 turns: 7 programs, 3 failed, 536 host calls, no sub-calls.
 and 15 turns. 11 programs, 6 failed, 1,298 host calls, 25 sub-calls. A
 single run each, so this says the path works, not how often it does; M2
 (above) is the measurement.
+
+**The battery (2026-11-01, #793 deployed).** Seven runs, none told about
+`code`, on fictional fixtures with known answers:
+
+| Task | Answer | `code`? | What happened |
+|---|---|---|---|
+| the 300 notes, three times | right once; twice Marco 18 of 25 | yes | `peek(h, n)` after `find`, expecting text around the hit; it reads the head. Two of the runs were the same program: the provider's pinned seed (42) makes repeats identical, so they are one sample |
+| which of 32 meetings ended without agreement (told in prose) | wrong: 4 of 10, 9 wrong | yes, no sub-calls | it searched for the word "inconclusive" |
+| failures in a 1.5 MB log | wrong: "0" (7) | no | `fs_read` stopped at 200 KB and said so after the text; the result cap kept the head, so the note was in the spill file's tail, and the model took a spill file's end for the log's |
+| a join of the notes and a roster | right, every count | yes | four of five programs failed first on habits |
+| five short notes | right | no, correctly | |
+
+The answers: `fs_read` says a cut first, with the file's size, and a
+program's read takes the whole file up to the host-byte limit
+(ARCHITECTURE.md, *A cut read says so first*); `peek` takes `start` (§3);
+and the description has a judgement example, asking each item's relevant
+part, in a domain unlike any fixture. A repeat must vary the seed to count
+as a second sample.
+
+**Rerun on #796's build (2026-11-01), seeds varied** by a run directory's
+`mecha.toml` (a provider table there replaces the global one whole, so it
+carries the full block):
+
+| Task | Before | After |
+|---|---|---|
+| the log | "0" | **right**: 7 failures, every date, the last code; 11 programs, 8 failed first |
+| the minutes, seed 42 | 4 of 10, 9 wrong | 10 of 10, 1 wrong, by `llm_map` over each ending (32 sub-calls) |
+| the minutes, seed 7 | | **exactly right**, by printing each ending and judging them itself |
+| the 300 notes, seed 7 | | Marco right; Priya 150 (144): a fixed 100-character window after "Attendees:" ran into the next line |
+| the 300 notes, seed 1234 | | Priya right; Marco 124: attendance counted as presenting again |
+
+What is left is reading, not machinery: a window where a line-scoped pattern
+(`Attendees:.*Priya`, the description's own) was exact, and "presented" read
+as "attended". Programs still fail first on habits about half the time.
