@@ -427,6 +427,11 @@ pub(crate) enum HostRequest {
         call_id: String,
         name: String,
         input: Value,
+        /// Bytes the program may still hold (its host-byte limit's rest), so
+        /// a tool that can stop early does, rather than read what the charge
+        /// would refuse (`ToolCtx::program_room`). The process pool is left
+        /// out: it moves with other programs.
+        room: usize,
         reply: oneshot::Sender<HostAnswer>,
     },
     /// One sub-call pass (§4), to the model the run already holds.
@@ -552,7 +557,7 @@ impl HostCalls {
         answer.await.unwrap_or_else(|_| gone())
     }
 
-    async fn call(&self, name: &str, input: Value) -> HostAnswer {
+    async fn call(&self, name: &str, input: Value, room: usize) -> HostAnswer {
         let (reply, answer) = oneshot::channel();
         let gone = || HostAnswer::Refused("the run that started this program has ended".into());
         if self
@@ -561,6 +566,7 @@ impl HostCalls {
                 call_id: self.call_id.clone(),
                 name: name.to_string(),
                 input,
+                room,
                 reply,
             })
             .is_err()
@@ -713,6 +719,23 @@ const EXAMPLE: &str = "hits = []\n\
     hits.append(name)\n\
     print(len(hits), hits)\n";
 
+/// The description's second example: a question about meaning, asked of each
+/// item's relevant part. Given the first example alone, a model asked which
+/// meetings ended without agreement searched for the word "inconclusive" and
+/// made no sub-call, and 9 of the 14 meetings it listed were wrong
+/// (2026-11-01). A different domain from any fixture, so it teaches the
+/// shape rather than an answer; `the_judgement_example_runs_as_written` runs
+/// this text.
+const JUDGE_EXAMPLE: &str = "names = []\n\
+    parts = []\n\
+    for name in fs_list(path=\"tickets\"):\n    if name.endswith(\"/\"):\n        continue\n    \
+    h = fs_read(path=\"tickets/\" + name)\n    hits = find(h, \"(?i)resolution\")\n    \
+    names.append(name)\n    \
+    if len(hits) > 0:\n        parts.append(slice(h, hits[-1][0], size(h)))\n    \
+    else:\n        parts.append(h)\n\
+    happy = llm_map(\"Was the customer satisfied at the end?\", parts, \"bool\")\n\
+    print([n for n, ok in zip(names, happy) if not ok])\n";
+
 /// The tool's description: what a program can do, and the tools it may call
 /// as built. Fixed at construction, so it never changes a cached prefix
 /// between turns.
@@ -760,8 +783,9 @@ fn describe(admission: &Admission) -> String {
          slice(h, start, end), lines(h), split(h, pattern), chunks(h, n, overlap=0) (n \
          characters each, at least 256), find(h, pattern) (a list of [start, end] character \
          offsets), count(h, pattern) and json_get(h, path) (a string, object or array leaf \
-         stays a handle; a number, bool or null comes back as itself). peek(h, n=2000) is \
-         the only way to see a handle's text, and is capped per program; budget() says what \
+         stays a handle; a number, bool or null comes back as itself). peek(h, n=2000, \
+         start=0) is the only way to see a handle's text: n characters from start, which \
+         may be an offset find gave; it is capped per program; budget() says what \
          is left of each limit. Patterns are Rust regular expressions. \
          llm_query(instruction, source, shape) asks the model one question about a handle \
          (or a list of them) and returns an answer of that shape: \"bool\", \"int\", \
@@ -771,7 +795,20 @@ fn describe(admission: &Admission) -> String {
          once per handle, one at a time, and returns a list; it raises at the first failed \
          item. Pass thinking=True only when a question needs reasoning: it is far slower. \
          Sub-calls are few (budget()[\"sub_calls\"]): keep them for judgement a pattern \
-         cannot make, and find or slice first so each one asks about what matters. To keep going past one bad source, loop instead, checking the budget \
+         cannot make, and find or slice first so each one asks about what matters. A \
+         question about meaning (whether people agreed, a tone, a reason) is judgement: a \
+         keyword search there is a guess. Ask each item's relevant part instead, or print \
+         those parts and judge them yourself.",
+    );
+    // Shown only beside the tools it uses, as the first example is.
+    if listings.contains(&"fs_list") && admission.contains("fs_read") {
+        d.push_str(" For example, which tickets ended unhappily:\n");
+        d.push_str(JUDGE_EXAMPLE);
+    } else {
+        d.push(' ');
+    }
+    d.push_str(
+        "To keep going past one bad source, loop instead, checking the budget \
          first:\n\
          for h in hs:\n    if budget()[\"sub_calls\"] < 2:\n        break\n    try:\n        \
          out.append(llm_query(q, h, \"bool\"))\n    except RuntimeError as e:\n        \
@@ -1010,6 +1047,13 @@ struct Run {
     listings: std::collections::BTreeSet<String>,
     /// Every host call that ran, in issue order: the program record (§7).
     recorded: Vec<record::ProgramCall>,
+    /// The most of `recorded`'s bytes held while the program runs
+    /// ([`record::RETAINED_BYTES`], the ceiling the conversation keeps them
+    /// under afterwards). A read is recorded before the host-byte limit can
+    /// refuse its handle, and a program can catch that `LimitError:` and read
+    /// again, so without this a loop over a large file held one whole result
+    /// per read: 2,048 of up to 64 MB each (review of #793).
+    retain: usize,
 }
 
 impl Drop for Run {
@@ -1095,6 +1139,7 @@ impl Run {
             external: false,
             reach: Default::default(),
             listings: Default::default(),
+            retain: record::RETAINED_BYTES,
             recorded: Vec::new(),
         }
     }
@@ -1280,7 +1325,7 @@ impl Run {
         // wait ends, the raise lands, and the interpreter, seeing the token,
         // ends the program `Cancelled` at that suspension.
         let answer = tokio::select! {
-            a = host.call(name, input.clone()) => a,
+            a = host.call(name, input.clone(), self.limits.host_bytes.saturating_sub(self.bytes)) => a,
             () = cancel.cancelled() => HostAnswer::Refused(
                 "stopped: the run was cancelled while this call ran".into(),
             ),
@@ -1317,6 +1362,7 @@ impl Run {
                     failed,
                     Arc::clone(&bytes),
                 ));
+                record::bound_at(&mut self.recorded, self.retain);
                 if !failed && self.listings.contains(name) {
                     return self.names(name, &bytes);
                 }
@@ -1915,9 +1961,23 @@ impl Run {
         if n < 0 {
             return Err(raise(Tag::HandleError, "`peek`: `n` must be at least 0"));
         }
-        let take = (n as usize).min(h.chars);
-        let end = h.bytes_at(&[take])[0];
-        let text = &h.text()[..end];
+        // `start` is a character offset, as `find` gives them, and counts from
+        // the end when negative, as `slice`'s do. Without it a model peeked
+        // `n` characters "around" a `find` hit and read the note's head
+        // instead, missing 7 of 25 presenter lines (2026-11-01).
+        let chars = h.chars as i64;
+        let start = a.int(2, "start", Some(0))?;
+        let from = if start < 0 { start + chars } else { start };
+        if from < 0 || from > chars {
+            return Err(raise(
+                Tag::HandleError,
+                format!("`peek`: start {start} is outside a handle of {chars} characters"),
+            ));
+        }
+        let from = from as usize;
+        let take = (n as usize).min(h.chars - from);
+        let b = h.bytes_at(&[from, from + take]);
+        let text = &h.text()[b[0]..b[1]];
         if self.peeked.saturating_add(text.len()) > self.limits.peek_bytes {
             return Err(raise(
                 Tag::LimitError,
