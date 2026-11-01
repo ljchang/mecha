@@ -727,9 +727,11 @@ one more reason §14's gate part 1 exists.
     wrote. Its presence, count and timing, and for a publisher reaching
     feeds under several interests which one a line shows (§8.3), are the
     residual §14's steering arm covers. Nothing else is exempt. Once shelf B ships, the id rides
-    shelf B's interest line instead (§8.3), and that line folds by its
-    row's origin like any row: clean by shelf B's capacity (§8.2), with the
-    untrusted variant below ready if its gate (§14, PL20) comes back dirty.
+    shelf B's interest line instead (§8.3), and that line folds by the
+    origin of the clean half §8.2's single constructor emits, never the
+    untrusted half beside it in the same `items` row (§5): clean by shelf
+    B's capacity, with the untrusted variant below ready if its gate (§14,
+    PL20) comes back dirty.
     It is not inherited from this exception.
 
   The untrusted variant exists from the first build, so a dirty result at the
@@ -899,7 +901,7 @@ read every chat, several processes write it).
 | `events` | `{when, kind, storylet, people, arc, importance_her, origin, source, told}` | Pruned by score (§9) |
 | `arcs` | Ongoing situations with a stage and a next-step distribution | Closed arcs collapse to one summary event |
 | `state` | Slow facts about her life: job, relationship status, home, health | **Persists**, superseded by a later row; never decays |
-| `people`, `edge_events` | Her network (§6) | Minor people decay out (§6.3) |
+| `people`, `edge_events` | Her network (§6) | Minor people decay out (§6.3); a node pointing at a shared person keeps only its hold, dates and retellings, past her own prune until the defaults would prune it (§3.2), and `forget` removes what a chat contributed to it like any row |
 | `items` | Interest shelves A and B as typed rows; shelf C's prose (headline, summary, link) in an untrusted column `news_read` alone reads, never rendered into a block (§8) | Five days, all shelves; a feed's items go with the feed when the owner unregisters it |
 
 **State vs events** is what makes aggressive pruning safe. "She changed jobs"
@@ -1576,7 +1578,13 @@ the headline never rides in the today-block.
       `discussed_at` comes from the transcript, all
       supplied by code (0 attacker bits). Only `owner_reaction` is chosen by
       the writer, from a closed set of four (2 bits). So the ceiling is **2
-      bits per episode**.
+      bits per episode**. `interest` follows from the item, so the writer
+      adds nothing to it, but it keeps the publisher's placement: a
+      publisher reaching feeds under k interests chose it, at most log₂k
+      bits an episode. Like the shelves' placement channel (§8.2) that sits
+      outside the ceiling, under the steering arm (§14 part 3), and unlike
+      the shelves' it outlives the five-day expiry, kept as long as the
+      episode is recalled.
     - **One typed episode per item read, fixed by code.** If the writer could
       choose which of several read items an episode is about, that choice
       would add log₂n bits over n items read. So the count is set by the recorded `news_read`
@@ -1594,11 +1602,12 @@ the headline never rides in the today-block.
       bounds the feed's choice. A fourth read still works and is
       still discussed. Its free text is stored as candidates like any other,
       and it simply gets no clean typed episode, with nothing asked of the
-      owner. That makes the ceiling **at most 6 bits a day**, the constant
-      gate part 2 checks.
+      owner. That makes the ceiling **at most 6 bits a day** the writer
+      chooses, the constant gate part 2 checks; the placement beside it is
+      at most 3·log₂k bits a day.
     - **The live total is not bounded by an expiry**, unlike shelves A and B,
-      because typed episodes are memory and persist. It is 6 bits × the days
-      an episode stays recalled, bounded by memory's own soft-pruning
+      because typed episodes are memory and persist. It is 6 bits (plus the
+      placement's 3·log₂k) × the days an episode stays recalled, bounded by memory's own soft-pruning
       (`[memory] recall_below`, §9). The document states that rather than
       giving a live ceiling it cannot have.
     - **Transparent endorsement does not hold here, and that is stated.**
@@ -2059,7 +2068,7 @@ The folds, which arrive in no tool result and so arm at the fold
 
 | Fold | Arms | Stem |
 |---|---|---|
-| Today-block (§4.5) | `private`; both when any folded row's origin is not clean, except a code-composed shelf C line, which carries no value the publisher chose (PL30) | a new pair shaped like the recall pair, riding as **its own run note** so its prefix matches, registered in `arm_for_content`, `is_recorded_note` and `is_harness_voice` |
+| Today-block (§4.5) | `private`; both when any folded row's origin is not clean, except, in the first build, a code-composed shelf C line, which carries no value the publisher wrote (PL30; its placement, at most log₂k bits a line, is the steering arm's residual) | a new pair shaped like the recall pair, riding as **its own run note** so its prefix matches, registered in `arm_for_content`, `is_recorded_note` and `is_harness_voice` |
 | Owner's roster, per-turn people cards and the unknown-name note (§7.2) | `private`; both when any fact's origin is not clean | `persona::recall::stem_of`'s existing pair, inside the recall block; the note is a line of the cards fold, never its own block |
 | `news_read` result (§8.3) | `untrusted`, always: `untrusted_input` declared and `external` on every result, the loop's conjunction | none; a tool result is re-armed from `Record::Taint`, like every external tool |
 | Proactive framing turn (§12) | nothing of its own; the run's today-block carries the arming | its own stem, registered in `arm_for_content`, `is_recorded_note` and `is_harness_voice` |
