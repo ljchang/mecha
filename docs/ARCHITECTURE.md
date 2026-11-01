@@ -1818,7 +1818,22 @@ module.
   set in `routine.toml` through `toml_edit`, every other line and comment
   kept, the file written from its template if there is none, and only over
   the digest the page was shown, so an edit made in an editor meanwhile is
-  never overwritten.
+  never overwritten. A stale pick is typed (`routine::StaleRoutine`, a
+  409), and a pick leaves `routine.previous.toml` alone: that is the
+  routine an approval replaced, the backup approval promises.
+- **The routine drafter answers typed anchors, never TOML**
+  (`persona::drafter`). One quarantined pass over `identity.md` and
+  `motivation.md` on the persona's own model (`PersonaUse::Judge`, as her
+  crisis judge), the answer constrained to a schema where the provider
+  takes one; the harness renders the file, so a model's words reach it only
+  as an anchor's label, which `routine::parse` caps and checks. The answer
+  has no field for `cell`, and approving a draft that names none keeps the
+  routine's (`routine::kept_cell`): her kind of week is the owner's pick,
+  and approval must not quietly undo it. It drafts only for an approved
+  persona whose recorded origin is not untrusted, since an approved label
+  is clean text in her days; `stage_draft` refuses an untrusted draft
+  again at the door. The envelope is read before the answer: a refusal or
+  a reply cut off at its cap stages nothing.
 - **Group membership lives once**, in each persona's `groups`. `groups.toml`
   only declares groups; a persona naming an undeclared group is a broken link.
 - **Links are by name, resolved on load, broken ones named**

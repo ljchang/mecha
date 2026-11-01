@@ -1849,8 +1849,12 @@ const demoDay = (date, when, weekend) => ({
 // The week holding `date` (YYYY-MM-DD, this demo week when absent), so
 // Earlier and Later step as they do on a real server. Today is fixed.
 const DEMO_TODAY = '2026-09-30';
+// `null` for a date that is not one, which the route answers 400 as the
+// server does, rather than throwing on an Invalid Date (review of #797).
 export function personaWeek(date) {
+  if (date != null && !/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
   const at = new Date(`${date ?? DEMO_TODAY}T12:00:00Z`);
+  if (Number.isNaN(at.getTime())) return null;
   const monday = new Date(at);
   monday.setUTCDate(at.getUTCDate() - ((at.getUTCDay() + 6) % 7));
   const days = [];

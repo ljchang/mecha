@@ -1940,8 +1940,18 @@ impl PersonaChats {
                 body.cell
             )));
         };
-        routine::set_cell(&self.store, &p.name, cell, &body.base)
-            .map_err(|e| Refusal::Bad(format!("{e:#}")))?;
+        // Stale is an edit made elsewhere (409), a disk that would not take
+        // the write is the server's failure, and the rest is the file as
+        // it stands refusing the pick (review of #797).
+        routine::set_cell(&self.store, &p.name, cell, &body.base).map_err(|e| {
+            if e.downcast_ref::<routine::StaleRoutine>().is_some() {
+                Refusal::Conflict(format!("{e:#}"))
+            } else if e.chain().any(|c| c.is::<std::io::Error>()) {
+                Refusal::Failed(format!("{e:#}"))
+            } else {
+                Refusal::Bad(format!("{e:#}"))
+            }
+        })?;
         self.week(
             library,
             &p.name,
@@ -8559,10 +8569,11 @@ mod tests {
             .unwrap();
         assert_eq!(picked["routine"]["cell"], "part_time");
         assert_eq!(picked["week"]["days"].as_array().unwrap().len(), 7);
-        // Sent with the digest of no file, over a file that is now there.
+        // Sent with the digest of no file, over a file that is now there:
+        // an edit made elsewhere, so a 409 the page answers by re-reading.
         assert!(matches!(
             w.personas().set_cell(&w.library, "mara", &body("retired", ""), None),
-            Err(Refusal::Bad(why)) if why.contains("changed since it was shown")
+            Err(Refusal::Conflict(why)) if why.contains("changed since it was shown")
         ));
         assert!(matches!(
             w.personas()
@@ -8620,7 +8631,18 @@ mod tests {
                     keys.push(inner.split('\'').next().unwrap().to_string());
                     continue;
                 }
-                for pair in line.split(',') {
+                // Quoted values cleared first, so a comma or a colon inside
+                // one is never read as a key (review of #797).
+                let mut bare = String::new();
+                let mut quoted = false;
+                for c in line.chars() {
+                    if c == '\'' {
+                        quoted = !quoted;
+                    } else if !quoted {
+                        bare.push(c);
+                    }
+                }
+                for pair in bare.split(',') {
                     if let Some((k, _)) = pair.split_once(':') {
                         let k = k.trim();
                         if !k.is_empty() && k.chars().all(|c| c.is_ascii_lowercase() || c == '_') {

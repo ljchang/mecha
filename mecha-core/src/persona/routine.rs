@@ -360,8 +360,53 @@ pub fn stage_draft(dir: &Path, name: &str, text: &str, origin: Origin) -> Result
     super::write_private(&pdir.join(STAGED), super::text_digest(text).as_bytes())
 }
 
+/// A change made against a file that changed since it was shown — an edit
+/// made elsewhere. Typed, so a surface can tell it from bad input (a 409,
+/// not a 400), as `persona::StaleEdit` is for the editor's files.
+#[derive(Debug)]
+pub struct StaleRoutine {
+    pub name: String,
+    pub file: &'static str,
+}
+
+impl std::fmt::Display for StaleRoutine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "`{}`'s {} changed since it was shown; read it again before changing it",
+            self.name, self.file
+        )
+    }
+}
+
+impl std::error::Error for StaleRoutine {}
+
+/// The kind of week approving `draft` over `routine` leaves her with when
+/// the draft names none: the routine's. Her cell is the owner's pick, and a
+/// drafter never names one ([`super::drafter`]), so approving a draft must
+/// not quietly undo the pick. `None` when the draft names its own, or the
+/// routine has none to keep (or does not load, so none can be read).
+pub fn kept_cell(draft: &str, routine: Option<&str>) -> Option<Cell> {
+    let named = parse(draft).ok()?.cell;
+    if named.is_some() {
+        return None;
+    }
+    parse(routine?).ok()?.cell
+}
+
+/// `text` with `cell` set at its root, every other line, comment and anchor
+/// as written: `toml_edit` places a root key above the first `[[anchor]]`.
+fn with_cell(text: &str, cell: Cell) -> Result<String> {
+    let mut doc: toml_edit::DocumentMut = text
+        .parse()
+        .with_context(|| format!("{FILE} is not TOML; fix it by hand first"))?;
+    doc["cell"] = toml_edit::value(cell.id());
+    Ok(doc.to_string())
+}
+
 /// Make the waiting draft the routine, only if it still hashes to
-/// `digest`, what the owner was shown. The routine it replaces is kept as
+/// `digest`, what the owner was shown. A draft naming no kind of week keeps
+/// the routine's ([`kept_cell`]). The routine it replaces is kept as
 /// [`PREVIOUS`].
 pub fn approve_draft_as_shown(dir: &Path, name: &str, digest: &str) -> Result<Routine> {
     let pdir = persona_dir(dir, name)?;
@@ -369,14 +414,25 @@ pub fn approve_draft_as_shown(dir: &Path, name: &str, digest: &str) -> Result<Ro
         bail!("`{name}` has no routine draft waiting");
     };
     if super::text_digest(&text) != digest {
-        bail!(
-            "`{name}`'s routine draft changed since it was shown — read it again before approving"
-        );
+        return Err(StaleRoutine {
+            name: name.into(),
+            file: DRAFT,
+        }
+        .into());
     }
     // The owner may have edited the draft into something that no longer
     // loads; approving that would leave her with no week at all.
-    let routine = parse(&text).context("the draft does not load")?;
-    if let Some(old) = read_if_there(&pdir.join(FILE))? {
+    let mut routine = parse(&text).context("the draft does not load")?;
+    let old = read_if_there(&pdir.join(FILE))?;
+    let text = match kept_cell(&text, old.as_deref()) {
+        Some(cell) => {
+            let kept = with_cell(&text, cell)?;
+            routine = parse(&kept).context("the draft does not load with her kind of week")?;
+            kept
+        }
+        None => text,
+    };
+    if let Some(old) = &old {
         super::write_private(&pdir.join(PREVIOUS), old.as_bytes())?;
     }
     super::write_private(&pdir.join(FILE), text.as_bytes())?;
@@ -396,25 +452,22 @@ pub fn digest_of(text: Option<&str>) -> String {
 /// other line, comment and anchor left as written, and the file written
 /// from [`TEMPLATE`] first if she has none. Only if the file still hashes
 /// to `base` ([`digest_of`]), what the owner was shown, so an edit made in
-/// an editor meanwhile is never overwritten. The routine it replaces is
-/// kept as [`PREVIOUS`], as an approval keeps it.
+/// an editor meanwhile is never overwritten ([`StaleRoutine`]).
+/// [`PREVIOUS`] is left alone: it is the routine an approval replaced, the
+/// backup `persona routine approve` promises, and one tap on a picker that
+/// changes a single line must not spend it (review of #797).
 pub fn set_cell(dir: &Path, name: &str, cell: Cell, base: &str) -> Result<Routine> {
     let pdir = persona_dir(dir, name)?;
     let old = read_if_there(&pdir.join(FILE))?;
     if digest_of(old.as_deref()) != base {
-        bail!("`{name}`'s {FILE} changed since it was shown; read it again before changing it");
+        return Err(StaleRoutine {
+            name: name.into(),
+            file: FILE,
+        }
+        .into());
     }
-    let mut doc: toml_edit::DocumentMut = old
-        .as_deref()
-        .unwrap_or(TEMPLATE)
-        .parse()
-        .with_context(|| format!("{FILE} is not TOML; fix it by hand first"))?;
-    doc["cell"] = toml_edit::value(cell.id());
-    let text = doc.to_string();
+    let text = with_cell(old.as_deref().unwrap_or(TEMPLATE), cell)?;
     let routine = parse(&text).with_context(|| format!("{FILE} does not load"))?;
-    if let Some(old) = &old {
-        super::write_private(&pdir.join(PREVIOUS), old.as_bytes())?;
-    }
     super::write_private(&pdir.join(FILE), text.as_bytes())?;
     Ok(routine)
 }
@@ -504,7 +557,9 @@ chance = 0.7
         assert!(text.contains("cell = \"part_time\""), "{text}");
         assert!(text.contains("# [[anchor]]"), "{text}");
         // A routine of the owner's: anchors and comments untouched, the
-        // cell replaced, and the old file kept.
+        // cell replaced, and the routine an approval replaced still kept.
+        let backup = dir.join("mara").join(PREVIOUS);
+        std::fs::write(&backup, "# the week before the last approval\n").unwrap();
         let mine = format!("# my week\ncell = \"student\"\n{GYM}");
         std::fs::write(dir.join("mara").join(FILE), &mine).unwrap();
         let base = digest_of(Some(&mine));
@@ -513,20 +568,31 @@ chance = 0.7
         let text = read(&dir, "mara").unwrap().routine.unwrap();
         assert_eq!(text, mine.replace("\"student\"", "\"retired\""));
         assert_eq!(
-            std::fs::read_to_string(dir.join("mara").join(PREVIOUS)).unwrap(),
-            mine
+            std::fs::read_to_string(&backup).unwrap(),
+            "# the week before the last approval\n"
         );
-        // Shown one file, the disk holds another: refused, nothing written.
-        let why = format!(
-            "{:#}",
-            set_cell(&dir, "mara", Cell::AtHome, &base).unwrap_err()
-        );
+        // Shown one file, the disk holds another: refused, typed so the
+        // page answers 409, and nothing written.
+        let stale = set_cell(&dir, "mara", Cell::AtHome, &base).unwrap_err();
+        assert!(stale.downcast_ref::<StaleRoutine>().is_some(), "{stale:#}");
+        let why = format!("{stale:#}");
         assert!(why.contains("changed since it was shown"), "{why}");
         assert!(read(&dir, "mara")
             .unwrap()
             .routine
             .unwrap()
             .contains("retired"));
+        // The shape the picker exists for: the owner's anchors and no cell
+        // line. The key lands at the root, above the first [[anchor]], and
+        // never inside the last anchor's table, which would refuse it.
+        std::fs::write(dir.join("mara").join(FILE), GYM).unwrap();
+        let r = set_cell(&dir, "mara", Cell::FullTime, &digest_of(Some(GYM))).unwrap();
+        assert_eq!((r.cell, r.anchors.len()), (Some(Cell::FullTime), 1));
+        let text = read(&dir, "mara").unwrap().routine.unwrap();
+        assert!(
+            text.find("cell = ").unwrap() < text.find("[[anchor]]").unwrap(),
+            "{text}"
+        );
     }
 
     #[test]
@@ -637,6 +703,34 @@ chance = 0.7
             std::fs::read_to_string(pdir.join(PREVIOUS)).unwrap(),
             TEMPLATE
         );
+    }
+
+    #[test]
+    fn approving_a_draft_keeps_the_kind_of_week_the_owner_picked() {
+        let dir = made();
+        let pdir = dir.join("mara");
+        let picked = "cell = \"part_time\"\n";
+        std::fs::write(pdir.join(FILE), picked).unwrap();
+        // A drafter names no cell: approving keeps the owner's pick, and the
+        // draft's anchors arrive beside it.
+        stage_draft(&dir, "mara", GYM, Origin::ModelClean).unwrap();
+        assert_eq!(kept_cell(GYM, Some(picked)), Some(Cell::PartTime));
+        let r = approve_draft_as_shown(&dir, "mara", &crate::persona::text_digest(GYM)).unwrap();
+        assert_eq!((r.cell, r.anchors.len()), (Some(Cell::PartTime), 1));
+        assert_eq!(load(&pdir).unwrap().unwrap(), r);
+        // A draft the owner edited to name its own cell wins: theirs too.
+        let own = format!("cell = \"retired\"\n{GYM}");
+        assert_eq!(kept_cell(&own, Some(picked)), None);
+        stage_draft(&dir, "mara", &own, Origin::ModelClean).unwrap();
+        let r = approve_draft_as_shown(&dir, "mara", &crate::persona::text_digest(&own)).unwrap();
+        assert_eq!(r.cell, Some(Cell::Retired));
+        // No routine, or one with no cell: nothing to keep.
+        assert_eq!(kept_cell(GYM, None), None);
+        assert_eq!(kept_cell(GYM, Some(TEMPLATE)), None);
+        // A stale approval is typed, as a stale pick is.
+        stage_draft(&dir, "mara", GYM, Origin::ModelClean).unwrap();
+        let stale = approve_draft_as_shown(&dir, "mara", "0").unwrap_err();
+        assert!(stale.downcast_ref::<StaleRoutine>().is_some(), "{stale:#}");
     }
 
     #[test]

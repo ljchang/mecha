@@ -48,8 +48,11 @@
   }
 
   // The owner picks her kind of week: written into routine.toml over the
-  // file as shown, and the week answered back as it now stands.
-  async function pickCell(cell) {
+  // file as shown, and the week answered back as it now stands. A refused
+  // pick puts the picker back on the cell her routine names, never the one
+  // refused; a stale one (409, an edit made elsewhere) reads the week
+  // again, so the next pick is made over the file as it now stands.
+  async function pickCell(select, cell) {
     if (!cell || cell === data?.routine?.cell) return;
     saving = true;
     error = '';
@@ -59,6 +62,12 @@
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(cellBody(cell, data, date, token)),
       });
+      if (res.status === 409) {
+        const why = (await res.text()).trim();
+        await load();
+        error = `${why} It is shown as it stands now.`;
+        return;
+      }
       if (!res.ok) throw new Error((await res.text()).trim());
       data = await res.json();
       picked = null;
@@ -66,6 +75,7 @@
       error = String(e?.message ?? e);
     } finally {
       saving = false;
+      select.value = data?.routine?.cell ?? '';
     }
   }
 
@@ -90,6 +100,14 @@
 
 <div class="week">
   {#if error}<div class="warnline">{error}</div>{/if}
+  {#if !data && error}
+    <!-- A failed step keeps no week, so the nav goes with it: these are
+         the way on from here (review of #797). -->
+    <div class="wnav">
+      <button class="linkbtn" onclick={load}>Try again</button>
+      <button class="linkbtn" onclick={() => { date = null; load(); }}>This week</button>
+    </div>
+  {/if}
   {#if !data && !error}
     <div class="wnote">loading…</div>
   {:else if data?.absent}
@@ -98,7 +116,7 @@
   {#if data && data.absent !== 'off' && data.routine}
     <label class="wcell">
       <span>Kind of week</span>
-      <select disabled={saving} value={data.routine.cell ?? ''} onchange={(e) => pickCell(e.currentTarget.value)}>
+      <select disabled={saving} value={data.routine.cell ?? ''} onchange={(e) => pickCell(e.currentTarget, e.currentTarget.value)}>
         {#if !data.routine.cell}<option value="" disabled>Pick one…</option>{/if}
         {#each WEEK_CELLS as [id, label]}<option value={id}>{label}</option>{/each}
       </select>
