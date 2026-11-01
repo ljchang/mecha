@@ -1301,7 +1301,10 @@ async fn the_descriptions_example_runs_as_written() {
     std::fs::write(jail.join("notes/2.md"), "Attendees: Marco").unwrap();
     std::fs::write(jail.join("notes/3.md"), "Attendees: Priya").unwrap();
     let admitted = Admission::over(
-        &registry_of(vec![Arc::new(crate::tool::builtin::FsList)]),
+        &registry_of(vec![
+            Arc::new(crate::tool::builtin::FsList),
+            Arc::new(crate::tool::builtin::FsRead),
+        ]),
         |_| false,
     );
     assert!(
@@ -1335,6 +1338,30 @@ fn only_the_builtin_listing_hands_a_program_names() {
     );
     assert!(server.contains("fs_list"), "a plain read is still admitted");
     assert_eq!(server.listings().count(), 0);
+    // And the description says so: names only where a tool hands them out,
+    // and the example that walks them only beside it.
+    let told = describe(&server);
+    assert!(!told.contains("returns a list of names"), "{told}");
+    assert!(!told.contains(EXAMPLE), "{told}");
+    assert!(
+        told.contains("A tool returns a handle, not text: `in`"),
+        "{told}"
+    );
+    let builtin = describe(&Admission::over(
+        &registry_of(vec![
+            Arc::new(crate::tool::builtin::FsList),
+            Arc::new(crate::tool::builtin::FsRead),
+        ]),
+        |_| false,
+    ));
+    assert!(
+        builtin.contains(
+            "fs_list returns a list of names (str; a directory's ends in /). \
+             Every other tool returns a handle, not text: `in`"
+        ),
+        "{builtin}"
+    );
+    assert!(builtin.contains(EXAMPLE), "{builtin}");
 }
 
 /// A handle has no methods: `h.split(",")` names the call to make instead,
