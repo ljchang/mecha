@@ -94,7 +94,7 @@ pub const NAME: &str = "code";
 
 /// §5's host limits, as R4 ruled them on 2026-10-31 (`CODE-MODE-DESIGN.md`
 /// §11: §5's proposals, unchanged, after M0 and M1), with the owner's two
-/// raises of 2026-11-01: the peek cap and tool reads. They live here, in one
+/// raises of 2026-11-01: the peek cap (#791) and tool reads (#793). They live here, in one
 /// place, and
 /// [`crate::interpreter::COUNTED_HOST_LIMITS`] sizes the suspension backstop
 /// from the same counts (a test holds the two together).
@@ -296,6 +296,11 @@ pub struct Admission {
     /// not a handle (`Tool::lists_names`, §3). Every live run opened with
     /// `name.startswith(...)` on `fs_list`'s entries and spent its first
     /// programs on the error (2026-11-01).
+    ///
+    /// Part of the derived `PartialEq` on purpose: `program_reach` compares a
+    /// program's admission with the live registry's and refuses a mismatch,
+    /// so a registry whose `fs_list` stopped answering `lists_names` cannot
+    /// leave a program, or the description it was built with, expecting names.
     listings: std::collections::BTreeSet<String>,
 }
 
@@ -719,15 +724,36 @@ fn describe(admission: &Admission) -> String {
          Python program (monty, a subset of Python 3). A program has no os, open, files, \
          network or clock: it reaches data only by calling the tools listed at the end, \
          with keyword arguments. Nothing a program holds survives to the next `code` call, \
-         so do the whole job in one program. fs_list returns a list of names (str; a \
-         directory's ends in /). Every other tool returns a handle, not text: `in`, len(), \
-         h.split() and other string methods raise on a handle, and print(h) shows only a \
-         stub. Count and search a handle without reading it, and peek only to learn a format \
-         or fetch a short field. Before a sweep, peek at one item, and match the field the \
-         question is about (an attendee list, a presenter line), not the name anywhere in \
-         the text. For example, which notes list someone as attending:\n",
+         so do the whole job in one program. ",
     );
-    d.push_str(EXAMPLE);
+    // Said only of the tools that do it: a server's `fs_list` returns a
+    // handle, and telling the model otherwise is the `.startswith` error
+    // again, from the description's side (review of #793).
+    let listings: Vec<&str> = admission.listings().collect();
+    if listings.is_empty() {
+        d.push_str("A tool returns a handle, not text");
+    } else {
+        d.push_str(&format!(
+            "{} returns a list of names (str; a directory's ends in /). Every other tool \
+             returns a handle, not text",
+            listings.join(" and ")
+        ));
+    }
+    d.push_str(
+        ": `in`, len(), h.split() and other string methods raise on a handle, and print(h) \
+         shows only a stub. Count and search a handle without reading it, and peek only to \
+         learn a format or fetch a short field. Before a sweep, peek at one item, and match \
+         the field the question is about (an attendee list, a presenter line), not the name \
+         anywhere in the text.",
+    );
+    // The example walks `fs_list`'s names and reads with `fs_read`, so it is
+    // shown only where both are what it assumes.
+    if listings.contains(&"fs_list") && admission.contains("fs_read") {
+        d.push_str(" For example, which notes list someone as attending:\n");
+        d.push_str(EXAMPLE);
+    } else {
+        d.push('\n');
+    }
     d.push_str(
         "Use count or find for anything a pattern can match, such as a name in a list, a \
          date or a heading: they cost no sub-calls. Work on handles with size(h), \

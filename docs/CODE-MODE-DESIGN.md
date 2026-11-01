@@ -541,8 +541,12 @@ apart from tool reads. Tool reads were 256 until a 300-file sweep could
 not finish: nothing a program holds survives to the next `code` call, so
 a job past the limit had no way through, and the model split it into
 programs that each hit the limit again (§13). Each read still meets the
-whole gate and arms taint, and the 64 MB host-byte limit still bounds what
-they hold. Each limit's error says which limit it
+whole gate and arms taint. The 64 MB host-byte limit bounds what handles
+hold, not what the program record keeps: a read whose bytes the limit
+refuses is already recorded, and a program can catch the `LimitError:` and
+read on, so the record can reach 64 MB plus one result per read. That term
+grew with the raise (review of #793). A per-program bound on recorded bytes
+would close it, and is not built. Each limit's error says which limit it
 was, because that error is the model's only feedback.
 
 Each run's total also draws on its existing `RunContext` budget.
