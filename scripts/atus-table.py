@@ -11,12 +11,14 @@ Run from the repo root:
 
     python3 scripts/atus-table.py            # downloads into ~/.cache/mecha/atus
     python3 scripts/atus-table.py --cache DIR
+    python3 scripts/atus-table.py --update   # after changing the inputs or mapping
 
 It rewrites mecha-core/data/atus/table.tsv.gz (`zcat` it to read it). Every
 input is pinned by sha256, a file that does not match its pin is refused, and
 the table's text is pinned too (`TEXT_SHA256`, which `persona::atus` checks
-against the shipped file), so a re-run says whether the pinned inputs still
-give the shipped rows. The pin is on the text, not the gzip file, whose bytes
+against the shipped file), so a re-run checks that the pinned inputs still
+give the shipped rows: a different text is refused and nothing is written,
+unless `--update` says the change is meant. The pin is on the text, not the gzip file, whose bytes
 depend on which zlib wrote them. It is compressed because it is a megabyte of
 numbers no diff should carry: this script and its pins are what review reads.
 
@@ -62,7 +64,7 @@ PINS = {
 }
 
 # sha256 of the table's text (before gzip) that the pins above produce.
-TEXT_SHA256 = "47629ab8cdf2f255c20f440113a50594392f02b6b7e07ba999e6e25325dfca9e"
+TEXT_SHA256 = "aa054ec649045b591efde2a7a56999792e26443b4412fe9f670b477b1113711e"
 
 # `Activity::atus`, longest prefix wins.
 ACTIVITIES = {
@@ -201,6 +203,7 @@ def duration_rows(cell, day, durs):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--cache", type=pathlib.Path, default=pathlib.Path.home() / ".cache/mecha/atus")
+    ap.add_argument("--update", action="store_true", help="write a table whose text differs from TEXT_SHA256")
     args = ap.parse_args()
 
     diaries = []  # (cell, day, weight, runs)
@@ -263,7 +266,7 @@ def main():
         "# scripts/atus-table.py; do not edit. Source: U.S. Bureau of Labor Statistics,",
         f"# American Time Use Survey {YEARS[0]}-{YEARS[-1]}, public domain. Weights are",
         "# normalized to a mean of 1 per day type, so a count is in diaries.",
-        "V\t1",
+        "V\t2",
         "C\t" + "\t".join(name for name, _ in COMPANY),
     ]
     for code in sorted(codes):
@@ -272,7 +275,8 @@ def main():
     for cell in cells:
         for day in ("weekday", "weekend"):
             members = [(w / mean[day], runs) for c, d, w, runs in diaries if c == cell and d == day]
-            out.append(f"N\t{cell}\t{day}\t{len(members)}")
+            weighted = sum(w for w, _ in members)
+            out.append(f"N\t{cell}\t{day}\t{len(members)}\t{weighted:.2f}")
             trans = collections.defaultdict(collections.Counter)
             durs = collections.defaultdict(list)
             company = collections.defaultdict(lambda: [0.0] * (len(COMPANY) + 1))
@@ -306,12 +310,15 @@ def main():
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     text = ("\n".join(out) + "\n").encode()
+    digest = hashlib.sha256(text).hexdigest()
+    if digest != TEXT_SHA256 and not args.update:
+        sys.exit(f"the table's text would change (sha256 {digest}, pinned {TEXT_SHA256}); nothing written. "
+                 "If that is meant, re-run with --update.")
     OUT.write_bytes(gzip.compress(text, compresslevel=9, mtime=0))
     kinds = collections.Counter(line[0] for line in out if not line.startswith("#"))
     print(f"wrote {OUT.relative_to(ROOT)}: {len(diaries)} diaries, " + ", ".join(f"{k}={v}" for k, v in sorted(kinds.items())))
-    digest = hashlib.sha256(text).hexdigest()
     if digest != TEXT_SHA256:
-        print(f"the table's text changed: sha256 {digest}; set TEXT_SHA256 here and in persona::atus")
+        print(f"the table's text is new: sha256 {digest}; set TEXT_SHA256 here and in persona::atus")
 
 
 if __name__ == "__main__":
