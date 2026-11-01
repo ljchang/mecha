@@ -69,8 +69,12 @@ async fn slacks_socket_opens_over_wss_without_asking_for_a_default_provider() {
         .expect("open finished");
     match opened {
         Ok(_) => panic!("a peer that speaks no TLS was dialled"),
+        // The dial's own failure, not the config's (`could not configure
+        // TLS`, the same variant): a config that failed to build would never
+        // have dialled, and this would pass while proving nothing (review of
+        // #788).
         Err(e) => assert!(
-            matches!(e, mecha_slack::SlackError::Disconnected(_)),
+            matches!(&e, mecha_slack::SlackError::Disconnected(m) if m.starts_with("could not open the socket")),
             "open failed before the dial: {e}"
         ),
     }
