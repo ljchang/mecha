@@ -1437,3 +1437,9 @@ in 85 s and 10 turns: 7 programs, 3 failed, 536 host calls, no sub-calls.
   item first and match the field the question names.
 - **The first program still used `in` on a handle**, which raised with the
   hint, and the next program used `count`.
+
+**The fourth run (2026-11-01, with that line).** Both answers right: Priya's
+144 meetings and the 25 Marco presented, each with its decision, in 132 s
+and 15 turns. 11 programs, 6 failed, 1,298 host calls, 25 sub-calls. A
+single run each, so this says the path works, not how often it does; M2
+(above) is the measurement.
