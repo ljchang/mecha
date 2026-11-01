@@ -7,7 +7,9 @@
 > yet), the ATUS table (`persona::atus`, §4.2), and the day sampler with
 > `world.db`'s `days` and `state` (`persona::sampler`, `persona::world`,
 > `mecha persona day`), and the today-block's first line, what she is doing
-> now (`persona::today`, §4.5); the week view is next. **Every decision in §16
+> now (`persona::today`, §4.5), and a read-only week view (`world::week_view`,
+> `mecha persona week`, the editor's Week tab, §15); the form's Life section
+> and the routine drafter are next. **Every decision in §16
 > is ruled** by the owner, the same day: PL1–PL22, PL24–PL26, PL29 and PL30 as rulings,
 > and PL23, PL27 and PL28 as the owner's direction (no approval queue for
 > news; every part opt-in per persona). §1 is the owner's requests, in the order they were made; §2 is
@@ -2360,6 +2362,25 @@ ruled for repetition.
 - **Week view** on the persona page: her routine and sampled days; the owner
   adds or edits events ("the formal is Saturday"), and what the owner writes outranks
   what the simulation drew.
+  - **As built (step 1, read only to the owner):** a Week tab in the
+    persona editor, beside Memories, shown while `world` is on
+    (`isShown(features.rows, 'world')`; no `PANE_FEATURE` row, §17),
+    reading `GET /api/personas/{name}/week`, owned by
+    `Feature::World`. Asking stores the in-window days it draws and may
+    prune, as `mecha persona day` does, so the route asks for the page's
+    own header as a mutation would. Each day is a 4am-to-4am bar
+    coloured by activity group; a tapped stretch says its times, routine
+    label and company, and one from a source that is not clean is hatched.
+    A day already kept is shown from the store first, with no routine
+    needed, so a routine that breaks or goes leaves the kept days showing
+    and says why the rest are not drawn. A day past fourteen days that is
+    no longer stored shows as "not kept", never drawn again, with its
+    week's folded minutes below; the store counts folded days a week, never
+    which, so the day cannot say whether it was folded or never drawn. A
+    day ahead is drawn and marked so, never stored. A persona with `world`
+    off, or with nothing kept and no routine or cell, answers with which,
+    and the tab says it, never a route error. Owner events wait for step
+    3's event table.
 - **People**, two views:
   - *Her people* — concentric Dunbar rings with her at the centre, portraits
     from library links, warm or tense lines, ended relationships greyed on an
@@ -2462,6 +2483,16 @@ items (episodes, plans, proposed merges) gets a Home card, and
 surfaces it adds to that registry: the week view and People tab (steps 1–2),
 the nightly job's switch (steps 3 and 5), the camera roll (step 6) and the
 Feed tab (step 7).
+
+**As built (step 1):** `PANE_FEATURE` gains no `personas/...` row. Under
+the `personas` view the route's sub is a persona's name (`App.svelte` hands
+it to `Personas` as the persona to open), so `personas/week` would be the
+deep link to a persona named `week`, giving her page the world's banner
+and the world's hidden-line in place of the personas ones. The world's
+surfaces are tabs in the persona editor, each gated there by
+`isShown(features.rows, 'world')`, a literal the registry's test holds to a
+real id. A world surface that becomes a route of its own needs a sub that
+cannot be a persona's name before it can take a row.
 
 1. **A day.** The `[life]` switches (§3.1), all off by default, with
    dependencies refused by name, and `intensity`'s row in

@@ -69,6 +69,32 @@ pub struct Day {
     pub carries: Option<Carry>,
 }
 
+impl Day {
+    /// The day as `mecha persona day --json` and the week view print it:
+    /// minutes after the day's midnight, so one past 1439 is the next
+    /// morning.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "date": self.date.to_string(),
+            "cell": self.cell.id(),
+            "day_type": self.day_type.id(),
+            "backoffs": self.backoffs,
+            "stretches": self.stretches.iter().map(|s| serde_json::json!({
+                "activity": s.activity.id(),
+                "start_minute": s.start,
+                "end_minute": s.end,
+                "company": s.company.as_ref().map(|c| c.iter().map(|k| k.id()).collect::<Vec<_>>()),
+                "anchor": s.anchor,
+            })).collect::<Vec<_>>(),
+            "carries": self.carries.as_ref().map(|c| serde_json::json!({
+                "activity": c.activity.id(),
+                "anchor": c.label,
+                "until_minute": c.until,
+            })),
+        })
+    }
+}
+
 /// An anchor that ran past a day's 4am.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Carry {

@@ -2,6 +2,7 @@
   import { onDestroy, tick, untrack } from 'svelte';
   import { apiFetch as fetch } from './api.js';
   import PersonaMemory from './PersonaMemory.svelte';
+  import PersonaWeek from './PersonaWeek.svelte';
   import TomlForm from './TomlForm.svelte';
   import MdForm from './MdForm.svelte';
   import ModelChip from './ModelChip.svelte';
@@ -144,6 +145,9 @@
   // The editor's Memories tab: not an owner file, so it sits beside the file
   // tabs rather than in `OWNER_FILES`, whose every entry is saved as a file.
   let memoryOpen = $state(false);
+  // Her week (PERSONA-LIFE-DESIGN.md §15), beside Memories for the same
+  // reason; shown only while the world part of personas is on.
+  let weekOpen = $state(false);
   // A relationship or group being added from the form: { kind, name, text }.
   let adding = $state(null);
   // How many runs this page has seen end, so a `done` that overtakes
@@ -1144,6 +1148,7 @@
       const files = await res.json();
       editing = { files, file, text: files[file].text, base: files[file].digest, saved: null };
       memoryOpen = false;
+      weekOpen = false;
     } catch (e) {
       error = String(e?.message ?? e);
     }
@@ -1763,11 +1768,16 @@
       {#if editing}
         <div class="chips">
           {#each OWNER_FILES as [file, label]}
-            <button class="chipbtn" class:active={!memoryOpen && editing.file === file} onclick={() => { memoryOpen = false; pickFile(file); }}>{label}</button>
+            <button class="chipbtn" class:active={!memoryOpen && !weekOpen && editing.file === file} onclick={() => { memoryOpen = false; weekOpen = false; pickFile(file); }}>{label}</button>
           {/each}
-          <button class="chipbtn" class:active={memoryOpen} onclick={() => (memoryOpen = true)}>Memories</button>
+          <button class="chipbtn" class:active={memoryOpen} onclick={() => { weekOpen = false; memoryOpen = true; }}>Memories</button>
+          {#if isShown(features.rows, 'world')}
+            <button class="chipbtn" class:active={weekOpen} onclick={() => { memoryOpen = false; weekOpen = true; }}>Week</button>
+          {/if}
         </div>
-        {#if memoryOpen}
+        {#if weekOpen && isShown(features.rows, 'world')}
+          <PersonaWeek name={chosen.name} {token} onclose={() => (weekOpen = false)} />
+        {:else if memoryOpen}
           <!-- Close leaves the Memories tab, never the editor: closing the editor
                would drop unsaved file drafts out of sight (review of #519). -->
           <PersonaMemory name={chosen.name} {token} onclose={() => (memoryOpen = false)} />
