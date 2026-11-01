@@ -107,8 +107,16 @@ impl Activity {
         }
     }
 
+    /// The activity a file names, by its [`id`](Activity::id).
+    pub fn from_id(id: &str) -> Option<Activity> {
+        Activity::ALL.into_iter().find(|a| a.id() == id)
+    }
+
     /// The ATUS lexicon code prefixes this activity owns. Tier-1 is two
     /// digits, tier-2 four, tier-3 six; `50` (data codes) is nobody's.
+    /// Checked against the 2025 lexicon: education's extracurriculars
+    /// (`0602`) are hobbies and its paperwork (`0604`) errands, not class,
+    /// and waiting or security at a sporting event one attends is the event.
     pub fn atus(self) -> &'static [&'static str] {
         match self {
             Activity::Sleep => &["0101"],
@@ -117,7 +125,7 @@ impl Activity {
             Activity::Cooking => &["0202"],
             Activity::Housework => &["02"],
             Activity::Shopping => &["07"],
-            Activity::Errands => &["08", "09", "10"],
+            Activity::Errands => &["08", "09", "10", "0604"],
             Activity::Caring => &["03", "04"],
             Activity::Work => &["05"],
             Activity::Class => &["06"],
@@ -129,12 +137,12 @@ impl Activity {
             Activity::Music => &["120305", "120306"],
             Activity::Games => &["120307"],
             Activity::Computer => &["120308"],
-            Activity::Hobbies => &["120309", "120310", "120311", "120313"],
+            Activity::Hobbies => &["120309", "120310", "120311", "120313", "0602"],
             Activity::Reading => &["120312"],
             Activity::Relaxing => &["12"],
             Activity::Outing => &["1204"],
             Activity::Exercise => &["13"],
-            Activity::SportsEvent => &["1302"],
+            Activity::SportsEvent => &["1302", "130302", "130402"],
             Activity::Religion => &["14"],
             Activity::Volunteering => &["15"],
         }
@@ -234,6 +242,10 @@ mod tests {
             ("020101", Activity::Housework),
             ("060301", Activity::Studying),
             ("060101", Activity::Class),
+            ("060201", Activity::Hobbies),
+            ("060401", Activity::Errands),
+            ("130302", Activity::SportsEvent),
+            ("130301", Activity::Exercise),
             ("180501", Activity::Commute),
             ("180701", Activity::Travel),
             ("120303", Activity::Tv),
