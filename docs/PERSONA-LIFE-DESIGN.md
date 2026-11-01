@@ -629,10 +629,11 @@ activity, and a who-was-present distribution from the Who file.
   alone, or one or more kinds of company, never both, and none where ATUS
   does not ask. Casting people into those kinds waits for her network
   (step 2), and traits moving the numbers waits for the storyteller
-  (step 3). A day is stored when first asked for; one of today or later is
-  drawn again when its routine, cell or table changed, and a past one is
-  kept. After fourteen days a day folds into its week's minutes per
-  activity.
+  (step 3). A day is stored when first asked for, from today back; today's
+  is drawn again when its routine, cell or table changed, and a past one is
+  kept. A day ahead is drawn and never stored. A night shift running past
+  4am is stored with its day, and the next day opens on it. After fourteen
+  days a day folds into its week's minutes per activity.
 
 Each day:
 

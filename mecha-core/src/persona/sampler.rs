@@ -101,19 +101,50 @@ pub fn sample(table: &Table, cell: Cell, routine: &Routine, persona: &str, date:
 
 /// The anchor `routine` would carry out of `persona`'s `date`, redrawn:
 /// what a day before that is not stored passes on. Anchors are the first
-/// draws of a day's stream, so this needs nothing else of the day. It reads
-/// the day's own anchors, not what that day carried in turn: a tail long
-/// enough to knock one of them out would have run past a whole day.
+/// draws of a day's stream, so this needs nothing else of the day. A tail
+/// carried into `date` can knock out one of its anchors by covering its
+/// start, so the day before's own tail is placed first; that one is
+/// redrawn from its day's anchors alone, which is exact unless a tail two
+/// days back knocked out the anchor that would have knocked out another.
 pub fn carried_from(routine: &Routine, persona: &str, date: NaiveDate) -> Option<Carry> {
-    let mut draw = Draw(seed(persona, date));
-    place_anchors(routine, date, &mut draw)
-        .into_iter()
-        .find(|a| a.reaches > DAY_END)
-        .map(|a| Carry {
-            activity: a.activity,
-            label: a.label,
-            until: a.reaches - MINUTES_PER_DAY,
-        })
+    let own = |d: NaiveDate, before: Option<Carry>| {
+        let mut draw = Draw(seed(persona, d));
+        carry_out(&anchors_of(routine, d, &mut draw, before))
+    };
+    let before = date.pred_opt().and_then(|prev| own(prev, None));
+    own(date, before)
+}
+
+/// The day's anchors in start order: the tail `before` carried in, then
+/// its own, each drawn against its chance, the earlier start winning an
+/// overlap.
+fn anchors_of(
+    routine: &Routine,
+    date: NaiveDate,
+    draw: &mut Draw,
+    before: Option<Carry>,
+) -> Vec<Placed> {
+    let tail = before.filter(|c| c.until > DAY_START).map(|c| Placed {
+        activity: c.activity,
+        label: c.label,
+        start: DAY_START,
+        end: c.until.min(DAY_END),
+        reaches: c.until,
+    });
+    keep_first(
+        tail.into_iter()
+            .chain(place_anchors(routine, date, draw))
+            .collect(),
+    )
+}
+
+/// The anchor among `anchors` that runs past the day's end.
+fn carry_out(anchors: &[Placed]) -> Option<Carry> {
+    anchors.iter().find(|a| a.reaches > DAY_END).map(|a| Carry {
+        activity: a.activity,
+        label: a.label.clone(),
+        until: a.reaches - MINUTES_PER_DAY,
+    })
 }
 
 /// [`sample`], opening with `before`: what the day before carried, as
@@ -133,23 +164,8 @@ pub fn sample_after(
         draw: Draw(seed(persona, date)),
         backoffs: 0,
     };
-    let tail = before.filter(|c| c.until > DAY_START).map(|c| Placed {
-        activity: c.activity,
-        label: c.label,
-        start: DAY_START,
-        end: c.until.min(DAY_END),
-        reaches: c.until,
-    });
-    let anchors = keep_first(
-        tail.into_iter()
-            .chain(place_anchors(routine, date, &mut s.draw))
-            .collect(),
-    );
-    let carries = anchors.iter().find(|a| a.reaches > DAY_END).map(|a| Carry {
-        activity: a.activity,
-        label: a.label.clone(),
-        until: a.reaches - MINUTES_PER_DAY,
-    });
+    let anchors = anchors_of(routine, date, &mut s.draw, before);
+    let carries = carry_out(&anchors);
     let mut out: Vec<Stretch> = Vec::new();
     let mut next_anchor = 0;
     let (mut t, mut from) = (DAY_START, Activity::Sleep);
@@ -396,7 +412,9 @@ impl Sampler<'_> {
             .map(|(who, _)| *who)
             .collect();
         if with.is_empty() {
-            // Someone was there: the kind most likely to be.
+            // Someone was there: the kind most likely to be. One more draw,
+            // only here, so the stream's length depends on this stretch's
+            // rolls; it still depends on nothing outside the day.
             let weights: BTreeMap<Company, f64> =
                 others.iter().map(|who| (*who, share(*who))).collect();
             with.push(self.draw.pick(&weights).unwrap_or(Company::Public));
@@ -637,6 +655,25 @@ mod tests {
         );
         assert_eq!(plain.stretches[0].activity, Activity::Sleep);
         check_shape(&tue);
+    }
+
+    #[test]
+    fn a_carried_tail_that_covers_an_anchors_start_knocks_it_out_of_the_carry() {
+        // Monday's day-long anchor carries into Tuesday past the start of
+        // Tuesday's long one, which is dropped, so Tuesday carries nothing,
+        // whether drawn whole or redrawn for Wednesday's sake.
+        let r = routine::parse(
+            "cell = \"full_time\"\n\
+             [[anchor]]\nwhat = \"long\"\nactivity = \"work\"\ndays = [\"mon\"]\nat = \"20:00\"\nminutes = 1440\n\
+             [[anchor]]\nwhat = \"late\"\nactivity = \"socializing\"\ndays = [\"tue\"]\nat = \"14:00\"\nminutes = 1000\nchance = 0.9\n",
+        )
+        .unwrap();
+        let tue = date("2026-01-06");
+        let drawn = sample(table(), Cell::FullTime, &r, "mara", tue);
+        assert_eq!(drawn.stretches[0].anchor.as_deref(), Some("long"));
+        assert!(drawn.carries.is_none());
+        assert_eq!(carried_from(&r, "mara", tue), drawn.carries);
+        check_shape(&drawn);
     }
 
     #[test]
