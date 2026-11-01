@@ -1173,6 +1173,14 @@ impl Taint {
                         self.private |= private;
                         self.untrusted |= untrusted;
                     }
+                    // **And a persona's today-block** (PERSONA-LIFE-DESIGN.md
+                    // §4.5): private always, since it carries memory of
+                    // conversations with the owner; untrusted when any row
+                    // folded into it came from outside, said by its stem.
+                    if let Some((private, untrusted)) = crate::persona::today::stem_of(text) {
+                        self.private |= private;
+                        self.untrusted |= untrusted;
+                    }
                 }
             }
         }
@@ -1873,6 +1881,9 @@ pub(crate) fn is_harness_voice(text: &str) -> bool {
         // A persona's scene (IMAGE-SCENE-DESIGN.md §5.5): the harness's note
         // of what her last picture showed, never the owner's words.
         || crate::scene::stem_of(text).is_some()
+        // A persona's today-block (PERSONA-LIFE-DESIGN.md §4.5): the
+        // harness's note of what her sampled day has her doing now.
+        || crate::persona::today::stem_of(text).is_some()
         // A persona on a call (§11): how a reply is heard, folded beside the
         // owner's spoken words — the harness's note, never what they said.
         || crate::persona::call::is_note(text)

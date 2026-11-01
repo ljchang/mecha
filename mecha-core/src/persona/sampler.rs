@@ -27,7 +27,8 @@ use super::routine::Routine;
 
 /// When a day begins, in minutes after midnight: an ATUS diary's 4am.
 pub const DAY_START: u32 = 4 * 60;
-const MINUTES_PER_DAY: u32 = 24 * 60;
+/// A day's length in minutes.
+pub const MINUTES_PER_DAY: u32 = 24 * 60;
 /// When a day ends: 4am the next morning, in the day's own minutes.
 pub const DAY_END: u32 = DAY_START + MINUTES_PER_DAY;
 /// How many stretches of the pool's shares a cell's counts are blended

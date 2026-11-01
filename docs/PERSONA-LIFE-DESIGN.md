@@ -6,7 +6,8 @@
 > (`persona::routine`, `persona::activity`; the model drafter is not built
 > yet), the ATUS table (`persona::atus`, §4.2), and the day sampler with
 > `world.db`'s `days` and `state` (`persona::sampler`, `persona::world`,
-> `mecha persona day`); the today-block and the week view are next. **Every decision in §16
+> `mecha persona day`), and the today-block's first line, what she is doing
+> now (`persona::today`, §4.5); the week view is next. **Every decision in §16
 > is ruled** by the owner, the same day: PL1–PL22, PL24–PL26, PL29 and PL30 as rulings,
 > and PL23, PL27 and PL28 as the owner's direction (no approval queue for
 > news; every part opt-in per persona). §1 is the owner's requests, in the order they were made; §2 is
@@ -816,6 +817,22 @@ one more reason §14's gate part 1 exists.
   existing persona fold is registered there, and that function's own rule is
   that "the party that knows a new voice exists is the one that adds it."
   §17 step 1 registers all three.
+- **As built (`persona::today`, `persona::world::now`):** step 1's block
+  holds one line, what she is doing now: the stretch of her stored day the
+  owner's clock falls in (before 4am, the day before's tail), its
+  routine label, until when, and with what kinds of company. The edges of
+  a day are not times, so a stretch carried in from the night before has
+  no "since". The untrusted stem is chosen by the folded row's
+  `days.source`, which only the sampler writes so far, and a source this
+  binary does not know is never clean; a stretch carried past 4am keeps
+  the source of the row it ran as. An anchor label read back from
+  `world.db` is held to the routine parser's limits, or the day is
+  unreadable and drawn again. With `[life] world` off, or no routine with
+  a cell, there is no note; a day that will not read is logged and left
+  out, since a missing note arms nothing. The routine stays out of the
+  persona's version: a version is what a chat's prompt renders from, and
+  the block, like the recall block, renders from the world's store, where
+  what a chat was told about a day is already kept.
 - **The told-ledger** is the anti-repetition mechanism. The nightly writer
   already reads each chat; it marks which world events and people she
   mentioned. An untold event is fresh material. A told one fades as Rimé
