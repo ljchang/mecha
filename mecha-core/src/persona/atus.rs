@@ -33,6 +33,11 @@ use std::sync::OnceLock;
 use super::activity::Activity;
 
 const TABLE: &[u8] = include_bytes!("../../data/atus/table.tsv.gz");
+/// sha256 of the table's text, the script's `TEXT_SHA256`: what the pinned
+/// ATUS files produce. The text, not the gzip file, whose bytes depend on
+/// which zlib wrote them.
+#[cfg(test)]
+const TEXT_SHA256: &str = "47629ab8cdf2f255c20f440113a50594392f02b6b7e07ba999e6e25325dfca9e";
 /// The format `V` row this reader understands.
 const VERSION: &str = "1";
 /// Quantiles per duration row: 0%, 5%, …, 100%.
@@ -449,8 +454,8 @@ impl Table {
     }
 
     /// What began at `hour` after `from`, as weighted counts by activity, in
-    /// [`Activity`] order. `None` pools every cell. Empty when the hour saw
-    /// no stretch of `from` end.
+    /// [`Activity`] order. `None` pools every cell. `None` back when the hour
+    /// saw no stretch of `from` end.
     pub fn next(
         &self,
         cell: Option<Cell>,
@@ -461,8 +466,9 @@ impl Table {
         self.transitions.get(&(cell, day, hour, from))
     }
 
-    /// How long `act` lasts begun in `band`. A cell too thin for a row has
-    /// none; the pool's (`None`) is there for every activity it saw enough.
+    /// How long `act` lasts begun in `band`. A row needs 20 stretches, so a
+    /// thin band has none, in a cell or in the pool (`None`) alike: the pool
+    /// has a row in some band for every activity, not in every band.
     pub fn durations(
         &self,
         cell: Option<Cell>,
@@ -525,7 +531,14 @@ mod tests {
 
     #[test]
     fn the_shipped_table_parses() {
-        let t = Table::parse(&shipped_text().unwrap()).unwrap();
+        use sha2::Digest;
+        let text = shipped_text().unwrap();
+        let digest: String = sha2::Sha256::digest(text.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(digest, TEXT_SHA256, "re-run scripts/atus-table.py");
+        let t = Table::parse(&text).unwrap();
         for cell in Cell::ALL {
             for day in DayType::ALL {
                 assert!(
