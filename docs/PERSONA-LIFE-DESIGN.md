@@ -4,8 +4,10 @@
 > switches of step 1 are built (`Feature::World`, `persona::Life`), and so
 > is the routine's file with its activity set and owner approval
 > (`persona::routine`, `persona::activity`; the model drafter is not built
-> yet), and the ATUS table (`persona::atus`, §4.2); the rest of step 1 is
-> next. **Every decision in §16
+> yet), the ATUS table (`persona::atus`, §4.2), and the day sampler with
+> `world.db`'s `days` and `state` (`persona::sampler`, `persona::world`,
+> `mecha persona day`), and the today-block's first line, what she is doing
+> now (`persona::today`, §4.5); the week view is next. **Every decision in §16
 > is ruled** by the owner, the same day: PL1–PL22, PL24–PL26, PL29 and PL30 as rulings,
 > and PL23, PL27 and PL28 as the owner's direction (no approval queue for
 > news; every part opt-in per persona). §1 is the owner's requests, in the order they were made; §2 is
@@ -416,7 +418,8 @@ threshold per persona once the access log says where it should sit. The
     default, which needs no file). Rows the threshold never reads still fold:
     owner-origin rows and `state`, which §9 exempts from decay, and `days`
     and `items`, which are pruned on a fixed age (§5). Events, arcs and
-    `people` rows decay on the threshold (§9), so they are withheld. A day's companions
+    `people` rows that are not owner-origin decay on the threshold (§9), so
+    they are withheld. A day's companions
     who are decaying `people` rows are withheld with them and render as
     "someone", as a pruned id does (§6.3). So a typo empties the part of the block that
     needs the owner's numbers, not the whole of it. The decay knobs have no "off", and shipped defaults
@@ -608,6 +611,30 @@ activity, and a who-was-present distribution from the Who file.
   before the diary's 4am. Who was there is ten kinds of company, from
   partner to colleague to strangers, which casting maps onto her network's
   edge types. How a persona is placed in a cell is the sampler's step.
+- **As built (`persona::sampler`, `persona::world`):** the owner picks her
+  cell per persona, as `cell` in `routine.toml` (ruled 2026-11-01: "we
+  would need to pick this per persona"). With none named no day is drawn,
+  and `mecha persona day` says why: a guessed week would look as plausible
+  as a right one. A day runs 4am to 4am, as a diary does, so an anchor
+  before 4am belongs to the day before. It opens asleep, waking at an hour
+  drawn from when the table's sleep stretches ended, unless an anchor opens
+  it. Anchors are placed first, each drawn against its chance (drawn even
+  at 1, so one anchor's chance never shifts the rest of the day's draws);
+  where two that happened overlap, the earlier start is kept. A drawn
+  stretch cut short by an anchor of the same activity becomes that anchor
+  begun early. A cell's transition counts are blended with the pool's
+  shares at a weight of five stretches, so a thin row follows the pool
+  and a thick one its cell; where the pool has no row, the nearest hour
+  of the pool's (or band's, for a duration) stands in, and every such step
+  is counted on the day. Company is the Who file's shares the same way:
+  alone, or one or more kinds of company, never both, and none where ATUS
+  does not ask. Casting people into those kinds waits for her network
+  (step 2), and traits moving the numbers waits for the storyteller
+  (step 3). A day is stored when first asked for, from today back; today's
+  is drawn again when its routine, cell or table changed, and a past one is
+  kept. A day ahead is drawn and never stored. A night shift running past
+  4am is stored with its day, and the next day opens on it. After fourteen
+  days a day folds into its week's minutes per activity.
 
 Each day:
 
@@ -790,6 +817,22 @@ one more reason §14's gate part 1 exists.
   existing persona fold is registered there, and that function's own rule is
   that "the party that knows a new voice exists is the one that adds it."
   §17 step 1 registers all three.
+- **As built (`persona::today`, `persona::world::now`):** step 1's block
+  holds one line, what she is doing now: the stretch of her stored day the
+  owner's clock falls in (before 4am, the day before's tail), its
+  routine label, until when, and with what kinds of company. The edges of
+  a day are not times, so a stretch carried in from the night before has
+  no "since". The untrusted stem is chosen by the folded row's
+  `days.source`, which only the sampler writes so far, and a source this
+  binary does not know is never clean; a stretch carried past 4am keeps
+  the source of the row it ran as. An anchor label read back from
+  `world.db` is held to the routine parser's limits, or the day is
+  unreadable and drawn again. With `[life] world` off, or no routine with
+  a cell, there is no note; a day that will not read is logged and left
+  out, since a missing note arms nothing. The routine stays out of the
+  persona's version: a version is what a chat's prompt renders from, and
+  the block, like the recall block, renders from the world's store, where
+  what a chat was told about a day is already kept.
 - **The told-ledger** is the anti-repetition mechanism. The nightly writer
   already reads each chat; it marks which world events and people she
   mentioned. An untold event is fresh material. A told one fades as Rimé
@@ -2300,7 +2343,8 @@ ruled for repetition.
   - **The publisher's placement where it outlives the five-day expiry**,
     out of reach because memory outlives the arm's measured days, so part
     3's window would not see it: the typed episode's `interest`, at most
-    log₂k bits an episode and three episodes a day (§8.4), and shelf B's
+    log₂k bits an episode and three episodes a day (§8.4), which is the
+    only way the first build's shelf C line persists (PL30), and shelf B's
     `interest` in the narration snapshotted from it, at most log₂k bits an
     item and three arrivals a night (§4.4, §8.2). The caps bound the rate,
     3·log₂k bits a day each, and the live total is that times the days the
