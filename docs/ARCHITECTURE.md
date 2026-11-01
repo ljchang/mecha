@@ -1777,11 +1777,13 @@ module.
   fails until the table is rewritten after either side changes.
 - **A sampled day is drawn once, stored, and redrawn only forward**
   (`persona::sampler`, `persona::world`). The draw is seeded by persona and
-  date and reads no clock, so the same inputs give the same day. A stored
-  day of today or later is redrawn when the digest of what it was drawn from
-  (the routine's text, the table's text pin, the sampler's version) changes;
-  a past day is kept, because what a chat was told about a day must stay
-  what the day was. Bump `SAMPLER_VERSION` for any change that would draw a
+  date and reads no clock, so the same inputs give the same day. Only today
+  and the fourteen days before it are stored. Today's is redrawn when the
+  digest of what it was drawn from (the routine's text, the table's text
+  pin, the sampler's version) changes; a past day is kept, because what a
+  chat was told about a day must stay what the day was, and so is the
+  anchor it carried past 4am, which the next day reads rather than
+  re-deriving from a routine edited since. Bump `SAMPLER_VERSION` for any change that would draw a
   different day from the same inputs. A row this binary cannot read makes
   the stored day unreadable and redrawn, never shown in part. No day is
   drawn without a `cell` in `routine.toml`, the owner's pick, never a guess.

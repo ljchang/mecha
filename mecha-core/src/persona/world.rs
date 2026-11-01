@@ -10,12 +10,13 @@
 //!   never decaying.
 //!
 //! A day is sampled when first asked for and stored, so what a chat was told
-//! about a day stays what the day was. A stored day of today or later is
-//! drawn again when what it was drawn from has changed (her routine, her
-//! cell, the table); a past one is kept, because the past does not change
+//! about a day stays what the day was. Today's stored day is drawn again
+//! when what it was drawn from has changed (her routine, her cell, the
+//! table); a past one is kept, because the past does not change
 //! when the routine does, and is read back even when the routine no longer
 //! loads. A day older than [`KEEP_DAYS`] is drawn and returned, never
-//! stored, so it is never folded into its week twice. Every row names its
+//! stored, so it is never folded into its week twice, and a day ahead is drawn
+//! and never stored, since it draws the same way until it comes. Every row names its
 //! source, and an unknown source is never clean; `days.source` is for
 //! `forget` and the today-block's fold to read, and the sampler is its only
 //! writer so far.
@@ -37,7 +38,7 @@ pub const WORLD_DB: &str = "world.db";
 /// How long a sampled day is kept whole.
 pub const KEEP_DAYS: u64 = 14;
 /// Bumped when the sampler would draw a different day from the same inputs,
-/// so a stored day of today or later is drawn again.
+/// so today's stored day is drawn again.
 const SAMPLER_VERSION: &str = "1";
 /// A state value is a few words: "nurse at the county hospital".
 pub const MAX_STATE: usize = 200;
@@ -285,7 +286,17 @@ impl World {
                 anchor,
             });
         }
-        if stretches.is_empty() {
+        // A day that is not back to back from 4am to 4am is not one this
+        // binary can read whole either: drawn again, never shown in part.
+        let contiguous = stretches
+            .windows(2)
+            .all(|w| w[0].end == w[1].start && w[0].start < w[0].end);
+        if stretches
+            .first()
+            .is_none_or(|s| s.start != sampler::DAY_START)
+            || stretches.last().is_none_or(|s| s.end != sampler::DAY_END)
+            || !contiguous
+        {
             return Ok(None);
         }
         let day = Day {
@@ -526,11 +537,12 @@ pub fn day(store_dir: &Path, name: &str, date: NaiveDate, today: NaiveDate) -> R
         None => prev.and_then(|p| sampler::carried_from(&routine, &persona.name, p)),
     };
     let day = sampler::sample_after(atus::table(), cell, &routine, &persona.name, date, before);
-    let keep = Days::new(KEEP_DAYS);
-    if date < today - keep || date > today + keep {
+    if date < today - Days::new(KEEP_DAYS) || date > today {
         // Outside what the store keeps. A day past it would be folded into
-        // its week at once and again on every asking, and one far ahead
-        // would sit uncollected until its date passed.
+        // its week at once and again on every asking. A day ahead is drawn
+        // the same way every time until it comes, and stored early it would
+        // be kept as history once its date passed, drawn from a routine
+        // that may have changed since and told to no one.
         return Ok(day);
     }
     let mut world = World::open(&pdir)?;
@@ -704,13 +716,29 @@ mod tests {
     }
 
     #[test]
-    fn a_day_far_ahead_is_drawn_never_stored() {
+    fn a_day_ahead_is_drawn_never_stored() {
         let dir = store(Some("cell = \"retired\"\n"), true);
-        let (far, today) = (date("2099-01-01"), date("2026-11-02"));
-        let drawn = day(dir.as_path(), "mara", far, today).unwrap();
-        assert_eq!(day(dir.as_path(), "mara", far, today).unwrap(), drawn);
+        let today = date("2026-11-02");
+        for ahead in [date("2026-11-03"), date("2099-01-01")] {
+            let drawn = day(dir.as_path(), "mara", ahead, today).unwrap();
+            assert_eq!(day(dir.as_path(), "mara", ahead, today).unwrap(), drawn);
+            let world = World::open(&dir.join("mara")).unwrap();
+            assert!(world.stored(ahead).unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn a_stored_day_with_a_hole_is_drawn_again_never_shown_in_part() {
+        let dir = store(Some("cell = \"student\"\n"), true);
+        let d = date("2026-11-02");
+        let first = day(dir.as_path(), "mara", d, d).unwrap();
         let world = World::open(&dir.join("mara")).unwrap();
-        assert!(world.stored(far).unwrap().is_none());
+        world
+            .conn
+            .execute("DELETE FROM days WHERE seq = 1", [])
+            .unwrap();
+        assert!(world.stored(d).unwrap().is_none());
+        assert_eq!(day(dir.as_path(), "mara", d, d).unwrap(), first);
     }
 
     #[test]
