@@ -5948,7 +5948,12 @@ impl Agent {
         };
         let work =
             crate::step::Work::of(trace).in_run(cx.tools.work.map(|w| w.run).unwrap_or_default());
-        let tool_ctx = Self::call_ctx(cx, id, turn_taint, recorded_taint, context, work, None);
+        let mut tool_ctx = Self::call_ctx(cx, id, turn_taint, recorded_taint, context, work, None);
+        // `Refuse` is a program's host call and nothing else (`Asking`): its
+        // result is a handle, so the tool need not cut it for a context window.
+        if asking == Asking::Refuse {
+            Arc::make_mut(&mut tool_ctx).for_program = true;
+        }
         let mut output = Self::execute(&tool, name, input.clone(), &tool_ctx).await;
         let terms = self.terms(
             cx,

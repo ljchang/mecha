@@ -5099,6 +5099,15 @@ backpressure. Images alone may render inline; other content stays inert.
 lines and caps bytes in `read_text_window`; truncating a completed
 `read_to_string` caps the answer but leaves allocation and decoding unbounded.
 
+**A cut read says so first.** `fs_read`'s notice of a cut opens its result,
+with the file's size and the line to read on from, because the dispatch's
+result cap keeps the head: a note after the text landed in the spill file's
+tail, the cap marker named the 200 KB read as the whole output, and a model
+reported a 1.5 MB log as two days long with no failures in it (2026-11-01).
+A program's read (`ToolCtx::for_program`, set by the gate for a host call
+alone) is capped at code mode's host-byte limit instead, because it becomes a
+handle and never enters the context window the turn cap protects.
+
 **An MCP client's lifetime owns its child and readers.** `McpClient` enables
 `kill_on_drop` before spawning and aborts its reader task handles on drop.
 Holding a Tokio `Child` without that option does not terminate it, and closing

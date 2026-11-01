@@ -956,6 +956,86 @@ fn each_handle_limit_raises_a_limit_error_naming_it() {
     assert!(err.starts_with("LimitError: find matches:"), "{err}");
 }
 
+/// A read the host-byte limit refuses is still recorded, and a program can
+/// catch the `LimitError:` and read again: the record keeps every call but
+/// holds at most `retain` of their bytes while the program runs, the newest
+/// first (review of #793), where it used to hold one whole result per read.
+#[tokio::test]
+async fn a_program_that_reads_past_its_byte_limit_holds_a_bounded_record() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Some(req) = rx.recv().await {
+            if let HostRequest::Call { reply, .. } = req {
+                let _ = reply.send(HostAnswer::Ran {
+                    id: "t.host-1".into(),
+                    output: ToolOutput::ok("x".repeat(1000)),
+                });
+            }
+        }
+    });
+    let host = HostCalls::new(tx, "c1", 10_000);
+    let mut run = Run::new(
+        HostLimits {
+            host_bytes: 1500,
+            ..HostLimits::default()
+        },
+        BytePool::new(1 << 20),
+    )
+    .reaching(["mail_search".to_string()]);
+    run.retain = 2500;
+    let read = call("mail_search", vec![]);
+    let stop = tokio_util::sync::CancellationToken::new();
+    run.read(&host, &read, &stop).await.unwrap();
+    for _ in 0..5 {
+        let err = run.read(&host, &read, &stop).await.unwrap_err().message;
+        assert!(err.starts_with("LimitError: host bytes"), "{err}");
+    }
+    assert_eq!(run.recorded.len(), 6, "every call that ran is recorded");
+    let held: usize = run
+        .recorded
+        .iter()
+        .filter_map(|c| c.text())
+        .map(str::len)
+        .sum();
+    assert_eq!(
+        held, 2000,
+        "two newest results held, at a 2,500-byte ceiling"
+    );
+    assert!(
+        run.recorded.last().unwrap().text().is_some(),
+        "the newest is kept"
+    );
+}
+
+/// `peek` reads from `start`, a character offset as `find` gives them,
+/// negative from the end as `slice`'s are, and counts only what it returns.
+/// Without it a model peeked "around" a `find` hit, read the note's head
+/// instead, and missed 7 of 25 presenter lines (2026-11-01).
+#[test]
+fn peek_reads_from_a_start_offset() {
+    let (mut run, h) = run_over("abcdéfghij", HostLimits::default());
+    let h = json!(h);
+    assert_eq!(
+        op(&mut run, "peek", vec![h.clone(), json!(3), json!(4)]).unwrap(),
+        json!("éfg")
+    );
+    assert_eq!(
+        op(&mut run, "peek", vec![h.clone(), json!(5), json!(-2)]).unwrap(),
+        json!("ij")
+    );
+    assert_eq!(
+        op(&mut run, "peek", vec![h.clone(), json!(5), json!(10)]).unwrap(),
+        json!("")
+    );
+    let err = op(&mut run, "peek", vec![h.clone(), json!(1), json!(11)]).unwrap_err();
+    assert!(
+        err.starts_with("HandleError: `peek`: start 11 is outside"),
+        "{err}"
+    );
+    // "éfg" is 4 bytes and "ij" 2: the count is what was returned.
+    assert_eq!(run.stats(None).peeked_bytes, 6);
+}
+
 /// Tool reads, through a host channel answered here: the read past the
 /// limit raises before it reaches the gate.
 #[tokio::test]
@@ -1318,6 +1398,91 @@ async fn the_descriptions_example_runs_as_written() {
         "{}",
         d.content
     );
+}
+
+/// A program's `fs_read` is a host call, and the gate marks it so
+/// (`ToolCtx::for_program`): the file comes back whole as a handle, where a
+/// turn's read stops at 200 KB. Through the real dispatch, because the mark
+/// is the gate's to set.
+#[cfg(feature = "monty")]
+#[tokio::test]
+async fn a_programs_read_holds_the_whole_file() {
+    let Some(interp) = monty().await else {
+        return;
+    };
+    let agent = with_code(vec![Arc::new(crate::tool::builtin::FsRead)], interp);
+    let jail = agent.context().tools.workspace.clone();
+    std::fs::write(jail.join("big.log"), "x".repeat(299_999) + "\n").unwrap();
+    let (d, _) = run(
+        &agent,
+        "h = fs_read(path='big.log')\nprint(size(h), count(h, '\\[truncated'))",
+    )
+    .await;
+    assert!(!d.is_error, "{}", d.content);
+    assert!(
+        unwrapped(&d.content).starts_with("300000 0"),
+        "{}",
+        d.content
+    );
+}
+
+/// The description's judgement example, run as the model reads it
+/// ([`JUDGE_EXAMPLE`]): it slices each ticket from its resolution, asks one
+/// pass per ticket about that part only, and prints the unhappy ones.
+#[cfg(feature = "monty")]
+#[tokio::test]
+async fn the_judgement_example_runs_as_written() {
+    let Some(interp) = monty().await else {
+        return;
+    };
+    let (agent, seen) = on_passes(
+        vec![
+            Arc::new(crate::tool::builtin::FsList),
+            Arc::new(crate::tool::builtin::FsRead),
+        ],
+        interp,
+        vec![
+            r#"{"answer": true}"#,
+            r#"{"answer": false}"#,
+            r#"{"answer": true}"#,
+        ],
+        true,
+        true,
+    );
+    let jail = agent.context().tools.workspace.clone();
+    std::fs::create_dir_all(jail.join("tickets/old")).unwrap();
+    for (n, end) in [(1, "Fixed, thanks"), (2, "Still broken"), (3, "All good")] {
+        std::fs::write(
+            jail.join(format!("tickets/{n}.txt")),
+            format!("Opened by a customer about the printer.\nResolution: {end}.\n"),
+        )
+        .unwrap();
+    }
+    let admitted = Admission::over(
+        &registry_of(vec![
+            Arc::new(crate::tool::builtin::FsList),
+            Arc::new(crate::tool::builtin::FsRead),
+        ]),
+        |_| false,
+    );
+    assert!(describe(&admitted).contains(JUDGE_EXAMPLE));
+    let (d, _) = run(&agent, JUDGE_EXAMPLE).await;
+    assert!(!d.is_error, "{}", d.content);
+    assert!(
+        unwrapped(&d.content).starts_with("['2.txt']"),
+        "{}",
+        d.content
+    );
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 3, "one pass per ticket");
+    for req in seen.iter() {
+        let asked = format!("{:?}", req.messages);
+        assert!(asked.contains("Resolution:"), "{asked}");
+        assert!(
+            !asked.contains("Opened by"),
+            "the pass saw the whole ticket: {asked}"
+        );
+    }
 }
 
 /// Only the builtin `fs_list` answers a program with names: a server's tool
