@@ -1085,8 +1085,6 @@ fn run_with(
     Ok(())
 }
 
-/// `mecha persona day`: the sampled day, through `world::day`'s own door,
-/// drawn and stored on the first asking and read back on the next.
 /// The owner's calendar day, not the machine's UTC one, and `date` read
 /// against it.
 fn owner_dates(date: Option<&str>) -> Result<(chrono::NaiveDate, chrono::NaiveDate)> {
@@ -1103,6 +1101,8 @@ fn owner_dates(date: Option<&str>) -> Result<(chrono::NaiveDate, chrono::NaiveDa
     Ok((date, today))
 }
 
+/// `mecha persona day`: the sampled day, through `world::day`'s own door,
+/// drawn and stored on the first asking and read back on the next.
 fn day_cmd(dir: &Path, name: &str, date: Option<&str>, json: bool) -> Result<()> {
     use mecha_core::persona::world;
     let (date, today) = owner_dates(date)?;
@@ -1172,6 +1172,7 @@ fn render_day(name: &str, day: &mecha_core::persona::sampler::Day, json: bool) -
     Ok(out)
 }
 
+/// `mecha persona week`: the week holding a date, through `world::week_view`.
 fn week_cmd(dir: &Path, name: &str, date: Option<&str>, json: bool) -> Result<()> {
     use mecha_core::persona::world;
     let (date, today) = owner_dates(date)?;
@@ -1208,7 +1209,10 @@ fn render_week(
         };
         write!(out, "  {} {}  {when:<6}", d.date.format("%a"), d.date)?;
         let Some(day) = &d.day else {
-            writeln!(out)?;
+            match d.when {
+                When::Folded => writeln!(out)?,
+                _ => writeln!(out, "  not drawn")?,
+            }
             continue;
         };
         let mut by: Vec<(&str, u32)> = Vec::new();
@@ -1225,6 +1229,9 @@ fn render_week(
             .map(|(a, m)| format!("{a} {}", hours(*m)))
             .collect();
         writeln!(out, "  {}", line.join(", "))?;
+    }
+    if let Some(why) = &week.unavailable {
+        writeln!(out, "\nThe days not drawn wait on her routine: {why}")?;
     }
     if let Some(f) = &week.folded {
         let line: Vec<String> = f
@@ -1744,6 +1751,7 @@ mod tests {
                 minutes: vec![(Activity::Sleep, 1440)],
                 unreadable: 30,
             }),
+            unavailable: None,
         };
         let text = render_week("juno", &week, false).unwrap();
         let lines: Vec<&str> = text.lines().collect();

@@ -2367,11 +2367,15 @@ ruled for repetition.
     `personas/week` row), reading `GET /api/personas/{name}/week`, owned by
     `Feature::World`. Each day is a 4am-to-4am bar coloured by activity
     group; a tapped stretch says its times, routine label and company, and
-    one from a source that is not clean is hatched. A day past fourteen days
-    shows as folded, with its week's minutes below, never drawn again; a
+    one from a source that is not clean is hatched. A day already kept is
+    shown from the store first, with no routine needed, so a routine that
+    breaks or goes leaves the kept days showing and says why the rest are
+    not drawn. A day past fourteen days shows as folded, with its week's
+    minutes below, once `prune` has folded it, and is never drawn again; a
     day ahead is drawn and marked so, never stored. A persona with `world`
-    off, no routine or no cell answers with which, and the tab says it,
-    never a route error. Owner events wait for step 3's event table.
+    off, or with nothing kept and no routine or cell, answers with which,
+    and the tab says it, never a route error. Owner events wait for step
+    3's event table.
 - **People**, two views:
   - *Her people* — concentric Dunbar rings with her at the centre, portraits
     from library links, warm or tense lines, ended relationships greyed on an

@@ -1,6 +1,6 @@
 // The persona week view's pure logic, imported from the shipped module.
 import assert from 'node:assert/strict';
-import { personaUrl, ENDPOINTS, weekUrl, weekDays, foldedHours, shiftWeek, stretchLine, dayClock, WEEK_ABSENT } from '../src/lib/persona.js';
+import { personaUrl, ENDPOINTS, weekUrl, weekDays, foldedHours, weekUnavailable, shiftWeek, stretchLine, dayClock, WEEK_ABSENT } from '../src/lib/persona.js';
 import { PANE_FEATURE } from '../src/lib/features.js';
 
 // The endpoint is one the builder accepts, and so one the docs demo checks.
@@ -49,7 +49,15 @@ assert.equal(swim.left + swim.width, 100, 'the day ends at the next 4am');
 assert.equal(swim.unclean, true, 'an unknown source is never clean');
 assert.equal(swim.line, '10:00–04:00 exercise (swim), with friend, colleague');
 assert.equal(days[1].folded, true);
+assert.equal(days[1].undrawn, false);
 assert.equal(days[1].bars.length, 0);
+assert.equal(days[0].undrawn, false);
+// A day her routine could not draw is not a folded one, and the week says why.
+const undrawn = weekDays({ week: { days: [{ date: '2026-11-04', when: 'today', sources: [], day: null }], unavailable: 'routine.toml does not load' } });
+assert.equal(undrawn[0].folded, false);
+assert.equal(undrawn[0].undrawn, true);
+assert.equal(weekUnavailable({ week: { unavailable: 'routine.toml does not load' } }), 'routine.toml does not load');
+assert.equal(weekUnavailable(data), null);
 assert.equal(stretchLine({ activity: 'tv', start_minute: 1200, end_minute: 1260, company: ['alone'], anchor: 'tv' }), '20:00–21:00 tv, alone');
 
 // Folded minutes, most first.

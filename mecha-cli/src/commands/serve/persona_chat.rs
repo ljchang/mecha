@@ -1868,13 +1868,6 @@ impl PersonaChats {
         }))
     }
 
-    /// What `name` remembers, for the owner's curation page (§9.8): every
-    /// episode and fact still standing — candidates waiting on the owner
-    /// included, withdrawn ones not — each dated by when it was said, in
-    /// `tz`, with this persona's shared copies of its facts about the owner.
-    /// Read-only and never created: no store yet is an empty page. Only this
-    /// persona's own rows, so a locked persona's facts shared with everyone
-    /// can never surface through another's page.
     /// Her week for the persona page (PERSONA-LIFE-DESIGN.md §15): the
     /// week holding `date` (this week when `None`) on the owner's calendar,
     /// or why she has no days. A persona with `[life] world` off answers
@@ -1913,6 +1906,13 @@ impl PersonaChats {
         }
     }
 
+    /// What `name` remembers, for the owner's curation page (§9.8): every
+    /// episode and fact still standing — candidates waiting on the owner
+    /// included, withdrawn ones not — each dated by when it was said, in
+    /// `tz`, with this persona's shared copies of its facts about the owner.
+    /// Read-only and never created: no store yet is an empty page. Only this
+    /// persona's own rows, so a locked persona's facts shared with everyone
+    /// can never surface through another's page.
     pub fn memory(
         &self,
         library: &LibraryState,

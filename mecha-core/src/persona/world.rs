@@ -640,7 +640,8 @@ pub enum When {
 pub struct WeekDay {
     pub date: NaiveDate,
     pub when: When,
-    /// `None` for a folded day.
+    /// `None` for a folded day, and for one that could not be drawn
+    /// ([`WeekView::unavailable`]).
     pub day: Option<Day>,
     /// Each stretch's source, in stretch order.
     pub sources: Vec<Source>,
@@ -653,6 +654,10 @@ pub struct WeekView {
     pub days: Vec<WeekDay>,
     /// The minutes of the days already folded, if any are.
     pub folded: Option<Week>,
+    /// Why the days that are neither kept nor folded could not be drawn
+    /// (her routine is gone, names no cell, or does not load), when the
+    /// week still has kept days to show.
+    pub unavailable: Option<String>,
 }
 
 impl WeekView {
@@ -675,13 +680,15 @@ impl WeekView {
                 })).collect::<Vec<_>>(),
                 "unreadable": w.unreadable,
             })),
+            "unavailable": self.unavailable,
         })
     }
 }
 
 /// The week holding `date`, each day as [`day`] gives it and a folded one
 /// left as its week's minutes rather than drawn again. `Ok(Err(_))` names
-/// why she has no days at all.
+/// why she has no days at all: `[life] world` off, or nothing kept and
+/// nothing drawable.
 pub fn week_view(
     store_dir: &Path,
     name: &str,
@@ -692,51 +699,81 @@ pub fn week_view(
     let Some(persona) = store.get(name) else {
         bail!("no persona named `{name}`");
     };
-    // Asked before any day, so a week whose days are all folded still says
-    // why she has none, and nothing is drawn to find out.
     if !persona.settings.life.world {
         return Ok(Err(Absent::Off));
     }
-    match routine::read(store_dir, &persona.name)?.routine {
-        None => return Ok(Err(Absent::NoRoutine)),
-        Some(text) => {
-            let routine = routine::parse(&text)
-                .with_context(|| format!("{} does not load", routine::FILE))?;
-            if routine.cell.is_none() {
-                return Ok(Err(Absent::NoCell));
-            }
-        }
-    }
     let monday = week_of(date);
     let oldest = today - Days::new(KEEP_DAYS);
+    let when_of = |d: NaiveDate| match d.cmp(&today) {
+        std::cmp::Ordering::Less => When::Past,
+        std::cmp::Ordering::Equal => When::Today,
+        std::cmp::Ordering::Greater => When::Ahead,
+    };
+    // What the store already holds comes first, and needs no routine: a
+    // past day is what it was, whatever the routine says now or whether it
+    // still loads (`draw`'s rule). A day past the keep window is folded
+    // only once `prune` has folded it; until then it is still whole.
+    let existing = World::open_existing(&store_dir.join(&persona.name))?;
     let mut days = Vec::with_capacity(7);
+    let mut pending = Vec::new();
     for i in 0..7 {
         let d = monday + Days::new(i);
-        if d < oldest {
-            days.push(WeekDay {
+        let kept = match (&existing, d < today) {
+            (Some(w), true) => w.stored(d)?,
+            _ => None,
+        };
+        match kept {
+            Some(st) => days.push(WeekDay {
+                date: d,
+                when: When::Past,
+                day: Some(st.day),
+                sources: st.sources,
+            }),
+            None if d < oldest => days.push(WeekDay {
                 date: d,
                 when: When::Folded,
                 day: None,
                 sources: Vec::new(),
-            });
-            continue;
+            }),
+            None => {
+                pending.push(days.len());
+                days.push(WeekDay {
+                    date: d,
+                    when: when_of(d),
+                    day: None,
+                    sources: Vec::new(),
+                });
+            }
         }
-        let (day, sources) = match draw(store_dir, name, d, today)? {
-            Drawn::Day(day, sources) => (day, sources),
-            Drawn::Absent(why) => return Ok(Err(why)),
-        };
-        let when = match d.cmp(&today) {
-            std::cmp::Ordering::Less => When::Past,
-            std::cmp::Ordering::Equal => When::Today,
-            std::cmp::Ordering::Greater => When::Ahead,
-        };
-        days.push(WeekDay {
-            date: d,
-            when,
-            day: Some(day),
-            sources,
-        });
     }
+    // The rest must be drawn, which needs a routine naming her cell. Asked
+    // once, before any draw, so finding out draws nothing; and a week with
+    // days already kept shows them with the reason beside the rest.
+    let mut unavailable = None;
+    if !pending.is_empty() {
+        let shown = days.iter().any(|d| d.day.is_some());
+        match drawable(store_dir, &persona.name) {
+            Ok(Ok(())) => {
+                for &i in &pending {
+                    match draw(store_dir, name, days[i].date, today)? {
+                        Drawn::Day(day, sources) => {
+                            days[i].day = Some(day);
+                            days[i].sources = sources;
+                        }
+                        Drawn::Absent(why) => {
+                            unavailable = Some(why.why(name));
+                            break;
+                        }
+                    }
+                }
+            }
+            Ok(Err(why)) if !shown => return Ok(Err(why)),
+            Ok(Err(why)) => unavailable = Some(why.why(name)),
+            Err(e) if !shown => return Err(e),
+            Err(e) => unavailable = Some(format!("{e:#}")),
+        }
+    }
+    // Read after the draws, which may have pruned.
     let folded = World::open_existing(&store_dir.join(&persona.name))?
         .map(|w| w.week(monday))
         .transpose()?
@@ -745,7 +782,22 @@ pub fn week_view(
         monday,
         days,
         folded,
+        unavailable,
     }))
+}
+
+/// Whether her days can be drawn: `Ok(Err(_))` names what is missing, and
+/// `Err` is a routine that does not load.
+fn drawable(store_dir: &Path, name: &str) -> Result<std::result::Result<(), Absent>> {
+    let Some(text) = routine::read(store_dir, name)?.routine else {
+        return Ok(Err(Absent::NoRoutine));
+    };
+    let routine =
+        routine::parse(&text).with_context(|| format!("{} does not load", routine::FILE))?;
+    Ok(match routine.cell {
+        Some(_) => Ok(()),
+        None => Err(Absent::NoCell),
+    })
 }
 
 /// A day, or why she has none.
@@ -1327,6 +1379,74 @@ mod tests {
         assert_eq!(folded.days, 7);
         let named: u32 = folded.minutes.iter().map(|(_, m)| m).sum();
         assert_eq!(named, 7 * sampler::MINUTES_PER_DAY);
+    }
+
+    #[test]
+    fn a_kept_week_is_shown_when_the_routine_no_longer_loads_or_is_gone() {
+        let dir = store(Some("cell = \"student\"\n"), true);
+        let monday = date("2026-11-02");
+        for i in 0..7 {
+            let d = monday + Days::new(i);
+            day(dir.as_path(), "mara", d, d).unwrap();
+        }
+        let routine_file = dir.join("mara").join(routine::FILE);
+        std::fs::write(&routine_file, "cell = \"nurse\"\n").unwrap();
+        // A week wholly kept needs no routine at all.
+        let later = date("2026-11-10");
+        let w = week_view(dir.as_path(), "mara", monday, later)
+            .unwrap()
+            .unwrap();
+        assert!(w
+            .days
+            .iter()
+            .all(|d| d.when == When::Past && d.day.is_some()));
+        assert_eq!(w.unavailable, None);
+        // Mid-week, the kept days show and the rest say why they are not drawn.
+        let wednesday = date("2026-11-04");
+        let w = week_view(dir.as_path(), "mara", monday, wednesday)
+            .unwrap()
+            .unwrap();
+        assert!(w.days[..2].iter().all(|d| d.day.is_some()));
+        assert!(w.days[2..]
+            .iter()
+            .all(|d| d.day.is_none() && d.when != When::Folded));
+        assert!(w.unavailable.as_deref().unwrap().contains("does not load"));
+        std::fs::remove_file(&routine_file).unwrap();
+        let w = week_view(dir.as_path(), "mara", monday, wednesday)
+            .unwrap()
+            .unwrap();
+        assert!(w
+            .unavailable
+            .as_deref()
+            .unwrap()
+            .contains("no routine.toml"));
+        // Nothing kept and nothing drawable is the absent state, as before.
+        let fresh = date("2026-12-07");
+        assert_eq!(
+            week_view(dir.as_path(), "mara", fresh, fresh).unwrap(),
+            Err(Absent::NoRoutine)
+        );
+    }
+
+    #[test]
+    fn a_day_past_the_window_is_folded_only_once_prune_has_folded_it() {
+        let dir = store(Some("cell = \"at_home\"\n"), true);
+        let monday = date("2026-10-05");
+        for i in 0..7 {
+            let d = monday + Days::new(i);
+            day(dir.as_path(), "mara", d, d).unwrap();
+        }
+        // A fortnight and more of nothing: no draw, so no prune, and every
+        // day is still whole in the store.
+        let today = date("2026-11-02");
+        let w = week_view(dir.as_path(), "mara", monday, today)
+            .unwrap()
+            .unwrap();
+        assert!(w
+            .days
+            .iter()
+            .all(|d| d.when == When::Past && d.day.is_some()));
+        assert_eq!(w.folded, None);
     }
 
     #[test]

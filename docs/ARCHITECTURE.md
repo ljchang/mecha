@@ -1802,9 +1802,10 @@ module.
   start and would never arm on a resume.
 - **A week view never redraws a folded day** (`world::week_view`). A day
   past `KEEP_DAYS` is shown as its week's minutes, because drawing it again
-  would show a day no chat was told; and the reasons she has no days (world
-  off, no routine, no cell) are checked before any day, so finding out
-  draws nothing. Its route is `Feature::World`'s, and the per-persona switch
+  would show a day no chat was told. Kept days are read from the store
+  before the routine is asked for, since a past day does not need it; the
+  reasons the rest cannot be drawn (no routine, no cell, one that does not
+  load) are checked once before any draw, so finding out draws nothing. Its route is `Feature::World`'s, and the per-persona switch
   answers as a state, never a refusal.
 - **Group membership lives once**, in each persona's `groups`. `groups.toml`
   only declares groups; a persona naming an undeclared group is a broken link.
