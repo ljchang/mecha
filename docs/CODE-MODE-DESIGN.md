@@ -163,6 +163,33 @@ the call's `ToolOutput::external` and the tool's capabilities.
 `<handle 3: 48,213 chars from mail_get_thread>`, so the default spelling of
 "look at it" costs a line, not the payload.
 
+- **A handle is not a string, and using one as text raises** (#791). The
+  host marks each handle in its answer (`interpreter::HANDLE_MARK`), and the
+  backend hands the program an object that string operations refuse on:
+  `"Priya" in h` and `len(h)` raise `TypeError`, and a method such as
+  `h.split(",")` raises `AttributeError`. The `code` result adds a line
+  saying what to use instead: `split(h, ...)` for a method that is a host
+  function of the same name, and `find`, `count`, `lines` and `peek`
+  otherwise.
+  The program's value goes back to the host as its stub, and the result
+  shows it as one.
+  - *Incident:* handles used to be the stub string itself. A model's
+    `"Priya Okafor" in text` searched the stub's own text and returned
+    `False`, so its program reported 0 meetings attended, with nothing
+    raised. The model caught it only because 0 looked wrong.
+  - Text cannot reach anything new by looking like a stub. A stub-shaped
+    string a program passes back resolves only if it is the exact stub of a
+    handle this program already holds (`held()`), which `peek` of a tool's
+    error body relies on. And tool data cannot turn into a handle object:
+    file text reaches a program only as a `peek` string, and the marker's
+    key holds a NUL.
+- **A program that reaches for the filesystem is told where its data is.**
+  An `os` call is refused with a `PermissionError` that says a program has
+  no files, environment, network or clock, and lists the functions it was
+  given. An unknown import is left as monty's own `ModuleNotFoundError`, so
+  a program's `except ImportError:` still catches it. Monty's own `Permission denied: '/notes'` read as a sandbox fault,
+  and the model went probing paths.
+
 - **Taint is unchanged.** It arms on the host call, from the result's
   `external` and the tool's capabilities, before the program resumes —
   §3.12's first hazard, as specified. A handle therefore saves *context*;
@@ -232,7 +259,7 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
   | one of | `["urgent", "fyi", "none"]` | ≤ 32 labels, each ≤ 64 chars |
   | list | `[shape]` | ≤ 64 items |
   | record | `{"due": "str[32]", "urgent": "bool"}` | ≤ 8 fields, no nesting past one level |
-  | short text | `str[n]` | n ≤ 2,000; with lists and records, the result must also fit §5's 16 KB prose cap, so `[{"x": "str[2000]"}]` raises on the cap and the program narrows `n`. The table bounds shapes; it is not a menu of shapes that fit |
+  | short text | `str[n]` | n ≤ 2,000; with lists and records, the result must also fit §5's 256 KiB prose cap, so 64 records of eight `str[2000]` fields raise on the cap and the program narrows `n`. The table bounds shapes; it is not a menu of shapes that fit |
 
   Every spelling is a JSON value: a bare Python type such as `bool`
   has no JSON form and never crosses into the host, so the program
@@ -416,7 +443,7 @@ Per program. **Two kinds of limit, and only the first is catchable:**
 | live handles | 4,096 | the host. `split`, `lines` and `chunks` refuse a result that would cross it, and `chunks` refuses `n` below 256, so one counted operation cannot mint a handle per byte |
 | host bytes, all programs in the process | 256 MB | one process-wide pool every program draws from. `dispatch` runs a turn's calls under `join_all`, so two `code` calls in one message, a parent's program beside an `analyst` child's, and `mecha batch` are all concurrent, and per-program limits alone would not bound N × 64 MB. A read that would cross either limit raises |
 | memory, recursion | monty's limits | the pool worker, which bounds the interpreter's heap. It does not own the handles' bytes, which is why the two rows above exist. Monty 1.4 has no allocation-count limit, and recursion raises a catchable `RecursionError`. On a Mac monty's ceiling is the only memory bound (below) |
-| `peek` bytes plus `str[n]` result bytes | 16 KB together | the host, one count (`peeked_bytes`) |
+| `peek` bytes plus `str[n]` result bytes | 256 KiB together (was 16 KB; owner, 2026-11-01) | the host, one count (`peeked_bytes`) |
 
 **Memory on a Mac: monty's ceiling holds, and nothing stands behind it.**
 On Linux, `[sandbox] memory_mb` puts the worker in a cgroup, a wall
@@ -1168,7 +1195,15 @@ with your recs"), except R4, which waited on M1 and was ruled on
   a worker on this box. The numbers live in `tool/code.rs`'s `defaults`.
 - **R5. Yes.** `peek` exists, capped together with `str[n]` results, and
   counted (§3). The cap's number belongs to R4's budget table (§5): 16 KB,
-  ruled with it.
+  ruled with it. **Raised to 256 KiB on 2026-11-01 (owner).** The first live
+  test hit 16 KB on a program that read 40 short notes (#791), and in the
+  read-only slice the cap guards less than the number suggested:
+  - reading a handle already arms the run, and `peek` lowers no label;
+  - a program has no sink, so a branch that third-party text steers can
+    change only what it computes and prints;
+  - what it prints is capped and wrapped as untrusted, like any tool result.
+
+  It stays counted (`peeked_bytes`). The sink slice revisits it (§12).
 - **R6. Thinking off by default**, on per call (§4, from M0). **Every
   pass gets `max_tokens` of 8,192, thinking or not**, because the
   thinking-off request can be silently ignored (§4). The floor alone
@@ -1212,6 +1247,12 @@ with your recs"), except R4, which waited on M1 and was ruled on
 ---
 
 ## 12. Deliberately not in this slice
+
+- **The peek cap's size in the sink slice.** R5's cap was raised to 256 KiB
+  because a read-only program has no sink (§11, R5). The moment a program
+  can reach one, prose inside it can steer a branch toward that sink, and
+  the cap bounds how much prose can do that. The sink slice must set this
+  number again, with that argument, and not inherit 256 KiB.
 
 When code lands, the invariants §2–§7 assert move to `ARCHITECTURE.md`, in
 a §Code mode section, and this document stops being cited for them. It
@@ -1321,3 +1362,28 @@ The literature agrees:
    found none in the current corpus. The precedent is RLM-Qwen3-8B,
    about 1,000 filtered trajectories from a stronger model writing
    programs in the same harness.
+
+**The first live test (2026-11-01, Qwen3.6-35B-A3B on the router, `mecha
+run`).** The fixture was 40 fictional meeting notes and one question that
+needed all of them. Both runs answered right. They failed in different ways:
+
+| | told nothing about `code` | told to use `code` |
+|---|---|---|
+| called `code` | **no**: 41 `fs_read` calls over 6 turns | yes: 16 programs, **8 failed** |
+| tool calls, turns, time | 41, 6, 100 s | 191, 20, 66 s |
+
+- **Unprompted, it did not reach for `code`**, though it was offered. The
+  notes come to about 16 KB, so reading them was a sound choice; this
+  fixture does not make `code` necessary.
+- **Told to use it, it wrote ordinary file I/O** (`os.listdir`, `open`).
+  Monty's bare `Permission denied: '/notes'` sent it probing paths.
+- **A silent wrong answer.** `"Priya Okafor" in text` searched a handle's
+  stub and reported 0 meetings, with nothing raised.
+- **The 16 KB `peek` cap stopped a correct program** reading 40 short
+  notes.
+
+#791 answers the last three: handles that raise when used as text, an OS
+refusal that names the program's functions, a description that leads with
+when to use `code` and shows `count`/`find` on handles, and the cap at
+256 KiB. Adoption, the first finding, is what the next test measures, on a
+fixture too large to read file by file.
