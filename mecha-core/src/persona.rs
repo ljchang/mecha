@@ -49,9 +49,11 @@ pub mod replay;
 pub mod replay_judge;
 pub mod routine;
 pub mod safety;
+pub mod sampler;
 pub mod search;
 pub mod turn;
 pub mod variety;
+pub mod world;
 pub mod writer;
 
 /// A name — persona, relationship, group or voice: `[a-z0-9][a-z0-9_-]*`.
@@ -1140,8 +1142,8 @@ impl Store {
     }
 
     /// The persona's folder — for the owner's doors (the CLI, the page).
-    /// **Never a jail root:** `sessions/`, `state.toml` and, later,
-    /// `memory.db` sit in it beside `files/`. A tool reading a persona's
+    /// **Never a jail root:** `sessions/`, `state.toml`, `memory.db` and
+    /// `world.db` sit in it beside `files/`. A tool reading a persona's
     /// material is jailed to [`Store::files_roots`] instead.
     pub fn persona_dir(&self, name: &str) -> PathBuf {
         self.dir.join(name)

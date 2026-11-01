@@ -37,9 +37,9 @@ use super::activity::Activity;
 const TABLE: &[u8] = include_bytes!("../../data/atus/table.tsv.gz");
 /// sha256 of the table's text, the script's `TEXT_SHA256`: what the pinned
 /// ATUS files produce. The text, not the gzip file, whose bytes depend on
-/// which zlib wrote them.
-#[cfg(test)]
-const TEXT_SHA256: &str = "b51bd371dc2ed22bfd42c42911a400fa6c2f4f7624d48d7ac630648a724ce37b";
+/// which zlib wrote them. A sampled day records it, so a day drawn from
+/// another table is known to be one.
+pub const TEXT_SHA256: &str = "b51bd371dc2ed22bfd42c42911a400fa6c2f4f7624d48d7ac630648a724ce37b";
 /// The format `V` row this reader understands.
 const VERSION: &str = "2";
 /// Quantiles per duration row: 0%, 5%, …, 100%.
