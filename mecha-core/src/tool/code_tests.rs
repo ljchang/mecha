@@ -800,7 +800,7 @@ fn json_get_keeps_text_in_handles() {
         vec![h.clone(), json!("messages.0.body")],
     )
     .unwrap();
-    assert!(body.as_str().unwrap().starts_with("<handle "), "{body}");
+    assert!(stub_of(&body).unwrap().starts_with("<handle "), "{body}");
     assert_eq!(peek_all(&mut run, &body), "hello");
     let msg = op(
         &mut run,
@@ -808,7 +808,7 @@ fn json_get_keeps_text_in_handles() {
         vec![h.clone(), json!(["messages", -1])],
     )
     .unwrap();
-    assert!(msg.as_str().unwrap().starts_with("<handle "));
+    assert!(stub_of(&msg).unwrap().starts_with("<handle "));
     assert_eq!(
         op(&mut run, "json_get", vec![h.clone(), json!("messages.0.n")]).unwrap(),
         json!(3)
@@ -1176,11 +1176,7 @@ async fn a_child_registry_without_mail_search_cannot_reach_it() {
         "try:\n    mail_search(query='x')\nexcept NameError:\n    print('absent')\ndocument_read()",
     )
     .await;
-    assert!(
-        d.content.starts_with("absent\n'<handle 1:"),
-        "{}",
-        d.content
-    );
+    assert!(d.content.starts_with("absent\n<handle 1:"), "{}", d.content);
 
     // The parent's, cloned into the child.
     let mut child = registry_of(vec![Arc::clone(&doc)]);
@@ -1194,6 +1190,117 @@ async fn a_child_registry_without_mail_search_cannot_reach_it() {
         d.content
     );
     assert_eq!(mail_ran.load(Ordering::SeqCst), 0);
+}
+
+/// A handle is not text, and using it as text raises rather than answers
+/// wrongly. A stub string let `"Priya" in h` search the stub, and a program
+/// counted 0 meetings with nothing raised (#791). The raise carries a hint
+/// that names what to use instead, and a printed handle reads as its stub.
+#[cfg(feature = "monty")]
+#[tokio::test]
+async fn a_handle_used_as_text_raises_and_says_what_to_use() {
+    let Some(interp) = monty().await else {
+        return;
+    };
+    let doc: Arc<dyn Tool> = Arc::new(Fake::read("document_read", "Attendees: Priya"));
+    let agent = with_code(vec![Arc::clone(&doc)], Arc::clone(&interp));
+    let (d, _) = run(&agent, "h = document_read()\nprint('Priya' in h)").await;
+    assert!(d.is_error, "a handle answered `in`: {}", d.content);
+    assert!(d.content.contains("TypeError"), "{}", d.content);
+    assert!(d.content.contains("a handle is not text"), "{}", d.content);
+    // What works instead, and how a handle prints.
+    let agent = with_code(vec![doc], interp);
+    let (d, _) = run(
+        &agent,
+        "h = document_read()\nprint(count(h, 'Priya'))\nprint(h)",
+    )
+    .await;
+    assert!(!d.is_error, "{}", d.content);
+    assert!(
+        d.content
+            .starts_with("1\n<handle 1: 16 chars from document_read>"),
+        "{}",
+        d.content
+    );
+}
+
+/// A handle has no methods: `h.split(",")` names the call to make instead,
+/// and `len(h)` raises with the hint, where both used to answer about the
+/// stub's own text (review of #791).
+#[cfg(feature = "monty")]
+#[tokio::test]
+async fn a_handles_methods_and_len_say_what_to_use() {
+    let Some(interp) = monty().await else {
+        return;
+    };
+    let doc: Arc<dyn Tool> = Arc::new(Fake::read("document_read", "a, b"));
+    for (src, error, want) in [
+        (
+            "h = document_read()\nh.split(',')",
+            "AttributeError",
+            "call split(h, ...)",
+        ),
+        (
+            "h = document_read()\nh.strip()",
+            "AttributeError",
+            "a handle has no method 'strip'",
+        ),
+        (
+            "h = document_read()\nlen(h)",
+            "TypeError",
+            "a handle is not text",
+        ),
+    ] {
+        let agent = with_code(vec![Arc::clone(&doc)], Arc::clone(&interp));
+        let (d, _) = run(&agent, src).await;
+        assert!(d.is_error, "{src}: {}", d.content);
+        assert!(d.content.contains(error), "{src}: {}", d.content);
+        assert!(d.content.contains(want), "{src}: {}", d.content);
+    }
+}
+
+/// A missing module is still an `ImportError` a program can catch: the OS
+/// refusal is for files, the environment and the clock, not imports.
+#[cfg(feature = "monty")]
+#[tokio::test]
+async fn an_unknown_import_is_still_an_import_error() {
+    let Some(interp) = monty().await else {
+        return;
+    };
+    let agent = with_code(Vec::new(), interp);
+    let (d, _) = run(
+        &agent,
+        "try:\n    import nosuchmodule\nexcept ImportError:\n    print('caught')",
+    )
+    .await;
+    assert!(!d.is_error, "{}", d.content);
+    assert!(d.content.starts_with("caught"), "{}", d.content);
+}
+
+/// A program that reaches for the filesystem is told it has none, and what
+/// it was given instead, by name. Monty's own `Permission denied: '/notes'`
+/// read as a sandbox fault, and a model went probing paths (#791).
+#[cfg(feature = "monty")]
+#[tokio::test]
+async fn a_program_that_reaches_for_files_is_told_what_it_was_given() {
+    let Some(interp) = monty().await else {
+        return;
+    };
+    let doc: Arc<dyn Tool> = Arc::new(Fake::read("document_read", "a page"));
+    let agent = with_code(vec![doc], interp);
+    let (d, _) = run(&agent, "import os\nprint(os.listdir('notes'))").await;
+    assert!(d.is_error, "{}", d.content);
+    assert!(d.content.contains("PermissionError"), "{}", d.content);
+    assert!(
+        d.content.contains("a program has no files"),
+        "{}",
+        d.content
+    );
+    assert!(
+        d.content.contains("document_read"),
+        "the refusal names no function: {}",
+        d.content
+    );
 }
 
 /// A skill restriction that leaves out `mail_search` keeps it out of the
@@ -2051,7 +2158,8 @@ async fn an_empty_or_refused_pass_is_named_never_read_as_an_answer() {
 
 /// A `str[n]` result is prose entering the program: its bytes draw on
 /// `peek`'s cap, one count, and a shape whose text could not fit what is
-/// left is refused before its pass (`[{"x": "str[2000]"}]`).
+/// left is refused before its pass (64 records of eight `str[2000]`, about
+/// 1 MB against the 256 KiB default).
 #[tokio::test]
 async fn text_results_draw_on_the_peek_cap() {
     let limits = HostLimits {
@@ -2084,7 +2192,12 @@ async fn text_results_draw_on_the_peek_cap() {
         &mut run,
         &host,
         "llm_query",
-        vec![json!("q"), h[0].clone(), json!([{"x": "str[2000]"}])],
+        vec![
+            json!("q"),
+            h[0].clone(),
+            json!([{"a": "str[2000]", "b": "str[2000]", "c": "str[2000]", "d": "str[2000]",
+                    "e": "str[2000]", "f": "str[2000]", "g": "str[2000]", "h": "str[2000]"}]),
+        ],
         vec![],
     )
     .await
