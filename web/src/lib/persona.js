@@ -33,7 +33,7 @@ export function withUnlock(path, token) {
 // imports `ENDPOINTS` instead, and the builders refuse any suffix not listed
 // here: a new endpoint is added to this list or it throws, and the list is
 // then what `check-demo` holds the demo's routes to (review of #415).
-const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock', '/frame', '/image-touching', '/image-settings', '/sources', '/sources/remove', '/sources/file', '/sources/text', '/review', '/approve', '/reject', '/memory'];
+const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock', '/frame', '/image-touching', '/image-settings', '/sources', '/sources/remove', '/sources/file', '/sources/text', '/review', '/approve', '/reject', '/memory', '/week'];
 const CHAT_SUFFIXES = ['', '/events', '/send', '/cancel', '/file', '/upload', '/cited', '/save', '/call', '/call-regenerate', '/jobs/order'];
 
 export const ENDPOINTS = [
@@ -795,4 +795,121 @@ const MEMORY_ACTIONS = ['approve', 'pin', 'unpin', 'correct', 'forget', 'share',
 export function memoryActBody(action, id, extra = {}, token = null) {
   if (!MEMORY_ACTIONS.includes(action)) throw new Error(`not a memory action: ${action}`);
   return { action, id, ...extra, unlock: token ?? undefined };
+}
+
+// Her week (PERSONA-LIFE-DESIGN.md §15), as `GET /api/personas/{name}/week`
+// answers it. Her day runs 4am to 4am, as a time-use diary does, so a
+// minute past 1439 is the next morning.
+const DAY_START = 240;
+const DAY_MINUTES = 1440;
+// Midnight, in a day's own minutes.
+const MIDNIGHT = 24 * 60;
+
+// Why she has no days, said with its fix; the server's `why` is the CLI's.
+export const WEEK_ABSENT = {
+  off: 'Her life is off for this persona. Set world = true under [life] in her persona.toml to give her days.',
+  no_routine: 'She has no routine yet, so there are no days to draw. Write one with mecha persona routine edit.',
+  no_cell: 'Her routine names no kind of week (cell), so there are no days to draw. Add one with mecha persona routine edit.',
+};
+
+// Activities in a few groups the week view colours by.
+const ACTIVITY_GROUP = {
+  sleep: 'rest', personal_care: 'rest', relaxing: 'rest',
+  work: 'work', class: 'work', studying: 'work', volunteering: 'work',
+  eating: 'home', cooking: 'home', housework: 'home', shopping: 'home', errands: 'home', caring: 'home',
+  commute: 'move', travel: 'move', exercise: 'move', outing: 'move', sports_event: 'move',
+  socializing: 'social', religion: 'social',
+  tv: 'leisure', music: 'leisure', games: 'leisure', computer: 'leisure', hobbies: 'leisure', reading: 'leisure',
+};
+
+export const WEEK_GROUPS = [
+  ['rest', 'sleep and rest'],
+  ['work', 'work and study'],
+  ['home', 'home and errands'],
+  ['move', 'out and about'],
+  ['social', 'with people'],
+  ['leisure', 'free time'],
+  ['unknown', 'not named here'],
+];
+
+// A minute of her day as a clock time.
+export function dayClock(m) {
+  const h = Math.floor(m / 60) % 24;
+  return `${String(h).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+}
+
+// Hours and minutes, as 8h05.
+export function hoursOf(m) {
+  return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}`;
+}
+
+// One stretch said in a line: when, what, the routine's name, and company.
+export function stretchLine(s) {
+  // A stretch across midnight says its end is the next day's, as
+  // `mecha persona day` does.
+  const nextDay = s.start_minute < MIDNIGHT && s.end_minute > MIDNIGHT ? '+1' : '';
+  let line = `${dayClock(s.start_minute)}–${dayClock(s.end_minute)}${nextDay} ${s.activity.replace(/_/g, ' ')}`;
+  if (s.anchor && s.anchor !== s.activity) line += ` (${s.anchor})`;
+  const who = s.company ?? [];
+  if (who.length === 1 && who[0] === 'alone') line += ', alone';
+  else if (who.length) line += `, with ${who.join(', ')}`;
+  return line;
+}
+
+// The week's rows: one a day, Monday first, each stretch placed on a 4am to
+// 4am bar as percentages. A folded day has no bars. A stretch whose source
+// is not the sampler's or the owner's is marked, since unknown is never
+// clean.
+export function weekDays(data) {
+  return (data?.week?.days ?? []).map((d) => {
+    const date = new Date(`${d.date}T12:00:00`);
+    const stretches = d.day?.stretches ?? [];
+    return {
+      date: d.date,
+      weekday: date.toLocaleDateString(undefined, { weekday: 'short' }),
+      dayOfMonth: date.getDate(),
+      when: d.when,
+      folded: d.when === 'folded',
+      // Neither kept nor folded: her routine could not draw it
+      // (`week.unavailable` says why).
+      undrawn: !d.day && d.when !== 'folded',
+      bars: stretches.map((s, i) => ({
+        ...s,
+        // An activity this bundle does not know is said as unknown, never
+        // coloured as one it does (a stale build beside a newer binary).
+        group: ACTIVITY_GROUP[s.activity] ?? 'unknown',
+        left: ((s.start_minute - DAY_START) / DAY_MINUTES) * 100,
+        width: ((s.end_minute - s.start_minute) / DAY_MINUTES) * 100,
+        unclean: !['sampler', 'owner'].includes(d.sources?.[i]),
+        line: stretchLine(s),
+      })),
+    };
+  });
+}
+
+// Why the days not drawn wait, when the week still shows kept ones.
+export function weekUnavailable(data) {
+  return data?.week?.unavailable ?? null;
+}
+
+// What the week's folded days left: hours by activity, most first.
+export function foldedHours(data) {
+  const f = data?.week?.folded;
+  if (!f) return null;
+  const rows = [...(f.minutes ?? [])].sort((a, b) => b.minutes - a.minutes || a.activity.localeCompare(b.activity));
+  return { days: f.days, rows: rows.map((r) => ({ activity: r.activity.replace(/_/g, ' '), hours: hoursOf(r.minutes) })), unreadable: f.unreadable ? hoursOf(f.unreadable) : null };
+}
+
+// The Monday a week away from `monday` (YYYY-MM-DD), by whole days.
+export function shiftWeek(monday, weeks) {
+  const [y, m, d] = monday.split('-').map(Number);
+  const t = new Date(Date.UTC(y, m - 1, d + 7 * weeks));
+  return t.toISOString().slice(0, 10);
+}
+
+// The week view's URL: this week, or the one holding `date`.
+export function weekUrl(name, date, token) {
+  const url = personaUrl(name, '/week', token);
+  if (!date) return url;
+  return `${url}${url.includes('?') ? '&' : '?'}date=${encodeURIComponent(date)}`;
 }

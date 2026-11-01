@@ -228,6 +228,7 @@ export const ROUTES = [
   ['POST', /^\/api\/personas\/[^/]+\/image-settings$/, () => new Response('the demo does not keep image settings', { status: 501 })],
   ['GET', /^\/api\/personas\/[^/]+\/chats$/, () => fx.personaHistory],
   ['GET', /^\/api\/personas\/[^/]+\/memory$/, () => fx.personaMemory],
+  ['GET', /^\/api\/personas\/[^/]+\/week$/, () => fx.personaWeek],
   ['POST', /^\/api\/personas\/[^/]+\/memory$/, () => new Response('the demo does not change memories', { status: 501 })],
   ['GET', /^\/api\/personas\/[^/]+\/review$/, () => fx.personaReview],
   ['POST', /^\/api\/personas\/[^/]+\/(approve|reject)$/, () => new Response('the demo does not approve or reject personas', { status: 501 })],

@@ -1814,6 +1814,56 @@ export const personaMemory = {
   groups: ['work'],
 };
 
+// Her week as `GET /api/personas/{name}/week` answers it: a weekday of
+// work and a weekend at home, minutes after midnight on a 4am-to-4am day.
+const demoDay = (date, when, weekend) => ({
+  date,
+  when,
+  sources: ['sampler', 'sampler', 'sampler', 'sampler', 'sampler', 'sampler'],
+  day: {
+    date,
+    cell: 'full_time',
+    day_type: weekend ? 'weekend' : 'weekday',
+    backoffs: 0,
+    carries: null,
+    stretches: weekend
+      ? [
+          { activity: 'sleep', start_minute: 240, end_minute: 540, company: null, anchor: null },
+          { activity: 'eating', start_minute: 540, end_minute: 600, company: ['partner'], anchor: null },
+          { activity: 'outing', start_minute: 600, end_minute: 840, company: ['friend'], anchor: null },
+          { activity: 'cooking', start_minute: 840, end_minute: 1080, company: ['partner'], anchor: null },
+          { activity: 'reading', start_minute: 1080, end_minute: 1380, company: ['alone'], anchor: null },
+          { activity: 'sleep', start_minute: 1380, end_minute: 1680, company: null, anchor: null },
+        ]
+      : [
+          { activity: 'sleep', start_minute: 240, end_minute: 420, company: null, anchor: null },
+          { activity: 'exercise', start_minute: 420, end_minute: 480, company: ['alone'], anchor: 'swim' },
+          { activity: 'work', start_minute: 480, end_minute: 1050, company: ['colleague'], anchor: 'lab' },
+          { activity: 'commute', start_minute: 1050, end_minute: 1090, company: ['alone'], anchor: null },
+          { activity: 'tv', start_minute: 1090, end_minute: 1380, company: ['partner'], anchor: null },
+          { activity: 'sleep', start_minute: 1380, end_minute: 1680, company: null, anchor: null },
+        ],
+  },
+});
+
+export const personaWeek = {
+  today: '2026-09-30',
+  week: {
+    monday: '2026-09-28',
+    days: [
+      demoDay('2026-09-28', 'past', false),
+      demoDay('2026-09-29', 'past', false),
+      demoDay('2026-09-30', 'today', false),
+      demoDay('2026-10-01', 'ahead', false),
+      demoDay('2026-10-02', 'ahead', false),
+      demoDay('2026-10-03', 'ahead', true),
+      demoDay('2026-10-04', 'ahead', true),
+    ],
+    folded: null,
+    unavailable: null,
+  },
+};
+
 export const personaFiles = {
   identity: {
     file: 'identity.md',

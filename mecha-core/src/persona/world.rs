@@ -583,7 +583,7 @@ impl World {
 pub fn day(store_dir: &Path, name: &str, date: NaiveDate, today: NaiveDate) -> Result<Day> {
     match draw(store_dir, name, date, today)? {
         Drawn::Day(day, _) => Ok(day),
-        Drawn::Absent(why) => bail!(why),
+        Drawn::Absent(why) => bail!(why.why(name)),
     }
 }
 
@@ -621,12 +621,234 @@ pub fn now(store_dir: &Path, name: &str, at: NaiveDateTime) -> Result<Option<Now
     }))
 }
 
+/// Where a day of a week view stands against today.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum When {
+    /// Past [`KEEP_DAYS`] and no longer stored: folded into its week's
+    /// minutes if it was ever drawn. The store keeps only a count of folded
+    /// days a week, never which, so a surface says "not kept" for the day
+    /// and leaves the count to the week's summary.
+    Folded,
+    /// Kept as it was drawn.
+    Past,
+    Today,
+    /// Drawn as it would be now and never stored, so it may change until it
+    /// comes.
+    Ahead,
+}
+
+/// One day of a week view.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WeekDay {
+    pub date: NaiveDate,
+    pub when: When,
+    /// `None` for a folded day, and for one that could not be drawn
+    /// ([`WeekView::unavailable`]).
+    pub day: Option<Day>,
+    /// Each stretch's source, in stretch order.
+    pub sources: Vec<Source>,
+}
+
+/// A week of her days, Monday first, and what its folded days left.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WeekView {
+    pub monday: NaiveDate,
+    pub days: Vec<WeekDay>,
+    /// The minutes of the days already folded, if any are.
+    pub folded: Option<Week>,
+    /// Why the days that are neither kept nor folded could not be drawn
+    /// (her routine is gone, names no cell, or does not load), when the
+    /// week still has kept days to show.
+    pub unavailable: Option<String>,
+}
+
+impl WeekView {
+    /// The week as `mecha persona week --json` and the web app's week view
+    /// read it: each day as [`Day::to_json`], `null` once folded, with its
+    /// stretches' sources beside it.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "monday": self.monday.to_string(),
+            "days": self.days.iter().map(|d| serde_json::json!({
+                "date": d.date.to_string(),
+                "when": d.when,
+                "day": d.day.as_ref().map(Day::to_json),
+                "sources": d.sources,
+            })).collect::<Vec<_>>(),
+            "folded": self.folded.as_ref().map(|w| serde_json::json!({
+                "days": w.days,
+                "minutes": w.minutes.iter().map(|(a, m)| serde_json::json!({
+                    "activity": a.id(), "minutes": m,
+                })).collect::<Vec<_>>(),
+                "unreadable": w.unreadable,
+            })),
+            "unavailable": self.unavailable,
+        })
+    }
+}
+
+/// The week holding `date`, each day as [`day`] gives it and a folded one
+/// left as its week's minutes rather than drawn again. `Ok(Err(_))` names
+/// why she has no days at all: `[life] world` off, or nothing kept and
+/// nothing drawable.
+pub fn week_view(
+    store_dir: &Path,
+    name: &str,
+    date: NaiveDate,
+    today: NaiveDate,
+) -> Result<std::result::Result<WeekView, Absent>> {
+    let store = super::Store::load(store_dir);
+    let Some(persona) = store.get(name) else {
+        bail!("no persona named `{name}`");
+    };
+    if !persona.settings.life.world {
+        return Ok(Err(Absent::Off));
+    }
+    let monday = week_of(date);
+    let oldest = today - Days::new(KEEP_DAYS);
+    let when_of = |d: NaiveDate| match d.cmp(&today) {
+        std::cmp::Ordering::Less => When::Past,
+        std::cmp::Ordering::Equal => When::Today,
+        std::cmp::Ordering::Greater => When::Ahead,
+    };
+    // What the store already holds comes first, and needs no routine: a
+    // past day is what it was, whatever the routine says now or whether it
+    // still loads (`draw`'s rule). A day past the keep window is folded
+    // only once `prune` has folded it; until then it is still whole.
+    let existing = World::open_existing(&store_dir.join(&persona.name))?;
+    let mut days = Vec::with_capacity(7);
+    let mut pending = Vec::new();
+    for i in 0..7 {
+        let d = monday + Days::new(i);
+        let kept = match (&existing, d < today) {
+            (Some(w), true) => w.stored(d)?,
+            _ => None,
+        };
+        match kept {
+            Some(st) => days.push(WeekDay {
+                date: d,
+                when: When::Past,
+                day: Some(st.day),
+                sources: st.sources,
+            }),
+            None if d < oldest => days.push(WeekDay {
+                date: d,
+                when: When::Folded,
+                day: None,
+                sources: Vec::new(),
+            }),
+            None => {
+                pending.push(days.len());
+                days.push(WeekDay {
+                    date: d,
+                    when: when_of(d),
+                    day: None,
+                    sources: Vec::new(),
+                });
+            }
+        }
+    }
+    // The rest must be drawn, which needs a routine naming her cell. Asked
+    // once, before any draw, so finding out draws nothing; and a week with
+    // days already kept shows them with the reason beside the rest.
+    let mut unavailable = None;
+    if !pending.is_empty() {
+        let shown = days.iter().any(|d| d.day.is_some());
+        match drawable(store_dir, &persona.name) {
+            Ok(Ok(())) => {
+                for &i in &pending {
+                    match draw(store_dir, name, days[i].date, today)? {
+                        Drawn::Day(day, sources) => {
+                            days[i].day = Some(day);
+                            days[i].sources = sources;
+                        }
+                        Drawn::Absent(why) => {
+                            unavailable = Some(why.why(name));
+                            break;
+                        }
+                    }
+                }
+            }
+            Ok(Err(why)) if !shown => return Ok(Err(why)),
+            Ok(Err(why)) => unavailable = Some(why.why(name)),
+            Err(e) if !shown => return Err(e),
+            Err(e) => unavailable = Some(format!("{e:#}")),
+        }
+    }
+    // Read after the draws, which may have pruned: a draw ends in `prune`,
+    // which can fold a day this call already showed as kept. Such a day is
+    // shown folded, as the next asking would show it, never twice.
+    let after = World::open_existing(&store_dir.join(&persona.name))?;
+    if let Some(w) = &after {
+        for d in days
+            .iter_mut()
+            .filter(|d| d.when == When::Past && d.date < oldest)
+        {
+            if w.stored(d.date)?.is_none() {
+                d.when = When::Folded;
+                d.day = None;
+                d.sources = Vec::new();
+            }
+        }
+    }
+    let folded = after.map(|w| w.week(monday)).transpose()?.flatten();
+    Ok(Ok(WeekView {
+        monday,
+        days,
+        folded,
+        unavailable,
+    }))
+}
+
+/// Whether her days can be drawn: `Ok(Err(_))` names what is missing, and
+/// `Err` is a routine that does not load.
+fn drawable(store_dir: &Path, name: &str) -> Result<std::result::Result<(), Absent>> {
+    let Some(text) = routine::read(store_dir, name)?.routine else {
+        return Ok(Err(Absent::NoRoutine));
+    };
+    let routine =
+        routine::parse(&text).with_context(|| format!("{} does not load", routine::FILE))?;
+    Ok(match routine.cell {
+        Some(_) => Ok(()),
+        None => Err(Absent::NoCell),
+    })
+}
+
 /// A day, or why she has none.
 enum Drawn {
     /// The day, with each stretch's source in stretch order.
     Day(Day, Vec<Source>),
-    /// The refusal [`day`] gives, naming what is missing.
-    Absent(String),
+    Absent(Absent),
+}
+
+/// Why a persona has no days to draw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Absent {
+    /// `[life] world` is off for her.
+    Off,
+    /// She has no `routine.toml`.
+    NoRoutine,
+    /// Her routine names no `cell`.
+    NoCell,
+}
+
+impl Absent {
+    /// The refusal [`day`] gives, naming the fix.
+    pub fn why(self, name: &str) -> String {
+        match self {
+            Absent::Off => format!("[life] world is off for `{name}`: she has no simulated days"),
+            Absent::NoRoutine => format!(
+                "`{name}` has no routine.toml, so no cell to draw her days from; \
+                 `mecha persona routine edit {name}` writes one"
+            ),
+            Absent::NoCell => format!(
+                "`{name}`'s routine.toml names no cell, so there is no kind of week to draw her \
+                 days from; add `cell = \"…\"` (`mecha persona routine edit {name}`)"
+            ),
+        }
+    }
 }
 
 fn draw(store_dir: &Path, name: &str, date: NaiveDate, today: NaiveDate) -> Result<Drawn> {
@@ -635,9 +857,7 @@ fn draw(store_dir: &Path, name: &str, date: NaiveDate, today: NaiveDate) -> Resu
         bail!("no persona named `{name}`");
     };
     if !persona.settings.life.world {
-        return Ok(Drawn::Absent(format!(
-            "[life] world is off for `{name}`: she has no simulated days"
-        )));
+        return Ok(Drawn::Absent(Absent::Off));
     }
     let pdir = store_dir.join(&persona.name);
     let existing = World::open_existing(&pdir)?;
@@ -654,20 +874,28 @@ fn draw(store_dir: &Path, name: &str, date: NaiveDate, today: NaiveDate) -> Resu
         }
     }
     let Some(text) = routine::read(store_dir, &persona.name)?.routine else {
-        return Ok(Drawn::Absent(format!(
-            "`{name}` has no routine.toml, so no cell to draw her days from; \
-             `mecha persona routine edit {name}` writes one"
-        )));
+        return Ok(Drawn::Absent(Absent::NoRoutine));
     };
     let routine =
         routine::parse(&text).with_context(|| format!("{} does not load", routine::FILE))?;
     let Some(cell) = routine.cell else {
-        return Ok(Drawn::Absent(format!(
-            "`{name}`'s routine.toml names no cell, so there is no kind of week to draw her \
-             days from; add `cell = \"…\"` (`mecha persona routine edit {name}`)"
-        )));
+        return Ok(Drawn::Absent(Absent::NoCell));
     };
     let digest = inputs(&text);
+    // Today, already drawn from these inputs: read back without drawing it
+    // again or opening the store to write, which every chat turn would
+    // otherwise pay (`now`).
+    if date == today {
+        if let Some(st) = existing
+            .as_ref()
+            .map(|w| w.stored(date))
+            .transpose()?
+            .flatten()
+            .filter(|st| st.digest == digest)
+        {
+            return Ok(Drawn::Day(st.day, st.sources));
+        }
+    }
     // The day before opens this one with what it carried past 4am, as it
     // was stored; redrawn only when it is not stored, or is a stale
     // future day.
@@ -1091,6 +1319,178 @@ mod tests {
         assert_ne!(inputs_of("1", "abd", text), base);
         assert_ne!(inputs_of("1", "abc", "cell = \"retired\"\n"), base);
         assert_ne!(inputs_of("1a", "bc", text), inputs_of("1", "abc", text));
+    }
+
+    #[test]
+    fn a_week_says_why_she_has_no_days_and_draws_nothing_to_find_out() {
+        let d = date("2026-11-04");
+        for (routine, world, why) in [
+            (Some("cell = \"student\"\n"), false, Absent::Off),
+            (None, true, Absent::NoRoutine),
+            (Some(routine::TEMPLATE), true, Absent::NoCell),
+        ] {
+            let dir = store(routine, world);
+            assert_eq!(week_view(dir.as_path(), "mara", d, d).unwrap(), Err(why));
+            assert!(!dir.join("mara").join(WORLD_DB).exists());
+        }
+    }
+
+    #[test]
+    fn a_week_keeps_its_past_shows_today_and_stores_nothing_ahead() {
+        let dir = store(Some("cell = \"full_time\"\n"), true);
+        // A Wednesday: Monday and Tuesday are past, Thursday on ahead.
+        let today = date("2026-11-04");
+        let w = week_view(dir.as_path(), "mara", today, today)
+            .unwrap()
+            .unwrap();
+        assert_eq!(w.monday, date("2026-11-02"));
+        let when: Vec<When> = w.days.iter().map(|d| d.when).collect();
+        assert_eq!(
+            when,
+            [
+                When::Past,
+                When::Past,
+                When::Today,
+                When::Ahead,
+                When::Ahead,
+                When::Ahead,
+                When::Ahead
+            ]
+        );
+        assert_eq!(w.folded, None);
+        let world = World::open(&dir.join("mara")).unwrap();
+        for d in &w.days {
+            let drawn = d.day.as_ref().unwrap();
+            assert_eq!(d.sources.len(), drawn.stretches.len());
+            assert_eq!(
+                world.stored(d.date).unwrap().is_some(),
+                d.when != When::Ahead,
+                "{}",
+                d.date
+            );
+            assert_eq!(&day(dir.as_path(), "mara", d.date, today).unwrap(), drawn);
+        }
+    }
+
+    #[test]
+    fn a_week_past_the_store_shows_its_folded_minutes_never_a_redraw() {
+        let dir = store(Some("cell = \"retired\"\n"), true);
+        let monday = date("2026-10-05");
+        for i in 0..7 {
+            let d = monday + Days::new(i);
+            day(dir.as_path(), "mara", d, d).unwrap();
+        }
+        let today = date("2026-11-02");
+        // Drawing today prunes everything past fourteen days.
+        day(dir.as_path(), "mara", today, today).unwrap();
+        let w = week_view(dir.as_path(), "mara", monday, today)
+            .unwrap()
+            .unwrap();
+        assert!(w
+            .days
+            .iter()
+            .all(|d| d.when == When::Folded && d.day.is_none()));
+        let folded = w.folded.unwrap();
+        assert_eq!(folded.days, 7);
+        let named: u32 = folded.minutes.iter().map(|(_, m)| m).sum();
+        assert_eq!(named, 7 * sampler::MINUTES_PER_DAY);
+    }
+
+    #[test]
+    fn a_kept_week_is_shown_when_the_routine_no_longer_loads_or_is_gone() {
+        let dir = store(Some("cell = \"student\"\n"), true);
+        let monday = date("2026-11-02");
+        for i in 0..7 {
+            let d = monday + Days::new(i);
+            day(dir.as_path(), "mara", d, d).unwrap();
+        }
+        let routine_file = dir.join("mara").join(routine::FILE);
+        std::fs::write(&routine_file, "cell = \"nurse\"\n").unwrap();
+        // A week wholly kept needs no routine at all.
+        let later = date("2026-11-10");
+        let w = week_view(dir.as_path(), "mara", monday, later)
+            .unwrap()
+            .unwrap();
+        assert!(w
+            .days
+            .iter()
+            .all(|d| d.when == When::Past && d.day.is_some()));
+        assert_eq!(w.unavailable, None);
+        // Mid-week, the kept days show and the rest say why they are not drawn.
+        let wednesday = date("2026-11-04");
+        let w = week_view(dir.as_path(), "mara", monday, wednesday)
+            .unwrap()
+            .unwrap();
+        assert!(w.days[..2].iter().all(|d| d.day.is_some()));
+        assert!(w.days[2..]
+            .iter()
+            .all(|d| d.day.is_none() && d.when != When::Folded));
+        assert!(w.unavailable.as_deref().unwrap().contains("does not load"));
+        std::fs::remove_file(&routine_file).unwrap();
+        let w = week_view(dir.as_path(), "mara", monday, wednesday)
+            .unwrap()
+            .unwrap();
+        assert!(w
+            .unavailable
+            .as_deref()
+            .unwrap()
+            .contains("no routine.toml"));
+        // Nothing kept and nothing drawable is the absent state, as before.
+        let fresh = date("2026-12-07");
+        assert_eq!(
+            week_view(dir.as_path(), "mara", fresh, fresh).unwrap(),
+            Err(Absent::NoRoutine)
+        );
+    }
+
+    #[test]
+    fn a_day_past_the_window_is_folded_only_once_prune_has_folded_it() {
+        let dir = store(Some("cell = \"at_home\"\n"), true);
+        let monday = date("2026-10-05");
+        for i in 0..7 {
+            let d = monday + Days::new(i);
+            day(dir.as_path(), "mara", d, d).unwrap();
+        }
+        // A fortnight and more of nothing: no draw, so no prune, and every
+        // day is still whole in the store.
+        let today = date("2026-11-02");
+        let w = week_view(dir.as_path(), "mara", monday, today)
+            .unwrap()
+            .unwrap();
+        assert!(w
+            .days
+            .iter()
+            .all(|d| d.when == When::Past && d.day.is_some()));
+        assert_eq!(w.folded, None);
+    }
+
+    #[test]
+    fn a_day_folded_by_this_weeks_own_draw_is_shown_folded_never_twice() {
+        let dir = store(Some("cell = \"student\"\n"), true);
+        // Chatted on Monday and Tuesday of the week of 10-19, then nothing.
+        let monday = date("2026-10-19");
+        for i in 0..2 {
+            let d = monday + Days::new(i);
+            day(dir.as_path(), "mara", d, d).unwrap();
+        }
+        // Today is 11-04, so the keep window starts at 10-21: drawing the
+        // week's missing Wednesday prunes Monday and Tuesday.
+        let today = date("2026-11-04");
+        let w = week_view(dir.as_path(), "mara", monday, today)
+            .unwrap()
+            .unwrap();
+        assert!(w.days[..2]
+            .iter()
+            .all(|d| d.when == When::Folded && d.day.is_none()));
+        assert!(w.days[2..].iter().all(|d| d.day.is_some()));
+        assert_eq!(w.folded.as_ref().map(|f| f.days), Some(2));
+        // And asked again, the same week.
+        assert_eq!(
+            week_view(dir.as_path(), "mara", monday, today)
+                .unwrap()
+                .unwrap(),
+            w
+        );
     }
 
     #[test]
