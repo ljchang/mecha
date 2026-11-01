@@ -159,6 +159,25 @@ the call's `ToolOutput::external` and the tool's capabilities.
 | `budget()` | dict of ints | the remaining amount of each **per-program** §5 host limit, read without spending anything, so a program can check before a sweep. The process-wide byte pool is left out: it moves with other programs, and reading it would be a cross-program observable, the `find`/`count` oracle's cousin |
 | `peek(h, n=2000)` | str | **the only way a handle's text enters the program**; a `str[n]` sub-call result (§4) is the other way prose does, and both draw on one cap and one count |
 
+**`fs_list` is the one tool whose result is not a handle.** A program gets
+its names as a list of `str` (a directory's ends in `/`; the tool's
+`(empty directory)` is an empty list), charged to `peek`'s cap and count,
+and a listing that would cross the cap raises whole. A file name is
+metadata, but someone else may have chosen it, so it is counted as prose
+is. *Incident:* in every live run (2026-11-01) the model opened with
+`name.startswith(...)` on `fs_list`'s entries and spent its first
+programs on the error before reaching the data.
+
+- **Only the builtin answers so** (`Tool::lists_names`): a server may
+  register a tool named `fs_list`, and its result stays a handle, so the
+  exception is not claimable by config (review of #793).
+- **What the charge costs.** Before, a listing too large for the cap was
+  still a handle a program could walk with `lines()`; now it raises whole,
+  and a directory walk shares its 256 KiB with `str[n]` answers. At ~20
+  bytes a name that is about 13,000 entries, far past the fixtures, but a
+  program that needs more has no route to the names. Raise the cap, or give
+  listings a count of their own, if a real directory reaches it.
+
 `print(h)` renders a stub such as
 `<handle 3: 48,213 chars from mail_get_thread>`, so the default spelling of
 "look at it" costs a line, not the payload.
@@ -436,7 +455,7 @@ Per program. **Two kinds of limit, and only the first is catchable:**
 | sub-calls | 32 | the host, **per pass**: `llm_map` over N handles is N, and a schema retry is another. An `llm_map` longer than the remaining budget raises before its first pass, and so does a thinking-on `llm_map` longer than the remaining thinking passes |
 | thinking passes | 8 | the host, counting passes that **did** think, not passes that asked to: a pass whose response carries reasoning (`reasoning_content`, recorded as `Block::Thinking`) counts, whatever it requested. A thinking-off request can be silently ignored (§4), so counting requests would read 0 while every pass thinks and the clock binds first. The pass after the cap raises. This is the row that keeps the clock from binding first (below) |
 | sub-call input tokens | 120k | the host, from `Usage`. Sized so that it binds before the clock even under contention (below) |
-| tool reads | 256 | the host, counted at the gate |
+| tool reads | 2,048 (was 256; owner, 2026-11-01) | the host, counted at the gate |
 | handle operations (§3) | 2,048 | the host. `budget()` counts as one, and so does each `llm_query` and `llm_map` call beside its passes, so a loop of either ends in a `LimitError:`, not a backstop. Monty's `max_suspensions` is set to the sum of the counted limits as a backstop |
 | wall clock | 600 s | the interpreter, from the program's start and across the host's answers. `monty-pool`'s `request_timeout` is **unset by default** and is set to the same value, but it bounds one protocol turn, not the program |
 | host bytes held by handles | 64 MB | the host, summed over every tool read's raw result; the read that would cross it raises |
@@ -515,10 +534,19 @@ draws on the budget at a higher rate. R4 sets a separate, smaller cap on
 passes that thought (8, ruled 2026-10-31), so the clock still never binds
 first.
 
-A long document chunked into handles can reach 256 host calls before 32
-sub-calls, because `find`, `slice` and `chunks` are host calls. So the
-handle operations of §3 count toward their own, larger limit (2,048),
-and 256 applies to tool reads only. Each limit's error says which limit it
+A long document chunked into handles can make hundreds of host calls
+before 32 sub-calls, because `find`, `slice` and `chunks` are host calls.
+So the handle operations of §3 count toward their own limit (2,048),
+apart from tool reads. Tool reads were 256 until a 300-file sweep could
+not finish: nothing a program holds survives to the next `code` call, so
+a job past the limit had no way through, and the model split it into
+programs that each hit the limit again (§13). Each read still meets the
+whole gate and arms taint. The 64 MB host-byte limit bounds what handles
+hold, not what the program record keeps: a read whose bytes the limit
+refuses is already recorded, and a program can catch the `LimitError:` and
+read on, so the record can reach 64 MB plus one result per read. That term
+grew with the raise (review of #793). A per-program bound on recorded bytes
+would close it, and is not built. Each limit's error says which limit it
 was, because that error is the model's only feedback.
 
 Each run's total also draws on its existing `RunContext` budget.
@@ -1106,7 +1134,8 @@ curl -s http://127.0.0.1:8080/v1/chat/completions -H 'content-type: application/
 
 - **The interpreter is not where a program's time goes.** A host call costs
   10–18 µs, against M0's 0.3–0.5 s for a thinking-off pass: the §5
-  suspension backstop's 2,336 calls would spend about 40 ms in transport.
+  suspension backstop's 2,336 calls would spend about 40 ms in transport
+  (4,128 since tool reads went to 2,048: about 75 ms).
   Worker start is about 4 ms cold, most of it bwrap (bare start is under
   1 ms), and a warm worker is reused in under 0.1 ms.
 - **Contention cost the interpreter a third at most.** One decode in flight
@@ -1204,6 +1233,9 @@ with your recs"), except R4, which waited on M1 and was ruled on
   - what it prints is capped and wrapped as untrusted, like any tool result.
 
   It stays counted (`peeked_bytes`). The sink slice revisits it (§12).
+- **R4 raise: tool reads 2,048 (owner, 2026-11-01).** Was 256, which a
+  300-note sweep could not get under (§5, §13). `fs_list`'s names come to
+  a program as `str`, counted with `peek` (§3), ruled the same day.
 - **R6. Thinking off by default**, on per call (§4, from M0). **Every
   pass gets `max_tokens` of 8,192, thinking or not**, because the
   thinking-off request can be silently ignored (§4). The floor alone
@@ -1387,3 +1419,41 @@ refusal that names the program's functions, a description that leads with
 when to use `code` and shows `count`/`find` on handles, and the cap at
 256 KiB. Adoption, the first finding, is what the next test measures, on a
 fixture too large to read file by file.
+
+**The second live test (2026-11-01, the same model, after #791).** 300
+fictional notes, 846 KB, the same kind of question, not told about `code`.
+
+- **Adoption held: it chose `code` unprompted.** 37 of its 42 tool calls
+  were programs.
+- **It never answered.** The run used all 40 turns in 630 s: 20 programs
+  failed, 11 on a budget limit.
+- **The tool-read limit made the job impossible.** 256 reads cannot cover
+  300 files, and a program starts with nothing from the last, so every
+  split it tried hit the limit again.
+- **It asked the model where a pattern would do.** It sent 394 sub-calls
+  through `llm_map` to pull attendee lists, where `count` was free, and
+  the 32-sub-call limit stopped those programs too.
+- **String habits again.** `os.listdir` first, then `.startswith` on
+  `fs_list`'s entries, before a working program.
+
+The answer: tool reads at 2,048, `fs_list`'s names as `str` (§3), and a
+description that says to do the whole job in one program and to keep
+sub-calls for what a pattern cannot judge.
+
+**The third run (2026-11-01, #793's build, the same fixture).** It answered
+in 85 s and 10 turns: 7 programs, 3 failed, 536 host calls, no sub-calls.
+- **Priya: right**, 144 meetings, every number listed.
+- **Marco: wrong, for a reading reason.** It counted "Marco Bellini"
+  anywhere in a note, which is the 124 meetings he attended, and called them
+  the meetings he presented (25). The 25 decisions it owed were all in its
+  list of 124. Nothing in the program was broken; it never looked at a
+  note's layout before the sweep. The description now says to peek at one
+  item first and match the field the question names.
+- **The first program still used `in` on a handle**, which raised with the
+  hint, and the next program used `count`.
+
+**The fourth run (2026-11-01, with that line).** Both answers right: Priya's
+144 meetings and the 25 Marco presented, each with its decision, in 132 s
+and 15 turns. 11 programs, 6 failed, 1,298 host calls, 25 sub-calls. A
+single run each, so this says the path works, not how often it does; M2
+(above) is the measurement.
