@@ -10,6 +10,8 @@
 pub enum State {
     Stopped,
     Zombie,
+    /// Torn down past being a zombie (Linux's `X`): gone in all but name.
+    Dead,
     Other,
 }
 
@@ -22,6 +24,7 @@ pub fn state(pid: u32) -> Option<State> {
         Some(match rest.chars().next()? {
             'T' | 't' => State::Stopped,
             'Z' => State::Zombie,
+            'X' | 'x' => State::Dead,
             _ => State::Other,
         })
     }
@@ -41,9 +44,48 @@ pub fn state(pid: u32) -> Option<State> {
     }
 }
 
-/// Gone, or a zombie waiting to be reaped: either way, no longer running.
+/// Gone, a zombie waiting to be reaped, or dead: either way, no longer
+/// running.
 pub fn is_gone(pid: u32) -> bool {
-    matches!(state(pid), None | Some(State::Zombie))
+    matches!(state(pid), None | Some(State::Zombie | State::Dead))
+}
+
+/// Whether `pid` has a `SIGKILL` delivered and not yet acted on. A process
+/// in uninterruptible sleep (exec paging in a binary on a loaded runner, say)
+/// holds one until it leaves it, so "killed" is this or [`is_gone`]: the
+/// signal reached it, whatever the scheduler does next. Linux reads
+/// `/proc/<pid>/status`; elsewhere it answers `false`, and only gone counts.
+pub fn sigkill_pending(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status")) else {
+            return false;
+        };
+        // SIGKILL is signal 9: bit 8 of the pending masks.
+        status
+            .lines()
+            .filter(|l| l.starts_with("SigPnd:") || l.starts_with("ShdPnd:"))
+            .filter_map(|l| u64::from_str_radix(l.split_whitespace().nth(1)?, 16).ok())
+            .any(|mask| mask & (1 << 8) != 0)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
+/// Killed: gone, or with a `SIGKILL` on its way ([`sigkill_pending`]).
+pub fn is_killed(pid: u32) -> bool {
+    is_gone(pid) || sigkill_pending(pid)
+}
+
+/// `/proc/<pid>/stat` as it reads now, or empty: for a failure message.
+pub fn stat_line(pid: u32) -> String {
+    std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .unwrap_or_default()
+        .trim()
+        .to_string()
 }
 
 #[cfg(target_os = "macos")]
