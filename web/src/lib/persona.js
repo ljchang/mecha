@@ -33,7 +33,7 @@ export function withUnlock(path, token) {
 // imports `ENDPOINTS` instead, and the builders refuse any suffix not listed
 // here: a new endpoint is added to this list or it throws, and the list is
 // then what `check-demo` holds the demo's routes to (review of #415).
-const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock', '/frame', '/image-touching', '/image-settings', '/sources', '/sources/remove', '/sources/file', '/sources/text', '/review', '/approve', '/reject', '/memory', '/week'];
+const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock', '/frame', '/image-touching', '/image-settings', '/sources', '/sources/remove', '/sources/file', '/sources/text', '/review', '/approve', '/reject', '/memory', '/week', '/routine/cell'];
 const CHAT_SUFFIXES = ['', '/events', '/send', '/cancel', '/file', '/upload', '/cited', '/save', '/call', '/call-regenerate', '/jobs/order'];
 
 export const ENDPOINTS = [
@@ -807,13 +807,13 @@ const MIDNIGHT = 24 * 60;
 
 // Why she has no days, said with its fix; the server's `why` is the CLI's.
 export const WEEK_ABSENT = {
-  off: 'Her life is off for this persona. Set world = true under [life] in her persona.toml to give her days.',
-  no_routine: 'She has no routine yet, so there are no days to draw. Write one with mecha persona routine edit.',
-  no_cell: 'Her routine names no kind of week (cell), so there are no days to draw. Add one with mecha persona routine edit.',
+  off: 'Her days are off for this persona. Turn on Her days in the Life section of her Settings.',
+  no_routine: 'She has no routine yet. Pick her kind of week below and her days are drawn from it.',
+  no_cell: 'Her routine names no kind of week yet. Pick one below and her days are drawn from it.',
 };
 
 // Activities in a few groups the week view colours by.
-const ACTIVITY_GROUP = {
+export const ACTIVITY_GROUP = {
   sleep: 'rest', personal_care: 'rest', relaxing: 'rest',
   work: 'work', class: 'work', studying: 'work', volunteering: 'work',
   eating: 'home', cooking: 'home', housework: 'home', shopping: 'home', errands: 'home', caring: 'home',
@@ -821,6 +821,24 @@ const ACTIVITY_GROUP = {
   socializing: 'social', religion: 'social',
   tv: 'leisure', music: 'leisure', games: 'leisure', computer: 'leisure', hobbies: 'leisure', reading: 'leisure',
 };
+
+// Her kind of week (the routine's `cell`), as the picker offers it.
+export const WEEK_CELLS = [
+  ['student', 'Student'],
+  ['full_time', 'Works full time'],
+  ['full_time_parent', 'Works full time, a child under 13 at home'],
+  ['part_time', 'Works part time'],
+  ['at_home', 'Not working, under 65'],
+  ['retired', 'Retired'],
+];
+
+// The body of the owner's cell pick: the cell, the routine's digest as the
+// page was shown it, and the week on screen. A cell the server does not
+// draw is refused here, so the page can never send one.
+export function cellBody(cell, data, date, token = null) {
+  if (!WEEK_CELLS.some(([id]) => id === cell)) throw new Error(`not a kind of week: ${cell}`);
+  return { cell, base: data?.routine?.digest ?? '', date: date ?? undefined, unlock: token ?? undefined };
+}
 
 export const WEEK_GROUPS = [
   ['rest', 'sleep and rest'],
