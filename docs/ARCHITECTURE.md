@@ -1785,8 +1785,19 @@ module.
   anchor it carried past 4am, which the next day reads rather than
   re-deriving from a routine edited since. Bump `SAMPLER_VERSION` for any change that would draw a
   different day from the same inputs. A row this binary cannot read makes
-  the stored day unreadable and redrawn, never shown in part. No day is
-  drawn without a `cell` in `routine.toml`, the owner's pick, never a guess.
+  the stored day unreadable and redrawn, never shown in part, and an anchor
+  label is held on the way out to what the routine's parser lets in, since
+  it reaches a chat. A day that cannot be read when it is pruned folds as
+  a whole day of unreadable minutes, so a week always adds up to its days.
+  No day is drawn without a `cell` in `routine.toml`, the owner's pick,
+  never a guess.
+- **The today-block is a run note of its own, with its own stem pair**
+  (`persona::today`). Both stems arm `private`; the untrusted one is
+  chosen by any folded row's source that is not clean, and an unknown
+  source never is. It is registered in `Taint::arm_for_content`,
+  `message::is_recorded_note` and `agent::is_harness_voice`, as every
+  persona fold is; joined to another note, its stem would not sit at the
+  start and would never arm on a resume.
 - **Group membership lives once**, in each persona's `groups`. `groups.toml`
   only declares groups; a persona naming an undeclared group is a broken link.
 - **Links are by name, resolved on load, broken ones named**

@@ -4001,6 +4001,27 @@ impl PersonaChats {
                     build_on.is_some(),
                 )
             });
+        // What her day has her doing now (PERSONA-LIFE-DESIGN.md §4.5), on
+        // the owner's clock: its own note, arming taint by the stem its
+        // rows' sources pick (`persona::today::stem_of`). Nothing when `[life]
+        // world` is off or she has no routine with a cell; a day that cannot
+        // be read is logged and left out, since a missing note arms nothing.
+        let today_note = if pause {
+            None
+        } else {
+            let tz = chat.follower.current().config.agent.timezone();
+            let at = match tz {
+                Some(tz) => chrono::Utc::now().with_timezone(&tz).naive_local(),
+                None => chrono::Local::now().naive_local(),
+            };
+            match mecha_core::persona::world::now(&self.store, &name, at) {
+                Ok(now) => now.map(|n| mecha_core::persona::today::note(&n)),
+                Err(e) => {
+                    tracing::warn!("persona {name}: no today-block this turn: {e:#}");
+                    None
+                }
+            }
+        };
         let notes: Vec<String> = [
             memory_note,
             recall_block,
@@ -4008,6 +4029,7 @@ impl PersonaChats {
             call_note,
             variety_note,
             scene_note,
+            today_note,
         ]
         .into_iter()
         .flatten()
