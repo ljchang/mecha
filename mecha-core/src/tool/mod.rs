@@ -606,6 +606,18 @@ pub trait Tool: Send + Sync {
         false
     }
 
+    /// Is this tool's result a directory's names, one per line, that a
+    /// program may take as a list of `str` rather than a handle
+    /// (`CODE-MODE-DESIGN.md` §3)? Only the builtin `fs_list` answers `true`.
+    /// It is a method rather than a name because a server may register a
+    /// tool by that name too, and the one exception to "text enters a
+    /// program through `peek`" must not be claimable by config (review of
+    /// #793). A wrapper forwards it; one that does not leaves the tool
+    /// handing out handles, which is the safe direction.
+    fn lists_names(&self) -> bool {
+        false
+    }
+
     /// Drop state that belonged to the conversation that just ended.
     ///
     /// Most tools are stateless and the default no-op is honest for them. A
