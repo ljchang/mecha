@@ -125,10 +125,23 @@ impl Tool for FsRead {
                     .await
                     .map(|m| m.len().to_string())
                     .unwrap_or_else(|_| "an unknown number of".into());
+                // A cut inside the line the read began on kept no whole line,
+                // so its offset would repeat this read: one line is longer
+                // than the limit, and `fs_read` has no byte offset to get
+                // past it (a minified JSON log, a one-line CSV). Saying "read
+                // on with offset N" there loops (review of #796).
+                let on = if line == offset {
+                    format!(
+                        "line {line} alone is longer than that, so no offset gets past it \
+                         with fs_read"
+                    )
+                } else {
+                    format!("read on with offset {line}")
+                };
                 format!(
                     "[truncated: {} is {size} bytes, and this read stopped at its {cap}-byte \
-                     limit partway through line {line}. This is not the whole file: read on \
-                     with offset {line}.]\n\n{text}",
+                     limit partway through line {line}. This is not the whole file: {on}.]\n\n\
+                     {text}",
                     path.display()
                 )
             }
@@ -1778,6 +1791,26 @@ mod read_window_tests {
             last_kept.len() <= next.content.len() && next.content.starts_with(last_kept),
             "offset {line} reads on from the cut: kept {last_kept:?}, next {:?}",
             next.content
+        );
+
+        // One line longer than the limit: its offset is the read just made,
+        // so the notice says no offset gets past it rather than loop.
+        std::fs::write(dir.join("one.json"), "x".repeat(300_000)).unwrap();
+        let one = read(json!({"path": "one.json"}), ctx(&dir)).await;
+        assert!(
+            one.content.contains("line 1 alone is longer than that")
+                && !one.content.contains("read on with offset"),
+            "{}",
+            &one.content[..300]
+        );
+        let later = read(
+            json!({"path": "big.log", "offset": 7, "limit": 1}),
+            ctx(&dir),
+        )
+        .await;
+        assert!(
+            !later.content.starts_with("[truncated"),
+            "a short read is not cut"
         );
 
         let program = ToolCtx {
