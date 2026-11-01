@@ -1025,7 +1025,8 @@ async fn a_listing_reaches_a_program_as_names_counted_with_peek() {
         },
         BytePool::new(1 << 20),
     )
-    .reaching(["fs_list".to_string()]);
+    .reaching(["fs_list".to_string()])
+    .listing(["fs_list".to_string()]);
     let list = call("fs_list", vec![]);
     let stop = tokio_util::sync::CancellationToken::new();
     assert_eq!(
@@ -1276,11 +1277,14 @@ async fn a_handle_used_as_text_raises_and_says_what_to_use() {
     );
 }
 
-/// The description's own example runs as written: names from `fs_list`
-/// take string methods, and each file is read and counted without a peek.
+/// The description's worked example, run as the model reads it ([`EXAMPLE`]):
+/// names from `fs_list` take string methods, a subdirectory in the listing is
+/// skipped rather than read, and each note is counted without a peek. A test
+/// with a guard of its own once passed over an example that had none (review
+/// of #793).
 #[cfg(feature = "monty")]
 #[tokio::test]
-async fn a_program_walks_a_listing_by_name() {
+async fn the_descriptions_example_runs_as_written() {
     let Some(interp) = monty().await else {
         return;
     };
@@ -1296,19 +1300,41 @@ async fn a_program_walks_a_listing_by_name() {
     std::fs::write(jail.join("notes/1.md"), "Attendees: Priya, Marco").unwrap();
     std::fs::write(jail.join("notes/2.md"), "Attendees: Marco").unwrap();
     std::fs::write(jail.join("notes/3.md"), "Attendees: Priya").unwrap();
-    let (d, _) = run(
-        &agent,
-        "hits = []\nfor name in fs_list(path='notes'):\n    if name.endswith('/'):\n        \
-         continue\n    h = fs_read(path='notes/' + name)\n    \
-         if count(h, 'Attendees:.*Priya') > 0:\n        hits.append(name)\nprint(len(hits), hits)",
-    )
-    .await;
+    let admitted = Admission::over(
+        &registry_of(vec![Arc::new(crate::tool::builtin::FsList)]),
+        |_| false,
+    );
+    assert!(
+        describe(&admitted).contains(EXAMPLE),
+        "the description carries the example this test runs"
+    );
+    let (d, _) = run(&agent, EXAMPLE).await;
     assert!(!d.is_error, "{}", d.content);
     assert!(
         unwrapped(&d.content).starts_with("2 ['1.md', '3.md']"),
         "{}",
         d.content
     );
+}
+
+/// Only the builtin `fs_list` answers a program with names: a server's tool
+/// registered under that name is admitted as any read is, and its result
+/// stays a handle, so the one exception to "text enters through `peek`" is
+/// not claimable by config (review of #793).
+#[test]
+fn only_the_builtin_listing_hands_a_program_names() {
+    let builtin = Admission::over(
+        &registry_of(vec![Arc::new(crate::tool::builtin::FsList)]),
+        |_| false,
+    );
+    assert!(builtin.contains("fs_list"));
+    assert_eq!(builtin.listings().collect::<Vec<_>>(), ["fs_list"]);
+    let server = Admission::over(
+        &registry_of(vec![Arc::new(Fake::read("fs_list", "a\nb"))]),
+        |_| false,
+    );
+    assert!(server.contains("fs_list"), "a plain read is still admitted");
+    assert_eq!(server.listings().count(), 0);
 }
 
 /// A handle has no methods: `h.split(",")` names the call to make instead,

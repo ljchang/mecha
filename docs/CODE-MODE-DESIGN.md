@@ -168,6 +168,16 @@ is. *Incident:* in every live run (2026-11-01) the model opened with
 `name.startswith(...)` on `fs_list`'s entries and spent its first
 programs on the error before reaching the data.
 
+- **Only the builtin answers so** (`Tool::lists_names`): a server may
+  register a tool named `fs_list`, and its result stays a handle, so the
+  exception is not claimable by config (review of #793).
+- **What the charge costs.** Before, a listing too large for the cap was
+  still a handle a program could walk with `lines()`; now it raises whole,
+  and a directory walk shares its 256 KiB with `str[n]` answers. At ~20
+  bytes a name that is about 13,000 entries, far past the fixtures, but a
+  program that needs more has no route to the names. Raise the cap, or give
+  listings a count of their own, if a real directory reaches it.
+
 `print(h)` renders a stub such as
 `<handle 3: 48,213 chars from mail_get_thread>`, so the default spelling of
 "look at it" costs a line, not the payload.
