@@ -1989,13 +1989,14 @@ fn render(f: Finished, cap: usize) -> (String, bool) {
         out = "(the program printed nothing and its last line has no value)".to_string();
     }
     let mut out = handles_as_stubs(&out);
-    // A handle used as text raises a TypeError that names a 'function',
-    // which says nothing about what to do instead (#791).
-    if is_error && out.contains("TypeError") && out.contains("'function'") {
-        out.push_str(
-            "\n[a handle is not text: search it with find(h, pattern) or count(h, pattern), \
-             split it with lines(h), and read a short part with peek(h, n)]",
-        );
+    // A handle used as text raises on an object monty calls a 'function',
+    // which says nothing about what to do instead (#791): a TypeError for
+    // `in` or `len()`, an AttributeError for a method such as `h.split(",")`.
+    if is_error {
+        if let Some(hint) = handle_hint(&out) {
+            out.push('\n');
+            out.push_str(&hint);
+        }
     }
     if out.len() > cap {
         out = format!(
@@ -2005,6 +2006,30 @@ fn render(f: Finished, cap: usize) -> (String, bool) {
         );
     }
     (out, is_error)
+}
+
+/// The line that says what to do instead, when a program's error is a handle
+/// used as text: a method (`'function' object has no attribute 'split'`) names
+/// the host function of that name if there is one; anything else gets the
+/// general hint.
+fn handle_hint(out: &str) -> Option<String> {
+    const GENERAL: &str = "[a handle is not text: search it with find(h, pattern) or \
+                           count(h, pattern), split it with lines(h), and read a short part \
+                           with peek(h, n)]";
+    if let Some(i) = out.find("'function' object has no attribute '") {
+        let rest = &out[i + "'function' object has no attribute '".len()..];
+        let method = rest.split('\'').next().unwrap_or_default();
+        if HOST_FUNCTIONS.contains(&method) {
+            return Some(format!(
+                "[a handle has no methods: call {method}(h, ...) instead of h.{method}(...)]"
+            ));
+        }
+        return Some(format!(
+            "[a handle has no method '{method}'. {}",
+            &GENERAL[1..]
+        ));
+    }
+    (out.contains("TypeError") && out.contains("'function'")).then(|| GENERAL.to_string())
 }
 
 /// `text` with each handle shown as its stub. A backend prints a handle as
