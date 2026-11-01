@@ -5839,11 +5839,20 @@ pub struct WeekQuery {
 }
 
 /// GET /api/personas/{name}/week
+///
+/// A read that writes: the days it draws inside the keep window are stored
+/// (PERSONA-LIFE-DESIGN.md §15). `owner_guard` lets a `GET` through without
+/// the page's header, so this asks for it itself, or a page on another site
+/// could sweep the dates and store days no chat was told.
 pub async fn week(
     State(state): Web,
+    headers: axum::http::HeaderMap,
     axum::extract::Path(name): axum::extract::Path<String>,
     Query(q): Query<WeekQuery>,
 ) -> axum::response::Response {
+    if !super::request_verified(&headers) {
+        return super::unverified();
+    }
     let chat = match chat::chat_state(&state) {
         Ok(c) => c,
         Err(resp) => return resp,

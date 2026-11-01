@@ -1303,23 +1303,33 @@ async fn owner_guard(
     if !matches!(
         *request.method(),
         axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
-    ) && (request
-        .headers()
-        .get("x-mecha-request")
-        .and_then(|v| v.to_str().ok())
-        != Some("1")
-        || request
-            .headers()
-            .get("sec-fetch-site")
-            .is_some_and(|v| v != "same-origin"))
+    ) && !request_verified(request.headers())
     {
-        return (
-            StatusCode::FORBIDDEN,
-            "request verification failed — reload the page and retry\n",
-        )
-            .into_response();
+        return unverified();
     }
     next.run(request).await
+}
+
+/// Whether a request carries the page's own intent: the non-simple header a
+/// cross-site form cannot send without a preflight this server never grants,
+/// and no `sec-fetch-site` saying it came from elsewhere. `owner_guard` asks
+/// it of every mutation; a `GET` with a side effect asks it itself, since the
+/// guard lets reads through (`persona_chat::week`, which stores the days it
+/// draws).
+pub(super) fn request_verified(headers: &axum::http::HeaderMap) -> bool {
+    headers.get("x-mecha-request").and_then(|v| v.to_str().ok()) == Some("1")
+        && !headers
+            .get("sec-fetch-site")
+            .is_some_and(|v| v != "same-origin")
+}
+
+/// What a request that fails [`request_verified`] is answered.
+pub(super) fn unverified() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        "request verification failed — reload the page and retry\n",
+    )
+        .into_response()
 }
 
 /// The page renders third-party text next to buttons that will one day
@@ -1998,6 +2008,49 @@ mod tests {
 
     fn test_router() -> Router {
         test_router_gated(gate::Gate::default())
+    }
+
+    /// A persona's week stores the days it draws, so its `GET` asks for the
+    /// page's own header, which `owner_guard` asks only of mutations: the
+    /// owner's session from another site is refused before any draw.
+    #[tokio::test]
+    async fn a_week_is_refused_without_the_pages_header() {
+        let ask = |verified: bool, site: Option<&'static str>| {
+            let mut req = Request::builder()
+                .method("GET")
+                .uri("/api/personas/mara/week?date=2026-10-24")
+                .header("Tailscale-User-Login", "owner@example.com");
+            if verified {
+                req = req.header("x-mecha-request", "1");
+            }
+            if let Some(site) = site {
+                req = req.header("sec-fetch-site", site);
+            }
+            req.body(Body::empty()).unwrap()
+        };
+        for (verified, site) in [
+            (false, None),
+            (false, Some("same-origin")),
+            (true, Some("cross-site")),
+        ] {
+            let response = test_router().oneshot(ask(verified, site)).await.unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "{verified} {site:?}"
+            );
+            let body = axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap();
+            assert!(String::from_utf8_lossy(&body).contains("request verification failed"));
+        }
+        // The page's own request passes the check and reaches the handler,
+        // which here has no chat state to answer from.
+        let response = test_router()
+            .oneshot(ask(true, Some("same-origin")))
+            .await
+            .unwrap();
+        assert_ne!(response.status(), StatusCode::FORBIDDEN);
     }
 
     /// `test_router` with a gate: the features its routes answer

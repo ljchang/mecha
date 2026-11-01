@@ -31,7 +31,9 @@
   async function load() {
     error = '';
     try {
-      const res = await fetch(weekUrl(name, date, token));
+      // Asked with the page's header: this read stores the days it draws, so
+      // the server wants proof it came from here (`request_verified`).
+      const res = await fetch(weekUrl(name, date, token), { headers: { 'X-Mecha-Request': '1' } });
       if (!res.ok) throw new Error((await res.text()).trim());
       data = await res.json();
       picked = null;
@@ -166,6 +168,7 @@
   .move { background: #4f9fb0; }
   .social { background: #b8739d; }
   .leisure { background: #a99a52; }
+  .unknown { background: var(--text-muted); }
   .wnote { margin: 0; font-size: 12px; color: var(--text-muted); line-height: 1.45; }
   .linkbtn { background: none; border: none; padding: 4px 0; min-height: 32px; color: var(--accent-400); font-size: 12px; cursor: pointer; }
   .warnline { font-size: 12px; color: var(--hazard); line-height: 1.45; }
