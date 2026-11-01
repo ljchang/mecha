@@ -12,7 +12,7 @@
 //! that nothing ever has to dial home, and its comment is the argument here
 //! too: *instant is a property of who waits, not of who calls.*
 //!
-//! Four behaviours worth knowing before changing anything:
+//! Three behaviours worth knowing before changing anything:
 //!
 //! - **Reconnect is make-before-break.** Slack rotates connections every few
 //!   hours and gives about ten seconds' warning. Opening the replacement before
