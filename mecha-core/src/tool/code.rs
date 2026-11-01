@@ -93,7 +93,8 @@ pub mod record;
 pub const NAME: &str = "code";
 
 /// §5's host limits, as R4 ruled them on 2026-10-31 (`CODE-MODE-DESIGN.md`
-/// §11: §5's proposals, unchanged, after M0 and M1). They live here, in one
+/// §11: §5's proposals, unchanged, after M0 and M1), with the owner's two
+/// raises of 2026-11-01: the peek cap (#791) and tool reads (#793). They live here, in one
 /// place, and
 /// [`crate::interpreter::COUNTED_HOST_LIMITS`] sizes the suspension backstop
 /// from the same counts (a test holds the two together).
@@ -112,8 +113,10 @@ pub mod defaults {
     /// server's 4,096 reasoning budget, so a pass that thinks anyway (a
     /// preset that lost `--jinja`) still has room to answer. Not a §5 row.
     pub const PASS_MAX_TOKENS: u32 = 8192;
-    /// Tool reads per program.
-    pub const TOOL_READS: u32 = 256;
+    /// Tool reads per program. Was 256, under a 300-file sweep: each `code`
+    /// call starts with nothing from the last, so a job past the limit had no
+    /// way to finish (owner, 2026-11-01).
+    pub const TOOL_READS: u32 = 2048;
     /// Handle operations per program, `budget()` included.
     pub const HANDLE_OPERATIONS: u32 = 2048;
     /// Bytes the program's handles may hold: every tool read's raw result,
@@ -289,6 +292,16 @@ impl ProgramStats {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Admission {
     tools: BTreeMap<String, (Capabilities, EffectClass)>,
+    /// The admitted tools whose result a program gets as a list of `str`,
+    /// not a handle (`Tool::lists_names`, §3). Every live run opened with
+    /// `name.startswith(...)` on `fs_list`'s entries and spent its first
+    /// programs on the error (2026-11-01).
+    ///
+    /// Part of the derived `PartialEq` on purpose: `program_reach` compares a
+    /// program's admission with the live registry's and refuses a mismatch,
+    /// so a registry whose `fs_list` stopped answering `lists_names` cannot
+    /// leave a program, or the description it was built with, expecting names.
+    listings: std::collections::BTreeSet<String>,
 }
 
 impl Admission {
@@ -296,15 +309,19 @@ impl Admission {
     /// routing for the run (`[outbox] tools`): a routed read resolves
     /// `Staged` and is not admitted, so nothing in a program can stage.
     pub fn over(registry: &Registry, routed: impl Fn(&str) -> bool) -> Self {
+        let mut listings = std::collections::BTreeSet::new();
         let tools = registry
             .iter()
             .filter_map(|t| {
                 let class = effect::class_of(t.as_ref(), routed(t.name()));
-                Self::admits(t.as_ref(), class)
-                    .then(|| (t.name().to_string(), (t.capabilities(), class)))
+                let admitted = Self::admits(t.as_ref(), class);
+                if admitted && t.lists_names() {
+                    listings.insert(t.name().to_string());
+                }
+                admitted.then(|| (t.name().to_string(), (t.capabilities(), class)))
             })
             .collect();
-        Admission { tools }
+        Admission { tools, listings }
     }
 
     /// §2's rule for one tool whose effect class is `class`: a plain read
@@ -332,6 +349,11 @@ impl Admission {
 
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.tools.keys().map(String::as_str)
+    }
+
+    /// The admitted tools that answer a program with names (`listings`).
+    pub fn listings(&self) -> impl Iterator<Item = &str> {
+        self.listings.iter().map(String::as_str)
     }
 
     pub fn contains(&self, name: &str) -> bool {
@@ -621,7 +643,9 @@ impl CodeTool {
         let mut externals: Vec<String> = HOST_FUNCTIONS.iter().map(|s| s.to_string()).collect();
         externals.extend(reach.iter().cloned());
         let cancel = ctx.cancel.clone().unwrap_or_default();
-        let mut state = Run::new(self.limits, Arc::clone(&self.pool)).reaching(reach);
+        let mut state = Run::new(self.limits, Arc::clone(&self.pool))
+            .reaching(reach)
+            .listing(self.admission.listings().map(str::to_string));
         let (mut program, mut step) = match self
             .interpreter
             .start(program, &externals, cancel.clone())
@@ -679,6 +703,16 @@ impl CodeTool {
     }
 }
 
+/// The description's worked example. A model copies it nearly verbatim
+/// (§13), so `the_descriptions_example_runs_as_written` runs this text, not
+/// a tidier copy: a subdirectory in the listing once would have ended the
+/// program on `fs_read`, with the test's own guard hiding it (review of #793).
+const EXAMPLE: &str = "hits = []\n\
+    for name in fs_list(path=\"notes\"):\n    if name.endswith(\"/\"):\n        continue\n    \
+    h = fs_read(path=\"notes/\" + name)\n    if count(h, \"Attendees:.*Priya\") > 0:\n        \
+    hits.append(name)\n\
+    print(len(hits), hits)\n";
+
 /// The tool's description: what a program can do, and the tools it may call
 /// as built. Fixed at construction, so it never changes a cached prefix
 /// between turns.
@@ -689,16 +723,40 @@ fn describe(admission: &Admission) -> String {
          all in one step, instead of you reading each into your context. It runs a short \
          Python program (monty, a subset of Python 3). A program has no os, open, files, \
          network or clock: it reaches data only by calling the tools listed at the end, \
-         with keyword arguments. A tool returns a handle, not text: `in`, len(), h.split() \
-         and other string methods raise on a handle, and print(h) shows only a stub. Count and search \
-         a handle without reading it, and peek only to learn a format or fetch a short field. \
-         For example, which notes name someone:\n\
-         hits = []\n\
-         for n in lines(fs_list(path=\"notes\")):\n    name = peek(n, 200).strip()\n    \
-         h = fs_read(path=\"notes/\" + name)\n    if count(h, \"Attendees:.*Priya\") > 0:\n        \
-         hits.append(name)\n\
-         print(len(hits), hits)\n\
-         Work on handles with size(h), \
+         with keyword arguments. Nothing a program holds survives to the next `code` call, \
+         so do the whole job in one program. ",
+    );
+    // Said only of the tools that do it: a server's `fs_list` returns a
+    // handle, and telling the model otherwise is the `.startswith` error
+    // again, from the description's side (review of #793).
+    let listings: Vec<&str> = admission.listings().collect();
+    if listings.is_empty() {
+        d.push_str("A tool returns a handle, not text");
+    } else {
+        d.push_str(&format!(
+            "{} returns a list of names (str; a directory's ends in /). Every other tool \
+             returns a handle, not text",
+            listings.join(" and ")
+        ));
+    }
+    d.push_str(
+        ": `in`, len(), h.split() and other string methods raise on a handle, and print(h) \
+         shows only a stub. Count and search a handle without reading it, and peek only to \
+         learn a format or fetch a short field. Before a sweep, peek at one item, and match \
+         the field the question is about (an attendee list, a presenter line), not the name \
+         anywhere in the text.",
+    );
+    // The example walks `fs_list`'s names and reads with `fs_read`, so it is
+    // shown only where both are what it assumes.
+    if listings.contains(&"fs_list") && admission.contains("fs_read") {
+        d.push_str(" For example, which notes list someone as attending:\n");
+        d.push_str(EXAMPLE);
+    } else {
+        d.push('\n');
+    }
+    d.push_str(
+        "Use count or find for anything a pattern can match, such as a name in a list, a \
+         date or a heading: they cost no sub-calls. Work on handles with size(h), \
          slice(h, start, end), lines(h), split(h, pattern), chunks(h, n, overlap=0) (n \
          characters each, at least 256), find(h, pattern) (a list of [start, end] character \
          offsets), count(h, pattern) and json_get(h, path) (a string, object or array leaf \
@@ -712,8 +770,8 @@ fn describe(admission: &Admission) -> String {
          most n characters (counted with peek). llm_map(instruction, sources, shape) asks \
          once per handle, one at a time, and returns a list; it raises at the first failed \
          item. Pass thinking=True only when a question needs reasoning: it is far slower. \
-         Sub-calls are few (budget()[\"sub_calls\"]), so find or slice first and ask about \
-         what matters. To keep going past one bad source, loop instead, checking the budget \
+         Sub-calls are few (budget()[\"sub_calls\"]): keep them for judgement a pattern \
+         cannot make, and find or slice first so each one asks about what matters. To keep going past one bad source, loop instead, checking the budget \
          first:\n\
          for h in hs:\n    if budget()[\"sub_calls\"] < 2:\n        break\n    try:\n        \
          out.append(llm_query(q, h, \"bool\"))\n    except RuntimeError as e:\n        \
@@ -948,6 +1006,8 @@ struct Run {
     /// alone refusing an unregistered name (review of #768). `ask_user` and
     /// `message_send` would clear the gate if one reached it.
     reach: std::collections::BTreeSet<String>,
+    /// The reachable tools whose names come back as `str` ([`Admission`]).
+    listings: std::collections::BTreeSet<String>,
     /// Every host call that ran, in issue order: the program record (§7).
     recorded: Vec<record::ProgramCall>,
 }
@@ -1034,6 +1094,7 @@ impl Run {
             limit_raised: false,
             external: false,
             reach: Default::default(),
+            listings: Default::default(),
             recorded: Vec::new(),
         }
     }
@@ -1067,6 +1128,13 @@ impl Run {
     /// The tools this program may call; none until this is said.
     fn reaching(mut self, names: impl IntoIterator<Item = String>) -> Self {
         self.reach = names.into_iter().collect();
+        self
+    }
+
+    /// The tools whose result this program takes as names; none until this
+    /// is said, so every result is a handle by default.
+    fn listing(mut self, names: impl IntoIterator<Item = String>) -> Self {
+        self.listings = names.into_iter().collect();
         self
     }
 
@@ -1249,6 +1317,9 @@ impl Run {
                     failed,
                     Arc::clone(&bytes),
                 ));
+                if !failed && self.listings.contains(name) {
+                    return self.names(name, &bytes);
+                }
                 self.room_for(1, name)?;
                 let h = self.shared(bytes, name, out.external)?;
                 let s = self.mint(h);
@@ -1808,6 +1879,34 @@ impl Run {
         let tool = h.buf.tool.clone();
         let leaf = self.buffer(leaf, &tool, h.buf.external)?;
         Ok(handle_value(self.mint(leaf)))
+    }
+
+    /// A listing tool's answer, one `str` per entry (a directory's ends in
+    /// `/`), counted with `peek` and refused whole if it would cross the cap.
+    fn names(&mut self, tool: &str, listing: &str) -> Result<Value, HostRaise> {
+        // `fs_list`'s own spelling of nothing. A directory holding one file
+        // of exactly that name reads the same, here as in the tool's result.
+        if listing == "(empty directory)" {
+            return Ok(Value::Array(Vec::new()));
+        }
+        let bytes = listing.len();
+        if self.peeked.saturating_add(bytes) > self.limits.peek_bytes {
+            return Err(raise(
+                Tag::LimitError,
+                format!(
+                    "peek bytes: `{tool}`'s {bytes} bytes of names would take this program \
+                     past its {} ({} used)",
+                    self.limits.peek_bytes, self.peeked
+                ),
+            ));
+        }
+        self.peeked += bytes;
+        Ok(Value::Array(
+            listing
+                .lines()
+                .map(|n| Value::String(n.to_string()))
+                .collect(),
+        ))
     }
 
     fn peek(&mut self, a: &Args<'_>) -> Result<Value, HostRaise> {
