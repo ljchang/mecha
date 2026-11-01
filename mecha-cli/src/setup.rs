@@ -639,7 +639,8 @@ fn build(
     for profile in &cfg.subagents {
         if opts.tool_profile.is_some() {
             // `code` is not in the pool yet (it is built after every other
-            // tool, below), and `build_subagent` refuses it by name.
+            // tool, below), and `build_subagent` builds the child's own over
+            // the child's registry; it is judged once that is built.
             let excluded: Vec<&str> = profile
                 .tools
                 .iter()
@@ -683,6 +684,29 @@ fn build(
                 continue;
             }
         }
+        // A profile naming `code` in a run that withholds code mode — the
+        // switch on and the build able, but `--no-code-tool` (which `mecha
+        // eval` throws), a `--tool` list without it, or `[tools]` — is a
+        // subagent this run has said it does not want, as above: skipped,
+        // loudly. Off or not built is still fatal, by name
+        // (`subagent_code_refusal`): that is configuration, not this run.
+        let names_code = profile
+            .tools
+            .iter()
+            .any(|t| t == mecha_core::tool::code::NAME);
+        if names_code
+            && code.is_none()
+            && mecha_core::feature::unbuilt(mecha_core::feature::Feature::Code).is_none()
+            && mecha_core::feature::switched_on(&cfg, mecha_core::feature::Feature::Code)
+        {
+            if !opts.tools_from_trigger {
+                eprintln!(
+                    "mecha: subagent `{}` not registered — this run withholds `code`",
+                    profile.name
+                );
+            }
+            continue;
+        }
         // A profile may point at a different provider entry entirely.
         let (_, child_provider_cfg) = cfg.provider(profile.provider.as_deref())?;
         let child = build_subagent(
@@ -694,7 +718,28 @@ fn build(
             hooks.as_ref(),
             &policy,
             outbox.as_ref(),
+            code.as_ref(),
         )?;
+        // A `--tool-profile` judges the child's own `code` as it judges the
+        // parent's (`narrow_code`): by what it declares, alone. One the
+        // profile would not keep takes the subagent with it, loudly, rather
+        // than handing the parent a program reach the profile refused.
+        if let Some(tool_profile) = opts.tool_profile {
+            let kept = child
+                .agent()
+                .registry()
+                .get(mecha_core::tool::code::NAME)
+                .is_none_or(|c| tool_profile.keeps(c.as_ref(), &cfg.outbox.tools));
+            if !kept {
+                if !opts.tools_from_trigger {
+                    eprintln!(
+                        "mecha: subagent `{}` not registered — `--tool-profile` excludes its `code`",
+                        profile.name
+                    );
+                }
+                continue;
+            }
+        }
         registry.insert(Arc::new(child));
     }
 
@@ -2323,10 +2368,9 @@ fn build_search_chain(configs: &[SearchBackendConfig]) -> (SearchChain, Vec<Stri
 /// Why a subagent profile naming `code` does not start (`CODE-MODE-DESIGN.md`
 /// §8): the feature, by name, when code mode is off or not in this build —
 /// never the typo message, since `code` is no tool of the pool a child is
-/// built from — and otherwise that a child's own `code` is not built yet. It
-/// must be built afresh over the child's registry, never the parent's
-/// cloned in (§6), and that is the next slice's; refusing at launch beats a
-/// child whose every program is refused.
+/// built from — and otherwise that this run serves no code mode, so there
+/// is no interpreter to build the child's own `code` over (`build` skips
+/// such a subagent before asking, as it skips one `--tool` excludes).
 fn subagent_code_refusal(name: &str, cfg: &Config) -> String {
     use mecha_core::feature::{self, Feature};
     if let Some(why) = feature::unbuilt(Feature::Code) {
@@ -2343,14 +2387,23 @@ fn subagent_code_refusal(name: &str, cfg: &Config) -> String {
         );
     }
     format!(
-        "subagent `{name}` asks for `code`, which no subagent has yet: a child's `code` is built \
-         over its own registry, never its parent's (CODE-MODE-DESIGN.md §6), and that build is \
-         still to come. Drop `code` from the profile."
+        "subagent `{name}` asks for `code`, and this run serves no code mode (`--no-code-tool`, \
+         a `--tool` list without it, or `[tools]`), so there is no interpreter to build its \
+         `code` over"
     )
 }
 
 /// Build one subagent: a child [`Agent`] with a restricted registry, wrapped as
 /// a tool the parent can call.
+///
+/// **A profile naming `code` gets a `code` of its own** (`CODE-MODE-DESIGN.md`
+/// §6), built over the child's registry, after every other tool and the
+/// outbox route are in, by the child agent itself (`Agent::enable_code`) —
+/// never the parent's `Arc` cloned in, which would carry the parent's
+/// admitted set and its declaration. So a profile granting `code` but not
+/// `mail_search` reaches no `mail_search` from a program, though its effect
+/// class would admit it. `interpreter` is the run's (`code_interpreter`);
+/// without one the profile is refused, naming why.
 #[allow(clippy::too_many_arguments)]
 fn build_subagent(
     profile: &SubagentProfile,
@@ -2361,8 +2414,10 @@ fn build_subagent(
     hooks: Option<&Arc<mecha_core::hooks::HookSet>>,
     policy: &Arc<mecha_core::policy::ExecPolicy>,
     outbox: Option<&Arc<mecha_core::outbox::OutboxRoute>>,
+    interpreter: Option<&Arc<dyn mecha_core::interpreter::Interpreter>>,
 ) -> Result<Subagent> {
     let mut child_registry = Registry::new();
+    let mut child_code = None;
     for wanted in &profile.tools {
         // A subagent cannot safely send inter-agent mail: its message_send
         // would stamp the taint of its *own* fresh conversation (or, unwatched,
@@ -2381,8 +2436,16 @@ fn build_subagent(
                 profile.name
             );
         }
+        // Built last, below, over the child's own registry: never taken from
+        // the pool, where it is not yet and where it would be the parent's.
         if wanted == mecha_core::tool::code::NAME {
-            anyhow::bail!("{}", subagent_code_refusal(&profile.name, cfg));
+            match interpreter {
+                Some(i) => {
+                    child_code = Some(Arc::clone(i));
+                    continue;
+                }
+                None => anyhow::bail!("{}", subagent_code_refusal(&profile.name, cfg)),
+            }
         }
         match pool.get(wanted) {
             // The closure guard again, at the clone: `build` wraps the pool's
@@ -2482,6 +2545,13 @@ fn build_subagent(
     // delegating becomes the way to send unstaged.
     if let Some(outbox) = outbox {
         child.set_outbox(Arc::clone(outbox));
+    }
+    // The child's own `code`, last: over its registry as it now stands, with
+    // its outbox route, so a routed read stays out of its programs. Built
+    // before `Subagent::new`, which derives what the parent sees from the
+    // child's registry, `code` included.
+    if let Some(interpreter) = child_code {
+        child.enable_code(interpreter);
     }
 
     Subagent::new(profile.clone(), Arc::new(child))
@@ -3761,6 +3831,7 @@ mod tests {
             None,
             &std::sync::Arc::new(mecha_core::policy::ExecPolicy::empty()),
             None,
+            None,
         );
         let child = match child {
             Ok(c) => c,
@@ -3780,8 +3851,9 @@ mod tests {
     /// with the message that names the feature, not the typo message." `code`
     /// is never in the pool a child is built from (the agent builds it last),
     /// so without the check a profile naming it read as a misspelt tool. With
-    /// the feature on it still fails at launch: a child's own `code` is not
-    /// built yet, and the parent's is never cloned in.
+    /// the feature on and no interpreter for the run it fails too, naming
+    /// that, since the child's own `code` has nothing to be built over and
+    /// the parent's is never cloned in.
     #[test]
     fn a_profile_naming_code_names_the_feature_not_the_typo() {
         let provider_cfg = mecha_core::config::ProviderConfig {
@@ -3803,6 +3875,7 @@ mod tests {
             &mecha_core::tool::ToolCtx::default(),
             None,
             &std::sync::Arc::new(mecha_core::policy::ExecPolicy::empty()),
+            None,
             None,
         ) {
             Ok(_) => panic!("a child naming `code` launched"),
@@ -3829,8 +3902,151 @@ mod tests {
             "the typo message: {on}"
         );
         if mecha_core::interpreter::BUILT {
-            assert!(on.contains("no subagent has yet"), "{on}");
+            assert!(on.contains("serves no code mode"), "{on}");
         }
+    }
+
+    /// An interpreter that is never asked to run anything: what
+    /// `build_subagent` builds a child's `code` over, in a test about what it
+    /// is built over.
+    struct Unused;
+
+    #[async_trait::async_trait]
+    impl mecha_core::interpreter::Interpreter for Unused {
+        fn name(&self) -> &'static str {
+            "unused"
+        }
+        async fn preflight(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn start(
+            &self,
+            _source: &str,
+            _externals: &[String],
+            _cancel: tokio_util::sync::CancellationToken,
+        ) -> anyhow::Result<(
+            Box<dyn mecha_core::interpreter::Program>,
+            mecha_core::interpreter::Step,
+        )> {
+            anyhow::bail!("not in this test")
+        }
+    }
+
+    /// §8: "A subagent whose profile grants `code` but not `mail_search`
+    /// cannot reach `mail_search` from a program, though its effect class
+    /// would admit it." The `analyst` profile of §6 over a pool that holds
+    /// `mail_search` — and the parent's own `code`, which can reach it:
+    /// `build_subagent` gives the child a `code` of its own, built over the
+    /// child's registry, whose program functions and declaration are the
+    /// child's reads alone. Cloning the parent's `code` in — the naive build
+    /// — hands the child `mail_search` and the parent's whole declaration.
+    #[test]
+    fn a_profile_granting_code_gets_its_own_over_its_registry() {
+        use mecha_core::tool::{Capabilities, Tool, ToolCtx, ToolOutput};
+        use std::sync::Arc;
+        struct Read(&'static str, Capabilities);
+        #[async_trait::async_trait]
+        impl Tool for Read {
+            fn name(&self) -> &str {
+                self.0
+            }
+            fn description(&self) -> &str {
+                "a read"
+            }
+            fn input_schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                true
+            }
+            fn capabilities(&self) -> Capabilities {
+                self.1
+            }
+            fn effect(&self) -> Option<mecha_core::tool::effect::Effect> {
+                Some(mecha_core::tool::effect::Effect::Read)
+            }
+            async fn call(
+                &self,
+                _input: serde_json::Value,
+                _ctx: &ToolCtx,
+            ) -> anyhow::Result<ToolOutput> {
+                Ok(ToolOutput::ok("read"))
+            }
+        }
+        let interpreter: Arc<dyn mecha_core::interpreter::Interpreter> = Arc::new(Unused);
+        let mut pool = mecha_core::tool::Registry::new();
+        pool.insert(Arc::new(Read(
+            "mail__mail_search",
+            Capabilities::default().private().untrusted(),
+        )));
+        pool.insert(Arc::new(Read("document_read", Capabilities::default())));
+        let parents = Arc::new(mecha_core::tool::code::CodeTool::over(
+            &pool,
+            |_| false,
+            Arc::clone(&interpreter),
+        ));
+        assert!(parents.admission().contains("mail__mail_search"));
+        pool.insert(parents.clone());
+
+        let provider_cfg = mecha_core::config::ProviderConfig {
+            kind: "local".into(),
+            base_url: Some("http://127.0.0.1:1".into()),
+            ..Default::default()
+        };
+        let profile = mecha_core::subagent::SubagentProfile {
+            name: "analyst".into(),
+            description: "Answers one question by writing a program.".into(),
+            tools: vec!["code".into(), "document_read".into()],
+            trusted_output: true,
+            answer_shape: Some(mecha_core::subagent::AnswerShape::OneOf(vec![
+                "yes".into(),
+                "no".into(),
+                "unclear".into(),
+            ])),
+            ..Default::default()
+        };
+        let mut cfg = Config::default();
+        mecha_core::feature::set_switch(&mut cfg, mecha_core::feature::Feature::Code, true);
+        let child = build_subagent(
+            &profile,
+            &pool,
+            &cfg,
+            &provider_cfg,
+            &ToolCtx::default(),
+            None,
+            &Arc::new(mecha_core::policy::ExecPolicy::empty()),
+            None,
+            Some(&interpreter),
+        )
+        .expect("a profile naming `code` launches with an interpreter for the run");
+        let code = child
+            .agent()
+            .registry()
+            .get("code")
+            .expect("the child has a `code` of its own");
+        assert!(
+            !std::ptr::eq(
+                Arc::as_ptr(code) as *const (),
+                Arc::as_ptr(&parents) as *const ()
+            ),
+            "the parent's `code` was cloned into the child"
+        );
+        assert!(
+            code.description()
+                .ends_with("Tools a program may call: document_read."),
+            "{}",
+            code.description()
+        );
+        let caps = code.capabilities();
+        assert!(
+            !caps.private_data && !caps.untrusted_input,
+            "the child's `code` declares the parent's reads: {caps:?}"
+        );
+        assert!(child.agent().registry().get("mail__mail_search").is_none());
+        assert!(
+            !child.capabilities().private_data,
+            "the parent sees a child that reads nothing private"
+        );
     }
 
     /// Code mode's interpreter is asked for only with the switch on and
@@ -4073,6 +4289,7 @@ mod tests {
             &mecha_core::tool::ToolCtx::default(),
             None,
             &std::sync::Arc::new(mecha_core::policy::ExecPolicy::empty()),
+            None,
             None,
         )
         .expect("a local provider needs no credential, so the child must build");

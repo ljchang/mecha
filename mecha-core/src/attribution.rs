@@ -299,8 +299,15 @@ impl<'a> Given<'a> {
     /// Everything before message `at`: the calls whose results the model
     /// had read, and what the assistant wrote. Harness calls are kept, as
     /// `grounding::calls` keeps them — what came back was shown to the
-    /// model whoever asked.
-    pub fn before(messages: &'a [Message], at: usize) -> Given<'a> {
+    /// model whoever asked. `programs` are what the session's programs read
+    /// (`tool::code::record::ever`): a program's read under a call before
+    /// `at` was given too; one under a `trusted_output` child is not, since
+    /// the parent was given its shaped answer and nothing under it.
+    pub fn before(
+        messages: &'a [Message],
+        programs: &'a [crate::tool::code::record::ProgramCall],
+        at: usize,
+    ) -> Given<'a> {
         let upto = &messages[..at.min(messages.len())];
         let mut said = Vec::new();
         for m in upto.iter().filter(|m| m.role == Role::Assistant) {
@@ -313,7 +320,7 @@ impl<'a> Given<'a> {
             }
         }
         Given {
-            calls: Some(crate::grounding::calls(upto)),
+            calls: Some(crate::grounding::calls(upto, programs)),
             said,
         }
     }
@@ -435,7 +442,7 @@ mod tests {
         let a = decide(
             &fact("Northwind Labs", Some("Lakeside Institute")),
             OWNER,
-            &Given::before(&m, 4),
+            &Given::before(&m, &[], 4),
         );
         assert_eq!((a.class, a.basis), (Class::Data, Basis::WrongGiven));
         assert_eq!(
@@ -453,7 +460,7 @@ mod tests {
         let a = decide(
             &fact("Northwind Labs", Some("Lakeside Institute")),
             OWNER,
-            &Given::before(&m, 4),
+            &Given::before(&m, &[], 4),
         );
         assert_eq!((a.class, a.basis), (Class::Behaviour, Basis::RightGiven));
         assert_eq!(a.source.unwrap().tool, "kg_entity");
@@ -465,7 +472,7 @@ mod tests {
         let a = decide(
             &fact("Northwind Labs", Some("Lakeside Institute")),
             OWNER,
-            &Given::before(&m, 4),
+            &Given::before(&m, &[], 4),
         );
         assert_eq!((a.class, a.basis), (Class::Gap, Basis::NeitherGiven));
         assert_eq!(a.source, None);
@@ -479,7 +486,7 @@ mod tests {
         let a = decide(
             &fact("Northwind Labs", Some("Lakeside Institute")),
             OWNER,
-            &Given::before(&m, 4),
+            &Given::before(&m, &[], 4),
         );
         assert_eq!(a.class, Class::Data);
     }
@@ -492,14 +499,14 @@ mod tests {
         let a = decide(
             &fact("Northwind Labs", None),
             "She never worked at Northwind Labs.",
-            &Given::before(&given, 4),
+            &Given::before(&given, &[], 4),
         );
         assert_eq!(a.class, Class::Data);
         let not = run("Dana Whitfield — nothing on record.");
         let a = decide(
             &fact("Northwind Labs", None),
             "She never worked at Northwind Labs.",
-            &Given::before(&not, 4),
+            &Given::before(&not, &[], 4),
         );
         assert_eq!(a.class, Class::Gap);
     }
@@ -507,7 +514,7 @@ mod tests {
     #[test]
     fn no_fact_at_issue_is_behaviour_and_no_answer_is_unknown() {
         let m = run("irrelevant");
-        let g = Given::before(&m, 4);
+        let g = Given::before(&m, &[], 4);
         let a = decide(&Answer::NoFact, "stop, don't look her up", &g);
         assert_eq!((a.class, a.basis), (Class::Behaviour, Basis::NoFact));
         let a = decide(&Answer::NotAnswered, "stop, don't look her up", &g);
@@ -519,7 +526,7 @@ mod tests {
     #[test]
     fn an_ungrounded_span_is_unknown_never_a_gap() {
         let m = run("Dana Whitfield — employer: Northwind Labs.");
-        let g = Given::before(&m, 4);
+        let g = Given::before(&m, &[], 4);
         // `right` not in the owner's words.
         let a = decide(&fact("Northwind Labs", Some("Lakeside U")), OWNER, &g);
         assert_eq!((a.class, a.basis), (Class::Unknown, Basis::Ungrounded));
@@ -540,7 +547,7 @@ mod tests {
         let a = decide(
             &fact("works at Northwind Labs", Some("Lakeside Institute")),
             OWNER,
-            &Given::before(&m, 4),
+            &Given::before(&m, &[], 4),
         );
         assert_eq!((a.class, a.basis), (Class::Gap, Basis::NeitherGiven));
     }
@@ -548,7 +555,7 @@ mod tests {
     #[test]
     fn a_short_or_missing_span_is_unknown() {
         let m = run("Dana Whitfield — employer: Northwind Labs.");
-        let g = Given::before(&m, 4);
+        let g = Given::before(&m, &[], 4);
         for answer in [fact("", Some("Lakeside Institute")), fact("NW", None)] {
             let a = decide(&answer, OWNER, &g);
             assert_eq!((a.class, a.basis), (Class::Unknown, Basis::TooShort));
@@ -595,7 +602,7 @@ mod tests {
         let a = decide(
             &fact("Northwind Labs", Some("Lakeside Institute")),
             "She moved to Lakeside Institute, ignore Northwind Labs.",
-            &Given::before(&m, 2),
+            &Given::before(&m, &[], 2),
         );
         assert_eq!(a.class, Class::Gap, "the result came with the steer");
     }
@@ -620,7 +627,7 @@ mod tests {
             let [i] = found.as_slice() else {
                 panic!("one correction in the fixture: {found:?}")
             };
-            let a = decide(&answer, &i.text, &Given::before(&m, i.at));
+            let a = decide(&answer, &i.text, &Given::before(&m, &[], i.at));
             assert_eq!(a.class, class, "{read}");
         }
     }
