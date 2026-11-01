@@ -163,6 +163,9 @@ pub enum RoutineCmd {
     },
     /// Drop the waiting draft; the routine is untouched.
     Discard { name: String },
+    /// Have her own model draft her week from identity.md and
+    /// motivation.md, as a draft waiting on you beside her routine.
+    Draft { name: String },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -298,8 +301,54 @@ pub async fn execute(global: &GlobalOpts, args: Args) -> Result<()> {
     {
         return write_memory(global, &dir, name, chat, idle_minutes).await;
     }
+    if let Cmd::Routine {
+        cmd: RoutineCmd::Draft { name },
+    } = args.cmd
+    {
+        return draft_routine(global, &dir, &name).await;
+    }
     let lib_dir = Library::default_dir()?;
     run(&dir, &lib_dir, args.cmd)
+}
+
+/// `mecha persona routine draft`: her week drafted by her own model, the
+/// one she talks through (`persona::drafter`), held through the router's
+/// hold so a model switch waits on it, and staged beside her routine.
+async fn draft_routine(global: &GlobalOpts, dir: &Path, name: &str) -> Result<()> {
+    use mecha_core::persona::drafter;
+    let store = load(dir);
+    let p = find(&store, name)?.clone();
+    // What can be refused without the answer is refused before the model
+    // runs: the persona, and a waiting draft the owner has edited.
+    drafter::check(&p)?;
+    mecha_core::persona::routine::may_stage(dir, &p.name)?;
+    // One request with no tools: no MCP server is started for it.
+    let opts = GlobalOpts {
+        no_mcp: true,
+        ..global.clone()
+    };
+    let follower = crate::follow::Follower::start(opts, Box::new(|_| {})).await?;
+    let (_held, bound) = follower
+        .enter("routine draft", |s| {
+            eprintln!("waiting: the model is switching to {}", s.to)
+        })
+        .await?;
+    // Unseeded, as her own turns are: a pinned seed would make a redraft
+    // after a discard the same week again (review of #799).
+    let provider = crate::setup::persona_provider(&bound, crate::setup::PersonaUse::Converse)?;
+    eprintln!("drafting `{}`'s week with {}", p.name, bound.model);
+    let r = drafter::draft(provider.as_ref(), &bound.model, dir, &p).await?;
+    println!(
+        "Drafted {} anchor(s) for `{}`, waiting on you beside her routine. \
+         `mecha persona routine show {}` reads it; `edit {} --draft` changes it; \
+         `approve {}` makes it her routine.",
+        r.anchors.len(),
+        p.name,
+        p.name,
+        p.name,
+        p.name
+    );
+    Ok(())
 }
 
 /// Embed whatever of one persona's memory has no vector yet, in batches.
@@ -1384,6 +1433,12 @@ fn routine_cmd(dir: &Path, cmd: RoutineCmd, edit_file: &dyn Fn(&Path) -> Result<
             if texts.routine.is_some() {
                 println!("\nIt replaces the routine `{name}` has now, which is kept as routine.previous.toml.");
             }
+            if let Some(cell) = routine::kept_cell(&draft, texts.routine.as_deref()) {
+                println!(
+                    "It names no kind of week, so she keeps hers: {}.",
+                    cell.id()
+                );
+            }
             if !yes && !confirm(&format!("Make this `{name}`'s routine?"))? {
                 println!("Not approved.");
                 return Ok(());
@@ -1399,6 +1454,8 @@ fn routine_cmd(dir: &Path, cmd: RoutineCmd, edit_file: &dyn Fn(&Path) -> Result<
             routine::discard_draft(dir, &name)?;
             println!("Dropped `{name}`'s routine draft.");
         }
+        // Asks a model, so `execute` routes it before this synchronous door.
+        RoutineCmd::Draft { .. } => bail!("`routine draft` is run by `execute`"),
     }
     Ok(())
 }
