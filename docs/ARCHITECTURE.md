@@ -1764,6 +1764,16 @@ module.
   anchors that always happen may not overlap (the week is a circle, so
   Sunday night runs into Monday), and a routine that does not parse is a
   `Store::problems` entry, never an empty week.
+- **The ATUS table ships counts, and the code that reads it decides**
+  (`persona::atus`, §4.2). `scripts/atus-table.py` writes
+  `mecha-core/data/atus/table.tsv.gz` from sha256-pinned public files, the
+  same bytes on every run; it is gzipped because no diff should carry a
+  megabyte of numbers, so the script and its pins are what review reads.
+  Rows are weighted counts, never probabilities, on one weight scale per day
+  type, so the pool is the exact sum of the cells. Backoff and smoothing
+  are code, where a test sees them. The script holds a copy of the activity
+  mapping and the table records what it gave every code it met, so a test
+  fails until the table is rewritten after either side changes.
 - **Group membership lives once**, in each persona's `groups`. `groups.toml`
   only declares groups; a persona naming an undeclared group is a broken link.
 - **Links are by name, resolved on load, broken ones named**
