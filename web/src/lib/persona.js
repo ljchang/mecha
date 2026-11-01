@@ -33,7 +33,7 @@ export function withUnlock(path, token) {
 // imports `ENDPOINTS` instead, and the builders refuse any suffix not listed
 // here: a new endpoint is added to this list or it throws, and the list is
 // then what `check-demo` holds the demo's routes to (review of #415).
-const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock', '/frame', '/image-touching', '/image-settings', '/sources', '/sources/remove', '/sources/file', '/sources/text', '/review', '/approve', '/reject', '/memory', '/week', '/routine/cell'];
+const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock', '/frame', '/image-touching', '/image-settings', '/sources', '/sources/remove', '/sources/file', '/sources/text', '/review', '/approve', '/reject', '/memory', '/week', '/routine/cell', '/routine/draft', '/routine/draft/approve'];
 const CHAT_SUFFIXES = ['', '/events', '/send', '/cancel', '/file', '/upload', '/cited', '/save', '/call', '/call-regenerate', '/jobs/order'];
 
 export const ENDPOINTS = [
@@ -838,6 +838,38 @@ export const WEEK_CELLS = [
 export function cellBody(cell, data, date, token = null) {
   if (!WEEK_CELLS.some(([id]) => id === cell)) throw new Error(`not a kind of week: ${cell}`);
   return { cell, base: data?.routine?.digest ?? '', date: date ?? undefined, unlock: token ?? undefined };
+}
+
+// The body of the owner's doors to a waiting draft: the draft's digest as
+// the page was shown it (approve, edit), the owner's text (edit), and the
+// week on screen.
+export function draftBody(data, date, token = null, text = undefined) {
+  return {
+    digest: data?.routine?.draft?.digest ?? '',
+    text,
+    date: date ?? undefined,
+    unlock: token ?? undefined,
+  };
+}
+
+const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+// A drafted anchor said in a line, as the owner reviews it: its days, its
+// hours, its name, its activity, and how often it really happens.
+export function anchorLine(a) {
+  const days = a.days ?? [];
+  const mask = days.reduce((m, d) => m | (1 << d), 0);
+  const when =
+    mask === 0b1111111 ? 'Daily'
+    : mask === 0b0011111 ? 'Weekdays'
+    : mask === 0b1100000 ? 'Weekends'
+    : days.map((d) => DAY_NAMES[d] ?? '?').join(', ');
+  const end = a.start_minute + a.minutes;
+  const nextDay = end > 1440 ? '+1' : '';
+  const activity = String(a.activity ?? '').replace(/_/g, ' ');
+  const name = a.what && a.what !== a.activity ? `${a.what} (${activity})` : activity;
+  const often = a.chance >= 1 ? 'always' : `${Math.round(a.chance * 100)}% of weeks`;
+  return `${when} ${dayClock(a.start_minute)}–${dayClock(end)}${nextDay} · ${name} · ${often}`;
 }
 
 export const WEEK_GROUPS = [

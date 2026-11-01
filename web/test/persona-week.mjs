@@ -1,6 +1,6 @@
 // The persona week view's pure logic, imported from the shipped module.
 import assert from 'node:assert/strict';
-import { personaUrl, ENDPOINTS, weekUrl, weekDays, foldedHours, weekUnavailable, cellBody, WEEK_CELLS, ACTIVITY_GROUP, shiftWeek, stretchLine, dayClock, WEEK_ABSENT } from '../src/lib/persona.js';
+import { personaUrl, ENDPOINTS, weekUrl, weekDays, foldedHours, weekUnavailable, cellBody, WEEK_CELLS, ACTIVITY_GROUP, shiftWeek, stretchLine, dayClock, WEEK_ABSENT, draftBody, anchorLine } from '../src/lib/persona.js';
 import { PANE_FEATURE } from '../src/lib/features.js';
 
 // The endpoint is one the builder accepts, and so one the docs demo checks.
@@ -87,3 +87,24 @@ assert.equal(shiftWeek('2026-11-02', -1), '2026-10-26');
 assert.equal(shiftWeek('2026-12-28', 1), '2027-01-04');
 
 console.log('persona-week: ok');
+
+// A drafted week: its doors are endpoints the builder accepts, and the body
+// carries the draft's digest as shown, never the routine's.
+assert.ok(ENDPOINTS.includes('/api/personas/X/routine/draft'));
+assert.ok(ENDPOINTS.includes('/api/personas/X/routine/draft/approve'));
+const shown = { routine: { digest: 'r', draft: { digest: 'd' } } };
+assert.deepEqual(draftBody(shown, null, 'tok'), { digest: 'd', text: undefined, date: undefined, unlock: 'tok' });
+assert.deepEqual(draftBody(shown, '2026-11-02', null, 'x'), { digest: 'd', text: 'x', date: '2026-11-02', unlock: undefined });
+assert.equal(draftBody({ routine: { digest: 'r' } }, null).digest, '');
+// Each anchor said in a line: named days or their group, hours, name,
+// activity, and how often.
+assert.equal(
+  anchorLine({ what: 'pottery class', activity: 'class', days: [1], start_minute: 18 * 60 + 30, minutes: 120, chance: 1 }),
+  'Tue 18:30–20:30 · pottery class (class) · always',
+);
+assert.equal(
+  anchorLine({ what: null, activity: 'sports_event', days: [0, 1, 2, 3, 4], start_minute: 390, minutes: 45, chance: 0.6 }),
+  'Weekdays 06:30–07:15 · sports event · 60% of weeks',
+);
+assert.equal(anchorLine({ what: 'late shift', activity: 'work', days: [5, 6], start_minute: 22 * 60, minutes: 240, chance: 1 }), 'Weekends 22:00–02:00+1 · late shift (work) · always');
+assert.equal(anchorLine({ what: 'x', activity: 'work', days: [0, 2], start_minute: 0, minutes: 60, chance: 1 }).slice(0, 8), 'Mon, Wed');
