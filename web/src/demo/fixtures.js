@@ -679,7 +679,7 @@ export function factoryInstrument(id = 'book', now = Date.now()) {
       horizon_days: 60,
       busy_generated_at: new Date(now - 6 * 60000).toISOString(),
       last_pushed_at: new Date(now - 6 * 60000).toISOString(),
-      held_by_polls: 0,
+      held_slots: 0,
       slots: slots.slice(1),
     },
     bookings: nextTue
