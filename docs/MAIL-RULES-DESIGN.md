@@ -116,7 +116,9 @@ edit — or an installed proposal — grant itself `auto`.
 **The effective mode is the latest row for the rule and action group, and the
 digest only ever lowers it.** A row names its group (§5's table), or `all`
 for a whole-rule change such as R7's lapse or `pause-all`, which a later
-group row can then raise again only by the owner's approval. Owner approvals, owner step-downs and §6.4's automatic brakes are
+group row can then raise again only by the owner's approval. Resolution reads
+a group's own rows **and** the rule's `all` rows together, latest wins, so a
+`pause-all` overrides every group until something newer says otherwise. Owner approvals, owner step-downs and §6.4's automatic brakes are
 all rows in the same file, and the most recent one wins; if its digest no
 longer matches the rule's directory, the mode reads as `propose` (or lower, if
 the row says lower). Never "the current digest matches *some* `auto`
@@ -214,8 +216,10 @@ skipped classification is a description rule never evaluated, so a
 a `priority = 5` archive silence a `priority = 90` reply**, because §4.3 gives
 outbound actions to the first rule *that has any*, so a higher-priority
 mailbox-only rule does not take the thread's outbound slot. So the condition is
-not about rank: whenever any enabled description rule has an outbound action,
-or another header rule with an outbound action also matches the thread,
+not about rank: whenever any outbound action could apply to the thread — the
+same header rule's own (one rule holding both `forward` and `archive` is §5.2's
+expected shape), another matching header rule's, or any enabled description
+rule's —
 **the header rule's inbox-removing
 actions (`archive`, `trash`, `spam`) wait for the classify pass**, and only
 its other actions (`read`, `unread`, `tag`, `digest`) run on the timer. The header case
@@ -346,7 +350,9 @@ table, **never its position**: an offset re-maps when an action is inserted
 or reordered, so an action that already ran would find no row under its new
 index and run again — a receipt sent to finance twice. Keyed by identity, an
 untouched action keeps its row across any reordering, and an edited one is
-honestly a new action that has not run. The message half is the
+honestly a new action that has not run. Two structurally identical actions in
+one rule would share an identity, so the loader refuses a rule that declares
+the same action twice. The message half is the
 provider's own id (`Email::provider_id`, what `get_message` takes), **made
 immutable on Outlook by asking for it**: Graph's default `id` changes when a
 message moves folders, and every Outlook `archive`, `trash` and `spam` is a
@@ -483,7 +489,8 @@ Which guard binds which action group, so no section has to infer it:
 | Never on a message `From` one of the owner's own addresses | yes | yes |
 | `block_sends_after_private` (§6.3) | yes | yes |
 
-Loop prevention for `forward` and `send` needs two guards of its own. Their
+Loop prevention for `forward` and `send` needs two guards of its own,
+because the copy can come back two ways. Their
 recipient is fixed by the owner, so nothing they send goes back to the
 sender — but the forwarded copy can come back to the owner (the owner is on
 the recipient alias, or the recipient copies them in), and R5 and R8 make it
@@ -499,6 +506,12 @@ cap stopped it. So, both failing closed:
   always the owner's. (An "own output" check by sent id was considered and
   dropped: Graph's send and reply return no id, and the returning copy would
   not carry it anyway.)
+- **Never act on a message whose `From` is one of this rule's own `to`
+  addresses.** That covers the other way back: the recipient copies the owner
+  in, and the returning message is from finance, not from the owner. A rule
+  whose `from_domain` happens to include the recipient's domain would
+  otherwise fire on finance's acknowledgement, every day, held only by the
+  daily cap.
 
 The rest of this section is about replies. A reply goes to an address the
 sender controls, so the guards keep mecha from
@@ -757,8 +770,11 @@ acks it — no second schedule or channel. The `one_line` text is fine here: the
 digest is a surface for a human, never input to a privileged run
 (`Record::for_privileged_run` stays as it is).
 
-`digest` as a rule action means "archive it, and make sure I see it tonight" —
-the newsletter you want to skim but not in your inbox. `task` as an action
+`digest` as a rule action means "make sure I see this in the next digest",
+and nothing else: it moves no mail, which is why it is a record action and
+safe on the timer (§4.1). "Archive it, but show me tomorrow" — the newsletter
+you want to skim but not in your inbox — is two actions, `archive` and
+`digest`, and the archive follows §4.1's deferral like any other. `task` as an action
 creates the task directly. It is in the record group, so it may run in
 `auto` like `digest` (§5's table), but the approval screen recommends
 leaving it at `propose`, where the digest offers it with one tap, because a
@@ -869,10 +885,12 @@ Each phase is useful alone and testable without the next.
 
 **P0 — mecha-mail prerequisites.** Expose `Auto-Submitted`, `Precedence`,
 `List-Id`, `Authentication-Results`, `Reply-To` and the owner's
-participation in a thread on the thread read — `Authentication-Results` as the
-topmost instance with its `authserv-id`, absent stated rather than defaulted,
-with a test per provider in **both** directions — a missing or foreign
-instance proposes, and a genuine provider instance passes — because a test of
+participation in a thread on the thread read — `Authentication-Results` as
+**every instance, in received order, each with its `authserv-id`**, because
+§5.4's guard needs the count as well as the top one; absent stated rather than
+defaulted. A test per provider in **both** directions — a missing, foreign or
+duplicated provider instance proposes, and a single genuine provider instance
+passes — because a test of
 the negative alone passes on a reader that proposes unconditionally (§5.4); the
 immutable-id read for the rule engine, verified to survive a move and a
 restore on the owner's mailbox (§4.4); and the provider's own message id on the
@@ -983,7 +1001,8 @@ The rest are answered by measurement or by a decision made elsewhere:
 ## 14. What is deliberately not being built
 
 - **A rule that takes a recipient from the mail or from a model**, other than
-  `reply`'s authenticated sender.
+  `reply`'s authenticated sender, and a proposed `to` that the owner has
+  installed and approved on screen with the address shown first (§9).
 - **Auto-promotion, or a promotion gate.** No rule moves up the ladder
   without the owner, no statistic moves it, and no statistic stands between
   the owner and the switch either (R6).
