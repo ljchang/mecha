@@ -259,7 +259,17 @@ async fn run(
     let mut child = cmd.spawn()?;
     if let Some(bytes) = stdin {
         let mut pipe = child.stdin.take().expect("piped");
-        pipe.write_all(&bytes).await?;
+        // A child that refuses before reading its stdin (`slots push` checks
+        // the manifest's id first) closes the pipe under the write. That is
+        // the child's answer arriving early, not a failure of ours: carry on
+        // and report its exit and its own refusal, which is what the owner
+        // needs to read. Reported as "Broken pipe" it said nothing (CI on
+        // #816's merge, where the stand-in exited before the write finished).
+        match pipe.write_all(&bytes).await {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+            Err(e) => return Err(e.into()),
+        }
         drop(pipe);
     }
     let output = tokio::time::timeout(
