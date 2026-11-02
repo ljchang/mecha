@@ -1,6 +1,6 @@
 # Code mode, reshaped by RLM — design
 
-**Status: 2026-10-31, designed; the interpreter backend (slice 3a, `mecha-core/src/interpreter/`), the `code` tool's host calls and handles (slice 3b, `mecha-core/src/tool/code.rs`) and `llm_query`/`llm_map` (slice 3c, the same file and `tool/code_shape.rs`) built and tested; registered (slice 3d): `Feature::Code` behind `[features] code`, available only in a build with the cargo feature `monty`, `Lever::CodeTool`, the parent's `code` built last by the agent (`Agent::enable_code`), and §7's `RunStats` counters, with each pass's usage in the run's own. Slice 3e built the `program` record, its blob store and the grounding walk's second source with its readers (§7, `tool/code_record.rs`), and a subagent's own `code`, which makes the `analyst` profile (§6) launch; a subagent stays unadmitted into a program. Not built: retention and `doctor` for the blob store, and `replay_run` answering a replayed program's host calls from the record (§7). Ruled 2026-10-30, and R4 on 2026-10-31 (§11). M0 and M1 measured (§10). **R11 (2026-11-02): a tool's result reaches a program as a `str`, and the opaque handles are retired (§3), after M2 (§13); measured as M3: 30/40 against M2's 27/40 under the same grade, programs raising 20% against 50%, and 36/40 with a log date in the owner's zone accepted, a grade widened after reading M3's answers (§13).**
+**Status: 2026-10-31, designed; the interpreter backend (slice 3a, `mecha-core/src/interpreter/`), the `code` tool's host calls and handles (slice 3b, `mecha-core/src/tool/code.rs`) and `llm_query`/`llm_map` (slice 3c, the same file and `tool/code_shape.rs`) built and tested; registered (slice 3d): `Feature::Code` behind `[features] code`, available only in a build with the cargo feature `monty`, `Lever::CodeTool`, the parent's `code` built last by the agent (`Agent::enable_code`), and §7's `RunStats` counters, with each pass's usage in the run's own. Slice 3e built the `program` record, its blob store and the grounding walk's second source with its readers (§7, `tool/code_record.rs`), and a subagent's own `code`, which makes the `analyst` profile (§6) launch; a subagent stays unadmitted into a program. Not built: retention and `doctor` for the blob store, and `replay_run` answering a replayed program's host calls from the record (§7). Ruled 2026-10-30, and R4 on 2026-10-31 (§11). M0 and M1 measured (§10). **R12 (2026-11-02): `open(path)` reads text through `fs_read` (§11), after M4 (§13). R11 (2026-11-02): a tool's result reaches a program as a `str`, and the opaque handles are retired (§3), after M2 (§13); measured as M3: 30/40 against M2's 27/40 under the same grade, programs raising 20% against 50%, and 36/40 with a log date in the owner's zone accepted, a grade widened after reading M3's answers (§13).**
 
 This supersedes the *shape* of `AUDIT-RESEARCH.md` §3.12 ("programmatic
 tool calling, on monty"). That section's contract, its first hazard (taint
@@ -182,7 +182,9 @@ parse, never its raw output, and a provider's failure by its class, never
 its body (§4).
 
 **A program that reaches for the operating system is told where its data
-is.** An `os` call or `open()` is refused with a `PermissionError` that
+is.** (R12: `open(path)` in text-read mode is answered through `fs_read`
+when the program has it; the rest of this paragraph is what is still
+refused.) An `os` call or any other `open()` is refused with a `PermissionError` that
 says a program has no files, environment, network or clock, leads with
 `fs_read` and `fs_list` when the program has them (19 of M2's 27 first
 programs failed on `open()` or `os.listdir`), and lists the functions it
@@ -1103,7 +1105,8 @@ curl -s http://127.0.0.1:8080/v1/chat/completions -H 'content-type: application/
 - **The interpreter is not where a program's time goes.** A host call costs
   10–18 µs, against M0's 0.3–0.5 s for a thinking-off pass: the §5
   suspension backstop's 2,336 calls would spend about 40 ms in transport
-  (4,128 since tool reads went to 2,048: about 75 ms).
+  (4,128 since tool reads went to 2,048: about 75 ms; 6,176 since R12, where
+  a read through `open()` is two suspensions).
   Worker start is about 4 ms cold, most of it bwrap (bare start is under
   1 ms), and a warm worker is reused in under 0.1 ms.
 - **Contention cost the interpreter a third at most.** One decode in flight
@@ -1235,6 +1238,21 @@ with your recs"), except R4, which waited on M1 and was ruled on
   so a stored counter keeps its meaning), and `chunks` takes any `n` of
   at least 1. The sink slice
   decides opacity again for itself (§3, §12).
+- **R12. `open(path)` reads text, through `fs_read`** (the owner,
+  2026-11-02, after M4, §13). In a program that was given `fs_read`,
+  `open(path)` in mode `r` answers with a file object, and every read of
+  one (`read`, `readlines`, `readline`, a `for` loop, `csv` over it, a
+  `pathlib` `read_text`) is one `fs_read(path=...)` call, so the guard,
+  the limits and the taint are those of the call a program would have
+  written. Any other mode, binary or write, and any program without
+  `fs_read`, is refused as before. The refusal had cost a turn in most M2
+  to M4 first programs, and in one M4 run it was swallowed by a bare
+  `except` and the program reported no match with nothing raised. The path
+  reaches `fs_read` relative to the workspace: monty cannot tell
+  `open('/a.csv')` from `open('a.csv')`, so one leading `/` comes off, and
+  an absolute path, an owner grant's included, is reached with `fs_read`
+  directly. A read through `open()` is two suspensions against one tool
+  read, so the suspension backstop counts tool reads twice.
 - **And the `code` call itself is `read_only()`.** A program runs
   without a prompt. The reason is not that its tools would all skip the
   approver: a read-only tool still meets a `prompt` or `forbid` policy
