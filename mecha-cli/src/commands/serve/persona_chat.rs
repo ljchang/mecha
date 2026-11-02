@@ -2179,14 +2179,7 @@ impl PersonaChats {
         });
         // The portraits a person may link: approved characters this viewer
         // may see.
-        let characters: Vec<String> = lib
-            .all()
-            .iter()
-            .filter(|e| e.kind == Kind::Character)
-            .filter(|e| e.status == mecha_core::persona::Status::Approved)
-            .filter(|e| !e.locked || unlocked)
-            .map(|e| e.name.clone())
-            .collect();
+        let characters = visible_characters(&lib, unlocked);
         Ok(serde_json::json!({
             "people": people,
             "ties": ties,
@@ -2284,6 +2277,23 @@ impl PersonaChats {
                 let clear = |v: &Option<String>| {
                     v.clone().map(|v| Some(v).filter(|v| !v.trim().is_empty()))
                 };
+                // Hidden, never cut: a clear of a portrait this viewer may
+                // not see is no choice to remove it, since the page was
+                // shown none (review of #803; the persona settings door's
+                // rule).
+                let existing = network::Network::read(&pdir)
+                    .map_err(failed)?
+                    .person(&id)
+                    .and_then(|q| q.character.clone());
+                let clears = body
+                    .character
+                    .as_deref()
+                    .is_some_and(|c| c.trim().is_empty());
+                let character = if clears && visible(&existing).is_err() {
+                    None
+                } else {
+                    clear(&body.character)
+                };
                 network::edit_person(
                     &pdir,
                     &lib,
@@ -2293,7 +2303,7 @@ impl PersonaChats {
                         aliases: body.aliases.clone(),
                         role: clear(&body.role),
                         description: clear(&body.description),
-                        character: clear(&body.character),
+                        character,
                     },
                 )
                 .map_err(bad)?;
@@ -9568,6 +9578,32 @@ mod tests {
             Some("veiledone")
         );
         assert_eq!(n.person(&theo_id).unwrap().role.as_deref(), Some("cousin"));
+        // Nor does a clear from it cut the link it was never shown.
+        ps.act_on_people(
+            &w.library,
+            "mara",
+            PeopleAct::Edit(theo_id.clone()),
+            &body(&|b| b.character = Some(String::new())),
+        )
+        .unwrap();
+        let n = mecha_core::persona::network::Network::read(&w.store().join("mara")).unwrap();
+        assert_eq!(
+            n.person(&theo_id).unwrap().character.as_deref(),
+            Some("veiledone")
+        );
+        // Unlocked, the owner may clear it.
+        ps.act_on_people(
+            &w.library,
+            "mara",
+            PeopleAct::Edit(theo_id.clone()),
+            &body(&|b| {
+                b.character = Some(String::new());
+                b.unlock = Some(token.clone());
+            }),
+        )
+        .unwrap();
+        let n = mecha_core::persona::network::Network::read(&w.store().join("mara")).unwrap();
+        assert_eq!(n.person(&theo_id).unwrap().character, None);
 
         // An event on the tie between two, then retracted; a person removed.
         let ines_id = ines["id"].as_str().unwrap().to_string();
