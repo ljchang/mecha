@@ -266,12 +266,17 @@ the rule store, and `classify` reads that queue beside `mail_recent` — the
 same need `due_outside_window` answers for the triage store's retries (work
 owed on threads the window no longer returns), here met with a queue because
 there is no earlier record to walk. A queued thread is evaluated and its
-deferred actions run whether or not it is still in the window; **an id leaves
-the queue only when every deferred action for it has a settled ledger row**
-(`done`, `failed`, `skipped`), and one that cannot be read is a `failed:
-thread unreadable` row, never a silent drop. An entry older than seven days
-settles as `failed: expired` with a notice, so the queue cannot grow without
-bound behind a broken classifier. Whether any
+deferred actions run whether or not it is still in the window. **The queue
+exists so `classify` re-evaluates the thread, and an entry leaves once it
+has**: each deferred action is then executed (`done`), offered to the owner
+(`offered` — a `propose`-mode action now waiting in the mail desk, which
+carries it from there and counts in `backlog.rs`), staged, skipped, or
+failed. A thread that cannot be read is a `failed: thread unreadable` row,
+never a silent drop. An entry older than seven days settles as `expired`
+with a notice, so the queue cannot grow without bound behind a broken
+classifier — and `expired` is not a failure: it does not count toward
+§6.4's consecutive-failure brake, which owner inattention must never be able
+to trip. Whether any
 description rule is enabled is known statically from the enabled set, and
 which other header rules match a given thread is known in the same timer
 pass, before anything executes. P1 builds this, though no description rule exists until P4,
@@ -280,6 +285,19 @@ notification should cost a string comparison, not a model call, whenever
 "the first rule by priority owns the thread" allows it.
 
 ### 4.2 Description matchers — the classifier, one more field
+
+**A rule is a description rule if and only if it declares `describe`.** Its
+header keys, if any, are then an *additional precondition* checked in the
+same classify pass, against the same newest inbound message — never a
+separate header rule — and **none of its actions run on the `--headers`
+timer**. This is the common shape, not an edge: §5.2 requires a sender key
+for any automatic forward, send or drafted reply, so §3's `receipts-to-finance`
+example (`from_domain` + `describe`) is exactly it. Read as a header rule, its
+`digest` would fire on the timer for every message from the vendor, whether
+or not it was a receipt. For §5.5, such a rule counts as a description rule,
+so its `trash` and `spam` propose: a pinned sender set narrows who can
+trigger it but not what the description generalises to, and an owner who
+wants an automatic trash on a sender alone writes a header rule for it.
 
 `describe` is a sentence the owner writes. The classifier — already one
 isolated, tool-less call per thread — is given the enabled rules' descriptions
@@ -768,8 +786,8 @@ rules too (R7). It is the simpler rule, the
 the cost is one click after an edit.
 
 **What the digest covers is everything that decides a send, and it says so
-where it does not cover a match.** For a header rule, `rules/<name>/` is the
-whole matcher. For a description rule *with an outbound action*, the send
+where it does not cover a match.** For a header rule (one with no
+`describe`, §4.2), `rules/<name>/` is the whole matcher. For a description rule *with an outbound action*, the send
 decision is the confirmation pass of §4.2, whose inputs are the rule's
 description and an instruction compiled into the binary — so the digest also
 carries the version of that instruction **and of the §5.3 extraction pass's**,
@@ -952,8 +970,11 @@ edit rate, and a pause toggle. A rule that stepped itself down shows why.
 - **The ledger**: one row per action — when, which message (sender and
   subject, opening in the reader), matched because (header key, or the
   grounded `rule_quote`), the action, the mode it ran in, and the outcome:
-  `done`, `would have` (shadow), `staged`, `sent`, `released unchanged`,
-  `edited`, `rejected`, `undone`, `failed: <why>`, `skipped: <guard>`.
+  `pending` (written before an action executes, §4.4), `done`, `would have`
+  (shadow), `offered` (a proposed mailbox action waiting in the mail desk),
+  `staged`, `held: global cap` (§6.4), `sent`, `released unchanged`,
+  `edited`, `rejected`, `undone`, `expired` (§4.1), `failed: <why>`,
+  `skipped: <guard>`.
   `skipped` rows are shown, not hidden — a guard visibly firing is how the
   owner learns to trust the guards.
 - **Undo** on mailbox rows (archive → back to inbox, trash → restore), and
