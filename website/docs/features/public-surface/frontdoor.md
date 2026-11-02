@@ -186,7 +186,8 @@ The editor shows what the page would offer before you save. That preview is
 `factory-publish slots preview`, computed over the busy time the last push
 saw, so it is the page's own arithmetic. Saving writes the manifest's
 `[availability]` section in place and keeps your comments. It then pushes, so
-the page changes at once instead of at the next fifteen-minute tick.
+the page changes at once instead of at the slot timer's next run, two
+minutes later at most.
 
 Five rules hold it together:
 
