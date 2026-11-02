@@ -1756,10 +1756,12 @@ impl Run {
         // on a 1.5 MB log is 140 GB built here, uncharged (review of #805).
         // Bytes, as the limit is: a character of a multibyte text is up to
         // four, so a count of characters under-refused it (review of #805).
-        let per_char = t.text.len().div_ceil(t.chars.max(1));
-        let total = count
-            .saturating_mul(n.min(t.chars))
-            .saturating_mul(per_char);
+        // The text's own bytes per character, multiplied before dividing so
+        // one `é` in a long log does not round it up to two (review of #817).
+        let chars = count as u128 * n.min(t.chars) as u128;
+        let total = (chars * t.text.len() as u128)
+            .div_ceil(t.chars.max(1) as u128)
+            .min(usize::MAX as u128) as usize;
         if total > self.limits.host_bytes {
             return Err(raise(
                 Tag::LimitError,

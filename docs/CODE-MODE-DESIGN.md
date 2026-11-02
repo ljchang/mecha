@@ -921,7 +921,8 @@ attacker selects from their own text can be an address; that is a
   `sessions health` splits by the tag, so a program-heavy week reads as
   that and not as a jump in tool use.
 - **Counters.** New `RunStats` counters: `programs`, `program_errors`,
-  `subcalls`, `subcall_tokens`, `peeked_bytes`, `budget_stops`. Each is an
+  `subcalls`, `subcall_tokens`, `peeked_bytes`, `program_read_bytes` (the
+  tool-result bytes a program was handed, added after R11), `budget_stops`. Each is an
   `Option<u32>`, as `context_overflows` is, because a row written before
   the sensor existed is unknown, not zero.
 
