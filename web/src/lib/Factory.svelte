@@ -306,6 +306,9 @@
               <span class="hazardtext">request count unknown — the front-door store could not be read</span>
             {:else}
               <span>{item.requests_open} request{item.requests_open === 1 ? '' : 's'} waiting</span>
+              {#if item.requests_skipped}
+                <span class="hazardtext">and {item.requests_skipped} request file{item.requests_skipped === 1 ? '' : 's'} could not be read — the count and the meetings below may be short</span>
+              {/if}
             {/if}
             <button class="link" onclick={() => navigate('review/frontdoor')}>open the front door ›</button>
           </div>

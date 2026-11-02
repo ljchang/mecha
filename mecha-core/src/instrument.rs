@@ -221,6 +221,13 @@ pub fn read_hours(text: &str) -> Result<Hours> {
     let shapes: Shapes = toml::Value::Table(a.clone())
         .try_into()
         .context("[availability]")?;
+    // The zone is the one key the box reads, so it is never left to a
+    // default here: a manifest without one is refused at the read, as every
+    // other shape the editor cannot represent is, rather than read as ""
+    // and passed through a guard that compares "" with "".
+    if shapes.timezone.trim().is_empty() {
+        bail!("[availability] names no timezone; set one in the manifest and type push it");
+    }
     Ok(Hours {
         timezone: shapes.timezone,
         durations: shapes.durations,
@@ -315,7 +322,18 @@ pub fn write_hours(text: &str, h: &Hours) -> Result<String> {
     // written only if the edit changed its value, so a save never pins a
     // default this repo merely copied from the factory.
     let was = read_hours(text)?;
-    a["timezone"] = value(h.timezone.as_str());
+    // `timezone` is never written: the box reads it, so it changes only by a
+    // type push (refused above in `rewrite`, and here for any caller), and
+    // leaving the item alone keeps the owner's comment on that line.
+    if h.timezone != was.timezone {
+        bail!(
+            "the time zone is read by the booking page itself, so changing it is a \
+             `factory-publish type push`, not an hours save: edit `timezone` in the \
+             manifest and push it (the page would otherwise label {} slots in {})",
+            h.timezone,
+            was.timezone
+        );
+    }
     a["durations"] = value(h.durations.iter().map(|d| i64::from(*d)).collect::<Array>());
     for (key, now, before) in [
         ("buffer_minutes", h.buffer_minutes, was.buffer_minutes),
@@ -411,16 +429,6 @@ pub const MAX_OVERRIDES: usize = 366;
 pub fn rewrite(disk: &str, base: &str, h: &Hours) -> Result<String> {
     if digest(disk) != base {
         bail!(Stale);
-    }
-    let current = read_hours(disk)?;
-    if h.timezone != current.timezone {
-        bail!(
-            "the time zone is read by the booking page itself, so changing it is a \
-             `factory-publish type push`, not an hours save: edit `timezone` in the \
-             manifest and push it (the page would otherwise label {} slots in {})",
-            h.timezone,
-            current.timezone
-        );
     }
     write_hours(disk, h)
 }
@@ -652,6 +660,22 @@ heading = "You're booked"
             },
             "YYYY-MM-DD",
         );
+    }
+
+    #[test]
+    fn the_zone_line_is_left_alone_and_a_missing_zone_is_refused() {
+        let noted = MANIFEST.replace(
+            "timezone = \"America/New_York\"",
+            "timezone = \"America/New_York\"  # where I am",
+        );
+        let out = write_hours(&noted, &read_hours(&noted).unwrap()).unwrap();
+        assert!(
+            out.contains("timezone = \"America/New_York\"  # where I am"),
+            "{out}"
+        );
+        let without = MANIFEST.replace("timezone = \"America/New_York\"\n", "");
+        let err = read_hours(&without).unwrap_err().to_string();
+        assert!(err.contains("no timezone"), "{err}");
     }
 
     #[test]

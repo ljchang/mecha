@@ -137,7 +137,7 @@ kind = "booking"
 version = 1
 title = "Book a meeting with Robin"
 
-[availability]            # home reads this; the box ignores it entirely
+[availability]            # home computes from this; the box reads only `timezone`
 timezone = "America/New_York"
 durations = [30, 60]
 buffer_minutes = 10
@@ -167,8 +167,9 @@ confirmation_subject = "Confirmed: {title} on {when_local}"
 # ... reminder / cancelled / rebook bodies, {placeholder}-interpolated
 ```
 
-The box never computes from `[availability]`; home never enforces
-`[policy]`. Free-text-ness of the detail fields stays derived from kind, and
+The box never computes from `[availability]`, though it reads its
+`timezone` to label the week grid and the confirmation's times (so a zone
+change is a `type push`); home never enforces `[policy]`. Free-text-ness of the detail fields stays derived from kind, and
 drained booking records carry `free_text` exactly as request records do — a
 booking's "what do you want to discuss" goes through the same quarantine as
 any stranger prose (§6.1).
