@@ -1,6 +1,6 @@
 # Code mode, reshaped by RLM — design
 
-**Status: 2026-10-31, designed; the interpreter backend (slice 3a, `mecha-core/src/interpreter/`), the `code` tool's host calls and handles (slice 3b, `mecha-core/src/tool/code.rs`) and `llm_query`/`llm_map` (slice 3c, the same file and `tool/code_shape.rs`) built and tested; registered (slice 3d): `Feature::Code` behind `[features] code`, available only in a build with the cargo feature `monty`, `Lever::CodeTool`, the parent's `code` built last by the agent (`Agent::enable_code`), and §7's `RunStats` counters, with each pass's usage in the run's own. Slice 3e built the `program` record, its blob store and the grounding walk's second source with its readers (§7, `tool/code_record.rs`), and a subagent's own `code`, which makes the `analyst` profile (§6) launch; a subagent stays unadmitted into a program. Not built: retention and `doctor` for the blob store, and `replay_run` answering a replayed program's host calls from the record (§7). Ruled 2026-10-30, and R4 on 2026-10-31 (§11). M0 and M1 measured (§10). **R11 (2026-11-02): a tool's result reaches a program as a `str`, and the opaque handles are retired (§3), after M2 (§13); measured as M3, 36/40 against M2's 27/40 (§13).**
+**Status: 2026-10-31, designed; the interpreter backend (slice 3a, `mecha-core/src/interpreter/`), the `code` tool's host calls and handles (slice 3b, `mecha-core/src/tool/code.rs`) and `llm_query`/`llm_map` (slice 3c, the same file and `tool/code_shape.rs`) built and tested; registered (slice 3d): `Feature::Code` behind `[features] code`, available only in a build with the cargo feature `monty`, `Lever::CodeTool`, the parent's `code` built last by the agent (`Agent::enable_code`), and §7's `RunStats` counters, with each pass's usage in the run's own. Slice 3e built the `program` record, its blob store and the grounding walk's second source with its readers (§7, `tool/code_record.rs`), and a subagent's own `code`, which makes the `analyst` profile (§6) launch; a subagent stays unadmitted into a program. Not built: retention and `doctor` for the blob store, and `replay_run` answering a replayed program's host calls from the record (§7). Ruled 2026-10-30, and R4 on 2026-10-31 (§11). M0 and M1 measured (§10). **R11 (2026-11-02): a tool's result reaches a program as a `str`, and the opaque handles are retired (§3), after M2 (§13); measured as M3: 30/40 against M2's 27/40 under the same grade, programs raising 20% against 50%, and 36/40 with a log date in the owner's zone accepted, a grade widened after reading M3's answers (§13).**
 
 This supersedes the *shape* of `AUDIT-RESEARCH.md` §3.12 ("programmatic
 tool calling, on monty"). That section's contract, its first hazard (taint
@@ -209,9 +209,10 @@ would reach the model's planning only when it chose `peek`. In practice:
   credited it);
 - R5 had already found the cap guarded less than its number suggested,
   because the read-only slice has no sink;
-- and it cost the most of any failure in M2: about 46 of 220 programs
-  failed on a handle used as text (`.strip()`, `.split()`, `in`, `len()`),
-  a quarter of all failures, where every other harness surveyed hands a
+- and it cost the most of any failure in M2: of the 220 programs written
+  in its first 35 runs, 108 raised, about 46 of them on a handle used as
+  text (`.strip()`, `.split()`, `in`, `len()`), the largest single cause,
+  where every other harness surveyed hands a
   program real strings and guards what goes back to the model (§13).
 
 The handle came from RLM's *prompt as a variable*, whose gain (Qwen3-Coder
@@ -1469,13 +1470,14 @@ What is left is reading, not machinery: a window where a line-scoped pattern
 as "attended". Programs still fail first on habits about half the time.
 
 **M2 (2026-11-01 to 11-02, #798's build): the battery, measured.** Five
-fictional tasks, eight seeds (11 to 131), each run twice: with `code` offered and with
-`--no-code-tool`, one run at a time on the router's uncensored Qwen3.6
-preset, as test sessions, from a run directory whose `mecha.toml` sets the
-seed. Graded by a scorer fixed before reading any answer and checked
-against twelve hand-graded runs. Two scorer artefacts were found by reading
-failures (counts such as "25 presentations" read as meeting numbers, and a
-table that bolded every row) and fixed against the same hand grades.
+fictional tasks, eight seeds (11 to 131), each run twice: with `code`
+offered and with `--no-code-tool`, one run at a time on the router's
+uncensored Qwen3.6 preset, as test sessions, from a run directory whose
+`mecha.toml` sets the seed. Graded by a scorer fixed before reading any
+answer and checked against twelve hand-graded runs. Two scorer artefacts
+were found by reading failures (counts such as "25 presentations" read as
+meeting numbers, and a table that bolded every row) and fixed against the
+same hand grades.
 
 | Task | `code` on | `code` off |
 |---|---|---|
