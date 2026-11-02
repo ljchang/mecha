@@ -789,8 +789,8 @@ fn describe(admission: &Admission) -> String {
     }
     d.push_str(
         "Host helpers, faster than Python on a long text and free of sub-calls: grep(text, \
-         pattern) (the matching lines, a list of str, at most 4,096: narrow the pattern past \
-         that), count(text, pattern), find(text, \
+         pattern) (the matching lines, a list of str; it raises past 4,096, so narrow the \
+         pattern), count(text, pattern), find(text, \
          pattern) (a list of [start, end] character offsets), lines(text), split(text, \
          pattern), chunks(text, n, overlap=0) (pieces of n characters) and json_get(text, \
          path). Patterns are Rust regular expressions. budget() says what is left of each \
@@ -973,6 +973,15 @@ fn strings<'s>(parts: impl IntoIterator<Item = &'s str>) -> Value {
             .map(|p| Value::String(p.to_string()))
             .collect(),
     )
+}
+
+/// How many values `v` holds, itself included.
+fn nodes(v: &Value) -> usize {
+    match v {
+        Value::Array(a) => 1 + a.iter().map(nodes).sum::<usize>(),
+        Value::Object(m) => 1 + m.values().map(nodes).sum::<usize>(),
+        _ => 1,
+    }
 }
 
 /// How deeply `v` nests: 0 for a scalar, 1 for a flat list or object.
@@ -1312,7 +1321,7 @@ impl Run {
                 }
                 self.charge(bytes.len())?;
                 if self.listings.contains(name) {
-                    return Ok(Self::names(&bytes));
+                    return Self::names(name, &bytes);
                 }
                 Ok(Value::String(bytes.to_string()))
             }
@@ -1829,6 +1838,9 @@ impl Run {
         // Past the depth a value may cross into the program at, the backend
         // would fail the program uncatchably: about 130 bytes of a stranger's
         // JSON could end it, losing what it printed (review of #805).
+        // And past PIECES values in all, as `lines` is: the leaf crosses into
+        // the program whole, uncharged (review of #805).
+        pieces("json_get", nodes(at))?;
         if depth(at) > crate::interpreter::VALUE_DEPTH {
             return Err(raise(
                 Tag::HandleError,
@@ -1844,13 +1856,16 @@ impl Run {
 
     /// A listing tool's answer, one `str` per entry (a directory's ends in
     /// `/`).
-    fn names(listing: &str) -> Value {
+    /// Past [`defaults::PIECES`] names it raises, catchably: the peek cap
+    /// was the bound until R11 (review of #805).
+    fn names(tool: &str, listing: &str) -> Result<Value, HostRaise> {
         // `fs_list`'s own spelling of nothing. A directory holding one file
         // of exactly that name reads the same, here as in the tool's result.
         if listing == "(empty directory)" {
-            return Value::Array(Vec::new());
+            return Ok(Value::Array(Vec::new()));
         }
-        strings(listing.lines())
+        pieces(tool, listing.lines().count())?;
+        Ok(strings(listing.lines()))
     }
 
     /// `n` characters of a text from `start`: slicing, kept by name because
@@ -2047,7 +2062,9 @@ fn render(f: Finished, cap: usize, shadowed: &[&str]) -> (String, bool) {
         // `shadowed` is in host-function order, not the error's.
         // With none shown, no hint: a guess could name a function the
         // failing line never called (review of #805).
-        let called = shadowed.iter().find(|n| out.contains(&format!("{n}(")));
+        // Searched in the ending alone: printed output that mentions `size(`
+        // is not the failing line (review of #805).
+        let called = shadowed.iter().find(|n| ending.contains(&format!("{n}(")));
         if let Some(name) = called {
             out.push_str(&format!(
                 "\n[`{name}` is a function this program was given, and the program assigned \
