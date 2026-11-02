@@ -14,8 +14,8 @@
 > with her network's store (`persona::network`, `mecha persona people`,
 > `network.md`, §6.6), her people in her prompt (PL32) and proposed from
 > `identity.md` (`persona::people_draft`, PL31), and the People tab's rings,
-> card and owner doors (§15); reviewing a proposal on the tab and the time
-> slider are next.
+> card, owner doors, proposal review and time slider (§15). Step 2 is built;
+> its measures are read before step 3.
 > **Every decision in §16
 > is ruled** by the owner: PL1–PL22, PL24–PL26, PL29 and PL30 as rulings
 > on 2026-10-31, PL31 and PL32 on 2026-11-01,
@@ -2483,6 +2483,17 @@ ruled for repetition.
     one is hidden and an edit that leaves it out keeps it (§6.5). Merge,
     split, promote, forget and share wait for the people step 3 adds;
     links to chat turns wait for events that have them.
+  - **As built (step 2, proposals and the slider):** the tab proposes her
+    people from `identity.md` (`POST …/people/proposal`, her model on the
+    router hold, "Reading identity.md…" while it runs), lists them ticked
+    for the owner to add all or some (`POST …/people/proposal/accept` with
+    `only`; the rest keep waiting), or dismiss (`DELETE …/people/proposal`);
+    one read from an `identity.md` changed since is a 409. "As it was on" a
+    day folds the event log up to it (`Network::as_of`, `GET …/people?as_of=`),
+    read only, with the forms hidden; problems and the proposal stay about
+    now. The page's writes are refused while `[life] people` is off, so a
+    save cannot land out of sight; the CLI stays the owner's door either
+    way.
 - **What she read last night** (§8.5) and **the camera roll** (§10).
 - **Feed** (§11).
 

@@ -251,6 +251,26 @@ pub fn read(pdir: &Path) -> Result<Option<Draft>> {
         .with_context(|| format!("{DRAFT} does not load"))
 }
 
+/// A proposal read from an `identity.md` that has changed since: the owner
+/// would be accepting a reading of a file that is gone. Typed, so a surface
+/// answers it as the conflict it is (a 409).
+#[derive(Debug)]
+pub struct StaleProposal {
+    pub name: String,
+}
+
+impl std::fmt::Display for StaleProposal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "`{}`'s identity.md changed since her people were read from it; propose again",
+            self.name
+        )
+    }
+}
+
+impl std::error::Error for StaleProposal {}
+
 /// What accepting did: who was added, and who was already there.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Accepted {
@@ -281,10 +301,10 @@ pub fn accept(
         bail!("`{}` has no proposal of people waiting", p.name);
     };
     if draft.identity != super::text_digest(&p.identity) {
-        bail!(
-            "`{}`'s identity.md changed since her people were read from it; propose again",
-            p.name
-        );
+        return Err(StaleProposal {
+            name: p.name.clone(),
+        }
+        .into());
     }
     let picked: Vec<usize> = match only {
         None => (0..draft.people.len()).collect(),
@@ -503,8 +523,9 @@ mod tests {
         stage(&dir, &p, ANSWER).unwrap();
         let mut changed = p.clone();
         changed.identity.push_str("A new line.\n");
-        let why = format!("{:#}", accept(&dir, &no_lib(), &changed, None).unwrap_err());
-        assert!(why.contains("changed since"), "{why}");
+        let stale = accept(&dir, &no_lib(), &changed, None).unwrap_err();
+        assert!(stale.downcast_ref::<StaleProposal>().is_some(), "{stale:#}");
+        assert!(format!("{stale:#}").contains("changed since"));
         assert!(accept(&dir, &no_lib(), &p, Some(&[3])).is_err());
         assert!(accept(&dir, &no_lib(), &p, Some(&[0])).is_err());
         assert!(network::Network::read(&dir.join("mara"))

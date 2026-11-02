@@ -2099,8 +2099,28 @@ impl PersonaChats {
         name: &str,
         token: Option<&str>,
     ) -> Result<serde_json::Value, Refusal> {
+        self.people_on(library, name, token, None)
+    }
+
+    /// [`Self::people`] as her network stood at the end of `as_of`
+    /// (`YYYY-MM-DD`, §15's time slider): the people and ties folded from the
+    /// events by then. What is about now (problems, the identity.md overlap,
+    /// a waiting proposal) is answered as it stands now.
+    pub fn people_on(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        token: Option<&str>,
+        as_of: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
         use mecha_core::imagelib::Kind;
         use mecha_core::persona::{network, people_draft};
+        let as_of = as_of
+            .map(|d| {
+                chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d")
+                    .map_err(|_| Refusal::Bad(format!("`{d}` is not a date (YYYY-MM-DD)")))
+            })
+            .transpose()?;
         let p = self
             .visible(library, name, token)
             .ok_or(Refusal::NotFound)?;
@@ -2113,7 +2133,11 @@ impl PersonaChats {
         let pdir = self.store.join(&p.name);
         let lib = mecha_core::imagelib::Library::load(&library.dir).0;
         let unlocked = library.unlocked(token);
-        let n = network::Network::read(&pdir).map_err(failed)?;
+        let now = network::Network::read(&pdir).map_err(failed)?;
+        let n = match as_of {
+            Some(d) => now.as_of(d),
+            None => now.clone(),
+        };
         let shown = |c: Option<&str>| -> (Option<String>, Option<String>) {
             let Some(c) = c else {
                 return (None, None);
@@ -2164,8 +2188,8 @@ impl PersonaChats {
                 })
             })
             .collect();
-        let mut problems = n.broken_links(&lib);
-        problems.extend(n.unreadable_edges());
+        let mut problems = now.broken_links(&lib);
+        problems.extend(now.unreadable_edges());
         let overlap: Vec<serde_json::Value> = people_draft::identity_overlap(&self.store, &p)
             .map_err(failed)?
             .into_iter()
@@ -2187,6 +2211,7 @@ impl PersonaChats {
             "overlap": overlap,
             "proposal": proposal,
             "characters": characters,
+            "as_of": as_of.map(|d| d.to_string()),
         }))
     }
 
@@ -2208,6 +2233,15 @@ impl PersonaChats {
         let p = self
             .visible(library, name, body.unlock.as_deref())
             .ok_or(Refusal::NotFound)?;
+        // The page answers "off" while her people are off, so a write it
+        // could not show is refused rather than landing out of sight
+        // (review of #803). The CLI is the owner's door either way.
+        if !p.settings.life.people {
+            return Err(Refusal::Conflict(format!(
+                "[life] people is off for `{}`; turn on Her people first",
+                p.name
+            )));
+        }
         let pdir = self.store.join(&p.name);
         let lib = mecha_core::imagelib::Library::load(&library.dir).0;
         let bad = |e: anyhow::Error| network_refusal(e);
@@ -2244,9 +2278,9 @@ impl PersonaChats {
             When::parse(w.as_deref().unwrap_or("")).map_err(|e| Refusal::Bad(format!("{e:#}")))
         };
         // A person or an event is named by its full id, which the page holds.
-        let known = |id: &str| -> Result<String, Refusal> {
+        let known = |id: &str| -> Result<network::Person, Refusal> {
             let n = network::Network::read(&pdir).map_err(failed)?;
-            n.person(id).map(|q| q.uid.clone()).ok_or(Refusal::NotFound)
+            n.person(id).cloned().ok_or(Refusal::NotFound)
         };
         match act {
             PeopleAct::Add => {
@@ -2271,7 +2305,8 @@ impl PersonaChats {
                 .map_err(bad)?;
             }
             PeopleAct::Edit(id) => {
-                let id = known(&id)?;
+                let person = known(&id)?;
+                let id = person.uid.clone();
                 // An empty value clears a field; one left out is unchanged,
                 // so a portrait this page was not shown (locked) stays.
                 let clear = |v: &Option<String>| {
@@ -2281,10 +2316,8 @@ impl PersonaChats {
                 // not see is no choice to remove it, since the page was
                 // shown none (review of #803; the persona settings door's
                 // rule).
-                let existing = network::Network::read(&pdir)
-                    .map_err(failed)?
-                    .person(&id)
-                    .and_then(|q| q.character.clone());
+                // From the one read `known` made (review of #803).
+                let existing = person.character.clone();
                 let clears = body
                     .character
                     .as_deref()
@@ -2312,8 +2345,8 @@ impl PersonaChats {
                 .map_err(bad)?;
             }
             PeopleAct::Event(id) => {
-                let id = known(&id)?;
-                let other = body.with.as_deref().map(known).transpose()?;
+                let id = known(&id)?.uid;
+                let other = body.with.as_deref().map(known).transpose()?.map(|q| q.uid);
                 let Some(kind) = body.kind.as_deref() else {
                     return Err(Refusal::Bad("an event needs a `kind`".into()));
                 };
@@ -2335,7 +2368,7 @@ impl PersonaChats {
                 .map_err(bad)?;
             }
             PeopleAct::Retract(id, event) => {
-                let id = known(&id)?;
+                let id = known(&id)?.uid;
                 // Only an event on an edge this person is part of.
                 let n = network::Network::read(&pdir).map_err(failed)?;
                 if !n.events.iter().any(|e| {
@@ -2346,11 +2379,107 @@ impl PersonaChats {
                 network::remove_event(&pdir, &event).map_err(bad)?;
             }
             PeopleAct::Remove(id) => {
-                let id = known(&id)?;
+                let id = known(&id)?.uid;
                 network::remove_person(&pdir, &id).map_err(bad)?;
             }
         }
         self.people(library, &p.name, body.unlock.as_deref())
+    }
+
+    /// Her own model reads her identity.md for the people it names (PL31,
+    /// `persona::people_draft`), held on the router as a turn is, unseeded,
+    /// and the proposal staged for the owner. What can be refused without
+    /// the answer is refused before the model runs, as a 409. Answers with
+    /// her network and how many were proposed: 0 is the model finding no one,
+    /// a finding with nothing staged.
+    pub async fn propose_people(
+        self: &Arc<Self>,
+        follower: &crate::follow::Follower,
+        library: &Arc<LibraryState>,
+        name: &str,
+        body: &ProposalBody,
+    ) -> Result<serde_json::Value, Refusal> {
+        use mecha_core::persona::{drafter, people_draft};
+        let (me, lib, who, unlock) = (
+            Arc::clone(self),
+            Arc::clone(library),
+            name.to_string(),
+            body.unlock.clone(),
+        );
+        let p = tokio::task::spawn_blocking(move || -> Result<Persona, Refusal> {
+            let p = me
+                .visible(&lib, &who, unlock.as_deref())
+                .ok_or(Refusal::NotFound)?;
+            if !p.settings.life.people {
+                return Err(Refusal::Conflict(format!(
+                    "[life] people is off for `{}`; turn on Her people first",
+                    p.name
+                )));
+            }
+            drafter::check(&p).map_err(|e| Refusal::Conflict(format!("{e:#}")))?;
+            Ok(p)
+        })
+        .await
+        .map_err(|e| Refusal::Failed(format!("reading her identity: {e}")))??;
+        let (_held, bound) = follower
+            .enter("people proposal", |_| {})
+            .await
+            .map_err(failed)?;
+        let provider = (self.provider)(&bound, PersonaUse::Converse).map_err(failed)?;
+        let proposed = people_draft::propose(provider.as_ref(), &bound.model, &self.store, &p)
+            .await
+            .map_err(failed)?;
+        let (me, lib, unlock) = (Arc::clone(self), Arc::clone(library), body.unlock.clone());
+        let mut out =
+            tokio::task::spawn_blocking(move || me.people(&lib, &p.name, unlock.as_deref()))
+                .await
+                .map_err(|e| Refusal::Failed(format!("reading her people: {e}")))??;
+        out["proposed"] = serde_json::json!(proposed.map_or(0, |d| d.people.len()));
+        Ok(out)
+    }
+
+    /// The owner accepts the waiting proposal, or only some of it (`only`,
+    /// numbered from 1 as the page lists it), or dismisses it. Accepting
+    /// answers with her network and what it did; one read from an
+    /// identity.md that has changed since is a 409.
+    pub fn act_on_proposal(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        accept: bool,
+        body: &ProposalBody,
+    ) -> Result<serde_json::Value, Refusal> {
+        use mecha_core::persona::people_draft;
+        let p = self
+            .visible(library, name, body.unlock.as_deref())
+            .ok_or(Refusal::NotFound)?;
+        if !p.settings.life.people {
+            return Err(Refusal::Conflict(format!(
+                "[life] people is off for `{}`; turn on Her people first",
+                p.name
+            )));
+        }
+        let pdir = self.store.join(&p.name);
+        if !accept {
+            people_draft::dismiss(&pdir).map_err(network_refusal)?;
+            return self.people(library, &p.name, body.unlock.as_deref());
+        }
+        let lib = mecha_core::imagelib::Library::load(&library.dir).0;
+        let done =
+            people_draft::accept(&self.store, &lib, &p, body.only.as_deref()).map_err(|e| {
+                if e.downcast_ref::<people_draft::StaleProposal>().is_some() {
+                    Refusal::Conflict(format!("{e:#}"))
+                } else {
+                    network_refusal(e)
+                }
+            })?;
+        let mut out = self.people(library, &p.name, body.unlock.as_deref())?;
+        out["accepted"] = serde_json::json!({
+            "added": done.added.iter().map(|(_, n)| n).collect::<Vec<_>>(),
+            "already": done.already,
+            "waiting": done.waiting,
+        });
+        Ok(out)
     }
 
     /// What `name` remembers, for the owner's curation page (§9.8): every
@@ -6366,6 +6495,25 @@ pub struct PersonBody {
     unlock: Option<String>,
 }
 
+/// What the People tab sends about a proposal.
+#[derive(serde::Deserialize, Default, Clone)]
+pub struct ProposalBody {
+    /// Accept only these, numbered from 1 as the proposal lists them.
+    #[serde(default)]
+    only: Option<Vec<usize>>,
+    #[serde(default)]
+    unlock: Option<String>,
+}
+
+/// The People tab's read: the unlock, and a day to see her network as it was.
+#[derive(serde::Deserialize)]
+pub struct PeopleQuery {
+    #[serde(default)]
+    unlock: Option<String>,
+    #[serde(default)]
+    as_of: Option<String>,
+}
+
 /// What the owner does to her network.
 #[derive(Debug, Clone)]
 pub enum PeopleAct {
@@ -6470,7 +6618,7 @@ pub async fn discard_draft(
 pub async fn people(
     State(state): Web,
     axum::extract::Path(name): axum::extract::Path<String>,
-    Query(q): Query<UnlockQuery>,
+    Query(q): Query<PeopleQuery>,
 ) -> axum::response::Response {
     let chat = match chat::chat_state(&state) {
         Ok(c) => c,
@@ -6478,8 +6626,10 @@ pub async fn people(
     };
     let personas = Arc::clone(&chat.personas);
     let library = Arc::clone(&state.library);
-    match tokio::task::spawn_blocking(move || personas.people(&library, &name, q.unlock.as_deref()))
-        .await
+    match tokio::task::spawn_blocking(move || {
+        personas.people_on(&library, &name, q.unlock.as_deref(), q.as_of.as_deref())
+    })
+    .await
     {
         Ok(result) => respond(result),
         Err(e) => Refusal::Failed(format!("reading a persona's people: {e}")).into_response(),
@@ -6504,6 +6654,63 @@ async fn act_on_people(
         Ok(result) => respond(result),
         Err(e) => Refusal::Failed(format!("changing a persona's people: {e}")).into_response(),
     }
+}
+
+/// POST /api/personas/{name}/people/proposal: her model reads identity.md.
+pub async fn propose_people(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<ProposalBody>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    respond(
+        chat.personas
+            .propose_people(&chat.follower, &state.library, &name, &body)
+            .await,
+    )
+}
+
+async fn act_on_proposal(
+    state: super::WebState,
+    name: String,
+    accept: bool,
+    body: ProposalBody,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let personas = Arc::clone(&chat.personas);
+    let library = Arc::clone(&state.library);
+    match tokio::task::spawn_blocking(move || {
+        personas.act_on_proposal(&library, &name, accept, &body)
+    })
+    .await
+    {
+        Ok(result) => respond(result),
+        Err(e) => Refusal::Failed(format!("changing a persona's proposal: {e}")).into_response(),
+    }
+}
+
+/// POST /api/personas/{name}/people/proposal/accept
+pub async fn accept_proposal(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<ProposalBody>,
+) -> axum::response::Response {
+    act_on_proposal(state, name, true, body).await
+}
+
+/// DELETE /api/personas/{name}/people/proposal
+pub async fn dismiss_proposal(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<ProposalBody>,
+) -> axum::response::Response {
+    act_on_proposal(state, name, false, body).await
 }
 
 /// POST /api/personas/{name}/people
@@ -9717,6 +9924,123 @@ mod tests {
         ));
     }
 
+    /// The People tab's proposal and time doors (PL31, §15), and writes
+    /// refused while her people are off.
+    #[tokio::test]
+    async fn the_owner_reviews_proposed_people_and_looks_back_at_her_network() {
+        let w = world_with(Mode::Say(
+            r#"{"people": [
+                {"name": "Ines", "aliases": [], "role": "older sister", "description": "Runs a bakery.",
+                 "tie": "kin", "label": "sister", "layer": 5},
+                {"name": "Theo", "aliases": [], "role": "lab partner", "description": null,
+                 "tie": "colleague", "label": null, "layer": null}
+            ]}"#
+                .into(),
+        ));
+        let ps = w.personas();
+        // Off: the page's doors refuse rather than write out of sight.
+        let add = PersonBody {
+            name: Some("Bo".into()),
+            ..PersonBody::default()
+        };
+        assert!(matches!(
+            ps.act_on_people(&w.library, "mara", PeopleAct::Add, &add),
+            Err(Refusal::Conflict(m)) if m.contains("[life] people is off")
+        ));
+        assert!(matches!(
+            ps.propose_people(
+                &w.chat.follower,
+                &w.library,
+                "mara",
+                &ProposalBody::default()
+            )
+            .await,
+            Err(Refusal::Conflict(_))
+        ));
+        assert!(
+            !w.store().join("mara").join("world.db").exists(),
+            "an off persona's store was created"
+        );
+        let toml = w.store().join("mara/persona.toml");
+        let text = std::fs::read_to_string(&toml).unwrap();
+        std::fs::write(
+            &toml,
+            text.replace("world     = false", "world     = true")
+                .replace("people    = false", "people    = true"),
+        )
+        .unwrap();
+
+        // Proposed by her model: two people waiting, none added yet.
+        let proposed = ps
+            .propose_people(
+                &w.chat.follower,
+                &w.library,
+                "mara",
+                &ProposalBody::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(proposed["proposed"], 2);
+        assert_eq!(proposed["proposal"]["people"].as_array().unwrap().len(), 2);
+        assert_eq!(proposed["proposal"]["stale"], false);
+        assert!(proposed["people"].as_array().unwrap().is_empty());
+        // Accept only the second: Theo added, Ines still waiting.
+        let only = ProposalBody {
+            only: Some(vec![2]),
+            ..ProposalBody::default()
+        };
+        let got = ps.act_on_proposal(&w.library, "mara", true, &only).unwrap();
+        assert_eq!(got["accepted"]["added"], serde_json::json!(["Theo"]));
+        assert_eq!(got["accepted"]["waiting"], 1);
+        assert_eq!(got["proposal"]["people"][0]["name"], "Ines");
+        assert_eq!(got["people"][0]["name"], "Theo");
+        // identity.md changed since: accepting the rest is a 409.
+        let id = w.store().join("mara/identity.md");
+        let text = std::fs::read_to_string(&id).unwrap();
+        std::fs::write(&id, format!("{text}\nShe keeps bees.\n")).unwrap();
+        let stale = ps.people(&w.library, "mara", None).unwrap();
+        assert_eq!(stale["proposal"]["stale"], true);
+        assert!(matches!(
+            ps.act_on_proposal(&w.library, "mara", true, &ProposalBody::default()),
+            Err(Refusal::Conflict(m)) if m.contains("changed since")
+        ));
+        // Dismissed, nothing waits.
+        let gone = ps
+            .act_on_proposal(&w.library, "mara", false, &ProposalBody::default())
+            .unwrap();
+        assert_eq!(gone["proposal"], serde_json::Value::Null);
+
+        // As it was: a person whose tie began after the day is not there.
+        let theo = got["people"][0]["id"].as_str().unwrap().to_string();
+        ps.act_on_people(
+            &w.library,
+            "mara",
+            PeopleAct::Event(theo.clone()),
+            &PersonBody {
+                kind: Some("conflict".into()),
+                on: Some("2025-03".into()),
+                ..PersonBody::default()
+            },
+        )
+        .unwrap();
+        let then = ps
+            .people_on(&w.library, "mara", None, Some("2025-01-01"))
+            .unwrap();
+        assert_eq!(then["as_of"], "2025-01-01");
+        // Theo's start is undated, so he was there from the beginning, but the
+        // conflict had not happened yet.
+        assert_eq!(
+            then["people"][0]["edge"]["valence"],
+            serde_json::Value::Null
+        );
+        let now = ps.people(&w.library, "mara", None).unwrap();
+        assert_eq!(now["people"][0]["edge"]["valence"], "tense");
+        assert!(matches!(
+            ps.people_on(&w.library, "mara", None, Some("someday")),
+            Err(Refusal::Bad(_))
+        ));
+    }
+
     #[test]
     fn the_week_views_keys_are_the_enums_ids() {
         use mecha_core::persona::{activity::Activity, atus::Cell, world::Absent};
@@ -9798,6 +10122,8 @@ mod tests {
             block("PEOPLE_EVENTS"),
             sorted(EventKind::ALL.map(|k| wire(serde_json::json!(k))).to_vec())
         );
+        // `people()` answers one absent reason, "off" (review of #803).
+        assert_eq!(block("PEOPLE_ABSENT"), vec!["off".to_string()]);
     }
 
     /// §9.7, on every turn: past the first reply, an owner message that

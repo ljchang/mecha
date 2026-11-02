@@ -1931,8 +1931,15 @@ export const personaPeople = {
     { a: DEMO_P(1), b: DEMO_P(2), edge: demoEdge({ tie: 'acquaintance' }), events: [demoEvent('f', DEMO_P(1), DEMO_P(2), 'met', { tie: 'acquaintance' })] },
   ],
   problems: [],
-  overlap: [],
-  proposal: null,
+  overlap: [{ line: 6, text: 'Her older sister Ines runs a bakery two towns over.' }],
+  // A proposal from identity.md waiting on the owner.
+  proposal: {
+    people: [
+      { name: 'Pell', aliases: [], role: 'diving buddy', description: 'Checks her gear before every dive.', tie: 'friend', label: null, layer: 15 },
+      { name: 'Ines', aliases: ['Nessa'], role: 'older sister', description: null, tie: 'kin', label: 'sister', layer: 5 },
+    ],
+    stale: false,
+  },
   characters: [],
 };
 

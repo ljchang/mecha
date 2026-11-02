@@ -7,7 +7,7 @@
   // it now stands. A persona with her people switched off says so.
   import { untrack } from 'svelte';
   import { apiFetch as fetch } from './api.js';
-  import { personaUrl, personUrl, ringLayout, initials, eventLine, personBody, PEOPLE_TIES, PEOPLE_EVENTS, PEOPLE_LAYERS, PEOPLE_ABSENT, RINGS } from './persona.js';
+  import { personaUrl, personUrl, peopleUrl, acceptedLine, ringLayout, initials, eventLine, personBody, PEOPLE_TIES, PEOPLE_EVENTS, PEOPLE_LAYERS, PEOPLE_ABSENT, RINGS } from './persona.js';
 
   let { name, display = '', token = null, onclose } = $props();
 
@@ -23,6 +23,14 @@
   const blankEvent = () => ({ kind: 'met', on: '', context: '', with: '', tie: '', label: '', layer: '' });
   let newPerson = $state(blankPerson());
   let newEvent = $state(blankEvent());
+  // The time slider (§15): the day being looked back at, null for now.
+  let asOf = $state(null);
+  let asOfInput = $state('');
+  // A proposal from identity.md: her model reading it, which of the waiting
+  // people are ticked (numbered from 1), and what the last accept did.
+  let proposing = $state(false);
+  let ticked = $state([]);
+  let proposalNote = $state('');
   let edit = $state(blankPerson());
 
   const people = $derived(data?.people ?? []);
@@ -52,9 +60,10 @@
   async function load() {
     error = '';
     try {
-      const res = await fetch(personaUrl(name, '/people', token));
+      const res = await fetch(peopleUrl(name, asOf, token));
       if (!res.ok) throw new Error((await res.text()).trim());
       data = await res.json();
+      tickAll();
       if (picked && !data.people?.some((p) => p.id === picked)) picked = null;
     } catch (e) {
       data = null;
@@ -81,6 +90,55 @@
     } finally {
       busy = false;
     }
+  }
+
+  // Looking back is read only: the forms hide, and the network shown is
+  // folded from the events by that day.
+  const past = $derived(Boolean(data?.as_of));
+  function tickAll() {
+    ticked = (data?.proposal?.people ?? []).map((_, i) => i + 1);
+  }
+  function toggle(n) {
+    ticked = ticked.includes(n) ? ticked.filter((t) => t !== n) : [...ticked, n].sort((a, b) => a - b);
+  }
+
+  function lookBack() {
+    if (!asOfInput) return;
+    asOf = asOfInput;
+    picked = null;
+    load();
+  }
+
+  function backToNow() {
+    asOf = null;
+    asOfInput = '';
+    load();
+  }
+
+  // Her model reads identity.md for the people it names: a model run of a
+  // minute or two, so the button says so while it runs.
+  async function propose() {
+    proposing = true;
+    proposalNote = '';
+    const ok = await send('POST', personaUrl(name, '/people/proposal', null), {});
+    proposing = false;
+    if (ok) {
+      tickAll();
+      if (data.proposed === 0) proposalNote = 'Her model found no one named in identity.md.';
+    }
+  }
+
+  async function acceptProposal() {
+    const all = (data?.proposal?.people ?? []).length;
+    const only = ticked.length === all ? undefined : ticked;
+    if (await send('POST', personaUrl(name, '/people/proposal/accept', null), { only })) {
+      proposalNote = acceptedLine(data.accepted);
+      tickAll();
+    }
+  }
+
+  async function dismissProposal() {
+    if (await send('DELETE', personaUrl(name, '/people/proposal', null), {})) proposalNote = '';
   }
 
   const words = (s) => (s.trim() ? s.trim() : undefined);
@@ -173,6 +231,9 @@
     untrack(() => {
       picked = null;
       adding = false;
+      asOf = null;
+      asOfInput = '';
+      proposalNote = '';
       load();
     });
   });
@@ -186,14 +247,56 @@
     <p class="pnote">{PEOPLE_ABSENT[data.absent] ?? data.why}</p>
   {:else if data}
     {#each data.problems ?? [] as problem}<div class="warnline">{display || name} {problem}.</div>{/each}
-    {#if data.proposal}
-      <p class="pnote">
-        {data.proposal.people.length} {data.proposal.people.length === 1 ? 'person' : 'people'} proposed from identity.md
-        {data.proposal.stale ? '(identity.md has changed since; propose again)' : 'wait on you'}:
-        <code>mecha persona people proposal {name}</code>
-      </p>
+    <!-- The time slider: her network as it was at the end of a day. -->
+    <div class="pwhen">
+      <label class="pwhenl"><span>As it was on</span>
+        <input type="date" bind:value={asOfInput} disabled={busy} />
+      </label>
+      <button class="linkbtn" disabled={busy || !asOfInput} onclick={lookBack}>Look back</button>
+      {#if past}<button class="linkbtn" disabled={busy} onclick={backToNow}>Back to now</button>{/if}
+    </div>
+    {#if past}
+      <p class="pnote pastnote">Her people as they were at the end of {data.as_of}, from what was recorded by then. Read only.</p>
     {/if}
-    {#if data.overlap?.length}
+
+    {#if !past}
+      <!-- People proposed from identity.md (PL31): her model reads it, the
+           owner ticks who to add, and nothing rewrites identity.md. -->
+      {#if data.proposal}
+        <div class="pcard">
+          <div class="psec">Proposed from identity.md</div>
+          {#if data.proposal.stale}
+            <div class="warnline">identity.md has changed since these were read from it; propose again to accept any.</div>
+          {/if}
+          <ul class="pprop">
+            {#each data.proposal.people as q, i}
+              <li>
+                <label>
+                  <input type="checkbox" checked={ticked.includes(i + 1)} disabled={busy || data.proposal.stale} onchange={() => toggle(i + 1)} />
+                  <span class="pname2">{q.name}</span>
+                  <span class="psub">{[q.role, q.label && q.label !== q.role ? q.label : null, q.layer ? `closest ${q.layer}` : null].filter(Boolean).join(' · ')}</span>
+                  {#if q.description}<span class="pdesc2">{q.description}</span>{/if}
+                </label>
+              </li>
+            {/each}
+          </ul>
+          <div class="pacts">
+            <button class="abtn" disabled={busy || data.proposal.stale || !ticked.length} onclick={acceptProposal}>
+              Add {ticked.length === data.proposal.people.length ? 'them all' : `${ticked.length} ticked`}
+            </button>
+            <button class="linkbtn" disabled={busy} onclick={dismissProposal}>Dismiss</button>
+          </div>
+        </div>
+      {:else}
+        <div class="pacts">
+          <button class="linkbtn" disabled={busy || proposing} onclick={propose}>
+            {proposing ? 'Reading identity.md…' : 'Propose her people from identity.md'}
+          </button>
+        </div>
+      {/if}
+      {#if proposalNote}<p class="pnote">{proposalNote}</p>{/if}
+    {/if}
+    {#if !past && data.overlap?.length}
       <div class="pnote">
         identity.md still names people who now live in her network. Edit these lines on her Identity tab so each lives in one place:
         <ul class="overlap">{#each data.overlap as o}<li><span class="lno">{o.line}</span> {o.text}</li>{/each}</ul>
@@ -281,18 +384,19 @@
         <div class="psec">What happened</div>
         <ul class="ptime">
           {#each timeline(person.events) as e (e.id)}
-            <li>{eventLine(e)}{#if e.source === 'owner'}<button class="linkbtn take" disabled={busy} onclick={() => retract(e.id)}>take back</button>{/if}</li>
+            <li>{eventLine(e)}{#if e.source === 'owner' && !past}<button class="linkbtn take" disabled={busy} onclick={() => retract(e.id)}>take back</button>{/if}</li>
           {/each}
         </ul>
         {#each tiesOf(person.id) as t}
           <div class="psec">With {t.other.name}: {[tieWord(t.edge), t.edge.valence, t.edge.status === 'ended' ? 'ended' : null].filter(Boolean).join(' · ') || 'a tie'}</div>
           <ul class="ptime">
             {#each timeline(t.events) as e (e.id)}
-              <li>{eventLine(e)}{#if e.source === 'owner'}<button class="linkbtn take" disabled={busy} onclick={() => retract(e.id)}>take back</button>{/if}</li>
+              <li>{eventLine(e)}{#if e.source === 'owner' && !past}<button class="linkbtn take" disabled={busy} onclick={() => retract(e.id)}>take back</button>{/if}</li>
             {/each}
           </ul>
         {/each}
 
+        {#if !past}
         <div class="psec">Record something</div>
         <div class="pform">
           <select bind:value={newEvent.kind} disabled={busy} aria-label="What happened">
@@ -340,10 +444,13 @@
             <button class="linkbtn" disabled={busy} onclick={() => (editing = false)}>Cancel</button>
           </div>
         {/if}
+        {/if}
       </div>
     {/if}
 
-    {#if !adding}
+    {#if past}
+      <!-- Nothing is added while looking back. -->
+    {:else if !adding}
       <button class="linkbtn" onclick={() => (adding = true)}>+ Add someone to her life</button>
     {:else}
       <div class="pcard">
@@ -435,5 +542,16 @@
   .abtn { min-height: 44px; padding: 0 16px; background: var(--surface); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font-size: 14px; cursor: pointer; }
   /* Its own margin: Svelte trims the space at the block's edge. */
   .take { margin-left: 8px; min-height: 0; padding: 0; }
+  .pwhen { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .pwhenl { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); }
+  .pwhenl input { min-height: 36px; padding: 0 8px; background: var(--surface); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font: inherit; font-size: 13px; }
+  @media (pointer: coarse) { .pwhenl input { font-size: 16px; } }
+  .pastnote { color: var(--accent-400); }
+  .pprop { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+  .pprop label { display: grid; grid-template-columns: auto 1fr; column-gap: 8px; row-gap: 2px; align-items: baseline; cursor: pointer; }
+  .pprop input { width: 18px; height: 18px; }
+  .pprop .psub, .pprop .pdesc2 { grid-column: 2; }
+  .pname2 { font-size: 14px; color: var(--text); }
+  .pdesc2 { font-size: 12px; color: var(--text); line-height: 1.4; }
   .abtn.danger { border-color: var(--hazard); color: var(--hazard); }
 </style>
