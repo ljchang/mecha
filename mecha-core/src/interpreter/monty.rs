@@ -788,10 +788,15 @@ impl MontyProgram {
                     && args.args().next().and_then(os_path).is_some() =>
                 {
                     let path = args.args().next().and_then(os_path).unwrap_or_default();
-                    let text_read = args
-                        .args()
-                        .nth(1)
-                        .map_or(Some("r"), |m| m.as_str())
+                    // The mode is the second positional or the `mode` keyword; a
+                    // keyword is not in `args()`, and an absent one is `r`.
+                    let mode = args
+                        .kwargs()
+                        .find(|(k, _)| k.as_str() == Some("mode"))
+                        .map(|(_, v)| v)
+                        .or_else(|| args.args().nth(1))
+                        .map_or(Some("r"), |m| m.as_str());
+                    let text_read = mode
                         .and_then(|m| m.parse::<FileMode>().ok())
                         .is_some_and(|m| m == FileMode::Read(false));
                     if function_name == "open" {
@@ -806,11 +811,12 @@ impl MontyProgram {
                         } else {
                             Req::Resume(ResumeValue::Error(MontyException::new(
                                 ExcType::PermissionError,
-                                Some(format!(
+                                Some(
                                     "a program may open a file only to read its text, in mode \
-                                     'r'; {}",
-                                    os_refusal(&self.externals)
-                                )),
+                                     'r'; it cannot write files or read bytes, and reads data \
+                                     through the functions it was given"
+                                        .to_string(),
+                                ),
                             )))
                         }
                     } else {

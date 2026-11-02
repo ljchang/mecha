@@ -385,6 +385,55 @@ async fn open_reads_text_through_fs_read_and_nothing_else() {
             "{path}"
         );
     }
+    // `mode` as a keyword is read as the positional is
+    let (f, _) = run_with(
+        &interp,
+        "print(len(open('a.csv', mode='r').read()))",
+        &["fs_read"],
+        |_| Ok(Value::from(text)),
+    )
+    .await;
+    assert_eq!(f.printed.trim(), "12", "{}", f.printed);
+    // a handle holds its text after the first read: a `readline()` loop is one
+    // `fs_read`, not one per line (measured, R12)
+    let (f, calls) = run_with(
+        &interp,
+        "f = open('a.csv')\nn = 0\nwhile f.readline():\n    n += 1\nprint(n)",
+        &["fs_read"],
+        |_| Ok(Value::from(text)),
+    )
+    .await;
+    assert_eq!(f.printed.trim(), "3", "{}", f.printed);
+    assert_eq!(calls.len(), 1);
+    // the description's claims, held against the worker
+    let (f, _) = run_with(
+        &interp,
+        "import re, json, csv, collections, itertools, math, datetime, decimal, pathlib\n\
+         d = {'a': 1}\nprint(d.get('a'))\n\
+         try:\n    max(d, key=d.get)\n    print('METHOD-AS-VALUE-WORKS')\n\
+         except BaseException:\n    print('method as value raises')\n\
+         for m in ['io', 'statistics']:\n    try:\n        __import__\n    except BaseException:\n        pass",
+        &[],
+        |_| Ok(Value::Null),
+    )
+    .await;
+    assert!(
+        f.printed.contains("method as value raises"),
+        "{}",
+        f.printed
+    );
+    for m in ["io", "statistics"] {
+        let (f, _) = run_with(
+            &interp,
+            &format!(
+                "try:\n    import {m}\n    print('HAS')\nexcept ImportError:\n    print('lacks')"
+            ),
+            &[],
+            |_| Ok(Value::Null),
+        )
+        .await;
+        assert_eq!(f.printed.trim(), "lacks", "{m}: {}", f.printed);
+    }
     // a failure from the tool reaches the program where it reads
     let (f, _) = run_with(
         &interp,
@@ -399,6 +448,8 @@ async fn open_reads_text_through_fs_read_and_nothing_else() {
         "open('x.txt', 'w').write('x')",
         "open('x.txt', 'a')",
         "open('x.txt', 'rb').read()",
+        "open('x.txt', mode='w').write('x')",
+        "open('x.txt', mode='rb').read()",
         "import os\nos.getenv('HOME')",
     ] {
         let (f, calls) = run_with(&interp, src, &["fs_read"], |_| Ok(Value::from("t"))).await;
