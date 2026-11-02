@@ -105,7 +105,10 @@ page's existence.
 mecha-mail freebusy --days 60 --json | mecha-sched slots | factory-publish slots push book
 ```
 
-on a systemd timer, every 15 minutes. Deliberately **not** a mecha trigger:
+on a systemd timer, every 15 minutes — every two since 2026-08-08, to narrow
+the double-booking window (`mecha-slots.timer`). (As built since 2026-11-02 the policy
+is the manifest's own `[availability]`: `factory-publish slots push book
+--manifest book.toml`, the file the web Factory view edits.) Deliberately **not** a mecha trigger:
 triggers run prompts, and a model transcribing intervals is a model that can
 mistranscribe them — this is `scripts/ruminate.sh`'s rule ("scheduled
 commands are what cron is for") applied to data flow. Zero tokens, works
@@ -134,7 +137,7 @@ kind = "booking"
 version = 1
 title = "Book a meeting with Robin"
 
-[availability]            # home reads this; the box ignores it entirely
+[availability]            # home computes from this; the box reads only `timezone`
 timezone = "America/New_York"
 durations = [30, 60]
 buffer_minutes = 10
@@ -164,8 +167,9 @@ confirmation_subject = "Confirmed: {title} on {when_local}"
 # ... reminder / cancelled / rebook bodies, {placeholder}-interpolated
 ```
 
-The box never computes from `[availability]`; home never enforces
-`[policy]`. Free-text-ness of the detail fields stays derived from kind, and
+The box never computes from `[availability]`, though it reads its
+`timezone` to label the week grid and the confirmation's times (so a zone
+change is a `type push`); home never enforces `[policy]`. Free-text-ness of the detail fields stays derived from kind, and
 drained booking records carry `free_text` exactly as request records do — a
 booking's "what do you want to discuss" goes through the same quarantine as
 any stranger prose (§6.1).

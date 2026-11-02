@@ -30,7 +30,14 @@ PATH="$HOME/.cargo/bin:$PATH"
 ACCOUNT="${MECHA_BOOKINGS_ACCOUNT:-}"
 account_args=()
 [ -n "$ACCOUNT" ] && account_args=(--account "$ACCOUNT")
-POLICY="${MECHA_BOOK_POLICY:-$HOME/.mecha/instruments/book-policy.toml}"
+MANIFEST="${MECHA_BOOK_MANIFEST:-$HOME/.mecha/factory/types/book.toml}"
+# The old variable named a standalone policy file this script no longer
+# reads. Said loudly, once, and then the drain carries on: this loop is what
+# brings bookings home, and under Restart=always an exit here would be a
+# restart loop on exactly the upgrade that retired the variable.
+if [ -n "${MECHA_BOOK_POLICY:-}" ]; then
+  echo "MECHA_BOOK_POLICY is retired and ignored: the slots come from $MANIFEST now (set MECHA_BOOK_MANIFEST to name another manifest)" >&2
+fi
 
 while :; do
   # If the box answers an empty drain instantly — a binary that predates
@@ -60,7 +67,7 @@ while :; do
       # than waiting out the timer. Failure here degrades to exactly the
       # timer's own staleness, so it only warns.
       mecha-mail freebusy --days 60 --json |
-        factory-publish slots push book --policy "$POLICY" ||
+        factory-publish slots push book --manifest "$MANIFEST" ||
         echo "slot refresh after drain failed; the timer will catch it" >&2
     fi
   else

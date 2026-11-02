@@ -15,7 +15,9 @@
 
 /**
  * The view each nav place belongs to. A view not named is core — home,
- * chat, review and settings are there whatever is switched on.
+ * chat, review and settings are there whatever is switched on. `factory`
+ * rides `frontdoor`: a factory is what the front door is the door of, so one
+ * switch hides both and the two cannot disagree about whether one is here.
  */
 export const VIEW_FEATURE = {
   mail: 'mail',
@@ -23,6 +25,7 @@ export const VIEW_FEATURE = {
   tasks: 'tasks',
   personas: 'personas',
   library: 'library',
+  factory: 'frontdoor',
 };
 
 /**
