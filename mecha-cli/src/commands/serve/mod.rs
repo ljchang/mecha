@@ -3439,9 +3439,15 @@ mod tests {
   *) echo "unexpected: $*" >&2; exit 9 ;;
 esac"#,
         );
+        // More busy time than a pipe holds (64 KiB on Linux), so the write to
+        // the push's stdin always outlives a push that refuses without reading
+        // it — as the real one does on an id mismatch. The refusal must still
+        // reach the page, not "Broken pipe" (CI found this on #816's merge).
         script(
             "mecha-mail",
-            r#"echo '{"generated_at":"2026-11-02T00:00:00Z","time_min":"2026-11-02T00:00:00Z","time_max":"2027-01-02T00:00:00Z","busy":[]}'"#,
+            r#"printf '{"generated_at":"2026-11-02T00:00:00Z","time_min":"2026-11-02T00:00:00Z","time_max":"2027-01-02T00:00:00Z","pad":"'
+head -c 200000 /dev/zero | tr '\0' 'x'
+printf '","busy":[]}\n'"#,
         );
         *super::factory::TEST_BIN_DIR.lock().unwrap() = Some(bin.clone());
         struct Unpin;
