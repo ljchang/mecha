@@ -179,6 +179,14 @@ where
     }))
 }
 
+// The two run-describing rows, `Outcome(RunStats)` and `Config(RunConfig)`,
+// are each a few hundred bytes larger than a message, and they trade places
+// as the largest whenever either grows a field: boxing one makes the other
+// the outlier. A transcript is read one record at a time and the rare
+// collected `Vec<Record>` is short, so the size is accepted rather than every
+// construction site boxed (tripped when `ended_at` and `program_read_bytes`
+// landed together).
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "record", rename_all = "snake_case")]
 pub enum Record {
