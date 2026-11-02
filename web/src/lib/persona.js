@@ -1054,6 +1054,33 @@ export function stretchLine(s) {
   return line;
 }
 
+// Her story on one day of the week view (PERSONA-LIFE-DESIGN.md §4.3): the
+// weather, the levels that ended the day away from normal, and the events,
+// as the server shows them. `null` when the week carries no story.
+export const STORY_SKY = { clear: 'clear', cloudy: 'cloudy', fog: 'fog', drizzle: 'drizzle', rain: 'rain', snow: 'snow', storm: 'storm' };
+// What the week says about her story as a whole: whether any day was drawn,
+// and why the rest was not. Both can hold, so neither hides the other.
+export function storyNotes(data) {
+  return { drawn: (data?.story ?? []).length > 0, why: data?.story_error ?? null };
+}
+
+export function storyDay(data, date) {
+  const d = (data?.story ?? []).find((s) => s.date === date);
+  // A past day the store does not keep was drawn for this view alone: not
+  // her history, so not shown as it (the day row says "not kept").
+  if (!d || (d.kept === false && data?.today && date <= data.today)) return null;
+  const w = d.weather;
+  const weather = w ? `${STORY_SKY[w.sky] ?? 'unknown sky'} ${w.high_c}°/${w.low_c}°C` : null;
+  const levels = ['energy', 'stress', 'mood']
+    .filter((k) => d.evening?.[k] && d.evening[k] !== 'normal')
+    .map((k) => `${k} ${d.evening[k]}`)
+    .join(' · ');
+  const events = (d.events ?? []).map((e) => ({ text: e.shown ?? e.title, major: e.size !== 'minor' }));
+  // Nothing to show is no row, never an empty one.
+  if (!weather && !levels && !events.length) return null;
+  return { weather, levels, events };
+}
+
 // The week's rows: one a day, Monday first, each stretch placed on a 4am to
 // 4am bar as percentages. A folded day has no bars. A stretch whose source
 // is not the sampler's or the owner's is marked, since unknown is never

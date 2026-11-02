@@ -1,0 +1,52 @@
+# Working, full or part time.
+
+[[storylet]]
+id = "long_meeting"
+title = "a meeting that ran an hour over"
+size = "minor"
+doing = ["work"]
+effect = { energy = -1 }
+
+[[storylet]]
+id = "praise_at_work"
+title = "someone noticed work worth being proud of"
+size = "minor"
+doing = ["work"]
+effect = { mood = 1 }
+
+[[storylet]]
+id = "bad_commute"
+title = "the commute was a mess"
+size = "minor"
+doing = ["commute"]
+effect = { stress = 1, mood = -1 }
+
+[[storylet]]
+id = "lunch_colleague"
+title = "lunch with {who}"
+size = "minor"
+doing = ["work"]
+with = ["colleague"]
+effect = { mood = 1 }
+
+[[storylet]]
+id = "deadline_crunch"
+title = "a deadline crunch"
+size = "minor"
+doing = ["work"]
+days = ["weekdays"]
+effect = { stress = 1 }
+
+[[storylet]]
+id = "project_landed"
+title = "a big project landed well"
+size = "major"
+doing = ["work"]
+effect = { mood = 1, stress = -1 }
+
+[[storylet]]
+id = "reorg"
+title = "news of a reorganisation at work"
+size = "major"
+doing = ["work"]
+effect = { stress = 1 }
