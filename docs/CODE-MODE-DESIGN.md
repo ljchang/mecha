@@ -1,6 +1,6 @@
 # Code mode, reshaped by RLM — design
 
-**Status: 2026-10-31, designed; the interpreter backend (slice 3a, `mecha-core/src/interpreter/`), the `code` tool's host calls and handles (slice 3b, `mecha-core/src/tool/code.rs`) and `llm_query`/`llm_map` (slice 3c, the same file and `tool/code_shape.rs`) built and tested; registered (slice 3d): `Feature::Code` behind `[features] code`, available only in a build with the cargo feature `monty`, `Lever::CodeTool`, the parent's `code` built last by the agent (`Agent::enable_code`), and §7's `RunStats` counters, with each pass's usage in the run's own. Slice 3e built the `program` record, its blob store and the grounding walk's second source with its readers (§7, `tool/code_record.rs`), and a subagent's own `code`, which makes the `analyst` profile (§6) launch; a subagent stays unadmitted into a program. Not built: retention and `doctor` for the blob store, and `replay_run` answering a replayed program's host calls from the record (§7). Ruled 2026-10-30, and R4 on 2026-10-31 (§11). M0 and M1 measured (§10). **R12 (2026-11-02): `open(path)` reads text through `fs_read` (§11), after M4 (§13). R11 (2026-11-02): a tool's result reaches a program as a `str`, and the opaque handles are retired (§3), after M2 (§13); measured as M3: 30/40 against M2's 27/40 under the same grade, programs raising 20% against 50%, and 36/40 with a log date in the owner's zone accepted, a grade widened after reading M3's answers (§13).**
+**Status: 2026-10-31, designed; the interpreter backend (slice 3a, `mecha-core/src/interpreter/`), the `code` tool's host calls and handles (slice 3b, `mecha-core/src/tool/code.rs`) and `llm_query`/`llm_map` (slice 3c, the same file and `tool/code_shape.rs`) built and tested; registered (slice 3d): `Feature::Code` behind `[features] code`, available only in a build with the cargo feature `monty`, `Lever::CodeTool`, the parent's `code` built last by the agent (`Agent::enable_code`), and §7's `RunStats` counters, with each pass's usage in the run's own. Slice 3e built the `program` record, its blob store and the grounding walk's second source with its readers (§7, `tool/code_record.rs`), and a subagent's own `code`, which makes the `analyst` profile (§6) launch; a subagent stays unadmitted into a program. Not built: retention and `doctor` for the blob store, and `replay_run` answering a replayed program's host calls from the record (§7). Ruled 2026-10-30, and R4 on 2026-10-31 (§11). M0 and M1 measured (§10). **R12 (2026-11-02): `open(path)` reads text through `fs_read` (§11), after M4 (§13); on five held-out tasks, M5 passed 32/40 against M4's 27/40, with no `open()` refusal left. R11 (2026-11-02): a tool's result reaches a program as a `str`, and the opaque handles are retired (§3), after M2 (§13); measured as M3: 30/40 against M2's 27/40 under the same grade, programs raising 20% against 50%, and 36/40 with a log date in the owner's zone accepted, a grade widened after reading M3's answers (§13).**
 
 This supersedes the *shape* of `AUDIT-RESEARCH.md` §3.12 ("programmatic
 tool calling, on monty"). That section's contract, its first hazard (taint
@@ -1252,8 +1252,9 @@ with your recs"), except R4, which waited on M1 and was ruled on
   so a relative path reaches `fs_read` relative to the workspace and an
   absolute one (a spill file, an owner grant) as written, for `fs_read`'s
   jail to decide. Rooted at `/`, the two could not be told apart, and M5
-  read a spill file's absolute path inside the workspace. A read through `open()` is two suspensions against one tool
-  read, so the suspension backstop counts tool reads twice.
+  read a spill file's absolute path inside the workspace. A read through
+  `open()` is two suspensions against one tool read, so the suspension
+  backstop counts tool reads twice.
 - **And the `code` call itself is `read_only()`.** A program runs
   without a prompt. The reason is not that its tools would all skip the
   approver: a read-only tool still meets a `prompt` or `forbid` policy
@@ -1589,3 +1590,60 @@ Nothing raised on a string method, `in`, `len()` or a host limit. The four
 wrong answers are reading, all on the 300 notes, and none raised: three
 counted the 124 meetings Marco attended as the 25 he presented, as in M1
 and M2, and one took a note's discussion line for its decision.
+
+**M4 (2026-11-02, build 2d1d127d9): five tasks the description was never
+fitted to.** M3 reran the tasks the fixes were designed against, so it could
+not say whether R11 generalizes. M4's fixtures are invented and generated
+from a fixed seed (a 6,000-row CSV, 412 services in nested JSON, a 64-file
+source tree, a 485 KB report, 150 patches), with each question's decoys
+built in: a dependency listed only as soft, a function quoted in a
+docstring, three budgets for similarly named projects. The grader was
+written and checked against the truth and against wrong answers before
+any run, and no rule changed after reading answers. Code on, eight seeds,
+as M3. **M5** reran it on R12's build (188ee8c0d, `open()` through
+`fs_read`), with nothing else changed.
+
+| Task | M4 | M5 (R12) |
+|---|---|---|
+| the top region by revenue in a CSV, and a threshold count | 8/8, 35 programs | 8/8, 17 programs |
+| which services list a queue as a hard dependency | 6/8 | **8/8** |
+| which files define a function, and its default | 0/8 | 0/8 |
+| one approved budget in a long report | 8/8 | 8/8 |
+| which patches touch two files, and the lines they add | 5/8 | **8/8** |
+| **all** | **27/40** | **32/40** |
+
+| Programs | M4 | M5 |
+|---|---|---|
+| raised | 43 of 108 (40%) | 29 of 79 (37%) |
+| the first one raised | 22 of 40 runs | 17 of 40 runs |
+
+**What raised in M4:** `open()` refused, 24 of 43, in four of the five
+tasks; a method passed as a value (`max(d, key=d.get)`, which monty 1.4
+does not support while `d.get(k)` works), 11, every one in the CSV task;
+`import io`, 5. One run did worse than raise: its program wrapped the
+reads in a bare `try/except`, the refusal was swallowed, and it printed "0
+matches", so the model reported that no file defined the function. That
+was the case for R12 over a better refusal.
+
+**What raised in M5:** no `open()` refusal; `key=d.get`, 9, despite the
+description now naming it (each run recovered on its next program);
+`os.walk`, `glob`, `subprocess` and the like, 14, 13 of them in the
+source-tree task; `fs_list` imported as a module or given a path outside
+the workspace, 3; and 3 reads of a spill file by its absolute path, which R12's first
+form read inside the workspace. #809 runs a program in a directory that is
+not a real path, so an absolute path now reaches `fs_read` as written.
+
+**What the wrong answers were.** The source-tree task failed every run in
+both: every M5 run named all five defining files with the right defaults,
+and also the file that only quotes the function in a docstring (M4: six of
+eight had all five, and one more said "none found" after the swallowed
+refusal). That is reading, the same shape as "attended" for "presented"
+in M1 to M3. M4's two services failures were right answers that also named
+the services listing the queue only as a soft dependency, which the grade
+counts as extras; no M5 answer did. M4's three patch failures were wrong
+line totals (107 against 135, for one), and M5 had none.
+
+**What is left:** the docstring decoy, a reading error R11 and R12 do not
+touch; `key=d.get`, a monty gap a description line did not move; and
+programs that reach for `os`, `glob` or `subprocess` to walk a tree, which
+the refusal answers with `fs_list` at the cost of a turn.

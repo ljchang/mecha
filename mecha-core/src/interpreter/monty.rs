@@ -1055,9 +1055,10 @@ fn workspace_path(path: &str) -> String {
     }
 }
 
-/// The path an OS call was given. Monty hands a `PosixPath`, whose repr is
-/// `PosixPath('<the path as written>')` with no escaping, which the worker
-/// test holds for 1.4.0 with a path that has a quote in it.
+/// The path an OS call was given. Monty hands a `PosixPath`, resolved against
+/// the program's directory, whose repr is `PosixPath('<the path>')` with no
+/// escaping, which the worker test holds for 1.4.0 with a path that has a
+/// quote in it.
 fn os_path(o: ObjectRef<'_>) -> Option<String> {
     if o.type_name() != "PosixPath" {
         return None;
