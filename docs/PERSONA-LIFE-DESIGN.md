@@ -13,7 +13,9 @@
 > drafted routine there (draft, edit, approve, discard). Step 2 has begun
 > with her network's store (`persona::network`, `mecha persona people`,
 > `network.md`, §6.6), her people in her prompt (PL32) and proposed from
-> `identity.md` (`persona::people_draft`, PL31); the People tab is next.
+> `identity.md` (`persona::people_draft`, PL31), and the People tab's rings,
+> card and owner doors (§15); reviewing a proposal on the tab and the time
+> slider are next.
 > **Every decision in §16
 > is ruled** by the owner: PL1–PL22, PL24–PL26, PL29 and PL30 as rulings
 > on 2026-10-31, PL31 and PL32 on 2026-11-01,
@@ -2464,6 +2466,23 @@ ruled for repetition.
     or world event behind it; edit, backdate, end, merge, split, link a
     character, promote, forget, share. A time slider shows the network as it
     was on a date — nearly free from the event log.
+  - **As built (step 2, her people):** a People tab beside Week, behind the
+    same world gate, answering "off for this persona" while `[life] people`
+    is off (the form's Life section gains the "Her people" switch). Rings
+    for the four layers, a dashed ring for those not placed and a greyed
+    outer band for ended ties; spokes green when warm, orange and dashed
+    when tense, dotted when out of touch; ties between people as thin lines;
+    a node a fold could not wholly read gets a hazard rim. The same people
+    as a list by ring, for touch and screen readers. The card shows who
+    they are, the timeline in the order things happened (an owner event can
+    be taken back), each tie with someone else, a form to record an event
+    on her tie or a tie between two, and edit and remove. Routes:
+    `GET`/`POST /api/personas/{name}/people`, `PUT`/`DELETE …/people/{id}`,
+    `POST …/people/{id}/events`, `DELETE …/people/{id}/events/{event}`. A
+    portrait is named and shown only by the library's lock rule; a locked
+    one is hidden and an edit that leaves it out keeps it (§6.5). Merge,
+    split, promote, forget and share wait for the people step 3 adds;
+    links to chat turns wait for events that have them.
 - **What she read last night** (§8.5) and **the camera roll** (§10).
 - **Feed** (§11).
 

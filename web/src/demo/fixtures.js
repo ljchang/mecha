@@ -1888,6 +1888,54 @@ export function personaWeek(date) {
   };
 }
 
+// Her network on the People tab, an invented cast (the shapes
+// `PersonaChats::people` serves).
+const demoEvent = (id, person, other, event, extra = {}) => ({
+  id: id.repeat(32).slice(0, 32),
+  person,
+  other,
+  event,
+  tie: null,
+  label: null,
+  layer: null,
+  when: { on: null, precision: 'unknown', said: null },
+  context: null,
+  source: 'owner',
+  recorded_at: '2026-10-30T12:00:00.000Z',
+  ...extra,
+});
+const demoEdge = (extra) => ({ tie: null, label: null, layer: null, valence: null, status: 'active', started: null, ended: null, last: null, unreadable: 0, unclean: false, ...extra });
+const DEMO_P = (n) => String(n).repeat(32).slice(0, 32);
+export const personaPeople = {
+  people: [
+    {
+      id: DEMO_P(1), name: 'Ines', aliases: ['Nessa'], role: 'older sister', description: 'Runs a bakery two towns over.',
+      character: null, portrait: null, source: 'owner', known_to_owner: true,
+      edge: demoEdge({ tie: 'kin', label: 'sister', layer: 5, valence: 'warm', started: { on: '1994-01-01', precision: 'year', said: '1994' } }),
+      events: [demoEvent('a', DEMO_P(1), null, 'formed', { tie: 'kin', label: 'sister', layer: 5, when: { on: '1994-01-01', precision: 'year', said: '1994' } }), demoEvent('b', DEMO_P(1), null, 'strengthened', { when: { on: '2025-06-01', precision: 'season', said: 'summer 2025' }, context: 'helped her move' })],
+    },
+    {
+      id: DEMO_P(2), name: 'Theo', aliases: [], role: 'lab partner', description: null,
+      character: null, portrait: null, source: 'owner', known_to_owner: true,
+      edge: demoEdge({ tie: 'colleague', layer: 15, valence: 'tense', started: { on: '2023-09-01', precision: 'season', said: 'autumn 2023' } }),
+      events: [demoEvent('c', DEMO_P(2), null, 'formed', { tie: 'colleague', layer: 15, when: { on: '2023-09-01', precision: 'season', said: 'autumn 2023' } }), demoEvent('d', DEMO_P(2), null, 'conflict', { when: { on: '2026-03-01', precision: 'month', said: 'March 2026' }, context: 'over the grant' })],
+    },
+    {
+      id: DEMO_P(3), name: 'Rory', aliases: [], role: 'ex', description: null,
+      character: null, portrait: null, source: 'owner', known_to_owner: true,
+      edge: demoEdge({ tie: 'ex', layer: 50, status: 'ended', ended: { on: '2022-01-01', precision: 'year', said: '2022' } }),
+      events: [demoEvent('e', DEMO_P(3), null, 'ended', { tie: 'ex', when: { on: '2022-01-01', precision: 'year', said: '2022' } })],
+    },
+  ],
+  ties: [
+    { a: DEMO_P(1), b: DEMO_P(2), edge: demoEdge({ tie: 'acquaintance' }), events: [demoEvent('f', DEMO_P(1), DEMO_P(2), 'met', { tie: 'acquaintance' })] },
+  ],
+  problems: [],
+  overlap: [],
+  proposal: null,
+  characters: [],
+};
+
 export const personaFiles = {
   identity: {
     file: 'identity.md',

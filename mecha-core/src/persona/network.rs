@@ -68,6 +68,13 @@ pub enum Tie {
 }
 
 impl Tie {
+    /// The tie a word names, never `Unknown`: a word outside the set is
+    /// refused by whoever asked, not stored as a tie no one can read.
+    pub fn from_id(word: &str) -> Option<Tie> {
+        let w = word.trim().to_lowercase();
+        Tie::ALL.into_iter().find(|t| wire(t) == w)
+    }
+
     pub const ALL: [Tie; 9] = [
         Tie::Kin,
         Tie::Romantic,
@@ -98,6 +105,12 @@ pub enum EventKind {
 }
 
 impl EventKind {
+    /// The kind a word names, never `Unknown`.
+    pub fn from_id(word: &str) -> Option<EventKind> {
+        let w = word.trim().to_lowercase();
+        EventKind::ALL.into_iter().find(|k| wire(k) == w)
+    }
+
     pub const ALL: [EventKind; 8] = [
         EventKind::Met,
         EventKind::Formed,
@@ -1165,6 +1178,14 @@ pub fn markdown(n: &Network) -> String {
     out
 }
 
+/// Whether `e` is the store failing (the database or the disk), as against
+/// what was sent being refused: a surface answers the first as its own
+/// failure and the second as bad input.
+pub fn is_store_error(e: &anyhow::Error) -> bool {
+    e.chain()
+        .any(|c| c.is::<rusqlite::Error>() || c.is::<std::io::Error>())
+}
+
 /// Whether `name` may be someone's portrait: a library character the owner
 /// has approved, as `persona.toml`'s own `character` must be. Both doors
 /// that write a person (the CLI, the People tab) ask here.
@@ -1227,7 +1248,10 @@ pub fn prompt_section(n: &Network) -> String {
         .iter()
         .filter(|p| p.source.is_clean())
         .map(|p| (p, n.her_edge(&p.uid)))
-        .filter(|(_, e)| !e.unclean)
+        // An edge the fold could not wholly read is as unvouched as one an
+        // unclean event touched: her prompt is what she asserts, with no
+        // owner reading over it (review of #802).
+        .filter(|(_, e)| !e.unclean && e.unreadable == 0)
         .collect();
     if clean.is_empty() {
         return String::new();
@@ -1292,12 +1316,20 @@ pub fn prompt_section(n: &Network) -> String {
         .iter()
         .map(|(p, _)| (p.uid.as_str(), p.name.as_str()))
         .collect();
-    let ties: Vec<String> = n
+    let mut ties: Vec<String> = n
         .ties()
         .into_iter()
-        .filter(|(_, e)| !e.unclean)
+        .filter(|(_, e)| !e.unclean && e.unreadable == 0)
         .filter_map(|((a, b), e)| {
             let (a, b) = (names.get(a.as_str())?, names.get(b.as_str())?);
+            // By name, as network.md is: the same network renders the same
+            // prompt on every install, and a budget keeps the same ties
+            // (review of #802).
+            let (a, b) = if b.to_lowercase() < a.to_lowercase() {
+                (b, a)
+            } else {
+                (a, b)
+            };
             let mut line = format!("{a} and {b}");
             if let Some(t) = tie_words(&e) {
                 line.push_str(&format!(": {t}"));
@@ -1310,6 +1342,7 @@ pub fn prompt_section(n: &Network) -> String {
             Some(line)
         })
         .collect();
+    ties.sort();
     // Laid out innermost first, so a budget drops from the outside in.
     let mut parts: Vec<(&str, Vec<String>, &str)> = Vec::new();
     if !close.is_empty() {
@@ -1336,7 +1369,7 @@ pub fn prompt_section(n: &Network) -> String {
             if out.len() + block.len() + piece.len() + 80 > PROMPT_CHARS {
                 if any {
                     out.push_str(&block);
-                    out.push_str(".\n");
+                    out.push_str(if sep == "\n" { "\n" } else { ".\n" });
                 }
                 break 'parts;
             }
@@ -1890,14 +1923,6 @@ mod tests {
              Others in your life: Cal (friend), Dee (your old flatmate, friend).\n\
              No longer in your life: Sam (friend), ended 2022.\n\
              Between them: Bo and Ines: acquaintance."
-                .replace(
-                    "Bo and Ines",
-                    if bo < ines {
-                        "Bo and Ines"
-                    } else {
-                        "Ines and Bo"
-                    }
-                ),
         );
         // Someone from a source that is not clean never reaches it, nor an
         // edge one such event touched.
@@ -1911,6 +1936,63 @@ mod tests {
         let text = prompt_section(&Network::read(&pdir).unwrap());
         assert!(!text.contains("Sam") && !text.contains("- Bo"), "{text}");
         assert!(text.contains("Ines"), "{text}");
+    }
+
+    #[test]
+    fn a_tie_the_fold_could_not_wholly_read_stays_out_of_her_prompt() {
+        let pdir = pdir();
+        let ines = add_person(&pdir, &no_lib(), &sister()).unwrap();
+        add_person(&pdir, &no_lib(), &person("Bo", None, Some(Layer::Fifteen))).unwrap();
+        // A newer binary wrote an event on her tie to Ines this one cannot read.
+        record(&pdir, &ines, None, &at(EventKind::Ended, "2025")).unwrap();
+        World::open(&pdir)
+            .unwrap()
+            .conn_mut()
+            .execute(
+                "UPDATE edge_events SET event = 'eloped' WHERE event = 'ended'",
+                [],
+            )
+            .unwrap();
+        let text = prompt_section(&Network::read(&pdir).unwrap());
+        assert!(!text.contains("Ines") && text.contains("Bo"), "{text}");
+    }
+
+    #[test]
+    fn ties_in_her_prompt_are_named_and_listed_by_name_not_by_id() {
+        let pdir = pdir();
+        // Ids chosen so id order and name order disagree.
+        World::open(&pdir).unwrap();
+        let mut w = World::open(&pdir).unwrap();
+        let c = w.conn_mut();
+        for (id, name) in [
+            ("f".repeat(32), "Ann"),
+            ("e".repeat(32), "Bea"),
+            ("0".repeat(32), "Cy"),
+        ] {
+            c.execute(
+                "INSERT INTO people (uid, name, aliases, source, known_to_owner, created_at, updated_at)
+                 VALUES (?1, ?2, '[]', 'owner', 1, '2026-01-01', '2026-01-01')",
+                params![id, name],
+            )
+            .unwrap();
+        }
+        drop(w);
+        let (ann, bea, cy) = ("f".repeat(32), "e".repeat(32), "0".repeat(32));
+        let friends = || NewEvent {
+            tie: Some(Tie::Friend),
+            ..NewEvent::of(EventKind::Formed)
+        };
+        record(&pdir, &ann, Some(&cy), &friends()).unwrap();
+        record(&pdir, &ann, Some(&bea), &friends()).unwrap();
+        let text = prompt_section(&Network::read(&pdir).unwrap());
+        let ties = text
+            .lines()
+            .find(|l| l.starts_with("Between them"))
+            .unwrap();
+        assert_eq!(
+            ties,
+            "Between them: Ann and Bea: friend; Ann and Cy: friend."
+        );
     }
 
     #[test]
@@ -2158,6 +2240,18 @@ mod tests {
             assert_eq!(unwire::<Precision>(&wire(&p)), Some(p));
         }
         assert_eq!(unwire::<Tie>("cousin"), Some(Tie::Unknown));
+        // A word reads as a known value or as nothing, never as Unknown.
+        for t in Tie::ALL {
+            assert_eq!(Tie::from_id(&wire(&t).to_uppercase()), Some(t));
+        }
+        for k in EventKind::ALL {
+            assert_eq!(EventKind::from_id(&wire(&k)), Some(k));
+        }
+        assert_eq!(
+            (Tie::from_id("unknown"), Tie::from_id("cousin")),
+            (None, None)
+        );
+        assert_eq!(EventKind::from_id("unknown"), None);
         assert_eq!(unwire::<EventKind>("eloped"), Some(EventKind::Unknown));
     }
 }
