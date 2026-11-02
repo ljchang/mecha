@@ -74,8 +74,8 @@ use tokio_util::sync::CancellationToken;
 use super::watchdog::{self, Watchdog};
 use super::worker::VerifiedWorker;
 use super::{
-    ran_and_failed, registrable, Backstop, Backstops, Builtin, End, ExternalCall, Finished,
-    HostRaise, Interpreter, Program, Raised, Step, Tag, Value,
+    ran_and_failed, registrable, Backstop, Backstops, Builtin, End, ExternalCall, FileTools,
+    Finished, HostRaise, Interpreter, Program, Raised, Step, Tag, Value,
 };
 use crate::sandbox::{Backend, Sandbox};
 
@@ -524,6 +524,17 @@ impl Interpreter for Monty {
         externals: &[String],
         cancel: CancellationToken,
     ) -> Result<(Box<dyn Program>, Step)> {
+        let files = FileTools::named(externals);
+        self.start_with(source, externals, files, cancel).await
+    }
+
+    async fn start_with(
+        &self,
+        source: &str,
+        externals: &[String],
+        files: FileTools,
+        cancel: CancellationToken,
+    ) -> Result<(Box<dyn Program>, Step)> {
         for name in externals {
             if !registrable(name) {
                 bail!("`{name}` cannot be registered as an external function");
@@ -568,6 +579,11 @@ impl Interpreter for Monty {
             .map(|n| (n.clone(), MontyObject::function(n.clone(), None)))
             .collect();
         let mut program = MontyProgram::new(checkout, externals, self.backstops, started, cancel);
+        // Only a tool the program was given, in the shape the shims need.
+        program.files = FileTools {
+            read: files.read && program.externals.contains("fs_read"),
+            list: files.list && program.externals.contains("fs_list"),
+        };
         program.watchdog = watchdog;
         let step = if cancelled_waiting {
             program.end(End::Cancelled, false).await
@@ -618,6 +634,8 @@ struct MontyProgram {
     pending: bool,
     /// A listing being answered through `fs_list`, between its calls.
     walk: Option<Walk>,
+    /// Which file tools answer the program's own file calls.
+    files: FileTools,
     /// What ends the worker if mecha dies first, under Seatbelt. Dropped
     /// with the program, it runs until the worker has gone.
     watchdog: Option<Watchdog>,
@@ -642,6 +660,7 @@ impl MontyProgram {
             suspensions: 0,
             pending: false,
             walk: None,
+            files: FileTools::default(),
             watchdog: None,
         }
     }
@@ -795,7 +814,7 @@ impl MontyProgram {
                     function_name,
                     args,
                     ..
-                } if self.externals.contains("fs_read")
+                } if self.files.read
                     && matches!(function_name.as_str(), "open" | "Path.read_text")
                     && args.args().next().and_then(os_path).is_some() =>
                 {
@@ -856,7 +875,7 @@ impl MontyProgram {
                     function_name,
                     args,
                     ..
-                } if self.externals.contains("fs_list")
+                } if self.files.list
                     && matches!(
                         function_name.as_str(),
                         "Path.iterdir"

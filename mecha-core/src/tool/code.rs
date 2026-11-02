@@ -652,12 +652,19 @@ impl CodeTool {
         let mut externals: Vec<String> = HOST_FUNCTIONS.iter().map(|s| s.to_string()).collect();
         externals.extend(reach.iter().cloned());
         let cancel = ctx.cancel.clone().unwrap_or_default();
+        // The shims answer only what a tool answers in their shape: a
+        // server's `fs_list` returns one string, so it is not walked.
+        let files = crate::interpreter::FileTools {
+            read: reach.iter().any(|n| n == "fs_read"),
+            list: self.admission.listings().any(|n| n == "fs_list")
+                && reach.iter().any(|n| n == "fs_list"),
+        };
         let mut state = Run::new(self.limits, Arc::clone(&self.pool))
             .reaching(reach)
             .listing(self.admission.listings().map(str::to_string));
         let (mut program, mut step) = match self
             .interpreter
-            .start(program, &externals, cancel.clone())
+            .start_with(program, &externals, files, cancel.clone())
             .await
         {
             Ok(started) => started,
@@ -752,9 +759,12 @@ fn describe(admission: &Admission) -> String {
     // (R12, R13); elsewhere every file call is refused (review of #811).
     // A server's `fs_list` answers in one string, which a walk cannot use.
     let walks = admission.listings().any(|l| l == "fs_list");
-    let modules = if admission.contains("fs_read") || walks {
+    let modules = if walks {
         "decimal, os and pathlib, but no third-party packages, io or statistics, and os and \
          pathlib reach only the files the tools below do"
+    } else if admission.contains("fs_read") {
+        "decimal and pathlib, but no third-party packages, os, io or statistics, and pathlib \
+         reads only the files the tools below do"
     } else {
         "and decimal, but no third-party packages, os, io or statistics"
     };

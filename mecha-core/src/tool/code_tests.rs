@@ -1879,6 +1879,28 @@ async fn a_file_opened_by_a_program_arms_taint_and_lands_in_the_trace() {
     assert!(format!("{calls:?}").contains("fs_read"), "{calls:?}");
 }
 
+/// A tool called `fs_list` that answers in one string (a server's) is a
+/// plain read: a program's `os.listdir` is refused, not walked through it,
+/// and the tool is never called (review of #811).
+#[cfg(feature = "monty")]
+#[tokio::test]
+async fn a_servers_fs_list_is_not_walked() {
+    let Some(interp) = monty().await else {
+        return;
+    };
+    let server = Fake::read("fs_list", "a.md\nb.md");
+    let ran = server.counter();
+    let agent = with_code(vec![Arc::new(server)], interp);
+    let (d, _) = run(&agent, "import os\nprint(os.listdir('notes'))").await;
+    assert!(d.is_error, "{}", d.content);
+    assert!(d.content.contains("PermissionError"), "{}", d.content);
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        0,
+        "the server's tool was called"
+    );
+}
+
 /// A skill restriction that leaves out `mail_search` keeps it out of the
 /// program's function list, and so does a `forbid` rule; the restriction
 /// is not in the registry, so a `code` that built its list from the
