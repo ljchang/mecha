@@ -2082,6 +2082,277 @@ impl PersonaChats {
         )
     }
 
+    /// Her network for the People tab (PERSONA-LIFE-DESIGN §15): everyone
+    /// with her tie folded and its events, the ties between people, what
+    /// does not load or links a broken portrait, the identity.md lines that
+    /// still name someone (PL31), and a waiting proposal. A persona with
+    /// `[life] people` off answers so, as the Week tab's states do, never a
+    /// refusal. Read only, and never creates a store.
+    ///
+    /// **Locks carry over** (§6.5): a person's library character is named,
+    /// and its portrait shown, only for an entry that loads and is not
+    /// locked, or with a live unlock. Otherwise both are null and the link
+    /// itself is untouched: hidden, never cut.
+    pub fn people(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        token: Option<&str>,
+    ) -> Result<serde_json::Value, Refusal> {
+        use mecha_core::imagelib::Kind;
+        use mecha_core::persona::{network, people_draft};
+        let p = self
+            .visible(library, name, token)
+            .ok_or(Refusal::NotFound)?;
+        if !p.settings.life.people {
+            return Ok(serde_json::json!({
+                "absent": "off",
+                "why": format!("[life] people is off for `{}`", p.name),
+            }));
+        }
+        let pdir = self.store.join(&p.name);
+        let lib = mecha_core::imagelib::Library::load(&library.dir).0;
+        let unlocked = library.unlocked(token);
+        let n = network::Network::read(&pdir).map_err(failed)?;
+        let shown = |c: Option<&str>| -> (Option<String>, Option<String>) {
+            let Some(c) = c else {
+                return (None, None);
+            };
+            match lib.get(Kind::Character, c) {
+                Some(e) if !e.locked || unlocked => {
+                    let portrait = (e.status == mecha_core::persona::Status::Approved)
+                        .then(|| super::library::portrait_url(e, token.filter(|_| unlocked)))
+                        .flatten();
+                    (Some(c.to_string()), portrait)
+                }
+                // Locked, or an entry that does not load, on a locked page:
+                // unknown is never "not locked".
+                _ if !unlocked => (None, None),
+                // The owner, unlocked, sees a link that broke by its name.
+                _ => (Some(c.to_string()), None),
+            }
+        };
+        let events_of = |person: &str, other: Option<&str>| -> Vec<serde_json::Value> {
+            n.events
+                .iter()
+                .filter(|e| e.person == person && e.other.as_deref() == other)
+                .map(|e| e.to_json())
+                .collect()
+        };
+        let people: Vec<serde_json::Value> = n
+            .people
+            .iter()
+            .map(|q| {
+                let mut v = q.to_json();
+                let (character, portrait) = shown(q.character.as_deref());
+                v["character"] = serde_json::json!(character);
+                v["portrait"] = serde_json::json!(portrait);
+                v["edge"] = n.her_edge(&q.uid).to_json();
+                v["events"] = events_of(&q.uid, None).into();
+                v
+            })
+            .collect();
+        let ties: Vec<serde_json::Value> = n
+            .ties()
+            .into_iter()
+            .map(|((a, b), e)| {
+                serde_json::json!({
+                    "a": a,
+                    "b": b,
+                    "edge": e.to_json(),
+                    "events": events_of(&a, Some(&b)),
+                })
+            })
+            .collect();
+        let mut problems = n.broken_links(&lib);
+        problems.extend(n.unreadable_edges());
+        let overlap: Vec<serde_json::Value> = people_draft::identity_overlap(&self.store, &p)
+            .map_err(failed)?
+            .into_iter()
+            .map(|(line, text)| serde_json::json!({ "line": line, "text": text }))
+            .collect();
+        let proposal = people_draft::read(&pdir).map_err(failed)?.map(|d| {
+            serde_json::json!({
+                "people": d.people,
+                "stale": d.identity != mecha_core::persona::text_digest(&p.identity),
+            })
+        });
+        // The portraits a person may link: approved characters this viewer
+        // may see.
+        let characters = visible_characters(&lib, unlocked);
+        Ok(serde_json::json!({
+            "people": people,
+            "ties": ties,
+            "problems": problems,
+            "overlap": overlap,
+            "proposal": proposal,
+            "characters": characters,
+        }))
+    }
+
+    /// The owner's doors to her network from the People tab: add someone,
+    /// change who they are, record an event on her tie or a tie between two,
+    /// retract an owner event, take someone out. Each answers with the
+    /// network as it now stands. A portrait is checked by the store's own
+    /// door (`network::add_person`, `edit_person`).
+    pub fn act_on_people(
+        &self,
+        library: &LibraryState,
+        name: &str,
+        act: PeopleAct,
+        body: &PersonBody,
+    ) -> Result<serde_json::Value, Refusal> {
+        use mecha_core::persona::network::{
+            self, EventKind, Layer, NewEvent, NewPerson, PersonEdit, Tie, When,
+        };
+        let p = self
+            .visible(library, name, body.unlock.as_deref())
+            .ok_or(Refusal::NotFound)?;
+        let pdir = self.store.join(&p.name);
+        let lib = mecha_core::imagelib::Library::load(&library.dir).0;
+        let bad = |e: anyhow::Error| network_refusal(e);
+        // Writes honour the lock as reads do (`library.rs`): a portrait this
+        // viewer may not see answers exactly as one that does not exist, and
+        // nothing is written, so the answer never says which locked names
+        // there are (review of #803).
+        let unlocked = library.unlocked(body.unlock.as_deref());
+        let visible = |c: &Option<String>| -> Result<(), Refusal> {
+            let Some(c) = c.as_deref().map(str::trim).filter(|c| !c.is_empty()) else {
+                return Ok(());
+            };
+            match lib.get(mecha_core::imagelib::Kind::Character, c) {
+                Some(e) if !e.locked || unlocked => Ok(()),
+                _ => Err(Refusal::Bad(format!(
+                    "there is no character `{c}` in the image library"
+                ))),
+            }
+        };
+        visible(&body.character)?;
+        let tie = |t: &Option<String>| -> Result<Option<Tie>, Refusal> {
+            match t.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+                None => Ok(None),
+                Some(w) => Tie::from_id(w)
+                    .map(Some)
+                    .ok_or_else(|| Refusal::Bad(format!("`{w}` is not a tie"))),
+            }
+        };
+        let layer = |l: Option<u32>| -> Result<Option<Layer>, Refusal> {
+            l.map(|n| Layer::of_size(n).ok_or_else(|| Refusal::Bad(format!("{n} is not a layer"))))
+                .transpose()
+        };
+        let when = |w: &Option<String>| -> Result<When, Refusal> {
+            When::parse(w.as_deref().unwrap_or("")).map_err(|e| Refusal::Bad(format!("{e:#}")))
+        };
+        // A person or an event is named by its full id, which the page holds.
+        let known = |id: &str| -> Result<String, Refusal> {
+            let n = network::Network::read(&pdir).map_err(failed)?;
+            n.person(id).map(|q| q.uid.clone()).ok_or(Refusal::NotFound)
+        };
+        match act {
+            PeopleAct::Add => {
+                let Some(person) = body.name.clone() else {
+                    return Err(Refusal::Bad("a person needs a `name`".into()));
+                };
+                network::add_person(
+                    &pdir,
+                    &lib,
+                    &NewPerson {
+                        name: person,
+                        aliases: body.aliases.clone().unwrap_or_default(),
+                        role: body.role.clone(),
+                        description: body.description.clone(),
+                        character: body.character.clone().filter(|c| !c.trim().is_empty()),
+                        tie: tie(&body.tie)?,
+                        label: body.label.clone(),
+                        layer: layer(body.layer)?,
+                        since: when(&body.since)?,
+                    },
+                )
+                .map_err(bad)?;
+            }
+            PeopleAct::Edit(id) => {
+                let id = known(&id)?;
+                // An empty value clears a field; one left out is unchanged,
+                // so a portrait this page was not shown (locked) stays.
+                let clear = |v: &Option<String>| {
+                    v.clone().map(|v| Some(v).filter(|v| !v.trim().is_empty()))
+                };
+                // Hidden, never cut: a clear of a portrait this viewer may
+                // not see is no choice to remove it, since the page was
+                // shown none (review of #803; the persona settings door's
+                // rule).
+                let existing = network::Network::read(&pdir)
+                    .map_err(failed)?
+                    .person(&id)
+                    .and_then(|q| q.character.clone());
+                let clears = body
+                    .character
+                    .as_deref()
+                    .is_some_and(|c| c.trim().is_empty());
+                // Unlocked, the owner was shown every link, broken ones by
+                // name, so a clear always counts (as `hidden_character`).
+                let hidden = !unlocked && visible(&existing).is_err();
+                let character = if clears && hidden {
+                    None
+                } else {
+                    clear(&body.character)
+                };
+                network::edit_person(
+                    &pdir,
+                    &lib,
+                    &id,
+                    &PersonEdit {
+                        name: body.name.clone(),
+                        aliases: body.aliases.clone(),
+                        role: clear(&body.role),
+                        description: clear(&body.description),
+                        character,
+                    },
+                )
+                .map_err(bad)?;
+            }
+            PeopleAct::Event(id) => {
+                let id = known(&id)?;
+                let other = body.with.as_deref().map(known).transpose()?;
+                let Some(kind) = body.kind.as_deref() else {
+                    return Err(Refusal::Bad("an event needs a `kind`".into()));
+                };
+                let kind = EventKind::from_id(kind)
+                    .ok_or_else(|| Refusal::Bad(format!("`{kind}` is not a kind of event")))?;
+                network::record(
+                    &pdir,
+                    &id,
+                    other.as_deref(),
+                    &NewEvent {
+                        kind,
+                        tie: tie(&body.tie)?,
+                        label: body.label.clone(),
+                        layer: layer(body.layer)?,
+                        when: when(&body.on)?,
+                        context: body.context.clone(),
+                    },
+                )
+                .map_err(bad)?;
+            }
+            PeopleAct::Retract(id, event) => {
+                let id = known(&id)?;
+                // Only an event on an edge this person is part of.
+                let n = network::Network::read(&pdir).map_err(failed)?;
+                if !n.events.iter().any(|e| {
+                    e.uid == event && (e.person == id || e.other.as_deref() == Some(id.as_str()))
+                }) {
+                    return Err(Refusal::NotFound);
+                }
+                network::remove_event(&pdir, &event).map_err(bad)?;
+            }
+            PeopleAct::Remove(id) => {
+                let id = known(&id)?;
+                network::remove_person(&pdir, &id).map_err(bad)?;
+            }
+        }
+        self.people(library, &p.name, body.unlock.as_deref())
+    }
+
     /// What `name` remembers, for the owner's curation page (§9.8): every
     /// episode and fact still standing — candidates waiting on the owner
     /// included, withdrawn ones not — each dated by when it was said, in
@@ -6049,6 +6320,62 @@ pub struct DraftBody {
     unlock: Option<String>,
 }
 
+/// A refusal from her network's owner doors: a disk that would not take
+/// the write is the server's failure; the rest is what was sent refused.
+fn network_refusal(e: anyhow::Error) -> Refusal {
+    if mecha_core::persona::network::is_store_error(&e) {
+        Refusal::Failed(format!("{e:#}"))
+    } else {
+        Refusal::Bad(format!("{e:#}"))
+    }
+}
+
+/// What the People tab sends; each door reads the fields it needs.
+#[derive(serde::Deserialize, Default, Clone)]
+pub struct PersonBody {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    aliases: Option<Vec<String>>,
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    character: Option<String>,
+    #[serde(default)]
+    tie: Option<String>,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    layer: Option<u32>,
+    /// When the tie began (add).
+    #[serde(default)]
+    since: Option<String>,
+    /// An event's kind, when, what it was about, and the other person on a
+    /// tie between two (event).
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    on: Option<String>,
+    #[serde(default)]
+    context: Option<String>,
+    #[serde(default)]
+    with: Option<String>,
+    #[serde(default)]
+    unlock: Option<String>,
+}
+
+/// What the owner does to her network.
+#[derive(Debug, Clone)]
+pub enum PeopleAct {
+    Add,
+    Edit(String),
+    Event(String),
+    Retract(String, String),
+    Remove(String),
+}
+
 /// What the owner does to a waiting draft.
 #[derive(Debug, Clone, Copy)]
 pub enum DraftAct {
@@ -6137,6 +6464,91 @@ pub async fn discard_draft(
     Json(body): Json<DraftBody>,
 ) -> axum::response::Response {
     act_on_draft(state, name, DraftAct::Discard, body).await
+}
+
+/// GET /api/personas/{name}/people
+pub async fn people(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Query(q): Query<UnlockQuery>,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let personas = Arc::clone(&chat.personas);
+    let library = Arc::clone(&state.library);
+    match tokio::task::spawn_blocking(move || personas.people(&library, &name, q.unlock.as_deref()))
+        .await
+    {
+        Ok(result) => respond(result),
+        Err(e) => Refusal::Failed(format!("reading a persona's people: {e}")).into_response(),
+    }
+}
+
+async fn act_on_people(
+    state: super::WebState,
+    name: String,
+    act: PeopleAct,
+    body: PersonBody,
+) -> axum::response::Response {
+    let chat = match chat::chat_state(&state) {
+        Ok(c) => c,
+        Err(resp) => return resp,
+    };
+    let personas = Arc::clone(&chat.personas);
+    let library = Arc::clone(&state.library);
+    match tokio::task::spawn_blocking(move || personas.act_on_people(&library, &name, act, &body))
+        .await
+    {
+        Ok(result) => respond(result),
+        Err(e) => Refusal::Failed(format!("changing a persona's people: {e}")).into_response(),
+    }
+}
+
+/// POST /api/personas/{name}/people
+pub async fn add_person(
+    State(state): Web,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Json(body): Json<PersonBody>,
+) -> axum::response::Response {
+    act_on_people(state, name, PeopleAct::Add, body).await
+}
+
+/// PUT /api/personas/{name}/people/{id}
+pub async fn edit_person(
+    State(state): Web,
+    axum::extract::Path((name, id)): axum::extract::Path<(String, String)>,
+    Json(body): Json<PersonBody>,
+) -> axum::response::Response {
+    act_on_people(state, name, PeopleAct::Edit(id), body).await
+}
+
+/// DELETE /api/personas/{name}/people/{id}
+pub async fn remove_person(
+    State(state): Web,
+    axum::extract::Path((name, id)): axum::extract::Path<(String, String)>,
+    Json(body): Json<PersonBody>,
+) -> axum::response::Response {
+    act_on_people(state, name, PeopleAct::Remove(id), body).await
+}
+
+/// POST /api/personas/{name}/people/{id}/events
+pub async fn record_event(
+    State(state): Web,
+    axum::extract::Path((name, id)): axum::extract::Path<(String, String)>,
+    Json(body): Json<PersonBody>,
+) -> axum::response::Response {
+    act_on_people(state, name, PeopleAct::Event(id), body).await
+}
+
+/// DELETE /api/personas/{name}/people/{id}/events/{event}
+pub async fn retract_event(
+    State(state): Web,
+    axum::extract::Path((name, id, event)): axum::extract::Path<(String, String, String)>,
+    Json(body): Json<PersonBody>,
+) -> axum::response::Response {
+    act_on_people(state, name, PeopleAct::Retract(id, event), body).await
 }
 
 /// POST /api/personas/{name}/routine/draft/approve
@@ -9014,6 +9426,297 @@ mod tests {
         ));
     }
 
+    /// The People tab's doors over her network, with locks carried over:
+    /// a locked portrait is never named to a locked page, and never cut.
+    #[tokio::test]
+    async fn the_owner_builds_her_network_on_the_people_tab_and_locks_carry_over() {
+        let w = world();
+        let ps = w.personas();
+        // Off for her: said, never refused.
+        let off = ps.people(&w.library, "mara", None).unwrap();
+        assert_eq!(off["absent"], "off");
+        let toml = w.store().join("mara/persona.toml");
+        let text = std::fs::read_to_string(&toml).unwrap();
+        std::fs::write(
+            &toml,
+            text.replace("world     = false", "world     = true")
+                .replace("people    = false", "people    = true"),
+        )
+        .unwrap();
+        let png = || {
+            let img = image::RgbImage::from_pixel(2, 2, image::Rgb([9, 10, 10]));
+            let mut out = std::io::Cursor::new(Vec::new());
+            img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+            out.into_inner()
+        };
+        for (name, locked) in [("flourhand", false), ("veiledone", true)] {
+            mecha_core::imagelib::create(
+                &w.library.dir,
+                mecha_core::imagelib::NewEntry {
+                    kind: mecha_core::imagelib::Kind::Character,
+                    name: name.into(),
+                    text: "A tall woman in an apron.".into(),
+                    portrait: Some(png()),
+                    source_seed: None,
+                    origin: mecha_core::imagelib::Origin::Owner,
+                    locked,
+                },
+            )
+            .unwrap();
+        }
+        let body = |f: &dyn Fn(&mut PersonBody)| {
+            let mut b = PersonBody::default();
+            f(&mut b);
+            b
+        };
+        let token = w.library.grant_for_tests();
+        let add = |name: &str, character: Option<&str>, unlock: Option<&str>| {
+            ps.act_on_people(
+                &w.library,
+                "mara",
+                PeopleAct::Add,
+                &body(&|b| {
+                    b.name = Some(name.into());
+                    b.tie = Some("kin".into());
+                    b.layer = Some(5);
+                    b.character = character.map(Into::into);
+                    b.unlock = unlock.map(Into::into);
+                }),
+            )
+        };
+        add("Ines", Some("flourhand"), None).unwrap();
+        let got = add("Theo", Some("veiledone"), Some(&token)).unwrap();
+        assert_eq!(got["people"].as_array().unwrap().len(), 2);
+        // From a locked page, a locked portrait answers exactly as a name
+        // that does not exist, and nothing is written: the answer never
+        // says which locked names there are (review of #803).
+        let refused = |r: Result<serde_json::Value, Refusal>| match r {
+            Err(Refusal::Bad(m)) => m,
+            other => panic!("not refused as bad input: {:?}", other.map(|_| ())),
+        };
+        let locked_one = refused(add("Zed", Some("veiledone"), None));
+        let absent_one = refused(add("Zed", Some("nosuchone"), None));
+        assert_eq!(
+            locked_one.replace("veiledone", "X"),
+            absent_one.replace("nosuchone", "X")
+        );
+        let ines_id = ps.people(&w.library, "mara", None).unwrap()["people"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == "Ines")
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let edited = refused(ps.act_on_people(
+            &w.library,
+            "mara",
+            PeopleAct::Edit(ines_id.clone()),
+            &body(&|b| b.character = Some("veiledone".into())),
+        ));
+        assert!(edited.contains("no character"), "{edited}");
+        let n = mecha_core::persona::network::Network::read(&w.store().join("mara")).unwrap();
+        assert_eq!(n.people.len(), 2, "a refused add wrote someone");
+        assert_eq!(
+            n.person(&ines_id).unwrap().character.as_deref(),
+            Some("flourhand")
+        );
+        // A word outside a closed set, or a portrait the library will not
+        // give, is refused as bad input.
+        assert!(matches!(
+            ps.act_on_people(&w.library, "mara", PeopleAct::Add, &body(&|b| { b.name = Some("Bo".into()); b.tie = Some("cousin".into()); })),
+            Err(Refusal::Bad(m)) if m.contains("not a tie")
+        ));
+        assert!(matches!(
+            add("Bo", Some("nobody"), None),
+            Err(Refusal::Bad(_))
+        ));
+
+        // A locked page: the locked portrait is neither named nor shown;
+        // the open one is both.
+        let locked = ps.people(&w.library, "mara", None).unwrap();
+        assert!(!locked.to_string().contains("veiledone"), "{locked}");
+        let theo = locked["people"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == "Theo")
+            .unwrap()
+            .clone();
+        assert_eq!(
+            (theo["character"].clone(), theo["portrait"].clone()),
+            (serde_json::Value::Null, serde_json::Value::Null)
+        );
+        let ines = locked["people"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == "Ines")
+            .unwrap()
+            .clone();
+        assert_eq!(ines["character"], "flourhand");
+        assert!(ines["portrait"]
+            .as_str()
+            .unwrap()
+            .starts_with("/api/library/portrait/"));
+        assert!(!locked["characters"].to_string().contains("veiledone"));
+        // Unlocked, the owner sees both.
+        let open = ps.people(&w.library, "mara", Some(&token)).unwrap();
+        assert!(open.to_string().contains("veiledone"));
+
+        // An edit from the locked page that leaves the portrait out keeps
+        // it: hidden, never cut.
+        let theo_id = theo["id"].as_str().unwrap().to_string();
+        ps.act_on_people(
+            &w.library,
+            "mara",
+            PeopleAct::Edit(theo_id.clone()),
+            &body(&|b| b.role = Some("cousin".into())),
+        )
+        .unwrap();
+        let n = mecha_core::persona::network::Network::read(&w.store().join("mara")).unwrap();
+        assert_eq!(
+            n.person(&theo_id).unwrap().character.as_deref(),
+            Some("veiledone")
+        );
+        assert_eq!(n.person(&theo_id).unwrap().role.as_deref(), Some("cousin"));
+        // Nor does a clear from it cut the link it was never shown.
+        ps.act_on_people(
+            &w.library,
+            "mara",
+            PeopleAct::Edit(theo_id.clone()),
+            &body(&|b| b.character = Some(String::new())),
+        )
+        .unwrap();
+        let n = mecha_core::persona::network::Network::read(&w.store().join("mara")).unwrap();
+        assert_eq!(
+            n.person(&theo_id).unwrap().character.as_deref(),
+            Some("veiledone")
+        );
+        // Unlocked, the owner may clear it.
+        ps.act_on_people(
+            &w.library,
+            "mara",
+            PeopleAct::Edit(theo_id.clone()),
+            &body(&|b| {
+                b.character = Some(String::new());
+                b.unlock = Some(token.clone());
+            }),
+        )
+        .unwrap();
+        let n = mecha_core::persona::network::Network::read(&w.store().join("mara")).unwrap();
+        assert_eq!(n.person(&theo_id).unwrap().character, None);
+        // A link whose library entry is gone, which the page warns about:
+        // unlocked, the owner can clear it (review of #803).
+        ps.act_on_people(
+            &w.library,
+            "mara",
+            PeopleAct::Edit(theo_id.clone()),
+            &body(&|b| {
+                b.character = Some("flourhand".into());
+                b.unlock = Some(token.clone());
+            }),
+        )
+        .unwrap();
+        mecha_core::imagelib::remove(
+            &w.library.dir,
+            mecha_core::imagelib::Kind::Character,
+            "flourhand",
+        )
+        .unwrap();
+        ps.act_on_people(
+            &w.library,
+            "mara",
+            PeopleAct::Edit(theo_id.clone()),
+            &body(&|b| {
+                b.character = Some(String::new());
+                b.unlock = Some(token.clone());
+            }),
+        )
+        .unwrap();
+        let n = mecha_core::persona::network::Network::read(&w.store().join("mara")).unwrap();
+        assert_eq!(
+            n.person(&theo_id).unwrap().character,
+            None,
+            "an unlocked clear of a broken link was swallowed"
+        );
+
+        // An event on the tie between two, then retracted; a person removed.
+        let ines_id = ines["id"].as_str().unwrap().to_string();
+        let tied = ps
+            .act_on_people(
+                &w.library,
+                "mara",
+                PeopleAct::Event(ines_id.clone()),
+                &body(&|b| {
+                    b.kind = Some("conflict".into());
+                    b.with = Some(theo_id.clone());
+                    b.on = Some("2025-03".into());
+                }),
+            )
+            .unwrap();
+        let tie = &tied["ties"][0];
+        assert_eq!(tie["edge"]["valence"], "tense");
+        let event = tie["events"][0]["id"].as_str().unwrap().to_string();
+        assert!(matches!(
+            ps.act_on_people(
+                &w.library,
+                "mara",
+                PeopleAct::Event(ines_id.clone()),
+                &body(&|b| b.kind = Some("eloped".into()))
+            ),
+            Err(Refusal::Bad(_))
+        ));
+        // Retracting an event through someone it is not about is refused.
+        let other = add("Cal", None, None).unwrap();
+        let cal = other["people"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == "Cal")
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(matches!(
+            ps.act_on_people(
+                &w.library,
+                "mara",
+                PeopleAct::Retract(cal.clone(), event.clone()),
+                &PersonBody::default()
+            ),
+            Err(Refusal::NotFound)
+        ));
+        let back = ps
+            .act_on_people(
+                &w.library,
+                "mara",
+                PeopleAct::Retract(ines_id.clone(), event),
+                &PersonBody::default(),
+            )
+            .unwrap();
+        assert!(back["ties"].as_array().unwrap().is_empty());
+        let gone = ps
+            .act_on_people(
+                &w.library,
+                "mara",
+                PeopleAct::Remove(cal),
+                &PersonBody::default(),
+            )
+            .unwrap();
+        assert_eq!(gone["people"].as_array().unwrap().len(), 2);
+        assert!(matches!(
+            ps.act_on_people(
+                &w.library,
+                "mara",
+                PeopleAct::Remove("0".repeat(32)),
+                &PersonBody::default()
+            ),
+            Err(Refusal::NotFound)
+        ));
+    }
+
     #[test]
     fn the_week_views_keys_are_the_enums_ids() {
         use mecha_core::persona::{activity::Activity, atus::Cell, world::Absent};
@@ -9084,6 +9787,16 @@ mod tests {
         assert_eq!(
             block("WEEK_CELLS"),
             sorted(Cell::ALL.iter().map(|c| c.id().to_string()).collect())
+        );
+        // The People tab's closed sets are the network's.
+        use mecha_core::persona::network::{EventKind, Tie};
+        assert_eq!(
+            block("PEOPLE_TIES"),
+            sorted(Tie::ALL.map(|t| wire(serde_json::json!(t))).to_vec())
+        );
+        assert_eq!(
+            block("PEOPLE_EVENTS"),
+            sorted(EventKind::ALL.map(|k| wire(serde_json::json!(k))).to_vec())
         );
     }
 

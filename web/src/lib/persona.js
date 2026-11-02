@@ -33,7 +33,7 @@ export function withUnlock(path, token) {
 // imports `ENDPOINTS` instead, and the builders refuse any suffix not listed
 // here: a new endpoint is added to this list or it throws, and the list is
 // then what `check-demo` holds the demo's routes to (review of #415).
-const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock', '/frame', '/image-touching', '/image-settings', '/sources', '/sources/remove', '/sources/file', '/sources/text', '/review', '/approve', '/reject', '/memory', '/week', '/routine/cell', '/routine/draft', '/routine/draft/approve'];
+const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock', '/frame', '/image-touching', '/image-settings', '/sources', '/sources/remove', '/sources/file', '/sources/text', '/review', '/approve', '/reject', '/memory', '/week', '/routine/cell', '/routine/draft', '/routine/draft/approve', '/people'];
 const CHAT_SUFFIXES = ['', '/events', '/send', '/cancel', '/file', '/upload', '/cited', '/save', '/call', '/call-regenerate', '/jobs/order'];
 
 export const ENDPOINTS = [
@@ -43,7 +43,28 @@ export const ENDPOINTS = [
   '/api/personas/groups',
   ...PERSONA_SUFFIXES.map((s) => `/api/personas/X${s}`),
   ...CHAT_SUFFIXES.map((s) => `/api/persona-chat/X${s}`),
+  // One person in her network, and the events on her tie to them.
+  '/api/personas/X/people/X',
+  '/api/personas/X/people/X/events',
+  '/api/personas/X/people/X/events/X',
 ];
+
+// A person's or an event's id: 32 hex characters, as the store mints them.
+const NETWORK_ID = /^[0-9a-f]{32}$/;
+
+// The URL of one person in her network, or of an event on her tie to them.
+// An id that is not one the store mints is refused here, so the page can
+// never address a path the server does not route.
+export function personUrl(name, id, event = null, token = null) {
+  if (!NETWORK_ID.test(id ?? '')) throw new Error(`not a person's id: ${id}`);
+  let path = `/api/personas/${encodeURIComponent(name)}/people/${id}`;
+  if (event === '') path += '/events';
+  else if (event != null) {
+    if (!NETWORK_ID.test(event)) throw new Error(`not an event's id: ${event}`);
+    path += `/events/${event}`;
+  }
+  return withUnlock(path, token);
+}
 
 // The picture-settings presets: nothing set — the layer below, the chat's on
 // a persona's page and the model's own on the chat's (the owner,
@@ -870,6 +891,110 @@ export function anchorLine(a) {
   const name = a.what && a.what !== a.activity ? `${a.what} (${activity})` : activity;
   const often = a.chance >= 1 ? 'always' : `${Math.round(a.chance * 100)}% of weeks`;
   return `${when} ${dayClock(a.start_minute)}–${dayClock(end)}${nextDay} · ${name} · ${often}`;
+}
+
+// Her people (PERSONA-LIFE-DESIGN §6, §15). The closed sets the page offers,
+// held to `network::Tie::ALL` and `EventKind::ALL` by the server's key test.
+export const PEOPLE_TIES = [
+  ['kin', 'kin'],
+  ['romantic', 'partner'],
+  ['ex', 'ex'],
+  ['friend', 'friend'],
+  ['colleague', 'colleague'],
+  ['mentor', 'mentor'],
+  ['neighbour', 'neighbour'],
+  ['acquaintance', 'acquaintance'],
+  ['rival', 'rival'],
+];
+
+export const PEOPLE_EVENTS = [
+  ['met', 'met'],
+  ['formed', 'became close'],
+  ['strengthened', 'grew closer'],
+  ['conflict', 'fell out'],
+  ['reconciled', 'made up'],
+  ['paused', 'lost touch'],
+  ['ended', 'ended'],
+  ['renewed', 'back in touch'],
+];
+
+// The Dunbar layers, innermost first.
+export const PEOPLE_LAYERS = [5, 15, 50, 150];
+
+export const PEOPLE_ABSENT = {
+  off: 'Her people are off for this persona. Turn on Her people in the Life section of her Settings.',
+};
+
+// Each ring's radius on a 200-unit board, her at the centre: the four
+// layers, then one ring for those not placed, then the outer band where
+// ended ties are greyed (§15).
+export const RINGS = { 5: 31, 15: 47, 50: 63, 150: 78, none: 88, ended: 96 };
+
+// Where each person sits: on their layer's ring, or the unplaced ring, or
+// the ended band, spread evenly round it in name order from the top, so the
+// same network lays out the same way every time.
+export function ringLayout(people) {
+  const rings = new Map();
+  for (const p of people ?? []) {
+    const e = p.edge ?? {};
+    const ring = e.status === 'ended' ? 'ended' : (PEOPLE_LAYERS.includes(e.layer) ? e.layer : 'none');
+    if (!rings.has(ring)) rings.set(ring, []);
+    rings.get(ring).push(p);
+  }
+  const out = [];
+  // Rings in a fixed order, innermost first, so the output is the same
+  // whatever order the people came in.
+  for (const ring of [...PEOPLE_LAYERS, 'none', 'ended']) {
+    const members = rings.get(ring);
+    if (!members) continue;
+    members.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()) || a.id.localeCompare(b.id));
+    const r = RINGS[ring];
+    // Rings offset a little from one another so two rings' first members
+    // never line up on the same spoke.
+    const offset = (Object.keys(RINGS).indexOf(String(ring)) * Math.PI) / 7;
+    members.forEach((p, i) => {
+      const a = -Math.PI / 2 + offset + (2 * Math.PI * i) / members.length;
+      out.push({
+        id: p.id,
+        name: p.name,
+        ring,
+        x: Math.round(r * Math.cos(a) * 100) / 100,
+        y: Math.round(r * Math.sin(a) * 100) / 100,
+        portrait: p.portrait ?? null,
+        valence: p.edge?.valence ?? null,
+        status: p.edge?.status ?? 'active',
+        unvouched: Boolean(p.edge?.unreadable || p.edge?.unclean),
+      });
+    });
+  }
+  return out;
+}
+
+// Initials for a node without a portrait.
+export function initials(name) {
+  const words = String(name ?? '').trim().split(/\s+/).filter(Boolean);
+  return (words.length > 1 ? words[0][0] + words[words.length - 1][0] : (words[0] ?? '?').slice(0, 2)).toUpperCase();
+}
+
+// One event on a timeline: when (as precisely as it was said), what, the
+// tie and layer it names, and what it was about.
+export function eventLine(e) {
+  const what = PEOPLE_EVENTS.find(([k]) => k === e.event)?.[1] ?? 'an event this version cannot read';
+  const parts = [what];
+  const tie = e.label ?? PEOPLE_TIES.find(([k]) => k === e.tie)?.[1];
+  if (tie) parts.push(tie);
+  if (e.layer) parts.push(`closest ${e.layer}`);
+  let line = `${e.when?.said ?? 'undated'} · ${parts.join(', ')}`;
+  if (e.context) line += ` · ${e.context}`;
+  return line;
+}
+
+// The body of the People tab's doors: the fields given, and the unlock.
+export function personBody(fields, token = null) {
+  const out = {};
+  for (const [k, v] of Object.entries(fields ?? {})) if (v !== undefined) out[k] = v;
+  if (token) out.unlock = token;
+  return out;
 }
 
 export const WEEK_GROUPS = [
