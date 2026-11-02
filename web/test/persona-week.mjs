@@ -120,6 +120,9 @@ assert.equal(anchorLine({ what: 'x', activity: 'work', days: [0, 2], start_minut
   });
   assert.equal(storyDay(data, '2026-11-03'), null);
   assert.equal(storyDay({}, '2026-11-02'), null);
+  const unkept = { today: '2026-11-02', story: [{ date: '2026-10-01', kept: false, weather: { sky: 'rain', high_c: 1, low_c: 0 }, events: [] }, { date: '2026-11-04', kept: false, weather: { sky: 'rain', high_c: 1, low_c: 0 }, events: [] }] };
+  assert.equal(storyDay(unkept, '2026-10-01'), null, 'a past day not kept is not shown as her history');
+  assert.ok(storyDay(unkept, '2026-11-04'), 'a day ahead is shown, though not kept');
   assert.equal(storyDay({ story: [{ date: 'd', weather: null, evening: { energy: 'normal' }, events: [] }] }, 'd'), null, 'a quiet day with no weather is no row');
   assert.equal(storyDay({ story: [{ date: 'd', weather: { sky: 'hail', high_c: 1, low_c: 0 }, events: [] }] }, 'd').weather, 'unknown sky 1°/0°C');
 }

@@ -735,16 +735,31 @@ fn inputs(
     h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Her story over a window: the days, and why any could not be drawn.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Story {
+    pub days: Vec<StoryDay>,
+    /// Why the days after the last one shown were not drawn (no routine,
+    /// no kind of week, a deck that does not load): said beside what is
+    /// kept, never instead of it.
+    pub why: Option<String>,
+}
+
 /// Her story from `from` to `to`, inclusive: each day drawn on the evening
-/// of the one before, stored up to `today`. Refused by name when `[life]
-/// world` is off or her days cannot be drawn.
+/// of the one before. A day is stored only inside the world store's keep
+/// window (`world::KEEP_DAYS` back to today), as her sampled days are: an
+/// older lookback day is drawn from a day re-sampled from today's routine,
+/// so it seeds the walk in memory and is never kept as her history
+/// (review of #814). A stored past day needs nothing drawn, so a routine
+/// that stops loading still shows what was kept, with the reason beside.
+/// Refused by name when `[life] world` is off.
 pub fn story(
     store_dir: &Path,
     name: &str,
     from: NaiveDate,
     to: NaiveDate,
     today: NaiveDate,
-) -> Result<Vec<StoryDay>> {
+) -> Result<Story> {
     let store = super::Store::load(store_dir);
     let Some(p) = store.get(name) else {
         bail!("no persona named `{name}`");
@@ -753,17 +768,21 @@ pub fn story(
         bail!("[life] world is off for `{name}`; her days are not drawn");
     }
     let pdir = store_dir.join(&p.name);
-    let routine = super::routine::load(&pdir)?;
-    let Some(cell) = routine.as_ref().and_then(|r| r.cell) else {
-        bail!("`{name}` has no routine naming her kind of week, so no day is drawn");
-    };
-    let (deck, deck_text) = deck(&pdir, cell)?;
+    // What a draw needs, or why there is none; asked once.
+    let drawable = (|| -> Result<(Deck, String)> {
+        let routine = super::routine::load(&pdir)?;
+        let Some(cell) = routine.as_ref().and_then(|r| r.cell) else {
+            bail!("`{name}` has no routine naming her kind of week, so no day is drawn");
+        };
+        deck(&pdir, cell)
+    })();
     let people = if p.settings.life.people {
         castable(&Network::read(&pdir)?)
     } else {
         Vec::new()
     };
     let severe_open = p.settings.life.intensity == super::Intensity::Full;
+    let oldest_kept = today - Days::new(super::world::KEEP_DAYS);
     let mut world = super::world::World::open(&pdir)?;
     // Start a lookback before `from`, so the first day shown has a
     // morning and a history.
@@ -771,6 +790,7 @@ pub fn story(
     let mut levels = Levels::default();
     let mut last_major: Option<NaiveDate> = None;
     let mut drawn: Vec<(String, NaiveDate)> = Vec::new();
+    let mut why: Option<String> = drawable.as_ref().err().map(|e| format!("{e:#}"));
     let mut out = Vec::new();
     let mut d = start;
     while d <= to {
@@ -778,71 +798,83 @@ pub fn story(
         let stored = world.story_day(d)?;
         // A stored past day is what it was, and needs nothing drawn: only
         // today and the days not yet kept read her day, so a week view
-        // loads her store a handful of times, not once per lookback day
-        // (review of #814).
+        // loads her store a handful of times, not once per lookback day.
         let past = stored
             .as_ref()
             .filter(|_| d < today)
             .map(|(sd, _)| sd.clone());
         let sd = if let Some(sd) = past {
-            sd
-        } else {
-            let day = super::world::day(store_dir, &p.name, d, today)?;
-            let doing: Vec<Activity> = day.stretches.iter().map(|s| s.activity).collect();
-            let digest = inputs(
-                &deck_text,
-                weather,
-                &format!("{:?}", day.stretches),
-                &people,
-                severe_open,
-            );
-            if let Some((sd, _)) = stored.filter(|(_, was)| *was == digest) {
-                sd
-            } else {
-                let cx = Today {
-                    persona: &p.name,
-                    date: d,
-                    doing,
-                    weather,
-                    levels,
-                    people: &people,
-                    since_major: last_major.map(|m| (d - m).num_days()),
-                    recent: drawn
-                        .iter()
-                        .map(|(id, on)| (id.clone(), (d - *on).num_days()))
-                        .collect(),
-                    severe_open,
-                };
-                let (events, morning, evening) = draw_day(&deck, &cx);
-                let sd = StoryDay {
-                    date: d,
-                    weather: weather.map(WeatherOut::from),
-                    morning,
-                    evening,
-                    events,
-                    kept: d <= today,
-                };
-                if d <= today {
-                    world.set_story_day(&sd, &digest)?;
+            Some(sd)
+        } else if let (Ok((deck, deck_text)), None) = (&drawable, &why) {
+            let keep = d >= oldest_kept && d <= today;
+            match super::world::day(store_dir, &p.name, d, today) {
+                Err(e) => {
+                    // The chain is broken from here: later days are not
+                    // drawn on a guess, and the stored ones still show.
+                    why = Some(format!("{e:#}"));
+                    None
                 }
-                sd
+                Ok(day) => {
+                    let doing: Vec<Activity> = day.stretches.iter().map(|s| s.activity).collect();
+                    let digest = inputs(
+                        deck_text,
+                        weather,
+                        &format!("{:?}", day.stretches),
+                        &people,
+                        severe_open,
+                    );
+                    if let Some((sd, _)) = stored.filter(|(_, was)| *was == digest) {
+                        Some(sd)
+                    } else {
+                        let cx = Today {
+                            persona: &p.name,
+                            date: d,
+                            doing,
+                            weather,
+                            levels,
+                            people: &people,
+                            since_major: last_major.map(|m| (d - m).num_days()),
+                            recent: drawn
+                                .iter()
+                                .map(|(id, on)| (id.clone(), (d - *on).num_days()))
+                                .collect(),
+                            severe_open,
+                        };
+                        let (events, morning, evening) = draw_day(deck, &cx);
+                        let sd = StoryDay {
+                            date: d,
+                            weather: weather.map(WeatherOut::from),
+                            morning,
+                            evening,
+                            events,
+                            kept: keep,
+                        };
+                        if keep {
+                            world.set_story_day(&sd, &digest)?;
+                        }
+                        Some(sd)
+                    }
+                }
             }
+        } else {
+            None
         };
-        // Weather is a fact, not a draw: shown as it stands now, so a day
-        // drawn before its weather arrived still shows it.
-        let mut sd = sd;
-        sd.weather = weather.map(WeatherOut::from);
-        levels = sd.evening;
-        drawn.extend(sd.events.iter().map(|e| (e.storylet.clone(), d)));
-        if sd.events.iter().any(|e| e.size != Size::Minor) {
-            last_major = Some(d);
-        }
-        if d >= from {
-            out.push(sd);
+        if let Some(mut sd) = sd {
+            // Weather is a fact, not a draw: shown as it stands now, so a
+            // day drawn before its weather arrived still shows it.
+            sd.weather = weather.map(WeatherOut::from);
+            levels = sd.evening;
+            drawn.extend(sd.events.iter().map(|e| (e.storylet.clone(), d)));
+            if sd.events.iter().any(|e| e.size != Size::Minor) {
+                last_major = Some(d);
+            }
+            if d >= from {
+                out.push(sd);
+            }
         }
         d = d + Days::new(1);
     }
-    Ok(out)
+    Ok(Story { days: out, why })
 }
 
 /// The names of her people by id, for showing a `{who}`.
@@ -1158,10 +1190,10 @@ with = ["friend"]
         let dir = store();
         let today = d("2026-11-02");
         let from = today - Days::new(6);
-        let week = story(&dir, "mara", from, today, today).unwrap();
+        let week = story(&dir, "mara", from, today, today).unwrap().days;
         assert_eq!(week.len(), 7);
         assert!(week.iter().all(|s| s.kept && s.weather.is_none()));
-        assert_eq!(story(&dir, "mara", from, today, today).unwrap(), week);
+        assert_eq!(story(&dir, "mara", from, today, today).unwrap().days, week);
         // Weather arrives: today redraws with it, the past keeps what it was.
         let mut w = super::super::world::World::open(&dir.join("mara")).unwrap();
         w.set_weather(&[
@@ -1180,7 +1212,7 @@ with = ["friend"]
         ])
         .unwrap();
         drop(w);
-        let again = story(&dir, "mara", from, today, today).unwrap();
+        let again = story(&dir, "mara", from, today, today).unwrap().days;
         for (a, w) in again[..6].iter().zip(&week[..6]) {
             assert_eq!(
                 (&a.events, a.morning, a.evening),
@@ -1211,7 +1243,7 @@ with = ["friend"]
             "[[storylet]]\nid = \"only\"\ntitle = \"the only thing\"\nsize = \"minor\"\n",
         )
         .unwrap();
-        let mine = story(&dir, "mara", from, today, today).unwrap();
+        let mine = story(&dir, "mara", from, today, today).unwrap().days;
         assert_eq!(mine[1..6], again[1..6]);
         assert!(
             mine[6].events.iter().all(|e| e.storylet == "only"),
@@ -1225,7 +1257,7 @@ with = ["friend"]
              [[storylet]]\nid = \"grave\"\ntitle = \"a grave thing\"\nsize = \"severe\"\n",
         )
         .unwrap();
-        let capped = story(&dir, "mara", today, today, today).unwrap();
+        let capped = story(&dir, "mara", today, today, today).unwrap().days;
         let toml = dir.join("mara/persona.toml");
         let text = std::fs::read_to_string(&toml).unwrap();
         let full = if text.contains("intensity") {
@@ -1240,7 +1272,7 @@ with = ["friend"]
             .unwrap()
             .unwrap()
             .1;
-        let after = story(&dir, "mara", today, today, today).unwrap();
+        story(&dir, "mara", today, today, today).unwrap();
         let redrawn = World::open(&dir.join("mara"))
             .unwrap()
             .story_day(today)
@@ -1252,7 +1284,6 @@ with = ["friend"]
             "intensity changes what today was drawn from"
         );
         assert!(capped[0].events.iter().all(|e| e.size != Size::Severe));
-        let _ = after;
         std::fs::write(&toml, &text).unwrap();
         // A day ahead is drawn, never stored.
         let ahead = story(
@@ -1262,7 +1293,8 @@ with = ["friend"]
             today + Days::new(1),
             today,
         )
-        .unwrap();
+        .unwrap()
+        .days;
         assert!(!ahead[0].kept);
         let w = super::super::world::World::open(&dir.join("mara")).unwrap();
         assert!(w.story_day(today + Days::new(1)).unwrap().is_none());
@@ -1270,15 +1302,44 @@ with = ["friend"]
     }
 
     #[test]
-    fn a_story_needs_her_world_and_a_kind_of_week() {
+    fn what_was_kept_shows_beside_why_the_rest_was_not_drawn() {
         let dir = store();
-        std::fs::write(dir.join("mara/routine.toml"), "").unwrap();
         let today = d("2026-11-02");
-        let why = format!(
-            "{:#}",
-            story(&dir, "mara", today, today, today).unwrap_err()
+        let from = today - Days::new(6);
+        let week = story(&dir, "mara", from, today, today).unwrap();
+        assert_eq!((week.days.len(), week.why.as_deref()), (7, None));
+        // Her routine stops naming a kind of week: tomorrow is asked, the
+        // kept week still shows, and the reason rides beside it.
+        std::fs::write(dir.join("mara/routine.toml"), "").unwrap();
+        let tomorrow = today + Days::new(1);
+        let got = story(&dir, "mara", from, tomorrow, tomorrow).unwrap();
+        assert_eq!(
+            got.days, week.days,
+            "the kept days, nothing drawn on a guess"
         );
-        assert!(why.contains("kind of week"), "{why}");
+        assert!(
+            got.why.as_deref().unwrap().contains("kind of week"),
+            "{:?}",
+            got.why
+        );
+        // With nothing kept, the reason alone.
+        let fresh = store();
+        std::fs::write(fresh.join("mara/routine.toml"), "").unwrap();
+        let none = story(&fresh, "mara", today, today, today).unwrap();
+        assert!(none.days.is_empty() && none.why.is_some());
+    }
+
+    #[test]
+    fn a_day_past_the_keep_window_is_drawn_never_stored() {
+        let dir = store();
+        let today = d("2026-11-02");
+        let old = today - Days::new(super::super::world::KEEP_DAYS + 3);
+        let got = story(&dir, "mara", old, old, today).unwrap().days;
+        assert!(!got[0].kept, "older than the keep window");
+        let w = super::super::world::World::open(&dir.join("mara")).unwrap();
+        assert!(w.story_day(old).unwrap().is_none());
+        // The lookback before it is never kept either.
+        assert!(w.story_day(old - Days::new(1)).unwrap().is_none());
     }
 
     #[test]

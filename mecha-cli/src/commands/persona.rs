@@ -496,6 +496,9 @@ async fn fetch_weather(dir: &Path, name: &str) -> Result<()> {
         place.name, place.lat, place.lon
     );
     let days = weather::fetch(&place, today).await?;
+    if days.is_empty() {
+        bail!("the weather service answered, but every day was refused; nothing stored");
+    }
     let n = World::open(&pdir)?.set_weather(&days)?;
     println!(
         "Stored {n} days of weather for `{}` at {}.",
@@ -1391,8 +1394,8 @@ fn owner_dates(date: Option<&str>) -> Result<(chrono::NaiveDate, chrono::NaiveDa
     Ok((date, today))
 }
 
-/// `mecha persona day`: the sampled day, through `world::day`'s own door,
-/// drawn and stored on the first asking and read back on the next.
+/// `mecha persona story`: her events, levels and weather, through
+/// `story::story`'s own door, drawn and stored on the first asking.
 fn story_cmd(dir: &Path, cmd: StoryCmd) -> Result<()> {
     use mecha_core::persona::{routine, story};
     match cmd {
@@ -1407,7 +1410,10 @@ fn story_cmd(dir: &Path, cmd: StoryCmd) -> Result<()> {
             let from = to - chrono::Days::new(u64::from(days - 1));
             let got = story::story(dir, &name, from, to, today)?;
             let names = story::names(&dir.join(&name))?;
-            print!("{}", render_story(&got, &names, json)?);
+            print!("{}", render_story(&got.days, &names, json, today)?);
+            if let Some(why) = &got.why {
+                eprintln!("the rest is not drawn: {why}");
+            }
         }
         StoryCmd::Init { name } => {
             let store = load(dir);
@@ -1415,7 +1421,8 @@ fn story_cmd(dir: &Path, cmd: StoryCmd) -> Result<()> {
             let pdir = dir.join(&p.name);
             let Some(cell) = routine::load(&pdir)?.and_then(|r| r.cell) else {
                 bail!(
-                    "`{}` has no routine naming her kind of week; set it first                      (`mecha persona routine edit {}`)",
+                    "`{}` has no routine naming her kind of week; set it first \
+                     (`mecha persona routine edit {}`)",
                     p.name,
                     p.name
                 );
@@ -1434,6 +1441,7 @@ fn render_story(
     days: &[mecha_core::persona::story::StoryDay],
     names: &std::collections::BTreeMap<String, String>,
     json: bool,
+    today: chrono::NaiveDate,
 ) -> Result<String> {
     use mecha_core::persona::story;
     use std::fmt::Write;
@@ -1463,7 +1471,11 @@ fn render_story(
             "{} {}{} · {weather}",
             d.date.format("%a"),
             d.date,
-            if d.kept { "" } else { " (ahead, not kept)" }
+            match (d.kept, d.date > today) {
+                (true, _) => "",
+                (false, true) => " (ahead, not kept)",
+                (false, false) => " (past the keep window, drawn now and not kept)",
+            }
         )?;
         writeln!(out, "  morning: {}", lv(&d.morning))?;
         if d.events.is_empty() {
@@ -1477,6 +1489,8 @@ fn render_story(
     Ok(out)
 }
 
+/// `mecha persona day`: the sampled day, through `world::day`'s own door,
+/// drawn and stored on the first asking and read back on the next.
 fn day_cmd(dir: &Path, name: &str, date: Option<&str>, json: bool) -> Result<()> {
     use mecha_core::persona::world;
     let (date, today) = owner_dates(date)?;
