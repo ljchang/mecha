@@ -1736,12 +1736,20 @@ impl PersonaChats {
                     "locked": p.state.locked,
                     // Which of its parts are on, so the page offers a tab
                     // only for one that is (owner, 2026-11-02): memories
-                    // while any kind is kept, the week with `[life] world`,
-                    // the people with `[life] people` too.
+                    // while any kind is on, or while anything is stored,
+                    // since that tab is the page's door to forgetting and
+                    // unsharing (reviews of #477, #519 and #818); the week
+                    // with `[life] world`, the people with `[life] people`
+                    // too.
                     "shows": {
                         "memories": p.settings.memory.episodic
                             || p.settings.memory.semantic
-                            || p.settings.memory.user_facts != mecha_core::persona::UserFacts::Off,
+                            || p.settings.memory.user_facts != mecha_core::persona::UserFacts::Off
+                            || self
+                                .store
+                                .join(&p.name)
+                                .join(mecha_core::persona::memory::MEMORY_DB)
+                                .exists(),
                         "week": p.settings.life.world,
                         "people": p.settings.life.world && p.settings.life.people,
                     },
@@ -10943,6 +10951,60 @@ mod tests {
         // Another model: that model's numbers.
         assert_eq!(turbo["steps"], mecha_core::sampling::TURBO_STEPS);
         assert_eq!(turbo["cfg"], 1.0);
+    }
+
+    /// Which tabs the page offers follows the persona's settings (owner,
+    /// 2026-11-02): the week with `[life] world`, the people with both
+    /// switches, and memories while any kind is on or anything is stored.
+    #[test]
+    fn the_list_says_which_parts_are_on() {
+        let w = world();
+        let shows = || {
+            w.personas().list(&w.library, None, Some(chrono_tz::UTC))["personas"][0]["shows"]
+                .clone()
+        };
+        assert_eq!(
+            shows(),
+            serde_json::json!({ "memories": true, "week": false, "people": false })
+        );
+        let toml = w.store().join("mara/persona.toml");
+        let text = std::fs::read_to_string(&toml).unwrap();
+        std::fs::write(&toml, text.replace("world     = false", "world     = true")).unwrap();
+        assert_eq!(
+            (shows()["week"].clone(), shows()["people"].clone()),
+            (true.into(), false.into()),
+            "the week alone"
+        );
+        let both = std::fs::read_to_string(&toml)
+            .unwrap()
+            .replace("people    = false", "people    = true");
+        std::fs::write(&toml, both).unwrap();
+        assert_eq!(shows()["people"], true);
+        // Every kind of memory off: no tab, until something is stored.
+        let off = std::fs::read_to_string(&toml)
+            .unwrap()
+            .replace("episodic    = true", "episodic    = false")
+            .replace("semantic    = true", "semantic    = false")
+            .replace("user_facts  = \"shared\"", "user_facts  = \"off\"");
+        std::fs::write(&toml, off).unwrap();
+        assert_eq!(
+            shows()["memories"],
+            false,
+            "{}",
+            std::fs::read_to_string(&toml).unwrap()
+        );
+        std::fs::write(
+            w.store()
+                .join("mara")
+                .join(mecha_core::persona::memory::MEMORY_DB),
+            b"",
+        )
+        .unwrap();
+        assert_eq!(
+            shows()["memories"],
+            true,
+            "kept records keep the door to them"
+        );
     }
 
     /// The picture settings: set from the page and carried by the list with
