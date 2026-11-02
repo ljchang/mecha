@@ -22,6 +22,7 @@ use axum::Json;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
+use mecha_core::form_draft::{self, FormEdit};
 use mecha_core::instrument::{self, Hours};
 
 type St = State<super::WebState>;
@@ -35,15 +36,34 @@ fn err(status: StatusCode, e: impl std::fmt::Display) -> Response {
 pub async fn list(State(_state): St) -> Response {
     let listed = tokio::task::spawn_blocking(|| -> anyhow::Result<_> {
         let dir = instrument::types_dir()?;
-        Ok((dir.clone(), instrument::list_in(&dir)?))
+        let served = instrument::list_in(&dir)?;
+        let drafts = instrument::list_in(&form_draft::drafts_dir()?)?;
+        Ok((dir, served, drafts))
     })
     .await;
     match listed {
-        Ok(Ok((dir, all))) => Json(serde_json::json!({
-            "dir": dir,
-            "instruments": all,
-        }))
-        .into_response(),
+        Ok(Ok((dir, served, drafts))) => {
+            // Each served form says whether a draft of it waits; a draft of a
+            // form never published is listed on its own, as unpublished.
+            let mut rows: Vec<serde_json::Value> = served
+                .iter()
+                .map(|i| {
+                    let mut v = serde_json::to_value(i).unwrap_or_default();
+                    v["has_draft"] = drafts.iter().any(|d| d.id == i.id).into();
+                    v
+                })
+                .collect();
+            for d in drafts
+                .iter()
+                .filter(|d| !served.iter().any(|i| i.id == d.id))
+            {
+                let mut v = serde_json::to_value(d).unwrap_or_default();
+                v["draft_only"] = true.into();
+                v["has_draft"] = true.into();
+                rows.push(v);
+            }
+            Json(serde_json::json!({ "dir": dir, "instruments": rows })).into_response()
+        }
         Ok(Err(e)) => err(StatusCode::INTERNAL_SERVER_ERROR, e),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
@@ -498,4 +518,432 @@ async fn push(id: &str, manifest: &Path) -> anyhow::Result<String> {
         Child::Publish,
     )
     .await
+}
+
+// ── Forms: drafts, preview, publish ─────────────────────────────────────
+//
+// The served copy is the factory's record of what strangers see, so the
+// owner edits a draft beside it and Publish is `type push` of the draft
+// (`mecha_core::form_draft`). Every write here is the owner's, from this
+// page only, as the hours are.
+
+/// The most a form save body may be: a manifest is a few kilobytes.
+pub const MAX_FORM_BODY: usize = 256 * 1024;
+
+/// A form's working text: its draft if one waits, else the served copy.
+struct Working {
+    id: String,
+    kind: String,
+    text: String,
+    draft: bool,
+    served: Option<String>,
+}
+
+fn working(id: &str) -> anyhow::Result<Working> {
+    form_draft::valid_id(id)?;
+    let draft_path = form_draft::draft_path(&form_draft::drafts_dir()?, id)?;
+    let served = instrument::list_in(&instrument::types_dir()?)?
+        .into_iter()
+        .find(|i| i.id == id)
+        .map(|i| std::fs::read_to_string(&i.path))
+        .transpose()?;
+    let (text, draft) = match std::fs::read_to_string(&draft_path) {
+        Ok(t) => (t, true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => match &served {
+            Some(t) => (t.clone(), false),
+            None => anyhow::bail!("no form `{id}`, served or drafted"),
+        },
+        Err(e) => return Err(e.into()),
+    };
+    let kind = if text.contains("kind = \"booking\"") {
+        "booking"
+    } else {
+        "request"
+    }
+    .to_string();
+    Ok(Working {
+        id: id.to_string(),
+        kind,
+        text,
+        draft,
+        served,
+    })
+}
+
+fn form_state(w: &Working) -> serde_json::Value {
+    let mut out = serde_json::json!({
+        "id": w.id,
+        "kind": w.kind,
+        "draft": w.draft,
+        "published": w.served.is_some(),
+        "digest": instrument::digest(&w.text),
+        "text": w.text,
+        "kinds": form_draft::KINDS,
+    });
+    match form_draft::read_form(&w.text) {
+        Ok(f) => out["form"] = serde_json::to_value(f).unwrap_or_default(),
+        Err(e) => out["form_error"] = format!("{e:#}").into(),
+    }
+    out
+}
+
+/// GET /api/factory/starters — what a new form can begin as.
+pub async fn starters(State(_state): St) -> Response {
+    match run(
+        "factory-publish",
+        &["type".as_ref(), "starters".as_ref()],
+        None,
+        Child::Read,
+    )
+    .await
+    {
+        Ok(out) => {
+            let rows: Vec<serde_json::Value> = out
+                .lines()
+                .filter_map(|l| l.split_once('\t'))
+                .map(|(name, title)| serde_json::json!({ "name": name, "title": title }))
+                .collect();
+            Json(serde_json::json!({ "starters": rows })).into_response()
+        }
+        Err(e) => err(StatusCode::BAD_GATEWAY, e),
+    }
+}
+
+/// GET /api/factory/form?id= — the form as the editor shows it.
+pub async fn form(State(_state): St, Query(q): Query<IdQuery>) -> Response {
+    match tokio::task::spawn_blocking(move || working(&q.id)).await {
+        Ok(Ok(w)) => Json(form_state(&w)).into_response(),
+        Ok(Err(e)) => err(StatusCode::NOT_FOUND, e),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+#[derive(Deserialize, Clone)]
+pub struct FormSave {
+    pub id: String,
+    /// The digest of the text the page read (the draft, or the served copy).
+    pub base: String,
+    #[serde(default)]
+    pub form: Option<FormEdit>,
+    /// The whole manifest — the "Edit as TOML" save.
+    #[serde(default)]
+    pub raw: Option<String>,
+}
+
+#[allow(clippy::result_large_err)]
+/// POST /api/factory/form/save — write the draft, never the served copy.
+/// Checked by the factory before it lands, so a draft that will not parse
+/// never sits waiting to be published.
+pub async fn form_save(State(_state): St, Json(body): Json<FormSave>) -> Response {
+    let b = body.clone();
+    let prepared = tokio::task::spawn_blocking(move || -> Result<(Working, String), Response> {
+        let w = working(&b.id).map_err(|e| err(StatusCode::NOT_FOUND, e))?;
+        if instrument::digest(&w.text) != b.base {
+            return Err(err(StatusCode::CONFLICT, instrument::Stale));
+        }
+        let next = match (b.form, b.raw) {
+            (Some(f), None) => form_draft::write_form(&w.text, &f)
+                .map_err(|e| err(StatusCode::UNPROCESSABLE_ENTITY, e))?,
+            (None, Some(raw)) => raw,
+            _ => {
+                return Err(err(
+                    StatusCode::BAD_REQUEST,
+                    "a form save carries `form` or `raw`, one of them",
+                ))
+            }
+        };
+        if next.len() > MAX_FORM_BODY {
+            return Err(err(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "a manifest this large is not a form",
+            ));
+        }
+        Ok((w, next))
+    })
+    .await;
+    let (w, next) = match prepared {
+        Ok(Ok(p)) => p,
+        Ok(Err(refused)) => return refused,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    // The id is the file's name and the form's URL: a raw edit may not move
+    // it. Checked before the factory is asked anything.
+    let id_line = format!("id = \"{}\"", w.id);
+    if !next.lines().any(|l| l.trim() == id_line) {
+        return err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("the id must stay `{}`: it names the form's URL", w.id),
+        );
+    }
+    let dir = match form_draft::drafts_dir() {
+        Ok(d) => d,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, e);
+    }
+    let draft = match Draft::write(&dir.join("x"), &next) {
+        Ok(d) => d,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    match run(
+        "factory-publish",
+        &["type".as_ref(), "check".as_ref(), draft.0.as_os_str()],
+        None,
+        Child::Read,
+    )
+    .await
+    {
+        Ok(_) => {}
+        Err(e) => {
+            return err(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("the factory would refuse this form: {e:#}"),
+            )
+        }
+    }
+    let path = match form_draft::draft_path(&dir, &w.id) {
+        Ok(p) => p,
+        Err(e) => return err(StatusCode::BAD_REQUEST, e),
+    };
+    let base_text = w.text.clone();
+    let wrote = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        // Guard at the write, as the hours save does: the page read either
+        // the draft or the served copy, and neither may have moved since.
+        let now = working(&w.id)?;
+        if now.text != base_text {
+            anyhow::bail!(instrument::Stale);
+        }
+        instrument::replace_file(&path, &next)
+    })
+    .await;
+    match wrote {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) if e.downcast_ref::<instrument::Stale>().is_some() => {
+            return err(StatusCode::CONFLICT, e)
+        }
+        Ok(Err(e)) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+    let id = body.id.clone();
+    match tokio::task::spawn_blocking(move || working(&id)).await {
+        Ok(Ok(w)) => Json(form_state(&w)).into_response(),
+        Ok(Err(e)) => err(StatusCode::INTERNAL_SERVER_ERROR, e),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct IdBody {
+    pub id: String,
+    #[serde(default)]
+    pub base: Option<String>,
+}
+
+/// The page a form serves, made safe to show inside the owner's page: its
+/// stylesheet inlined and every script removed, for a `sandbox` frame with
+/// no network and no scripts at all.
+fn preview_html(html: &str, style: &str) -> String {
+    let mut out = String::with_capacity(html.len() + style.len());
+    let mut rest = html;
+    loop {
+        let script = rest.find("<script");
+        let link = rest.find("<link");
+        let next = match (script, link) {
+            (Some(a), Some(b)) => a.min(b),
+            (Some(a), None) => a,
+            (None, Some(b)) => b,
+            (None, None) => break,
+        };
+        out.push_str(&rest[..next]);
+        let tail = &rest[next..];
+        if tail.starts_with("<script") {
+            match tail.find("</script>") {
+                Some(end) => rest = &tail[end + "</script>".len()..],
+                None => {
+                    rest = "";
+                    break;
+                }
+            }
+        } else {
+            match tail.find('>') {
+                Some(end) => rest = &tail[end + 1..],
+                None => {
+                    rest = "";
+                    break;
+                }
+            }
+        }
+    }
+    out.push_str(rest);
+    let styled = format!("<style>{style}</style>");
+    match out.find("</head>") {
+        Some(at) => format!("{}{styled}{}", &out[..at], &out[at..]),
+        None => format!("{styled}{out}"),
+    }
+}
+
+/// POST /api/factory/form/render — what the working text would serve.
+pub async fn form_render(State(_state): St, Json(body): Json<IdBody>) -> Response {
+    let w = match tokio::task::spawn_blocking(move || working(&body.id)).await {
+        Ok(Ok(w)) => w,
+        Ok(Err(e)) => return err(StatusCode::NOT_FOUND, e),
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    let dir = match form_draft::drafts_dir().and_then(|d| {
+        std::fs::create_dir_all(&d)?;
+        Ok(d)
+    }) {
+        Ok(d) => d,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    let draft = match Draft::write(&dir.join("x"), &w.text) {
+        Ok(d) => d,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    match run("factory-publish", &["type".as_ref(), "render".as_ref(), draft.0.as_os_str()], None, Child::Read).await {
+        Ok(out) => match serde_json::from_str::<serde_json::Value>(&out) {
+            Ok(page) => Json(serde_json::json!({
+                "kind": page["kind"],
+                "html": preview_html(page["html"].as_str().unwrap_or(""), page["style"].as_str().unwrap_or("")),
+            }))
+            .into_response(),
+            Err(e) => err(StatusCode::BAD_GATEWAY, e),
+        },
+        Err(e) => err(StatusCode::UNPROCESSABLE_ENTITY, e),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct NewForm {
+    pub starter: String,
+    pub id: String,
+}
+
+/// POST /api/factory/form/new — a draft from a starter, under a new id.
+pub async fn form_new(State(_state): St, Json(body): Json<NewForm>) -> Response {
+    if let Err(e) = form_draft::valid_id(&body.id) {
+        return err(StatusCode::BAD_REQUEST, e);
+    }
+    let id = body.id.clone();
+    let taken = tokio::task::spawn_blocking(move || working(&id).is_ok())
+        .await
+        .unwrap_or(true);
+    if taken {
+        return err(
+            StatusCode::CONFLICT,
+            format!("a form called `{}` already exists", body.id),
+        );
+    }
+    let text = match run(
+        "factory-publish",
+        &[
+            "type".as_ref(),
+            "new".as_ref(),
+            body.starter.as_ref(),
+            "--id".as_ref(),
+            body.id.as_ref(),
+        ],
+        None,
+        Child::Read,
+    )
+    .await
+    {
+        Ok(t) => t,
+        Err(e) => return err(StatusCode::UNPROCESSABLE_ENTITY, e),
+    };
+    let id = body.id.clone();
+    let wrote = tokio::task::spawn_blocking(move || -> anyhow::Result<Working> {
+        let dir = form_draft::drafts_dir()?;
+        std::fs::create_dir_all(&dir)?;
+        instrument::replace_file(&form_draft::draft_path(&dir, &id)?, &text)?;
+        working(&id)
+    })
+    .await;
+    match wrote {
+        Ok(Ok(w)) => Json(form_state(&w)).into_response(),
+        Ok(Err(e)) => err(StatusCode::INTERNAL_SERVER_ERROR, e),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+/// POST /api/factory/form/publish — `type push` of the draft, which makes
+/// it what strangers see. A booking draft takes the served hours first.
+pub async fn form_publish(State(_state): St, Json(body): Json<IdBody>) -> Response {
+    let id = body.id.clone();
+    let w = match tokio::task::spawn_blocking(move || working(&id)).await {
+        Ok(Ok(w)) => w,
+        Ok(Err(e)) => return err(StatusCode::NOT_FOUND, e),
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    if !w.draft {
+        return err(
+            StatusCode::BAD_REQUEST,
+            "there is no draft to publish; this form is as served",
+        );
+    }
+    if body.base.as_deref() != Some(instrument::digest(&w.text).as_str()) {
+        return err(StatusCode::CONFLICT, instrument::Stale);
+    }
+    let text = match &w.served {
+        Some(served) => match form_draft::carry_hours(&w.text, served) {
+            Ok(t) => t,
+            Err(e) => return err(StatusCode::UNPROCESSABLE_ENTITY, e),
+        },
+        None => w.text.clone(),
+    };
+    let dir = match form_draft::drafts_dir() {
+        Ok(d) => d,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    let path = match form_draft::draft_path(&dir, &w.id) {
+        Ok(p) => p,
+        Err(e) => return err(StatusCode::BAD_REQUEST, e),
+    };
+    if text != w.text {
+        if let Err(e) = instrument::replace_file(&path, &text) {
+            return err(StatusCode::INTERNAL_SERVER_ERROR, e);
+        }
+    }
+    match run(
+        "factory-publish",
+        &["type".as_ref(), "push".as_ref(), path.as_os_str()],
+        None,
+        Child::Publish,
+    )
+    .await
+    {
+        Ok(out) => {
+            // Live, and recorded as served by the push itself; the draft has
+            // done its job.
+            let _ = std::fs::remove_file(&path);
+            tracing::info!(form = %w.id, "form published from the factory page");
+            Json(serde_json::json!({ "published": true, "output": out.trim() })).into_response()
+        }
+        Err(e) => err(StatusCode::BAD_GATEWAY, format!("not published: {e:#}")),
+    }
+}
+
+/// POST /api/factory/form/discard — drop the draft; what is served stays.
+pub async fn form_discard(State(_state): St, Json(body): Json<IdBody>) -> Response {
+    let done = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let w = working(&body.id)?;
+        if !w.draft {
+            return Ok(());
+        }
+        if body.base.as_deref() != Some(instrument::digest(&w.text).as_str()) {
+            anyhow::bail!(instrument::Stale);
+        }
+        std::fs::remove_file(form_draft::draft_path(&form_draft::drafts_dir()?, &w.id)?)?;
+        Ok(())
+    })
+    .await;
+    match done {
+        Ok(Ok(())) => Json(serde_json::json!({ "discarded": true })).into_response(),
+        Ok(Err(e)) if e.downcast_ref::<instrument::Stale>().is_some() => {
+            err(StatusCode::CONFLICT, e)
+        }
+        Ok(Err(e)) => err(StatusCode::NOT_FOUND, e),
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
 }

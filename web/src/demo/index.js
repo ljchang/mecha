@@ -145,6 +145,11 @@ export const ROUTES = [
   ['GET', /^\/api\/factory\/instrument$/, (url) => fx.factoryInstrument(url.searchParams.get('id'))],
   ['POST', /^\/api\/factory\/preview$/, () => ({ preview: fx.factoryInstrument('book').preview })],
   ['POST', /^\/api\/factory\/hours$/, () => new Response('the demo does not keep hours', { status: 501 })],
+  // Forms: the demo shows a form and its preview; it keeps and publishes nothing.
+  ['GET', /^\/api\/factory\/starters$/, () => ({ starters: [{ name: 'meeting', title: 'Request a meeting' }, { name: 'speaking', title: 'Invite me to speak' }] })],
+  ['GET', /^\/api\/factory\/form$/, () => fx.factoryForm],
+  ['POST', /^\/api\/factory\/form\/render$/, () => ({ kind: 'request', html: fx.factoryFormPreview })],
+  ['POST', /^\/api\/factory\/form\/(save|new|publish|discard)$/, () => new Response('the demo does not keep or publish forms', { status: 501 })],
 
   // The Proposals pane: the store chips, one store's listing, one item's
   // `show`. Every store answers with the same demo listing — the pane is

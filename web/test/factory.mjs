@@ -40,3 +40,13 @@ assert.equal(nextWindow([{ start: '20:00', end: '23:59' }]), null);
 assert.deepEqual(nextWindow([{ start: '21:00', end: '22:15' }]), { start: '22:15', end: '23:15' });
 
 console.log('factory: ok');
+
+import { nameFrom } from '../src/lib/factory.js';
+assert.equal(nameFrom('Your email'), 'your_email');
+assert.equal(nameFrom("Where you're from?"), 'where_you_re_from');
+assert.equal(nameFrom('2nd choice'), 'f_2nd_choice');
+assert.equal(nameFrom(''), 'field');
+assert.equal(nameFrom('Topic', ['topic']), 'topic_2');
+assert.equal(nameFrom('Topic', ['topic', 'topic_2']), 'topic_3');
+assert.equal(nameFrom('Café notes'), 'cafe_notes');
+console.log('factory names: ok');

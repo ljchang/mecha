@@ -89,6 +89,7 @@ pub mod fetch;
 pub mod fixture_check;
 pub mod forecast;
 pub mod forget;
+pub mod form_draft;
 pub mod frontdoor;
 pub mod goal;
 pub mod gossip;

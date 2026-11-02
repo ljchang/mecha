@@ -1,6 +1,7 @@
 <script>
   import { apiFetch as fetch } from './api.js';
-  import { byDay, nextWindow } from './factory.js';
+  import { byDay, nameFrom, nextWindow } from './factory.js';
+  import FactoryForm from './FactoryForm.svelte';
   // The Factory view: the instruments on the public surface, from home.
   // A booking page's hours are edited here and nowhere a model can reach —
   // the save is one handler in `serve/factory.rs`, with no CLI verb and no
@@ -30,6 +31,45 @@
   // `Review.svelte` records: App passes a new `initial` on a hash change
   // without remounting.
   const id = $derived(initial);
+
+  // A form that exists only as a draft has no served copy, so the
+  // instrument read 404s; the list says so, and the page shows the editor.
+  const draftOnly = $derived(!!list?.find((i) => i.id === id)?.draft_only);
+
+  // The new-form sheet: a starter and an id, then the draft opens.
+  let newing = $state(null); // { starters, starter, title, id, busy, error }
+  async function openNew() {
+    newing = { starters: [], starter: 'meeting', title: '', id: '', busy: false, error: null };
+    try {
+      const res = await fetch('/api/factory/starters');
+      if (!res.ok) throw new Error((await res.text()).trim());
+      newing.starters = (await res.json()).starters;
+    } catch (e) {
+      newing.error = String(e?.message ?? e);
+    }
+  }
+  async function createForm() {
+    newing.busy = true;
+    newing.error = null;
+    try {
+      const res = await fetch('/api/factory/form/new', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ starter: newing.starter, id: newing.id }),
+      });
+      if (!res.ok) throw new Error((await res.text()).trim());
+      const made = newing.id;
+      newing = null;
+      await loadList();
+      navigate(`factory/${made}`);
+    } catch (e) {
+      newing.error = String(e?.message ?? e);
+      newing.busy = false;
+    }
+  }
+  // The id names the form's public link; it is suggested from the starter
+  // and editable, in the factory's alphabet.
+  const suggestId = (text) => nameFrom(text, (list ?? []).map((i) => i.id)).replaceAll('_', '-');
 
   async function loadList() {
     try {
@@ -263,10 +303,13 @@
       {#if list === null && !listError}
         <div class="empty">reading the manifests…</div>
       {:else if list}
+        <button class="abtn newbtn" onclick={openNew}>+ New form</button>
         {#each list as inst (inst.path)}
           <button class="card rowbtn" disabled={!!inst.problem} onclick={() => navigate(`factory/${inst.id}`)}>
             <div class="rowtop">
               <span class="chip">{inst.kind === 'booking' ? 'booking page' : inst.kind === 'request' ? 'form' : inst.kind}</span>
+              {#if inst.draft_only}<span class="chip hazardtext">not published yet</span>
+              {:else if inst.has_draft}<span class="chip hazardtext">unpublished changes</span>{/if}
               <span class="when">{inst.id}</span>
             </div>
             <div class="topic">{inst.title || inst.id}</div>
@@ -283,8 +326,12 @@
         </button>
         <span class="dtitle">{item?.title || id}</span>
       </div>
-      {#if itemError}<div class="warnline">{@render hazardGlyph()}<span>{itemError}</span></div>{/if}
-      {#if !item && !itemError}
+      {#if itemError && !draftOnly}<div class="warnline">{@render hazardGlyph()}<span>{itemError}</span></div>{/if}
+      {#if draftOnly}
+        <!-- Never published: nothing is served yet, so there is no status
+             to show — only the draft, and Publish. -->
+        <FactoryForm {id} onpublished={() => { loadList(); loadItem(id); }} />
+      {:else if !item && !itemError}
         <div class="empty">reading {id}…</div>
       {:else if item}
         <!-- Status: what the page is serving now, by the factory's answer. -->
@@ -335,7 +382,7 @@
         {/if}
 
         {#if item.kind !== 'booking'}
-          <div class="note">This is a form. Editing its fields from here is not built yet — edit <code>{item.path}</code> and run <code>factory-publish type push</code>.</div>
+          <FactoryForm {id} onpublished={() => { loadList(); loadItem(id); }} />
         {:else if item.hours_error}
           <div class="warnline">{@render hazardGlyph()}<span>{item.hours_error}</span></div>
         {:else if draft}
@@ -464,6 +511,9 @@
             </div>
           {/if}
         {/if}
+        {#if item.kind === 'booking'}
+          <FactoryForm {id} onpublished={() => { loadList(); loadItem(id); }} />
+        {/if}
       {/if}
     {/if}
   </div>
@@ -486,6 +536,29 @@
       <div class="btnrow">
         <button class="abtn" disabled={saving} onclick={() => (confirming = false)}>Back</button>
         <button class="abtn primary" disabled={saving} onclick={save}>{saving ? 'Saving…' : 'Save and push'}</button>
+      </div>
+    </div>
+  {/if}
+
+  {#if newing}
+    <div class="sheet">
+      <div class="sheet-grip"></div>
+      <div class="sheet-text">A new form</div>
+      {#if newing.error}<div class="warnline"><span>{newing.error}</span></div>{/if}
+      <label class="field">
+        <span class="flabel">Start from</span>
+        <select class="tzsel" bind:value={newing.starter} onchange={() => { if (!newing.id) newing.id = suggestId(newing.starter); }}>
+          {#each newing.starters as st}<option value={st.name}>{st.title || st.name}</option>{/each}
+        </select>
+      </label>
+      <label class="field">
+        <span class="flabel">Link name</span>
+        <input class="tzsel" placeholder="office-hours" bind:value={newing.id} />
+      </label>
+      <div class="note">The link name is part of the form's public address and cannot change after it is published. Lowercase letters, digits and hyphens. Nothing is published until you press Publish.</div>
+      <div class="btnrow">
+        <button class="abtn" disabled={newing.busy} onclick={() => (newing = null)}>Back</button>
+        <button class="abtn primary" disabled={newing.busy || !newing.id} onclick={createForm}>Create draft</button>
       </div>
     </div>
   {/if}
@@ -553,6 +626,8 @@
   .pstart sub { font-size: 8px; margin-left: 1px; color: var(--accent-700); }
   .actionbar { display: flex; gap: 8px; justify-content: flex-end; padding: 10px var(--gutter); border-top: 1px solid var(--accent-900); background: var(--bg); }
   .abtn { flex-shrink: 0; min-height: 44px; padding: 0 16px; background: var(--surface); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font-size: 14px; cursor: pointer; white-space: nowrap; }
+  .newbtn { align-self: flex-start; }
+  .tzsel { background: var(--surface); border: 1px solid var(--accent-900); border-radius: var(--radius); color: var(--text); font: inherit; font-size: 13px; padding: 8px 10px; color-scheme: dark; min-width: 0; flex: 1; max-width: 260px; }
   .abtn.primary { background: var(--accent-400); color: var(--void); font-weight: 500; border: none; }
   .abtn:disabled { opacity: 0.5; }
   .btnrow { display: flex; gap: 10px; }
