@@ -7541,6 +7541,12 @@ The design decisions, each of which is a bug if undone:
   file would be faster and would be a second source of truth that can disagree
   with the first — the same reasoning that has the TUI read a trigger's last
   answer back from the session record instead of caching it.
+- **The outcome row is the one per-run clock** (`RunStats::ended_at`),
+  stamped by `Session::record_outcome` as the row is written and never by
+  `RunStats::of_run`, so a replayed or folded row invents no time; a fold
+  keeps the last run's, `None` included. A `Config`'s clock is per process
+  attach and per router rebind, so before this a chat held open for days
+  had no time on its later turns (`persona::initiative`'s ordering).
 - **Every front-end writes the outcome record** — `run`, `chat`, the TUI, web,
   Slack, triggers. Before `Record::Outcome` existed the transcript kept two of
   `RunOutcome`'s fields while a trigger's ledger kept the rest, so a run a
