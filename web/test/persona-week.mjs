@@ -1,6 +1,6 @@
 // The persona week view's pure logic, imported from the shipped module.
 import assert from 'node:assert/strict';
-import { personaUrl, ENDPOINTS, weekUrl, weekDays, foldedHours, weekUnavailable, cellBody, WEEK_CELLS, ACTIVITY_GROUP, shiftWeek, stretchLine, dayClock, WEEK_ABSENT, draftBody, anchorLine } from '../src/lib/persona.js';
+import { personaUrl, ENDPOINTS, weekUrl, weekDays, foldedHours, weekUnavailable, cellBody, WEEK_CELLS, ACTIVITY_GROUP, shiftWeek, stretchLine, dayClock, WEEK_ABSENT, draftBody, anchorLine, storyDay } from '../src/lib/persona.js';
 import { PANE_FEATURE } from '../src/lib/features.js';
 
 // The endpoint is one the builder accepts, and so one the docs demo checks.
@@ -108,3 +108,17 @@ assert.equal(
 );
 assert.equal(anchorLine({ what: 'late shift', activity: 'work', days: [5, 6], start_minute: 22 * 60, minutes: 240, chance: 1 }), 'Weekends 22:00–02:00+1 · late shift (work) · always');
 assert.equal(anchorLine({ what: 'x', activity: 'work', days: [0, 2], start_minute: 0, minutes: 60, chance: 1 }).slice(0, 8), 'Mon, Wed');
+
+// Her story on a day: weather, the levels that ended away from normal, and
+// the events as the server shows them; nothing when the week has none.
+{
+  const data = { story: [{ date: '2026-11-02', weather: { sky: 'snow', high_c: -2, low_c: -9 }, evening: { energy: 'low', stress: 'normal', mood: 'high' }, events: [{ title: 'coffee with {who}', shown: 'coffee with Ines', size: 'minor' }, { title: 'x', size: 'major' }] }] };
+  assert.deepEqual(storyDay(data, '2026-11-02'), {
+    weather: 'snow -2°/-9°C',
+    levels: 'energy low · mood high',
+    events: [{ text: 'coffee with Ines', major: false }, { text: 'x', major: true }],
+  });
+  assert.equal(storyDay(data, '2026-11-03'), null);
+  assert.equal(storyDay({}, '2026-11-02'), null);
+  assert.equal(storyDay({ story: [{ date: 'd', weather: { sky: 'hail', high_c: 1, low_c: 0 }, events: [] }] }, 'd').weather, 'unknown sky 1°/0°C');
+}

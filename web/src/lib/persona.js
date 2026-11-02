@@ -1058,6 +1058,23 @@ export function stretchLine(s) {
 // 4am bar as percentages. A folded day has no bars. A stretch whose source
 // is not the sampler's or the owner's is marked, since unknown is never
 // clean.
+// Her story on one day of the week view (PERSONA-LIFE-DESIGN.md §4.3): the
+// weather, the levels that ended the day away from normal, and the events,
+// as the server shows them. `null` when the week carries no story.
+export const STORY_SKY = { clear: 'clear', cloudy: 'cloudy', fog: 'fog', drizzle: 'drizzle', rain: 'rain', snow: 'snow', storm: 'storm' };
+export function storyDay(data, date) {
+  const d = (data?.story ?? []).find((s) => s.date === date);
+  if (!d) return null;
+  const w = d.weather;
+  const weather = w ? `${STORY_SKY[w.sky] ?? 'unknown sky'} ${w.high_c}°/${w.low_c}°C` : null;
+  const levels = ['energy', 'stress', 'mood']
+    .filter((k) => d.evening?.[k] && d.evening[k] !== 'normal')
+    .map((k) => `${k} ${d.evening[k]}`)
+    .join(' · ');
+  const events = (d.events ?? []).map((e) => ({ text: e.shown ?? e.title, major: e.size !== 'minor' }));
+  return { weather, levels, events };
+}
+
 export function weekDays(data) {
   return (data?.week?.days ?? []).map((d) => {
     const date = new Date(`${d.date}T12:00:00`);

@@ -1,0 +1,133 @@
+# Everyday, for anyone.
+
+[[storylet]]
+id = "soaked"
+title = "got caught in the rain without a coat"
+size = "minor"
+weather = ["rain", "storm"]
+effect = { mood = -1 }
+
+[[storylet]]
+id = "first_warm_day"
+title = "a warm day, and spent part of it outside"
+size = "minor"
+weather = ["clear"]
+warmer_than = 18
+effect = { mood = 1, energy = 1 }
+
+[[storylet]]
+id = "snow_morning"
+title = "woke to snow"
+size = "minor"
+weather = ["snow"]
+effect = { mood = 1 }
+
+[[storylet]]
+id = "bad_sleep"
+group = "sleep"
+title = "slept badly"
+size = "minor"
+effect = { energy = -1 }
+
+[[storylet]]
+id = "good_sleep"
+group = "sleep"
+title = "slept through the night for once"
+size = "minor"
+energy = "not_high"
+effect = { energy = 1 }
+
+[[storylet]]
+id = "lost_keys"
+title = "lost her keys for twenty minutes"
+size = "minor"
+effect = { stress = 1 }
+
+[[storylet]]
+id = "good_meal"
+title = "cooked something that turned out really well"
+size = "minor"
+doing = ["cooking"]
+effect = { mood = 1 }
+
+[[storylet]]
+id = "errand_line"
+title = "an errand took twice as long as it should have"
+size = "minor"
+doing = ["errands", "shopping"]
+effect = { stress = 1, mood = -1 }
+
+[[storylet]]
+id = "call_family"
+title = "a long call with {who}"
+size = "minor"
+with = ["kin"]
+effect = { mood = 1 }
+
+[[storylet]]
+id = "friend_text"
+title = "{who} sent something that made her laugh"
+size = "minor"
+with = ["friend"]
+effect = { mood = 1 }
+
+[[storylet]]
+id = "small_spat"
+group = "conflict"
+title = "a small spat with {who}"
+size = "minor"
+with = ["friend", "kin", "romantic"]
+stress = "not_low"
+effect = { mood = -1, stress = 1 }
+
+[[storylet]]
+id = "workout_pr"
+title = "a really good workout"
+size = "minor"
+doing = ["exercise"]
+effect = { energy = 1, mood = 1 }
+
+[[storylet]]
+id = "headache"
+group = "health"
+title = "a headache most of the afternoon"
+size = "minor"
+stress = "high"
+effect = { energy = -1 }
+
+[[storylet]]
+id = "rested_day"
+group = "rest"
+title = "a slow, easy day that left her rested"
+size = "minor"
+days = ["weekends"]
+effect = { stress = -1 }
+
+[[storylet]]
+id = "caught_a_cold"
+group = "health"
+title = "came down with a cold"
+size = "major"
+energy = "not_high"
+effect = { energy = -1, mood = -1 }
+
+[[storylet]]
+id = "good_news_friend"
+title = "{who} shared big good news"
+size = "major"
+with = ["friend", "kin"]
+effect = { mood = 1 }
+
+[[storylet]]
+id = "falling_out"
+group = "conflict"
+title = "a real falling-out with {who}"
+size = "major"
+with = ["friend", "kin", "romantic"]
+effect = { mood = -1, stress = 1 }
+
+[[storylet]]
+id = "phone_broke"
+title = "her phone died for good"
+size = "major"
+effect = { stress = 1, mood = -1 }

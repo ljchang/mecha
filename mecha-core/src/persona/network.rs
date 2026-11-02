@@ -2208,7 +2208,7 @@ mod tests {
         .unwrap();
         c.execute("UPDATE edge_events SET layer = 500 WHERE person = ?1 AND event = 'formed' AND other IS NULL", [&theo]).unwrap();
         c.execute(
-            "UPDATE edge_events SET source = 'feed' WHERE other IS NOT NULL",
+            "UPDATE edge_events SET source = 'carrier_pigeon' WHERE other IS NOT NULL",
             [],
         )
         .unwrap();
