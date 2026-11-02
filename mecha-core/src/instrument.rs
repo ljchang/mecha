@@ -179,6 +179,18 @@ pub const DAYS: [&str; 7] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 
 /// Read a booking manifest's hours.
 pub fn read_hours(text: &str) -> Result<Hours> {
+    // The shape `write_hours` can set in place, checked first: an inline
+    // `availability = { … }` reads as a table but is not one `toml_edit`
+    // edits, and the editor must not open on hours it cannot save.
+    let edit: toml_edit::DocumentMut = text.parse().context("parsing the manifest")?;
+    if edit
+        .get("availability")
+        .is_some_and(|i| i.as_table().is_none())
+    {
+        bail!(
+            "[availability] is written inline here; edit it by hand, or as a [availability] table"
+        );
+    }
     let doc: toml::Table = toml::from_str(text)?;
     let Some(a) = doc.get("availability").and_then(|v| v.as_table()) else {
         bail!("not a booking manifest: no [availability] section");
@@ -700,6 +712,83 @@ heading = "You're booked"
         replace_if_unchanged(&path, &base, &text).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_inline_availability_is_refused_at_the_read_not_the_save() {
+        let inline = "id = \"book\"\nkind = \"booking\"\navailability = { timezone = \"UTC\", durations = [30], windows = [] }\n";
+        let err = read_hours(inline).unwrap_err().to_string();
+        assert!(err.contains("inline"), "{err}");
+    }
+
+    /// "The owner is the only author" as a property of the tree rather than
+    /// of four documents: nothing but this module and the web handler may
+    /// call the functions that write a manifest. A tool, a CLI verb or a
+    /// trigger that reached them would fail here, by name.
+    #[test]
+    fn only_the_owners_page_writes_hours() {
+        const WRITERS: [&str; 4] = [
+            "write_hours(",
+            "rewrite(",
+            "replace_if_unchanged(",
+            "replace_file(",
+        ];
+        const ALLOWED: [&str; 2] = [
+            "mecha-core/src/instrument.rs",
+            "mecha-cli/src/commands/serve/factory.rs",
+        ];
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap();
+        let mut offenders = Vec::new();
+        let mut stack: Vec<PathBuf> = [
+            "mecha-core/src",
+            "mecha-cli/src",
+            "mecha-mail/src",
+            "mecha-slack/src",
+        ]
+        .iter()
+        .map(|d| root.join(d))
+        .collect();
+        let mut seen = 0;
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                seen += 1;
+                let rel = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if ALLOWED.contains(&rel.as_str()) {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).unwrap_or_default();
+                if text.contains("instrument::")
+                    && WRITERS
+                        .iter()
+                        .any(|w| text.contains(&format!("instrument::{w}")))
+                {
+                    offenders.push(rel);
+                }
+            }
+        }
+        assert!(seen > 100, "the walk read the tree ({seen} files)");
+        assert!(
+            offenders.is_empty(),
+            "a booking page's hours are the owner's to write, from the web page only \
+             (ARCHITECTURE.md §The Factory view); these reach a writer: {offenders:?}"
+        );
     }
 
     #[test]
