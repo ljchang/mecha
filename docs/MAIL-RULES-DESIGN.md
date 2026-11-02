@@ -238,12 +238,19 @@ immediate archive would remove the thread before the forward is decided.
 They have to: `classify` enumerates threads from `mail_recent`, which is
 inbox-only (`in:inbox` on Gmail, `recent` on Outlook), so a thread archived at
 minute three would never be classified and the reply would never be
-considered, with nothing on the ledger to say why. Deferring is the cheaper
-of the two shapes that hold — the other is an id queue that `classify` reads
-beside `mail_recent`, on `due_outside_window`'s precedent — and it needs no
-new state: whether any description rule is enabled is known statically from
-the enabled set, and which other header rules match a given
-thread is known in the same timer pass, before anything executes. P1 builds this, though no description rule exists until P4,
+considered, with nothing on the ledger to say why. **Deferring alone is not
+enough, though**: `classify` reads `mail_recent`'s newest-N window, threads
+leave that window on a busy day, and a deferred thread that left it would
+lose its archive and every rule's evaluation in silence. So a deferral is
+**recorded**: the header pass writes the thread's id to a deferred queue in
+the rule store, and `classify` reads that queue beside `mail_recent` — the id
+queue that `due_outside_window` already is for the triage store, not a new
+kind of mechanism. A queued thread is evaluated and its deferred actions run
+whether or not it is still in the window; one that cannot be read is a
+`failed: thread unreadable` ledger row, never a silent drop. Whether any
+description rule is enabled is known statically from the enabled set, and
+which other header rules match a given thread is known in the same timer
+pass, before anything executes. P1 builds this, though no description rule exists until P4,
 so the bug cannot land dormant. A GitHub
 notification should cost a string comparison, not a model call, whenever
 "the first rule by priority owns the thread" allows it.
@@ -336,8 +343,9 @@ both declared by the same rule.
 ### 4.4 When it runs
 
 - Header rules' **mailbox and record actions**: `mecha mail rule apply
-  --headers`, on its own five-minute timer. No model, so no `model-idle.sh`
-  gate.
+  --headers`, on its own five-minute timer — except the inbox-removing ones
+  §4.1 defers to the classify pass when a description rule or an outbound
+  action could still need the thread. No model, so no `model-idle.sh` gate.
 - **Every outbound action, from any rule**, is decided in one place: the
   end of the `classify` pass, after every rule has been evaluated for the
   thread. That is the only way §4.3's "first by priority" can hold — a
@@ -385,7 +393,11 @@ actions are once per thread.** The classifier reads a thread, but a thread
 grows. So a rule evaluates a thread against **its newest inbound message**:
 that is the message the header matchers read, the one §5.4's guards check
 (its `From`, its `Authentication-Results`), and the one whose provider id
-keys mailbox actions. Outbound actions are additionally limited to **one
+keys mailbox actions. Every ledger row therefore carries the **thread id**
+as well as the message id — Gmail's `threadId`, Outlook's `conversationId`,
+both stable across moves — and the once-per-thread check below is a lookup
+on `(rule, account, thread id)` over the outbound rows, a key of its own
+beside the per-message one. Outbound actions are additionally limited to **one
 occasion per rule per thread**: all of a rule's outbound actions fire together
 on the first message that triggers them — the receipts rule's `forward` *and*
 typed `send` both go (§4.3) — and a later message in a thread the rule has
@@ -454,10 +466,19 @@ in `auto` only if its matcher constrains the sender** — a `from` or
 `from_domain` key. An `account` key does not count: which account mail
 arrived at says nothing about who sent it. A rule whose matcher is
 `describe` alone may still *propose* these sends. R3's "to a specific person"
-becomes "from a known set, to a specific person". The residual the owner
-accepts by enabling such a rule is then the narrow one: a listed sender's
-real account sending something false, with the ledger and the digest showing
-every forward that went.
+becomes "from a known set, to a specific person".
+
+**A domain is only a known set if few people can send from it.** A
+`from_domain` naming a public mailbox provider (`gmail.com`, `outlook.com`,
+`yahoo.com`, `icloud.com`, `proton.me` and the like — a closed list compiled
+into the binary) or one of the owner's own accounts' domains (a university's,
+where every student and colleague has an address) is a population, not a
+known set, and does not count; such a rule needs a `from` key naming the
+addresses. A vendor's or a company's own domain counts, and the owner who
+lists it accepts that anyone who can send from that domain is in the set. The
+residual the owner accepts by enabling such a rule is then the narrow one: a
+listed sender's real account sending something false, with the ledger and
+the digest showing every forward that went.
 
 **A drafted reply (`draft_with`, §6.3) needs the same key to run in `auto`.**
 Only a *template* `reply` is exempt, and on §5.1's argument alone: its payload
@@ -758,7 +779,12 @@ the residual risk).
 
 The control that does own `Blind` is `block_sends_after_private`, which
 refuses both classes but runs in the loop's dispatch, where a harness-side
-send never passes. **So the rule engine reads it itself:** with
+send never passes. **So the rule engine reads it itself — from the global
+config only** (`Config::load_global`, the trigger runner's rule), never
+through the layered load: a `mecha.toml` in whatever directory the rule
+engine runs from could otherwise lower a guard the owner raised globally,
+which is the cloned-repository threat §3 keeps the store out of layered
+config for. With
 `block_sends_after_private = true`, **every** outbound action group stays in
 `propose` — template replies included — and the rule page says that guard is
 holding it. Its doc comment says "block *every* outbound call" and "turn this
@@ -914,10 +940,13 @@ real and worth serving, and the safe shape exists already in
   drafted after reading mail installs a description whose origin is
   `Origin::of_proposal`'s untrusted answer. So **no outbound action group may
   enter `auto` while the rule's description, any template it sends, or its
-  `to` is model-proposed text from an armed conversation.** `to` is the one
-  field §3 calls owner-written and §14 says never comes from a model, and a
-  proposal writes the whole `rule.toml`, so a proposed recipient is held to
-  the same rule as proposed words — and the approval screen shows it first. The rescue is `Reflexion::provenance`'s existing move: the
+  `to` is model-proposed text from an armed conversation.** And `to` is held
+  to a stricter rule than words: **an outbound group may enter `auto` only
+  when its `to` is `Owner` — typed or edited by the owner — never a proposed
+  address left as proposed, even from a clean conversation.** `to` is the one
+  field that bounds where every automatic forward and send lands, §3 calls it
+  owner-written, and a proposal writes the whole `rule.toml`; the approval
+  screen shows it first and opens it for editing. The rescue is `Reflexion::provenance`'s existing move: the
   installed record keeps a digest of each proposed text, and once the owner
   has changed one, it is the owner's words. The rule store records each
   text's origin in `imagelib::Origin`'s terms, the enum `of_proposal`
@@ -1054,7 +1083,9 @@ Sources: [Inbox Zero security and data](https://docs.getinboxzero.com/essentials
 One is the owner's:
 
 0. **Automatic forwards, sends and drafted replies need a sender-constrained
-   matcher (§5.2).** The design's default, found in review: without it, any
+   matcher (§5.2)** — a `from` list, or a `from_domain` that is not a public
+   mailbox provider or the owner's own institution. The design's default,
+   found in review: without it, any
    stranger with a domain and a plausible invoice reaches finance under the
    owner's name, or steers a drafted reply's quotes from the `shareable`
    files. Template replies are exempt. The alternative is to accept that
@@ -1073,8 +1104,9 @@ The rest are answered by measurement or by a decision made elsewhere:
 ## 14. What is deliberately not being built
 
 - **A rule that takes a recipient from the mail or from a model**, other than
-  `reply`'s authenticated sender, and a proposed `to` that the owner has
-  installed and approved on screen with the address shown first (§9).
+  `reply`'s authenticated sender. A proposed `to` may be installed and used in
+  `propose`, but reaches `auto` only once the owner has typed or edited it
+  (§9).
 - **Auto-promotion, or a promotion gate.** No rule moves up the ladder
   without the owner, no statistic moves it, and no statistic stands between
   the owner and the switch either (R6).
