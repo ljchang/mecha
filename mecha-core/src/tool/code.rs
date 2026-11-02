@@ -1,7 +1,7 @@
 //! The `code` tool (`docs/CODE-MODE-DESIGN.md`, slice 3b): a short Python
 //! program run in the interpreter ([`crate::interpreter`]), whose calls to
-//! tools come back through the run's own gate, and whose results stay in the
-//! host as opaque handles.
+//! tools come back through the run's own gate as `str`, and of which only
+//! what it prints reaches the model.
 //!
 //! The invariants, each a section of the design:
 //! - **Admission is per run** (§2). A tool is a program function only if it
@@ -18,14 +18,17 @@
 //!   program and prompts nobody. Taint is armed from the raw result before
 //!   the program resumes, and each host call pushes a trace entry tagged
 //!   `in_program`.
-//! - **Results are handles** (§3): the bytes stay here, and the program holds
-//!   a stub (`<handle 3: 48,213 chars from mail_get_thread>`), which is also
-//!   what `print` shows. Text reaches the program only through `peek`,
-//!   capped and counted. Patterns run here, with Rust's linear-time `regex`.
-//! - **Host messages carry no bytes** (§3, §4): every raise names a handle,
-//!   an offset, a tool or a limit, under one of `QueryError:`, `ToolError:`,
-//!   `HandleError:` and `LimitError:`. A tool's error body is a handle like
-//!   any result, and a failed pass is named by what failed to parse.
+//! - **Results are text** (§3, R11): a tool's result reaches the program as
+//!   a `str`, so string methods, slicing and `in` work as the model expects.
+//!   The guard is on what leaves the program: its printed output and ending,
+//!   capped by [`render`] and again by the dispatch, which wraps it as any
+//!   tool result. The opaque handles that came before cost about a quarter of
+//!   every program written in M2 (2026-11-02). The host's helpers (`grep`,
+//!   `count`, `find`) run Rust's linear-time `regex` over a text argument.
+//! - **Host messages are tagged** (§3, §4): every raise opens with one of
+//!   `QueryError:`, `ToolError:`, `HandleError:` and `LimitError:`. A failed
+//!   pass is named by what failed to parse, never its raw output, and a
+//!   provider failure by its class, never a server's body.
 //! - **A sub-call is one quarantined pass** (§4): `llm_query` and `llm_map`
 //!   hand handles to a [`QuarantinedPass`] — a fixed frame, the program's
 //!   instruction, the sources delimited, the schema — with no tools and one
@@ -119,25 +122,18 @@ pub mod defaults {
     pub const TOOL_READS: u32 = 2048;
     /// Handle operations per program, `budget()` included.
     pub const HANDLE_OPERATIONS: u32 = 2048;
-    /// Bytes the program's handles may hold: every tool read's raw result,
-    /// and every new string a `json_get` leaf decodes.
+    /// Bytes of tool results one program may be handed, summed over its
+    /// reads.
     pub const HOST_BYTES: usize = 64 * 1024 * 1024;
     /// The same, for every program in the process at once.
     pub const PROCESS_HOST_BYTES: usize = 256 * 1024 * 1024;
-    /// Handles one program may hold.
-    pub const LIVE_HANDLES: usize = 4096;
-    /// Text `peek` may hand the program, in bytes: one count with `str[n]`
-    /// sub-call results (`peeked_bytes`).
-    pub const PEEK_BYTES: usize = 256 * 1024;
     /// `peek`'s `n` when the program names none.
     pub const PEEK_DEFAULT: usize = 2000;
-    /// The least `n` `chunks` accepts, so one counted operation cannot mint
-    /// a handle per character.
-    pub const CHUNK_FLOOR: usize = 256;
-    /// Not a §5 row: the most `(start, end)` pairs one `find` returns. A
-    /// pattern matching every character of a 64 MB handle would otherwise
-    /// build a value of billions of pairs in the host before any limit saw
-    /// it, so a sweep that wants more narrows the pattern or slices first.
+    /// Not a §5 row: the most `(start, end)` pairs one `find` returns, and
+    /// the most lines one `grep` does. A pattern matching every character of
+    /// a 64 MB text would otherwise build a value of billions of pairs in the
+    /// host before any limit saw it, so a sweep that wants more narrows the
+    /// pattern or slices first.
     pub const FIND_MATCHES: usize = 4096;
 }
 
@@ -151,8 +147,6 @@ pub struct HostLimits {
     pub tool_reads: u32,
     pub handle_operations: u32,
     pub host_bytes: usize,
-    pub live_handles: usize,
-    pub peek_bytes: usize,
 }
 
 impl Default for HostLimits {
@@ -164,14 +158,12 @@ impl Default for HostLimits {
             tool_reads: defaults::TOOL_READS,
             handle_operations: defaults::HANDLE_OPERATIONS,
             host_bytes: defaults::HOST_BYTES,
-            live_handles: defaults::LIVE_HANDLES,
-            peek_bytes: defaults::PEEK_BYTES,
         }
     }
 }
 
-/// The bytes every program in the process holds in handles, against one
-/// ceiling (§5): two `code` calls in one turn, a parent's beside a child's,
+/// The bytes of tool results every program in the process holds, against
+/// one ceiling (§5): two `code` calls in one turn, a parent's beside a child's,
 /// and `mecha batch` all run at once, and per-program limits alone would
 /// not bound N × 64 MB. Never shown to a program: it moves with other
 /// programs, and reading it would be a cross-program observable.
@@ -224,11 +216,12 @@ impl BytePool {
 
 /// The host functions every program has (§3, §4), beside its admitted
 /// tools. A tool whose name collides with one of these is not admitted.
-pub const HOST_FUNCTIONS: [&str; 12] = [
+pub const HOST_FUNCTIONS: [&str; 13] = [
     "budget",
     "chunks",
     "count",
     "find",
+    "grep",
     "json_get",
     "lines",
     "llm_map",
@@ -264,7 +257,10 @@ pub struct ProgramStats {
     /// Every pass's `Usage`, summed: what the run's own total takes.
     #[serde(default)]
     pub usage: crate::message::Usage,
-    /// `peek` and `str[n]` bytes handed to the program (§5, one count).
+    /// Bytes `peek` and `str[n]` answers handed the program (§5). A count
+    /// with no cap since R11 (2026-11-02), and still only those two: a
+    /// stored counter keeps its meaning, so a read's text is not added,
+    /// though a read now reaches the program as text too.
     #[serde(default)]
     pub peeked_bytes: u64,
     /// The program ran to its end.
@@ -292,8 +288,8 @@ impl ProgramStats {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Admission {
     tools: BTreeMap<String, (Capabilities, EffectClass)>,
-    /// The admitted tools whose result a program gets as a list of `str`,
-    /// not a handle (`Tool::lists_names`, §3). Every live run opened with
+    /// The admitted tools whose result a program gets as a list of `str`
+    /// names rather than one `str` (`Tool::lists_names`, §3). Every live run opened with
     /// `name.startswith(...)` on `fs_list`'s entries and spent its first
     /// programs on the error (2026-11-01).
     ///
@@ -635,6 +631,7 @@ impl CodeTool {
     }
 
     async fn run(&self, program: &str, host: &HostCalls, ctx: &ToolCtx) -> ToolOutput {
+        let source = program;
         let reach = match host.reach(&self.admission).await {
             Ok(r) => r,
             // A program refused at its start is still a program, and a
@@ -697,7 +694,9 @@ impl CodeTool {
             };
         };
         let stats = state.stats(Some(&finished.end));
-        let (content, is_error) = render(finished, host.result_cap);
+        let mut names: Vec<&str> = HOST_FUNCTIONS.to_vec();
+        names.extend(state.reach.iter().map(String::as_str));
+        let (content, is_error) = render(finished, host.result_cap, &shadowed(source, &names));
         ToolOutput {
             content,
             is_error,
@@ -713,9 +712,13 @@ impl CodeTool {
 /// (§13), so `the_descriptions_example_runs_as_written` runs this text, not
 /// a tidier copy: a subdirectory in the listing once would have ended the
 /// program on `fs_read`, with the test's own guard hiding it (review of #793).
+/// It matches the field, a line that starts `Attendees:`, because three of
+/// the four failed 300-note programs in M2 matched a name anywhere in the
+/// note and reported every meeting Marco attended as one he presented.
 const EXAMPLE: &str = "hits = []\n\
     for name in fs_list(path=\"notes\"):\n    if name.endswith(\"/\"):\n        continue\n    \
-    h = fs_read(path=\"notes/\" + name)\n    if count(h, \"Attendees:.*Priya\") > 0:\n        \
+    text = fs_read(path=\"notes/\" + name)\n    for line in text.splitlines():\n        \
+    if line.startswith(\"Attendees:\") and \"Priya\" in line:\n            \
     hits.append(name)\n\
     print(len(hits), hits)\n";
 
@@ -729,10 +732,9 @@ const EXAMPLE: &str = "hits = []\n\
 const JUDGE_EXAMPLE: &str = "names = []\n\
     parts = []\n\
     for name in fs_list(path=\"tickets\"):\n    if name.endswith(\"/\"):\n        continue\n    \
-    h = fs_read(path=\"tickets/\" + name)\n    hits = find(h, \"(?i)resolution\")\n    \
+    text = fs_read(path=\"tickets/\" + name)\n    i = text.lower().rfind(\"resolution\")\n    \
     names.append(name)\n    \
-    if len(hits) > 0:\n        parts.append(slice(h, hits[-1][0], size(h)))\n    \
-    else:\n        parts.append(h)\n\
+    parts.append(text[i:] if i >= 0 else text)\n\
     happy = llm_map(\"Was the customer satisfied at the end?\", parts, \"bool\")\n\
     print([n for n, ok in zip(names, happy) if not ok])\n";
 
@@ -741,33 +743,34 @@ const JUDGE_EXAMPLE: &str = "names = []\n\
 /// between turns.
 fn describe(admission: &Admission) -> String {
     let mut d = String::from(
-        "Use this when a question needs many tool results combined: more than a handful of \
-         files, threads or items to count, filter, compare or join. One program reads them \
-         all in one step, instead of you reading each into your context. It runs a short \
-         Python program (monty, a subset of Python 3). A program has no os, open, files, \
-         network or clock: it reaches data only by calling the tools listed at the end, \
-         with keyword arguments. Nothing a program holds survives to the next `code` call, \
-         so do the whole job in one program. ",
+        "Use this when a question needs many tool results combined, or one result too long \
+         to read: more than a handful of files, threads or items to count, filter, compare or \
+         join, or a long file or log to search. One program reads them all in one step, and \
+         only what it prints comes back to you. It runs a short Python program (monty, a \
+         subset of Python 3, with re and json but no third-party packages, os or open). It \
+         reaches data by calling the tools listed at the end, with keyword arguments, and ",
     );
-    // Said only of the tools that do it: a server's `fs_list` returns a
-    // handle, and telling the model otherwise is the `.startswith` error
+    // Said only of the tools that do it: a server's `fs_list` returns one
+    // string, and telling the model otherwise is the `.startswith` error
     // again, from the description's side (review of #793).
     let listings: Vec<&str> = admission.listings().collect();
-    if listings.is_empty() {
-        d.push_str("A tool returns a handle, not text");
+    if admission.contains("fs_read") {
+        d.push_str("each returns its result as a str (fs_read(path=...) returns the file's text)");
     } else {
+        d.push_str("each returns its result as a str");
+    }
+    if !listings.is_empty() {
         d.push_str(&format!(
-            "{} returns a list of names (str; a directory's ends in /). Every other tool \
-             returns a handle, not text",
+            ", except that {} returns a list of names (a directory's ends in /)",
             listings.join(" and ")
         ));
     }
     d.push_str(
-        ": `in`, len(), h.split() and other string methods raise on a handle, and print(h) \
-         shows only a stub. Count and search a handle without reading it, and peek only to \
-         learn a format or fetch a short field. Before a sweep, peek at one item, and match \
-         the field the question is about (an attendee list, a presenter line), not the name \
-         anywhere in the text.",
+        ". Work on that text with string methods, slicing, `in`, len() and re. Nothing a \
+         program holds survives to the next `code` call, so do the whole job in one program, \
+         and print only what the answer needs: a long result is cut. Before a sweep, print a \
+         short part of one item to learn its format, and match the field the question is \
+         about (an attendee list, a presenter line), not the name anywhere in the text.",
     );
     // The example walks `fs_list`'s names and reads with `fs_read`, so it is
     // shown only where both are what it assumes.
@@ -778,27 +781,24 @@ fn describe(admission: &Admission) -> String {
         d.push('\n');
     }
     d.push_str(
-        "Use count or find for anything a pattern can match, such as a name in a list, a \
-         date or a heading: they cost no sub-calls. Work on handles with size(h), \
-         slice(h, start, end), lines(h), split(h, pattern), chunks(h, n, overlap=0) (n \
-         characters each, at least 256), find(h, pattern) (a list of [start, end] character \
-         offsets), count(h, pattern) and json_get(h, path) (a string, object or array leaf \
-         stays a handle; a number, bool or null comes back as itself). peek(h, n=2000, \
-         start=0) is the only way to see a handle's text: n characters from start, which \
-         may be an offset find gave; it is capped per program; budget() says what \
-         is left of each limit. Patterns are Rust regular expressions. \
-         llm_query(instruction, source, shape) asks the model one question about a handle \
-         (or a list of them) and returns an answer of that shape: \"bool\", \"int\", \
+        "Host helpers, faster than Python on a long text and free of sub-calls: grep(text, \
+         pattern) (the matching lines, a list of str), count(text, pattern), find(text, \
+         pattern) (a list of [start, end] character offsets), lines(text), split(text, \
+         pattern), chunks(text, n, overlap=0) (pieces of n characters) and json_get(text, \
+         path). Patterns are Rust regular expressions. budget() says what is left of each \
+         limit. llm_query(instruction, source, shape) asks the model one question about a \
+         text (or a list of them) and returns an answer of that shape: \"bool\", \"int\", \
          \"float\", \"int[0,100]\", a list of labels such as [\"urgent\", \"fyi\", \"none\"], \
          [shape] for a list, {\"field\": shape} for a record, or \"str[n]\" for text of at \
-         most n characters (counted with peek). llm_map(instruction, sources, shape) asks \
-         once per handle, one at a time, and returns a list; it raises at the first failed \
-         item. Pass thinking=True only when a question needs reasoning: it is far slower. \
-         Sub-calls are few (budget()[\"sub_calls\"]): keep them for judgement a pattern \
-         cannot make, and find or slice first so each one asks about what matters. A \
-         question about meaning (whether people agreed, a tone, a reason) is judgement: a \
-         keyword search there is a guess. Ask each item's relevant part instead, or print \
-         those parts and judge them yourself.",
+         most n characters. llm_map(instruction, sources, shape) asks once per text, one at \
+         a time, and returns a list; it raises at the first failed item. Pass thinking=True \
+         only when a question needs reasoning: it is far slower. Sub-calls are few \
+         (budget()[\"sub_calls\"]) and slow, so never spend one per line or per short item: \
+         use a pattern for anything a pattern can match (a name in a list, a date, a status \
+         field), and give each sub-call a whole item or a few thousand characters of a long \
+         text. A question about meaning (whether people agreed, a tone, a reason) is \
+         judgement: a keyword search there is a guess. Ask each item's relevant part \
+         instead, or print those parts and judge them yourself.",
     );
     // Shown only beside the tools it uses, as the first example is.
     if listings.contains(&"fs_list") && admission.contains("fs_read") {
@@ -810,8 +810,8 @@ fn describe(admission: &Admission) -> String {
     d.push_str(
         "To keep going past one bad source, loop instead, checking the budget \
          first:\n\
-         for h in hs:\n    if budget()[\"sub_calls\"] < 2:\n        break\n    try:\n        \
-         out.append(llm_query(q, h, \"bool\"))\n    except RuntimeError as e:\n        \
+         for text in texts:\n    if budget()[\"sub_calls\"] < 2:\n        break\n    try:\n        \
+         out.append(llm_query(q, text, \"bool\"))\n    except RuntimeError as e:\n        \
          failed.append(str(e))\n\
          A failure raises RuntimeError whose message starts QueryError:, ToolError:, \
          HandleError: or LimitError:. The result is what the program printed, then its \
@@ -891,41 +891,36 @@ fn raise(tag: Tag, message: impl AsRef<str>) -> HostRaise {
     HostRaise::tagged(tag, message.as_ref())
 }
 
-/// One buffer of bytes a handle points into: a tool's raw result, or a
-/// string a `json_get` decoded.
-struct Buffer {
-    /// Shared with the program record (§7), which keeps a read's bytes past
-    /// the program's end without a copy.
-    text: Arc<str>,
+/// A text argument a host function was given: a `str` the program holds,
+/// viewed with its length in characters, because offsets are characters
+/// (`find`, `slice`, `chunks`), as Python's are.
+struct Text<'a> {
+    text: &'a str,
     ascii: bool,
-    tool: String,
-    /// The read it came from returned external content: the label a
-    /// sub-call's answer over it carries (§4).
-    external: bool,
-}
-
-/// A view of a buffer: byte offsets into it, and its length in characters.
-#[derive(Clone)]
-struct Handle {
-    buf: Arc<Buffer>,
-    start: usize,
-    end: usize,
     chars: usize,
 }
 
-impl Handle {
-    fn text(&self) -> &str {
-        &self.buf.text[self.start..self.end]
+impl<'a> Text<'a> {
+    fn of(text: &'a str) -> Self {
+        let ascii = text.is_ascii();
+        Text {
+            text,
+            ascii,
+            chars: if ascii {
+                text.len()
+            } else {
+                text.chars().count()
+            },
+        }
     }
 
-    /// Byte offsets, relative to this handle, of the character offsets
-    /// `chars` (ascending, each at most `self.chars`).
+    /// Byte offsets of the character offsets `chars` (ascending, each at
+    /// most `self.chars`).
     fn bytes_at(&self, chars: &[usize]) -> Vec<usize> {
-        if self.buf.ascii {
+        if self.ascii {
             return chars.to_vec();
         }
-        let text = self.text();
-        let mut it = text.char_indices();
+        let mut it = self.text.char_indices();
         let (mut ci, mut bi) = (0usize, 0usize);
         chars
             .iter()
@@ -945,86 +940,60 @@ impl Handle {
     }
 
     /// Character offsets of the byte offsets `bytes` (ascending, each on a
-    /// character boundary of this handle's text).
+    /// character boundary).
     fn chars_at(&self, bytes: &[usize]) -> Vec<usize> {
-        if self.buf.ascii {
+        if self.ascii {
             return bytes.to_vec();
         }
-        let text = self.text();
         let (mut lb, mut lc) = (0usize, 0usize);
         bytes
             .iter()
             .map(|&b| {
-                lc += text[lb..b].chars().count();
+                lc += self.text[lb..b].chars().count();
                 lb = b;
                 lc
             })
             .collect()
     }
-
-    /// The sub-view `[from, to)` in bytes relative to this handle.
-    fn sub(&self, from: usize, to: usize) -> Handle {
-        let text = &self.text()[from..to];
-        Handle {
-            buf: Arc::clone(&self.buf),
-            start: self.start + from,
-            end: self.start + to,
-            chars: if self.buf.ascii {
-                to - from
-            } else {
-                text.chars().count()
-            },
-        }
-    }
 }
 
-/// `n` with thousands separators, as a stub prints it.
-fn grouped(n: usize) -> String {
-    let digits = n.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, d) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(d);
-    }
-    out
-}
-
-/// A handle as the program receives it: marked, so the backend hands over an
-/// object string operations refuse on (`interpreter::HANDLE_MARK`). A bare
-/// stub string let `"Priya" in h` search the stub and answer `False`, and a
-/// program counted 0 meetings with nothing raised (#791).
-fn handle_value(stub: String) -> Value {
-    json!({ crate::interpreter::HANDLE_MARK: stub })
-}
-
-/// A handle argument's stub: the string a backend hands back for the object
-/// [`handle_value`] made, or that marked value itself, when a host is driven
-/// without a backend between (the unit tests).
-fn stub_of(v: &Value) -> Option<&str> {
-    v.as_str()
-        .or_else(|| v.get(crate::interpreter::HANDLE_MARK)?.as_str())
-}
-
-fn stub(id: u64, h: &Handle) -> String {
-    format!(
-        "<handle {id}: {} chars from {}>",
-        grouped(h.chars),
-        h.buf.tool
+/// Strings, as the program receives a list of them.
+fn strings<'s>(parts: impl IntoIterator<Item = &'s str>) -> Value {
+    Value::Array(
+        parts
+            .into_iter()
+            .map(|p| Value::String(p.to_string()))
+            .collect(),
     )
 }
 
-/// One program's handles and counts.
+/// How much of a tool's error text a raise carries, so a failed read says
+/// why without a large error body crowding the traceback.
+const ERROR_TEXT: usize = 2000;
+
+/// `text` cut to at most `n` bytes, on a character boundary.
+fn cut(text: &str, n: usize) -> &str {
+    if text.len() <= n {
+        return text;
+    }
+    let mut end = n;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+/// One program's counts.
 struct Run {
     limits: HostLimits,
     pool: Arc<BytePool>,
-    handles: BTreeMap<u64, Handle>,
-    next: u64,
     reads: u32,
     ops: u32,
-    /// Bytes this program's buffers hold, all drawn from `pool` too.
+    /// Bytes of tool results this program was handed, all drawn from `pool`
+    /// too.
     bytes: usize,
+    /// `peek` and `str[n]` bytes handed to the program
+    /// (`ProgramStats::peeked_bytes`).
     peeked: usize,
     /// Sub-call passes sent, retries included.
     subcalls: u32,
@@ -1036,23 +1005,25 @@ struct Run {
     usage: crate::message::Usage,
     /// A host limit raised `LimitError:` into the program at least once.
     limit_raised: bool,
-    /// Any host call returned external content.
+    /// Any host call returned external content. A text the program passes
+    /// back carries no label of its own, so a sub-call's answer takes this
+    /// one: every external read so far (§4), never less.
     external: bool,
     /// The tools this program may call, as its start resolved them: checked
     /// again here on every read, so §2 does not rest on the interpreter
     /// alone refusing an unregistered name (review of #768). `ask_user` and
     /// `message_send` would clear the gate if one reached it.
     reach: std::collections::BTreeSet<String>,
-    /// The reachable tools whose names come back as `str` ([`Admission`]).
+    /// The reachable tools whose names come back as a list ([`Admission`]).
     listings: std::collections::BTreeSet<String>,
     /// Every host call that ran, in issue order: the program record (§7).
     recorded: Vec<record::ProgramCall>,
     /// The most of `recorded`'s bytes held while the program runs
     /// ([`record::RETAINED_BYTES`], the ceiling the conversation keeps them
     /// under afterwards). A read is recorded before the host-byte limit can
-    /// refuse its handle, and a program can catch that `LimitError:` and read
-    /// again, so without this a loop over a large file held one whole result
-    /// per read: 2,048 of up to 64 MB each (review of #793).
+    /// refuse it, and a program can catch that `LimitError:` and read again,
+    /// so without this a loop over a large file held one whole result per
+    /// read: 2,048 of up to 64 MB each (review of #793).
     retain: usize,
 }
 
@@ -1125,8 +1096,6 @@ impl Run {
         Run {
             limits,
             pool,
-            handles: BTreeMap::new(),
-            next: 1,
             reads: 0,
             ops: 0,
             bytes: 0,
@@ -1177,37 +1146,25 @@ impl Run {
     }
 
     /// The tools whose result this program takes as names; none until this
-    /// is said, so every result is a handle by default.
+    /// is said, so every result is one `str` by default.
     fn listing(mut self, names: impl IntoIterator<Item = String>) -> Self {
         self.listings = names.into_iter().collect();
         self
     }
 
-    /// The handle a program passed, by its stub. A string that is not the
-    /// exact stub of a handle this program holds is refused without being
-    /// quoted.
-    fn handle(&self, a: &Args<'_>) -> Result<(u64, Handle), HostRaise> {
-        let not = || {
-            raise(
-                Tag::HandleError,
-                format!(
-                    "`{}`: its first argument is not a handle this program holds",
-                    a.f
-                ),
-            )
-        };
-        let s = a.get(0, "h").and_then(stub_of).ok_or_else(not)?;
-        self.held(s).ok_or_else(not)
-    }
-
-    /// The handle whose exact stub is `s`, if this program holds it.
-    fn held(&self, s: &str) -> Option<(u64, Handle)> {
-        let id = s
-            .strip_prefix("<handle ")
-            .and_then(|r| r.split_once(':'))
-            .and_then(|(n, _)| n.parse::<u64>().ok())?;
-        let h = self.handles.get(&id).filter(|h| stub(id, h) == s)?;
-        Some((id, h.clone()))
+    /// The text a host function was given first: a `str`, by position or as
+    /// `text` (or `h`, the name it had when it was a handle).
+    fn text<'v>(&self, a: &Args<'v>) -> Result<Text<'v>, HostRaise> {
+        a.get(0, "text")
+            .or_else(|| a.get(0, "h"))
+            .and_then(Value::as_str)
+            .map(Text::of)
+            .ok_or_else(|| {
+                raise(
+                    Tag::HandleError,
+                    format!("`{}`: its first argument must be a str", a.f),
+                )
+            })
     }
 
     /// Hold `n` more bytes, against this program's limit and the process's.
@@ -1217,7 +1174,7 @@ impl Run {
                 Tag::LimitError,
                 format!(
                     "host bytes: a result of {n} bytes would take this program past its {} \
-                     ({} held)",
+                     ({} read so far)",
                     self.limits.host_bytes, self.bytes
                 ),
             ));
@@ -1236,64 +1193,7 @@ impl Run {
         Ok(())
     }
 
-    fn buffer(&mut self, text: String, tool: &str, external: bool) -> Result<Handle, HostRaise> {
-        self.shared(Arc::from(text), tool, external)
-    }
-
-    /// [`Run::buffer`] over bytes another holder keeps too: the program
-    /// record, for a read's result.
-    fn shared(&mut self, text: Arc<str>, tool: &str, external: bool) -> Result<Handle, HostRaise> {
-        self.charge(text.len())?;
-        let ascii = text.is_ascii();
-        let chars = if ascii {
-            text.len()
-        } else {
-            text.chars().count()
-        };
-        let end = text.len();
-        Ok(Handle {
-            buf: Arc::new(Buffer {
-                text,
-                ascii,
-                tool: tool.to_string(),
-                external,
-            }),
-            start: 0,
-            end,
-            chars,
-        })
-    }
-
-    fn room_for(&self, n: usize, f: &str) -> Result<(), HostRaise> {
-        if self.handles.len().saturating_add(n) > self.limits.live_handles {
-            return Err(raise(
-                Tag::LimitError,
-                format!(
-                    "live handles: `{f}` would make {n} more, past this program's {} ({} held)",
-                    self.limits.live_handles,
-                    self.handles.len()
-                ),
-            ));
-        }
-        Ok(())
-    }
-
-    fn mint(&mut self, h: Handle) -> String {
-        let id = self.next;
-        self.next += 1;
-        let s = stub(id, &h);
-        self.handles.insert(id, h);
-        s
-    }
-
-    fn mint_all(&mut self, hs: Vec<Handle>, f: &str) -> Result<Value, HostRaise> {
-        self.room_for(hs.len(), f)?;
-        Ok(Value::Array(
-            hs.into_iter().map(|h| handle_value(self.mint(h))).collect(),
-        ))
-    }
-
-    /// One tool read: counted, through the gate, and its result a handle.
+    /// One tool read: counted, through the gate, and its result a `str`.
     async fn read(
         &mut self,
         host: &HostCalls,
@@ -1363,20 +1263,25 @@ impl Run {
                     Arc::clone(&bytes),
                 ));
                 record::bound_at(&mut self.recorded, self.retain);
-                if !failed && self.listings.contains(name) {
-                    return self.names(name, &bytes);
-                }
-                self.room_for(1, name)?;
-                let h = self.shared(bytes, name, out.external)?;
-                let s = self.mint(h);
                 if failed {
-                    Err(raise(
+                    let more = if bytes.len() > ERROR_TEXT {
+                        format!(" [{} more bytes cut]", bytes.len() - ERROR_TEXT)
+                    } else {
+                        String::new()
+                    };
+                    return Err(raise(
                         Tag::ToolError,
-                        format!("`{name}` returned an error; its text is {s}"),
-                    ))
-                } else {
-                    Ok(handle_value(s))
+                        format!(
+                            "`{name}` returned an error: {}{more}",
+                            cut(&bytes, ERROR_TEXT)
+                        ),
+                    ));
                 }
+                self.charge(bytes.len())?;
+                if self.listings.contains(name) {
+                    return Ok(Self::names(&bytes));
+                }
+                Ok(Value::String(bytes.to_string()))
             }
         }
     }
@@ -1412,40 +1317,26 @@ impl Run {
             Some(Value::Bool(b)) => *b,
             Some(_) => return Err(q(format!("`{f}`: `thinking` must be True or False"))),
         };
-        let not_held = |i: usize| {
-            raise(
-                Tag::HandleError,
-                format!("`{f}`: source {i} is not a handle this program holds"),
-            )
-        };
-        let resolve = |v: &Value, i: usize| {
-            stub_of(v)
-                .and_then(|s| self.held(s))
-                .map(|(_, h)| h)
-                .ok_or_else(|| not_held(i))
-        };
-        let items: Vec<Vec<Handle>> = match (map, a.get(1, if map { "sources" } else { "source" }))
-        {
+        fn resolve<'v>(v: &'v Value, i: usize, f: &str) -> Result<&'v str, HostRaise> {
+            v.as_str()
+                .ok_or_else(|| raise(Tag::HandleError, format!("`{f}`: source {i} is not a str")))
+        }
+        let items: Vec<Vec<&str>> = match (map, a.get(1, if map { "sources" } else { "source" })) {
             (true, Some(Value::Array(vs))) => vs
                 .iter()
                 .enumerate()
-                .map(|(i, v)| resolve(v, i).map(|h| vec![h]))
+                .map(|(i, v)| resolve(v, i, f).map(|t| vec![t]))
                 .collect::<Result<_, _>>()?,
-            (true, _) => {
-                return Err(q(
-                    "`llm_map`: `sources` must be a list of handles".to_string()
-                ))
-            }
+            (true, _) => return Err(q("`llm_map`: `sources` must be a list of str".to_string())),
             (false, Some(Value::Array(vs))) if !vs.is_empty() => vec![vs
                 .iter()
                 .enumerate()
-                .map(|(i, v)| resolve(v, i))
+                .map(|(i, v)| resolve(v, i, f))
                 .collect::<Result<_, _>>()?],
-            (false, Some(v)) if stub_of(v).is_some() => vec![vec![resolve(v, 0)?]],
+            (false, Some(Value::String(t))) => vec![vec![t.as_str()]],
             (false, _) => {
                 return Err(q(
-                    "`llm_query`: `source` must be a handle or a non-empty list of handles"
-                        .to_string(),
+                    "`llm_query`: `source` must be a str or a non-empty list of them".to_string(),
                 ))
             }
         };
@@ -1454,19 +1345,6 @@ impl Run {
             return Ok(Value::Array(Vec::new()));
         }
         let l = self.limits;
-        let text_left = l.peek_bytes.saturating_sub(self.peeked);
-        let most = shape.max_text_chars().saturating_mul(n);
-        if most > text_left {
-            return Err(raise(
-                Tag::LimitError,
-                format!(
-                    "peek bytes: this shape's text could come to {most} characters (at least \
-                     as many bytes) over {n} pass(es), past the {text_left} bytes left of this \
-                     program's {} (peek and str[n] results share it); narrow n or the sweep",
-                    l.peek_bytes
-                ),
-            ));
-        }
         let calls_left = l.subcalls.saturating_sub(self.subcalls);
         if (n as u64) > u64::from(calls_left) {
             return Err(raise(
@@ -1491,7 +1369,7 @@ impl Run {
         }
         self.pass_limits().map_err(|(tag, m)| raise(tag, m))?;
         // The sweep's input, estimated before anything is sent: a source the
-        // size of a handle's 64 MB is refused here, never handed to the
+        // size of a 64 MB read is refused here, never handed to the
         // server to overflow on (review of #773).
         let tokens: u64 = items
             .iter()
@@ -1510,7 +1388,9 @@ impl Run {
         }
         // A shape bounds how much an attacker can say, not who said it: the
         // answer carries its sources' labels (§4), and nothing here narrows.
-        self.external |= items.iter().flatten().any(|h| h.buf.external);
+        // A source is a `str` with no label of its own, so it is taken to
+        // carry every external read so far, which `self.external` already
+        // holds.
         let mut out = Vec::with_capacity(n);
         for (i, sources) in items.iter().enumerate() {
             match self
@@ -1582,7 +1462,7 @@ impl Run {
         &mut self,
         host: &HostCalls,
         instruction: &str,
-        sources: &[Handle],
+        sources: &[&str],
         shape: &shape::Shape,
         think: bool,
         cancel: &tokio_util::sync::CancellationToken,
@@ -1654,19 +1534,7 @@ impl Run {
             }
             match envelope(&resp).and_then(|text| shape.check(&text)) {
                 Ok(v) => {
-                    let bytes = shape.text_bytes(&v);
-                    let left = self.limits.peek_bytes.saturating_sub(self.peeked);
-                    if bytes > left {
-                        return Err((
-                            Tag::LimitError,
-                            format!(
-                                "peek bytes: this answer's text is {bytes} bytes, past the \
-                                 {left} left of this program's {} (the pass is spent)",
-                                self.limits.peek_bytes
-                            ),
-                        ));
-                    }
-                    self.peeked += bytes;
+                    self.peeked += shape.text_bytes(&v);
                     return Ok(v);
                 }
                 Err(why) => last = why,
@@ -1678,7 +1546,7 @@ impl Run {
         ))
     }
 
-    /// One handle operation (§3): counted, `budget()` included.
+    /// One host-function call (§3): counted, `budget()` included.
     fn op(&mut self, call: &ExternalCall) -> Result<Value, HostRaise> {
         let f: &'static str = HOST_FUNCTIONS
             .iter()
@@ -1689,15 +1557,16 @@ impl Run {
         let a = Args { call, f };
         match f {
             "budget" => Ok(self.budget()),
-            "size" => Ok(Value::from(self.handle(&a)?.1.chars)),
+            "size" => Ok(Value::from(self.text(&a)?.chars)),
             "slice" => self.slice(&a),
             "lines" => self.lines(&a),
             "split" => self.split(&a),
             "chunks" => self.chunks(&a),
             "find" => self.find(&a),
+            "grep" => self.grep(&a),
             "count" => {
-                let (_, h) = self.handle(&a)?;
-                Ok(Value::from(a.pattern(1)?.find_iter(h.text()).count()))
+                let t = self.text(&a)?;
+                Ok(Value::from(a.pattern(1)?.find_iter(t.text).count()))
             }
             "json_get" => self.json_get(&a),
             "peek" => self.peek(&a),
@@ -1732,75 +1601,69 @@ impl Run {
             "tool_reads": l.tool_reads.saturating_sub(self.reads),
             "handle_operations": l.handle_operations.saturating_sub(self.ops),
             "host_bytes": l.host_bytes.saturating_sub(self.bytes),
-            "live_handles": l.live_handles.saturating_sub(self.handles.len()),
-            "peek_bytes": l.peek_bytes.saturating_sub(self.peeked),
         })
     }
 
     fn slice(&mut self, a: &Args<'_>) -> Result<Value, HostRaise> {
-        let (id, h) = self.handle(a)?;
-        let n = h.chars as i64;
+        let t = self.text(a)?;
+        let n = t.chars as i64;
         let (start, end) = (a.int(1, "start", Some(0))?, a.int(2, "end", Some(n))?);
         let norm = |i: i64| if i < 0 { i + n } else { i };
         let (s, e) = (norm(start), norm(end));
         if s < 0 || e > n || s > e {
             return Err(raise(
                 Tag::HandleError,
-                format!("`slice`: {start}..{end} is outside handle {id}, which has {n} characters"),
+                format!("`slice`: {start}..{end} is outside a text of {n} characters"),
             ));
         }
-        self.room_for(1, "slice")?;
-        let b = h.bytes_at(&[s as usize, e as usize]);
-        Ok(handle_value(self.mint(h.sub(b[0], b[1]))))
+        let b = t.bytes_at(&[s as usize, e as usize]);
+        Ok(Value::String(t.text[b[0]..b[1]].to_string()))
     }
 
     fn lines(&mut self, a: &Args<'_>) -> Result<Value, HostRaise> {
-        let (_, h) = self.handle(a)?;
-        let text = h.text();
-        let mut pieces = text.matches('\n').count() + 1;
-        if text.ends_with('\n') || text.is_empty() {
-            pieces -= 1;
+        let t = self.text(a)?;
+        Ok(strings(t.text.lines()))
+    }
+
+    /// The lines of a text that `pattern` matches anywhere in, in order: the
+    /// sweep a log question wants, and the loop over `lines()` it replaces,
+    /// which made 22,874 handles of one 1.5 MB log before R11 (M2).
+    fn grep(&mut self, a: &Args<'_>) -> Result<Value, HostRaise> {
+        let t = self.text(a)?;
+        let re = a.pattern(1)?;
+        let mut out = Vec::new();
+        for line in t.text.lines() {
+            if re.is_match(line) {
+                if out.len() == defaults::FIND_MATCHES {
+                    return Err(raise(
+                        Tag::LimitError,
+                        format!(
+                            "grep matches: more than {} lines for one `grep`; narrow the \
+                             pattern, or slice the text first",
+                            defaults::FIND_MATCHES
+                        ),
+                    ));
+                }
+                out.push(line);
+            }
         }
-        self.room_for(pieces, "lines")?;
-        let mut out = Vec::with_capacity(pieces);
-        let mut from = 0;
-        for (i, _) in text.match_indices('\n') {
-            let to = if text[..i].ends_with('\r') { i - 1 } else { i };
-            out.push(h.sub(from, to));
-            from = i + 1;
-        }
-        if from < text.len() {
-            out.push(h.sub(from, text.len()));
-        }
-        self.mint_all(out, "lines")
+        Ok(strings(out))
     }
 
     fn split(&mut self, a: &Args<'_>) -> Result<Value, HostRaise> {
-        let (_, h) = self.handle(a)?;
+        let t = self.text(a)?;
         let re = a.pattern(1)?;
-        let text = h.text();
-        self.room_for(re.find_iter(text).count() + 1, "split")?;
-        let mut out = Vec::new();
-        let mut from = 0;
-        for m in re.find_iter(text) {
-            out.push(h.sub(from, m.start()));
-            from = m.end();
-        }
-        out.push(h.sub(from, text.len()));
-        self.mint_all(out, "split")
+        Ok(strings(re.split(t.text)))
     }
 
     fn chunks(&mut self, a: &Args<'_>) -> Result<Value, HostRaise> {
-        let (_, h) = self.handle(a)?;
+        let t = self.text(a)?;
         let n = a.int(1, "n", None)?;
         let overlap = a.int(2, "overlap", Some(0))?;
-        if n < defaults::CHUNK_FLOOR as i64 {
+        if n < 1 {
             return Err(raise(
-                Tag::LimitError,
-                format!(
-                    "chunk size: `chunks` takes n of at least {} characters, and was given {n}",
-                    defaults::CHUNK_FLOOR
-                ),
+                Tag::HandleError,
+                format!("`chunks`: `n` must be at least 1, and was given {n}"),
             ));
         }
         if overlap < 0 || overlap >= n {
@@ -1812,43 +1675,36 @@ impl Run {
         let (n, step) = (n as usize, (n - overlap) as usize);
         let mut spans = Vec::new();
         let mut start = 0;
-        // Counted as it goes and stopped one past the limit, so a refusal
-        // never allocates the whole list first.
-        while start < h.chars {
-            let end = (start + n).min(h.chars);
+        while start < t.chars {
+            let end = (start + n).min(t.chars);
             spans.push((start, end));
-            if end == h.chars {
+            if end == t.chars {
                 break;
             }
             start += step;
-            if spans.len() > self.limits.live_handles {
-                break;
-            }
         }
-        self.room_for(spans.len(), "chunks")?;
         let flat: Vec<usize> = {
             let mut v: Vec<usize> = spans.iter().flat_map(|(s, e)| [*s, *e]).collect();
             v.sort_unstable();
             v.dedup();
             v
         };
-        let bytes = h.bytes_at(&flat);
+        let bytes = t.bytes_at(&flat);
         let at = |c: usize| bytes[flat.binary_search(&c).unwrap_or_default()];
-        let out = spans.iter().map(|(s, e)| h.sub(at(*s), at(*e))).collect();
-        self.mint_all(out, "chunks")
+        Ok(strings(spans.iter().map(|(s, e)| &t.text[at(*s)..at(*e)])))
     }
 
     fn find(&mut self, a: &Args<'_>) -> Result<Value, HostRaise> {
-        let (_, h) = self.handle(a)?;
+        let t = self.text(a)?;
         let re = a.pattern(1)?;
         let mut flat = Vec::new();
-        for (k, m) in re.find_iter(h.text()).enumerate() {
+        for (k, m) in re.find_iter(t.text).enumerate() {
             if k == defaults::FIND_MATCHES {
                 return Err(raise(
                     Tag::LimitError,
                     format!(
                         "find matches: more than {} for one `find`; narrow the pattern, or \
-                         slice the handle first",
+                         slice the text first",
                         defaults::FIND_MATCHES
                     ),
                 ));
@@ -1856,14 +1712,16 @@ impl Run {
             flat.push(m.start());
             flat.push(m.end());
         }
-        let chars = h.chars_at(&flat);
+        let chars = t.chars_at(&flat);
         Ok(Value::Array(
             chars.chunks(2).map(|p| json!([p[0], p[1]])).collect(),
         ))
     }
 
+    /// The JSON value at `path` in a text: decoded, as `json.loads` would
+    /// give it, a string leaf as a `str` and an object as a dict.
     fn json_get(&mut self, a: &Args<'_>) -> Result<Value, HostRaise> {
-        let (id, h) = self.handle(a)?;
+        let t = self.text(a)?;
         let steps: Vec<Value> = match a.get(1, "path") {
             None | Some(Value::Null) => Vec::new(),
             Some(Value::String(s)) if s.is_empty() => Vec::new(),
@@ -1877,11 +1735,11 @@ impl Run {
                 ))
             }
         };
-        let root: Value = serde_json::from_str(h.text()).map_err(|e| {
+        let root: Value = serde_json::from_str(t.text).map_err(|e| {
             raise(
                 Tag::HandleError,
                 format!(
-                    "`json_get`: handle {id} is not JSON (it fails at line {}, column {})",
+                    "`json_get`: the text is not JSON (it fails at line {}, column {})",
                     e.line(),
                     e.column()
                 ),
@@ -1892,7 +1750,7 @@ impl Run {
             let missing = || {
                 raise(
                     Tag::HandleError,
-                    format!("`json_get`: handle {id} has nothing at step {k} of the path"),
+                    format!("`json_get`: the text has nothing at step {k} of the path"),
                 )
             };
             at = match (at, step) {
@@ -1916,79 +1774,41 @@ impl Run {
                 _ => return Err(missing()),
             };
         }
-        let leaf = match at {
-            Value::String(s) => s.clone(),
-            Value::Object(_) | Value::Array(_) => at.to_string(),
-            scalar => return Ok(scalar.clone()),
-        };
-        self.room_for(1, "json_get")?;
-        let tool = h.buf.tool.clone();
-        let leaf = self.buffer(leaf, &tool, h.buf.external)?;
-        Ok(handle_value(self.mint(leaf)))
+        Ok(at.clone())
     }
 
     /// A listing tool's answer, one `str` per entry (a directory's ends in
-    /// `/`), counted with `peek` and refused whole if it would cross the cap.
-    fn names(&mut self, tool: &str, listing: &str) -> Result<Value, HostRaise> {
+    /// `/`).
+    fn names(listing: &str) -> Value {
         // `fs_list`'s own spelling of nothing. A directory holding one file
         // of exactly that name reads the same, here as in the tool's result.
         if listing == "(empty directory)" {
-            return Ok(Value::Array(Vec::new()));
+            return Value::Array(Vec::new());
         }
-        let bytes = listing.len();
-        if self.peeked.saturating_add(bytes) > self.limits.peek_bytes {
-            return Err(raise(
-                Tag::LimitError,
-                format!(
-                    "peek bytes: `{tool}`'s {bytes} bytes of names would take this program \
-                     past its {} ({} used)",
-                    self.limits.peek_bytes, self.peeked
-                ),
-            ));
-        }
-        self.peeked += bytes;
-        Ok(Value::Array(
-            listing
-                .lines()
-                .map(|n| Value::String(n.to_string()))
-                .collect(),
-        ))
+        strings(listing.lines())
     }
 
+    /// `n` characters of a text from `start`: slicing, kept by name because
+    /// programs written before R11 call it.
     fn peek(&mut self, a: &Args<'_>) -> Result<Value, HostRaise> {
-        let (_, h) = self.handle(a)?;
+        let t = self.text(a)?;
         let n = a.int(1, "n", Some(defaults::PEEK_DEFAULT as i64))?;
-        if n < 0 {
-            return Err(raise(Tag::HandleError, "`peek`: `n` must be at least 0"));
-        }
-        // `start` is a character offset, as `find` gives them, and counts from
-        // the end when negative, as `slice`'s do. Without it a model peeked
-        // `n` characters "around" a `find` hit and read the note's head
-        // instead, missing 7 of 25 presenter lines (2026-11-01).
-        let chars = h.chars as i64;
-        let start = a.int(2, "start", Some(0))?;
+        // A negative `n` is the last `n` characters, the way `peek(h, -500)`
+        // was written in M2 and raised.
+        let chars = t.chars as i64;
+        let start = a.int(2, "start", Some(if n < 0 { n } else { 0 }))?;
+        let n = n.abs();
         let from = if start < 0 { start + chars } else { start };
         if from < 0 || from > chars {
             return Err(raise(
                 Tag::HandleError,
-                format!("`peek`: start {start} is outside a handle of {chars} characters"),
+                format!("`peek`: start {start} is outside a text of {chars} characters"),
             ));
         }
         let from = from as usize;
-        let take = (n as usize).min(h.chars - from);
-        let b = h.bytes_at(&[from, from + take]);
-        let text = &h.text()[b[0]..b[1]];
-        if self.peeked.saturating_add(text.len()) > self.limits.peek_bytes {
-            return Err(raise(
-                Tag::LimitError,
-                format!(
-                    "peek bytes: {} more would take this program past its {} ({} used)",
-                    text.len(),
-                    self.limits.peek_bytes,
-                    self.peeked
-                ),
-            ));
-        }
+        let take = (n as usize).min(t.chars - from);
+        let b = t.bytes_at(&[from, from + take]);
+        let text = &t.text[b[0]..b[1]];
         self.peeked += text.len();
         Ok(Value::String(text.to_string()))
     }
@@ -2023,10 +1843,10 @@ fn envelope(resp: &CompletionResponse) -> Result<String, String> {
 /// schema) over four, the usual reading for prose. Checked against what is
 /// left of the token cap before each pass, and charged for a pass the
 /// provider failed; an answered pass is charged its `Usage`.
-fn pass_tokens(instruction: &str, sources: &[Handle], shape: &shape::Shape) -> u64 {
+fn pass_tokens(instruction: &str, sources: &[&str], shape: &shape::Shape) -> u64 {
     let bytes = PASS_FRAME.len()
         + instruction.len()
-        + sources.iter().map(|h| h.text().len() + 64).sum::<usize>()
+        + sources.iter().map(|t| t.len() + 64).sum::<usize>()
         + shape.schema().to_string().len()
         + 256;
     (bytes / 4) as u64
@@ -2058,9 +1878,8 @@ fn marker_tag(texts: &[&str]) -> Option<String> {
 /// source between marker lines, then the schema. The markers' tag is one no
 /// source contains ([`marker_tag`]), so a source cannot close its own block
 /// early; `None` when no such tag was found.
-fn pass_message(instruction: &str, sources: &[Handle], shape: &shape::Shape) -> Option<String> {
-    let texts: Vec<&str> = sources.iter().map(Handle::text).collect();
-    let tag = marker_tag(&texts)?;
+fn pass_message(instruction: &str, texts: &[&str], shape: &shape::Shape) -> Option<String> {
+    let tag = marker_tag(texts)?;
     let n = texts.len();
     let mut m = String::with_capacity(texts.iter().map(|t| t.len() + 64).sum::<usize>() + 512);
     m.push_str(instruction.trim());
@@ -2108,7 +1927,10 @@ fn tool_input(call: &ExternalCall) -> Result<Value, HostRaise> {
 /// is the model's only feedback. So a long traceback keeps its raised line
 /// and says how many frames it dropped, and a result past `cap` opens with a
 /// line naming how it ended, ahead of the printed output the cut may take.
-fn render(f: Finished, cap: usize) -> (String, bool) {
+///
+/// `shadowed` names the functions the program assigned over
+/// ([`shadowed`]), for the hint a "not callable" error gets.
+fn render(f: Finished, cap: usize, shadowed: &[&str]) -> (String, bool) {
     let (ending, is_error, summary) = match f.end {
         End::Complete { value, repr } => {
             let shown = match value {
@@ -2147,14 +1969,15 @@ fn render(f: Finished, cap: usize) -> (String, bool) {
     if out.is_empty() {
         out = "(the program printed nothing and its last line has no value)".to_string();
     }
-    let mut out = handles_as_stubs(&out);
-    // A handle used as text raises on an object monty calls a 'function',
-    // which says nothing about what to do instead (#791): a TypeError for
-    // `in` or `len()`, an AttributeError for a method such as `h.split(",")`.
-    if is_error {
-        if let Some(hint) = handle_hint(&out) {
-            out.push('\n');
-            out.push_str(&hint);
+    // `size = size(h)` in a loop: the next call finds the int, and monty's
+    // "'int' object is not callable" says nothing about why (M2, 2026-11-02).
+    if is_error && out.contains("object is not callable") {
+        if let Some(name) = shadowed.first() {
+            out.push_str(&format!(
+                "\n[`{name}` is a function this program was given, and the program assigned \
+                 a value to that name, so a later call found the value: use another name for \
+                 the variable]"
+            ));
         }
     }
     if out.len() > cap {
@@ -2167,50 +1990,32 @@ fn render(f: Finished, cap: usize) -> (String, bool) {
     (out, is_error)
 }
 
-/// The line that says what to do instead, when a program's error is a handle
-/// used as text: a method (`'function' object has no attribute 'split'`) names
-/// the host function of that name if there is one; anything else gets the
-/// general hint.
-fn handle_hint(out: &str) -> Option<String> {
-    const GENERAL: &str = "[a handle is not text: search it with find(h, pattern) or \
-                           count(h, pattern), split it with lines(h), and read a short part \
-                           with peek(h, n)]";
-    if let Some(i) = out.find("'function' object has no attribute '") {
-        let rest = &out[i + "'function' object has no attribute '".len()..];
-        let method = rest.split('\'').next().unwrap_or_default();
-        if HOST_FUNCTIONS.contains(&method) {
-            return Some(format!(
-                "[a handle has no methods: call {method}(h, ...) instead of h.{method}(...)]"
-            ));
-        }
-        return Some(format!(
-            "[a handle has no method '{method}'. {}",
-            &GENERAL[1..]
-        ));
-    }
-    (out.contains("TypeError") && out.contains("'function'")).then(|| GENERAL.to_string())
-}
-
-/// `text` with each handle shown as its stub. A backend prints a handle as
-/// the object it is (`<function '<handle 1: 6 chars from fs_read>'
-/// external>`, `interpreter::HANDLE_MARK`); the model reads `<handle 1: …>`.
-fn handles_as_stubs(text: &str) -> String {
-    const OPEN: &str = "<function '<handle ";
-    const CLOSE: &str = "' external>";
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(i) = rest.find(OPEN) {
-        let after = &rest[i + OPEN.len()..];
-        let Some(j) = after.find(CLOSE) else {
-            break;
-        };
-        out.push_str(&rest[..i]);
-        out.push_str("<handle ");
-        out.push_str(&after[..j]);
-        rest = &after[j + CLOSE.len()..];
-    }
-    out.push_str(rest);
-    out
+/// The names among `names` that `program` assigns to (`x = …`, `x += …`,
+/// `for x in …`), in `names`' order: a host function or tool overwritten by
+/// a variable.
+fn shadowed<'n>(program: &str, names: &[&'n str]) -> Vec<&'n str> {
+    let assigned = |name: &str| {
+        program.lines().any(|line| {
+            let l = line.trim_start();
+            let after_for = l.strip_prefix("for ").map(str::trim_start);
+            [Some(l), after_for].into_iter().flatten().any(|l| {
+                l.strip_prefix(name).is_some_and(|rest| {
+                    let ident = |c: char| c.is_alphanumeric() || c == '_';
+                    let longer = rest.starts_with(ident);
+                    let rest = rest.trim_start();
+                    !longer
+                        && ((rest.starts_with('=') && !rest.starts_with("=="))
+                            || rest.starts_with(" in ")
+                            || rest.starts_with("in ")
+                            || rest.starts_with(',')
+                            || ["+=", "-=", "*=", "/="]
+                                .iter()
+                                .any(|op| rest.starts_with(op)))
+                })
+            })
+        })
+    };
+    names.iter().copied().filter(|n| assigned(n)).collect()
 }
 
 /// A traceback no longer than about `room` bytes: the first line, a count
