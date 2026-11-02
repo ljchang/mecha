@@ -1031,6 +1031,10 @@ pub struct RunStats {
     pub subcall_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub peeked_bytes: Option<u32>,
+    /// Bytes of tool results the run's programs were handed
+    /// (`ProgramStats::read_bytes`), saturating as `peeked_bytes` does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program_read_bytes: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget_stops: Option<u32>,
     /// The conditions this run happened under, when the front-end asked for
@@ -1242,6 +1246,7 @@ impl RunStats {
         self.subcalls = sum(self.subcalls, other.subcalls);
         self.subcall_tokens = sum(self.subcall_tokens, other.subcall_tokens);
         self.peeked_bytes = sum(self.peeked_bytes, other.peeked_bytes);
+        self.program_read_bytes = sum(self.program_read_bytes, other.program_read_bytes);
         self.budget_stops = sum(self.budget_stops, other.budget_stops);
         self.step_escalations_attempted = match (
             self.step_escalations_attempted,
@@ -1416,6 +1421,12 @@ impl RunStats {
                 programs
                     .clone()
                     .map(|p| u32::try_from(p.peeked_bytes).unwrap_or(u32::MAX))
+                    .fold(0, u32::saturating_add),
+            ),
+            program_read_bytes: Some(
+                programs
+                    .clone()
+                    .map(|p| u32::try_from(p.read_bytes).unwrap_or(u32::MAX))
                     .fold(0, u32::saturating_add),
             ),
             budget_stops: Some(programs.filter(|p| p.budget_stop).count() as u32),

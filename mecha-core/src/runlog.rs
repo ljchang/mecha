@@ -1390,6 +1390,7 @@ mod tests {
             subcalls: None,
             subcall_tokens: None,
             peeked_bytes: None,
+            program_read_bytes: None,
             budget_stops: None,
             turns: 3,
             usage: Usage::default(),
