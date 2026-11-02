@@ -344,10 +344,14 @@ provider's own id (`Email::provider_id`, what `get_message` takes), **made
 immutable on Outlook by asking for it**: Graph's default `id` changes when a
 message moves folders, and every Outlook `archive`, `trash` and `spam` is a
 folder move (`move_message`), as is undo. A key read after the rule's own
-archive would find no row and run the action again. So P0 has the Graph
-client send `Prefer: IdType="ImmutableId"` on every request, which keeps a
-message's id fixed across moves within the mailbox, and the ledger key
-depends on that header being sent. Gmail's message id is already stable
+archive would find no row and run the action again. So the ledger keys an
+Outlook message by its **immutable** id — what Graph returns under
+`Prefer: IdType="ImmutableId"`, fixed across moves within the mailbox — and
+the rule engine asks for it on its own reads only. Setting the preference on
+every Graph request would also change the ids the triage store already keys
+on (`(account, thread_id)`), stranding its records and corrections; scoped to
+the rule engine, nothing else moves. P0 verifies on the owner's mailbox that
+the immutable id survives archive, trash and restore. Gmail's message id is already stable
 across label changes. It is
 **never the RFC 5322 `Message-ID`**, which is sender-written and optional
 here: a reused one would mark another message's actions as already done, and
@@ -413,8 +417,8 @@ message honestly *is* an invoice.
 
 So the second condition is structural: **a rule may run `forward` or `send`
 in `auto` only if its matcher constrains the sender** — a `from` or
-`from_domain` key (an `account` key counts only where the owner marks that
-account as reached by known correspondents alone). A rule whose matcher is
+`from_domain` key. An `account` key does not count: which account mail
+arrived at says nothing about who sent it. A rule whose matcher is
 `describe` alone may still *propose* these sends. R3's "to a specific person"
 becomes "from a known set, to a specific person". The residual the owner
 accepts by enabling such a rule is then the narrow one: a listed sender's
@@ -436,8 +440,14 @@ The receipt-to-finance case done properly: a message *with all the
 information* in a fixed shape, without letting a model write prose to a third
 party.
 
-1. A quarantined extraction pass — no tools, no history, the classifier's
-   frame — fills the rule's declared `fields` from the message. Types are a
+1. A quarantined extraction pass — no tools, no history, and **the
+   confirmation pass's frame shape, not the classifier's**: the owner's field
+   declarations plus an instruction compiled into the binary, with no learned
+   rules and no few-shot pool (§4.2). The extraction is a send decision —
+   which `amount`, which `email` is the payload — so it gets the frame a send
+   decision gets, and §6.2's digest already carries the compiled
+   instruction's version. It fills the rule's declared `fields` from the
+   message. Types are a
    closed set: `text` (one line, bounded), `money`, `date`, `email`, `number`.
 2. **Every value is grounded**: its source words must appear in the message
    (the `deadline_quote` rule). An ungrounded field fails the send, which
@@ -463,12 +473,23 @@ Which guard binds which action group, so no section has to infer it:
 | Once per sender per rule per 7 days | yes | **no** — every receipt from a listed vendor is forwarded |
 | Per-rule and global daily caps | yes | yes |
 | Not into a conversation the owner has joined | yes | no |
+| Never on a message `From` the owner, or one this rule sent | yes | yes |
 | `block_sends_after_private` (§6.3) | yes | yes |
 
-Loop prevention needs nothing extra for `forward` and `send`: their recipient
-is fixed by the owner rather than taken from the mail, so nothing they send
-goes back to the sender, and anything the recipient's own auto-responder
-sends back must still pass a sender-constrained matcher to trigger again.
+Loop prevention for `forward` and `send` needs two guards of its own. Their
+recipient is fixed by the owner, so nothing they send goes back to the
+sender — but the forwarded copy can come back to the owner (the owner is on
+the recipient alias, or the recipient copies them in), and R5 and R8 make it
+ordinary mail **from the owner** with no marker to key on. A rule whose
+`from_domain` names the owner's own institution would then fire on its own
+output, each copy a new provider id the ledger has not seen, until the daily
+cap stopped it. So, both failing closed:
+
+- **Never act on a message whose `From` is one of the owner's own
+  addresses** — the reply column's guard, applied here too.
+- **Never act on a message this rule sent.** The provider returns the id of
+  what it sends; the ledger records it on the `sent` row, and a match on a
+  recorded id is `skipped: own output`.
 
 The rest of this section is about replies. A reply goes to an address the
 sender controls, so the guards keep mecha from
@@ -511,7 +532,15 @@ and none is configurable off:
   adding `Authentication-Results` to that loop selects the bottom-most
   instance, the one a sender can write. On Gmail the reader takes the
   **first** instance; on Graph, `graph_mail.rs`'s `.find(…)` is first-match
-  (`find_map`) and needs the provider check added. `Authentication-Results` gets its
+  (`find_map`) and needs the provider check added. And because neither
+  provider documents header order — `get_thread` already warns that Gmail's
+  array order is "observed, not documented" — the guard does not rest on it:
+  **if more than one instance claims the account's own provider, the message
+  goes to `propose`.** A genuine provider instance is unique, and a forgery
+  added to a submitted message makes two, so this fails closed whatever order
+  the headers arrive in. P0's real-header check covers Gmail's ordering as
+  well as EOP's shape, with the same fallback: if it is not reliable, that
+  provider's sends stay in `propose`. `Authentication-Results` gets its
   own field on `Email` rather than riding the existing loop.
   One consequence worth saying in the UI: mail that reaches an account by
   forwarding from another address routinely fails alignment, so a rule on
@@ -716,9 +745,11 @@ digest is a surface for a human, never input to a privileged run
 
 `digest` as a rule action means "archive it, and make sure I see it tonight" —
 the newsletter you want to skim but not in your inbox. `task` as an action
-creates the task directly; it defaults to `propose`, so the digest offers it
-with one tap, because a task board filled by whoever can send you mail is a
-board you stop trusting.
+creates the task directly. It is in the record group, so it may run in
+`auto` like `digest` (§5's table), but the approval screen recommends
+leaving it at `propose`, where the digest offers it with one tap, because a
+task board filled by whoever can send you mail is a board you stop
+trusting.
 
 ---
 
@@ -826,7 +857,8 @@ topmost instance with its `authserv-id`, absent stated rather than defaulted,
 with a test per provider in **both** directions — a missing or foreign
 instance proposes, and a genuine provider instance passes — because a test of
 the negative alone passes on a reader that proposes unconditionally (§5.4); the
-`ImmutableId` preference on every Graph request (§4.4); and the provider's own message id on the
+immutable-id read for the rule engine, verified to survive a move and a
+restore on the owner's mailbox (§4.4); and the provider's own message id on the
 thread read for the ledger key (§4.4). Restore verbs for undo (back to
 inbox, out of trash) on both providers. Nothing changes on the send side:
 rule replies go through the existing `mail_reply` path as ordinary mail (R5).
