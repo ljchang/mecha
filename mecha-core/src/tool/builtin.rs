@@ -184,6 +184,24 @@ impl Tool for FsRead {
                 } else {
                     format!("read on with offset {line}")
                 };
+                // Inside a program the text is the program's to search; to a
+                // turn, a program is how to search all of it at once.
+                // The path as the model wrote it, so the call can be copied;
+                // `...` past a length the notice's reserve was not sized for.
+                let on = if ctx.code_offered && ctx.program_room.is_none() {
+                    let asked = arg_str(&input, "path")?;
+                    let path = if asked.len() <= 160 && !asked.contains(['"', '\\', '\n']) {
+                        format!("\"{asked}\"")
+                    } else {
+                        "...".to_string()
+                    };
+                    format!(
+                        "{on}, or search all of it in one step with `code`, as in \
+                         grep(fs_read(path={path}), pattern)"
+                    )
+                } else {
+                    on
+                };
                 format!(
                     "[truncated: {} is {size} bytes, and this read stopped at its {cap}-byte \
                      limit partway through line {line}. This is not the whole file: {on}.]\n\n\
@@ -1980,6 +1998,33 @@ mod read_window_tests {
         );
         let on = read(json!({"path": "edge.log", "offset": 2}), ctx(&dir)).await;
         assert_eq!(on.content, "second");
+
+        // In a run that offers `code`, the cut points at a program as the way
+        // to search all of it, with the path as the model wrote it; inside a
+        // program, where the text is already the program's, it does not.
+        let offered = ToolCtx {
+            code_offered: true,
+            ..ctx(&dir)
+        };
+        let pointed = read(json!({"path": "big.log"}), offered.clone()).await;
+        let note = pointed.content.lines().next().unwrap();
+        assert!(
+            note.ends_with(
+                "or search all of it in one step with `code`, as in \
+                 grep(fs_read(path=\"big.log\"), pattern).]"
+            ),
+            "{note}"
+        );
+        let in_program = ToolCtx {
+            program_room: Some(250_000),
+            ..offered
+        };
+        let inside = read(json!({"path": "big.log"}), in_program).await;
+        assert!(
+            !inside.content.contains("with `code`"),
+            "{}",
+            &inside.content[..300]
+        );
         let later = read(
             json!({"path": "big.log", "offset": 7, "limit": 1}),
             ctx(&dir),

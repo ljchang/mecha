@@ -1010,6 +1010,13 @@ pub struct ToolCtx {
     /// Stamped per call by `Agent::call_ctx`, as `host_calls` is, so no run
     /// inherits it from the call that started it; never the model's.
     pub program_room: Option<usize>,
+    /// The run this call belongs to offers `code`: registered and not
+    /// withheld. A read that has to cut a long text says so, and points at a
+    /// program as the way to search all of it (`CODE-MODE-DESIGN.md` §13,
+    /// "offer it at the moment of need"): in M2 a model paged a 1.5 MB log in
+    /// 200 KB windows, stopped partway and called it a thorough review.
+    /// Stamped once per run by `Agent::stamped`; never the model's.
+    pub code_offered: bool,
 }
 
 /// The last confirmed goal, and how the plan has moved against it.
@@ -1210,6 +1217,7 @@ impl Default for ToolCtx {
             build_on: None,
             host_calls: None,
             program_room: None,
+            code_offered: false,
         }
     }
 }
