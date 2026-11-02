@@ -31,7 +31,12 @@ assert.deepEqual(
   { start: '17:30', end: '18:30' },
   'after the latest window, whatever order they were added in',
 );
+// Late in the day: after the last window, never inside it, and nothing
+// once the day is open to its end.
 const lateWindow = nextWindow([{ start: '20:00', end: '23:30' }]);
+assert.deepEqual(lateWindow, { start: '23:30', end: '23:59' });
 assert.ok(lateWindow.start < lateWindow.end, 'never ends before it starts');
+assert.equal(nextWindow([{ start: '20:00', end: '23:59' }]), null);
+assert.deepEqual(nextWindow([{ start: '21:00', end: '22:15' }]), { start: '22:15', end: '23:15' });
 
 console.log('factory: ok');

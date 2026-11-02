@@ -4099,7 +4099,12 @@ edited there. Four decisions, each a bug if undone:
   `[availability]` (`slots push --manifest`). The box never computes from it
   but reads one field, `timezone`, to label the week grid and the
   confirmation's times. So an hours edit needs no `type push`, and a timezone
-  edit is refused here (`instrument::rewrite`): it is a publish, by hand. Until 2026-11-02 the pipeline read a
+  edit is refused here (`instrument::rewrite`): it is a publish, by hand.
+  The file is the factory's record of what is **served** (`type push`
+  writes it after the box accepts, and the drain validates submissions
+  against it), so the editor writes only keys neither the box nor the drain
+  reads. A later `type push` replaces the file whole and prints a note when
+  the hours it replaced differ (`requests::hours_displaced`, factory side). Until 2026-11-02 the pipeline read a
   hand-kept copy (`instruments/book-policy.toml`) under a "KEEP THE TWO IN
   AGREEMENT" comment that nothing enforced. An editor writing two files that
   must agree is that drift with a nicer face.
@@ -4121,7 +4126,9 @@ edited there. Four decisions, each a bug if undone:
   and drops any booking a withdrawal names, whatever its state says. The
   confirm sheet quotes only the preview of the draft being saved. A `base` digest refuses a save
   over a file that changed since the page read it (409), as the charter's list
-  save does.
+  save does, and checks it again at the write, since judging took seconds
+  and spawned two children. Save and preview bodies are capped
+  (`MAX_HOURS_BODY`, and `MAX_WINDOWS`/`MAX_OVERRIDES` in `validate`).
 
 It rides the `frontdoor` feature (`VIEW_FEATURE.factory`): a factory is what
 the front door is the door of, and a second switch could disagree with the
