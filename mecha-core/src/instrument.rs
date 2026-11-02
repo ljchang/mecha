@@ -228,7 +228,7 @@ pub fn read_hours(text: &str) -> Result<Hours> {
     if shapes.timezone.trim().is_empty() {
         bail!("[availability] names no timezone; set one in the manifest and type push it");
     }
-    Ok(Hours {
+    let hours = Hours {
         timezone: shapes.timezone,
         durations: shapes.durations,
         buffer_minutes: int("buffer_minutes")?.unwrap_or(0),
@@ -237,7 +237,12 @@ pub fn read_hours(text: &str) -> Result<Hours> {
         per_day_cap: int("per_day_cap")?,
         windows: shapes.windows,
         overrides: shapes.overrides,
-    })
+    };
+    // Hours the editor would refuse to save are refused at the read, with
+    // the reason: opening on them would show a blank box for `9:00` and an
+    // error on the first touch of a field the owner never edited.
+    validate(&hours).context("these hours cannot be edited here as they stand")?;
+    Ok(hours)
 }
 
 /// What would make a write unreadable or a push certain to fail. The
@@ -334,18 +339,32 @@ pub fn write_hours(text: &str, h: &Hours) -> Result<String> {
             was.timezone
         );
     }
-    a["durations"] = value(h.durations.iter().map(|d| i64::from(*d)).collect::<Array>());
+    // A replaced value keeps the old one's decor — the trailing `# note` and
+    // spacing live there, and `value(..)` carries none, so a plain
+    // assignment drops the owner's comment on every line the editor writes.
+    fn set(a: &mut Table, key: &str, new: toml_edit::Value) {
+        let mut new = new;
+        if let Some(old) = a.get(key).and_then(Item::as_value) {
+            *new.decor_mut() = old.decor().clone();
+        }
+        a[key] = Item::Value(new);
+    }
+    set(
+        a,
+        "durations",
+        toml_edit::Value::Array(h.durations.iter().map(|d| i64::from(*d)).collect::<Array>()),
+    );
     for (key, now, before) in [
         ("buffer_minutes", h.buffer_minutes, was.buffer_minutes),
         ("min_notice_hours", h.min_notice_hours, was.min_notice_hours),
         ("horizon_days", h.horizon_days, was.horizon_days),
     ] {
         if a.contains_key(key) || now != before {
-            a[key] = value(i64::from(now));
+            set(a, key, i64::from(now).into());
         }
     }
     match h.per_day_cap {
-        Some(cap) => a["per_day_cap"] = value(i64::from(cap)),
+        Some(cap) => set(a, "per_day_cap", i64::from(cap).into()),
         None => {
             a.remove("per_day_cap");
         }
@@ -663,6 +682,33 @@ heading = "You're booked"
     }
 
     #[test]
+    fn a_comment_on_a_line_the_editor_writes_survives() {
+        // Dragging one window end rewrites `durations` and states the other
+        // scalars; the owner's trailing notes on those lines must not go.
+        let noted = MANIFEST
+            .replace(
+                "durations = [30, 60]",
+                "durations = [30, 60]  # the two lengths I offer",
+            )
+            .replace(
+                "buffer_minutes = 10",
+                "buffer_minutes = 10  # tight on purpose",
+            );
+        let mut h = read_hours(&noted).unwrap();
+        h.windows[0].end = "16:00".into();
+        h.buffer_minutes = 15;
+        let out = write_hours(&noted, &h).unwrap();
+        assert!(
+            out.contains("durations = [30, 60]  # the two lengths I offer"),
+            "{out}"
+        );
+        assert!(
+            out.contains("buffer_minutes = 15  # tight on purpose"),
+            "{out}"
+        );
+    }
+
+    #[test]
     fn the_zone_line_is_left_alone_and_a_missing_zone_is_refused() {
         let noted = MANIFEST.replace(
             "timezone = \"America/New_York\"",
@@ -858,6 +904,13 @@ heading = "You're booked"
             "a booking page's hours are the owner's to write, from the web page only \
              (ARCHITECTURE.md §The Factory view); these reach a writer: {offenders:?}"
         );
+    }
+
+    #[test]
+    fn hours_the_save_would_refuse_do_not_open() {
+        let unpadded = MANIFEST.replace("start = \"13:00\"", "start = \"9:00\"");
+        let err = format!("{:#}", read_hours(&unpadded).unwrap_err());
+        assert!(err.contains("HH:MM"), "{err}");
     }
 
     #[test]
