@@ -20,10 +20,11 @@
 //! same over every chat, so a chat from before her people existed and one
 //! from after are measured by one instrument. Events wait for step 3,
 //! when they get names a transcript can be searched for. A name is matched
-//! as whole words. In her replies a capitalised name must be capitalised,
-//! since she writes names that way and "will" is not Will. In the owner's
-//! text case is ignored, since a phone types "milo". A name that is also a
-//! common word still over-counts where she starts a sentence with it.
+//! as whole words, and a capitalised name must be capitalised, since "will"
+//! is not Will. The one exception is an owner turn typed with no capital
+//! at all, as a phone often is ("is milo ok"), where case is ignored
+//! (review of #808). A name that is also a common word still over-counts
+//! where a sentence starts with it.
 //!
 //! - **An introduction** is a completed reply naming someone neither side
 //!   has named earlier in that chat. Harness notes are not read, only what
@@ -31,8 +32,8 @@
 //!   do not count as either side naming them.
 //! - **Taken up** is the owner naming them in the next turn they speak
 //!   in, and **asked** the subset where that turn holds a question mark.
-//! - **Came back** is the owner naming them in a later chat before she
-//!   does.
+//! - **Came back** is the owner naming them in a later stretch of talk
+//!   before she does: another chat, or the same one resumed.
 //! - **Not taken up** is her bringing them up again first, or the owner
 //!   speaking after the introduction without ever naming them: in the
 //!   next turn, or, for a chat's last introduction, in any later chat.
@@ -41,6 +42,14 @@
 //! - **Unanswered** is an introduction the owner has not spoken after at
 //!   all: the newest chat's last turn. Its outcome is unknown, so it is
 //!   kept out of the rate, never counted as a no.
+//!
+//! **Order is when it was said.** "Later" is read in time, not by chat. A
+//! chat resumed days after it began is read as stretches, each from its
+//! start or a resume (where the transcript records a config, with its
+//! clock) to the next, and every chat's stretches are read in one order by
+//! that clock. Ordering whole chats by when they began would put a
+//! long-lived chat's newest turns before chats that came after them, and
+//! each misplaced turn errs toward uptake (review of #808).
 //!
 //! **Arms, from what she was shown, not from her settings.** Each turn is
 //! filed by whether the transcript shows her days (a today-block among the
@@ -56,6 +65,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use serde::Serialize;
+
+use chrono::{DateTime, Utc};
 
 use crate::message::{Message, Role};
 use crate::session::{Record, Session};
@@ -105,12 +116,12 @@ fn capitalised(w: &str) -> bool {
     w.chars().next().is_some_and(char::is_uppercase)
 }
 
-/// Whether `text` names `s`. In her text (`hers`) a word the owner
-/// capitalised must be capitalised; in the owner's, case is ignored.
-fn names(text: &[String], s: &Subject, hers: bool) -> bool {
+/// Whether `text` names `s`. When `cased`, a word the owner capitalised
+/// must be capitalised; otherwise case is ignored.
+fn names(text: &[String], s: &Subject, cased: bool) -> bool {
     let same = |said: &str, name: &str| {
         said.to_lowercase() == name.to_lowercase()
-            && !(hers && capitalised(name) && !capitalised(said))
+            && !(cased && capitalised(name) && !capitalised(said))
     };
     s.names.iter().any(|name| {
         text.windows(name.len())
@@ -145,7 +156,16 @@ fn reply_text(m: &Message) -> Option<String> {
     (m.role == Role::Assistant && !text.trim().is_empty()).then_some(text)
 }
 
-/// One chat's runs, in order, from its session file.
+/// One stretch of a chat: from its start, or a resume, to the next.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Stretch {
+    /// The recorded config's clock; `None` on a record from before it.
+    pub at: Option<DateTime<Utc>>,
+    pub turns: Vec<Turn>,
+}
+
+/// One chat's runs, in order, from its session file, in stretches split
+/// where a config is recorded (the chat's start, and each resume).
 ///
 /// Walks the records as [`super::echo::session_echoes`] does: a run's
 /// messages (appended, or a `Rewrite` holding the whole history when it
@@ -154,15 +174,20 @@ fn reply_text(m: &Message) -> Option<String> {
 /// message the owner typed in the history, which is the run's own,
 /// since what came before it was summarised away. The arm's people half
 /// follows the latest recorded config, its days half the run's notes.
-pub fn session_turns(path: &Path) -> Result<Vec<Turn>> {
+pub fn session_turns(path: &Path) -> Result<Vec<Stretch>> {
     let text =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    let mut out = Vec::new();
+    let mut out: Vec<Stretch> = Vec::new();
+    let mut now = Stretch::default();
     let mut people = false;
     let mut run = Turn::default();
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
         match serde_json::from_str(line) {
             Ok(Record::Config(c)) => {
+                if !now.turns.is_empty() {
+                    out.push(std::mem::take(&mut now));
+                }
+                now.at = c.clock.or(now.at);
                 people = c
                     .system_prompt
                     .as_deref()
@@ -204,10 +229,13 @@ pub fn session_turns(path: &Path) -> Result<Vec<Turn>> {
                 let mut done = std::mem::take(&mut run);
                 done.completed = stats.stop_cause == Some(crate::agent::StopCause::Completed);
                 done.arm.people = people;
-                out.push(done);
+                now.turns.push(done);
             }
             _ => {}
         }
+    }
+    if !now.turns.is_empty() {
+        out.push(now);
     }
     Ok(out)
 }
@@ -251,15 +279,15 @@ impl Reading {
 /// An introduction waiting on its outcome.
 struct Waiting {
     arm: Arm,
-    /// The chat it was made in, which a return must come after.
-    chat: usize,
-    /// The owner had a next turn in its chat and did not name them.
+    /// The stretch it was made in, which a return must come after.
+    stretch: usize,
+    /// The owner had a next turn in its stretch and did not name them.
     passed: bool,
 }
 
 /// How a waiting introduction ended.
 enum Settled {
-    /// The owner brought them up first in a later chat.
+    /// The owner brought them up first in a later stretch.
     Back,
     /// She brought them up again first.
     Repeated,
@@ -278,27 +306,41 @@ fn settle(by: &mut HashMap<Arm, Reading>, w: Waiting, how: Settled) {
     }
 }
 
-/// Every arm's reading over `chats` (each a chat's turns, oldest chat
-/// first), searching for `who`. Arms with no reply are left out.
-pub fn score(chats: &[Vec<Turn>], who: &[Subject]) -> Vec<(Arm, Reading)> {
+/// Every arm's reading over `stretches`, each `(chat, turns)`, in the
+/// order they were said, searching for `who`. Arms with no reply are left
+/// out.
+pub fn score(stretches: &[(usize, Vec<Turn>)], who: &[Subject]) -> Vec<(Arm, Reading)> {
     let mut by: HashMap<Arm, Reading> = HashMap::new();
     // Per subject, introductions not taken up in the next turn, waiting
-    // for a return in a later chat.
+    // for a return in a later stretch.
     let mut waiting: HashMap<usize, Vec<Waiting>> = HashMap::new();
-    // The last chat the owner spoke in.
+    // Named by either side earlier in each chat, across its stretches.
+    let mut named: HashMap<usize, HashSet<usize>> = HashMap::new();
+    // The last stretch the owner spoke in.
     let mut spoke: Option<usize> = None;
-    for (chat, turns) in chats.iter().enumerate() {
-        // Named by either side earlier in this chat.
-        let mut named: HashSet<usize> = HashSet::new();
+    // A return or a repeat settles what an earlier stretch left waiting.
+    let settle_earlier = |by: &mut HashMap<Arm, Reading>,
+                          ws: &mut Vec<Waiting>,
+                          now: usize,
+                          how: fn() -> Settled| {
+        let (done, keep): (Vec<_>, Vec<_>) = ws.drain(..).partition(|w| w.stretch < now);
+        *ws = keep;
+        for w in done {
+            settle(by, w, how());
+        }
+    };
+    for (stretch, (chat, turns)) in stretches.iter().enumerate() {
+        let named = named.entry(*chat).or_default();
         // Introduced in the turn before, waiting on the owner's next turn.
         let mut last: Vec<(usize, Arm)> = Vec::new();
         for turn in turns {
             let owner = words(&turn.owner);
             if !owner.is_empty() {
-                spoke = Some(chat);
+                spoke = Some(stretch);
                 let asked = turn.owner.contains('?');
+                let cased = turn.owner.chars().any(char::is_uppercase);
                 for (s, arm) in last.drain(..) {
-                    if names(&owner, &who[s], false) {
+                    if names(&owner, &who[s], cased) {
                         let r = by.entry(arm).or_default();
                         r.taken_up += 1;
                         if asked {
@@ -307,27 +349,18 @@ pub fn score(chats: &[Vec<Turn>], who: &[Subject]) -> Vec<(Arm, Reading)> {
                     } else {
                         waiting.entry(s).or_default().push(Waiting {
                             arm,
-                            chat,
+                            stretch,
                             passed: true,
                         });
                     }
                 }
                 for (s, subject) in who.iter().enumerate() {
-                    if !names(&owner, subject, false) {
+                    if !names(&owner, subject, cased) {
                         continue;
                     }
                     named.insert(s);
-                    // The return each earlier chat's introduction was
-                    // waiting for. Only the owner can be first here: had
-                    // she named them earlier in this chat, that settled
-                    // the wait already.
                     if let Some(ws) = waiting.get_mut(&s) {
-                        let (back, keep): (Vec<_>, Vec<_>) =
-                            ws.drain(..).partition(|w| w.chat < chat);
-                        *ws = keep;
-                        for w in back {
-                            settle(&mut by, w, Settled::Back);
-                        }
+                        settle_earlier(&mut by, ws, stretch, || Settled::Back);
                     }
                 }
             }
@@ -341,12 +374,16 @@ pub fn score(chats: &[Vec<Turn>], who: &[Subject]) -> Vec<(Arm, Reading)> {
             }
             let mut introduced = false;
             for (s, subject) in who.iter().enumerate() {
-                if !names(&said, subject, true) || !named.insert(s) {
+                if !names(&said, subject, true) {
                     continue;
                 }
-                // Her bringing them up again first settles what waited.
-                for w in waiting.remove(&s).unwrap_or_default() {
-                    settle(&mut by, w, Settled::Repeated);
+                // Her bringing them up again first settles what an
+                // earlier stretch left waiting, a resumed chat's included.
+                if let Some(ws) = waiting.get_mut(&s) {
+                    settle_earlier(&mut by, ws, stretch, || Settled::Repeated);
+                }
+                if !named.insert(s) {
+                    continue;
                 }
                 if turn.completed {
                     introduced = true;
@@ -358,24 +395,71 @@ pub fn score(chats: &[Vec<Turn>], who: &[Subject]) -> Vec<(Arm, Reading)> {
                 by.entry(turn.arm).or_default().introducing += 1;
             }
         }
-        // The chat's last introductions had no next turn: they wait for a
-        // later chat, and are unanswered only if the owner never speaks
-        // again.
+        // The stretch's last introductions had no next turn: they wait for
+        // a later stretch, and are unanswered only if the owner never
+        // speaks again.
         for (s, arm) in last {
             waiting.entry(s).or_default().push(Waiting {
                 arm,
-                chat,
+                stretch,
                 passed: false,
             });
         }
     }
     for mut w in waiting.into_values().flatten() {
-        w.passed |= spoke.is_some_and(|c| c > w.chat);
+        w.passed |= spoke.is_some_and(|c| c > w.stretch);
         settle(&mut by, w, Settled::End);
     }
     let mut out: Vec<(Arm, Reading)> = by.into_iter().filter(|(_, r)| r.replies > 0).collect();
     out.sort_by_key(|(a, _)| *a);
     out
+}
+
+/// What [`stretches`] read.
+#[derive(Debug, Default)]
+pub struct Said {
+    /// `(chat, turns)`, in the order they were said.
+    pub stretches: Vec<(usize, Vec<Turn>)>,
+    /// Chats read.
+    pub chats: usize,
+    /// Session files that could not be read.
+    pub unreadable: usize,
+}
+
+/// Every stretch of every chat in `sessions` last written at or after
+/// `since`, in the order they were said: by the stretch's clock, or its
+/// chat's start where none was recorded.
+pub fn stretches(sessions: &Path, since: std::time::SystemTime) -> Result<Said> {
+    let (listed, mut unreadable) = Session::list_counting(sessions)?;
+    let mut all: Vec<(DateTime<Utc>, usize, Vec<Turn>)> = Vec::new();
+    let mut chats = 0;
+    for (meta, path) in listed {
+        let active = std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .is_ok_and(|t| t >= since);
+        if !active {
+            continue;
+        }
+        match session_turns(&path) {
+            Ok(parts) => {
+                for part in parts {
+                    all.push((part.at.unwrap_or(meta.created_at), chats, part.turns));
+                }
+                chats += 1;
+            }
+            Err(_) => unreadable += 1,
+        }
+    }
+    // Stable, so a chat's own stretches keep their order on a tie.
+    all.sort_by_key(|(at, _, _)| *at);
+    Ok(Said {
+        stretches: all
+            .into_iter()
+            .map(|(_, chat, turns)| (chat, turns))
+            .collect(),
+        chats,
+        unreadable,
+    })
 }
 
 /// One persona's reading over a window.
@@ -413,31 +497,21 @@ pub fn initiative(
     since: std::time::SystemTime,
 ) -> Result<Initiative> {
     let who = subjects(&Network::read(pdir)?);
-    let (listed, unreadable) = Session::list_counting(sessions)?;
+    if who.is_empty() {
+        let (_, unreadable) = Session::list_counting(sessions)?;
+        return Ok(Initiative {
+            unreadable,
+            ..Initiative::default()
+        });
+    }
+    let said = stretches(sessions, since)?;
     let mut out = Initiative {
+        chats: said.chats,
         people: who.len(),
-        unreadable,
+        unreadable: said.unreadable,
         ..Initiative::default()
     };
-    if who.is_empty() {
-        return Ok(out);
-    }
-    let mut chats = Vec::new();
-    // Oldest first: a return is a later chat's.
-    for (_, path) in listed.into_iter().rev() {
-        let active = std::fs::metadata(&path)
-            .and_then(|m| m.modified())
-            .is_ok_and(|t| t >= since);
-        if !active {
-            continue;
-        }
-        match session_turns(&path) {
-            Ok(turns) => chats.push(turns),
-            Err(_) => out.unreadable += 1,
-        }
-    }
-    out.chats = chats.len();
-    out.arms = score(&chats, &who)
+    out.arms = score(&said.stretches, &who)
         .into_iter()
         .map(|(arm, reading)| ArmReading {
             arm,
@@ -475,8 +549,13 @@ mod tests {
         }
     }
 
-    fn only(chats: &[Vec<Turn>]) -> Reading {
-        let got = score(chats, &milo());
+    /// Each chat as one stretch, oldest first.
+    fn chats(chats: &[Vec<Turn>]) -> Vec<(usize, Vec<Turn>)> {
+        chats.iter().cloned().enumerate().collect()
+    }
+
+    fn only(list: &[Vec<Turn>]) -> Reading {
+        let got = score(&chats(list), &milo());
         assert_eq!(got.len(), 1, "{got:?}");
         got[0].1
     }
@@ -489,7 +568,7 @@ mod tests {
         assert!(!names(&words("I will call."), &s, true), "will is not Will");
         assert!(
             names(&words("did will call?"), &s, false),
-            "the owner types in any case"
+            "uncased: a turn typed with no capital"
         );
         assert!(!names(&words("Willow came"), &s, true));
         let two = Subject::new(["Aunt May"]);
@@ -586,10 +665,10 @@ mod tests {
     #[test]
     fn arms_are_read_apart() {
         let got = score(
-            &[
+            &chats(&[
                 vec![turn("hi", "Milo!", OFF)],
                 vec![turn("hi", "Milo!", ON), turn("Milo?", "Yes", ON)],
-            ],
+            ]),
             &milo(),
         );
         assert_eq!(
@@ -600,6 +679,75 @@ mod tests {
         // The off arm's Milo was settled by her bringing him up again.
         assert_eq!(got[0].1.not_taken_up, 1);
         assert_eq!(got[1].1.taken_up, 1);
+    }
+
+    #[test]
+    fn the_owner_is_held_to_capitals_once_they_type_any() {
+        // "I will call" has a capital, so its will is not Will; an
+        // all-lowercase turn is read case-blind (review of #808).
+        let will = vec![Subject::new(["Will"])];
+        let r = score(
+            &chats(&[vec![
+                turn("hi", "Will is visiting.", ON),
+                turn("I will call you later", "Ok.", ON),
+            ]]),
+            &will,
+        );
+        assert_eq!((r[0].1.taken_up, r[0].1.not_taken_up), (0, 1));
+        let r = score(
+            &chats(&[vec![
+                turn("hi", "Will is visiting.", ON),
+                turn("oh is will staying long", "A week.", ON),
+            ]]),
+            &will,
+        );
+        assert_eq!(r[0].1.taken_up, 1);
+    }
+
+    #[test]
+    fn a_resumed_chat_is_read_where_it_happened() {
+        // Chat 0 introduces Milo and stops; chat 1 comes after; then chat 0
+        // is resumed and the owner asks about him. Read in time, the
+        // owner's question is a return in a later stretch.
+        let got = score(
+            &[
+                (0, vec![turn("hi", "Milo is home.", ON)]),
+                (1, vec![turn("rain again", "Ugh.", ON)]),
+                (0, vec![turn("how is Milo?", "Better.", ON)]),
+            ],
+            &milo(),
+        );
+        assert_eq!(
+            (
+                got[0].1.came_back,
+                got[0].1.taken_up,
+                got[0].1.introductions
+            ),
+            (1, 0, 1)
+        );
+        // Her raising him first on resuming is a repeat, not an
+        // introduction, and settles the wait as a no.
+        let got = score(
+            &[
+                (0, vec![turn("hi", "Milo is home.", ON)]),
+                (
+                    0,
+                    vec![
+                        turn("back", "Milo slept well.", ON),
+                        turn("good, Milo needed it", "Yes.", ON),
+                    ],
+                ),
+            ],
+            &milo(),
+        );
+        assert_eq!(
+            (
+                got[0].1.introductions,
+                got[0].1.not_taken_up,
+                got[0].1.came_back
+            ),
+            (1, 1, 0)
+        );
     }
 
     mod transcripts {
@@ -621,12 +769,21 @@ mod tests {
             Session::create(dir, meta).unwrap()
         }
 
-        fn config(s: &Session, prompt: &str) {
+        fn config(s: &Session, prompt: &str, at: &str) {
             s.append(&Record::Config(RunConfig {
                 system_prompt: Some(prompt.into()),
+                clock: Some(at.parse().unwrap()),
                 ..RunConfig::default()
             }))
             .unwrap();
+        }
+
+        fn flat(path: &Path) -> Vec<Turn> {
+            session_turns(path)
+                .unwrap()
+                .into_iter()
+                .flat_map(|s| s.turns)
+                .collect()
         }
 
         fn run(s: &Session, convo: &mut Conversation, said: &str, answer: &str, notes: &[&str]) {
@@ -651,7 +808,7 @@ mod tests {
         fn a_transcript_files_each_turn_by_what_she_was_shown() {
             let dir = std::env::temp_dir().join(format!("mecha-init-{}", uuid::Uuid::new_v4()));
             let s = scratch(&dir);
-            config(&s, "# Who you are\n\nMara.");
+            config(&s, "# Who you are\n\nMara.", "2026-01-01T09:00:00Z");
             let mut convo = Conversation::default();
             run(&s, &mut convo, "hi", "Milo is up early.", &[]);
             let today = format!(
@@ -664,9 +821,22 @@ mod tests {
                     "# Who you are\n\nMara.\n\n{}\n\nMilo.",
                     super::super::super::agent::PEOPLE_HEADING
                 ),
+                "2026-01-03T09:00:00Z",
             );
             run(&s, &mut convo, "is Milo ok?", "Yes.", &[&today]);
-            let turns = session_turns(&s.path).unwrap();
+            // Two stretches, split at the resume, each at its clock.
+            let parts = session_turns(&s.path).unwrap();
+            assert_eq!(
+                parts
+                    .iter()
+                    .map(|p| (p.at.unwrap().to_rfc3339(), p.turns.len()))
+                    .collect::<Vec<_>>(),
+                vec![
+                    ("2026-01-01T09:00:00+00:00".to_string(), 1),
+                    ("2026-01-03T09:00:00+00:00".to_string(), 1)
+                ]
+            );
+            let turns = flat(&s.path);
             assert_eq!(turns.len(), 2);
             assert_eq!(turns[0].arm, Arm::default());
             assert_eq!(
@@ -691,9 +861,32 @@ mod tests {
                 ..RunStats::default()
             }))
             .unwrap();
-            let turns = session_turns(&s.path).unwrap();
+            let turns = flat(&s.path);
             assert_eq!(turns[2].owner, "tell me about Ines");
             assert_eq!(turns[2].reply.as_deref(), Some("Ines bakes."));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn stretches_are_read_in_the_order_they_were_said() {
+            let dir = std::env::temp_dir().join(format!("mecha-init-{}", uuid::Uuid::new_v4()));
+            // Chat a began first and was resumed after chat b.
+            let a = scratch(&dir);
+            config(&a, "p", "2026-01-01T09:00:00Z");
+            let mut ca = Conversation::default();
+            run(&a, &mut ca, "hi", "Milo is home.", &[]);
+            let b = scratch(&dir);
+            config(&b, "p", "2026-01-02T09:00:00Z");
+            run(&b, &mut Conversation::default(), "rain", "Ugh.", &[]);
+            config(&a, "p", "2026-01-03T09:00:00Z");
+            run(&a, &mut ca, "how is Milo?", "Better.", &[]);
+            let read = stretches(&dir, std::time::UNIX_EPOCH).unwrap();
+            assert_eq!((read.chats, read.unreadable), (2, 0));
+            let said = read.stretches;
+            let owners: Vec<&str> = said.iter().map(|(_, t)| t[0].owner.as_str()).collect();
+            assert_eq!(owners, vec!["hi", "rain", "how is Milo?"]);
+            assert_eq!(said[0].0, said[2].0, "one chat, two stretches");
+            assert_ne!(said[0].0, said[1].0);
             let _ = std::fs::remove_dir_all(&dir);
         }
     }
