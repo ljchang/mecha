@@ -1284,12 +1284,16 @@ fn api() -> gate::Owned {
         .at(
             "/api/factory/preview",
             Owner::Of(Feature::Frontdoor),
-            axum::routing::post(factory::preview_hours),
+            axum::routing::post(factory::preview_hours).layer(
+                axum::extract::DefaultBodyLimit::max(factory::MAX_HOURS_BODY),
+            ),
         )
         .at(
             "/api/factory/hours",
             Owner::Of(Feature::Frontdoor),
-            axum::routing::post(factory::save_hours),
+            axum::routing::post(factory::save_hours).layer(axum::extract::DefaultBodyLimit::max(
+                factory::MAX_HOURS_BODY,
+            )),
         )
         .at("/api/find", Owner::Of(Feature::Graph), get(board::find))
         .at(

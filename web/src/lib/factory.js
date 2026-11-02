@@ -31,16 +31,17 @@ export function byDay(slots, tz, { days = 14, now = Date.now(), locale = [] } = 
 }
 
 /**
- * The window "+" adds to a day: an hour after the day's last window ends,
- * or a working afternoon on a day with none. Never one that ends before it
- * starts — a window that late gets the rest of the day instead.
+ * The window "+" adds to a day: from the end of the day's last window, an
+ * hour long or to the end of the day, whichever is sooner; a working
+ * afternoon on a day with none. `null` once the day is open until 23:59 —
+ * there is nothing after it to add, and a window starting inside the last
+ * one is two windows saying one thing.
  */
 export function nextWindow(existing) {
   const last = [...existing].sort((a, b) => a.end.localeCompare(b.end)).at(-1);
   if (!last) return { start: '13:00', end: '17:00' };
+  if (last.end >= '23:59') return null;
   const [h, m] = last.end.split(':').map(Number);
-  if (!(h < 23)) return { start: '23:00', end: '23:45' };
-  const start = last.end;
-  const end = h + 1 >= 24 ? '23:45' : `${String(h + 1).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-  return { start, end };
+  const end = h >= 23 ? '23:59' : `${String(h + 1).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  return { start: last.end, end };
 }

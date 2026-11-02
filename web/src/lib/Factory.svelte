@@ -21,7 +21,6 @@
   let draftPreview = $state(null);
   let draftPreviewFor = $state(null);
   let draftError = $state(null);
-  let previewing = $state(false);
   let saving = $state(false);
   let confirming = $state(false);
   let toast = $state(null);
@@ -93,7 +92,6 @@
   });
 
   async function runPreview(snapshot) {
-    previewing = true;
     try {
       const res = await fetch('/api/factory/preview', {
         method: 'POST',
@@ -101,8 +99,8 @@
         body: JSON.stringify({ id, base: item.digest, hours: JSON.parse(snapshot) }),
       });
       const text = await res.text();
-      // A stale answer for a draft that has moved on is dropped, and the
-      // newer request's own `finally` is what clears `previewing`.
+      // A stale answer for a draft that has moved on is dropped; the
+      // newer request's own answer is the one `current` waits for.
       if (snapshot !== draftKey) return;
       if (!res.ok) {
         draftPreview = null;
@@ -113,12 +111,8 @@
         draftPreviewFor = snapshot;
         draftError = null;
       }
-      previewing = false;
     } catch (e) {
-      if (snapshot === draftKey) {
-        draftError = String(e?.message ?? e);
-        previewing = false;
-      }
+      if (snapshot === draftKey) draftError = String(e?.message ?? e);
     }
   }
 
@@ -169,8 +163,10 @@
 
   const windowsOf = (day) => (draft?.windows ?? []).map((w, i) => [w, i]).filter(([w]) => w.day === day);
   function addWindow(day) {
-    draft.windows.push({ day, ...nextWindow(windowsOf(day).map(([w]) => w)) });
+    const next = nextWindow(windowsOf(day).map(([w]) => w));
+    if (next) draft.windows.push({ day, ...next });
   }
+  const canAdd = (day) => nextWindow(windowsOf(day).map(([w]) => w)) !== null;
   function toggleLength(n) {
     const has = draft.durations.includes(n);
     draft.durations = has ? draft.durations.filter((d) => d !== n) : [...draft.durations, n].sort((a, b) => a - b);
@@ -315,7 +311,7 @@
                   {:else}
                     <span class="closed">closed</span>
                   {/each}
-                  <button class="add" onclick={() => addWindow(day)}>+</button>
+                  {#if canAdd(day)}<button class="add" aria-label="add hours on {DAY_NAMES[day]}" onclick={() => addWindow(day)}>+</button>{/if}
                 </div>
               </div>
             {/each}

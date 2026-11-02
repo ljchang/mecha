@@ -314,6 +314,13 @@ fn candidate(body: &HoursBody) -> Result<(instrument::Instrument, String), Respo
     }
 }
 
+/// The most a preview or save body may be. A week of hours is a few
+/// hundred bytes; the cap is what keeps one request from asking two child
+/// processes to judge a manifest of fifty thousand windows (`validate` also
+/// caps the counts, so what is written stays a manifest this page can read
+/// back).
+pub const MAX_HOURS_BODY: usize = 64 * 1024;
+
 /// POST /api/factory/preview — what these hours would offer, without
 /// saving them.
 pub async fn preview_hours(State(_state): St, Json(body): Json<HoursBody>) -> Response {
@@ -339,10 +346,25 @@ pub async fn save_hours(State(_state): St, Json(body): Json<HoursBody>) -> Respo
     if let Err(e) = judge(&inst.id, &inst.path, &text).await {
         return err(StatusCode::UNPROCESSABLE_ENTITY, e);
     }
+    // The `base` guard again, at the write: the judging above spawned two
+    // children and took seconds, and a second tab saving in that window
+    // must get its 409 rather than have its hours silently replaced. The
+    // text written is the one judged; only the file it replaces is re-read.
     let path = inst.path.clone();
-    let wrote = tokio::task::spawn_blocking(move || instrument::replace_file(&path, &text)).await;
+    let base = body.base.clone();
+    let wrote = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let now = std::fs::read_to_string(&path)?;
+        if instrument::digest(&now) != base {
+            anyhow::bail!(instrument::Stale);
+        }
+        instrument::replace_file(&path, &text)
+    })
+    .await;
     match wrote {
         Ok(Ok(())) => {}
+        Ok(Err(e)) if e.downcast_ref::<instrument::Stale>().is_some() => {
+            return err(StatusCode::CONFLICT, e)
+        }
         Ok(Err(e)) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, e),
     }

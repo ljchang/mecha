@@ -30,8 +30,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// How many days the slot pipeline's freebusy fetch covers — the
-/// `mecha-mail freebusy --days 60` in `scripts/mecha-slots.service`, which
-/// `the_pipeline_unit_fetches_the_days_the_editor_allows` holds this to.
+/// `mecha-mail freebusy --days 60` in every script that pushes, which
+/// `the_pipelines_fetch_the_days_the_editor_allows` holds this to.
 /// A horizon past it would make every push refuse ("short of the horizon"),
 /// and the page would go stale while the editor said it saved.
 pub const PIPELINE_DAYS: u32 = 60;
@@ -240,6 +240,17 @@ pub fn validate(h: &Hours) -> Result<()> {
     if h.windows.is_empty() {
         bail!("open at least one weekly window — with none, nothing is ever offered");
     }
+    if h.windows.len() > MAX_WINDOWS || h.overrides.len() > MAX_OVERRIDES {
+        bail!(
+            "at most {MAX_WINDOWS} weekly windows and {MAX_OVERRIDES} dated exceptions — \
+             this is {} and {}",
+            h.windows.len(),
+            h.overrides.len()
+        );
+    }
+    if h.durations.len() > 16 || h.overrides.iter().any(|o| o.windows.len() > 16) {
+        bail!("more meeting lengths, or windows on one date, than a page can offer");
+    }
     if h.horizon_days == 0 || h.horizon_days > PIPELINE_DAYS {
         bail!(
             "how far ahead must be 1–{PIPELINE_DAYS} days: the slot timer fetches \
@@ -360,9 +371,16 @@ pub fn digest(text: &str) -> String {
     crate::charter::digest(text)
 }
 
-/// A manifest is a few kilobytes; a save body orders of magnitude past that
-/// is not an edit of one.
+/// A manifest on disk past this is not one the editor rewrites: a booking
+/// page's is a few kilobytes, and one this large was edited by hand into
+/// something this page should not round-trip.
 pub const MAX_MANIFEST_BYTES: usize = 256 * 1024;
+
+/// The most weekly windows and dated exceptions a save may carry — a week
+/// has a few windows and a year a few dozen days off; past these an edit is
+/// not one a person made on this page.
+pub const MAX_WINDOWS: usize = 64;
+pub const MAX_OVERRIDES: usize = 366;
 
 /// `text` with its hours replaced, refused if the file is no longer the one
 /// the page read (`base`, its [`digest`]).
@@ -560,6 +578,13 @@ heading = "You're booked"
         refuse(|h| h.horizon_days = 0, "1–60");
         refuse(|h| h.windows.clear(), "at least one weekly window");
         refuse(|h| h.durations.clear(), "meeting length");
+        refuse(
+            |h| {
+                let w = h.windows[0].clone();
+                h.windows = vec![w; MAX_WINDOWS + 1];
+            },
+            "at most",
+        );
         refuse(|h| h.windows[0].day = "tuesday".into(), "not a weekday");
         refuse(
             |h| h.windows[0].end = "12:00".into(),
