@@ -33,7 +33,7 @@ export function withUnlock(path, token) {
 // imports `ENDPOINTS` instead, and the builders refuse any suffix not listed
 // here: a new endpoint is added to this list or it throws, and the list is
 // then what `check-demo` holds the demo's routes to (review of #415).
-const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock', '/frame', '/image-touching', '/image-settings', '/sources', '/sources/remove', '/sources/file', '/sources/text', '/review', '/approve', '/reject', '/memory', '/week', '/routine/cell', '/routine/draft', '/routine/draft/approve', '/people'];
+const PERSONA_SUFFIXES = ['/chats', '/resume', '/files', '/lock', '/frame', '/image-touching', '/image-settings', '/sources', '/sources/remove', '/sources/file', '/sources/text', '/review', '/approve', '/reject', '/memory', '/week', '/routine/cell', '/routine/draft', '/routine/draft/approve', '/people', '/people/proposal', '/people/proposal/accept'];
 const CHAT_SUFFIXES = ['', '/events', '/send', '/cancel', '/file', '/upload', '/cited', '/save', '/call', '/call-regenerate', '/jobs/order'];
 
 export const ENDPOINTS = [
@@ -929,6 +929,28 @@ export const PEOPLE_ABSENT = {
 // layers, then one ring for those not placed, then the outer band where
 // ended ties are greyed (§15).
 export const RINGS = { 5: 31, 15: 47, 50: 63, 150: 78, none: 88, ended: 96 };
+// The rings innermost first.
+export const RING_ORDER = [...PEOPLE_LAYERS, 'none', 'ended'];
+
+// Her network's read, as it is or as it was on a day (§15's time slider).
+export function peopleUrl(name, asOf = null, token = null) {
+  let url = personaUrl(name, '/people', token);
+  if (asOf) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(asOf)) throw new Error(`not a date: ${asOf}`);
+    url += `${url.includes('?') ? '&' : '?'}as_of=${asOf}`;
+  }
+  return url;
+}
+
+// What accepting a proposal did, in a line.
+export function acceptedLine(a) {
+  if (!a) return '';
+  const parts = [];
+  if (a.added?.length) parts.push(`Added ${a.added.join(', ')}.`);
+  if (a.already?.length) parts.push(`${a.already.join(', ')} ${a.already.length === 1 ? 'was' : 'were'} already in her network.`);
+  if (a.waiting) parts.push(`${a.waiting} more still ${a.waiting === 1 ? 'waits' : 'wait'} below.`);
+  return parts.join(' ') || 'Nothing to add.';
+}
 
 // Where each person sits: on their layer's ring, or the unplaced ring, or
 // the ended band, spread evenly round it in name order from the top, so the
@@ -944,14 +966,15 @@ export function ringLayout(people) {
   const out = [];
   // Rings in a fixed order, innermost first, so the output is the same
   // whatever order the people came in.
-  for (const ring of [...PEOPLE_LAYERS, 'none', 'ended']) {
+  for (const ring of RING_ORDER) {
     const members = rings.get(ring);
     if (!members) continue;
     members.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()) || a.id.localeCompare(b.id));
     const r = RINGS[ring];
     // Rings offset a little from one another so two rings' first members
-    // never line up on the same spoke.
-    const offset = (Object.keys(RINGS).indexOf(String(ring)) * Math.PI) / 7;
+    // never line up on the same spoke; by the rings' own order, said here
+    // rather than left to how object keys happen to iterate (review of #803).
+    const offset = (RING_ORDER.indexOf(ring) * Math.PI) / 7;
     members.forEach((p, i) => {
       const a = -Math.PI / 2 + offset + (2 * Math.PI * i) / members.length;
       out.push({
