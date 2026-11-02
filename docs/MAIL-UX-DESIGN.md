@@ -454,9 +454,12 @@ them teaches the classifier noise.
 ## 8. What is deliberately not being built
 
 - **Auto-send of anything**, at any confidence, including the finance forward.
+  *(Reversed for owner-approved mail rules on 2026-11-02: see
+  `MAIL-RULES-DESIGN.md` §0, R1–R3.)*
 - **An autonomy tier.** Inbox Zero's per-rule graduation is the good version
   and it is v2 at the earliest; it should follow `/review now|later|auto`'s
   rule — set by explicit command, never inferred.
+  *(Designed as per-rule modes on 2026-11-02: see `MAIL-RULES-DESIGN.md` §6.)*
 - **A second approval surface.** The outbox is it.
 - **`mail_snooze`.** Neither provider has one; it would be a label plus a
   trigger, and a snooze that silently means "labelled and forgotten" is the
