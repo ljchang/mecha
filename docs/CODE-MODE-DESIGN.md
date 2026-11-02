@@ -1,6 +1,6 @@
 # Code mode, reshaped by RLM — design
 
-**Status: 2026-10-31, designed; the interpreter backend (slice 3a, `mecha-core/src/interpreter/`), the `code` tool's host calls and handles (slice 3b, `mecha-core/src/tool/code.rs`) and `llm_query`/`llm_map` (slice 3c, the same file and `tool/code_shape.rs`) built and tested; registered (slice 3d): `Feature::Code` behind `[features] code`, available only in a build with the cargo feature `monty`, `Lever::CodeTool`, the parent's `code` built last by the agent (`Agent::enable_code`), and §7's `RunStats` counters, with each pass's usage in the run's own. Slice 3e built the `program` record, its blob store and the grounding walk's second source with its readers (§7, `tool/code_record.rs`), and a subagent's own `code`, which makes the `analyst` profile (§6) launch; a subagent stays unadmitted into a program. Not built: retention and `doctor` for the blob store, and `replay_run` answering a replayed program's host calls from the record (§7). Ruled 2026-10-30, and R4 on 2026-10-31 (§11). M0 and M1 measured (§10).**
+**Status: 2026-10-31, designed; the interpreter backend (slice 3a, `mecha-core/src/interpreter/`), the `code` tool's host calls and handles (slice 3b, `mecha-core/src/tool/code.rs`) and `llm_query`/`llm_map` (slice 3c, the same file and `tool/code_shape.rs`) built and tested; registered (slice 3d): `Feature::Code` behind `[features] code`, available only in a build with the cargo feature `monty`, `Lever::CodeTool`, the parent's `code` built last by the agent (`Agent::enable_code`), and §7's `RunStats` counters, with each pass's usage in the run's own. Slice 3e built the `program` record, its blob store and the grounding walk's second source with its readers (§7, `tool/code_record.rs`), and a subagent's own `code`, which makes the `analyst` profile (§6) launch; a subagent stays unadmitted into a program. Not built: retention and `doctor` for the blob store, and `replay_run` answering a replayed program's host calls from the record (§7). Ruled 2026-10-30, and R4 on 2026-10-31 (§11). M0 and M1 measured (§10). **R11 (2026-11-02): a tool's result reaches a program as a `str`, and the opaque handles are retired (§3), after M2 (§13).**
 
 This supersedes the *shape* of `AUDIT-RESEARCH.md` §3.12 ("programmatic
 tool calling, on monty"). That section's contract, its first hazard (taint
@@ -18,10 +18,10 @@ interpreter comparison. The evidence for the changes is in
 A `code` tool runs a short Python program in monty, out of process through
 `monty-pool`. The program can call only tools whose effect class is a
 plain read (§2), and every call goes through the same gate a model-issued
-call takes. What a read returns stays in the host as an **opaque handle**;
-the program slices, searches and counts it through host functions, and
-the bytes reach the model's context only if the program asks to see them
-(§3). A host function, `llm_query`, hands one or more handles to a
+call takes. What a read returns reaches the **program** as a `str` and
+stays out of the **model's** context: only what the program prints comes
+back, capped and wrapped like any tool result (§3; opaque handles until
+R11, 2026-11-02). A host function, `llm_query`, hands one or more texts to a
 `QuarantinedPass` whose answer is decoded against a **shape** — a boolean,
 a number, one of a closed set, or a small list or record of those (§4). A
 **budget** caps sub-calls (§5). Nothing in the program can send, write,
@@ -142,125 +142,90 @@ What the slice gives up, and why that is the right trade:
 
 ---
 
-## 3. Handles
+## 3. Results are text (R11)
 
-A tool called from a program returns a `Handle`, not a `str`. The bytes
-stay in the host, owned by the program's run, along with the tool's name,
-the call's `ToolOutput::external` and the tool's capabilities.
+A tool called from a program returns its result as a `str`. `fs_list`'s
+builtin returns a list of names (`Tool::lists_names`, answered by the
+builtin alone, so a server's tool of that name returns one `str`), a
+directory's ending in `/` and `(empty directory)` an empty list. The
+program works on the text as Python does: string methods, slicing, `in`,
+`len()`, `re`, `json`.
+
+**The guard is what leaves the program.** What the model reads is the
+program's printed output and its ending, capped by `code::render` at the
+call's share of the output budget (with how it ended said first, so the cut
+never takes the model's only feedback), then capped, spilled and wrapped by
+the dispatch like any tool result. Taint arms on the host call, from the
+result's `external` and the tool's capabilities, before the program
+resumes, exactly as before: §3.12's first hazard, unchanged. Nothing a
+label rests on moved.
+
+**Host helpers** take a text and run Rust's `regex` (linear time, so a
+pattern cannot cost unbounded time on adversarial text, unlike monty's
+backtracking `re`):
 
 | Host function | Returns | Note |
 |---|---|---|
-| `size(h)` | int | |
-| `slice(h, start, end)` | Handle | |
-| `lines(h)`, `split(h, pattern)`, `chunks(h, n, overlap=0)` | list of Handle | `n` is each chunk's size in characters, not a count of chunks |
-| `find(h, pattern)` | list of (start, end) | offsets, never text |
-| `count(h, pattern)` | int | |
-| `json_get(h, path)` | Handle for a string, object or array leaf; a number, bool or null as itself | structured tool output without decoding it into the program. A string leaf is text and stays a handle, or it would bypass `peek`'s cap and count |
-| `budget()` | dict of ints | the remaining amount of each **per-program** §5 host limit, read without spending anything, so a program can check before a sweep. The process-wide byte pool is left out: it moves with other programs, and reading it would be a cross-program observable, the `find`/`count` oracle's cousin |
-| `peek(h, n=2000, start=0)` | str | **the only way a handle's text enters the program**; a `str[n]` sub-call result (§4) is the other way prose does, and both draw on one cap and one count. `start` is a character offset, as `find` gives them, negative from the end as `slice`'s are (2026-11-01: without it a model peeked "around" a `find` hit, read the note's head instead, and missed 7 of 25 matches) |
+| `grep(text, pattern)` | list of str | the lines `pattern` matches anywhere in, in order; bounded as `lines` is (131,072) |
+| `count(text, pattern)` | int | |
+| `find(text, pattern)` | list of [start, end] | character offsets, as Python's indexing counts them; at most 4,096 pairs |
+| `lines(text)`, `split(text, pattern)`, `chunks(text, n, overlap=0)` | list of str | `n` is each chunk's size in characters, at least 1; at most 131,072 pieces, and a `chunks` whose overlap repeats more text than the host-byte limit raises, both before anything is built |
+| `json_get(text, path)` | the decoded leaf | a string as `str`, an object as a dict; a leaf nesting past 64 levels, the most a value can cross into a program at, raises `HandleError:` |
+| `size(text)`, `slice(text, start, end)`, `peek(text, n=2000, start=0)` | int, str, str | kept because programs written before R11 call them; negative `start` counts from the end, and a negative `n` with no `start` is the last `n` characters (with a `start`, `n`'s sign is dropped) |
+| `budget()` | dict of ints | the remaining amount of each **per-program** §5 host limit. The process-wide byte pool is left out: it moves with other programs |
 
-**`fs_list` is the one tool whose result is not a handle.** A program gets
-its names as a list of `str` (a directory's ends in `/`; the tool's
-`(empty directory)` is an empty list), charged to `peek`'s cap and count,
-and a listing that would cross the cap raises whole. A file name is
-metadata, but someone else may have chosen it, so it is counted as prose
-is. *Incident:* in every live run (2026-11-01) the model opened with
-`name.startswith(...)` on `fs_list`'s entries and spent its first
-programs on the error before reaching the data.
+**A tool's error reaches the program in the tool's own words**, as
+`ToolError: \`name\` returned an error: …`, cut at 2,000 bytes. A host
+function's own errors name positions and offsets, not the text it was
+given, under `HandleError:`; a failed pass is named by what failed to
+parse, never its raw output, and a provider's failure by its class, never
+its body (§4).
 
-- **Only the builtin answers so** (`Tool::lists_names`): a server may
-  register a tool named `fs_list`, and its result stays a handle, so the
-  exception is not claimable by config (review of #793).
-- **What the charge costs.** Before, a listing too large for the cap was
-  still a handle a program could walk with `lines()`; now it raises whole,
-  and a directory walk shares its 256 KiB with `str[n]` answers. At ~20
-  bytes a name that is about 13,000 entries, far past the fixtures, but a
-  program that needs more has no route to the names. Raise the cap, or give
-  listings a count of their own, if a real directory reaches it.
+**A program that reaches for the operating system is told where its data
+is.** An `os` call or `open()` is refused with a `PermissionError` that
+says a program has no files, environment, network or clock, leads with
+`fs_read` and `fs_list` when the program has them (19 of M2's 27 first
+programs failed on `open()` or `os.listdir`), and lists the functions it
+was given. An unknown import is left as monty's own `ModuleNotFoundError`.
 
-`print(h)` renders a stub such as
-`<handle 3: 48,213 chars from mail_get_thread>`, so the default spelling of
-"look at it" costs a line, not the payload.
+**A function the program assigned over is named.** `size = size(h)` in a
+loop made the next call fail with monty's "'int' object is not callable"
+(M2). When a program's error says a value is not callable and the program
+assigned to one of its function names, the result says which, and that
+the variable needs another name.
 
-- **A handle is not a string, and using one as text raises** (#791). The
-  host marks each handle in its answer (`interpreter::HANDLE_MARK`), and the
-  backend hands the program an object that string operations refuse on:
-  `"Priya" in h` and `len(h)` raise `TypeError`, and a method such as
-  `h.split(",")` raises `AttributeError`. The `code` result adds a line
-  saying what to use instead: `split(h, ...)` for a method that is a host
-  function of the same name, and `find`, `count`, `lines` and `peek`
-  otherwise.
-  The program's value goes back to the host as its stub, and the result
-  shows it as one.
-  - *Incident:* handles used to be the stub string itself. A model's
-    `"Priya Okafor" in text` searched the stub's own text and returned
-    `False`, so its program reported 0 meetings attended, with nothing
-    raised. The model caught it only because 0 looked wrong.
-  - Text cannot reach anything new by looking like a stub. A stub-shaped
-    string a program passes back resolves only if it is the exact stub of a
-    handle this program already holds (`held()`), which `peek` of a tool's
-    error body relies on. And tool data cannot turn into a handle object:
-    file text reaches a program only as a `peek` string, and the marker's
-    key holds a NUL.
-- **A program that reaches for the filesystem is told where its data is.**
-  An `os` call is refused with a `PermissionError` that says a program has
-  no files, environment, network or clock, and lists the functions it was
-  given. An unknown import is left as monty's own `ModuleNotFoundError`, so
-  a program's `except ImportError:` still catches it. Monty's own `Permission denied: '/notes'` read as a sandbox fault,
-  and the model went probing paths.
+**What R11 replaced.** From slice 3b until 2026-11-02 a result was an
+opaque handle: an object string operations refused on, printing as a stub
+(`<handle 3: 48,213 chars from mail_get_thread>`), whose text entered the
+program only through `peek`, capped and counted. The design called it
+CaMeL's control-flow integrity, offered as an option: third-party prose
+would reach the model's planning only when it chose `peek`. In practice:
+- it bought no label: a read armed the run whether its text was peeked or
+  not, and the design already said a handle "saves context; it does not
+  lower a label";
+- it was not enforced: `find` and `count` take the program's pattern, an
+  oracle that learns text a character at a time, so "only through `peek`"
+  was a default, never a property (the §10 counter recorded it, never
+  credited it);
+- R5 had already found the cap guarded less than its number suggested,
+  because the read-only slice has no sink;
+- and it cost the most of any failure in M2: about 46 of 220 programs
+  failed on a handle used as text (`.strip()`, `.split()`, `in`, `len()`),
+  a quarter of all failures, where every other harness surveyed hands a
+  program real strings and guards what goes back to the model (§13).
 
-- **Taint is unchanged.** It arms on the host call, from the result's
-  `external` and the tool's capabilities, before the program resumes —
-  §3.12's first hazard, as specified. A handle therefore saves *context*;
-  it does not lower a label. What it adds is that third-party prose reaches
-  the model's planning only when the model chooses `peek`, which CaMeL
-  calls control-flow integrity, and which mecha records rather than
-  credits (§10, the `peeked` count).
-- **Numbers do enter without `peek`.** `size`, `count`, `find` offsets and
-  `json_get`'s number, bool or null leaves are values computed over
-  attacker text. They are attacker-influenced, as a typed sub-call answer
-  is, and bounded the same way: a number carries no instruction. They
-  change no label, and they are not counted with `peek`, because the cap
-  exists to bound prose.
-- **But `find` and `count` take the program's pattern, so they are an
-  oracle.** A program can learn text a character at a time by asking
-  whether a pattern matches, which a number bounded by an attacker's
-  choice is not. It spends the 2,048 handle-operation budget, not the
-  peek cap, and `peeked_bytes` cannot see it. This is not a taint hole:
-  the read armed the run, and the slice has no sinks. It does mean "prose
-  reaches planning only through `peek`" is the default a program follows,
-  not a property the host enforces, and §10 reads `peeked_bytes` as that,
-  never as proof.
-- **`peek` exists** because RLM roots look at a prefix to learn a format,
-  and a program that cannot see its data guesses. It is capped, counted,
-  and its output takes the ordinary output budget.
-- **Patterns run host-side** with Rust's `regex` (linear time), not
-  monty's backtracking engine, so a pattern cannot cost unbounded time on
-  adversarial text.
-- **A host-raised error is a third route for prose, so the host's
-  messages carry no bytes.** A program reads a failure as `str(e)`, and an
-  uncaught one reaches the model as a traceback. A message quoting a
-  handle's text, a tool's error body or a failed pass's raw output would
-  put prose into the program past `peek`'s cap and outside
-  `peeked_bytes`, and into the model's context unasked. So every message
-  the host writes names the handle's number, offsets, the tool and the
-  limit, and for a failed pass what failed to parse (wrong type, a missing
-  field, a label outside the set), never the text. A tool's error body is
-  bytes like any result: the message names a handle that holds it, and a
-  program that wants the reason `peek`s it, counted. Monty's own errors
-  need no rule: a program holds a `str` only from `peek`, a `str[n]`
-  result or its own literals, so an error quoting a value re-quotes
-  counted text. An uncaught error's traceback takes the ordinary output
-  budget, and a cut keeps the raised line and says how many frames it
-  dropped, because that line is the model's only feedback (§5).
-
----
+The handle came from RLM's *prompt as a variable*, whose gain (Qwen3-Coder
+on CodeQA, 20.0 to 66.0 with no sub-calls) is the input kept out of the
+**model's** window. RLM's own variable is a plain `str` the program reads
+freely, so that gain survives R11 whole. **The sink slice (§12) decides
+opacity again for itself**: there a branch third-party text steers could
+change what is sent, which is where CaMeL's property earns its cost.
 
 ## 4. `llm_query` and `llm_map`
 
 ```python
-llm_query(instruction: str, source: Handle | list[Handle], shape) -> value
-llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
+llm_query(instruction: str, source: str | list[str], shape) -> value
+llm_map(instruction: str, sources: list[str], shape) -> list[value]
 ```
 
 - **One `QuarantinedPass` per call.** A fixed harness system frame, then
@@ -290,9 +255,9 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
   could return (`n` per text field, 64 per list, times the items of
   an `llm_map`), and on the answer's actual bytes.
 
-- **A `str[n]` result is prose entering the program**, so it is counted
-  with `peek` against one cap (§5); otherwise it would be a second,
-  uncounted route around §3.
+- **A `str[n]` result is counted with `peek`'s** in `peeked_bytes`
+  (§5). Until R11 the two drew on one cap; with reads arriving as text,
+  the cap had nothing left to bound, and the count stays for the corpus.
 - **`str[n]` and record fields of it never cross a trust boundary.**
   `AnswerShape` deliberately has no bounded-string shape, because
   "ignore previous instructions" fits in very few characters: a length
@@ -315,8 +280,8 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
   a backstop (§5) is not an exception at all. The tags are `QueryError:` for a failed pass,
   `ToolError:` for a tool that returned `is_error` or a host call refused
   (§7, followed by the loop's own refusal prefix, so a policy block still
-  never reads as a person's denial), `HandleError:` for a §3 handle
-  operation that cannot apply (`json_get` on bytes that are not JSON, a
+  never reads as a person's denial), `HandleError:` for a §3 host
+  function that cannot apply (an argument that is not a `str`, `json_get` on bytes that are not JSON, a
   path that does not exist, a slice out of range), and `LimitError:` for
   a §5 limit. The text after the tag follows §3's rule: no bytes.
 - **`llm_map` raises at the first failed item, and the passes before it
@@ -341,9 +306,9 @@ llm_map(instruction: str, sources: list[Handle], shape) -> list[value]
 - **Same model only.** Sub-calls go to the model the run already holds. On
   the router, naming another preset swaps the resident model and evicts
   every slot.
-- **On a remote provider, a handle removes a cap that exists today.** Now,
+- **On a remote provider, a program's read removes a cap that exists today.** Now,
   `output_budget_bytes` and the spill rule bound how much of an oversized
-  result ever enters a request. A handle chunked into `llm_map` sends all
+  result ever enters a request. A text chunked into `llm_map` sends all
   of it to whatever model the run holds. The provider connection is not a
   tool, so the interlock never covered it. That is harmless on the local
   router, which is what this slice is for. On a remote provider it is
@@ -438,8 +403,9 @@ Per program. **Two kinds of limit, and only the first is catchable:**
 - **Host limits** are counted by mecha at a host call. Crossing one
   raises a `LimitError:`-tagged `RuntimeError` naming the limit, which the
   program can catch (§4). These are sub-calls, sub-call input tokens,
-  thinking-on passes, tool reads, handle operations, host bytes (per
-  program and per process), live handles, and `peek` plus `str[n]` bytes.
+  thinking-on passes, tool reads, host-function calls ("handle
+  operations", the name it kept), and host bytes (per program and per
+  process). R11 retired the live-handle and `peek` caps (§3).
 - **Backstops** are the wall clock (the interpreter's own deadline, with
   `monty-pool`'s per-turn `request_timeout` and `max_feed_duration` behind
   it), monty's memory limit, and `max_suspensions`. Monty 1.4 has no
@@ -452,17 +418,15 @@ Per program. **Two kinds of limit, and only the first is catchable:**
 
 | Limit | Default (R4, ruled 2026-10-31) | Enforced by |
 |---|---|---|
-| sub-calls | 32 | the host, **per pass**: `llm_map` over N handles is N, and a schema retry is another. An `llm_map` longer than the remaining budget raises before its first pass, and so does a thinking-on `llm_map` longer than the remaining thinking passes |
+| sub-calls | 32 | the host, **per pass**: `llm_map` over N texts is N, and a schema retry is another. An `llm_map` longer than the remaining budget raises before its first pass, and so does a thinking-on `llm_map` longer than the remaining thinking passes |
 | thinking passes | 8 | the host, counting passes that **did** think, not passes that asked to: a pass whose response carries reasoning (`reasoning_content`, recorded as `Block::Thinking`) counts, whatever it requested. A thinking-off request can be silently ignored (§4), so counting requests would read 0 while every pass thinks and the clock binds first. The pass after the cap raises. This is the row that keeps the clock from binding first (below) |
 | sub-call input tokens | 120k | the host, from `Usage`. Sized so that it binds before the clock even under contention (below) |
 | tool reads | 2,048 (was 256; owner, 2026-11-01) | the host, counted at the gate |
-| handle operations (§3) | 2,048 | the host. `budget()` counts as one, and so does each `llm_query` and `llm_map` call beside its passes, so a loop of either ends in a `LimitError:`, not a backstop. Monty's `max_suspensions` is set to the sum of the counted limits as a backstop |
+| host-function calls (§3; `handle_operations` in `budget()`) | 2,048 | the host. `budget()` counts as one, and so does each `llm_query` and `llm_map` call beside its passes, so a loop of either ends in a `LimitError:`, not a backstop. Monty's `max_suspensions` is set to the sum of the counted limits as a backstop |
 | wall clock | 600 s | the interpreter, from the program's start and across the host's answers. `monty-pool`'s `request_timeout` is **unset by default** and is set to the same value, but it bounds one protocol turn, not the program |
-| host bytes held by handles | 64 MB | the host, summed over every tool read's raw result; the read that would cross it raises |
-| live handles | 4,096 | the host. `split`, `lines` and `chunks` refuse a result that would cross it, and `chunks` refuses `n` below 256, so one counted operation cannot mint a handle per byte |
+| host bytes | 64 MB | the host, summed over every tool result a program is handed; the read that would cross it raises |
 | host bytes, all programs in the process | 256 MB | one process-wide pool every program draws from. `dispatch` runs a turn's calls under `join_all`, so two `code` calls in one message, a parent's program beside an `analyst` child's, and `mecha batch` are all concurrent, and per-program limits alone would not bound N × 64 MB. A read that would cross either limit raises |
-| memory, recursion | monty's limits | the pool worker, which bounds the interpreter's heap. It does not own the handles' bytes, which is why the two rows above exist. Monty 1.4 has no allocation-count limit, and recursion raises a catchable `RecursionError`. On a Mac monty's ceiling is the only memory bound (below) |
-| `peek` bytes plus `str[n]` result bytes | 256 KiB together (was 16 KB; owner, 2026-11-01) | the host, one count (`peeked_bytes`) |
+| memory, recursion | monty's limits | the pool worker, which bounds the interpreter's heap, the program's copies of its texts included. The host-byte rows above bound what the host reads and hands over before the worker sees it. Monty 1.4 has no allocation-count limit, and recursion raises a catchable `RecursionError`. On a Mac monty's ceiling is the only memory bound (below) |
 
 **Memory on a Mac: monty's ceiling holds, and nothing stands behind it.**
 On Linux, `[sandbox] memory_mb` puts the worker in a cgroup, a wall
@@ -534,15 +498,15 @@ draws on the budget at a higher rate. R4 sets a separate, smaller cap on
 passes that thought (8, ruled 2026-10-31), so the clock still never binds
 first.
 
-A long document chunked into handles can make hundreds of host calls
+A long document chunked by host functions can make hundreds of host calls
 before 32 sub-calls, because `find`, `slice` and `chunks` are host calls.
-So the handle operations of §3 count toward their own limit (2,048),
+So the host-function calls of §3 count toward their own limit (2,048),
 apart from tool reads. Tool reads were 256 until a 300-file sweep could
 not finish: nothing a program holds survives to the next `code` call, so
 a job past the limit had no way through, and the model split it into
 programs that each hit the limit again (§13). Each read still meets the
-whole gate and arms taint. The 64 MB host-byte limit bounds what handles
-hold, not what the program record keeps: a read whose bytes the limit
+whole gate and arms taint. The 64 MB host-byte limit bounds what a
+program is handed, not what the program record keeps: a read whose bytes the limit
 refuses is already recorded, and a program can catch the `LimitError:` and
 read on, so the record could reach 64 MB plus one result per read. That term
 grew with the raise (review of #793), and again when a program's `fs_read`
@@ -818,8 +782,8 @@ attacker selects from their own text can be an address; that is a
 - **Output.** Printed output plus the final expression, under
   `output_budget_bytes` and the spill rule, exactly as a tool result.
 - **Recording a program's reads, so grounding can find them.** A host
-  call is not a `tool_use`/`tool_result` pair, and a handle keeps its
-  bytes out of the transcript. Without a record, everything that walks
+  call is not a `tool_use`/`tool_result` pair, and a program's read keeps
+  its bytes out of the transcript. Without a record, everything that walks
   `grounding::calls` loses its referent for what a program read:
   - gossip's citation check (`gossip.rs`);
   - the outbox's "what is this draft answering" join (`outbox_source.rs`);
@@ -849,9 +813,9 @@ attacker selects from their own text can be an address; that is a
     `the_jail_admits_the_spill_directory_and_nothing_else_new`, because a
     cap marker tells the model to go and read the rest there. Blobs there
     would let `fs_list` and `fs_read`, both admitted in §2 and both
-    callable by the model directly, read every handle's raw bytes,
-    uncapped and uncounted. That would bypass §3's `peek` rule and §5's
-    cap completely.
+    callable by the model directly, read every program read's raw bytes,
+    uncapped and uncounted, from a turn, past the output cap that guards
+    what a program's results reach the model as (§3).
   - **A root per session, under the mecha home.** Spill is also the wrong
     lifetime: its root is keyed by the workspace's hash, and
     `forget::purge_workspace` keeps it whenever another conversation shares
@@ -893,8 +857,8 @@ attacker selects from their own text can be an address; that is a
     `messages_ever`'s sibling.
   - **That is a change to `grounding.rs`, not a record format.** The walk
     gains a second source (`&[ProgramCall]`), and `Call` gains an owned,
-    nested variant under the `code` call that made it, so a handle's
-    source and a span inside it dereference. The five readers of the
+    nested variant under the `code` call that made it, so a program
+    read's source and a span inside it dereference. The five readers of the
     walk change to pass it: `attribution.rs`, `gossip.rs`,
     `outbox_source.rs`, `appraisal_store.rs` and `persona/cite.rs`. A
     sixth edit is outside it: the diagnostician's carry-over check in
@@ -1262,6 +1226,14 @@ with your recs"), except R4, which waited on M1 and was ruled on
   mecha. It was raised by #769's review. Built as §7's watchdog. The other
   option was reaping leftover workers at the next start, which only
   clears up after the fact.
+- **R11. A tool's result reaches a program as a `str`** (the owner,
+  2026-11-02, after M2 and a survey of other harnesses, §13). The opaque
+  handle is retired; the guard is the program's output, capped and
+  wrapped as any tool result; taint is unchanged. The live-handle and
+  `peek` caps go with it (`peeked_bytes` still counts `peek` and `str[n]`,
+  so a stored counter keeps its meaning), and `chunks` takes any `n` of
+  at least 1. The sink slice
+  decides opacity again for itself (§3, §12).
 - **And the `code` call itself is `read_only()`.** A program runs
   without a prompt. The reason is not that its tools would all skip the
   approver: a read-only tool still meets a `prompt` or `forbid` policy
@@ -1495,3 +1467,68 @@ carries the full block):
 What is left is reading, not machinery: a window where a line-scoped pattern
 (`Attendees:.*Priya`, the description's own) was exact, and "presented" read
 as "attended". Programs still fail first on habits about half the time.
+
+**M2 (2026-11-01 to 11-02, #798's build): the battery, measured.** Five
+fictional tasks, seeds 11 to 101 so far (seed 131's last runs were pending
+at the time of writing), each run twice: with `code` offered and with
+`--no-code-tool`, one run at a time on the router's uncensored Qwen3.6
+preset, as test sessions, from a run directory whose `mecha.toml` sets the
+seed. Graded by a scorer fixed before reading any answer and checked
+against twelve hand-graded runs. Two scorer artefacts were found by reading
+failures (counts such as "25 presentations" read as meeting numbers, and a
+table that bolded every row) and fixed against the same hand grades.
+
+| Task | `code` on | `code` off |
+|---|---|---|
+| 300 notes: Priya's meetings, Marco's decisions | 3/7, ~1 min | 0/8, ~11 min, 36 turns |
+| a roster joined to the notes | **7/7**, 28 s | **0/7**, ~11 min, mostly at the turn limit |
+| which of 32 meetings ended without agreement | 4/7 | 5/8 |
+| failures in a 1.5 MB log | 3/7 | 0/8 |
+| five short notes | 7/7 | 7/7 |
+| **all** | **24/35 (69%)** | **12/38 (32%)** |
+
+The 35 code-on runs wrote 220 programs, and **108 failed**; the first
+program failed in 25 of the 27 runs that wrote one. By what raised:
+- **a handle used as text, about 46**: `.strip()`, `.split()`, `.lower()`
+  and the like (31), `in` (6), `len()` (4), a join of handles (3);
+- **the operating system, 25**: `open()` (23), `os.path`, `os.listdir`, in
+  19 of 27 first programs, though the description said "no os, open";
+- **a host limit, about 24**: `lines()` over a 22,874-line log past the
+  live-handle cap, `llm_map` asking 65 to 70 questions a pattern could
+  answer, `find` past 4,096 matches;
+- **small habits, about 6**: `size = size(h)`, `peek(h, -500)`,
+  `chunks(h, 200)`.
+
+Two failures raised nothing and cost more. Three of the four failed
+300-note runs matched "Marco Bellini" anywhere in a note and reported the
+124 meetings he attended as the 25 he presented; the description's advice
+to match the field was ignored each time. And in two of the four failed log
+runs the model barely used `code`: it paged the log in 200 KB windows, the
+cut note telling it to read on with an offset, stopped partway, and wrote
+"Based on my thorough review of the entire log file".
+
+**What other harnesses do** (researched 2026-11-02, sources in the PR):
+RLM (the paper and its repository), Prime Intellect's RLMEnv, smolagents'
+CodeAgent, DSPy's RLM, Anthropic's programmatic tool calling and its code
+execution with MCP, and Cloudflare's Code Mode all hand a program real
+values and guard what goes back to the model: a stdout prefix and its
+length (RLM), 8,192 characters (RLMEnv), `max_output_chars` (DSPy). Every
+one but mecha keeps a program's state between calls. Prompt tips that give
+a strategy help some open models and hurt others in Prime's ablations
+(GLM 4.6 on DeepDive fell to about half the plain model's score with
+them), which is the case for structure over advice. RLM's open-model
+sub-call flood was answered by one warning line and batch sizes, which the
+description now carries. RLM-Qwen3-8B, post-trained on about 1,000 filtered
+trajectories from a larger model in the same harness, is the measured
+price if the harness changes stop helping (remedy 5 above).
+
+**What changed (R11):** results as text (§3); `grep`; a cut read in a run
+that offers `code` names a program as the way to search all of it, with the
+model's own path (remedy 2 above); the `os` refusal leads with `fs_read`;
+a function assigned over is named; a negative `peek` length; and a
+description rewritten around strings, with a field-matching example and
+sub-call sizing. **Not taken:** state between `code` calls (§12, still
+deliberately out), `open()` mapped onto `fs_read` (the owner's call), and
+monty's built-in type check against stubs, whose main target was handle
+misuse. The next measurement reruns the code-on arm of M2 against this
+table.

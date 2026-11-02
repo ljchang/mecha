@@ -3131,7 +3131,7 @@ impl Agent {
         cache_lens: &mut crate::cache_lens::CacheLens,
     ) -> Result<RunOutcome> {
         let harness_notes = self.now_notes();
-        let stamped = Self::stamped(cx, &events);
+        let stamped = self.stamped(cx, &events);
         let cx = &stamped;
         Self::arm_at_start(cx, convo);
 
@@ -5223,9 +5223,11 @@ impl Agent {
     /// is a fourth copy of the bug this fixes. One function for a run and a
     /// harness call (`dispatch_one`), so the two cannot drift (review of
     /// #592, pass 3).
-    fn stamped(cx: &RunContext, events: &Option<UnboundedSender<AgentEvent>>) -> RunContext {
+    fn stamped(&self, cx: &RunContext, events: &Option<UnboundedSender<AgentEvent>>) -> RunContext {
+        let code = crate::tool::code::NAME;
         RunContext {
             tools: Arc::new(ToolCtx {
+                code_offered: self.registry.available(code).is_some() && !cx.is_withheld(code),
                 events: events.clone(),
                 cancel: cx.cancel.clone(),
                 cancel_reason: Some(Arc::clone(&cx.cancel_reason)),
@@ -5361,7 +5363,7 @@ impl Agent {
         let call_id = format!("{HARNESS_CALL}{}", uuid::Uuid::new_v4().simple());
         // Stamped and armed as a run is, so what the run would withhold and
         // what its messages and notes armed reach this call too.
-        let stamped = Self::stamped(cx, events);
+        let stamped = self.stamped(cx, events);
         let cx = &stamped;
         Self::arm_at_start(cx, convo);
         let mut trace = Vec::new();
@@ -6091,7 +6093,7 @@ impl Agent {
         if !self.provider.local() {
             return PassAnswer::Refused(
                 "this run's provider is not local (a `local` provider on a loopback address), \
-                 and a sub-call sends a handle's bytes to the model, so no pass was sent"
+                 and a sub-call sends a program's text to the model, so no pass was sent"
                     .into(),
             );
         }
@@ -8042,6 +8044,79 @@ mod tests {
         let seen = provider.seen.lock().unwrap();
         assert_eq!(seen.len(), 2);
         assert_eq!(seen[1].messages.len(), 3);
+    }
+
+    /// A call's context says whether its run offers `code`, so a read that
+    /// cuts a long text can point at a program: registered and not withheld,
+    /// and only then (`ToolCtx::code_offered`).
+    #[tokio::test]
+    async fn a_call_knows_whether_its_run_offers_code() {
+        struct Probe;
+        #[async_trait]
+        impl Tool for Probe {
+            fn name(&self) -> &str {
+                "probe"
+            }
+            fn description(&self) -> &str {
+                "Says whether the run offers code."
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            fn read_only(&self) -> bool {
+                true
+            }
+            async fn call(&self, _input: Value, ctx: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::ok(ctx.code_offered.to_string()))
+            }
+        }
+        struct NamedCode;
+        #[async_trait]
+        impl Tool for NamedCode {
+            fn name(&self) -> &str {
+                crate::tool::code::NAME
+            }
+            fn description(&self) -> &str {
+                "Stands in for code."
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            async fn call(&self, _input: Value, _ctx: &ToolCtx) -> Result<ToolOutput> {
+                Ok(ToolOutput::ok(""))
+            }
+        }
+        let turns = || {
+            vec![
+                assistant(
+                    vec![Block::ToolUse {
+                        id: "t1".into(),
+                        name: "probe".into(),
+                        input: json!({}),
+                    }],
+                    StopReason::ToolUse,
+                ),
+                assistant(vec![Block::text("done")], StopReason::EndTurn),
+            ]
+        };
+        let said = |convo: &Conversation| match &convo.messages[2].content[0] {
+            Block::ToolResult { content, .. } => content.clone(),
+            other => panic!("expected a tool result, got {other:?}"),
+        };
+        for (tools, withhold, want) in [
+            (vec![Arc::new(Probe) as Arc<dyn Tool>], false, "false"),
+            (vec![Arc::new(Probe), Arc::new(NamedCode)], false, "true"),
+            (vec![Arc::new(Probe), Arc::new(NamedCode)], true, "false"),
+        ] {
+            let (agent, _) = agent_with_tools(turns(), tools, PermissionMode::Allow);
+            let mut cx = (**agent.context()).clone();
+            if withhold {
+                cx = cx.withholding([crate::tool::code::NAME.to_string()]);
+            }
+            let mut convo = Conversation::from(vec![Message::user("go")]);
+            agent.run_in(&cx, &mut convo, None).await.unwrap();
+            assert_eq!(said(&convo), want, "withheld: {withhold}");
+        }
     }
 
     #[tokio::test]

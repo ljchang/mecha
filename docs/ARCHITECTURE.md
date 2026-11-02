@@ -3742,21 +3742,23 @@ The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
   program gets `ToolError:`. Taint arms before the reply resumes the
   program; each host call's trace entry is `in_program`, so `tool_calls`,
   `tool_errors` and `tool_denied` keep counting.
-- **Results are handles; host messages carry no bytes.** A program holds a
-  handle as an object string operations refuse on: the host marks it in its
-  answer (`interpreter::HANDLE_MARK`), so `"x" in h` and `len(h)` raise
-  `TypeError` and `h.split(...)` raises `AttributeError`, never an answer
-  about the stub's own text (#791). It prints, and comes back to the host,
-  as its stub (`<handle 3: 48,213 chars from mail_get_thread>`). Only that
-  exact stub resolves, to a handle this program holds, and text enters only
-  through `peek`, capped and counted. The one exception is `fs_list`
-  (`Tool::lists_names`, answered by the builtin alone, so a server tool of
-  that name still returns a handle): its names arrive as a list of `str`, charged to the same
-  cap and count, because every live run opened with string methods on them.
-  Patterns are Rust `regex`. A tool's error body is a handle the
-  `ToolError:` names. Every per-program limit (`code::defaults`, as R4 ruled)
-  raises a `LimitError:` naming itself; host bytes are also drawn from one
-  process-wide `BytePool`.
+- **Results are text; the guard is the output (R11, 2026-11-02).** A tool
+  called from a program returns its result as a `str` (`fs_list`'s builtin,
+  `Tool::lists_names`, as a list of names), so string methods, slicing,
+  `in` and `len()` answer about the result itself. Until R11 a result was an
+  opaque handle that raised on all of these, and in M2 about 46 of 220
+  programs failed on one; the field's harnesses (RLM, RLMEnv, smolagents,
+  DSPy) all hand a program real strings and guard what goes back to the
+  model instead. Here that is what the program prints and its ending,
+  capped by `code::render` and again by the dispatch, which wraps it as any
+  tool result; taint arms on the host call as before, so nothing a label
+  rests on changed. The host helpers (`grep`, `count`, `find`, `lines`,
+  `split`, `chunks`, `json_get`, `peek`, `slice`, `size`) take a `str` and
+  run Rust `regex`, linear in the text. A tool's error reaches the program
+  as `ToolError:` in the tool's own words, cut at `code::ERROR_TEXT`. Every
+  per-program limit (`code::defaults`, as R4 ruled) raises a `LimitError:`
+  naming itself; host bytes, the tool results a program was handed, are
+  also drawn from one process-wide `BytePool`.
 - **Rendered once.** The program's printed output and ending are the `code`
   call's own `tool_result`, capped, spilled and wrapped by `dispatch` like
   any result, and `external` when any host call's result was. A result past
@@ -3780,8 +3782,9 @@ The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
   `content` at HTTP 200 and a cut-off answer are named. Every pass is
   `max_tokens` 8,192 whatever thinking is set to, thinking off unless the
   program asks, and the thinking cap counts passes whose response carried
-  reasoning, never what they asked. `str[n]` text draws on `peek`'s cap,
-  and is never a `trusted_output` shape. A provider error is named by its
+  reasoning, never what they asked. `str[n]` text counts with `peek`'s in
+  `peeked_bytes` (uncapped since R11), and is never a `trusted_output`
+  shape. A provider error is named by its
   class (`code::pass_failure`), because a server's body can echo the
   prompt.
 - **Locality is the request's, not the loop's** (R8).
@@ -5198,9 +5201,13 @@ tail, the cap marker named the 200 KB read as the whole output, and a model
 reported a 1.5 MB log as two days long with no failures in it (2026-11-01).
 A program's read is capped at what the program can still hold
 (`ToolCtx::program_room`, at most code mode's 64 MB host-byte limit), less
-room for the notice, so a cut read is still a handle the program can hold:
-it becomes a handle and never enters the context window the turn cap
-protects, and reading past the room would be refused anyway. `call_ctx` sets
+room for the notice, so a cut read is still text the program can hold: it
+goes to the program, not the context window the turn cap protects, and
+reading past the room would be refused anyway. A turn's cut read in a run
+that offers `code` (`ToolCtx::code_offered`, stamped by `Agent::stamped`)
+also names a program as the way to search all of it, with the path as the
+model wrote it: in M2 a model paged a 1.5 MB log in 200 KB windows, stopped
+partway, and called it a thorough review. `call_ctx` sets
 the mark on every call, as it does `host_calls`, so a subagent's run, which
 is based on a call's context, never inherits it (review of #796).
 

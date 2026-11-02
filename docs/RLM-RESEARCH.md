@@ -133,6 +133,15 @@ or deliberately gated.
 
 ### 3.1 The handle, not the payload ❓ (the design's central bet)
 
+> **Revised 2026-11-02 (`CODE-MODE-DESIGN.md` R11).** The first half of
+> this section stands: the input kept out of the model's window is RLM's
+> gain. The second half, *opaque to the program too*, was measured in M2
+> and reversed: a handle used as text was the commonest program failure
+> (about 46 of 220), every other harness surveyed hands a program real
+> strings and guards the output, and the opacity lowered no label. A
+> result now reaches a program as a `str`; the sink slice decides opacity
+> again for itself.
+
 Kept out of the context, the input stops costing prefill on every turn and
 stops degrading the model's attention. Neither cost goes away because the
 window is large: `context_window` is 262,144 per slot, and the limit on
