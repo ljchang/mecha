@@ -238,28 +238,63 @@ pub fn read_hours(text: &str) -> Result<Hours> {
         windows: shapes.windows,
         overrides: shapes.overrides,
     };
-    // Hours the editor would refuse to save are refused at the read, with
-    // the reason: opening on them would show a blank box for `9:00` and an
-    // error on the first touch of a field the owner never edited.
-    validate(&hours).context("these hours cannot be edited here as they stand")?;
+    // Shapes the editor cannot show are refused at the read, with the
+    // reason: opening on them would show a blank box for `9:00` and an error
+    // on the first touch of a field the owner never edited. Everything else
+    // (no windows yet, a horizon past the pipeline's) opens, so it can be
+    // repaired; the save refuses it until it is.
+    representable(&hours).context("these hours cannot be edited here as they stand")?;
     Ok(hours)
 }
 
 /// What would make a write unreadable or a push certain to fail. The
 /// factory's `type check` is the judge of meaning; this is the part that
 /// has to be said in the editor's own terms, before a child is spawned.
-pub fn validate(h: &Hours) -> Result<()> {
-    let hhmm = |t: &str| {
-        let ok = t.len() == 5
-            && t.as_bytes()[2] == b':'
-            && t[..2].parse::<u32>().is_ok_and(|h| h < 24)
-            && t[3..].parse::<u32>().is_ok_and(|m| m < 60);
-        if ok {
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!("`{t}` is not an HH:MM time"))
+fn hhmm(t: &str) -> Result<()> {
+    let ok = t.len() == 5
+        && t.as_bytes()[2] == b':'
+        && t[..2].parse::<u32>().is_ok_and(|h| h < 24)
+        && t[3..].parse::<u32>().is_ok_and(|m| m < 60);
+    if ok {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("`{t}` is not an HH:MM time"))
+    }
+}
+
+/// What the editor cannot show at all: a time an `<input type="time">`
+/// renders blank, a weekday it has no row for, a date it cannot place. The
+/// read gate — and nothing else, because the editor exists to repair the
+/// rest: a page with no windows yet, no lengths, or a horizon past the
+/// pipeline's must open, so the owner can fix it and meet the refusal on
+/// Save, where it is actionable.
+pub fn representable(h: &Hours) -> Result<()> {
+    for w in &h.windows {
+        if !DAYS.contains(&w.day.as_str()) {
+            bail!("`{}` is not a weekday (mon–sun)", w.day);
         }
-    };
+        hhmm(&w.start)?;
+        hhmm(&w.end)?;
+    }
+    for o in &h.overrides {
+        let ok =
+            o.date.len() == 10 && chrono::NaiveDate::parse_from_str(&o.date, "%Y-%m-%d").is_ok();
+        if !ok {
+            bail!("`{}` is not a YYYY-MM-DD date", o.date);
+        }
+        for [s, e] in &o.windows {
+            hhmm(s)?;
+            hhmm(e)?;
+        }
+    }
+    Ok(())
+}
+
+/// What would make a write unreadable or a push certain to fail — the save
+/// gate. [`representable`] first, then the rules about emptiness, ranges and
+/// counts that only a save needs to hold.
+pub fn validate(h: &Hours) -> Result<()> {
+    representable(h)?;
     if h.durations.is_empty() {
         bail!("offer at least one meeting length");
     }
@@ -285,28 +320,16 @@ pub fn validate(h: &Hours) -> Result<()> {
         );
     }
     for w in &h.windows {
-        if !DAYS.contains(&w.day.as_str()) {
-            bail!("`{}` is not a weekday (mon–sun)", w.day);
-        }
-        hhmm(&w.start)?;
-        hhmm(&w.end)?;
         if w.start >= w.end {
             bail!("{} {}–{} ends before it starts", w.day, w.start, w.end);
         }
     }
     let mut seen = std::collections::BTreeSet::new();
     for o in &h.overrides {
-        let ok =
-            o.date.len() == 10 && chrono::NaiveDate::parse_from_str(&o.date, "%Y-%m-%d").is_ok();
-        if !ok {
-            bail!("`{}` is not a YYYY-MM-DD date", o.date);
-        }
         if !seen.insert(o.date.as_str()) {
             bail!("{} is overridden twice", o.date);
         }
         for [s, e] in &o.windows {
-            hhmm(s)?;
-            hhmm(e)?;
             if s >= e {
                 bail!("{} {s}–{e} ends before it starts", o.date);
             }
@@ -933,6 +956,27 @@ heading = "You're booked"
             "a booking page's hours are the owner's to write, from the web page only \
              (ARCHITECTURE.md §The Factory view); these reach a writer: {offenders:?}"
         );
+    }
+
+    #[test]
+    fn a_page_needing_repair_opens_and_its_save_says_what_to_fix() {
+        // No windows yet, a horizon past the pipeline's: the editor exists to
+        // repair these, so they read, and only the save refuses them.
+        let bare = MANIFEST
+            .replace(
+                "[[availability.windows]]\nday = \"tue\"\nstart = \"13:00\"\nend = \"17:00\"\n",
+                "",
+            )
+            .replace(
+                "buffer_minutes = 10",
+                "buffer_minutes = 10\nhorizon_days = 90",
+            );
+        assert_ne!(bare, MANIFEST);
+        let h = read_hours(&bare).expect("a page with no windows still opens");
+        assert!(h.windows.is_empty());
+        assert_eq!(h.horizon_days, 90);
+        let err = write_hours(&bare, &h).unwrap_err().to_string();
+        assert!(err.contains("weekly window"), "{err}");
     }
 
     #[test]
