@@ -136,8 +136,10 @@ fn names(text: &[String], s: &Subject, cased: bool) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, Serialize)]
 pub struct Arm {
     /// A today-block among the run's notes.
+    #[serde(rename = "shown_days")]
     pub days: bool,
     /// Her people in the recorded system prompt.
+    #[serde(rename = "shown_people")]
     pub people: bool,
 }
 
@@ -151,6 +153,17 @@ pub struct Turn {
     pub reply: Option<String>,
     pub completed: bool,
     pub arm: Arm,
+}
+
+/// Add `more` to what she said in the run.
+fn join(reply: &mut Option<String>, more: &str) {
+    match reply {
+        Some(r) => {
+            r.push('\n');
+            r.push_str(more);
+        }
+        None => *reply = Some(more.to_string()),
+    }
 }
 
 /// The text of an assistant message with something to say.
@@ -207,21 +220,27 @@ pub fn session_turns(path: &Path) -> Result<Vec<Stretch>> {
                         run.owner.push_str(&said);
                     }
                 } else if let Some(reply) = reply_text(&m) {
-                    run.reply = Some(reply);
+                    // Every text she said in the run, not only the last: a
+                    // run that called a tool spoke before it too, and the
+                    // owner saw both (review of #808).
+                    join(&mut run.reply, &reply);
                 }
             }
             Ok(Record::Rewrite { messages }) => {
-                if let Some(reply) = messages.last().and_then(reply_text) {
-                    run.reply = Some(reply);
-                }
-                if let Some(said) = messages
+                // The run's own part: everything after the last message the
+                // owner typed.
+                let from = messages
                     .iter()
-                    .rev()
-                    .filter(|m| m.role == Role::User)
-                    .map(crate::agent::owner_text)
-                    .find(|t| !t.trim().is_empty())
-                {
-                    run.owner = said;
+                    .rposition(|m| {
+                        m.role == Role::User && !crate::agent::owner_text(m).trim().is_empty()
+                    })
+                    .map_or(0, |i| i + 1);
+                if from > 0 {
+                    run.owner = crate::agent::owner_text(&messages[from - 1]);
+                }
+                run.reply = None;
+                for reply in messages[from..].iter().filter_map(reply_text) {
+                    join(&mut run.reply, &reply);
                 }
             }
             Ok(Record::Notes { notes }) => {
@@ -272,10 +291,15 @@ impl Reading {
         (self.replies > 0).then(|| self.introducing as f64 / self.replies as f64)
     }
 
+    /// Introductions with an outcome: taken up, either way, or not.
+    pub fn decided(&self) -> usize {
+        self.taken_up + self.came_back + self.not_taken_up
+    }
+
     /// Of the introductions with an outcome, the share the owner took up,
     /// in the next turn or a later chat; `None` when none has an outcome.
     pub fn uptake(&self) -> Option<f64> {
-        let decided = self.taken_up + self.came_back + self.not_taken_up;
+        let decided = self.decided();
         (decided > 0).then(|| (self.taken_up + self.came_back) as f64 / decided as f64)
     }
 }
@@ -442,11 +466,15 @@ pub fn stretches(sessions: &Path, since: std::time::SystemTime) -> Result<Said> 
     let mut all: Vec<(DateTime<Utc>, usize, Vec<Turn>)> = Vec::new();
     let mut chats = 0;
     for (meta, path) in listed {
-        let active = std::fs::metadata(&path)
-            .and_then(|m| m.modified())
-            .is_ok_and(|t| t >= since);
-        if !active {
-            continue;
+        // A file whose time cannot be read is unknown, never outside the
+        // window: counted with the unreadable.
+        match std::fs::metadata(&path).and_then(|m| m.modified()) {
+            Ok(t) if t >= since => {}
+            Ok(_) => continue,
+            Err(_) => {
+                unreadable += 1;
+                continue;
+            }
         }
         match session_turns(&path) {
             Ok(parts) => {
@@ -895,6 +923,47 @@ mod tests {
             let turns = flat(&s.path);
             assert_eq!(turns[2].owner, "tell me about Ines");
             assert_eq!(turns[2].reply.as_deref(), Some("Ines bakes."));
+            // A run that spoke, called a tool and spoke again is read
+            // whole, appended or rewritten (review of #808).
+            let hop = |convo: &mut Conversation| {
+                convo.push(Message::user("and Pell?"));
+                convo.push(Message::assistant(vec![
+                    Block::text("Pell kept me up."),
+                    Block::ToolUse {
+                        id: "t1".into(),
+                        name: "persona_recall".into(),
+                        input: serde_json::json!({}),
+                    },
+                ]));
+                convo.push(Message::tool_results(vec![Block::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: "nothing".into(),
+                    is_error: false,
+                }]));
+                convo.push(Message::assistant(vec![Block::text("Anyway.")]));
+            };
+            let before = convo.messages.clone();
+            hop(&mut convo);
+            s.record_run(&before, &convo).unwrap();
+            s.append(&Record::Outcome(RunStats {
+                stop_cause: Some(StopCause::Completed),
+                ..RunStats::default()
+            }))
+            .unwrap();
+            let before = convo.messages.clone();
+            convo.messages = vec![Message::user("[summary]")];
+            hop(&mut convo);
+            s.record_run(&before, &convo).unwrap();
+            s.append(&Record::Outcome(RunStats {
+                stop_cause: Some(StopCause::Completed),
+                ..RunStats::default()
+            }))
+            .unwrap();
+            let turns = flat(&s.path);
+            for t in &turns[3..5] {
+                assert_eq!(t.owner, "and Pell?");
+                assert_eq!(t.reply.as_deref(), Some("Pell kept me up.\nAnyway."));
+            }
             let _ = std::fs::remove_dir_all(&dir);
         }
 

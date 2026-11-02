@@ -935,7 +935,7 @@ fn initiative_lines(
     )];
     for a in &i.arms {
         let r = &a.reading;
-        let decided = r.taken_up + r.came_back + r.not_taken_up;
+        let decided = r.decided();
         out.push(format!(
             "days {}, people {}: {} replies, {} brought someone up ({} introductions); \
              you took up {}: {} in your next turn ({} asking), {} in a later chat; \
