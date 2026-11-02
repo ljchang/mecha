@@ -3648,8 +3648,13 @@ The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
   with.** They are globals. Every `NameLookup` is answered `Undefined`. An
   unknown import (an `OsCall` named `import`) is answered `NotHandled`, so
   it stays monty's own `ModuleNotFoundError` and `except ImportError:`
-  catches it. Every other `OsCall` (files, environment, clock) is a
-  `PermissionError` naming the functions the program was given
+  catches it. A program's own file calls are answered by the tools it was
+  given, never by anything the worker can see: a text read through
+  `fs_read` (R12) and a listing through `fs_list` (R13), each an ordinary
+  host call through the gate, and only for a tool that answers in the
+  shape the shim needs (`FileTools`; `CODE-MODE-DESIGN.md` §11). Every
+  other `OsCall` (environment, clock, a write, a file call without that
+  tool) is a `PermissionError` naming the functions the program was given
   (`os_refusal`). A `FunctionCall` under any other name is refused in the
   program. Monty 1.4
   has `eval` and `exec`, so a registered name is reachable from a built
@@ -3933,9 +3938,9 @@ The `Interpreter`/`Program` traits keep the backend swappable; `monty.rs`
   that ran a program diverges at its first host call.
 - **A program's numbers ride its output** (`code::ProgramStats` on
   `ToolOutput::program`, copied to `ToolCallTrace::program`): counts and
-  flags only, never a byte. `RunStats` counts §7's six from the trace
+  flags only, never a byte. `RunStats` counts §7's seven from the trace
   (`programs`, `program_errors`, `subcalls`, `subcall_tokens`,
-  `peeked_bytes`, `budget_stops`), each an `Option` so a row from before
+  `peeked_bytes`, `program_read_bytes`, `budget_stops`), each an `Option` so a row from before
   them reads unknown. A budget stop is a backstop, or a host `LimitError:`
   nothing caught; a program that raises the tag's text itself failed on its
   own, and one refused at its start counts as a failed program.
@@ -7309,8 +7314,10 @@ was ever deployed.
   a model regression. The system prompt is stored as text, not a hash — a hash
   says only *that* something differed. The sampler is recorded only as far as
   it was pinned: `temperature`/`seed` of `None` means the server chose, and
-  replay against such a run is pass@k-shaped, not exact-match. `clock` is per
-  run, because one `mecha serve` session held runs on both sides of midnight.
+  replay against such a run is pass@k-shaped, not exact-match. `clock` is
+  per `Config` record, which is per attach and per rebind, and so per run
+  only when the process is: one `mecha serve` session held runs on both
+  sides of midnight. The per-run time is `RunStats::ended_at`.
 - **A `spoken_direction` record is for the corpus, not the conversation**
   (`voice_direction::SpokenDirection`): written by the voice facade while
   its sentence plays, so it is joined by `turn` and `sentence`, never by
@@ -7562,6 +7569,14 @@ The design decisions, each of which is a bug if undone:
   file would be faster and would be a second source of truth that can disagree
   with the first — the same reasoning that has the TUI read a trigger's last
   answer back from the session record instead of caching it.
+- **The outcome row is the one per-run clock** (`RunStats::ended_at`),
+  stamped by `Session::record_outcome` as the row is written and never by
+  `RunStats::of_run`, so a replayed or folded row invents no time; a fold
+  keeps the last run's, `None` included. It is the machine's wall clock,
+  not the run's `Clock`: under an experiment's fixture clock `Config.clock`
+  is the designed day and `ended_at` the operator's. A `Config`'s clock is per process
+  attach and per router rebind, so before this a chat held open for days
+  had no time on its later turns (`persona::initiative`'s ordering).
 - **Every front-end writes the outcome record** — `run`, `chat`, the TUI, web,
   Slack, triggers. Before `Record::Outcome` existed the transcript kept two of
   `RunOutcome`'s fields while a trigger's ledger kept the rest, so a run a

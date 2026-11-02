@@ -269,6 +269,12 @@ pub struct ProgramStats {
     /// though a read now reaches the program as text too.
     #[serde(default)]
     pub peeked_bytes: u64,
+    /// Bytes of tool results the program was handed, as text since R11:
+    /// what the host-byte limit charges. The quantity R11 made the one to
+    /// watch, which `peeked_bytes` deliberately does not count (review of
+    /// #805).
+    #[serde(default)]
+    pub read_bytes: u64,
     /// The program ran to its end.
     #[serde(default)]
     pub completed: bool,
@@ -476,7 +482,7 @@ impl Pass {
 
 /// A provider's failure of a pass, by its class: never the error's text,
 /// which can carry a server's body, and a server's body can echo the prompt
-/// it was sent, which holds a handle's bytes (§3).
+/// it was sent, which holds a program's text (§3).
 pub(crate) fn pass_failure(e: &anyhow::Error) -> String {
     use crate::provider::retry::ProviderError;
     if let Some(r) = e.downcast_ref::<crate::provider::LocalOnlyRefused>() {
@@ -652,12 +658,19 @@ impl CodeTool {
         let mut externals: Vec<String> = HOST_FUNCTIONS.iter().map(|s| s.to_string()).collect();
         externals.extend(reach.iter().cloned());
         let cancel = ctx.cancel.clone().unwrap_or_default();
+        // The shims answer only what a tool answers in their shape: a
+        // server's `fs_list` returns one string, so it is not walked.
+        let files = crate::interpreter::FileTools {
+            read: reach.iter().any(|n| n == "fs_read"),
+            list: self.admission.listings().any(|n| n == "fs_list")
+                && reach.iter().any(|n| n == "fs_list"),
+        };
         let mut state = Run::new(self.limits, Arc::clone(&self.pool))
             .reaching(reach)
             .listing(self.admission.listings().map(str::to_string));
         let (mut program, mut step) = match self
             .interpreter
-            .start(program, &externals, cancel.clone())
+            .start_with(program, &externals, files, cancel.clone())
             .await
         {
             Ok(started) => started,
@@ -725,7 +738,8 @@ const EXAMPLE: &str = "hits = []\n\
     for name in fs_list(path=\"notes\"):\n    if name.endswith(\"/\"):\n        continue\n    \
     text = fs_read(path=\"notes/\" + name)\n    for line in text.splitlines():\n        \
     if line.startswith(\"Attendees:\") and \"Priya\" in line:\n            \
-    hits.append(name)\n\
+    hits.append(name)\n            \
+    break\n\
     print(len(hits), hits)\n";
 
 /// The description's second example: a question about meaning, asked of each
@@ -748,15 +762,28 @@ const JUDGE_EXAMPLE: &str = "names = []\n\
 /// as built. Fixed at construction, so it never changes a cached prefix
 /// between turns.
 fn describe(admission: &Admission) -> String {
-    let mut d = String::from(
+    // `os` and `pathlib` are offered only where a file tool answers them
+    // (R12, R13); elsewhere every file call is refused (review of #811).
+    // A server's `fs_list` answers in one string, which a walk cannot use.
+    let walks = admission.listings().any(|l| l == "fs_list");
+    let modules = if walks {
+        "decimal, os and pathlib, but no third-party packages, io or statistics, and os and \
+         pathlib reach only the files the tools below do"
+    } else if admission.contains("fs_read") {
+        "decimal and pathlib, but no third-party packages, os, io or statistics, and pathlib \
+         reads only the files the tools below do"
+    } else {
+        "and decimal, but no third-party packages, os, io or statistics"
+    };
+    let mut d = format!(
         "Use this when a question needs many tool results combined, or one result too long \
          to read: more than a handful of files, threads or items to count, filter, compare or \
          join, or a long file or log to search. One program reads them all in one step, and \
          only what it prints comes back to you. It runs a short Python program (monty, a \
          subset of Python 3, with re, json, csv, collections, itertools, math, datetime, \
-         decimal and pathlib (its read_text only), but no third-party packages, os, io or statistics; a method is called, not \
-         passed as a value, so write `key=lambda k: d[k]`, not `key=d.get`). It \
-         reaches data by calling the tools listed at the end, with keyword arguments, and ",
+         {modules}; a method is called, not passed as a value, so write \
+         `key=lambda k: d[k]`, not `key=d.get`). It reaches data by calling the tools listed \
+         at the end, with keyword arguments, and ",
     );
     // Said only of the tools that do it: a server's `fs_list` returns one
     // string, and telling the model otherwise is the `.startswith` error
@@ -765,7 +792,8 @@ fn describe(admission: &Admission) -> String {
     if admission.contains("fs_read") {
         d.push_str(
             "each returns its result as a str (fs_read(path=...) returns the file's text, and \
-             open(path) reads a file's text the same way, but cannot write; a read that fails \
+             open(path) reads a file's text the same way, but cannot write and takes no errors= \
+             argument; a read that fails \
              raises a RuntimeError, not a FileNotFoundError)",
         );
     } else {
@@ -776,6 +804,14 @@ fn describe(admission: &Admission) -> String {
             ", except that {} returns a list of names (a directory's ends in /)",
             listings.join(" and ")
         ));
+    }
+    // The walk is answered by `fs_list`'s names, so it is offered only where
+    // that tool hands them out.
+    if listings.contains(&"fs_list") {
+        d.push_str(
+            "; os.listdir, os.walk, pathlib's iterdir, glob and rglob, and os.path.exists, \
+             isfile and isdir list through fs_list the same way",
+        );
     }
     d.push_str(
         ". Work on that text with string methods, slicing, `in`, len() and re. Nothing a \
@@ -1179,6 +1215,7 @@ impl Run {
             subcall_tokens: self.subcall_tokens,
             usage: self.usage.clone(),
             peeked_bytes: self.peeked as u64,
+            read_bytes: self.bytes as u64,
             completed: matches!(end, Some(End::Complete { .. })),
             budget_stop,
             cancelled: matches!(end, Some(End::Cancelled)),
@@ -1318,7 +1355,8 @@ impl Run {
                     return Err(raise(
                         Tag::ToolError,
                         format!(
-                            "`{name}` returned an error: {}{more}",
+                            "{}{}{more}",
+                            crate::interpreter::ran_and_failed(name),
                             cut(&bytes, ERROR_TEXT)
                         ),
                     ));
@@ -1716,12 +1754,19 @@ impl Run {
         // An overlap repeats text, so the pieces' total can pass the read's
         // own size many times over: `chunks(t, 1_400_000, overlap=1_399_999)`
         // on a 1.5 MB log is 140 GB built here, uncharged (review of #805).
-        let total = count.saturating_mul(n.min(t.chars));
+        // Bytes, as the limit is: a character of a multibyte text is up to
+        // four, so a count of characters under-refused it (review of #805).
+        // The text's own bytes per character, multiplied before dividing so
+        // one `é` in a long log does not round it up to two (review of #817).
+        let chars = count as u128 * n.min(t.chars) as u128;
+        let total = (chars * t.text.len() as u128)
+            .div_ceil(t.chars.max(1) as u128)
+            .min(usize::MAX as u128) as usize;
         if total > self.limits.host_bytes {
             return Err(raise(
                 Tag::LimitError,
                 format!(
-                    "chunk text: `chunks` would return about {total} characters in all, past \
+                    "chunk text: `chunks` would return about {total} bytes in all, past \
                      this program's {} (an overlap repeats text); use a smaller overlap or a \
                      larger step",
                     self.limits.host_bytes
@@ -2079,6 +2124,16 @@ fn render(f: Finished, cap: usize, shadowed: &[&str]) -> (String, bool) {
             ));
         }
     }
+    // `max(d, key=d.get)`: monty 1.4 cannot take a built-in type's method as
+    // a value, though it calls one, and says only that the attribute is not
+    // there, which the description's own warning did not prevent (M5: 9).
+    if let Some(method) = is_error.then(|| method_as_value(&ending)).flatten() {
+        out.push_str(&format!(
+            "\n[monty cannot use a method as a value (`.{method}` here, without calling it), \
+             though it can call one: pass a lambda that calls it, as in `key=lambda k: d[k]` \
+             for `key=d.get`]"
+        ));
+    }
     if out.len() > cap {
         out = format!(
             "[this program's result is {} bytes, past this call's share of the output budget \
@@ -2087,6 +2142,79 @@ fn render(f: Finished, cap: usize, shadowed: &[&str]) -> (String, bool) {
         );
     }
     (out, is_error)
+}
+
+/// The method an `AttributeError` says a built-in value lacks, when the
+/// failing line in the traceback takes it without calling it: monty's gap,
+/// not the program's typo, since the type has that method in Python.
+fn method_as_value(ending: &str) -> Option<&str> {
+    const BUILTIN: [&str; 9] = [
+        "'dict'",
+        "'collections.defaultdict'",
+        "'collections.Counter'",
+        "'collections.OrderedDict'",
+        "'str'",
+        "'list'",
+        "'set'",
+        "'tuple'",
+        "'bytes'",
+    ];
+    let line = ending
+        .lines()
+        .rev()
+        .find(|l| l.starts_with("AttributeError: "))?;
+    let rest = line.strip_prefix("AttributeError: ")?;
+    let (ty, attr) = rest.split_once(" object has no attribute ")?;
+    if !BUILTIN.contains(&ty) {
+        return None;
+    }
+    let method = attr.strip_prefix('\'')?.strip_suffix('\'')?;
+    // Methods those types have in Python, so a typo (`d.keyz`) is not told
+    // it found monty's gap (review of #811).
+    const METHODS: [&str; 30] = [
+        "get",
+        "keys",
+        "values",
+        "items",
+        "pop",
+        "setdefault",
+        "update",
+        "copy",
+        "count",
+        "index",
+        "append",
+        "extend",
+        "remove",
+        "add",
+        "discard",
+        "strip",
+        "lstrip",
+        "rstrip",
+        "lower",
+        "upper",
+        "title",
+        "split",
+        "join",
+        "startswith",
+        "endswith",
+        "isdigit",
+        "isalpha",
+        "replace",
+        "find",
+        "most_common",
+    ];
+    if !METHODS.contains(&method) {
+        return None;
+    }
+    let taken = format!(".{method}");
+    let uncalled = ending.lines().filter(|l| *l != line).any(|l| {
+        l.match_indices(&taken).any(|(i, _)| {
+            let after = l[i + taken.len()..].trim_start();
+            !after.starts_with('(')
+                && !l[i + taken.len()..].starts_with(|c: char| c.is_alphanumeric() || c == '_')
+        })
+    });
+    uncalled.then_some(method)
 }
 
 /// The names among `names` that `program` assigns to (`x = …`, `x += …`,
@@ -2104,7 +2232,6 @@ fn shadowed<'n>(program: &str, names: &[&'n str]) -> Vec<&'n str> {
                     let rest = rest.trim_start();
                     !longer
                         && ((rest.starts_with('=') && !rest.starts_with("=="))
-                            || rest.starts_with(" in ")
                             || rest.starts_with("in ")
                             || rest.starts_with(',')
                             || ["+=", "-=", "*=", "/="]

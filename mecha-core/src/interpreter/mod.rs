@@ -278,7 +278,9 @@ pub struct Backstops {
 /// sub-calls and add nothing; an `llm_query` or `llm_map` call is one
 /// suspension and spends a handle operation, so the sum still bounds it. A
 /// tool read made by `open(path)` is two suspensions (the `open`, then the
-/// read, R12) against one tool read, so tool reads count twice.
+/// read, R12) against one tool read, so tool reads count twice. A listing
+/// through `fs_list` (R13) is one suspension and at least one tool read, so
+/// it adds nothing.
 pub const COUNTED_HOST_LIMITS: u64 = 32 + 2 * 2048 + 2048;
 
 impl Default for Backstops {
@@ -330,6 +332,36 @@ impl Tag {
     }
 }
 
+/// How a raise says the tool ran and failed, after its tag: the one shape a
+/// listing probe reads as "not there", where a refusal by the gate, a limit
+/// or a stop must still raise (review of #811).
+pub fn ran_and_failed(name: &str) -> String {
+    format!("`{name}` returned an error: ")
+}
+
+/// Which tools answer a program's own file calls, by the shape their answer
+/// takes rather than their name alone: `read` when `fs_read` returns a
+/// file's text (R12), `list` when `fs_list` returns a list of names (R13). A
+/// server's tool called `fs_list` answers in one string, which a walk cannot
+/// use, so it must not be walked (review of #811).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FileTools {
+    pub read: bool,
+    pub list: bool,
+}
+
+impl FileTools {
+    /// By name alone: what a caller that knows nothing of shapes gets, and
+    /// what [`Interpreter::start`] assumes.
+    pub fn named(externals: &[String]) -> Self {
+        let has = |n: &str| externals.iter().any(|e| e == n);
+        FileTools {
+            read: has("fs_read"),
+            list: has("fs_list"),
+        }
+    }
+}
+
 /// What the host raises into a program in answer to a call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostRaise {
@@ -368,6 +400,19 @@ pub trait Interpreter: Send + Sync {
         externals: &[String],
         cancel: CancellationToken,
     ) -> Result<(Box<dyn Program>, Step)>;
+
+    /// [`start`](Self::start), told which of `externals` answer a program's
+    /// own file calls (R12, R13). A backend with no such calls ignores it.
+    async fn start_with(
+        &self,
+        source: &str,
+        externals: &[String],
+        files: FileTools,
+        cancel: CancellationToken,
+    ) -> Result<(Box<dyn Program>, Step)> {
+        let _ = files;
+        self.start(source, externals, cancel).await
+    }
 
     /// Reserved: restore a program [`Program::dump`] saved (the sink slice).
     async fn load(&self, _snapshot: &[u8]) -> Result<(Box<dyn Program>, Step)> {

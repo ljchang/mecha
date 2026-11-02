@@ -990,6 +990,17 @@ fn each_host_limit_raises_a_limit_error_naming_it() {
     let err = op(&mut run, "chunks", vec![h.clone(), json!(500), json!(499)]).unwrap_err();
     assert!(err.starts_with("LimitError: chunk text:"), "{err}");
     assert!(op(&mut run, "chunks", vec![h, json!(500)]).is_ok());
+    // In bytes, as the limit is: 600 two-byte characters in two chunks of
+    // 400 overlapping by 200 are 1,600 bytes, past a 1,000-byte limit that
+    // 800 characters would not pass (review of #805).
+    let (mut run, h) = run_over(&"é".repeat(600), tight);
+    let err = op(&mut run, "chunks", vec![h.clone(), json!(400), json!(200)]).unwrap_err();
+    assert!(err.contains("bytes in all"), "{err}");
+    // And by the text's own bytes per character, not rounded up: one `é` in
+    // 599 ASCII characters is about 1.002 bytes each, so two chunks of 400
+    // (about 802 bytes) pass, where a rounded 2 would read 1,600 (review of #817).
+    let (mut run, h) = run_over(&format!("é{}", "x".repeat(599)), tight);
+    assert!(op(&mut run, "chunks", vec![h, json!(400), json!(200)]).is_ok());
 }
 
 /// A read the host-byte limit refuses is still recorded, and a program can
@@ -1181,6 +1192,10 @@ async fn a_read_reaches_a_program_as_text_and_a_listing_as_names() {
     let err = Run::names("fs_list", &many).unwrap_err().message;
     assert!(err.starts_with("LimitError: pieces: `fs_list`"), "{err}");
     assert_eq!(run.stats(None).peeked_bytes, 0);
+    // What the reads handed the program is counted beside it: the two
+    // listings' names and the note's text, not the failures.
+    let handed = "a.md\nsub/".len() + "(empty directory)".len() + "the whole note".len();
+    assert_eq!(run.stats(None).read_bytes, handed as u64);
 }
 
 /// §2 does not rest on the interpreter alone (review of #768): a call to a
@@ -1412,6 +1427,64 @@ async fn a_read_is_text_that_string_methods_work_on() {
     );
 }
 
+/// The hint's trigger, without a worker: a built-in type's method taken
+/// without a call, and nothing else.
+#[test]
+fn only_a_method_taken_without_a_call_is_monty_s_gap() {
+    assert_eq!(
+        method_as_value(
+            "  x = max(d, key=d.get)\nAttributeError: 'dict' object has no attribute 'get'"
+        ),
+        Some("get")
+    );
+    assert_eq!(
+        method_as_value("  x = d.get(k)\nAttributeError: 'dict' object has no attribute 'get'"),
+        None
+    );
+    assert_eq!(
+        method_as_value("  x = p.getter\nAttributeError: 'Point' object has no attribute 'getter'"),
+        None
+    );
+    assert_eq!(
+        method_as_value("  x = d.keyz\nAttributeError: 'dict' object has no attribute 'keyz'"),
+        None
+    );
+    assert_eq!(
+        method_as_value("  x = d.gets\nAttributeError: 'dict' object has no attribute 'get'"),
+        None
+    );
+}
+
+/// `max(d, key=d.get)` fails in monty 1.4 with "'dict' object has no
+/// attribute 'get'", though `d.get(k)` works; the result says why and what
+/// to write instead (M5: 9 programs, past the description's warning).
+#[cfg(feature = "monty")]
+#[tokio::test]
+async fn a_method_taken_as_a_value_is_named() {
+    let Some(interp) = monty().await else {
+        return;
+    };
+    let doc: Arc<dyn Tool> = Arc::new(Fake::read("document_read", "abc"));
+    let agent = with_code(vec![doc], interp);
+    let (d, _) = run(
+        &agent,
+        "import collections\nd = collections.defaultdict(int)\nd['a'] += 2\nprint(max(d, key=d.get))",
+    )
+    .await;
+    assert!(d.is_error, "{}", d.content);
+    assert!(
+        d.content
+            .contains("[monty cannot use a method as a value (`.get` here"),
+        "{}",
+        d.content
+    );
+    // A method that is called, or an attribute a user's value lacks, is not
+    // monty's gap, and gets no hint.
+    let (d, _) = run(&agent, "d = {}\nprint(d.nope())").await;
+    assert!(d.is_error, "{}", d.content);
+    assert!(!d.content.contains("method as a value"), "{}", d.content);
+}
+
 /// A variable that takes a function's name, as `size = size(h)` did in M2,
 /// makes the next call fail with monty's "'int' object is not callable",
 /// which says nothing about why: the result names the function and the
@@ -1506,7 +1579,12 @@ async fn the_descriptions_example_runs_as_written() {
     );
     let jail = agent.context().tools.workspace.clone();
     std::fs::create_dir_all(jail.join("notes/old")).unwrap();
-    std::fs::write(jail.join("notes/1.md"), "Attendees: Priya, Marco").unwrap();
+    // Two `Attendees:` lines (a list, and its correction): counted once.
+    std::fs::write(
+        jail.join("notes/1.md"),
+        "Attendees: Priya, Marco\nAttendees: Priya, Marco, Sam",
+    )
+    .unwrap();
     std::fs::write(jail.join("notes/2.md"), "Attendees: Marco").unwrap();
     std::fs::write(jail.join("notes/3.md"), "Attendees: Priya").unwrap();
     let admitted = Admission::over(
@@ -1665,6 +1743,11 @@ fn only_the_builtin_listing_hands_a_program_names() {
     assert!(!told.contains("returns a list of names"), "{told}");
     assert!(!told.contains(EXAMPLE), "{told}");
     assert!(
+        told.contains("no third-party packages, os, io or statistics"),
+        "{told}"
+    );
+    assert!(!told.contains("os and pathlib"), "{told}");
+    assert!(
         told.contains(
             "each returns its result as a str (there is no open(): a program has no files)."
         ),
@@ -1680,9 +1763,12 @@ fn only_the_builtin_listing_hands_a_program_names() {
     assert!(
         builtin.contains(
             "each returns its result as a str (fs_read(path=...) returns the file's text, and \
-             open(path) reads a file's text the same way, but cannot write; a read that fails \
+             open(path) reads a file's text the same way, but cannot write and takes no errors= \
+             argument; a read that fails \
              raises a RuntimeError, not a FileNotFoundError), \
-             except that fs_list returns a list of names (a directory's ends in /)."
+             except that fs_list returns a list of names (a directory's ends in /); \
+             os.listdir, os.walk, pathlib's iterdir, glob and rglob, and os.path.exists, \
+             isfile and isdir list through fs_list the same way."
         ),
         "{builtin}"
     );
@@ -1734,7 +1820,8 @@ async fn a_program_that_reaches_for_files_is_told_what_it_was_given() {
     // With the file tools, the refusal leads with them: `open()` was how 19
     // of 27 first programs failed in M2, and alphabetically `fs_read` came
     // after `docs__*`, `document_read` and `find`. (A text `open()` is
-    // answered since R12, so the refusal is reached by `os` here.)
+    // answered since R12, and a listing since the walk, so the refusal is
+    // reached by `os.getenv` here.)
     let Some(interp) = monty().await else {
         return;
     };
@@ -1745,7 +1832,7 @@ async fn a_program_that_reaches_for_files_is_told_what_it_was_given() {
         ],
         interp,
     );
-    let (d, _) = run(&agent, "import os\nprint(os.listdir('notes'))").await;
+    let (d, _) = run(&agent, "import os\nprint(os.getenv('HOME'))").await;
     assert!(d.is_error, "{}", d.content);
     assert!(
         d.content.contains(
@@ -1811,6 +1898,28 @@ async fn a_file_opened_by_a_program_arms_taint_and_lands_in_the_trace() {
     let calls = host_calls(&d.trace);
     assert_eq!(calls.len(), 1, "{calls:?}");
     assert!(format!("{calls:?}").contains("fs_read"), "{calls:?}");
+}
+
+/// A tool called `fs_list` that answers in one string (a server's) is a
+/// plain read: a program's `os.listdir` is refused, not walked through it,
+/// and the tool is never called (review of #811).
+#[cfg(feature = "monty")]
+#[tokio::test]
+async fn a_servers_fs_list_is_not_walked() {
+    let Some(interp) = monty().await else {
+        return;
+    };
+    let server = Fake::read("fs_list", "a.md\nb.md");
+    let ran = server.counter();
+    let agent = with_code(vec![Arc::new(server)], interp);
+    let (d, _) = run(&agent, "import os\nprint(os.listdir('notes'))").await;
+    assert!(d.is_error, "{}", d.content);
+    assert!(d.content.contains("PermissionError"), "{}", d.content);
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        0,
+        "the server's tool was called"
+    );
 }
 
 /// A skill restriction that leaves out `mail_search` keeps it out of the
@@ -3444,6 +3553,7 @@ async fn a_programs_passes_reach_the_runs_usage_and_its_counters() {
     assert_eq!(stats.subcalls, Some(1));
     assert_eq!(stats.subcall_tokens, Some(400));
     assert_eq!(stats.peeked_bytes, Some(0));
+    assert!(stats.program_read_bytes.is_some_and(|b| b > 0), "{stats:?}");
     assert_eq!(stats.budget_stops, Some(0));
     // The host call still enters the trace, tagged, beside the program's row.
     assert_eq!(host_calls(&outcome.tool_calls).len(), 1);
