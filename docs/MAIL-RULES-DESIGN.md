@@ -212,6 +212,38 @@ The same discipline as `request_type` and `deadline_quote`:
   whose actions include any send forces the full-body escalation before the
   verdict is final, so nothing is sent on the strength of a snippet.
 
+#### A send is confirmed by a pass with no learned rules in it
+
+The classifier's frame is not only the owner's words. It also carries the
+learned `triage`-domain rules (the `pass_rules_block_for(&[TRIAGE_DOMAIN])`
+load in `mail.rs`) and the few-shot pool — and those are made *from mail*.
+`Reflexion::learnable` admits `Origin::Untrusted` for `triage` on one stated
+premise: the classifier "can neither send nor reach the network", and its doc
+comment says that a consumer of triage rules with a way to send voids the
+exemption. A `rule` field that drives `reply`, `forward` or `send` is that
+consumer, and §10 closes the loop: a *wrong match* correction becomes a triage
+reflection, so mail the owner received could produce a learned line that
+steers which rule sends. `rule_quote` grounding does not bound it — whoever
+wrote the message chose the words it must quote.
+
+So the main pass's `rule` field is **a candidate, never a decision, for any
+rule with an outbound action.** Such a candidate gets a second quarantined
+call, the **confirmation pass**: no tools, no history, and a frame made only
+of the owner's rule description and a fixed instruction compiled into the
+binary — **no learned rules and no few-shot examples**. It answers one
+question about one rule, `matches: yes | no` with its own grounded quote. A
+send proceeds only when both passes agree; disagreement goes to `propose` with
+both answers on the ledger row.
+
+That keeps the exemption's premise true rather than re-arguing it: untrusted
+triage rules still reach only a pass whose output cannot send on its own. When
+this is built, `learnable()`'s comment gains one sentence naming the
+confirmation pass as the reason the premise still holds, so the next reader
+inherits a true argument. The cost is one extra call per *send candidate*, not
+per thread — a small fraction of mail. Rules with only mailbox and record
+actions keep matching in the main pass alone, learned rules and all: their
+worst case is a reversible archive that the digest shows (§5.5, §7).
+
 **Cost.** Each description adds its tokens to every classification. The
 working assumption is a cap of 12 enabled description rules, revisited once
 shadow mode (§6) has measured precision with a real list. A per-rule yes/no
@@ -222,13 +254,16 @@ fallback if the single field measures badly, not the start.
 
 Rules evaluate in `priority` order, header rules before description rules. A
 thread may match several. Mailbox actions and `digest`/`task` from every
-match apply. **At most one outbound action per thread** — the first by
-priority — because two rules answering the same email is never what anyone
-meant, and the ledger records the others as `skipped: superseded by <rule>`.
+match apply. **Outbound actions come from at most one rule per thread** — the
+first by priority — because two rules answering the same email is never what
+anyone meant, and the ledger records the other rules' outbound actions as
+`skipped: superseded by <rule>`. Within that one rule every outbound action
+runs: the receipts case is a `forward` of the invoice *and* a typed `send`,
+both declared by the same rule.
 
 ### 4.4 When it runs
 
-- Header rules: `mecha mail rules apply --headers`, on its own five-minute
+- Header rules: `mecha mail rule apply --headers`, on its own five-minute
   timer. No model, so no `model-idle.sh` gate.
 - Description rules: at the end of each `mecha mail classify` pass (05:30 UTC
   nightly, every 20 minutes through the working day). An automatic reply can
@@ -325,6 +360,21 @@ and none is configurable off:
 - **Authenticated sender.** `Authentication-Results` must show DMARC `pass`
   aligned with the `From` domain. A forged `From` is how an auto-responder
   sends unsolicited mail to a victim; a message that fails goes to `propose`.
+  **Only one instance counts.** `Authentication-Results` is a trace header:
+  every hop prepends its own, and a sender can write as many as they like
+  into what they submit. The guard reads **the topmost instance, and only if
+  its `authserv-id` is the account's own provider** (pinned per provider, not
+  matched loosely); any other instance is ignored, and **absent or
+  unparseable means `propose`, never `pass`**. Graph's
+  `internetMessageHeaders` is a truncated collection, so "absent" is a real
+  case on Outlook, and each provider gets a test that a missing header
+  proposes. The `List-Unsubscribe` reader in `graph_mail.rs` is first-match,
+  which is right there (any instance is a bulk signal, so sloppy is safe) and
+  the wrong shape to copy here.
+  One consequence worth saying in the UI: mail that reaches an account by
+  forwarding from another address routinely fails alignment, so a rule on
+  such an account may never leave `propose` for its sends. That is the guard
+  working, not a fault, and the rule page says which guard is holding it.
 - **`From`, never `Reply-To`, and never reply-all.** `Reply-To` is
   sender-chosen and is the other reflection route. An automatic reply answers
   one authenticated person.
@@ -392,6 +442,21 @@ rules too (R7). It is the simpler rule, the
 `hud_propose` precedent (an accept names the digest the owner was shown), and
 the cost is one click after an edit.
 
+**What the digest covers is everything that decides a send, and it says so
+where it does not cover a match.** For a header rule, `rules/<name>/` is the
+whole matcher. For a description rule *with an outbound action*, the send
+decision is the confirmation pass of §4.2, whose inputs are the rule's
+description and an instruction compiled into the binary — so the digest also
+carries that instruction's version, and a build that changes it lapses every
+such approval. What the digest does **not** cover is the main pass's learned
+triage rules, which change by design every time the owner corrects a verdict
+(§10). For send rules that is harmless, because a learned rule can only
+nominate a candidate the confirmation pass then judges without it. For a
+description rule with only mailbox and record actions it means the matcher
+can widen after approval: accepted, because those actions are reversible,
+appear in the digest, and exclude `trash` and `spam` (§5.5), and stated here
+so nobody reads "approval binds to what was shown" as covering it.
+
 The feature itself (`mail_rules` in the features registry) is **off by
 default**, so on a new install nothing in this document runs at all.
 
@@ -432,9 +497,15 @@ A rule steps itself down, with a notice, when:
 - **The owner undoes more than 20% of its automatic mailbox actions** over at
   least 10 → `propose`.
 - **Three consecutive action failures** → `shadow`.
-- **A cap is hit** (§5.4) → `shadow` until the owner looks.
+- **A rule's daily cap is hit** (§5.4) → that rule to `shadow` until the
+  owner looks.
+- **The cap across all rules is hit** → no rule changes mode, because the
+  rule that happened to be fifty-first is not the cause. Every outbound action
+  for the rest of the local day stages in the outbox instead, the ledger rows
+  say `held: global cap`, and the owner gets one notice. Mailbox and record
+  actions are unaffected.
 
-`mecha mail rules pause-all` (and a button) drops every rule to `shadow` at
+`mecha mail rule pause-all` (and a button) drops every rule to `shadow` at
 once. Stepping down never needs approval; stepping up always does.
 
 ---
@@ -552,7 +623,9 @@ Each phase is useful alone and testable without the next.
 
 **P0 — mecha-mail prerequisites.** Expose `Auto-Submitted`, `Precedence`,
 `List-Id`, `Authentication-Results`, `Reply-To` and the owner's
-participation in a thread on the thread read. Restore verbs for undo (back to
+participation in a thread on the thread read — `Authentication-Results` as the
+topmost instance with its `authserv-id`, absent stated rather than defaulted,
+with a test per provider (§5.4). Restore verbs for undo (back to
 inbox, out of trash) on both providers. Nothing changes on the send side:
 rule replies go through the existing `mail_reply` path as ordinary mail (R5).
 
@@ -569,8 +642,10 @@ GitHub notifications and junk with no model involved.**
 wrong-match, header-rule testing, *make a rule from this thread*.
 
 **P4 — description rules and fixed sends.** The classifier's `rule` field
-with grounding, template `reply`, verbatim `forward`, §5.4's guards, the
-approval screen. In `propose` until the owner approves a rule.
+with grounding, the confirmation pass for send candidates and the sentence it
+adds to `learnable()`'s comment (§4.2), template `reply`, verbatim `forward`,
+§5.4's guards, the approval screen. In `propose` until the owner approves a
+rule.
 
 **P5 — typed-field sends.** `fields`, the grounded extraction, the rendered
 template.
