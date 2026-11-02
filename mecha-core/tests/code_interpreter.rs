@@ -385,12 +385,18 @@ async fn open_reads_text_through_fs_read_and_nothing_else() {
             "{path}"
         );
     }
-    // the path reaches `fs_read` as written, a quote included, with a leading
-    // `/` taken off (monty cannot tell `open('/a')` from `open('a')`: both
-    // arrive as `/a`, so an absolute path is read relative to the workspace)
+    // the path reaches `fs_read` as written, a quote included: relative to the
+    // workspace when it was relative, absolute when it was absolute (a spill
+    // file, a grant), for `fs_read`'s own jail to decide
     for (src, want) in [
         ("open(\"it's.md\").read()", "it's.md"),
-        ("open('/etc/hosts').read()", "etc/hosts"),
+        ("open('./sub/../a.csv').read()", "a.csv"),
+        ("open('/etc/hosts').read()", "/etc/hosts"),
+        (
+            "open('/tmp/mecha-spill-1/x.txt').read()",
+            "/tmp/mecha-spill-1/x.txt",
+        ),
+        ("open('../up.txt').read()", "/up.txt"),
     ] {
         let mut asked = Vec::new();
         run_with(&interp, src, &["fs_read"], |c| {
