@@ -665,7 +665,10 @@ impl Network {
     /// only the events that fell on or before it, by the same order the fold
     /// reads ([`order`]), so an undated start counts from the beginning and
     /// any other undated event from the day it was recorded. Someone is in it
-    /// once any event about them is. Read only, from the log alone.
+    /// once any event about them is, and someone with no event at all (the
+    /// first taken back) from the beginning, as an undated start would be, so
+    /// "as of today" is never less than now (review of #804). Read only, from
+    /// the log alone.
     pub fn as_of(&self, day: NaiveDate) -> Network {
         let events: Vec<EdgeEvent> = self
             .events
@@ -677,9 +680,9 @@ impl Network {
             .people
             .iter()
             .filter(|p| {
-                events
-                    .iter()
-                    .any(|e| e.person == p.uid || e.other.as_deref() == Some(p.uid.as_str()))
+                let about =
+                    |e: &EdgeEvent| e.person == p.uid || e.other.as_deref() == Some(p.uid.as_str());
+                events.iter().any(about) || !self.events.iter().any(about)
             })
             .cloned()
             .collect();
@@ -2300,6 +2303,22 @@ mod tests {
         assert!(later.person(&theo).is_some());
         // Before anything, no one.
         assert!(n.as_of(day("2000-01-01")).people.is_empty());
+        // Someone whose only event was taken back has no date at all: there
+        // from the beginning, as an undated start, so today is never less
+        // than now.
+        let bo = add_person(&pdir, &no_lib(), &person("Bo", None, None)).unwrap();
+        let first = Network::read(&pdir)
+            .unwrap()
+            .events
+            .iter()
+            .find(|e| e.person == bo)
+            .unwrap()
+            .uid
+            .clone();
+        remove_event(&pdir, &first).unwrap();
+        let n = Network::read(&pdir).unwrap();
+        assert!(n.as_of(day("2030-01-01")).person(&bo).is_some());
+        assert!(n.as_of(day("2000-01-01")).person(&bo).is_some());
     }
 
     #[test]

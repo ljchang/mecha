@@ -7,7 +7,7 @@
   // it now stands. A persona with her people switched off says so.
   import { untrack } from 'svelte';
   import { apiFetch as fetch } from './api.js';
-  import { personaUrl, personUrl, peopleUrl, acceptedLine, ringLayout, initials, eventLine, personBody, PEOPLE_TIES, PEOPLE_EVENTS, PEOPLE_LAYERS, PEOPLE_ABSENT, RINGS } from './persona.js';
+  import { personaUrl, personUrl, peopleUrl, acceptedLine, ringLayout, initials, eventLine, personBody, PEOPLE_TIES, PEOPLE_EVENTS, PEOPLE_LAYERS, PEOPLE_ABSENT, RINGS, RING_ORDER } from './persona.js';
 
   let { name, display = '', token = null, onclose } = $props();
 
@@ -41,7 +41,7 @@
   const ties = $derived(data?.ties ?? []);
   // The list beside the rings: everyone, by ring, innermost first.
   const listed = $derived(
-    [...PEOPLE_LAYERS, 'none', 'ended']
+    RING_ORDER
       .map((ring) => [ring, nodes.filter((n) => n.ring === ring)])
       .filter(([, ns]) => ns.length),
   );
@@ -256,7 +256,7 @@
       {#if past}<button class="linkbtn" disabled={busy} onclick={backToNow}>Back to now</button>{/if}
     </div>
     {#if past}
-      <p class="pnote pastnote">Her people as they were at the end of {data.as_of}, from what was recorded by then. Read only.</p>
+      <p class="pnote pastnote">Her people as they were at the end of {data.as_of}, from what is recorded as having happened by then. Read only.</p>
     {/if}
 
     {#if !past}

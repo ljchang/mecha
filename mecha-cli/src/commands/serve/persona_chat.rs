@@ -2134,9 +2134,15 @@ impl PersonaChats {
         let lib = mecha_core::imagelib::Library::load(&library.dir).0;
         let unlocked = library.unlocked(token);
         let now = network::Network::read(&pdir).map_err(failed)?;
+        // Borrowed for now, folded anew only to look back: the common read
+        // clones nothing (review of #804).
+        let past;
         let n = match as_of {
-            Some(d) => now.as_of(d),
-            None => now.clone(),
+            Some(d) => {
+                past = now.as_of(d);
+                &past
+            }
+            None => &now,
         };
         let shown = |c: Option<&str>| -> (Option<String>, Option<String>) {
             let Some(c) = c else {
@@ -10029,6 +10035,9 @@ mod tests {
         assert_eq!(then["as_of"], "2025-01-01");
         // Theo's start is undated, so he was there from the beginning, but the
         // conflict had not happened yet.
+        // Held by name: out-of-range indexing is also null (review of #804).
+        assert_eq!(then["people"].as_array().unwrap().len(), 1);
+        assert_eq!(then["people"][0]["name"], "Theo");
         assert_eq!(
             then["people"][0]["edge"]["valence"],
             serde_json::Value::Null
